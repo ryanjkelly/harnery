@@ -1,0 +1,73 @@
+/* Brand / media-kit page (src/content/docs/brand.mdx). Loaded globally via
+   astro.config `customCss`; every selector is prefixed `brand-` so nothing
+   leaks into the rest of the docs. Swatch backgrounds are fixed (not theme
+   variables) so each logo variant is shown on the surface it is built for. */
+
+.brand-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  margin: 1.25rem 0 2rem;
+}
+
+.brand-card {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.6rem;
+  overflow: hidden;
+}
+
+.brand-swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 132px;
+  padding: 1.6rem;
+}
+.brand-swatch img { width: auto; height: auto; max-width: 170px; max-height: 92px; }
+.brand-swatch.is-logo img { max-width: 150px; max-height: 116px; }
+.brand-swatch.is-emblem img { max-width: 84px; max-height: 84px; }
+.brand-swatch.is-word img { max-width: 188px; max-height: 46px; }
+
+.brand-swatch.on-light { background: #ffffff; }
+.brand-swatch.on-paper { background: #f4f1ec; }
+.brand-swatch.on-dark { background: #232931; }
+.brand-swatch.on-check {
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #e6e6e6 25%, transparent 25%),
+    linear-gradient(-45deg, #e6e6e6 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e6e6e6 75%),
+    linear-gradient(-45deg, transparent 75%, #e6e6e6 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+
+.brand-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  border-top: 1px solid var(--sl-color-gray-5);
+  background: var(--sl-color-gray-7);
+}
+.brand-cap .name { color: var(--sl-color-white); font-weight: 600; }
+.brand-cap a { white-space: nowrap; }
+
+.brand-colors {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  margin: 1.25rem 0 2rem;
+}
+.brand-color { border: 1px solid var(--sl-color-gray-5); border-radius: 0.6rem; overflow: hidden; }
+.brand-chip { height: 78px; }
+.brand-chip.orange { background: #f25a0e; }
+.brand-chip.teal { background: #06738a; }
+.brand-chip.charcoal { background: #232931; }
+.brand-chip.ink { background: #15191d; }
+.brand-chip.gradient { background: linear-gradient(120deg, #f25a0e 0%, #06738a 100%); }
+.brand-color .meta { padding: 0.5rem 0.7rem; font-size: 0.8rem; }
+.brand-color .meta b { display: block; color: var(--sl-color-white); }
+.brand-color .meta code { font-size: 0.76rem; }
