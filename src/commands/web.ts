@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { lazyFetchWebRoot, webRunner } from "./web-fetch.ts";
 
 /**
  * `harn web`: Next.js dashboard for harnery's coord state.
@@ -18,6 +19,9 @@ import type { EmitContext } from "../commander.ts";
  * passing cwd here lets the dashboard show the right project regardless
  * of where the user invokes `harn web up` from.
  *
+ * The dashboard is not bundled in the npm package (ADR 0001/0003), so on an
+ * npm install `resolveWebRoot` lazy-fetches it on first use (see web-fetch.ts).
+ *
  * Localhost-only by default. Network exposure is intentionally out of
  * scope for v1.
  */
@@ -28,33 +32,31 @@ function webRoot(): string {
   return path.resolve(here, "..", "..", "web");
 }
 
-function checkWebPresent(emit: EmitContext): string | null {
-  const root = webRoot();
-  if (!existsSync(path.join(root, "package.json"))) {
-    emit.error({
-      code: "web_missing",
-      message: `harnery/web/ not found at ${root}`,
-      hint:
-        "The dashboard ships with the harnery git repo, not the npm package (which is the CLI + " +
-        "coord engine only). Clone https://github.com/ryanjkelly/harnery, run `bun install`, then " +
-        "`harn web up --coord-root <your-project>` (or run it from inside that project). " +
-        "See https://harnery.com/cli/web/.",
-    });
-    return null;
-  }
-  return root;
-}
-
-function runner(): string {
-  // Prefer bun when available; fall back to npx/npm for plain Node installs.
-  const r = spawnSync("bun", ["--version"], { stdio: "ignore" });
-  return r.status === 0 ? "bun" : "npx";
+/**
+ * Resolve the web app root. A local `web/` (source checkout / submodule) wins.
+ * Otherwise, on an npm install, lazy-fetch it (clone + install) unless the
+ * caller passed --no-fetch, in which case emit the honest manual hint.
+ */
+function resolveWebRoot(emit: EmitContext, allowFetch: boolean): string | null {
+  const local = webRoot();
+  if (existsSync(path.join(local, "package.json"))) return local;
+  if (allowFetch) return lazyFetchWebRoot(emit);
+  emit.error({
+    code: "web_missing",
+    message: `harnery/web/ not found at ${local}`,
+    hint:
+      "The dashboard is not bundled in the npm package. Re-run without --no-fetch to fetch it " +
+      "automatically, or clone https://github.com/ryanjkelly/harnery and run it from there. " +
+      "See https://harnery.com/cli/web/.",
+  });
+  return null;
 }
 
 interface UpOpts {
   port: string;
   coordRoot?: string;
   prod?: boolean;
+  fetch?: boolean;
 }
 
 export function registerWebCommand(program: Command, emit: EmitContext): void {
@@ -74,8 +76,9 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       "Override the coord root (default: cwd; web walks up looking for .harnery/)",
     )
     .option("--prod", "Use next start instead of next dev (requires prior build)")
+    .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
     .action(async (opts: UpOpts) => {
-      const root = checkWebPresent(emit);
+      const root = resolveWebRoot(emit, opts.fetch !== false);
       if (!root) {
         process.exitCode = 1;
         return;
@@ -101,7 +104,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
 
-      const child = spawn(runner(), ["run", mode], {
+      const child = spawn(webRunner(), ["run", mode], {
         cwd: root,
         env: {
           ...process.env,
@@ -130,14 +133,15 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
   web
     .command("build")
     .description("Build the production bundle (next build).")
-    .action(() => {
-      const root = checkWebPresent(emit);
+    .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
+    .action((opts: { fetch?: boolean }) => {
+      const root = resolveWebRoot(emit, opts.fetch !== false);
       if (!root) {
         process.exitCode = 1;
         return;
       }
       emit.log("running next build…", "info");
-      const r = spawnSync(runner(), ["run", "build"], {
+      const r = spawnSync(webRunner(), ["run", "build"], {
         cwd: root,
         stdio: "inherit",
       });
@@ -149,8 +153,9 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
     .description("Start the production server (next start). Requires prior `harn web build`.")
     .option("-p, --port <port>", "Listen port", "9000")
     .option("--coord-root <dir>", "Override the coord root")
-    .action((opts: { port: string; coordRoot?: string }) => {
-      const root = checkWebPresent(emit);
+    .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
+    .action((opts: { port: string; coordRoot?: string; fetch?: boolean }) => {
+      const root = resolveWebRoot(emit, opts.fetch !== false);
       if (!root) {
         process.exitCode = 1;
         return;
@@ -170,7 +175,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       emit.log(`harn web · http://localhost:${port} (start)`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
 
-      const child = spawn(runner(), ["run", "start"], {
+      const child = spawn(webRunner(), ["run", "start"], {
         cwd: root,
         env: {
           ...process.env,

@@ -6,7 +6,7 @@ sidebar:
 ---
 
 **Date:** 2026-06-21
-**Status:** Open (fix deferred; hybrid workaround in harnery-demo)
+**Status:** Resolved (lazy-fetch on first use; see Resolution below)
 
 ## Context
 
@@ -61,6 +61,16 @@ Interim: harnery-demo runs the web UI **from harnery source**, pointed at the
 demo's `.harnery/` via `HARNERY_COORD_ROOT` (`harnery-demo/scripts/web.sh`), so
 the demo is presentable today.
 
+## Resolution (lazy-fetch)
+
+Adopted the lazy-fetch option. `harn web up` / `build` / `start` detect a missing local `web/` (the npm-install case) and fetch the dashboard on first use: clone the matching version tag into `~/.cache/harnery/web/<ref>/`, install the web app's deps (web/ only), and run it; later runs reuse the cache. Implemented in `src/commands/web-fetch.ts` and `src/commands/web.ts`.
+
+What made this the light option, against the bloat feared above: `web/` reaches into `src/` for exactly one module (`harnery/lib/scratch`), which is dependency-free. So the install is `web/`-only: no root install, no Playwright browser download. The clone is a few MB; `web/node_modules` is hardlinked from the package manager's global cache.
+
+The fetched ref defaults to the installed version's tag (`v<version>`), so the dashboard tracks the coord schema the CLI writes. `HARNERY_WEB_REF` overrides it; `--no-fetch` opts out and prints manual steps (which also satisfies the graceful-degradation follow-up below). Lazy-fetch and the Next 16.2.6 build fix ship in the same release, so any version that has lazy-fetch fetches a dashboard that builds.
+
+A separate `@harnery/web` package is still the cleaner long-term shape (no runtime clone/build), but lazy-fetch delivers a working dashboard for npm consumers now, without a decoupling refactor or a second release pipeline.
+
 ## Additionally discovered: web build breaks under Next 16.2.6
 
 While wiring the harnery-demo hybrid (running the web UI from source), the dev
@@ -73,7 +83,8 @@ a client component drags `node:fs` into the browser bundle. Likely surfaced (or
 caused) by the `next` 16.2.4 -> 16.2.6 bump done for a Dependabot security
 alert. Fix: split the browser-safe constant + type into their own module with no
 `node:fs` import. This must be fixed for the web UI to run at all, separate from
-the distribution question above.
+the distribution question above. **(Done on the `next` branch, shipping in the
+same release as lazy-fetch.)**
 
 ## Follow-up
 

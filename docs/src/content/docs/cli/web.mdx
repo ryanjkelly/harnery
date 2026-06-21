@@ -12,15 +12,15 @@ harn web <subcommand> [options]
 Standalone Next.js dashboard for `.harnery/` state. See [concepts / web UI](/concepts/web-ui/) for the feature tour.
 
 :::note
-The dashboard ships with the **git clone**, not the npm package (which is the CLI + coord engine only). Clone the repo, `bun install`, then run `harn web up` from there, pointing at your project with `--coord-root <dir>` if it lives elsewhere. Running `harn web up` without the clone present prints these steps. See [Install → npm vs git clone](/getting-started/install/#npm-vs-git-clone--what-each-gives-you).
+The dashboard is not bundled in the npm package (which is the CLI + coord engine only). On an npm install, `harn web up` **fetches it on first use**: it clones the matching harnery version into `~/.cache/harnery/web/` and installs the web app's deps, then runs it (later runs reuse the cache). Pass `--no-fetch` to skip that and get manual steps instead. See [Install → npm vs git clone](/getting-started/install/#npm-vs-git-clone--what-each-gives-you).
 :::
 
 ## Subcommands
 
 ```
-harn web up [--port 9000] [--coord-root <dir>] [--prod]
-harn web build
-harn web start [--port 9000] [--coord-root <dir>]
+harn web up [--port 9000] [--coord-root <dir>] [--prod] [--no-fetch]
+harn web build [--no-fetch]
+harn web start [--port 9000] [--coord-root <dir>] [--no-fetch]
 ```
 
 ## `up`
@@ -52,6 +52,21 @@ Start the production server (requires prior `build`):
 ```bash
 harn web build && harn web start
 ```
+
+## First-run fetch (npm installs)
+
+The npm package omits the dashboard to keep the CLI lean. When `web/` is absent (a plain `npm i -g harnery`), the first `harn web up` fetches it:
+
+1. Clones the harnery repo at the matching version tag (`v<your version>`) into `~/.cache/harnery/web/<ref>/`.
+2. Installs the web app's deps there (just `web/`; no root install, no browser downloads).
+3. Boots it. Later runs reuse the cache, so only the first launch pays the cost.
+
+| Flag / env | Effect |
+| --- | --- |
+| `--no-fetch` | Skip the fetch; print manual clone steps instead. Works on `build` / `start` too. |
+| `HARNERY_WEB_REF=<ref>` | Fetch a specific git ref instead of the version tag (e.g. `next`, a branch). |
+
+The fetched dashboard matches your installed harnery version, so it stays in sync with the coord schema the CLI writes.
 
 ## Networking
 
