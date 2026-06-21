@@ -1,6 +1,6 @@
 "use client";
 
-import { DEFAULT_BIN_NAME, type HostInfo } from "@/lib/config";
+import { DEFAULT_BIN_NAME, type HostInfo } from "@/lib/host-info";
 import { type ReactNode, createContext, useContext } from "react";
 
 /**
