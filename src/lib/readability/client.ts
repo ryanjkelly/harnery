@@ -1,14 +1,17 @@
 /// <reference path="./turndown-plugin-gfm.d.ts" />
-import { Readability } from "@mozilla/readability";
-import { JSDOM } from "jsdom";
-import TurndownService from "turndown";
-import { tables } from "turndown-plugin-gfm";
 
 /**
  * HTML → clean markdown via Readability (main-content extraction) +
  * Turndown (HTML → markdown).
  *
  * The library backing the `read` command.
+ *
+ * jsdom, @mozilla/readability, and turndown are heavy and (jsdom's tree)
+ * ESM-fragile, so they are loaded lazily inside `htmlToMarkdown` rather than
+ * at module top level. A static import would pull them into CLI startup (every
+ * command is registered eagerly), and jsdom's transitive `html-encoding-sniffer`
+ * crashes a plain `node` process via ERR_REQUIRE_ESM. Lazy-loading keeps the
+ * CLI booting for users who never touch `read`/`browse`.
  */
 
 export interface ReadabilityOptions {
@@ -39,10 +42,20 @@ const DEFAULT_MAX_CHARS = 100_000;
  * Throws if input is empty, the selector matches nothing, or Readability
  * fails to find a main article (caller should retry with `selector`).
  */
-export function htmlToMarkdown(html: string, opts: ReadabilityOptions = {}): ReadabilityResult {
+export async function htmlToMarkdown(
+  html: string,
+  opts: ReadabilityOptions = {},
+): Promise<ReadabilityResult> {
   if (!html.trim()) {
     throw new Error("Empty HTML input");
   }
+
+  const [{ Readability }, { JSDOM }, { default: TurndownService }, { tables }] = await Promise.all([
+    import("@mozilla/readability"),
+    import("jsdom"),
+    import("turndown"),
+    import("turndown-plugin-gfm"),
+  ]);
 
   const dom = new JSDOM(html, { url: opts.url ?? "http://local/" });
   const doc = dom.window.document;

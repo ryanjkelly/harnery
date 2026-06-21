@@ -1,9 +1,26 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import type { Command } from "commander";
-import * as ts from "typescript";
+import type * as TS from "typescript";
 import type { EmitContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
+
+/**
+ * `typescript` is a devDependency, not a runtime dependency, so it is loaded
+ * lazily here and only when outlining a TS/JS file. A static top-level import
+ * would make the whole CLI fail to boot for an end user who installed harnery
+ * without dev deps (every command is registered at startup). PHP/Python
+ * outlines use regex and never touch this.
+ */
+async function loadTypeScript(): Promise<typeof TS> {
+  try {
+    return (await import("typescript")) as unknown as typeof TS;
+  } catch {
+    throw new Error(
+      "outlining TS/JS files needs the `typescript` package; install it (npm i -D typescript) or use outline on PHP/Python files",
+    );
+  }
+}
 
 /**
  * `harn outline <file>`: print the structural skeleton of a code file (imports
@@ -77,7 +94,7 @@ async function runOutline(file: string, opts: OutlineOpts): Promise<OutlineResul
 
   if ([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"].includes(ext)) {
     language = ext.slice(1);
-    parsed = outlineTypeScript(content, absPath, ext);
+    parsed = await outlineTypeScript(content, absPath, ext);
   } else if (ext === ".php") {
     language = "php";
     parsed = outlinePhp(content);
@@ -105,11 +122,12 @@ async function runOutline(file: string, opts: OutlineOpts): Promise<OutlineResul
   };
 }
 
-function outlineTypeScript(
+async function outlineTypeScript(
   content: string,
   path: string,
   ext: string,
-): { imports: string[]; symbols: SymbolEntry[] } {
+): Promise<{ imports: string[]; symbols: SymbolEntry[] }> {
+  const ts = await loadTypeScript();
   const isTsx = ext === ".tsx" || ext === ".jsx";
   const scriptKind = isTsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true, scriptKind);
@@ -117,18 +135,18 @@ function outlineTypeScript(
   const imports: string[] = [];
   const symbols: SymbolEntry[] = [];
 
-  const lineOf = (node: ts.Node) =>
+  const lineOf = (node: TS.Node) =>
     source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-  const text = (node: ts.Node) =>
+  const text = (node: TS.Node) =>
     content.slice(node.getStart(source), node.getEnd()).replace(/\s+/g, " ").trim();
-  const isExported = (node: ts.Node): boolean => {
-    const mods = (node as { modifiers?: ReadonlyArray<ts.ModifierLike> }).modifiers;
+  const isExported = (node: TS.Node): boolean => {
+    const mods = (node as { modifiers?: ReadonlyArray<TS.ModifierLike> }).modifiers;
     return mods?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
   };
 
   for (const stmt of source.statements) {
     if (ts.isImportDeclaration(stmt)) {
-      const moduleSpec = (stmt.moduleSpecifier as ts.StringLiteral).text;
+      const moduleSpec = (stmt.moduleSpecifier as TS.StringLiteral).text;
       const clause = stmt.importClause;
       const isTypeOnly = clause?.isTypeOnly ? "type " : "";
       let what = "";
@@ -151,7 +169,7 @@ function outlineTypeScript(
       symbols.push({
         kind: "function",
         name: stmt.name.text,
-        signature: renderFnSig(stmt, content, source),
+        signature: renderFnSig(ts, stmt, content, source),
         line: lineOf(stmt),
         exported,
       });
@@ -168,21 +186,21 @@ function outlineTypeScript(
         if (ts.isMethodDeclaration(member) && member.name) {
           members.push({
             kind: "method",
-            name: (member.name as ts.Identifier).text || text(member.name),
-            signature: renderFnSig(member, content, source),
+            name: (member.name as TS.Identifier).text || text(member.name),
+            signature: renderFnSig(ts, member, content, source),
             line: lineOf(member),
           });
         } else if (ts.isConstructorDeclaration(member)) {
           members.push({
             kind: "method",
             name: "constructor",
-            signature: renderFnSig(member, content, source),
+            signature: renderFnSig(ts, member, content, source),
             line: lineOf(member),
           });
         } else if (ts.isPropertyDeclaration(member) && member.name) {
           members.push({
             kind: "property",
-            name: (member.name as ts.Identifier).text || text(member.name),
+            name: (member.name as TS.Identifier).text || text(member.name),
             signature: member.type ? `: ${text(member.type)}` : "",
             line: lineOf(member),
           });
@@ -205,15 +223,15 @@ function outlineTypeScript(
         if (ts.isPropertySignature(member) && member.name) {
           members.push({
             kind: "property",
-            name: (member.name as ts.Identifier).text || text(member.name),
+            name: (member.name as TS.Identifier).text || text(member.name),
             signature: member.type ? `: ${text(member.type)}` : "",
             line: lineOf(member),
           });
         } else if (ts.isMethodSignature(member) && member.name) {
           members.push({
             kind: "method",
-            name: (member.name as ts.Identifier).text || text(member.name),
-            signature: renderFnSig(member, content, source),
+            name: (member.name as TS.Identifier).text || text(member.name),
+            signature: renderFnSig(ts, member, content, source),
             line: lineOf(member),
           });
         }
@@ -243,7 +261,7 @@ function outlineTypeScript(
         exported,
         members: stmt.members.map((m) => ({
           kind: "enumMember",
-          name: (m.name as ts.Identifier).text || text(m.name),
+          name: (m.name as TS.Identifier).text || text(m.name),
           line: lineOf(m),
         })),
       });
@@ -261,7 +279,7 @@ function outlineTypeScript(
           decl.initializer &&
           (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer))
         ) {
-          sig = renderFnSig(decl.initializer, content, source);
+          sig = renderFnSig(ts, decl.initializer, content, source);
         }
         symbols.push({
           kind,
@@ -275,7 +293,7 @@ function outlineTypeScript(
       if (stmt.exportClause && ts.isNamedExports(stmt.exportClause)) {
         const names = stmt.exportClause.elements.map((e) => e.name.text).join(", ");
         const fromText = stmt.moduleSpecifier
-          ? ` from "${(stmt.moduleSpecifier as ts.StringLiteral).text}"`
+          ? ` from "${(stmt.moduleSpecifier as TS.StringLiteral).text}"`
           : "";
         symbols.push({
           kind: "re-export",
@@ -286,7 +304,7 @@ function outlineTypeScript(
       } else if (stmt.moduleSpecifier) {
         symbols.push({
           kind: "re-export",
-          name: `* from "${(stmt.moduleSpecifier as ts.StringLiteral).text}"`,
+          name: `* from "${(stmt.moduleSpecifier as TS.StringLiteral).text}"`,
           line: lineOf(stmt),
           exported: true,
         });
@@ -294,7 +312,7 @@ function outlineTypeScript(
     } else if (ts.isModuleDeclaration(stmt) && stmt.name) {
       symbols.push({
         kind: "namespace",
-        name: (stmt.name as ts.Identifier).text || text(stmt.name),
+        name: (stmt.name as TS.Identifier).text || text(stmt.name),
         line: lineOf(stmt),
         exported,
       });
@@ -305,9 +323,10 @@ function outlineTypeScript(
 }
 
 function renderFnSig(
-  fn: ts.FunctionLikeDeclarationBase | ts.MethodSignature,
+  ts: typeof TS,
+  fn: TS.FunctionLikeDeclarationBase | TS.MethodSignature,
   content: string,
-  source: ts.SourceFile,
+  source: TS.SourceFile,
 ): string {
   const params = (fn.parameters || [])
     .map((p) => {

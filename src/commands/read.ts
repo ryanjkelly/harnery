@@ -26,9 +26,9 @@ export function registerReadCommand(program: Command, emitParam: EmitContext): v
     )
     .option("--raw", "Output cleaned HTML instead of markdown (debugging)")
     .option("--max-chars <n>", "Truncate output to N characters (0 = disable)", "100000")
-    .action((htmlFile: string | undefined, opts: ReadOpts) => {
+    .action(async (htmlFile: string | undefined, opts: ReadOpts) => {
       try {
-        runRead(htmlFile, opts);
+        await runRead(htmlFile, opts);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         emit.error({ code: "read_error", message: msg });
@@ -45,10 +45,10 @@ interface ReadOpts {
   maxChars: string;
 }
 
-function runRead(htmlFile: string | undefined, opts: ReadOpts): void {
+async function runRead(htmlFile: string | undefined, opts: ReadOpts): Promise<void> {
   const input =
     htmlFile && htmlFile !== "-" ? readFileSync(htmlFile, "utf-8") : readFileSync(0, "utf-8");
-  const result = htmlToMarkdown(input, {
+  const result = await htmlToMarkdown(input, {
     url: opts.url,
     selector: opts.selector,
     raw: opts.raw,
