@@ -1,6 +1,6 @@
 {
   "name": "harnery",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Multi-agent coordination + harness adapters + portable CLI utilities for Claude Code / Cursor / Codex.",
   "license": "MIT",
   "author": "Ryan Kelly",
