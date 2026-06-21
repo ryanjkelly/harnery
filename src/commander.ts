@@ -14,6 +14,9 @@
  * (Commander pattern).
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { registerAgentsCommand } from "./commands/agents.ts";
 import { registerBackupCommand } from "./commands/backup.ts";
@@ -236,7 +239,25 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
 }
 
 function readVersion(): string {
-  // Static for the empty scaffold. Will be replaced by a build-time substitution
-  // (or a JSON import) once we have any command shipping.
-  return "0.1.0";
+  // Resolve package.json by walking up from this module. Works under Bun (this
+  // file runs from src/) and Node (from dist/): package.json sits at the
+  // package root above both. Falls back to "0.0.0" if it can't be found rather
+  // than crashing `--version`.
+  try {
+    let dir = dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 6; i++) {
+      try {
+        const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+        if (pkg.name === "harnery" && typeof pkg.version === "string") return pkg.version;
+      } catch {
+        // no package.json at this level, or not ours; keep walking up
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // import.meta.url unavailable or fs error; fall through
+  }
+  return "0.0.0";
 }

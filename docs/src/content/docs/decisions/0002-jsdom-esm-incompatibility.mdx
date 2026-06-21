@@ -6,7 +6,7 @@ sidebar:
 ---
 
 **Date:** 2026-06-21
-**Status:** Open (fix deferred to a follow-up release)
+**Status:** Resolved in 0.2.2 (jsdom replaced with linkedom)
 
 ## Context
 
@@ -54,13 +54,18 @@ CLI, so the rest of the tool is usable.
   `whatwg-url`, which also `require()`s `@exodus/bytes`. Whack-a-mole across
   jsdom's tree.
 
-## Planned fix (follow-up release)
+## Fix (shipped in 0.2.2)
 
-Replace jsdom with [linkedom](https://github.com/WebReflection/linkedom) in
+Replaced jsdom with [linkedom](https://github.com/WebReflection/linkedom) in
 `src/lib/readability/client.ts`. linkedom is a lighter, CJS-friendly DOM that
 `@mozilla/readability` supports, and it drops the entire `@exodus/bytes` chain.
-The work: swap the lib, reconcile the readability test suite against linkedom's
-DOM-behavior differences, and verify `harn read` produces correct markdown on a
-plain Node install. A published-on-Node smoke test (`npm pack` + install
-`--omit=dev` + run) should become a CI gate so this class of regression is
-caught before release, not after.
+The readability test suite passed against linkedom unchanged (no DOM-behavior
+reconciliation needed for this usage), and `harn read` was verified to produce
+correct markdown on a plain Node `--omit=dev` install. The `--url` option's
+relative-link resolution is preserved by injecting a `<base>` tag, since
+linkedom's `parseHTML` has no base-URL option.
+
+Still outstanding: a published-on-Node smoke test (`npm pack` + install
+`--omit=dev` + run `harn --help`/`harn read`) should become a CI gate so this
+class of regression (which the test/lint/build gates all missed) is caught
+before release, not after.

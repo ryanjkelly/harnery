@@ -6,12 +6,14 @@
  *
  * The library backing the `read` command.
  *
- * jsdom, @mozilla/readability, and turndown are heavy and (jsdom's tree)
- * ESM-fragile, so they are loaded lazily inside `htmlToMarkdown` rather than
- * at module top level. A static import would pull them into CLI startup (every
- * command is registered eagerly), and jsdom's transitive `html-encoding-sniffer`
- * crashes a plain `node` process via ERR_REQUIRE_ESM. Lazy-loading keeps the
- * CLI booting for users who never touch `read`/`browse`.
+ * linkedom, @mozilla/readability, and turndown are heavy, so they are loaded
+ * lazily inside `htmlToMarkdown` rather than at module top level. A static
+ * import would pull them into CLI startup (every command is registered
+ * eagerly). linkedom replaced jsdom here: jsdom's transitive dependency tree
+ * (`html-encoding-sniffer`, `whatwg-url`) does a CommonJS `require()` of the
+ * ESM-only `@exodus/bytes`, which crashes a plain `node` process via
+ * ERR_REQUIRE_ESM. linkedom is a lighter, CJS-friendly DOM with no such chain.
+ * See ADR 0002.
  */
 
 export interface ReadabilityOptions {
@@ -50,15 +52,25 @@ export async function htmlToMarkdown(
     throw new Error("Empty HTML input");
   }
 
-  const [{ Readability }, { JSDOM }, { default: TurndownService }, { tables }] = await Promise.all([
-    import("@mozilla/readability"),
-    import("jsdom"),
-    import("turndown"),
-    import("turndown-plugin-gfm"),
-  ]);
+  const [{ Readability }, { parseHTML }, { default: TurndownService }, { tables }] =
+    await Promise.all([
+      import("@mozilla/readability"),
+      import("linkedom"),
+      import("turndown"),
+      import("turndown-plugin-gfm"),
+    ]);
 
-  const dom = new JSDOM(html, { url: opts.url ?? "http://local/" });
-  const doc = dom.window.document;
+  // jsdom took a `url` option to set the document base so Readability resolves
+  // relative links to absolute. linkedom's parseHTML has no such option, so we
+  // inject a <base> tag, which sets doc.baseURI to the same effect. Only when
+  // the HTML doesn't already carry its own <base>.
+  const baseUrl = opts.url ?? "http://local/";
+  const htmlWithBase = /<base\b/i.test(html)
+    ? html
+    : html.replace(/<head\b[^>]*>/i, (m) => `${m}<base href="${baseUrl}">`);
+  // If there's no <head> to anchor the <base> into, fall back to the raw HTML
+  // (relative links stay relative, matching a document with no base).
+  const { document: doc } = parseHTML(htmlWithBase.includes("<base") ? htmlWithBase : html);
   preprocessDom(doc);
 
   let contentHtml: string;
