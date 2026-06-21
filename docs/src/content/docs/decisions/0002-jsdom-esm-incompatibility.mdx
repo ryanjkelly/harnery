@@ -65,7 +65,12 @@ correct markdown on a plain Node `--omit=dev` install. The `--url` option's
 relative-link resolution is preserved by injecting a `<base>` tag, since
 linkedom's `parseHTML` has no base-URL option.
 
-Still outstanding: a published-on-Node smoke test (`npm pack` + install
-`--omit=dev` + run `harn --help`/`harn read`) should become a CI gate so this
-class of regression (which the test/lint/build gates all missed) is caught
-before release, not after.
+A published-on-Node smoke test now guards against this class of regression
+(`scripts/smoke-test.mjs`, the `smoke` CI job): it builds `dist/`, packs the
+tarball, installs it with `--omit=dev`, and runs the CLI via `node dist/cli.js`
+(not `bin/harn`, which prefers Bun and would mask Node-only failures), asserting
+`--version`, `--help`, `outline`, and `read` all work. Verified to catch the
+exact failure mode that shipped: a used static import of a devDependency
+typechecks clean but fails the smoke test with `ERR_MODULE_NOT_FOUND` on the
+production install. The test/lint/build gates all missed this because they run
+against source under Bun.

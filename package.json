@@ -132,6 +132,7 @@
     "test": "bun test src tests",
     "test:web": "cd web && bun install && bun test",
     "test:integration": "bash tests/integration/run.sh",
+    "smoke": "node scripts/smoke-test.mjs",
     "docs:dev": "bun --cwd docs run dev",
     "docs:build": "bun --cwd docs run build",
     "brand:showcase": "node scripts/build-brand-showcase.mjs"
