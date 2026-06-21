@@ -1,0 +1,83 @@
+---
+title: "ADR 0003: Web UI distribution to npm consumers"
+description: harn web up ships in the npm package but the web/ app does not, so it fails for every npm consumer. Tracking the fix.
+sidebar:
+  order: 3
+---
+
+**Date:** 2026-06-21
+**Status:** Open (fix deferred; hybrid workaround in harnery-demo)
+
+## Context
+
+The `web` command (`harn web up`, the Next.js coordination dashboard) ships in
+the published npm package (`dist/commands/web.js`), but the `web/` app itself is
+**deliberately excluded** from the tarball (ADR 0001: "web/ unpublished"; the
+`package.json#files` allowlist omits it). `harn web up` resolves the app at
+`harnery/web/` relative to its own location, which does not exist in an npm
+install, so it fails with `web_missing: harnery/web/ not found`.
+
+Result: **`harn web up` is shipped but cannot work for any npm consumer.** This
+is the same class of latent bug as the 0.2.0 startup crashes (a published
+command that is guaranteed to fail for a real install). It was surfaced by
+harnery-demo, a consumer repo built to dogfood + integration-test the package.
+
+## Why this is not a one-line fix
+
+The web app is not a self-contained, liftable artifact:
+
+1. **It imports harnery's `src/` directly.** `web/next.config` pins
+   `outputFileTracingRoot` to `..` and adds a webpack `extensionAlias` so it can
+   resolve harnery's `.js`-suffixed-but-actually-`.ts` imports. The dashboard
+   reaches up into harnery's source tree and is tied to that layout.
+2. **It is ~610 MB installed** (Next, React, Shiki, react-virtual, …). Shipping
+   the source or a naive build would balloon harnery's core package (~570 KB)
+   by ~100x, punishing every CLI-only user.
+3. **It is webpack-specific** (`next dev --webpack`, custom resolution config).
+
+## Options
+
+- **Prebuilt standalone bundle in-package** (`next build` with
+  `output: "standalone"`, shipped in the tarball): +tens of MB to core harnery;
+  finicky `outputFileTracing` because the app reaches into `../src/`; prepublish
+  build complexity. Bloats every install.
+- **Separate `@harnery/web` package**: the "correct" long-term shape, but
+  requires decoupling the web app from harnery's `src/` imports (a refactor) and
+  a second release pipeline (double the versioning / changeset / canary overhead
+  for a solo maintainer).
+- **`harn web up` lazy-fetches the UI on first use** (clone/install/run the
+  dashboard from the harnery repo at the matching version, into a cache dir):
+  keeps core lean; adds runtime complexity (network, on-machine build).
+
+## Decision
+
+Deferred. None of the options is quick, and the demo can be made presentable
+without it. Recommended eventual direction: **lazy-fetch or a separate
+`@harnery/web` package**, both of which keep the core CLI lean (the reason
+`web/` was excluded in the first place). The in-package prebuilt bundle is
+rejected for the bloat it imposes on CLI-only users.
+
+Interim: harnery-demo runs the web UI **from harnery source**, pointed at the
+demo's `.harnery/` via `HARNERY_COORD_ROOT` (`harnery-demo/scripts/web.sh`), so
+the demo is presentable today.
+
+## Additionally discovered: web build breaks under Next 16.2.6
+
+While wiring the harnery-demo hybrid (running the web UI from source), the dev
+build failed with `UnhandledSchemeError: Reading from "node:fs" is not handled`.
+Cause: `components/HostInfoProvider.tsx` is a client component (`"use client"`)
+that imports from `lib/config.ts`, and `lib/config.ts` imports `node:fs` at the
+top level. A browser-safe constant (`DEFAULT_BIN_NAME`) and type (`HostInfo`)
+live in the same module as server-only `fs` code, so importing the constant into
+a client component drags `node:fs` into the browser bundle. Likely surfaced (or
+caused) by the `next` 16.2.4 -> 16.2.6 bump done for a Dependabot security
+alert. Fix: split the browser-safe constant + type into their own module with no
+`node:fs` import. This must be fixed for the web UI to run at all, separate from
+the distribution question above.
+
+## Follow-up
+
+When this is picked up, also decide whether `harn web up` should **degrade
+gracefully** in the meantime: detect the missing app and print an actionable
+message (how to get the dashboard) instead of the bare `web_missing` error, so
+the shipped command is honest about its current limitation.
