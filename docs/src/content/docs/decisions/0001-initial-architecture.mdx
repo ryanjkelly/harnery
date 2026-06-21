@@ -1,0 +1,55 @@
+---
+title: "ADR 0001: Initial architecture"
+description: Architectural decisions made during the Harnery scaffolding conversation, 2026-05-27.
+sidebar:
+  order: 1
+---
+
+**Date:** 2026-05-27
+**Status:** Accepted
+
+## Context
+
+After 4+ months of building multi-agent tooling inside a multi-project monorepo (with separate `agent-coord/` + `agent-hooks/` packages plus dozens of generic CLI commands), and finding the same code being manually copy-pasted into sibling project CLIs, the obvious next move was to extract everything generic into a published npm package consumable by all of them.
+
+## Decisions
+
+- **Package**: single npm package `harnery`, binary `harn`, MIT-licensed, public repo at `github.com/ryanjkelly/harnery`. Domain at `harnery.com`.
+- **Composition**: downstream CLIs import `createHarneryProgram()` from `harnery/commander`, register their domain-specific commands via Commander's `.addCommand()`, and run. `mycli agents status` and `harn agents status` resolve to **the same code** loaded as library.
+- **State directory**: `.harnery/` is the single hidden root per repo, holding sibling dirs `active/` (heartbeats), `councils/`, `scratch/`, `identities/`, `pid-map/`, plus the `events.ndjson` stream.
+- **Web UI**: standalone Next.js app, boots via `harn web up`, file-based (no DB), localhost-only with opt-in tunnel exposure (gated IP allowlist + dangerously-override flag).
+- **Settings**: JSONC + published JSON Schema. `~/.config/harnery/config.jsonc` (user) + `.harnery/config.jsonc` (project) with project overriding user.
+- **Backup**: shell out to [restic](https://restic.net/). Google Drive default backend; rclone-style remote URLs configurable.
+- **Sync**: shell out to [rclone](https://rclone.org/) (Google Drive is the typical remote; OAuth happens via `rclone config`), selective subset only (config + name-history + councils, but NOT heartbeats, which are machine-specific by design).
+- **Lint/format**: [Biome](https://biomejs.dev/), not ESLint + Prettier.
+- **Releases**: `@changesets/cli` + auto-publish on `main` via GitHub Actions.
+- **Docs**: Astro Starlight at harnery.com via Cloudflare Pages.
+- **Runtime**: Bun-first for daily dev (zero-build TS execution); Node 20+ as the published-package target via `dist/` build.
+
+## Rejected alternatives
+
+- **Docker as primary distribution**: rejected. Adds onboarding cost and slow cold start, and Playwright + ffmpeg + Python all have npm-friendly alternatives (`ffmpeg-static`, Playwright's own postinstall, [`uv`](https://docs.astral.sh/uv/) for Python deps). Docker remains an opt-in artifact for the "kitchen sink" path.
+- **Plugin/extension architecture**: rejected for v1. Keep consumer CLIs as separate programs that compose Harnery as a library. A plugin loader is YAGNI until a third party wants to extend without forking.
+- **Multi-package monorepo (`@harnery/cli` + `@harnery/core` + `@harnery/web`)**: rejected. A single package keeps versioning simple. Internal organization via `src/cli/` + `src/core/` + `src/web/` gives clean module boundaries without the monorepo tax.
+- **YAML for settings**: rejected. Too many footguns (Norway problem, indentation sensitivity, spec version ambiguity) for a file that's edited by both CLI and Web UI. JSON Schema tooling around YAML is also weaker than around JSON. JSONC strikes the right balance.
+- **Provider-agnostic command surface (e.g. `harn image` with `--provider openai|anthropic`)**: rejected. Provider-specific commands stay in consumer CLIs, since the right provider mix is a per-project decision that Harnery shouldn't pre-empt.
+
+## Migration plan
+
+Six-commit strangler-fig executed inside the originating monorepo:
+
+1. Scaffold the empty Harnery package
+2. Wire the root `package.json` workspaces
+3. `git mv` the legacy `agent-coord/` → `harnery/src/core/agents/` + rewrite imports
+4. `git mv` the legacy `agent-hooks/` → `harnery/src/core/hooks/` + rewrite imports
+5. Port the portable commands (`tokens`, `eml`, `env`, etc.) into Harnery; the originating CLI then composes via `createHarneryProgram()`
+6. Update root docs + close out the migration
+
+After validation: split Harnery out of the originating monorepo into its own repo via `git filter-repo --path harnery/`, publish v0.1.0 to npm, then migrate the remaining consumer CLIs.
+
+## Consequences
+
+- Consumer CLIs become **thin domain wrappers**. Generic command logic lives in one place.
+- New generic commands land in Harnery and are immediately available to every consumer on next dep bump.
+- Schema changes to `.harnery/` are coordinated across consumers via semver; major bumps require deliberate adoption.
+- The coord layer gets a broader audience, including potential external users beyond the originating project.

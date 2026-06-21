@@ -1,0 +1,114 @@
+---
+title: Configuration schema
+description: Full reference for Harnery's settings file format.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+The canonical JSON Schema is published at:
+
+```
+https://harnery.com/schemas/config.schema.json
+```
+
+Reference it in your config file's `$schema` field to get editor autocomplete and validation in VS Code, Cursor, Zed, JetBrains, and anywhere else that respects `$schema`.
+
+## Locations
+
+Harnery reads settings in this order. Later values win.
+
+1. `~/.config/harnery/config.jsonc`: user-global defaults
+2. `<project>/.harnery/config.jsonc`: project-specific overrides
+3. CLI flags + environment variables: per-invocation
+
+## Top-level fields
+
+| Field          | Type    | Default          | Description |
+| -------------- | ------- | ---------------- | ----------- |
+| `$schema`      | string  | none             | URL to the JSON Schema (used by editors for autocomplete/validation) |
+| `project_name` | string  | repo basename    | Display name surfaced in log lines and to peers |
+| `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
+| `coord`        | object  | see below        | Coord-layer settings |
+| `web`          | object  | see below        | Standalone Next.js dashboard |
+| `backup`       | object  | see below        | restic-backed snapshots |
+| `sync`         | object  | see below        | rclone-backed cross-machine sync |
+
+### `binName`
+
+The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) and the web UI run *as Harnery itself*, so they can't see the name of a consumer CLI that composes Harnery (e.g. `myapp`). They read it back from this field for every agent-facing string: end-of-turn nudges, council prompts, worktree-conflict hints. `harn init` stamps it automatically for a consumer (any bin name other than the `harn` default). Resolution precedence: `HARNERY_BIN` env → this field → `"harn"`.
+
+## `coord`
+
+| Field                 | Type    | Default | Description |
+| --------------------- | ------- | ------- | ----------- |
+| `freshness_seconds`   | number  | `300`   | Heartbeat age above which an agent is considered stale (5 min) |
+| `name_pool`           | string  | `default` | Name pool to draw from for new agents |
+| `auto_release_on_failure` | bool | `true` | Drop a file claim if PostToolUseFailure fires |
+
+Also configurable via env: `HARNERY_AGENT_COORD_FRESHNESS`.
+
+## `web`
+
+| Field   | Type    | Default       | Description |
+| ------- | ------- | ------------- | ----------- |
+| `port`  | number  | `9000`        | Listen port for `harn web up` |
+| `bind`  | string  | `127.0.0.1`   | Bind address. Localhost-only by default |
+
+Override via flags: `harn web up --port 4000`.
+
+## `backup`
+
+| Field          | Type    | Default                                       | Description |
+| -------------- | ------- | --------------------------------------------- | ----------- |
+| `repo`         | string  | `~/.cache/harnery/restic-repo`                | restic repository path or URL |
+| `password_file`| string  | `~/.config/harnery/restic-password`           | File containing the restic repo password |
+| `keep_daily`   | number  | `7`                                           | Daily snapshots to keep on `harn backup prune` |
+| `keep_weekly`  | number  | `4`                                           | Weekly snapshots to keep |
+| `keep_monthly` | number  | `6`                                           | Monthly snapshots to keep |
+
+Env overrides: `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE`.
+
+## `sync`
+
+| Field    | Type   | Default     | Description |
+| -------- | ------ | ----------- | ----------- |
+| `remote` | string | none        | rclone remote name (e.g. `gdrive`) |
+| `prefix` | string | `harnery`   | Subpath under the remote root |
+
+Env overrides: `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX`.
+
+Sync subset is fixed: `identities/`, `scratch/archived/`, `councils/`. Heartbeats and event logs are intentionally machine-local and won't sync.
+
+## Example config
+
+```jsonc
+{
+  "$schema": "https://harnery.com/schemas/config.schema.json",
+  "project_name": "my-monorepo",
+  "binName": "mycli",
+
+  "coord": {
+    "freshness_seconds": 600
+  },
+
+  "web": {
+    "port": 9000
+  },
+
+  "backup": {
+    "keep_daily": 14,
+    "keep_weekly": 8
+  },
+
+  "sync": {
+    "remote": "gdrive",
+    "prefix": "harnery/my-monorepo"
+  }
+}
+```
+
+## Schema status
+
+The schema lives at `schemas/config.schema.json` in the Harnery repo. v1 covers the fields above; future fields land additively with semver minor bumps. Breaking schema changes require a major bump and a migration note.

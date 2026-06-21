@@ -1,0 +1,265 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Design tokens, mirroring the upstream app's app/globals.css. Critical: --primary
+ * is intentionally a NEUTRAL strong color (near-white in dark mode, near-black
+ * in light mode). Brand accents live in --chart-1 through --chart-5 +
+ * --positive / --negative / --revenue / --cost / --tone-*. */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+  --color-revenue: var(--revenue);
+  --color-cost: var(--cost);
+  --color-row-highlight: var(--row-highlight);
+  --color-tone-acquisition: var(--tone-acquisition);
+  --color-tone-back-end: var(--tone-back-end);
+  --color-tone-ecomm: var(--tone-ecomm);
+  --color-tone-total: var(--tone-total);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-heading: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.62 0.18 250);
+  --chart-2: oklch(0.6 0.21 295);
+  --chart-3: oklch(0.62 0.16 160);
+  --chart-4: oklch(0.75 0.16 75);
+  --chart-5: oklch(0.62 0.21 15);
+  --positive: oklch(0.55 0.16 150);
+  --positive-soft: oklch(0.94 0.07 150);
+  --negative: oklch(0.55 0.22 27);
+  --negative-soft: oklch(0.95 0.05 22);
+  --revenue: oklch(0.55 0.16 150);
+  --cost: oklch(0.65 0.18 38);
+  --row-highlight: oklch(0.97 0.02 250 / 60%);
+  --tone-acquisition: oklch(0.62 0.18 250);
+  --tone-back-end: oklch(0.6 0.21 295);
+  --tone-ecomm: oklch(0.62 0.16 160);
+  --tone-total: oklch(0.45 0.12 220);
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.7 0.17 250);
+  --chart-2: oklch(0.72 0.19 295);
+  --chart-3: oklch(0.73 0.16 160);
+  --chart-4: oklch(0.78 0.16 75);
+  --chart-5: oklch(0.72 0.2 15);
+  --positive: oklch(0.74 0.17 150);
+  --positive-soft: oklch(0.3 0.05 150);
+  --negative: oklch(0.72 0.19 22);
+  --negative-soft: oklch(0.3 0.06 20);
+  --revenue: oklch(0.74 0.17 150);
+  --cost: oklch(0.75 0.18 50);
+  --row-highlight: oklch(0.3 0.04 250 / 35%);
+  --tone-acquisition: oklch(0.7 0.17 250);
+  --tone-back-end: oklch(0.72 0.19 295);
+  --tone-ecomm: oklch(0.73 0.16 160);
+  --tone-total: oklch(0.72 0.1 220);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* Geist OpenType: cv11 = slashed zero, ss03 = single-storey ɑ. Both
+       improve digit disambiguation at the small sizes the dashboard uses
+       for captions and IDs. tabular-nums stays opt-in via Tailwind class
+       so prose flows naturally. */
+    font-feature-settings: "cv11", "ss03";
+  }
+  html {
+    @apply font-sans;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    @apply font-mono;
+  }
+}
+
+/* Back-compat with existing prose using `.text-muted` / `.card` classes from
+ * the pre-design-system era. Both forward to the token equivalents so prior
+ * markup keeps rendering while new code uses bg-card / text-muted-foreground
+ * directly. */
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--card-foreground);
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--positive);
+  box-shadow: 0 0 6px var(--positive);
+  margin-right: 6px;
+  animation: pulse 2s infinite;
+}
+
+.live-dot-stale {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: oklch(0.5 0.1 60);
+  margin-right: 6px;
+}
+
+pre.scratch {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Operator-attention channels (lib/attention.ts + AttentionProvider).
+ * edge = breathing inset ring along the viewport while a state waits on the
+ * human; ring = element-scale spotlight on the thing to click. Both use the
+ * sky "act now" colour from the state grammar and stop on any interaction. */
+.attention-edge {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 2px rgb(56 189 248 / 0.55),
+    inset 0 0 72px 8px rgb(56 189 248 / 0.16);
+  animation: attention-breathe 2.2s ease-in-out infinite;
+}
+
+.attention-ring {
+  animation: attention-ring 1.8s ease-in-out infinite;
+}
+
+/* Cursor→target flow-line canvas (AttentionFlow). Sits under the edge ring,
+ * never intercepts input; the component skips drawing entirely under
+ * prefers-reduced-motion. */
+.attention-flow {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9998;
+  pointer-events: none;
+}
+
+@keyframes attention-breathe {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes attention-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(56 189 248 / 0);
+  }
+  50% {
+    box-shadow:
+      0 0 0 4px rgb(56 189 248 / 0.35),
+      0 0 16px 2px rgb(56 189 248 / 0.22);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attention-edge,
+  .attention-ring {
+    animation: none;
+  }
+  .attention-edge {
+    opacity: 0.55;
+  }
+}

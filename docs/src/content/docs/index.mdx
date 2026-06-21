@@ -1,0 +1,37 @@
+---
+title: Harnery
+description: Multi-agent coordination + harness adapters + portable CLI utilities for Claude Code / Cursor / Codex.
+template: splash
+hero:
+  image:
+    file: ../../assets/harnery-emblem.svg
+    alt: Harnery emblem
+  tagline: Multi-agent coordination, harness adapters, and portable CLI utilities, extracted from production Claude Code / Cursor / Codex tooling.
+  actions:
+    - text: Get started
+      link: /getting-started/install/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/ryanjkelly/harnery
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What's inside
+
+<CardGrid stagger>
+  <Card title="Coord layer" icon="puzzle">
+    `.harnery/active/` heartbeats, claim-time guards, commit-time guards, the canonical event stream, harness adapters for Claude Code / Cursor / Codex.
+  </Card>
+  <Card title="Portable utilities" icon="laptop">
+    `tokens`, `eml`, `env`, `grep`, `docs`, `repo`, `wip`, `share`, `browse`, `fetch`, `read`. Cross-platform and dependency-light, with sensible defaults out of the box.
+  </Card>
+  <Card title="Standalone web UI" icon="open-book">
+    `harn web up` boots a local Next.js dashboard for coord state, councils, and per-project introspection.
+  </Card>
+  <Card title="Backup + sync" icon="rocket">
+    `harn backup` snapshots `.harnery/` via [restic](https://restic.net/); `harn sync` keeps a curated subset live across machines via rclone (Google Drive or any remote).
+  </Card>
+</CardGrid>

@@ -1,0 +1,43 @@
+---
+title: harn tunnel
+description: Expose the local dev stack or web UI to another device through an IP-gated Cloudflare quick tunnel.
+sidebar:
+  order: 7
+---
+
+```
+harn tunnel up | down | status | logs | allow [...]
+```
+
+`harn tunnel` puts an **IP-gated reverse proxy** in front of a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/), so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. A small gate process checks Cloudflare's `CF-Connecting-IP` against an allowlist, rewrites the upstream `Host` header, and forwards the request. `cloudflared` exposes the gate as a random `*.trycloudflare.com` URL.
+
+:::caution[Requires Bun]
+This is the one Harnery command that needs [Bun](https://bun.sh) installed: the gate worker is a `Bun.serve` process. Every other command runs on plain Node. Without Bun, `harn tunnel up` fails fast with a clear message.
+:::
+
+## Commands
+
+```bash
+harn tunnel up                       # start the default instance
+harn tunnel up --target 127.0.0.1:9000 --vhost localhost:9000   # custom upstream + Host
+harn tunnel up --name web            # a second, independently-managed instance
+harn tunnel status                   # table of running instances + their URLs
+harn tunnel down [--name <id>|--all] # stop one / all
+harn tunnel logs [-f]                # tail the gate log (--cloudflared for the tunnel log)
+```
+
+## Allowlist
+
+The gate denies every request whose origin IP isn't on the allowlist (shared across instances):
+
+```bash
+harn tunnel allow              # list allowed IPs
+harn tunnel allow add 1.2.3.4  # add (restart running tunnels to apply)
+harn tunnel allow rm 1.2.3.4   # remove
+```
+
+## Caveats
+
+- **Quick tunnels reroll their hostname on every restart.** A stable URL would need a named Cloudflare tunnel tied to a domain, which isn't built today.
+- `cloudflared` auto-installs to `~/.local/bin/` on first run (Linux); on macOS, `brew install cloudflared`.
+- State lives under `.cache/tunnel/`.

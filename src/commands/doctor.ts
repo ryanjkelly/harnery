@@ -1,0 +1,231 @@
+/**
+ * `harn doctor`: runtime + dependency check.
+ *
+ * Walks through every dependency harnery touches and reports presence,
+ * version, and OS-specific install hints. Returns a checklist:
+ *
+ *   ✓ ok: dep is present and recent enough
+ *   ⚠ warn: optional dep missing (feature degrades)
+ *   ✗ fail: required dep missing (commands will throw)
+ *
+ * Exits 0 unless a required dep is missing.
+ */
+
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { Command } from "commander";
+import type { EmitContext } from "../commander.ts";
+
+type Severity = "ok" | "warn" | "fail";
+
+interface Check {
+  name: string;
+  severity: Severity;
+  detail: string;
+  hint?: string;
+}
+
+interface CheckOpts {
+  json?: boolean;
+}
+
+export function registerDoctorCommand(program: Command, emit: EmitContext): void {
+  program
+    .command("doctor")
+    .description(
+      "Verify the runtime + optional deps harnery commands expect. Exits 0 " +
+        "unless a required dep (Node, git) is missing.",
+    )
+    .option("--json", "Machine-readable JSON output")
+    .action((opts: CheckOpts) => {
+      const checks = runChecks();
+      const requiredFailed = checks.some((c) => c.severity === "fail");
+
+      if (opts.json) {
+        emit.data({
+          checks,
+          summary: {
+            total: checks.length,
+            ok: checks.filter((c) => c.severity === "ok").length,
+            warn: checks.filter((c) => c.severity === "warn").length,
+            fail: checks.filter((c) => c.severity === "fail").length,
+          },
+        });
+        emit.setExitCode(requiredFailed ? 1 : 0);
+        return;
+      }
+
+      const symbols: Record<Severity, string> = { ok: "✓", warn: "⚠", fail: "✗" };
+      const widest = Math.max(...checks.map((c) => c.name.length));
+      const lines: string[] = [];
+      for (const c of checks) {
+        lines.push(`${symbols[c.severity]} ${c.name.padEnd(widest)}  ${c.detail}`);
+        if (c.hint) lines.push(`    ↳ ${c.hint}`);
+      }
+
+      const summary = `\n${checks.filter((c) => c.severity === "ok").length} ok, ${
+        checks.filter((c) => c.severity === "warn").length
+      } warn, ${checks.filter((c) => c.severity === "fail").length} fail`;
+      emit.text(`${lines.join("\n")}${summary}`);
+      emit.setExitCode(requiredFailed ? 1 : 0);
+    });
+}
+
+export function runChecks(): Check[] {
+  return [
+    checkNode(),
+    checkGit(),
+    checkBun(),
+    checkHarneryDir(),
+    checkRestic(),
+    checkRclone(),
+    checkPlaywright(),
+    checkPython(),
+  ];
+}
+
+function whichVersion(bin: string, args: string[] = ["--version"]): { ok: boolean; out: string } {
+  const r = spawnSync(bin, args, { encoding: "utf-8" });
+  if (r.status !== 0) return { ok: false, out: "" };
+  const out = (r.stdout || r.stderr).trim().split("\n")[0];
+  return { ok: true, out };
+}
+
+function checkNode(): Check {
+  const v = process.versions.node;
+  const major = Number.parseInt(v.split(".")[0], 10);
+  if (Number.isNaN(major) || major < 20) {
+    return {
+      name: "node",
+      severity: "fail",
+      detail: `${v} (need ≥ 20)`,
+      hint: "https://nodejs.org/en/download",
+    };
+  }
+  return { name: "node", severity: "ok", detail: v };
+}
+
+function checkGit(): Check {
+  const r = whichVersion("git");
+  if (!r.ok) {
+    return {
+      name: "git",
+      severity: "fail",
+      detail: "missing",
+      hint: macOrLinux("brew install git", "apt-get install -y git"),
+    };
+  }
+  return { name: "git", severity: "ok", detail: r.out.replace(/^git version\s*/, "") };
+}
+
+function checkBun(): Check {
+  const r = whichVersion("bun");
+  if (!r.ok) {
+    return {
+      name: "bun",
+      severity: "warn",
+      detail: "missing (Node-only mode: fine, just slower than bun-native)",
+      hint: "curl -fsSL https://bun.sh/install | bash",
+    };
+  }
+  return { name: "bun", severity: "ok", detail: r.out };
+}
+
+function checkRestic(): Check {
+  const r = whichVersion("restic", ["version"]);
+  if (!r.ok) {
+    return {
+      name: "restic",
+      severity: "warn",
+      detail: "missing (needed for `harn backup`)",
+      hint: macOrLinux("brew install restic", "apt-get install -y restic"),
+    };
+  }
+  return { name: "restic", severity: "ok", detail: r.out };
+}
+
+function checkRclone(): Check {
+  const r = whichVersion("rclone", ["version"]);
+  if (!r.ok) {
+    return {
+      name: "rclone",
+      severity: "warn",
+      detail: "missing (needed for `harn sync`)",
+      hint: "curl https://rclone.org/install.sh | sudo bash",
+    };
+  }
+  // first line is "rclone v1.XX.X"
+  return { name: "rclone", severity: "ok", detail: r.out };
+}
+
+function checkPlaywright(): Check {
+  // Check if playwright is importable + chromium installed.
+  try {
+    const moduleId = "playwright";
+    require.resolve(moduleId);
+  } catch {
+    return {
+      name: "playwright",
+      severity: "warn",
+      detail: "module missing (needed for `harn browse`)",
+      hint: "npm install -g playwright && npx playwright install chromium",
+    };
+  }
+  // Check chromium browser binary exists.
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, ".cache", "ms-playwright"),
+    path.join(home, "Library", "Caches", "ms-playwright"),
+  ];
+  const found = candidates.find(existsSync);
+  if (!found) {
+    return {
+      name: "playwright",
+      severity: "warn",
+      detail: "module ok but no browsers installed",
+      hint: "npx playwright install chromium",
+    };
+  }
+  return { name: "playwright", severity: "ok", detail: `module + browsers at ${found}` };
+}
+
+function checkPython(): Check {
+  const r = whichVersion("python3");
+  if (!r.ok) {
+    return {
+      name: "python3",
+      severity: "warn",
+      detail: "missing (optional; some examples use python)",
+    };
+  }
+  return { name: "python3", severity: "ok", detail: r.out };
+}
+
+function checkHarneryDir(): Check {
+  // Walk up from cwd looking for .harnery/.
+  let dir = process.cwd();
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(path.join(dir, ".harnery"))) {
+      return {
+        name: ".harnery/",
+        severity: "ok",
+        detail: path.join(dir, ".harnery"),
+      };
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return {
+    name: ".harnery/",
+    severity: "warn",
+    detail: "no .harnery/ found above cwd",
+    hint: "create one with `mkdir -p .harnery/active` from your monorepo root",
+  };
+}
+
+function macOrLinux(mac: string, linux: string): string {
+  return os.platform() === "darwin" ? mac : linux;
+}

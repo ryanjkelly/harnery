@@ -1,0 +1,98 @@
+---
+title: First run
+description: A quick tour through the most common harn commands.
+sidebar:
+  order: 2
+---
+
+After `npm install -g harnery`, run a freshness check and a tour of the daily-driver commands.
+
+## Verify the install
+
+```bash
+harn doctor
+```
+
+You'll see a `✓ / ⚠ / ✗` checklist of every dep Harnery touches (Node, git, bun, optional restic + rclone + playwright, plus whether `.harnery/` is reachable). Warnings about missing optional deps are fine; only `node` and `git` are required for the core surface.
+
+JSON output for scripting:
+
+```bash
+harn doctor --json
+```
+
+## Coord-layer essentials
+
+Inside a project that has a `.harnery/` directory (the multi-agent state lives here), the daily-driver commands are:
+
+```bash
+# Heartbeat + claims for every agent active in this repo right now
+harn agents list
+
+# End-of-turn status box for yourself
+harn agents status
+
+# Declare what you're working on so peers can see it
+harn agents set-task "rewriting the deploy command"
+
+# Snapshot of every uncommitted change across the monorepo + submodules
+harn wip
+
+# Append a note to your own scratchpad (survives in-session compaction)
+harn scratch add note "looking at this from the email angle next"
+```
+
+## Web dashboard
+
+The coord layer is read-only-fine but easier to consume in a browser:
+
+```bash
+harn web up
+```
+
+Visit `http://localhost:9000`. Live updates via Server-Sent Events whenever the coord state changes. See [concepts / web UI](/concepts/web-ui/) for the full feature tour.
+
+## Portable utilities
+
+Cross-platform CLI bits that aren't tied to coord state:
+
+```bash
+# Offline token counting (o200k_base, Claude proxy ~5% delta on markdown)
+harn tokens README.md src/**/*.ts
+
+# Parse a Gmail .eml export → clean markdown thread
+harn eml saved-thread.eml -o thread.md
+
+# Monorepo-aware grep with sensible default excludes (node_modules, dist, .next, ...)
+harn grep "TODO" --lang ts --limit 50
+
+# Cookie-aware HTTP fetch + reader pipeline
+harn fetch https://example.com | harn read -
+
+# Playwright-driven browser with persistent profile + visibility/overflow checks
+harn browse https://example.com --check-visible "header nav" --json
+```
+
+## Backup + sync
+
+Insurance for the coord state across machines:
+
+```bash
+# One-time setup (creates the restic repo + password file)
+harn backup init
+
+# Take a snapshot of .harnery/ (events.ndjson + .lock excluded by default)
+harn backup snapshot
+
+# Cross-machine sync of identities + archived scratchpads + councils via rclone
+harn sync init           # picks the rclone remote configured via `rclone config`
+harn sync push           # local → remote
+harn sync pull           # remote → local
+```
+
+## Where to next
+
+- [Configuration](/getting-started/configuration/): settings file format + precedence
+- [CLI reference](/cli/): the full command tree
+- [Concepts / coord layer](/concepts/coord-layer/): what the multi-agent state does
+- [Concepts / web UI](/concepts/web-ui/): dashboard tour

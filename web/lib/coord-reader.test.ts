@@ -1,0 +1,216 @@
+/**
+ * Locks the incremental identity index that replaced the whole-file
+ * readInstanceIdentities scan. The invariants that matter: it only consumes
+ * appended bytes (offset advances to the last complete line), it never drops a
+ * start event across a torn-final-line boundary, it rebuilds when the log is
+ * replaced, and it round-trips through the persisted .identity-index.json so a
+ * cold process doesn't re-read the whole ledger.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  type IdentityIndex,
+  mergeIdentitiesFromChunk,
+  refreshIdentityIndex,
+} from "./coord-reader.ts";
+
+function freshRoot(): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), "harn-idx-"));
+  mkdirSync(path.join(root, ".harnery"), { recursive: true });
+  return root;
+}
+
+function streamPath(root: string): string {
+  return path.join(root, ".harnery", "events.ndjson");
+}
+
+function startLine(
+  type: "session.start" | "subagent.start",
+  instanceId: string,
+  name: string | undefined,
+  extra: Record<string, unknown> = {},
+): string {
+  const data: Record<string, unknown> = { ...extra };
+  if (name !== undefined) data.name = name;
+  return JSON.stringify({
+    schema_version: 1,
+    event_id: `01${instanceId}`,
+    event_type: type,
+    ts: "2026-06-04T00:00:00Z",
+    instance_id: instanceId,
+    session_id: type === "subagent.start" ? "parent-sess" : instanceId,
+    harness: "claude-code",
+    source: "test",
+    data,
+  });
+}
+
+const NON_START = JSON.stringify({
+  schema_version: 1,
+  event_id: "01tool",
+  event_type: "tool.pre_use",
+  ts: "2026-06-04T00:00:00Z",
+  instance_id: "sess-1",
+  session_id: "sess-1",
+  harness: "claude-code",
+  source: "test",
+  data: { tool_name: "Bash" },
+});
+
+function turnStopLine(instanceId: string, model: string): string {
+  return JSON.stringify({
+    schema_version: 1,
+    event_id: `01ts-${instanceId}`,
+    event_type: "turn.stop",
+    ts: "2026-06-04T00:01:00Z",
+    instance_id: instanceId,
+    session_id: instanceId,
+    harness: "claude-code",
+    source: "test",
+    data: { model, tool_call_count: 1 },
+  });
+}
+
+describe("mergeIdentitiesFromChunk", () => {
+  test("harvests session + subagent starts, skips non-start and nameless rows", () => {
+    const chunk = [
+      startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+      NON_START,
+      startLine("subagent.start", "sub-1", "Bob", { agent_type: "Explore" }),
+      startLine("session.start", "sess-2", undefined), // nameless → skipped
+      "{ not json",
+    ].join("\n");
+    const out = mergeIdentitiesFromChunk(chunk, {});
+    expect(Object.keys(out).sort()).toEqual(["sess-1", "sub-1"]);
+    expect(out["sess-1"]!.kind).toBe("session");
+    expect(out["sess-1"]!.platform).toBe("claude_code");
+    expect(out["sub-1"]!.kind).toBe("subagent");
+    expect(out["sub-1"]!.agent_type).toBe("Explore");
+    expect(out["sub-1"]!.session_id).toBe("parent-sess");
+  });
+
+  test("latest start wins per instance_id", () => {
+    const into = mergeIdentitiesFromChunk(startLine("session.start", "x", "First"), {});
+    mergeIdentitiesFromChunk(startLine("session.start", "x", "Second"), into);
+    expect(into["x"]!.name).toBe("Second");
+  });
+
+  test("turn.stop folds data.model onto the existing identity; latest wins", () => {
+    const into = mergeIdentitiesFromChunk(
+      [
+        startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+        turnStopLine("sess-1", "claude-opus-4-8"),
+        turnStopLine("sess-1", "claude-fable-5"),
+      ].join("\n"),
+      {},
+    );
+    expect(into["sess-1"]!.model).toBe("claude-fable-5");
+  });
+
+  test("turn.stop with no captured identity is skipped (model without a name is unusable)", () => {
+    const into = mergeIdentitiesFromChunk(turnStopLine("ghost", "gpt-5.5"), {});
+    expect(Object.keys(into)).toEqual([]);
+  });
+
+  test("a re-emitted session.start (resume) preserves the harvested model", () => {
+    const into = mergeIdentitiesFromChunk(
+      [
+        startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+        turnStopLine("sess-1", "gpt-5.5"),
+        startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+      ].join("\n"),
+      {},
+    );
+    expect(into["sess-1"]!.model).toBe("gpt-5.5");
+  });
+});
+
+describe("refreshIdentityIndex: incremental consumption", () => {
+  test("cold start reads the whole file and advances offset to EOF", () => {
+    const root = freshRoot();
+    const body = `${startLine("session.start", "sess-1", "Anna")}\n${startLine("subagent.start", "sub-1", "Bob")}\n`;
+    writeFileSync(streamPath(root), body, "utf8");
+
+    const idx = refreshIdentityIndex(root, null);
+    expect(Object.keys(idx.identities).sort()).toEqual(["sess-1", "sub-1"]);
+    expect(idx.offset).toBe(Buffer.byteLength(body, "utf8"));
+  });
+
+  test("a second refresh with no new bytes is a no-op (steady-state fast path)", () => {
+    const root = freshRoot();
+    const body = `${startLine("session.start", "sess-1", "Anna")}\n`;
+    writeFileSync(streamPath(root), body, "utf8");
+    const first = refreshIdentityIndex(root, null);
+    const second = refreshIdentityIndex(root, first);
+    expect(second.offset).toBe(first.offset);
+    expect(Object.keys(second.identities)).toEqual(["sess-1"]);
+  });
+
+  test("appended start events are picked up on the next refresh", () => {
+    const root = freshRoot();
+    writeFileSync(streamPath(root), `${startLine("session.start", "sess-1", "Anna")}\n`, "utf8");
+    const first = refreshIdentityIndex(root, null);
+    expect(Object.keys(first.identities)).toEqual(["sess-1"]);
+
+    appendFileSync(streamPath(root), `${startLine("subagent.start", "sub-9", "Zed")}\n`, "utf8");
+    const second = refreshIdentityIndex(root, first);
+    expect(Object.keys(second.identities).sort()).toEqual(["sess-1", "sub-9"]);
+    expect(second.offset).toBeGreaterThan(first.offset);
+  });
+
+  test("a torn final line is NOT consumed until completed (no dropped start)", () => {
+    const root = freshRoot();
+    const annaLine = startLine("session.start", "sess-1", "Anna");
+    const bobLine = startLine("subagent.start", "sub-2", "Bob");
+    // File ends mid-Bob; only Anna's line is terminated.
+    writeFileSync(streamPath(root), `${annaLine}\n${bobLine.slice(0, 20)}`, "utf8");
+    const first = refreshIdentityIndex(root, null);
+    expect(Object.keys(first.identities)).toEqual(["sess-1"]);
+    expect(first.offset).toBe(Buffer.byteLength(`${annaLine}\n`, "utf8")); // stopped after Anna
+
+    // The writer completes Bob's line.
+    writeFileSync(streamPath(root), `${annaLine}\n${bobLine}\n`, "utf8");
+    const second = refreshIdentityIndex(root, first);
+    expect(Object.keys(second.identities).sort()).toEqual(["sess-1", "sub-2"]);
+  });
+
+  test("a shrunk/replaced log rebuilds from scratch", () => {
+    const root = freshRoot();
+    const big = `${startLine("session.start", "old-1", "Old")}\n${startLine("session.start", "old-2", "Older")}\n`;
+    writeFileSync(streamPath(root), big, "utf8");
+    const first = refreshIdentityIndex(root, null);
+    expect(first.offset).toBe(Buffer.byteLength(big, "utf8"));
+
+    // Replace with a smaller file (size < prior offset).
+    const small = `${startLine("session.start", "new-1", "New")}\n`;
+    writeFileSync(streamPath(root), small, "utf8");
+    const second = refreshIdentityIndex(root, first);
+    expect(Object.keys(second.identities)).toEqual(["new-1"]);
+    expect(second.offset).toBe(Buffer.byteLength(small, "utf8"));
+  });
+
+  test("missing stream returns the prior index unchanged", () => {
+    const root = freshRoot();
+    const prev: IdentityIndex = { offset: 0, identities: {} };
+    expect(refreshIdentityIndex(root, prev)).toBe(prev);
+  });
+});
+
+describe("refreshIdentityIndex: persisted index round-trip", () => {
+  test("persists .identity-index.json and a cold refresh (prev=null) reloads it", () => {
+    const root = freshRoot();
+    writeFileSync(streamPath(root), `${startLine("session.start", "sess-1", "Anna")}\n`, "utf8");
+    const first = refreshIdentityIndex(root, null);
+    expect(existsSync(path.join(root, ".harnery", ".identity-index.json"))).toBe(true);
+
+    // Append, then simulate a fresh process (prev=null): the persisted index is
+    // loaded so only the appended delta is read, and the prior identity survives.
+    appendFileSync(streamPath(root), `${startLine("session.start", "sess-2", "Cara")}\n`, "utf8");
+    const cold = refreshIdentityIndex(root, null);
+    expect(Object.keys(cold.identities).sort()).toEqual(["sess-1", "sess-2"]);
+    expect(cold.offset).toBeGreaterThanOrEqual(first.offset);
+  });
+});

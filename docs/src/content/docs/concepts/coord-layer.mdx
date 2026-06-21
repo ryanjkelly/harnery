@@ -1,0 +1,23 @@
+---
+title: Coord layer
+description: How Harnery's multi-agent coordination prevents commit contamination, overlapping edits, and submodule-pointer thrash.
+sidebar:
+  order: 1
+---
+
+The coord layer was extracted from years of running multiple Claude Code / Cursor / Codex sessions against the same checkout. It solves three failure modes that hit you the moment you run more than one agent at a time:
+
+1. **Commit contamination**: Agent A's unstaged changes get swept into Agent B's commit
+2. **Overlapping edits**: both agents edit the same file, and the second write clobbers the first
+3. **Submodule-pointer thrash**: Agent A bumps a submodule pointer, and Agent B unwittingly folds the wrong bump into a commit
+
+## How it works
+
+Three primitives on disk, plus hook scripts wired into Claude Code / Cursor / Codex + git:
+
+- **`.harnery/active/<id>.json`**: heartbeat per agent, declaring what files are claimed
+- **`.harnery/events.ndjson`**: canonical append-only event log under `flock`, surfaced live by the [web UI](/concepts/web-ui/)
+
+The hooks fire **before** an edit lands (claim time) and **before** a commit lands (commit time), block conflicts, and emit structured events.
+
+The agent sees **nothing** when nothing's going wrong. Single-agent runs are indistinguishable from no coord layer at all.

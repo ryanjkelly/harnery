@@ -1,0 +1,64 @@
+---
+title: Configuration
+description: Where Harnery looks for settings, the file format, and precedence rules.
+sidebar:
+  order: 3
+---
+
+## File format
+
+Settings live in [JSONC](https://github.com/microsoft/node-jsonc-parser): JSON with comments and trailing commas. A published JSON Schema gives editor autocomplete and inline validation in VS Code, Cursor, Zed, JetBrains, and anything else that respects `$schema`.
+
+## Locations
+
+Harnery looks for settings in two places, in precedence order:
+
+1. **Project**: `<project-root>/.harnery/config.jsonc`
+2. **User**: `~/.config/harnery/config.jsonc`
+
+Values from the project file override user-global values. CLI flags override both. Env vars (`HARNERY_*`) override CLI flags only when explicitly documented per command.
+
+## Schema
+
+Reference the published JSON Schema at the top of your config:
+
+```jsonc
+{
+  "$schema": "https://harnery.com/schemas/config.schema.json",
+
+  // ... your settings here
+}
+```
+
+VS Code (and most modern editors) read the `$schema` URL and provide autocomplete + validation as you type.
+
+## Example
+
+```jsonc
+{
+  "$schema": "https://harnery.com/schemas/config.schema.json",
+
+  // Project identity surfaced to peers + in log lines.
+  "project_name": "my-project",
+
+  // Coord layer
+  "coord": {
+    "freshness_seconds": 600,  // how stale a peer heartbeat can get before sweep
+    "name_pool": "default"     // "default" | "hurricane" | "custom-pool-id"
+  },
+
+  // Web UI
+  "web": {
+    "port": 7777,
+    "bind": "127.0.0.1"
+  },
+
+  // Backup
+  "backup": {
+    "repo": "rclone:gdrive:harnery-backup/my-project",
+    "schedule": "daily"
+  }
+}
+```
+
+See [reference / config schema](/reference/config-schema/) for the full field listing.

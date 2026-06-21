@@ -1,0 +1,73 @@
+---
+title: harn web
+description: Standalone Next.js dashboard for the coord layer.
+sidebar:
+  order: 13
+---
+
+```
+harn web <subcommand> [options]
+```
+
+Standalone Next.js dashboard for `.harnery/` state. See [concepts / web UI](/concepts/web-ui/) for the feature tour.
+
+:::note
+The dashboard ships with the **git clone**, not the npm package (which is the CLI + coord engine only). Clone the repo, `bun install`, then run `harn web up` from there, pointing at your project with `--coord-root <dir>` if it lives elsewhere. Running `harn web up` without the clone present prints these steps. See [Install → npm vs git clone](/getting-started/install/#npm-vs-git-clone--what-each-gives-you).
+:::
+
+## Subcommands
+
+```
+harn web up [--port 9000] [--coord-root <dir>] [--prod]
+harn web build
+harn web start [--port 9000] [--coord-root <dir>]
+```
+
+## `up`
+
+Boot the dashboard. Dev mode by default (HMR, no build needed). With `--prod`, runs `next start` (requires a prior `web build`).
+
+```bash
+harn web up
+# → http://localhost:9000
+
+harn web up --port 4000 --coord-root /path/to/some/repo
+# → http://localhost:4000, reading .harnery/ from /path/to/some/repo
+```
+
+## `build`
+
+Produce the production bundle:
+
+```bash
+harn web build
+```
+
+Runs `next build` against `harnery/web/`. Output lands in `harnery/web/.next/`.
+
+## `start`
+
+Start the production server (requires prior `build`):
+
+```bash
+harn web build && harn web start
+```
+
+## Networking
+
+Localhost-only by default. For cross-device access (phone, second laptop), pair with `harn tunnel`:
+
+```bash
+harn web up &
+harn tunnel up --target 127.0.0.1:9000
+```
+
+`harn tunnel` runs an IP-gated reverse-proxy in front of a Cloudflare quick tunnel; see [`harn tunnel`](/cli/tunnel/) for the allowlist + setup story.
+
+## Coord root resolution
+
+The dashboard resolves `.harnery/` from, in order:
+
+1. `--coord-root <dir>` flag
+2. `HARNERY_COORD_ROOT` env var
+3. Walk up from cwd looking for a `.harnery/` directory (up to 8 levels)

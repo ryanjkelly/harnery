@@ -1,0 +1,20 @@
+{
+  "//": "Node-publishable build. Extends the dev tsconfig but flips noEmit off and",
+  "// ": "emits JS + .d.ts to dist/. rewriteRelativeImportExtensions (TS 5.7+) rewrites",
+  "//  ": "the `.ts` import specifiers used throughout src/ to `.js` in the output, which",
+  "//   ": "is what lets Node resolve the emitted modules. Bun consumers never touch dist/",
+  "//    ": "(the `bun` export condition points them at src/*.ts); this is the Node path.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "docs", "src/web", "tests", "**/*.test.ts"]
+}

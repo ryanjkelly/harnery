@@ -1,0 +1,56 @@
+---
+title: Web UI
+description: The standalone Next.js dashboard for Harnery's coord state.
+sidebar:
+  order: 2
+---
+
+`harn web up` boots a Next.js dashboard that reads `.harnery/` directly from disk. There's no daemon, no server-side database, and no API key to manage. The intended audience is the operator sitting in front of the monorepo.
+
+## What you see
+
+- **Dashboard (`/`)**: every active and stale agent as a card with name, age, platform, last-tool, model, task, and turn summary. File claims table at the bottom.
+- **Per-agent page (`/agents/<id>`)**: full heartbeat detail, claimed files, parsed scratchpad entries newest-first, last 60 events emitted by this agent.
+- **Councils (`/councils` + `/councils/<id>`)**: active / closed / archived council manifests with members, rounds, and per-round contributions rendered inline.
+- **Events (`/events`)**: last 200 lines of `events.ndjson` with type-filter chips and per-instance drill-through.
+
+## Realtime
+
+Each page renders server-side from the latest `.harnery/` state. A tiny client component subscribes to `/api/stream` (Server-Sent Events) and calls `router.refresh()` on any change. The server-side stream watches `active/`, `councils/`, `scratch/`, and `events.ndjson` via `fs.watch`, debounces a 250 ms burst, and pushes a `refresh` event. A 2 s filesize poll on `events.ndjson` backs the watcher up: a directory `fs.watch` does not fire on a plain append to an existing file on Linux/WSL (inotify reports create/rename/delete for a dir watch, not a child's modify), so without it a fresh append (a new `subagent.start`, say) could go unseen until an unrelated heartbeat write churned a watched directory. The poll fires only on actual growth, so idle streams cost nothing.
+
+If the connection drops, the client backs off exponentially (1 s → 30 s) and reconnects.
+
+## Write actions
+
+The dashboard is mostly read-focused, but exposes three operator escape hatches:
+
+- **Release claim**: drop a file claim from any heartbeat. Useful when a session ended mid-Edit and a peer is now blocked on a path the original agent no longer cares about. Hits `POST /api/actions/release-claim`.
+- **Ping agent**: write a `handoff` entry to a peer's scratchpad, prefixed `from web-ui:`. Hits `POST /api/actions/ping`.
+- **End session**: unlink a stuck heartbeat (operator-only, same effect as the stale sweep but immediate). Hits `POST /api/actions/end-session`. Requires confirmation.
+
+These actions write directly to `.harnery/` files. The bash coord layer's flock dance is for the agent-vs-agent race; the web UI is the operator's escape hatch, single-user and low-frequency, so it needs no locks.
+
+## Production mode
+
+By default `harn web up` runs `next dev` with HMR. For a long-running operator panel:
+
+```bash
+harn web build       # next build
+harn web start       # next start
+```
+
+Or use `--prod` on `up` once a build exists:
+
+```bash
+harn web up --prod
+```
+
+## Network exposure
+
+Localhost-only by design. To reach the dashboard from a different machine, use `harn tunnel` (IP-gated Cloudflare quick tunnel); see [`harn tunnel`](/cli/tunnel/) for the full setup.
+
+## Implementation notes
+
+- All read paths live in `harnery/web/lib/coord-reader.ts`. Single source of truth for the JSON shapes returned by `/api/*`.
+- The webpack `extensionAlias` in `next.config.ts` teaches the bundler that `.ts` re-exports can import `.js`-suffixed paths (Harnery's source uses the ESM-spec convention; bun handles it natively, but webpack needs the hint).
+- The reader caches its `.harnery/` root after the first resolve to avoid repeated walks. Set `HARNERY_COORD_ROOT` to override (and to test against a fixture).

@@ -1,0 +1,4 @@
+# Code ownership for harnery.
+# Every path is owned by the maintainer, so every PR auto-requests their review.
+# Once branch protection is enabled, this makes maintainer review required.
+* @ryanjkelly

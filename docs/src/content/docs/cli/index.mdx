@@ -1,0 +1,43 @@
+---
+title: CLI reference
+description: Every harn command, grouped by purpose.
+sidebar:
+  order: 0
+---
+
+:::caution[Pre-1.0]
+Harnery is in early development. The CLI surface below is the planned tree; pages fill out as commands stabilize.
+:::
+
+## Coord layer
+
+- `harn agents …`: heartbeats, peers, claims, task focus, councils
+- `harn scratch …`: per-agent markdown journal
+- `harn wip`: uncommitted-work snapshot across submodules
+
+## Files + grep
+
+- `harn grep`: monorepo-aware code search with sensible default excludes
+- `harn outline`: TS/JS AST outline + markdown TOC
+- `harn callers`: find references to a symbol
+
+## Web ops
+
+- `harn browse`: Playwright-driven web automation
+- `harn fetch`: cookie-aware HTTP with shared jar
+- `harn read`: HTML → markdown via Readability + Turndown
+
+## Utilities
+
+- `harn tokens`: offline token counting (o200k_base)
+- `harn eml`: Gmail .eml → clean chronological markdown
+- `harn env`: runtime + tooling environment report
+- `harn docs`: markdown freshness + lint + index
+
+## Lifecycle
+
+- `harn web up`: standalone Next.js dashboard
+- `harn backup`: restic-backed snapshots
+- `harn sync`: Google Drive-backed cross-machine sync
+- `harn doctor`: runtime + dependency check
+- `harn tunnel`: IP-gated Cloudflare quick tunnel(s); run several at once with `--name`

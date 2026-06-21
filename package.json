@@ -1,0 +1,165 @@
+{
+  "name": "harnery",
+  "version": "0.1.0",
+  "description": "Multi-agent coordination + harness adapters + portable CLI utilities for Claude Code / Cursor / Codex.",
+  "license": "MIT",
+  "author": "Ryan Kelly",
+  "homepage": "https://harnery.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryanjkelly/harnery.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ryanjkelly/harnery/issues"
+  },
+  "keywords": [
+    "cli",
+    "multi-agent",
+    "coordination",
+    "claude-code",
+    "cursor",
+    "codex",
+    "agent-hooks",
+    "developer-tools"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "//exports": "Each entry resolves to TS source under Bun (zero-build dev + an embedding host) and to the built dist/ on Node/npm. The `bun` condition must stay first.",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./commander": {
+      "bun": "./src/commander.ts",
+      "types": "./dist/commander.d.ts",
+      "import": "./dist/commander.js"
+    },
+    "./core/agents": {
+      "bun": "./src/core/agents/index.ts",
+      "types": "./dist/core/agents/index.d.ts",
+      "import": "./dist/core/agents/index.js"
+    },
+    "./core/agents/session-events": {
+      "bun": "./src/core/agents/session-events.ts",
+      "types": "./dist/core/agents/session-events.d.ts",
+      "import": "./dist/core/agents/session-events.js"
+    },
+    "./core/hooks": {
+      "bun": "./src/core/hooks/index.ts",
+      "types": "./dist/core/hooks/index.d.ts",
+      "import": "./dist/core/hooks/index.js"
+    },
+    "./lib/agent-browser": {
+      "bun": "./src/lib/agent-browser/index.ts",
+      "types": "./dist/lib/agent-browser/index.d.ts",
+      "import": "./dist/lib/agent-browser/index.js"
+    },
+    "./lib/browser": {
+      "bun": "./src/lib/browser/index.ts",
+      "types": "./dist/lib/browser/index.d.ts",
+      "import": "./dist/lib/browser/index.js"
+    },
+    "./lib/cookies": {
+      "bun": "./src/lib/cookies/index.ts",
+      "types": "./dist/lib/cookies/index.d.ts",
+      "import": "./dist/lib/cookies/index.js"
+    },
+    "./lib/format": {
+      "bun": "./src/lib/format.ts",
+      "types": "./dist/lib/format.d.ts",
+      "import": "./dist/lib/format.js"
+    },
+    "./lib/http": {
+      "bun": "./src/lib/http/index.ts",
+      "types": "./dist/lib/http/index.d.ts",
+      "import": "./dist/lib/http/index.js"
+    },
+    "./lib/machine": {
+      "bun": "./src/lib/machine.ts",
+      "types": "./dist/lib/machine.d.ts",
+      "import": "./dist/lib/machine.js"
+    },
+    "./lib/readability": {
+      "bun": "./src/lib/readability/index.ts",
+      "types": "./dist/lib/readability/index.d.ts",
+      "import": "./dist/lib/readability/index.js"
+    },
+    "./lib/scratch": {
+      "bun": "./src/lib/scratch/index.ts",
+      "types": "./dist/lib/scratch/index.d.ts",
+      "import": "./dist/lib/scratch/index.js"
+    },
+    "./lib/tunnel/state": {
+      "bun": "./src/lib/tunnel/state.ts",
+      "types": "./dist/lib/tunnel/state.d.ts",
+      "import": "./dist/lib/tunnel/state.js"
+    }
+  },
+  "bin": {
+    "harn": "./bin/harn",
+    "agent-coord": "./bin/agent-coord",
+    "agent-hook": "./bin/agent-hook"
+  },
+  "//files": "src ships as TS so the `bun` export condition resolves to source; negate co-located tests so they don't ride into the tarball (a .npmignore is inert for paths already inside the files allowlist).",
+  "files": [
+    "bin",
+    "src",
+    "dist",
+    "schemas",
+    "README.md",
+    "LICENSE",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "packageManager": "bun@1.3.3",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "typecheck": "bun x tsc --noEmit",
+    "lint": "bun x @biomejs/biome check src",
+    "format": "bun x @biomejs/biome format --write src",
+    "test": "bun test src tests",
+    "test:web": "cd web && bun install && bun test",
+    "test:integration": "bash tests/integration/run.sh",
+    "docs:dev": "bun --cwd docs run dev",
+    "docs:build": "bun --cwd docs run build",
+    "brand:showcase": "node scripts/build-brand-showcase.mjs"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "commander": "^15.0.0",
+    "gpt-tokenizer": "^3.4.0",
+    "js-yaml": "^4.1.1",
+    "jsdom": "^29.0.2",
+    "mailparser": "^3.9.8",
+    "pixelmatch": "^7.2.0",
+    "playwright": "^1.59.1",
+    "pngjs": "^7.0.0",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.0",
+    "@changesets/cli": "^2.27.0",
+    "@types/bun": "^1.2.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^28.0.1",
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^26.0.0",
+    "@types/pixelmatch": "^5.2.6",
+    "@types/pngjs": "^6.0.5",
+    "@types/turndown": "^5.0.6",
+    "typescript": "^6.0.0"
+  }
+}

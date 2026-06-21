@@ -1,0 +1,74 @@
+---
+title: harn sync
+description: Cross-machine sync of a curated .harnery/ subset via rclone.
+sidebar:
+  order: 12
+---
+
+```
+harn sync <subcommand> [options]
+```
+
+Keep a curated subset of `.harnery/` live across machines via [rclone](https://rclone.org/). Google Drive is the expected remote, but any rclone backend works.
+
+Doesn't wrap OAuth: `rclone config` handles Google Drive setup, and `harn sync init` then picks the configured remote and records it.
+
+## What syncs
+
+A deliberately small subset:
+
+- `.harnery/identities/`: durable persona UUIDs + machine labels
+- `.harnery/scratch/archived/`: historical scratchpads
+- `.harnery/councils/`: manifests + invites + per-round contributions
+
+What stays put (machine-local, by design):
+
+- `.harnery/active/`: live heartbeats
+- `.harnery/pid-map/`: ppid → owner_id lookups
+- `.harnery/events.ndjson`: append-only event stream (large + machine-specific)
+- `.harnery/.last-intent.*`: per-turn intent stamps
+
+## Subcommands
+
+```
+harn sync init [--remote <name>] [--prefix <path>]
+harn sync status [-v]
+harn sync push [--dry-run -v]
+harn sync pull [--dry-run -v]
+harn sync list [--depth <n>]
+```
+
+## Setup
+
+```bash
+# One-time: configure an rclone remote (interactive OAuth for Google Drive)
+rclone config
+
+# Tell harnery which remote to use (records to ~/.config/harnery/sync.json)
+harn sync init --remote gdrive --prefix harnery/my-monorepo
+
+# Verify the connection
+harn sync status
+
+# First push
+harn sync push -v
+```
+
+## Day-to-day
+
+```bash
+# On machine A: capture today's scratchpad archive + council work
+harn sync push
+
+# On machine B: pull A's state down
+harn sync pull
+```
+
+## Defaults
+
+| Setting | Default       |
+| ------- | ------------- |
+| Remote  | (must set)    |
+| Prefix  | `harnery`     |
+
+Env overrides: `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX`.

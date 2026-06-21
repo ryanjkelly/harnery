@@ -1,0 +1,85 @@
+---
+title: Councils
+description: File-based multi-agent decision-making coordination.
+sidebar:
+  order: 3
+---
+
+A council is a small set of agents brought together to converge on a question over multiple rounds. The state lives under `.harnery/councils/<id>/`: a manifest file plus per-round contributions, each a markdown file written by one agent.
+
+## Why
+
+Single-agent decisions are fast but narrow. A council brings two to six agents into a round-robin, lets each one read the previous round's contributions before writing their own, and converges naturally when no one has anything substantive to add for two rounds.
+
+Use it to review the design of a hot-path migration, pick between two refactor approaches, or audit a security-sensitive boundary: anywhere a single agent's first instinct would benefit from being argued against before it gets committed.
+
+## Lifecycle
+
+```bash
+# Create a council with an objective + named members.
+harn agents council create "Pick the strangler-fig order" \
+  --member Alpha --member Beta --member Gamma \
+  --target-doc docs/migration-plan.md
+
+# Each member reads the invite + prior rounds, then writes their contribution:
+#   .harnery/councils/<id>/round-N/<their-name>.md
+
+# Check who's contributed this round:
+harn agents council show <id>
+
+# Once all members have contributed, advance to the next round.
+# (Or auto-advance by passing --auto-advance to create.)
+harn agents council advance <id>
+
+# When converged: close it. The status flips to "closed"; the manifest +
+# body stay on disk for the historical record.
+harn agents council close <id>
+
+# Or archive (manifest + body moved to .harnery/councils/archive/) to keep
+# the active list lean.
+harn agents council archive <id>
+```
+
+## Manifest shape
+
+The manifest is JSON at `.harnery/councils/<id>.json`. Key fields:
+
+```jsonc
+{
+  "schema_version": 2,
+  "council_id": "...",
+  "objective": "the question we're answering",
+  "status": "active",     // active | closed | archived
+  "created_at": "...",
+  "created_by": "Alpha",
+  "steward": "Beta",      // optional ongoing process-tender
+  "members": [
+    { "name": "Alpha", "id": "01H..." },
+    { "name": "Beta",  "id": "01H..." }
+  ],
+  "current_round": 2,
+  "target_doc": "docs/migration-plan.md",
+  "rounds": [
+    { "round": 1, "status": "collected", "contributors": ["Alpha", "Beta"] },
+    { "round": 2, "status": "open" }
+  ]
+}
+```
+
+## Web UI
+
+The standalone dashboard renders all of this for browsing:
+
+- `/councils`: active / closed / archived list with member chips + round count
+- `/councils/<id>`: manifest + invite + per-round contributions rendered inline
+
+See [concepts / web UI](/concepts/web-ui/).
+
+## Design notes
+
+- **File-based, not message-passing.** Each contribution is a markdown file. Reads are flat `readdirSync` + `readFileSync`. There's no broker or queue process behind it.
+- **One write per (round, member).** Re-writing the same contribution is allowed (and tracked via the file mtime), but the canonical state is "whatever's on disk right now."
+- **Convergence is convention.** Two consecutive rounds where no member submitted a "Substantive" entry = converged. The convention is encoded in the prompts each member is given by the steward, not enforced by the tool.
+- **Archival is permanent.** Archived councils stay on disk under `.harnery/councils/archive/` so future sessions can mine the conversation. Use `council delete --archived` to remove permanently; it refuses to operate on the active set.
+
+For the design rationale, see the [initial-architecture ADR](/decisions/0001-initial-architecture/).

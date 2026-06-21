@@ -1,0 +1,51 @@
+---
+title: harn init
+description: Bootstrap Harnery in a project by creating .harnery/ and wiring the harness hooks.
+sidebar:
+  order: 2
+---
+
+```
+harn init [--harness claude-code|cursor|codex] [--dry-run] [--project-root <path>]
+```
+
+One command to make a project harnery-ready. It does the two setup steps that are otherwise easy to miss, and that fail **silently** when missed:
+
+1. **Creates the `.harnery/` coord root.** Without it, `findCoordRoot` returns null and every hook no-ops forever. `init` also drops a `.harnery/.gitignore` (`*`) so machine-local runtime state (heartbeats, the event stream) never gets committed.
+2. **Wires the agent-hook entries** into the chosen harness's settings file (10 events each; see the table below).
+
+When you run `init` through a host CLI that composes Harnery under its own bin name (e.g. `mycli init`), it also **stamps `binName` into `.harnery/config.jsonc`** so Harnery's coord binaries and web UI tell agents to run *your* command (`mycli agents status`, …) rather than the `harn` default. The stamp is comment-preserving and idempotent. Standalone `harn` needs no stamp; it's the resolver's default. See [the config reference](/reference/config-schema/#binname).
+
+```bash
+harn init            # wire the current project for Claude Code
+harn init --dry-run  # preview every change without writing
+```
+
+## Idempotent + non-destructive
+
+Safe to re-run. `init` merges into an existing settings file: it preserves every hook you already have and skips any agent-hook entry that's already wired, so re-running only fills gaps. If the settings file exists but isn't valid JSON, `init` refuses rather than overwrite.
+
+```text
+harn init
+  root: /path/to/project
+  · .harnery/ already exists
+  · all 10 claude-code hooks already wired in .claude/settings.json
+```
+
+## Project root
+
+Defaults to the git top-level (falls back to the current directory). Override with `--project-root <path>`.
+
+## Harness support
+
+All three harnesses are fully auto-wired. Pass `--harness`:
+
+| `--harness` | Settings file | Notes |
+|---|---|---|
+| `claude-code` (default) | `.claude/settings.json` | 10 events; nested `{ hooks: [{ type, command }] }` entries |
+| `cursor` | `.cursor/hooks.json` | 10 events; flat `{ command }` entries + `"version": 1` |
+| `codex` | `.codex/hooks.json` | 10 events; same nested shape as Claude Code |
+
+Each writes only its own file, so you can wire several harnesses in one project by running `init` once per harness. The canonical file path + event→subcommand map + entry shape for every harness lives in [`src/core/hooks/harness/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/harness/events.ts) (`HARNESS_SPECS`).
+
+> Codex requires hooks to be enabled (`[features] hooks = true` in `config.toml`, the default on current Codex) and prompts you to trust new hooks via `/hooks` on first run.

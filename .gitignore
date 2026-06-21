@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.next/
+docs/.astro/
+docs/dist/
+*.log
+.DS_Store
+coverage/
+*.tsbuildinfo
+.harnery/
+
+# Editor + OS
+.idea/
+*.swp
+*.swo
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

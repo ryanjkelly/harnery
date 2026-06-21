@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harnery.com/schemas/config.schema.json",
+  "title": "harnery configuration",
+  "description": "Settings file format for harnery. Lives at ~/.config/harnery/config.jsonc (user-global) or <project-root>/.harnery/config.jsonc (project). Project values override user values.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL of this schema. Included so editors provide autocomplete + validation."
+    },
+    "project_name": {
+      "type": "string",
+      "description": "Project identity surfaced to peers and in log lines. Defaults to the basename of the monorepo root."
+    },
+    "binName": {
+      "type": "string",
+      "default": "harn",
+      "description": "Host CLI bin name used in agent-facing strings (council prompts, end-of-turn nudges, command help). The coord binaries + web UI run as harnery and read this back since they can't see a consumer CLI's name. Stamped by `harn init` for a consumer. Resolution: HARNERY_BIN env -> this field -> 'harn'."
+    },
+    "coord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "freshness_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "default": 600,
+          "description": "How stale a peer heartbeat can get before the sweeper prunes it."
+        },
+        "name_pool": {
+          "type": "string",
+          "default": "default",
+          "description": "Which agent-name pool to draw from. 'default' / 'hurricane' / a custom pool id."
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535,
+          "default": 7777,
+          "description": "Port that `harn web up` binds to."
+        },
+        "bind": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Bind address. Default localhost-only. Override with --bind 0.0.0.0 + gated IP allowlist to expose."
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Universal file viewer (web dashboard) path-serving policy. The shipped secret denylist is a baked-in, non-removable floor in code; these knobs are ADDITIVE ONLY (they extend the floor, never replace or shrink it).",
+      "properties": {
+        "deny_globs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra deny patterns on top of the shipped floor. Must be `**/`-anchored; supported shapes are `**/SEG` and `**/SEG/**` where SEG may use `*` and one `{a,b}` alternation. Matched case-insensitively against the canonical repo-relative path. Operator-added denies are treated as hard tier (never overridable). An entry that fails to compile disables the file viewer entirely (fail-closed) until fixed."
+        },
+        "allow_overrides": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Rescue globs consulted ONLY when a deny came from a soft-tier floor pattern (the deliberately over-broad nets like `**/.env.*` or `**/*secret*.json`). Hard-tier matches (credentials, key/cert files, `.ssh`/`.aws`/`.gnupg`, SA-key/oauth/token JSON, `.git`) are never overridable; an override that names a hard family is loudly dropped at config load."
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "restic repository URL. Common: 'rclone:gdrive:harnery-backup/<project>' for Google Drive."
+        },
+        "schedule": {
+          "type": "string",
+          "enum": ["off", "daily", "hourly"],
+          "default": "off",
+          "description": "Auto-snapshot cadence. 'off' = manual only."
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable cross-machine sync via Google Drive."
+        },
+        "drive_folder": {
+          "type": "string",
+          "default": "harnery-sync",
+          "description": "Folder name in Google Drive that holds the synced subset."
+        }
+      }
+    }
+  }
+}

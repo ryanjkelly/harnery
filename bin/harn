@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Wrapper for the harn CLI. Prefers Bun for daily dev (zero-build TS execution);
+# falls back to Node if the package was built to dist/ and Bun is unavailable.
+
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+    case "$LINK_TARGET" in
+        /*) SCRIPT_PATH="$LINK_TARGET" ;;
+        *) SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET" ;;
+    esac
+done
+MODULE_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
+# Locate bun in common install paths if not already on PATH. Hook invocations
+# under bash subshells may have a different PATH than the interactive shell.
+if ! command -v bun >/dev/null 2>&1; then
+    for candidate in \
+        "$HOME/.bun/bin/bun" \
+        "/usr/local/bin/bun" \
+        "/opt/homebrew/bin/bun"; do
+        if [ -x "$candidate" ]; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            break
+        fi
+    done
+fi
+
+# Bun-first (zero-build TS); Node-with-dist/ fallback when Bun isn't available.
+# The published npm package ships dist/ (built by prepublishOnly), so the Node
+# branch works out of the box. A bare git clone has neither until you build.
+if command -v bun >/dev/null 2>&1; then
+    exec bun run "$MODULE_DIR/src/cli.ts" "$@"
+elif [ -f "$MODULE_DIR/dist/cli.js" ]; then
+    exec node "$MODULE_DIR/dist/cli.js" "$@"
+else
+    echo "harn: needs Bun or a built dist/. Install Bun (https://bun.sh) for zero-build, or build the Node bundle: npm install && npm run build." >&2
+    exit 1
+fi

@@ -1,0 +1,22 @@
+# Excluded from the published npm tarball. package.json#files is the
+# authoritative include list; this file backstops what package.json#files
+# would otherwise pick up accidentally (docs/, tests/, examples/, configs).
+
+docs/
+tests/
+examples/
+.github/
+.changeset/
+.vscode/
+
+biome.json
+tsconfig.json
+.editorconfig
+.gitignore
+
+# Local-only state
+.harnery/
+node_modules/
+coverage/
+.tsbuildinfo
+*.log

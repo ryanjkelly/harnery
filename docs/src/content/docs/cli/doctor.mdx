@@ -1,0 +1,67 @@
+---
+title: harn doctor
+description: Verify the runtime + optional deps Harnery commands expect.
+sidebar:
+  order: 10
+---
+
+```
+harn doctor [--json]
+```
+
+Walks through every dep Harnery touches and reports presence + version + install hints.
+
+## Severity model
+
+- `✓ ok`: present and recent enough
+- `⚠ warn`: optional dep missing (the dependent feature degrades; Harnery's core still works)
+- `✗ fail`: required dep missing (Node, git); commands will throw
+
+Exits `0` unless a required dep is missing.
+
+## Checks
+
+| Name           | Required | Notes |
+| -------------- | -------- | ----- |
+| `node`         | required | Must be ≥ 20 |
+| `git`          | required | Used by `harn share`, `harn wip`, `harn agents`, et al |
+| `bun`          | optional | Daily-driver execution layer; speeds up `harn` startup |
+| `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
+| `restic`       | optional | Required for `harn backup` |
+| `rclone`       | optional | Required for `harn sync` |
+| `playwright`   | optional | Required for `harn browse` (module + browsers installed) |
+| `python3`      | optional | Some examples shell out to Python |
+
+## Examples
+
+Human-readable report (default):
+
+```bash
+$ harn doctor
+✓ node        24.3.0
+✓ git         2.34.1
+✓ bun         1.3.3
+✓ .harnery/   /home/you/projects/myrepo/.harnery
+⚠ restic      missing (needed for `harn backup`)
+    ↳ apt-get install -y restic
+⚠ rclone      missing (needed for `harn sync`)
+    ↳ curl https://rclone.org/install.sh | sudo bash
+✓ playwright  module + browsers at /home/you/.cache/ms-playwright
+✓ python3     Python 3.10.12
+
+6 ok, 2 warn, 0 fail
+```
+
+JSON for scripts / CI / dashboards:
+
+```bash
+$ harn doctor --json
+{
+  "checks": [
+    { "name": "node",       "severity": "ok",   "detail": "24.3.0" },
+    { "name": "git",        "severity": "ok",   "detail": "2.34.1" },
+    ...
+  ],
+  "summary": { "total": 8, "ok": 6, "warn": 2, "fail": 0 }
+}
+```

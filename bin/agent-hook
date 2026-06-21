@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Wrapper for agent-hook. Runs TypeScript directly via Bun.
+#
+# Lives in harnery/ as of commit 4 of the harnery v0.1 strangler-fig. The
+# binary name stays `agent-hook` because every harness's hooks.json /
+# settings.json line spawns by that bare name + path. Sibling launchers
+# are `harnery/bin/harn` (main CLI) + `harnery/bin/agent-coord` (coord
+# state).
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+    case "$LINK_TARGET" in
+        /*) SCRIPT_PATH="$LINK_TARGET" ;;
+        *) SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET" ;;
+    esac
+done
+MODULE_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
+# Find bun in common install locations if not already on PATH. Hooks fire
+# under bash subshells whose PATH may differ from the interactive shell.
+if ! command -v bun >/dev/null 2>&1; then
+    for candidate in \
+        "$HOME/.bun/bin/bun" \
+        "/usr/local/bin/bun" \
+        "/opt/homebrew/bin/bun"; do
+        if [ -x "$candidate" ]; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            break
+        fi
+    done
+fi
+
+# Bun-first (zero-build TS); Node-with-dist/ fallback. The published package
+# ships dist/, so harness hooks that spawn `agent-hook` work on a Node-only
+# host with no Bun installed.
+if command -v bun >/dev/null 2>&1; then
+    exec bun run "$MODULE_DIR/src/core/hooks/cli.ts" "$@"
+elif [ -f "$MODULE_DIR/dist/core/hooks/cli.js" ]; then
+    exec node "$MODULE_DIR/dist/core/hooks/cli.js" "$@"
+else
+    echo "agent-hook: needs Bun or a built dist/. Install Bun (https://bun.sh), or build: npm install && npm run build." >&2
+    exit 1
+fi

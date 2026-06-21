@@ -1,0 +1,79 @@
+---
+title: Install
+description: Install Harnery globally or as a project dependency.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Requirements
+
+- **Node 20+** *or* [**Bun**](https://bun.sh) **1.3+**: either runtime works
+- A POSIX shell (Linux, macOS, or WSL)
+
+The published npm package ships a prebuilt `dist/`, so it runs on plain Node out of the box, no Bun required. Installing Bun is optional but recommended for *developing* Harnery: Bun runs the TypeScript source directly (zero build step), so edits are live. The package's `exports` resolve to TS source under Bun and to the built `dist/` everywhere else, so the two stay in lockstep.
+
+:::note[One Bun-only command]
+`harn tunnel` is the single exception: its reverse-proxy gate worker is a `Bun.serve` process, so that one command requires Bun installed. It fails with a clear message on a Bun-free host. Everything else runs on Node.
+:::
+
+## Install
+
+<Tabs>
+  <TabItem label="Global">
+    ```bash
+    npm install -g harnery
+    harn --help
+    ```
+  </TabItem>
+  <TabItem label="Project">
+    ```bash
+    npm install harnery
+    npx harn --help
+    ```
+  </TabItem>
+  <TabItem label="bun">
+    ```bash
+    bun add -g harnery
+    harn --help
+    ```
+  </TabItem>
+</Tabs>
+
+## npm vs git clone: what each gives you
+
+`npm install harnery` ships the **CLI + coord engine** (`bin`, `dist`, `src`, `schemas`): everything you need to compose Harnery into a CLI, wire hooks with [`harn init`](/cli/init/), and run the coord layer. It does **not** include the `web/` dashboard or this `docs/` site; those are heavy app/build trees that live in the git repo only.
+
+To run the dashboard ([`harn web up`](/cli/web/)), `git clone` the repo and launch it from there, pointing at your project with `--coord-root <dir>` or running it from inside the project. (`harn web up` prints these steps if invoked without the clone present.)
+
+## From a git clone (one step)
+
+Cloned the repo instead of installing from npm? One script does everything: it installs deps, builds the Node `dist/` (skipped when Bun is present), runs [`harn init`](/cli/init/) to wire your project, and links the bins onto your `PATH`:
+
+```bash
+bash harnery/install.sh
+```
+
+Run it from your project (it auto-detects the project root via git, falling back to Harnery's parent directory). It's idempotent, so it's safe to re-run. Flags: `--project-root <dir>`, `--link-dir <dir>` (default `~/.local/bin`), `--no-link`, `--harness <id>`.
+
+## First-run check
+
+```bash
+harn doctor
+```
+
+This verifies the runtime + dependencies Harnery expects (Node version, optional Python, optional restic for backup, etc.). It exits 0 if everything's wired and prints OS-specific install instructions for anything missing.
+
+## Bootstrap a project
+
+```bash
+harn init
+```
+
+Run once per project to create the `.harnery/` coord root and wire the harness hooks. Auto-wires all three harnesses; pass `--harness claude-code` (default), `cursor`, or `codex`. Idempotent and non-destructive: safe to re-run, and it preserves hooks you already have. See [`harn init`](/cli/init/) for `--dry-run` and details.
+
+## Next steps
+
+- [First run](/getting-started/first-run/): quick tour of the most common commands
+- [Configuration](/getting-started/configuration/): settings file format + precedence rules

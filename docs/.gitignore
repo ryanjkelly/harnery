@@ -1,0 +1,12 @@
+# Astro
+.astro/
+dist/
+node_modules/
+
+# Build output
+.vercel/
+.netlify/
+
+# Editor + OS
+.DS_Store
+*.log
