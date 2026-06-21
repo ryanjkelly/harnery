@@ -54,3 +54,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # setup-node writes an .npmrc that reads NODE_AUTH_TOKEN; without this
+          # the publish PUT goes out unauthenticated and npm returns a 404.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
