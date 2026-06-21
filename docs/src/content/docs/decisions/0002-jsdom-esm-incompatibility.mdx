@@ -1,0 +1,66 @@
+---
+title: "ADR 0002: jsdom ESM incompatibility breaks harn read on Node"
+description: jsdom 29's dependency tree require()s an ESM-only package, breaking harn read for npm/Node consumers. Tracked for a linkedom swap.
+sidebar:
+  order: 2
+---
+
+**Date:** 2026-06-21
+**Status:** Open (fix deferred to a follow-up release)
+
+## Context
+
+After the 0.2.0 launch, a published-package smoke test on Node (`npm i harnery`
+with production deps only, no dev deps) revealed two startup crashes and one
+runtime failure:
+
+1. `outline` statically imported `typescript` (a devDependency) at module top
+   level, and the readability lib statically imported `jsdom`. Because every
+   command is registered eagerly at CLI startup, an end user hit
+   `ERR_MODULE_NOT_FOUND` (typescript) or `ERR_REQUIRE_ESM` (jsdom) on *any*
+   command, including `harn --version`. **Fixed in 0.2.1** by lazy-loading both
+   deps inside the command that needs them.
+
+2. After that fix, `harn read` still fails on Node with `ERR_REQUIRE_ESM`. This
+   is a deeper, upstream problem in jsdom's dependency tree, not something the
+   lazy-load fix can address.
+
+## The jsdom problem
+
+`harn read` (HTML to markdown via `@mozilla/readability` + jsdom) depends on
+`jsdom@29.1.1`, the current latest. Multiple packages in jsdom's dependency
+tree (`html-encoding-sniffer@6`, `whatwg-url`) do a CommonJS `require()` of
+`@exodus/bytes`, which is published **ESM-only (`"type": "module"`) in every
+version that exists** (verified `1.0.0-rc.0` through `1.15.1`). On Node, a
+`require()` of an ESM-only module throws `ERR_REQUIRE_ESM`. The failure is not
+at our boundary: harnery's `dist/` is ESM and imports cleanly. The broken
+`require()` lives inside jsdom's own transitive CJS code.
+
+## Decision
+
+Ship 0.2.1 with the startup fix (the dead-on-arrival crash affected every
+command and was the urgent problem). Defer the jsdom fix to a follow-up. `harn
+read` now fails gracefully with a captured error instead of crashing the whole
+CLI, so the rest of the tool is usable.
+
+## Rejected alternatives (for the jsdom fix)
+
+- **Bump jsdom**: rejected, no-op. `jsdom@29.1.1` is already the latest; it
+  still pulls `html-encoding-sniffer@^6.0.0`.
+- **Pin `@exodus/bytes` to a CJS version via `overrides`**: rejected,
+  impossible. Every published version is ESM-only; there is no CJS target.
+- **Override `html-encoding-sniffer` down to `4.0.0`** (uses `whatwg-encoding`,
+  no `@exodus/bytes`): rejected. Tested; the `ERR_REQUIRE_ESM` simply moves to
+  `whatwg-url`, which also `require()`s `@exodus/bytes`. Whack-a-mole across
+  jsdom's tree.
+
+## Planned fix (follow-up release)
+
+Replace jsdom with [linkedom](https://github.com/WebReflection/linkedom) in
+`src/lib/readability/client.ts`. linkedom is a lighter, CJS-friendly DOM that
+`@mozilla/readability` supports, and it drops the entire `@exodus/bytes` chain.
+The work: swap the lib, reconcile the readability test suite against linkedom's
+DOM-behavior differences, and verify `harn read` produces correct markdown on a
+plain Node install. A published-on-Node smoke test (`npm pack` + install
+`--omit=dev` + run) should become a CI gate so this class of regression is
+caught before release, not after.
