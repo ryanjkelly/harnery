@@ -4,12 +4,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { detectHarness } from "../../src/core/hooks/harness/detect.ts";
 import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
+import { resolveSingleActiveOwner } from "../../src/core/agents/coord-client.ts";
 
 describe("detectHarness", () => {
   const saved = process.env.HARNERY_AGENT_COORD_HARNESS;
@@ -92,5 +93,68 @@ describe("pid-map row format + resolveOwner", () => {
     // empty pid-map dir + no payload → null (the test runner's pid chain has no
     // entry in this fresh tmp root)
     expect(resolveOwner({ payload: null, coordRoot: root })).toBeNull();
+  });
+});
+
+describe("resolveSingleActiveOwner (ppid-walk fallback for the sole live agent)", () => {
+  let root: string;
+  let activeDir: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-singleton-"));
+    activeDir = path.join(root, ".harnery", "active");
+    mkdirSync(activeDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+  function writeHeartbeat(id: string, agoMs: number): void {
+    writeFileSync(
+      path.join(activeDir, `${id}.json`),
+      JSON.stringify({ instance_id: id, last_heartbeat: isoAgo(agoMs) }),
+    );
+  }
+
+  test("missing active/ dir → null", () => {
+    rmSync(activeDir, { recursive: true, force: true });
+    expect(resolveSingleActiveOwner(root)).toBeNull();
+  });
+
+  test("zero live agents → null", () => {
+    expect(resolveSingleActiveOwner(root)).toBeNull();
+  });
+
+  test("exactly one live agent → its instance_id", () => {
+    writeHeartbeat("only-one", 30_000);
+    expect(resolveSingleActiveOwner(root)).toBe("only-one");
+  });
+
+  test("two live agents → null (ambiguous, require --session-id)", () => {
+    writeHeartbeat("agent-a", 10_000);
+    writeHeartbeat("agent-b", 20_000);
+    expect(resolveSingleActiveOwner(root)).toBeNull();
+  });
+
+  test("one live + one stale → resolves the live one (stale ignored)", () => {
+    writeHeartbeat("fresh", 30_000);
+    writeHeartbeat("stale", 11 * 60 * 1000); // older than the 600s window
+    expect(resolveSingleActiveOwner(root)).toBe("fresh");
+  });
+
+  test("malformed heartbeat files are skipped", () => {
+    writeFileSync(path.join(activeDir, "broken.json"), "{ not valid json");
+    writeFileSync(path.join(activeDir, "no-ts.json"), JSON.stringify({ instance_id: "x" }));
+    writeHeartbeat("good", 30_000);
+    expect(resolveSingleActiveOwner(root)).toBe("good");
+  });
+
+  test("non-.json entries ignored", () => {
+    writeFileSync(path.join(activeDir, "notes.txt"), "ignore me");
+    writeHeartbeat("good", 30_000);
+    expect(resolveSingleActiveOwner(root)).toBe("good");
   });
 });

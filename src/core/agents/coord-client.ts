@@ -8,7 +8,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 // NOTE: kept dependency-free (node builtins only); this file is vendored verbatim into
 // a downstream consumer, so it cannot import the coordEnv helper.
@@ -144,7 +144,7 @@ export function resolveOwner(): string | null {
  */
 export function resolveOwnerWithSource(): {
   owner: string | null;
-  source: "env" | "pidmap" | "pidmap_fallback" | "none";
+  source: "env" | "pidmap" | "pidmap_fallback" | "active_singleton" | "none";
 } {
   const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
   if (envOwner) {
@@ -173,10 +173,59 @@ export function resolveOwnerWithSource(): {
     }
     pid = readPpid(pid);
   }
-  return {
-    owner: fallbackOwner,
-    source: fallbackOwner ? "pidmap_fallback" : "none",
-  };
+  if (fallbackOwner) {
+    return { owner: fallbackOwner, source: "pidmap_fallback" };
+  }
+
+  // Last resort: the ppid walk found nothing (e.g. a Bash-tool subshell whose
+  // process tree doesn't climb back to the harness anchor). If exactly one
+  // agent is live in this coord root, it's unambiguously us — resolve to it.
+  // This is what lets the bare `agents status` / `set-task` the stop hook
+  // recommends work without a `--session-id` flag in the common single-agent
+  // case. With 0 or 2+ live agents it would be a guess, so we stay null and
+  // require the explicit flag.
+  const singleton = resolveSingleActiveOwner(root);
+  if (singleton) {
+    return { owner: singleton, source: "active_singleton" };
+  }
+
+  return { owner: null, source: "none" };
+}
+
+/**
+ * Return the instance_id of the sole live agent in this coord root, or null
+ * if there are zero or more than one. "Live" reuses the 10-minute heartbeat
+ * freshness window the rest of the agents surface applies (kept inline as a
+ * literal so this file stays node-builtins-only for vendored downstream use).
+ *
+ * Exported for unit testing with an injectable root (the caller in
+ * `resolveOwnerWithSource` passes `monorepoRoot()`).
+ */
+export function resolveSingleActiveOwner(root: string): string | null {
+  const activeDir = resolve(root, ".harnery", "active");
+  if (!existsSync(activeDir)) return null;
+  const FRESHNESS_SECS = 600;
+  const cutoffMs = Date.now() - FRESHNESS_SECS * 1000;
+  const live: string[] = [];
+  let files: string[];
+  try {
+    files = readdirSync(activeDir);
+  } catch {
+    return null;
+  }
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
+      if (!parsed || typeof parsed.instance_id !== "string") continue;
+      const ts = Date.parse(parsed.last_heartbeat);
+      if (Number.isFinite(ts) && ts >= cutoffMs) live.push(parsed.instance_id);
+    } catch {
+      // skip malformed
+    }
+    if (live.length > 1) return null; // ambiguous; bail early
+  }
+  return live.length === 1 ? live[0]! : null;
 }
 
 /**

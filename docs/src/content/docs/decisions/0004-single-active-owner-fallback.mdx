@@ -1,0 +1,66 @@
+---
+title: "ADR 0004: single-live-agent fallback for owner resolution"
+description: When the ppid walk can't resolve self from a Bash-tool subshell, resolve to the sole live agent in the coord root rather than failing with no_pidmap_entry.
+sidebar:
+  order: 4
+---
+
+**Date:** 2026-06-22
+**Status:** Accepted
+
+## Context
+
+Owner resolution (`resolveOwnerWithSource` in
+[src/core/agents/coord-client.ts](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/coord-client.ts))
+tries, in order: the `HARNERY_AGENT_COORD_OWNER` env var, then a ppid walk up
+the process tree looking for a `.harnery/pid-map/<pid>` entry. The pid-map
+anchor is written for the harness session process; a subagent or a Bash-tool
+subshell does not write its own entry and is expected to climb back to the
+parent's.
+
+In practice the climb often fails. A host CLI that wraps commands in a session
+runner (so the user can follow along in a log) spawns each command as a
+detached child whose process tree does **not** reach the harness anchor. The
+ppid walk then finds nothing and resolution returns null, so `agents status`,
+`agents set-task`, and `whoami` all exit with `no_pidmap_entry`.
+
+This is worst at the exact moment the coord layer most wants to work: the stop
+hook's end-of-turn rules nudge the agent to run `<bin> agents status` and
+`<bin> agents set-task` as its last calls — and those bare invocations are the
+ones that fail. The only escape was passing `--session-id <id>` explicitly,
+which means digging the id out of `events.ndjson` every turn.
+
+## Decision
+
+Add a final resolution fallback: when env and the ppid walk both miss, scan
+`.harnery/active/` for live heartbeats (within the standard 600s freshness
+window). If **exactly one** agent is live, it is unambiguously self — resolve
+to it. With zero or two-or-more live agents, stay null (guessing would attribute
+state to the wrong agent), and the explicit `--session-id` escape hatch remains.
+
+`whoami` surfaces the path as a new resolution source, `active_singleton`, so
+operators debugging attribution can see when the fallback (rather than the
+pid-map) was load-bearing.
+
+## Rejected alternatives
+
+- **Always require `--session-id` from hooks**: rejected. The stop hook already
+  recommends the bare command; making the recommended command fail by default
+  is a bad contract. Hooks *can* pass the id, but interactive and host-wrapped
+  invocations can't easily.
+- **Pick the most-recently-heartbeated agent when several are live**: rejected.
+  Recency is not identity; under two concurrent agents this silently writes one
+  agent's task onto whichever pinged last. Ambiguity must fail closed.
+- **Write a per-subshell marker file** (`.harnery/shells/<pid>`) so the walk
+  always resolves: deferred. That's the general subagent-aware bridge already
+  noted as out of scope for v1; the singleton fallback covers the common
+  single-agent case without it.
+
+## Result
+
+Bare `agents status` / `set-task` / `whoami` work without `--session-id` in the
+single-agent case (the overwhelmingly common one). Verified end to end against a
+host CLI whose session wrapper detaches the child process: all three resolve via
+`active_singleton` and exit 0. Unit tests in
+`tests/unit/coord-resolve.test.ts` cover zero / one / two live agents, stale
+exclusion, malformed-file skipping, and a missing `active/` directory.
