@@ -10,7 +10,19 @@ import path from "node:path";
 import { detectHarness } from "../../src/core/hooks/harness/detect.ts";
 import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
-import { resolveSingleActiveOwner } from "../../src/core/agents/coord-client.ts";
+import {
+  resolveOwnerBySessionEnv,
+  resolveSingleActiveOwner,
+} from "../../src/core/agents/coord-client.ts";
+
+// Mirror of the source's SESSION_ID_ENV_VARS (kept unexported there); used here
+// only to save/restore env across tests.
+const SESSION_ID_ENV_KEYS = [
+  "HARNERY_AGENT_COORD_SESSION_ID",
+  "CLAUDE_CODE_SESSION_ID",
+  "CURSOR_SESSION_ID",
+  "CODEX_SESSION_ID",
+] as const;
 
 describe("detectHarness", () => {
   const saved = process.env.HARNERY_AGENT_COORD_HARNESS;
@@ -156,5 +168,87 @@ describe("resolveSingleActiveOwner (ppid-walk fallback for the sole live agent)"
     writeFileSync(path.join(activeDir, "notes.txt"), "ignore me");
     writeHeartbeat("good", 30_000);
     expect(resolveSingleActiveOwner(root)).toBe("good");
+  });
+});
+
+describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)", () => {
+  let root: string;
+  let activeDir: string;
+  const SAVED = SESSION_ID_ENV_KEYS.map((k) => [k, process.env[k]] as const);
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-session-env-"));
+    activeDir = path.join(root, ".harnery", "active");
+    mkdirSync(activeDir, { recursive: true });
+    for (const k of SESSION_ID_ENV_KEYS) delete process.env[k];
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    for (const [k, v] of SAVED) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+  function writeHeartbeat(id: string, sessionId: string, agoMs: number): void {
+    writeFileSync(
+      path.join(activeDir, `${id}.json`),
+      JSON.stringify({ instance_id: id, session_id: sessionId, last_heartbeat: isoAgo(agoMs) }),
+    );
+  }
+
+  test("no session-id env var → null", () => {
+    writeHeartbeat("agent-a", "sess-a", 30_000);
+    expect(resolveOwnerBySessionEnv(root)).toBeNull();
+  });
+
+  test("CLAUDE_CODE_SESSION_ID matches a live heartbeat → its instance_id", () => {
+    writeHeartbeat("agent-a", "sess-a", 30_000);
+    writeHeartbeat("agent-b", "sess-b", 30_000);
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-b";
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-b");
+  });
+
+  test("disambiguates among multiple live agents (the singleton fallback can't)", () => {
+    writeHeartbeat("agent-a", "sess-a", 10_000);
+    writeHeartbeat("agent-b", "sess-b", 20_000);
+    writeHeartbeat("agent-c", "sess-c", 30_000);
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-c";
+    expect(resolveSingleActiveOwner(root)).toBeNull(); // 3 live → ambiguous
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-c");
+  });
+
+  test("session id with no matching heartbeat → null", () => {
+    writeHeartbeat("agent-a", "sess-a", 30_000);
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-nope";
+    expect(resolveOwnerBySessionEnv(root)).toBeNull();
+  });
+
+  test("stale heartbeat for the matching session → null", () => {
+    writeHeartbeat("agent-a", "sess-a", 11 * 60 * 1000); // older than 600s
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-a";
+    expect(resolveOwnerBySessionEnv(root)).toBeNull();
+  });
+
+  test("HARNERY_AGENT_COORD_SESSION_ID override wins over harness vars", () => {
+    writeHeartbeat("agent-a", "sess-a", 30_000);
+    writeHeartbeat("agent-b", "sess-b", 30_000);
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-a";
+    process.env.HARNERY_AGENT_COORD_SESSION_ID = "sess-b";
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-b");
+  });
+
+  test("Cursor + Codex session-id env vars also resolve", () => {
+    writeHeartbeat("agent-cur", "sess-cur", 30_000);
+    process.env.CURSOR_SESSION_ID = "sess-cur";
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
+    delete process.env.CURSOR_SESSION_ID;
+
+    writeHeartbeat("agent-cdx", "sess-cdx", 30_000);
+    process.env.CODEX_SESSION_ID = "sess-cdx";
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx");
   });
 });

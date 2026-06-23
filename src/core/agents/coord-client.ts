@@ -144,7 +144,7 @@ export function resolveOwner(): string | null {
  */
 export function resolveOwnerWithSource(): {
   owner: string | null;
-  source: "env" | "pidmap" | "pidmap_fallback" | "active_singleton" | "none";
+  source: "env" | "pidmap" | "pidmap_fallback" | "session_env" | "active_singleton" | "none";
 } {
   const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
   if (envOwner) {
@@ -177,19 +177,94 @@ export function resolveOwnerWithSource(): {
     return { owner: fallbackOwner, source: "pidmap_fallback" };
   }
 
-  // Last resort: the ppid walk found nothing (e.g. a Bash-tool subshell whose
-  // process tree doesn't climb back to the harness anchor). If exactly one
-  // agent is live in this coord root, it's unambiguously us — resolve to it.
-  // This is what lets the bare `agents status` / `set-task` the stop hook
-  // recommends work without a `--session-id` flag in the common single-agent
-  // case. With 0 or 2+ live agents it would be a guess, so we stay null and
-  // require the explicit flag.
+  // The ppid walk found nothing (e.g. a Bash-tool subshell whose process tree
+  // doesn't climb back to the harness anchor). Before guessing, try the
+  // harness-provided session id from the environment: every supported harness
+  // exports its session id into the tool subprocess env, and each heartbeat
+  // records the `session_id` it was minted under. Matching the two resolves us
+  // unambiguously even with multiple live agents, which is the case the
+  // singleton fallback below cannot handle.
+  const bySession = resolveOwnerBySessionEnv(root);
+  if (bySession) {
+    return { owner: bySession, source: "session_env" };
+  }
+
+  // Last resort: if exactly one agent is live in this coord root, it's
+  // unambiguously us — resolve to it. This is what lets the bare `agents
+  // status` / `set-task` the stop hook recommends work without a `--session-id`
+  // flag in the common single-agent case. With 0 or 2+ live agents it would be
+  // a guess, so we stay null and require the explicit flag.
   const singleton = resolveSingleActiveOwner(root);
   if (singleton) {
     return { owner: singleton, source: "active_singleton" };
   }
 
   return { owner: null, source: "none" };
+}
+
+/**
+ * Harness-exported session-id environment variables, in precedence order. Each
+ * supported harness propagates its session id into the env of the subprocess it
+ * spawns for a tool call (Claude Code's Bash tool, Cursor's terminal, Codex's
+ * shell). A coord CLI invoked as such a tool can therefore recover its own
+ * identity from the env even when the ppid walk misses.
+ *
+ * Kept inline (no shared-helper import) so this file stays node-builtins-only
+ * for the vendored downstream consumer.
+ */
+const SESSION_ID_ENV_VARS = [
+  "HARNERY_AGENT_COORD_SESSION_ID", // explicit override, wins if set
+  "CLAUDE_CODE_SESSION_ID",
+  "CURSOR_SESSION_ID",
+  "CODEX_SESSION_ID",
+] as const;
+
+/** Read the first non-empty harness session-id env var, or null. */
+function sessionIdFromEnv(): string | null {
+  for (const key of SESSION_ID_ENV_VARS) {
+    const v = process.env[key]?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
+/**
+ * Resolve the owner by matching the harness session-id env var against the
+ * `session_id` of a live heartbeat in this coord root. Returns the matching
+ * `instance_id`, or null if there's no session-id env var or no live heartbeat
+ * carries it. "Live" reuses the same 10-minute freshness window the singleton
+ * fallback applies, so a stale heartbeat from a prior session of the same id
+ * doesn't resolve.
+ *
+ * Exported for unit testing with an injectable root.
+ */
+export function resolveOwnerBySessionEnv(root: string): string | null {
+  const sessionId = sessionIdFromEnv();
+  if (!sessionId) return null;
+
+  const activeDir = resolve(root, ".harnery", "active");
+  if (!existsSync(activeDir)) return null;
+  const FRESHNESS_SECS = 600;
+  const cutoffMs = Date.now() - FRESHNESS_SECS * 1000;
+  let files: string[];
+  try {
+    files = readdirSync(activeDir);
+  } catch {
+    return null;
+  }
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
+      if (!parsed || parsed.session_id !== sessionId) continue;
+      if (typeof parsed.instance_id !== "string") continue;
+      const ts = Date.parse(parsed.last_heartbeat);
+      if (Number.isFinite(ts) && ts >= cutoffMs) return parsed.instance_id;
+    } catch {
+      // skip malformed
+    }
+  }
+  return null;
 }
 
 /**
