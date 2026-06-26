@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
@@ -73,18 +74,26 @@ export function resolveOwner(opts: {
 }
 
 function readPpid(pid: number): number | null {
-  // Linux/WSL: /proc/<pid>/status carries `PPid:`. Falls back to null on
-  // macOS or any read failure; ancestor walk just terminates.
+  // Linux/WSL fast path: /proc/<pid>/status carries `PPid:`.
   try {
     const status = readFileSync(`/proc/${pid}/status`, "utf8");
-    for (const line of status.split("\n")) {
-      if (line.startsWith("PPid:")) {
-        const n = Number(line.split(/\s+/)[1]);
-        return Number.isFinite(n) ? n : null;
-      }
+    const m = status.match(/^PPid:\s+(\d+)/m);
+    if (m) {
+      const n = Number.parseInt(m[1]!, 10);
+      if (Number.isFinite(n) && n > 0) return n;
     }
   } catch {
-    /* fallthrough */
+    /* no /proc (macOS/BSD) — fall through to ps */
+  }
+  // Portable fallback: `ps -o ppid= -p <pid>` works on macOS/BSD/Linux.
+  try {
+    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+    if (out.status === 0) {
+      const n = Number.parseInt(out.stdout.trim(), 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch {
+    /* ps unavailable — give up */
   }
   return null;
 }

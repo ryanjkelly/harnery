@@ -361,13 +361,26 @@ export function selfDisplayName(): string {
 }
 
 function readPpid(pid: number): number | null {
+  // Linux/WSL fast path: /proc/<pid>/status carries `PPid:`.
   try {
     const status = readFileSync(`/proc/${pid}/status`, "utf8");
     const m = status.match(/^PPid:\s+(\d+)/m);
-    if (!m) return null;
-    const parsed = Number.parseInt(m[1]!, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    if (m) {
+      const parsed = Number.parseInt(m[1]!, 10);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
   } catch {
-    return null;
+    // no /proc (macOS/BSD) — fall through to ps
   }
+  // Portable fallback: `ps -o ppid= -p <pid>` works on macOS/BSD/Linux.
+  try {
+    const out = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+    if (out.status === 0) {
+      const parsed = Number.parseInt(out.stdout.trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  } catch {
+    // ps unavailable — give up
+  }
+  return null;
 }
