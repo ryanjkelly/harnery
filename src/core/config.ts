@@ -25,6 +25,14 @@ export const DEFAULT_BIN_NAME = "harn";
 interface HarneryConfig {
   /** Host CLI bin name, stamped by `harn init` for a consumer (e.g. "bp"). */
   binName?: string;
+  /**
+   * Host-specific command that (re)installs the project's git hooks, surfaced
+   * verbatim in the "commit guard not wired" nudge. Optional: harnery doesn't
+   * own git-hook installation (each host wires its own pre-commit to invoke
+   * `agent-coord verdict`), and the path/command is host-specific, so the host
+   * declares it here (e.g. "scripts/setup-hooks.sh"). Unset → a generic hint.
+   */
+  hooksSetupHint?: string;
   [k: string]: unknown;
 }
 
@@ -108,4 +116,17 @@ export function resolveBinName(coordRoot?: string | null): string {
     if (typeof binName === "string" && binName.trim()) return binName.trim();
   }
   return DEFAULT_BIN_NAME;
+}
+
+/**
+ * The host's git-hook (re)install command, for the "commit guard not wired"
+ * nudge. Returns the configured `hooksSetupHint` (e.g. "scripts/setup-hooks.sh")
+ * or null when unset — callers fall back to a generic, host-agnostic message.
+ * `coordRoot` is resolved via `findCoordRoot()` when not passed.
+ */
+export function resolveHooksSetupHint(coordRoot?: string | null): string | null {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return null;
+  const hint = readConfig(root).hooksSetupHint;
+  return typeof hint === "string" && hint.trim() ? hint.trim() : null;
 }

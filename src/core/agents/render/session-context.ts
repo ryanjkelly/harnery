@@ -10,7 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { resolveBinName } from "../../config.ts";
+import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadHarnessWiring } from "../../hooks/harness/wiring.ts";
 
 interface HeartbeatRow {
@@ -70,10 +70,14 @@ export function renderSessionContext(opts: RenderOpts): string {
     if (councilMsg) messages.push(councilMsg);
   }
 
-  // 4. Wiring check
+  // 4. Commit-guard wiring check
   const wiringIssues = checkWiring(coordRoot);
   if (wiringIssues.length > 0) {
-    const wiringSummary = `Coordination hooks are NOT wired: the E-guard will not block conflicting commits, and post-commit claim pruning will not run. Run \`scripts/setup-hooks.sh\` to fix. Detected:\n${wiringIssues.map((i) => `  - ${i}`).join("\n")}`;
+    const hint = resolveHooksSetupHint(coordRoot);
+    const fix = hint
+      ? `Run \`${hint}\` to install them.`
+      : "Wire each repo's pre-commit hook to invoke `agent-coord verdict --rule=commit` (harnery's commit guard).";
+    const wiringSummary = `Coordination hooks are NOT wired: the E-guard will not block conflicting commits, and post-commit claim pruning will not run. ${fix} Detected:\n${wiringIssues.map((i) => `  - ${i}`).join("\n")}`;
     messages.push(wiringSummary);
   }
 
@@ -222,19 +226,25 @@ function fmtAge(secs: number): string {
 }
 
 /**
- * Returns a list of wiring issues (empty when everything's wired). Checks
- * parent core.hooksPath + one representative submodule.
+ * Returns a list of commit-guard wiring issues (empty when wired). Portable
+ * across host projects: it asserts the FUNCTIONAL property ("does this repo's
+ * pre-commit invoke harnery's guard?") rather than any path convention. For
+ * each repo it resolves the EFFECTIVE git-hooks dir via
+ * `git rev-parse --git-path hooks` (which already honors `core.hooksPath`,
+ * linked worktrees, and submodule gitdirs) and checks whether the `pre-commit`
+ * there calls `agent-coord` / `agent-hook`. Checks the parent repo + one
+ * representative submodule (others almost always share the same setup).
+ *
+ * harnery does not install git hooks itself — each host wires its own
+ * pre-commit to invoke the guard — so the remediation command is host-specific
+ * and supplied via `hooksSetupHint` in `.harnery/config.jsonc` (see the caller).
  */
 export function checkWiring(coordRoot: string): string[] {
-  const expected = join(coordRoot, "scripts", "hooks");
   const issues: string[] = [];
 
-  // Parent repo
-  const parentHp = gitConfig(coordRoot, "core.hooksPath");
-  const parentResolved = resolveHooksPath(coordRoot, parentHp);
-  if (parentResolved !== expected) {
+  if (!preCommitInvokesGuard(coordRoot)) {
     issues.push(
-      `parent core.hooksPath=${parentHp || "<unset>"} (resolves to ${parentResolved}, expected ${expected})`,
+      "parent repo: pre-commit hook is missing or doesn't invoke the harnery commit guard",
     );
   }
 
@@ -244,15 +254,10 @@ export function checkWiring(coordRoot: string): string[] {
     const sampleSub = extractFirstSubmodule(gitmodules);
     if (sampleSub) {
       const subPath = join(coordRoot, sampleSub);
-      const subGitDir = join(subPath, ".git");
-      if (existsSync(subGitDir)) {
-        const subHp = gitConfig(subPath, "core.hooksPath");
-        const subResolved = resolveSubmoduleHooksPath(coordRoot, sampleSub, subHp);
-        if (subResolved !== expected) {
-          issues.push(
-            `submodule ${sampleSub} core.hooksPath=${subHp || "<unset>"} (resolves to ${subResolved}; other submodules likely affected too)`,
-          );
-        }
+      if (existsSync(join(subPath, ".git")) && !preCommitInvokesGuard(subPath)) {
+        issues.push(
+          `submodule ${sampleSub}: pre-commit hook doesn't invoke the harnery commit guard (other submodules likely affected too)`,
+        );
       }
     }
   }
@@ -260,22 +265,33 @@ export function checkWiring(coordRoot: string): string[] {
   return issues;
 }
 
-function gitConfig(cwd: string, key: string): string {
-  const result = spawnSync("git", ["-C", cwd, "config", "--get", key], { encoding: "utf8" });
-  if (result.status !== 0) return "";
-  return result.stdout.trim();
+/**
+ * Whether the repo at `repoDir` has a pre-commit hook — at its effective,
+ * `core.hooksPath`-aware location — that invokes harnery's commit guard.
+ * Fully portable: no assumption about WHERE the host keeps its hooks.
+ */
+function preCommitInvokesGuard(repoDir: string): boolean {
+  const hooksDir = gitHooksDir(repoDir);
+  if (!hooksDir) return false;
+  const preCommit = join(hooksDir, "pre-commit");
+  if (!existsSync(preCommit)) return false;
+  try {
+    return /agent-(coord|hook)\b/.test(readFileSync(preCommit, "utf8"));
+  } catch {
+    return false;
+  }
 }
 
-function resolveHooksPath(root: string, hp: string): string {
-  if (!hp) return join(root, ".git", "hooks");
-  if (hp.startsWith("/")) return hp.replace(/\/$/, "");
-  return join(root, hp).replace(/\/$/, "");
-}
-
-function resolveSubmoduleHooksPath(root: string, sub: string, hp: string): string {
-  if (!hp) return join(root, sub, ".git", "hooks");
-  if (hp.startsWith("/")) return hp.replace(/\/$/, "");
-  return join(root, sub, hp).replace(/\/$/, "");
+/** Resolve a repo's effective git-hooks directory (absolute), or null. */
+function gitHooksDir(repoDir: string): string | null {
+  const r = spawnSync("git", ["-C", repoDir, "rev-parse", "--git-path", "hooks"], {
+    encoding: "utf8",
+  });
+  if (r.status !== 0) return null;
+  const p = r.stdout.trim();
+  if (!p) return null;
+  // `--git-path` prints relative to repoDir (we passed -C); absolutize.
+  return p.startsWith("/") ? p : join(repoDir, p);
 }
 
 function extractFirstSubmodule(gitmodulesPath: string): string | null {

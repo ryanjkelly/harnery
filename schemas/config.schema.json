@@ -19,6 +19,10 @@
       "default": "harn",
       "description": "Host CLI bin name used in agent-facing strings (council prompts, end-of-turn nudges, command help). The coord binaries + web UI run as harnery and read this back since they can't see a consumer CLI's name. Stamped by `harn init` for a consumer. Resolution: HARNERY_BIN env -> this field -> 'harn'."
     },
+    "hooksSetupHint": {
+      "type": "string",
+      "description": "Host-specific command that (re)installs the project's git hooks (e.g. 'scripts/setup-hooks.sh'). Surfaced verbatim in the SessionStart 'commit guard not wired' nudge. harnery doesn't own git-hook installation (each host wires its own pre-commit to invoke `agent-coord verdict`) and the path/command is host-specific, so the host declares it here. Unset -> a generic, host-agnostic hint."
+    },
     "coord": {
       "type": "object",
       "additionalProperties": false,
