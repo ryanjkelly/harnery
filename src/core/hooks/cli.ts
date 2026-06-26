@@ -51,7 +51,7 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./harness/parse.ts";
-import { selectAnchorPid } from "./resolve/anchor.ts";
+import { parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
@@ -908,10 +908,10 @@ function healHeartbeatViaCli(
  * the next tool call rather than going invisible until SessionStart fires
  * again, which it may never do.
  *
- * Returns undefined on macOS (no /proc) or when no anchor is found; callers
- * fall back to `process.ppid` (the bash wrapper's parent, which is usually
- * the harness binary itself). `HARNERY_AGENT_COORD_TEST_ANCHOR_PID` overrides
- * everything so the test sandbox can pin a deterministic PID.
+ * Returns undefined only when no anchor is found; callers fall back to
+ * `process.ppid` (the bash wrapper's parent, which is usually the harness binary
+ * itself). `HARNERY_AGENT_COORD_TEST_ANCHOR_PID` overrides everything so the
+ * test sandbox can pin a deterministic PID.
  */
 function findHarnessAnchorPid(harness?: Harness): number | undefined {
   const override = coordEnv("AGENT_COORD_TEST_ANCHOR_PID");
@@ -919,27 +919,31 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
     const n = Number(override);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  // Build the ppid chain (nearest → root, up to 20 hops) from /proc, then hand
-  // it to the pure selector. Splitting the /proc walk (untestable off a live
-  // box) from the comm-matching (unit-tested against the real Phase 0 chains in
-  // resolve/anchor.ts) keeps the cursor `node`-fallback logic verifiable.
+  // Build the ppid chain (nearest → root, up to 20 hops), then hand it to the
+  // pure selector. Linux/WSL reads /proc; macOS/BSD (no /proc) falls back to
+  // `ps -o ppid=,comm=` parsed by the unit-tested `parsePsChainLine`. Splitting
+  // the walk (untestable off a live box) from the comm-matching keeps the
+  // cursor `node`-fallback logic verifiable.
   const chain: Array<{ pid: number; comm: string }> = [];
   let pid = process.pid;
   for (let hops = 0; hops < 20; hops++) {
-    let comm: string;
-    let status: string;
+    let hop: { comm: string; ppid: number } | null = null;
     try {
-      comm = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
-      status = readFileSync(`/proc/${pid}/status`, "utf8");
+      const comm = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+      const status = readFileSync(`/proc/${pid}/status`, "utf8");
+      const m = status.match(/^PPid:\s+(\d+)/m);
+      hop = { comm, ppid: m ? Number(m[1]) : 0 };
     } catch {
-      break;
+      // no /proc (macOS/BSD) — fall through to ps
     }
-    chain.push({ pid, comm });
-    const m = status.match(/^PPid:\s+(\d+)/m);
-    if (!m) break;
-    const ppid = Number(m[1]);
-    if (!Number.isFinite(ppid) || ppid === 0 || ppid === 1) break;
-    pid = ppid;
+    if (!hop) {
+      const out = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], { encoding: "utf8" });
+      if (out.status === 0) hop = parsePsChainLine(out.stdout);
+    }
+    if (!hop) break;
+    chain.push({ pid, comm: hop.comm });
+    if (!Number.isFinite(hop.ppid) || hop.ppid === 0 || hop.ppid === 1) break;
+    pid = hop.ppid;
   }
   return selectAnchorPid(chain, harness);
 }

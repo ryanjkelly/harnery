@@ -38,6 +38,7 @@ import {
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
+import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
 import {
   buildCouncilId,
   buildInviteMarkdown,
@@ -2692,13 +2693,25 @@ function runHarnessProbe(
   for (let hops = 0; hops < 20; hops++) {
     let comm = "?";
     let ppid = 0;
+    let got = false;
     try {
       comm = readFileSync(`/proc/${walkPid}/comm`, "utf8").trim() || "?";
       const status = readFileSync(`/proc/${walkPid}/status`, "utf8");
       const m = status.match(/^PPid:\s+(\d+)/m);
       ppid = m ? Number(m[1]) : 0;
+      got = true;
     } catch {
-      // non-Linux (no /proc) or the pid is gone: stop walking.
+      // non-Linux (no /proc): fall through to the portable ps walk below.
+    }
+    if (!got) {
+      const out = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(walkPid)], {
+        encoding: "utf8",
+      });
+      const parsed = out.status === 0 ? parsePsChainLine(out.stdout) : null;
+      if (parsed) {
+        comm = parsed.comm || "?";
+        ppid = parsed.ppid;
+      }
     }
     chainParts.push(`${walkPid}:${comm}`);
     if (!anchorPid && anchorTokens.has(comm)) anchorPid = String(walkPid);

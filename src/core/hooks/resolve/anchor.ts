@@ -49,3 +49,24 @@ export function selectAnchorPid(
   }
   return undefined;
 }
+
+/**
+ * Parse one `ps -o ppid=,comm= -p <pid>` line into the same `{ ppid, comm }`
+ * shape the `/proc` fast path produces, for the macOS/BSD branch of the anchor
+ * walk. `ps` prints `comm` as a full executable path (and some Apple helper
+ * names contain spaces, e.g. `Code Helper (Plugin)`), so the comm is reduced to
+ * its basename to match the harness comm tokens the way Linux's `/proc/<pid>/comm`
+ * basename does. Returns null when the line has no leading numeric ppid.
+ *
+ * Pure (no I/O) so the parsing — the error-prone part — is unit-testable
+ * without a live process tree; the caller owns the `ps` spawn.
+ */
+export function parsePsChainLine(line: string): { ppid: number; comm: string } | null {
+  const m = line.trim().match(/^(\d+)\s+(.*)$/);
+  if (!m) return null;
+  const ppid = Number.parseInt(m[1]!, 10);
+  if (!Number.isFinite(ppid)) return null;
+  const commPath = m[2]!.trim();
+  const comm = commPath.split("/").pop() || commPath;
+  return { ppid, comm };
+}

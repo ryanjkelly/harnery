@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { selectAnchorPid } from "../../src/core/hooks/resolve/anchor.ts";
+import { parsePsChainLine, selectAnchorPid } from "../../src/core/hooks/resolve/anchor.ts";
 
 // Phase 0 probe: Cursor's chain has no `cursor`-named process; the stable
 // anchors are the `node` ancestors (70826 nearest, then 45290).
@@ -65,5 +65,39 @@ describe("selectAnchorPid", () => {
 
   test("empty chain → undefined", () => {
     expect(selectAnchorPid([], "cursor")).toBeUndefined();
+  });
+});
+
+describe("parsePsChainLine (macOS/BSD `ps -o ppid=,comm=` fallback)", () => {
+  test("reduces a full executable path to its basename", () => {
+    // Real macOS chain: the Claude Code native binary lives under the VS Code
+    // extension dir; only the basename `claude` matches the comm token set.
+    expect(
+      parsePsChainLine(
+        "83268 /Users/ryan/.vscode/extensions/anthropic.claude-code-2.1.191-darwin-arm64/resources/native-binary/claude",
+      ),
+    ).toEqual({ ppid: 83268, comm: "claude" });
+  });
+
+  test("handles right-aligned ppid padding from `ps`", () => {
+    expect(parsePsChainLine("  62968 /bin/zsh")).toEqual({ ppid: 62968, comm: "zsh" });
+  });
+
+  test("keeps a basename that itself contains spaces (Apple helper)", () => {
+    expect(
+      parsePsChainLine(
+        "55724 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+      ),
+    ).toEqual({ ppid: 55724, comm: "Code Helper (Plugin)" });
+  });
+
+  test("a bare comm with no path is returned as-is", () => {
+    expect(parsePsChainLine("4900 node")).toEqual({ ppid: 4900, comm: "node" });
+  });
+
+  test("returns null for a line with no leading numeric ppid", () => {
+    expect(parsePsChainLine("")).toBeNull();
+    expect(parsePsChainLine("   ")).toBeNull();
+    expect(parsePsChainLine("not-a-pid claude")).toBeNull();
   });
 });
