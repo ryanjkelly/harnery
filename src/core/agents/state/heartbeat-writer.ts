@@ -171,9 +171,16 @@ export function releaseClaim(
   instanceId: string,
   path: string,
 ): Heartbeat | null {
+  // files_touched can hold either absolute-under-coordRoot or canonical
+  // monorepo-relative entries; normalize both sides so release matches
+  // regardless of the form the caller passes (the old exact-string filter
+  // silently no-op'd on a form mismatch).
+  const norm = (p: string): string =>
+    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
+  const target = norm(path);
   return mutate(coordRoot, instanceId, (hb) => ({
     ...hb,
-    files_touched: (hb.files_touched ?? []).filter((p) => p !== path),
+    files_touched: (hb.files_touched ?? []).filter((p) => norm(p) !== target),
   }));
 }
 

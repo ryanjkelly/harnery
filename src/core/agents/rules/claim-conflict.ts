@@ -102,14 +102,28 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
     (p) => isFresh(p.last_heartbeat) && p.files_touched.length > 0,
   );
   if (hasFreshPeers && myPeer && myPeer.files_touched.length > 0) {
-    const highest = [...myPeer.files_touched].sort().at(-1)!;
-    if (req.path < highest) {
-      return {
-        allow: false,
-        exit_code: 2,
-        rule: "claim.ordering_violation",
-        reason: `Cannot acquire ${req.path} while holding ${highest} (claim ordering rule: paths must be acquired in sorted order). Release the higher claim first.`,
-      };
+    // Only ACTIVE (uncommitted) edits should constrain lock ordering. A claim on
+    // a committed-clean file is a finished edit, not a held lock, so it must not
+    // wall off a lower-sorted acquisition. Without this, a long session
+    // accumulates committed claims that block every earlier-sorted path — pure
+    // friction, no deadlock risk (the file isn't being touched). Mirrors the
+    // peer stale-claim self-heal above. The git probes run only on the
+    // would-block path (claims sorting after req.path), staying off the hot path.
+    const blockers = myPeer.files_touched.filter((p) => req.path < p);
+    if (blockers.length > 0) {
+      const activeBlockers = blockers.filter((p) => !isFileCommittedClean(coordRoot, p));
+      if (activeBlockers.length > 0) {
+        const highest = [...activeBlockers].sort().at(-1)!;
+        return {
+          allow: false,
+          exit_code: 2,
+          rule: "claim.ordering_violation",
+          reason: `Cannot acquire ${req.path} while holding ${highest} (claim ordering rule: paths must be acquired in sorted order). Release the higher claim first.`,
+        };
+      }
+      // Every blocker is a finished (committed-clean) edit: prune them so they
+      // stop constraining future acquisitions, then fall through to allow.
+      for (const p of blockers) pruneClaimFromPeer(coordRoot, req.instance_id, p);
     }
   }
 
@@ -240,16 +254,19 @@ function isFresh(lastHeartbeat: string): boolean {
  *  - diff shows non-empty output (genuinely dirty)
  */
 function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
-  const abs = join(coordRoot, relPath);
+  // Tolerate either path form: files_touched can hold absolute-under-coordRoot
+  // entries (legacy file-tracking) or canonical monorepo-relative ones.
+  const rel = relPath.startsWith(`${coordRoot}/`) ? relPath.slice(coordRoot.length + 1) : relPath;
+  const abs = join(coordRoot, rel);
   if (!existsSync(abs)) return false;
   try {
-    const tracked = spawnSync("git", ["ls-files", "--error-unmatch", "--", relPath], {
+    const tracked = spawnSync("git", ["ls-files", "--error-unmatch", "--", rel], {
       cwd: coordRoot,
       encoding: "utf8",
       timeout: 2000,
     });
     if (tracked.status !== 0) return false;
-    const result = spawnSync("git", ["diff", "--quiet", "HEAD", "--", relPath], {
+    const result = spawnSync("git", ["diff", "--quiet", "HEAD", "--", rel], {
       cwd: coordRoot,
       encoding: "utf8",
       timeout: 2000,
