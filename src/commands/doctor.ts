@@ -17,6 +17,8 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { resolveBinName } from "../core/config.ts";
+import { loadHarnessWiring } from "../core/hooks/harness/wiring.ts";
 
 type Severity = "ok" | "warn" | "fail";
 
@@ -79,6 +81,7 @@ export function runChecks(): Check[] {
     checkGit(),
     checkBun(),
     checkHarneryDir(),
+    checkHarnessHooks(),
     checkRestic(),
     checkRclone(),
     checkPlaywright(),
@@ -203,20 +206,22 @@ function checkPython(): Check {
   return { name: "python3", severity: "ok", detail: r.out };
 }
 
-function checkHarneryDir(): Check {
-  // Walk up from cwd looking for .harnery/.
+/** Walk up from cwd to the nearest dir containing `.harnery/`; null if none. */
+function findCoordProjectRoot(): string | null {
   let dir = process.cwd();
   for (let i = 0; i < 8; i++) {
-    if (existsSync(path.join(dir, ".harnery"))) {
-      return {
-        name: ".harnery/",
-        severity: "ok",
-        detail: path.join(dir, ".harnery"),
-      };
-    }
+    if (existsSync(path.join(dir, ".harnery"))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  return null;
+}
+
+function checkHarneryDir(): Check {
+  const root = findCoordProjectRoot();
+  if (root) {
+    return { name: ".harnery/", severity: "ok", detail: path.join(root, ".harnery") };
   }
   return {
     name: ".harnery/",
@@ -224,6 +229,39 @@ function checkHarneryDir(): Check {
     detail: "no .harnery/ found above cwd",
     hint: "create one with `mkdir -p .harnery/active` from your monorepo root",
   };
+}
+
+/**
+ * Compare the project's wired harness hooks against HARNESS_SPECS. Catches the
+ * post-upgrade case where a harnery release added (or renamed) a hook event but
+ * the consumer's settings file hasn't been re-wired. Only fires for a harness
+ * the project has opted into (≥1 harnery hook already wired) — see
+ * loadHarnessWiring — so a bare settings file never false-warns. The remedy is
+ * always the same: re-run `<bin> init` (idempotent, additive).
+ */
+function checkHarnessHooks(): Check {
+  const root = findCoordProjectRoot();
+  if (!root) {
+    return { name: "harness hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
+  }
+  const drift = loadHarnessWiring(root);
+  if (drift.length === 0) {
+    return { name: "harness hooks", severity: "ok", detail: "wired + current" };
+  }
+  const bin = resolveBinName(root);
+  const parts = drift.map((d) => {
+    const bits: string[] = [];
+    if (d.missing.length > 0) {
+      bits.push(`${d.missing.length} missing (${d.missing.map((m) => m.subcommand).join(", ")})`);
+    }
+    if (d.orphans.length > 0) bits.push(`${d.orphans.length} orphaned (${d.orphans.join(", ")})`);
+    return `${d.settingsFile}: ${bits.join("; ")}`;
+  });
+  const hasOrphans = drift.some((d) => d.orphans.length > 0);
+  const hint = hasOrphans
+    ? `run \`${bin} init\` to wire missing hooks; remove orphaned entries (renamed/dropped events) with \`${bin} uninstall\` then \`${bin} init\``
+    : `run \`${bin} init\` to wire the new hook(s) (idempotent)`;
+  return { name: "harness hooks", severity: "warn", detail: parts.join("  |  "), hint };
 }
 
 function macOrLinux(mac: string, linux: string): string {

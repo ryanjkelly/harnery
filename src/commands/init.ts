@@ -23,12 +23,18 @@ import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME, stripJsonComments } from "../core/config.ts";
+import { HARNESS_SPECS, type HarnessId, type HarnessSpec } from "../core/hooks/harness/events.ts";
 import {
-  HARNESS_SPECS,
-  type HarnessId,
-  type HarnessSpec,
-  type HookEntryShape,
-} from "../core/hooks/harness/events.ts";
+  commandWiresSubcommand,
+  groupCommands,
+  type HookGroup,
+  makeEntry,
+  type SettingsFile,
+} from "../core/hooks/harness/wiring.ts";
+
+// Re-exported for back-compat: callers (uninstall, tests) import these names
+// from init.ts. The definitions now live in core/hooks/harness/wiring.ts.
+export type { HookGroup, SettingsFile };
 
 // This file is src/commands/init.ts → harnery package root is two levels up.
 const HARNERY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -37,25 +43,6 @@ interface InitOpts {
   harness: string;
   dryRun?: boolean;
   projectRoot?: string;
-}
-
-/** Claude Code + Codex entry: `{ hooks: [{ type, command }] }`. */
-interface ClaudeHookGroup {
-  matcher?: string;
-  hooks: { type: string; command: string }[];
-}
-/** Cursor entry: a flat `{ command }`. */
-interface CursorHookGroup {
-  command: string;
-  type?: string;
-  matcher?: string;
-}
-type HookGroup = ClaudeHookGroup | CursorHookGroup;
-
-export interface SettingsFile {
-  version?: number;
-  hooks?: Record<string, HookGroup[]>;
-  [k: string]: unknown;
 }
 
 export function registerInitCommand(program: Command, emit: EmitContext, binName?: string): void {
@@ -173,7 +160,7 @@ export function wireHooks(
     const command = `bash ${agentHookPath} ${subcommand} --harness ${harness}`;
     const groups = settings.hooks[settingsKey] ?? [];
     const present = groups.some((g) =>
-      groupCommands(g).some((c) => c.includes(`agent-hook ${subcommand} `)),
+      groupCommands(g).some((c) => commandWiresSubcommand(c, subcommand)),
     );
     if (present) {
       already++;
@@ -215,20 +202,6 @@ export function unwireHooks(settings: SettingsFile): { removed: number; remainin
   // drop the now-empty hooks object so callers see a clean shape
   if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
   return { removed, remaining };
-}
-
-/** Build a hook entry in the harness's shape. */
-function makeEntry(shape: HookEntryShape, command: string): HookGroup {
-  return shape === "cursor" ? { command } : { hooks: [{ type: "command", command }] };
-}
-
-/** Pull every command string out of a hook entry, regardless of shape. */
-function groupCommands(group: HookGroup): string[] {
-  if ("command" in group && typeof group.command === "string") return [group.command];
-  if ("hooks" in group && Array.isArray(group.hooks)) {
-    return group.hooks.map((h) => h.command).filter((c): c is string => typeof c === "string");
-  }
-  return [];
 }
 
 /**

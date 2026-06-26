@@ -32,6 +32,10 @@ harn init
   · all 10 claude-code hooks already wired in .claude/settings.json
 ```
 
+## Re-run after a Harnery upgrade that adds hooks
+
+Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds or renames a hook event**: re-run `harn init` to wire it (additive, so it only fills the gap). [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the missing hook(s).
+
 ## Project root
 
 Defaults to the git top-level (falls back to the current directory). Override with `--project-root <path>`.

@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBinName } from "../../config.ts";
+import { harneryVersion, loadHarnessWiring } from "../../hooks/harness/wiring.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -74,6 +75,29 @@ export function renderSessionContext(opts: RenderOpts): string {
   if (wiringIssues.length > 0) {
     const wiringSummary = `Coordination hooks are NOT wired: the E-guard will not block conflicting commits, and post-commit claim pruning will not run. Run \`scripts/setup-hooks.sh\` to fix. Detected:\n${wiringIssues.map((i) => `  - ${i}`).join("\n")}`;
     messages.push(wiringSummary);
+  }
+
+  // 5. Harness-hook drift: a harnery upgrade changed the hook set, but this
+  // project's settings file hasn't been re-wired. Only fires for a harness the
+  // project already opted into (≥1 hook wired), so it never nags a project that
+  // simply has a settings file. Remedy is always `<bin> init` (idempotent).
+  const drift = loadHarnessWiring(coordRoot);
+  if (drift.length > 0) {
+    const bin = resolveBinName(coordRoot);
+    const ver = harneryVersion();
+    const verPart = ver ? ` (harnery ${ver})` : "";
+    const lines = drift.map((d) => {
+      const bits: string[] = [];
+      if (d.missing.length > 0)
+        bits.push(`missing: ${d.missing.map((m) => m.subcommand).join(", ")}`);
+      if (d.orphans.length > 0) bits.push(`orphaned: ${d.orphans.join(", ")}`);
+      return `  - ${d.settingsFile} — ${bits.join("; ")}`;
+    });
+    messages.push(
+      `Harnery hook wiring is out of date${verPart}: an upgrade changed the hook set but the harness ` +
+        `settings file hasn't been re-wired, so the new hook(s) won't fire. Run \`${bin} init\` to wire them ` +
+        `(idempotent, additive).\n${lines.join("\n")}`,
+    );
   }
 
   return messages.join("\n\n");
