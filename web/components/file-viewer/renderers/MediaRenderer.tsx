@@ -36,18 +36,20 @@ export function VideoRenderer({ meta, path }: { meta: FileMeta; path: string }) 
 
 export function PdfRenderer({ meta, path }: { meta: FileMeta; path: string }) {
   return (
+    // No `sandbox` attribute, by necessity: Chrome's built-in PDF viewer is an
+    // internal chrome-extension document that refuses to instantiate inside a
+    // sandboxed frame — any sandbox value yields net::(blocked:other) + the
+    // "This page has been blocked by Chrome" overlay. (Headless Chromium can't
+    // catch this: its build omits the PDF plugin, so a sandboxed PDF iframe just
+    // paints blank instead of blocking.) Dropping the sandbox is safe because
+    // the framed bytes are served `application/pdf` + `nosniff`, so Chrome hands
+    // them to PDFium and NEVER instantiates a scriptable same-origin HTML
+    // document that could reach the dashboard — sandbox or not, there is nothing
+    // to contain. The raw route likewise omits the CSP `sandbox` header for PDFs
+    // for exactly this reason (see baseHeaders in lib/file-routes.ts).
     <iframe
       src={rawUrl(path)}
       title={meta.relPath}
-      // allow-same-origin is REQUIRED: Chrome's PDF viewer is an internal
-      // chrome-extension document that won't load into an opaque (sandboxed-away)
-      // origin — withholding it yields "This page has been blocked by Chrome",
-      // not containment. Safe here because the route serves application/pdf +
-      // nosniff, so the frame renders in PDFium, never as scriptable same-origin
-      // HTML. allow-scripts is omitted (the viewer UI runs in the extension
-      // context, and allow-scripts + allow-same-origin is the escape combo);
-      // allow-downloads powers the toolbar's Save button.
-      sandbox="allow-same-origin allow-popups allow-forms allow-downloads"
       className="h-full min-h-0 w-full flex-1 border-0 bg-white"
     />
   );
