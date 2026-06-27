@@ -3,6 +3,7 @@
 import {
   type ChangeEvent,
   type KeyboardEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -362,6 +363,15 @@ export function LogTable<E>({
       keyMapRef.current.set(obj, key);
     }
     return key;
+  }, []);
+
+  // Stable, identity-preserving toggle: a single callback shared by every row
+  // (the row passes its own key back) instead of a fresh inline arrow per row
+  // per render. Without this, the `onToggle` prop changes every render and the
+  // `memo`-wrapped rows below can never skip a re-render. Functional updater so
+  // it never closes over `expandedId`.
+  const handleToggle = useCallback((key: string) => {
+    setExpandedId((cur) => (cur === key ? null : key));
   }, []);
 
   /* ───── auto-scroll to top + flash newest row on append ───────────── */
@@ -764,12 +774,11 @@ export function LogTable<E>({
                   return (
                     <LogRowGroup
                       key={groupKey}
+                      rowKey={groupKey}
                       rows={item.rows}
                       renderer={renderer}
                       expanded={isExpanded}
-                      onToggle={() =>
-                        setExpandedId(isExpanded ? null : groupKey)
-                      }
+                      onToggle={handleToggle}
                       timeZone={timeZone}
                       flashing={isFlashing}
                     />
@@ -781,12 +790,11 @@ export function LogTable<E>({
                 return (
                   <LogRow
                     key={rowKey}
+                    rowKey={rowKey}
                     row={item.row}
                     renderer={renderer}
                     expanded={isExpanded}
-                    onToggle={() =>
-                      setExpandedId(isExpanded ? null : rowKey)
-                    }
+                    onToggle={handleToggle}
                     timeZone={timeZone}
                     flashing={isFlashing}
                   />
@@ -818,15 +826,18 @@ export function LogTable<E>({
 /* ────────────────────────────────────────────────────────────────────── */
 
 interface LogRowProps<E> {
+  /** Stable identity key (from the parent WeakMap); passed back to `onToggle`. */
+  rowKey: string;
   row: E;
   renderer: LogRowRenderer<E>;
   expanded: boolean;
-  onToggle: () => void;
+  onToggle: (key: string) => void;
   timeZone: string;
   flashing: boolean;
 }
 
-function LogRow<E>({
+function LogRowInner<E>({
+  rowKey,
   row,
   renderer,
   expanded,
@@ -856,7 +867,7 @@ function LogRow<E>({
           flashing &&
             "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
         )}
-        onClick={onToggle}
+        onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
       >
         <td className="py-1.5 px-3 font-mono text-muted-foreground whitespace-nowrap">
@@ -902,14 +913,24 @@ function LogRow<E>({
   );
 }
 
+// Memoized so a parent re-render (a keystroke in search, a streamed append, a
+// filter toggle) only re-renders the rows whose props actually changed, not all
+// N rows. Props are all primitives or stable refs (`row` identity is preserved
+// across appends; `renderer` + `onToggle` are stable), so the default shallow
+// comparison is correct. The cast restores the generic call signature `memo`
+// erases. This is what turns an O(all rows) re-render into O(changed rows).
+const LogRow = memo(LogRowInner) as typeof LogRowInner;
+
 /* ────────────────────────────────────────────────────────────────────── */
 
 interface LogRowGroupProps<E> {
+  /** Stable identity key (the first row's key); passed back to `onToggle`. */
+  rowKey: string;
   /** Run of ≥2 adjacent same-group rows, in display order (newest first). */
   rows: E[];
   renderer: LogRowRenderer<E>;
   expanded: boolean;
-  onToggle: () => void;
+  onToggle: (key: string) => void;
   timeZone: string;
   flashing: boolean;
 }
@@ -928,7 +949,8 @@ interface LogRowGroupProps<E> {
  * run back to emission order and the time column shows the first emitted
  * line's timestamp (the run's start).
  */
-function LogRowGroup<E>({
+function LogRowGroupInner<E>({
+  rowKey,
   rows,
   renderer,
   expanded,
@@ -957,7 +979,7 @@ function LogRowGroup<E>({
           expanded && "bg-muted/70 hover:bg-muted/70",
           flashing && "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
         )}
-        onClick={onToggle}
+        onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
       >
         <td className="py-1.5 px-3 font-mono text-muted-foreground whitespace-nowrap">
@@ -1037,6 +1059,10 @@ function LogRowGroup<E>({
     </>
   );
 }
+
+// Memoized for the same reason as LogRow (see above): skip re-rendering folded
+// groups whose props are unchanged on an unrelated parent re-render.
+const LogRowGroup = memo(LogRowGroupInner) as typeof LogRowGroupInner;
 
 function ExpandedRow<E>({
   row,

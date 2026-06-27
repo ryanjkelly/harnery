@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 import { useDateTimeFormat } from "@/components/DateTimeFormatProvider";
 import { Tooltip } from "@/components/ui/tooltip";
 import { formatTemplate } from "@/lib/format/template";
@@ -20,7 +22,7 @@ import { formatTemplate } from "@/lib/format/template";
  * one render uses an identical zone string, which avoids per-row `Intl` cache
  * misses. The parent supplies it via `useDateTimeFormat().timezone`.
  */
-export function LogTimestamp({
+export const LogTimestamp = memo(function LogTimestamp({
   iso,
   timeZone,
 }: {
@@ -49,4 +51,4 @@ export function LogTimestamp({
       </time>
     </Tooltip>
   );
-}
+});
