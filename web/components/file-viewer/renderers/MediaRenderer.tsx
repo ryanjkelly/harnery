@@ -39,10 +39,15 @@ export function PdfRenderer({ meta, path }: { meta: FileMeta; path: string }) {
     <iframe
       src={rawUrl(path)}
       title={meta.relPath}
-      // The PDF document loads in the iframe's own sandbox; allow-scripts is
-      // required for the browser's built-in PDF viewer UI, allow-same-origin is
-      // NOT granted so it can't reach the dashboard's origin.
-      sandbox="allow-scripts allow-popups allow-forms"
+      // allow-same-origin is REQUIRED: Chrome's PDF viewer is an internal
+      // chrome-extension document that won't load into an opaque (sandboxed-away)
+      // origin — withholding it yields "This page has been blocked by Chrome",
+      // not containment. Safe here because the route serves application/pdf +
+      // nosniff, so the frame renders in PDFium, never as scriptable same-origin
+      // HTML. allow-scripts is omitted (the viewer UI runs in the extension
+      // context, and allow-scripts + allow-same-origin is the escape combo);
+      // allow-downloads powers the toolbar's Save button.
+      sandbox="allow-same-origin allow-popups allow-forms allow-downloads"
       className="h-full min-h-0 w-full flex-1 border-0 bg-white"
     />
   );
