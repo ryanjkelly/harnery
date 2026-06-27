@@ -5,7 +5,7 @@
  * boundary.
  */
 
-import type { DirListing, FileError, FileMeta, FileText } from "./types";
+import type { DirListing, DirUsage, FileError, FileMeta, FileText, SearchResult } from "./types";
 
 export interface FetchOk<T> {
   ok: true;
@@ -62,6 +62,18 @@ export function fetchText(path: string): Promise<FetchResult<FileText>> {
 /** List one directory's immediate children (repo-relative; "" = repo root). */
 export function fetchList(dir: string): Promise<FetchResult<DirListing>> {
   return getJson<DirListing>(`/api/file/list?dir=${encodeURIComponent(dir)}`);
+}
+
+/** Recursive disk usage + file/folder counts for a directory (+ per-immediate-
+ * child breakdown). */
+export function fetchUsage(dir: string): Promise<FetchResult<DirUsage>> {
+  return getJson<DirUsage>(`/api/file/usage?dir=${encodeURIComponent(dir)}`);
+}
+
+/** Fuzzy file-name search across the repo (cached, deny-aware index). */
+export function fetchSearch(query: string, limit?: number): Promise<FetchResult<SearchResult>> {
+  const lim = limit ? `&limit=${limit}` : "";
+  return getJson<SearchResult>(`/api/file/search?q=${encodeURIComponent(query)}${lim}`);
 }
 
 /** Raw-bytes URL for a path, used by <img>/<audio>/<video>/<iframe> src and

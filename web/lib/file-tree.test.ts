@@ -11,7 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listDir } from "./file-tree.ts";
+import { __resetFileTreeCaches, dirUsage, listDir, searchFiles } from "./file-tree.ts";
 
 function makeRoot(): string {
   return realpathSync(mkdtempSync(path.join(os.tmpdir(), "harn-tree-")));
@@ -160,5 +160,106 @@ describe("listDir — symlink containment", () => {
     const res = listDir("", { root });
     const entry = res.ok ? res.entries.find((e) => e.name === "readme-link.md") : undefined;
     expect(entry?.kind).toBe("file");
+  });
+});
+
+describe("listDir — file sizes", () => {
+  const root = buildFixture();
+  const res = listDir("", { root });
+
+  test("file entries carry byte size; directories carry none", () => {
+    if (!res.ok) throw new Error("expected ok");
+    const readme = res.entries.find((e) => e.name === "README.md");
+    const docs = res.entries.find((e) => e.name === "docs");
+    expect(readme?.size).toBe("# readme\n".length);
+    expect(docs?.size).toBeUndefined();
+  });
+});
+
+describe("dirUsage — recursive totals + counts (deny-aware)", () => {
+  const root = buildFixture();
+  __resetFileTreeCaches();
+  const res = dirUsage("", { root });
+
+  // Non-denied files under the fixture: README.md(9) + .env.example(17) +
+  // docs/plans/plan.md(7) + src/index.ts(11) + app-web/src/data.json(8) +
+  // tools/ok.txt(5) = 57 bytes across 6 files + 6 dirs. node_modules/.git/
+  // .credentials and the secret jsons are excluded.
+  test("self totals exclude hidden/denied paths", () => {
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.self).toEqual({ fileCount: 6, dirCount: 6, totalBytes: 57 });
+      expect(res.partial).toBe(false);
+    }
+  });
+
+  test("per-immediate-child breakdown is present for visible dirs only", () => {
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.children.docs).toEqual({ fileCount: 1, dirCount: 1, totalBytes: 7 });
+    expect(res.children.tools).toEqual({ fileCount: 1, dirCount: 0, totalBytes: 5 });
+    expect(res.children.node_modules).toBeUndefined();
+    expect(res.children[".git"]).toBeUndefined();
+    expect(res.children[".credentials"]).toBeUndefined();
+  });
+
+  test("rejections mirror listDir (denied / traversal / not-a-dir)", () => {
+    const denied = dirUsage(".credentials", { root });
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) expect(denied.code).toBe("denied");
+    const trav = dirUsage("../etc", { root });
+    expect(trav.ok).toBe(false);
+    if (!trav.ok) expect(trav.code).toBe("invalid_path");
+    const notDir = dirUsage("README.md", { root });
+    expect(notDir.ok).toBe(false);
+    if (!notDir.ok) expect(notDir.code).toBe("not_file");
+  });
+});
+
+describe("searchFiles — fuzzy index (deny + build-artifact aware)", () => {
+  function searchFixture(): string {
+    const root = buildFixture();
+    w(root, ".next/static/chunk-abc.js", "console.log(1)\n"); // build artifact → not indexed
+    w(root, "node_modules/pkg/lib.js", "module.exports={}\n"); // denied → not indexed
+    return root;
+  }
+  const root = searchFixture();
+  __resetFileTreeCaches();
+  const paths = (q: string) => {
+    const r = searchFiles(q, { root });
+    return r.ok ? r.matches.map((m) => m.relPath) : [];
+  };
+
+  test("matches by basename substring", () => {
+    expect(paths("plan")).toContain("docs/plans/plan.md");
+  });
+
+  test("ranks an exact/prefix basename match first", () => {
+    const first = paths("index")[0];
+    expect(first).toBe("src/index.ts");
+  });
+
+  test("excludes denied files and build-artifact dirs from the index", () => {
+    const chunk = paths("chunk"); // lives under .next → skipped
+    expect(chunk).toHaveLength(0);
+    const lib = paths("lib.js"); // lives under node_modules → denied
+    expect(lib).toHaveLength(0);
+    const env = paths(".env"); // .env is denied; .env.example is rescued
+    expect(env).not.toContain(".env");
+    expect(env).toContain(".env.example");
+  });
+
+  test("empty query returns no matches", () => {
+    const r = searchFiles("   ", { root });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.matches).toHaveLength(0);
+  });
+
+  test("honors the limit + reports truncation", () => {
+    const r = searchFiles("s", { root, limit: 1 }); // 's' is a broad subsequence hit
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.matches.length).toBeLessThanOrEqual(1);
+      if (r.total > 1) expect(r.truncated).toBe(true);
+    }
   });
 });
