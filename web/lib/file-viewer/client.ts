@@ -5,7 +5,7 @@
  * boundary.
  */
 
-import type { FileError, FileMeta, FileText } from "./types";
+import type { DirListing, FileError, FileMeta, FileText } from "./types";
 
 export interface FetchOk<T> {
   ok: true;
@@ -57,6 +57,11 @@ export function fetchMeta(path: string): Promise<FetchResult<FileMeta>> {
 
 export function fetchText(path: string): Promise<FetchResult<FileText>> {
   return getJson<FileText>(`/api/file/text?${qs(path)}`);
+}
+
+/** List one directory's immediate children (repo-relative; "" = repo root). */
+export function fetchList(dir: string): Promise<FetchResult<DirListing>> {
+  return getJson<DirListing>(`/api/file/list?dir=${encodeURIComponent(dir)}`);
 }
 
 /** Raw-bytes URL for a path, used by <img>/<audio>/<video>/<iframe> src and

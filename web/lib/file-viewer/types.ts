@@ -51,6 +51,22 @@ export interface FileError {
   detail: string | null;
 }
 
+/** One entry in a directory listing from /api/file/list. */
+export interface DirEntry {
+  /** Bare entry name (last path segment). */
+  name: string;
+  /** Canonical repo-relative path, openable via the viewer / `?file=`. */
+  relPath: string;
+  kind: "dir" | "file";
+}
+
+/** The /api/file/list JSON shape (lib/file-tree.ts). */
+export interface DirListing {
+  /** Canonical repo-relative path of the listed directory ("" = repo root). */
+  dir: string;
+  entries: DirEntry[];
+}
+
 /** Options for `useFileViewer().open()`. A `sequence` of repo-relative paths
  * enables ←/→ navigation (e.g. /images keeps prev/next); `index` is the
  * starting position within it. */

@@ -41,6 +41,9 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
             <Link href="/files" className="hover:text-foreground">
               Files
             </Link>
+            <Link href="/browse" className="hover:text-foreground">
+              Browse
+            </Link>
           </nav>
         </div>
         {/* items-center (not baseline): the icon buttons have no text baseline,
