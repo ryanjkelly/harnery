@@ -38,13 +38,30 @@ bun run format
 
 ## Changesets + releases
 
-Every PR that changes published behavior includes a [changeset](https://github.com/changesets/changesets) file:
+Every PR that changes published behavior (`src/`, `bin/`, `schemas/`) includes a [changeset](https://github.com/changesets/changesets) file. `web/`, `docs/`, and the root scripts are unpublished, so they don't need one.
 
 ```bash
 bun x changeset
 ```
 
-Walk through the prompts to declare the bump type (patch/minor/major) and a one-line summary. The release workflow on `main` consumes pending changesets, bumps the version, regenerates `CHANGELOG.md`, and publishes to npm.
+Walk through the prompts to declare the bump type (patch/minor/major) and a one-line summary.
+
+### Cutting a release
+
+`main` is the released line; day-to-day work lands on `next`. A release is a `next` → `main` merge, and it runs in two steps:
+
+1. **Fast-forward `main` to `next`.** This carries the pending changesets onto `main`, where the [changesets action](https://github.com/changesets/action) opens (or updates) a `chore(release): version bump + changelog` PR. That PR applies the version bump, regenerates `CHANGELOG.md`, and deletes the consumed changesets. It does **not** publish yet.
+2. **Merge the release PR.** Merging it runs `changeset publish`, which publishes to npm (with provenance) and tags the release. Afterward, fast-forward `next` back up to `main` so the consumed changesets don't linger there.
+
+The release PR is opened by the Actions bot, so branch-protection checks never run on it and it sits as `BLOCKED`. Admin-merge it (`gh pr merge <n> --squash --admin`) once CI is green on the `main` commit beneath it: the PR only touches version + changelog metadata, and the code it ships already passed CI on that commit.
+
+**CI only runs on `main`.** Commits to `next` are quiet, so a green `next` is not CI-verified; the full suite runs only once you push to `main`. Run it locally before releasing:
+
+```bash
+bun run typecheck && bun run lint && bun test && bun run test:integration
+```
+
+The `installers` job also runs only on `main`: it packs the tarball and exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh` → `scripts/teardown.sh` round-trip. Those shell scripts have no unit tests, so if you touch them, run that round-trip against a throwaway project yourself, or a regression stays hidden on `next` until release.
 
 ## Adding a new command
 
