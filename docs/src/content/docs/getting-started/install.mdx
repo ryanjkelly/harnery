@@ -57,6 +57,8 @@ bash harnery/install.sh
 
 Run it from your project (it auto-detects the project root via git, falling back to Harnery's parent directory). It's idempotent, so it's safe to re-run. Flags: `--project-root <dir>`, `--link-dir <dir>` (default `~/.local/bin`), `--no-link`, `--harness <id>`.
 
+To reverse it, run the mirror script — `bash harnery/uninstall.sh` (see [Uninstall](#uninstall) below).
+
 ## First-run check
 
 ```bash
@@ -72,6 +74,26 @@ harn init
 ```
 
 Run once per project to create the `.harnery/` coord root and wire the harness hooks. Auto-wires all three harnesses; pass `--harness claude-code` (default), `cursor`, or `codex`. Idempotent and non-destructive: safe to re-run, and it preserves hooks you already have. See [`harn init`](/cli/init/) for `--dry-run` and details.
+
+## Uninstall
+
+Reverse what `harn init` (or `install.sh`) wired in — one command. Your `.harnery/` history is kept by default.
+
+<Tabs>
+  <TabItem label="npm">
+    ```bash
+    harn uninstall      # unwire the harness hooks (keeps .harnery/)
+    npm rm -g harnery   # remove the engine + CLI
+    ```
+  </TabItem>
+  <TabItem label="git clone">
+    ```bash
+    bash harnery/uninstall.sh   # mirror of install.sh: unwire + unlink the bins
+    ```
+  </TabItem>
+</Tabs>
+
+Pass `--purge-state` to either to also delete the `.harnery/` coord root (session history, councils, identities) — destructive. The clone-path script also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run`. See [`harn uninstall`](/cli/uninstall/) for the full flag set and the surgical, hook-preserving behavior.
 
 ## Next steps
 

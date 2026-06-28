@@ -27,23 +27,30 @@
 ## Install
 
 ```bash
-npm install -g harnery
+npm install -g harnery   # global CLI: harn, agent-coord, agent-hook
 ```
 
-Or as a per-project dep:
+Or as a per-project dep (`npm install harnery`). Then wire it into your project — one command, idempotent, safe to re-run:
 
 ```bash
-npm install harnery
+harn init     # creates .harnery/ + registers the harness hooks
+harn doctor   # optional: one-time runtime + dependency check
 ```
 
-Then:
-
-```bash
-harn --help
-harn doctor   # one-time runtime + dep check
-```
+> **From a git clone?** If you cloned the repo (for the `web/` dashboard, say), `bash install.sh` does everything in one shot: installs deps, builds `dist/` on a Bun-free host, runs `harn init`, and links the bins onto your `PATH`.
 
 > **npm gives you the engine + CLI.** The `web/` dashboard and the `docs/` site live in the git repo, not the npm package (which is the CLI + coord engine: `bin`, `dist`, `src`, `schemas`). To run the dashboard, `git clone` the repo, `bun install`, and `harn web up` from there, pointing it at your project with `--coord-root <dir>` (or just run it from inside the project). `harn web up` prints these exact steps if you invoke it without the clone present.
+
+## Uninstall
+
+Reverse the project wiring with one command. Your `.harnery/` history is kept by default:
+
+```bash
+harn uninstall                 # unwire the harness hooks (keeps .harnery/)
+harn uninstall --purge-state   # also delete .harnery/ (destructive)
+```
+
+Installed from a git clone? `bash uninstall.sh` is the mirror of `install.sh`: it runs `harn uninstall` and removes the `PATH` symlinks. To drop the engine itself, `npm rm -g harnery` (npm installs) or delete the clone.
 
 ## Use as a CLI library
 

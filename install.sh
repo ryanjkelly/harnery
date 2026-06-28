@@ -8,6 +8,8 @@
 # present, (3) runs `harn init` to create .harnery/ + wire the harness hooks in
 # your project, and (4) links the bins onto PATH (best-effort).
 #
+# To reverse everything this did, run the mirror:  bash harnery/uninstall.sh
+#
 # Re-runnable: every step is idempotent. Flags:
 #   --project-root <dir>   project to wire (default: git toplevel of CWD, else
 #                          harnery's parent directory)
@@ -92,3 +94,4 @@ if [ "$DO_LINK" -eq 1 ]; then
 fi
 
 echo "Done. Verify with:  harn doctor"
+echo "To undo:   bash $HARNERY_DIR/uninstall.sh"
