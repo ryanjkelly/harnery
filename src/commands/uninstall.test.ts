@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { HARNESS_SPECS } from "../core/hooks/harness/events.ts";
 import { type SettingsFile, unwireHooks, wireHooks } from "./init.ts";
+import { engineRemovalHint, shouldPromptForState } from "./uninstall.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 const CLAUDE = HARNESS_SPECS["claude-code"];
@@ -74,5 +75,47 @@ describe("unwireHooks", () => {
     expect(removed).toBe(CURSOR.events.length);
     expect(settings.hooks).toBeUndefined();
     expect(settings.version).toBe(1); // init's version key is left for the caller to judge
+  });
+});
+
+describe("shouldPromptForState", () => {
+  const base = {
+    standalone: true,
+    interactive: true,
+    dryRun: false,
+    purgeState: false,
+    coordExists: true,
+  };
+
+  test("prompts for standalone harn on a TTY with state present", () => {
+    expect(shouldPromptForState(base)).toBe(true);
+  });
+
+  test("never prompts off a TTY: scripts / CI stay flag-driven", () => {
+    expect(shouldPromptForState({ ...base, interactive: false })).toBe(false);
+  });
+
+  test("never prompts for an embedding host (it owns its own UX)", () => {
+    expect(shouldPromptForState({ ...base, standalone: false })).toBe(false);
+  });
+
+  test("skips the prompt when --purge-state already answered it", () => {
+    expect(shouldPromptForState({ ...base, purgeState: true })).toBe(false);
+  });
+
+  test("skips the prompt during a dry run", () => {
+    expect(shouldPromptForState({ ...base, dryRun: true })).toBe(false);
+  });
+
+  test("skips the prompt when there's no .harnery/ to delete", () => {
+    expect(shouldPromptForState({ ...base, coordExists: false })).toBe(false);
+  });
+});
+
+describe("engineRemovalHint", () => {
+  test("names the npm removal and the clone path", () => {
+    const hint = engineRemovalHint();
+    expect(hint).toContain("npm rm -g harnery");
+    expect(hint).toContain("uninstall.sh");
   });
 });

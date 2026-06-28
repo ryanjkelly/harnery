@@ -230,7 +230,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerAgentsCommand(program, emit);
   registerDoctorCommand(program, emit);
   registerInitCommand(program, emit, opts.binName);
-  registerUninstallCommand(program, emit);
+  registerUninstallCommand(program, emit, opts.binName);
   registerBackupCommand(program, emit);
   registerSyncCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);

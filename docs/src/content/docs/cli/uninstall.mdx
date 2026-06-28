@@ -40,7 +40,9 @@ Pass `--purge-state` to delete it (and the `binName` stamp in `.harnery/config.j
 harn uninstall --purge-state   # also rm -rf .harnery/  (destructive)
 ```
 
-`--dry-run` shows the deletion without performing it.
+On a terminal you don't need the flag: standalone `harn uninstall` **asks** before deleting `.harnery/` (defaulting to no) whenever `--purge-state` wasn't passed and a coord root exists. The prompt never fires off a TTY, so piped / CI runs stay flag-driven. After a real uninstall it also prints how to remove the harnery CLI itself (`npm rm -g harnery`, or the clone), since a running command can't delete its own package. An embedding host's `<bin> uninstall` skips both — it owns its own output and install lifecycle.
+
+`--dry-run` shows the deletion without performing it (and never prompts).
 
 ## Idempotent + non-destructive
 
