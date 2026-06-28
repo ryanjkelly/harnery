@@ -88,12 +88,12 @@ Reverse what `harn init` (or `install.sh`) wired in — one command. Your `.harn
   </TabItem>
   <TabItem label="git clone">
     ```bash
-    bash harnery/uninstall.sh   # mirror of install.sh: unwire + unlink the bins
+    bash harnery/uninstall.sh   # mirror of install.sh; also prompts to remove state + clone
     ```
   </TabItem>
 </Tabs>
 
-Pass `--purge-state` to either to also delete the `.harnery/` coord root (session history, councils, identities) — destructive. The clone-path script also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run`. See [`harn uninstall`](/cli/uninstall/) for the full flag set and the surgical, hook-preserving behavior.
+Run on a terminal, `uninstall.sh` asks whether to also delete this project's `.harnery/` history and the harnery clone itself — both default to no. Pre-answer either for unattended runs: `--purge-state` (delete `.harnery/`) or `--remove-clone` (delete the clone). It also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run` (which never prompts). The npm `harn uninstall` path takes `--purge-state` too; see [`harn uninstall`](/cli/uninstall/) for its surgical, hook-preserving behavior.
 
 ## Next steps
 

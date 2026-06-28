@@ -50,7 +50,7 @@ harn uninstall                 # unwire the harness hooks (keeps .harnery/)
 harn uninstall --purge-state   # also delete .harnery/ (destructive)
 ```
 
-Installed from a git clone? `bash uninstall.sh` is the mirror of `install.sh`: it runs `harn uninstall` and removes the `PATH` symlinks. To drop the engine itself, `npm rm -g harnery` (npm installs) or delete the clone.
+Installed from a git clone? `bash uninstall.sh` is the mirror of `install.sh`: it runs `harn uninstall`, removes the `PATH` symlinks, and — when run in a terminal — asks whether to also delete this project's `.harnery/` history and the harnery clone itself. Both default to no; pre-answer with `--purge-state` and `--remove-clone` for unattended runs. (npm users drop the engine with `npm rm -g harnery` instead.)
 
 ## Use as a CLI library
 
