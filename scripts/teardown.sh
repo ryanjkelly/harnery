@@ -105,7 +105,7 @@ fi
 # ── 1. Unwire the project: harness hooks (+ optional .harnery/ purge) ────────
 # Delegate to `harn deinit` so the unwiring logic lives in one place (it keeps
 # any non-harnery hooks and only purges .harnery/ when asked).
-DEINIT_ARGS=(uninstall --harness "$HARNESS" --project-root "$PROJECT_ROOT")
+DEINIT_ARGS=(deinit --harness "$HARNESS" --project-root "$PROJECT_ROOT")
 [ "$PURGE_STATE" -eq 1 ] && DEINIT_ARGS+=(--purge-state)
 [ "$DRY_RUN" -eq 1 ] && DEINIT_ARGS+=(--dry-run)
 echo "→ harn deinit"
