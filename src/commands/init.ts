@@ -32,7 +32,7 @@ import {
   type SettingsFile,
 } from "../core/hooks/harness/wiring.ts";
 
-// Re-exported for back-compat: callers (uninstall, tests) import these names
+// Re-exported for back-compat: callers (deinit, tests) import these names
 // from init.ts. The definitions now live in core/hooks/harness/wiring.ts.
 export type { HookGroup, SettingsFile };
 

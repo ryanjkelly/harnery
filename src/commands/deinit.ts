@@ -1,5 +1,5 @@
 /**
- * `harn uninstall`: reverse what `harn init` wired into a project.
+ * `harn deinit`: reverse what `harn init` wired into a project.
  *
  * `init` makes two kinds of change outside the harnery package:
  *   1. Merges `agent-hook` entries into the harness settings file
@@ -9,7 +9,7 @@
  *      identities, scratch) and stamps the host bin name into
  *      `.harnery/config.jsonc`.
  *
- * `uninstall` undoes (1) by default: it removes only harnery's hook entries from
+ * `deinit` undoes (1) by default: it removes only harnery's hook entries from
  * the settings file, preserving any other hooks the consumer added, and deletes
  * the settings file outright when it's left harnery-only. It does NOT touch the
  * `.harnery/` coord root unless `--purge-state` is passed, because that directory
@@ -22,7 +22,7 @@
  * itself (which a running process can't do to its own package). Both are gated to
  * standalone harn — an embedding host routes output through its own emit and owns
  * its install lifecycle — and the prompt never fires off a TTY, so scripted / CI
- * runs keep the flag-driven behavior untouched. The shell wrapper `uninstall.sh`
+ * runs keep the flag-driven behavior untouched. The shell wrapper `scripts/teardown.sh`
  * is the fuller mirror (it also unlinks the PATH bins and can delete the clone).
  */
 
@@ -36,26 +36,22 @@ import { DEFAULT_BIN_NAME } from "../core/config.ts";
 import { HARNESS_SPECS, type HarnessId } from "../core/hooks/harness/events.ts";
 import { type SettingsFile, unwireHooks } from "./init.ts";
 
-interface UninstallOpts {
+interface DeinitOpts {
   harness: string;
   dryRun?: boolean;
   projectRoot?: string;
   purgeState?: boolean;
 }
 
-export function registerUninstallCommand(
-  program: Command,
-  emit: EmitContext,
-  binName?: string,
-): void {
+export function registerDeinitCommand(program: Command, emit: EmitContext, binName?: string): void {
   // The interactive prompt + engine-removal hint are standalone-harn niceties.
   // An embedding host routes output through its own emit and owns its install
-  // lifecycle, so for a host (binName set + non-default) uninstall stays strictly
+  // lifecycle, so for a host (binName set + non-default) deinit stays strictly
   // flag-driven and says nothing about removing "the package".
   const standalone = !binName || binName === DEFAULT_BIN_NAME;
 
   program
-    .command("uninstall")
+    .command("deinit")
     .description(
       "Reverse `harn init`: remove harnery's hook entries from the harness " +
         "settings file (keeps any others). Pass --purge-state to also delete the " +
@@ -66,7 +62,7 @@ export function registerUninstallCommand(
     .option("--dry-run", "Show what would change without writing")
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .option("--purge-state", "Also delete the .harnery/ coord root (runtime state, destructive)")
-    .action(async (opts: UninstallOpts) => {
+    .action(async (opts: DeinitOpts) => {
       const harness = opts.harness as HarnessId;
       const spec = HARNESS_SPECS[harness];
       if (!spec) {
@@ -174,19 +170,19 @@ export function shouldPromptForState(o: {
 
 /**
  * The "harnery itself is still installed" line shown to standalone-harn users
- * after a real uninstall. `harn uninstall` can't remove the package it's running
+ * after a real deinit. `harn deinit` can't remove the package it's running
  * from, so it points at the two ways to finish the job. Pure + exported for the
  * test.
  */
 export function engineRemovalHint(): string {
   return (
     "harnery itself is still installed. To remove the CLI too: `npm rm -g harnery` " +
-    "(if you installed it with npm/bun), or delete the clone (`uninstall.sh --remove-clone` " +
-    "does that for a git clone)."
+    "(if you installed it with npm/bun); from a git clone, " +
+    "`scripts/teardown.sh --remove-clone` removes the checkout."
   );
 }
 
-/** Mirror uninstall.sh's wording: explain what .harnery/ holds, then ask. */
+/** Mirror scripts/teardown.sh's wording: explain what .harnery/ holds, then ask. */
 function confirmDeleteState(coordDir: string): Promise<boolean> {
   process.stdout.write(
     "\nharnery saved this project's coordination history in .harnery/\n" +
@@ -220,7 +216,7 @@ function render(
   actions: string[],
   hint: string | null,
 ): string {
-  const head = dryRun ? "harn uninstall (dry run): no changes written" : "harn uninstall";
+  const head = dryRun ? "harn deinit (dry run): no changes written" : "harn deinit";
   const tail = dryRun
     ? "\nRe-run without --dry-run to apply."
     : "\nDone. harnery hooks are unwired; restart your harness session to drop them.";

@@ -90,12 +90,12 @@ Run once per project to create the `.harnery/` coord root and wire the harness h
 
 ## Uninstall
 
-Two layers, mirroring install. **Unwire a project** with [`harn uninstall`](/cli/uninstall/) (on a terminal it asks before deleting `.harnery/`; keeps it by default). **Remove the CLI** with the hosted one-liner:
+Two layers, mirroring install. **Unwire a project** with [`harn deinit`](/cli/deinit/) (on a terminal it asks before deleting `.harnery/`; keeps it by default). **Remove the CLI** with the hosted one-liner:
 
 <Tabs>
   <TabItem label="CLI (npm/bun)">
     ```bash
-    harn uninstall                                       # unwire a project (keeps .harnery/)
+    harn deinit                                       # unwire a project (keeps .harnery/)
     curl -fsSL https://harnery.com/uninstall.sh | bash   # remove the CLI itself
     ```
   </TabItem>
@@ -106,7 +106,7 @@ Two layers, mirroring install. **Unwire a project** with [`harn uninstall`](/cli
   </TabItem>
 </Tabs>
 
-From a clone, `./scripts/teardown.sh` runs `harn uninstall`, removes the `PATH` symlinks, and (on a terminal) asks whether to also delete this project's `.harnery/` history and the clone itself — both default to no. Pre-answer for unattended runs with `--purge-state` and `--remove-clone`; it also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run`. See [`harn uninstall`](/cli/uninstall/) for the surgical, hook-preserving details.
+From a clone, `./scripts/teardown.sh` runs `harn deinit`, removes the `PATH` symlinks, and (on a terminal) asks whether to also delete this project's `.harnery/` history and the clone itself — both default to no. Pre-answer for unattended runs with `--purge-state` and `--remove-clone`; it also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run`. See [`harn deinit`](/cli/deinit/) for the surgical, hook-preserving details.
 
 ## Next steps
 

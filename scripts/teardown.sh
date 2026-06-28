@@ -7,7 +7,7 @@
 # Removing just the CLI (installed via the hosted one-liner / npm)? Use:
 #   curl -fsSL https://harnery.com/uninstall.sh | bash
 #
-# This always (1) runs `harn uninstall` to unwire the harness hooks and (2)
+# This always (1) runs `harn deinit` to unwire the harness hooks and (2)
 # removes the bin symlinks scripts/setup.sh put on your PATH. Then, when run in
 # a terminal, it asks about the two destructive extras:
 #   - deleting this project's .harnery/ state (your coordination history), and
@@ -103,13 +103,13 @@ if [ "$INTERACTIVE" -eq 1 ] && [ "$REMOVE_CLONE" -eq 0 ]; then
 fi
 
 # ── 1. Unwire the project: harness hooks (+ optional .harnery/ purge) ────────
-# Delegate to `harn uninstall` so the unwiring logic lives in one place (it keeps
+# Delegate to `harn deinit` so the unwiring logic lives in one place (it keeps
 # any non-harnery hooks and only purges .harnery/ when asked).
-UNINSTALL_ARGS=(uninstall --harness "$HARNESS" --project-root "$PROJECT_ROOT")
-[ "$PURGE_STATE" -eq 1 ] && UNINSTALL_ARGS+=(--purge-state)
-[ "$DRY_RUN" -eq 1 ] && UNINSTALL_ARGS+=(--dry-run)
-echo "→ harn uninstall"
-"$HARNERY_DIR/bin/harn" "${UNINSTALL_ARGS[@]}"
+DEINIT_ARGS=(uninstall --harness "$HARNESS" --project-root "$PROJECT_ROOT")
+[ "$PURGE_STATE" -eq 1 ] && DEINIT_ARGS+=(--purge-state)
+[ "$DRY_RUN" -eq 1 ] && DEINIT_ARGS+=(--dry-run)
+echo "→ harn deinit"
+"$HARNERY_DIR/bin/harn" "${DEINIT_ARGS[@]}"
 echo
 
 # ── 2. Remove the bin symlinks (best-effort, never fatal) ────────────────────

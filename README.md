@@ -46,8 +46,8 @@ harn doctor   # optional: one-time runtime + dependency check
 Two layers. **Unwire a project** (keeps `.harnery/` history by default; on a terminal it asks before deleting it):
 
 ```bash
-harn uninstall                 # unwire the harness hooks
-harn uninstall --purge-state   # also delete .harnery/ (destructive)
+harn deinit                 # unwire the harness hooks
+harn deinit --purge-state   # also delete .harnery/ (destructive)
 ```
 
 **Remove the CLI** with the hosted one-liner (`npm rm -g harnery` / `bun remove -g harnery` work too):
@@ -56,7 +56,7 @@ harn uninstall --purge-state   # also delete .harnery/ (destructive)
 curl -fsSL https://harnery.com/uninstall.sh | bash
 ```
 
-From a git clone, `./scripts/teardown.sh` is the mirror of `./scripts/setup.sh`: it runs `harn uninstall`, removes the `PATH` symlinks, and — on a terminal — asks whether to also delete this project's `.harnery/` history and the clone itself. Both default to no; pre-answer with `--purge-state` and `--remove-clone` for unattended runs.
+From a git clone, `./scripts/teardown.sh` is the mirror of `./scripts/setup.sh`: it runs `harn deinit`, removes the `PATH` symlinks, and — on a terminal — asks whether to also delete this project's `.harnery/` history and the clone itself. Both default to no; pre-answer with `--purge-state` and `--remove-clone` for unattended runs.
 
 ## Use as a CLI library
 

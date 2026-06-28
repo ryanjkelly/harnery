@@ -1,0 +1,71 @@
+---
+title: harn deinit
+description: Reverse harn init by removing Harnery's hook entries and (optionally) the .harnery/ coord root.
+sidebar:
+  order: 3
+---
+
+```
+harn deinit [--harness claude-code|cursor|codex] [--dry-run] [--project-root <path>] [--purge-state]
+```
+
+The inverse of [`harn init`](/cli/init/) (the same pairing as `git submodule deinit`). It undoes the project-level changes `init` made, surgically, so anything you added by hand survives. It removes the *project wiring*, not the CLI itself — to remove the `harn` binary from your machine, see [Removing the CLI](#removing-the-cli) below.
+
+:::tip[Installed from a git clone?]
+`harn deinit` reverses the *project wiring* but leaves the `PATH` symlinks that [`scripts/setup.sh`](/getting-started/install/) created for a git clone. From a clone, run `./scripts/teardown.sh` instead — the one-command mirror of `scripts/setup.sh`. It calls `harn deinit` for you, removes those symlinks, and (on a terminal) offers to delete this project's `.harnery/` state and the clone itself. It forwards `--purge-state`, `--remove-clone`, `--dry-run`, `--project-root`, and `--harness` straight through.
+:::
+
+By default it does one thing: **removes Harnery's hook entries** from the chosen harness's settings file. A hook counts as Harnery's when its command contains `agent-hook `, so any hook *you* added stays put. If pulling Harnery's entries leaves the settings file with nothing but what `init` itself wrote (no hooks, at most a `version` key), the file is deleted rather than left as an empty shell.
+
+```bash
+harn deinit            # unwire Claude Code hooks; keep .harnery/ state
+harn deinit --dry-run  # preview every change without writing
+```
+
+```text
+harn deinit
+  root: /path/to/project
+  + removed 10 harnery hook(s) from .claude/settings.json (1 other hook(s) kept)
+  · left .harnery/ coord root in place (pass --purge-state to delete it)
+Done. harnery hooks are unwired; restart your harness session to drop them.
+```
+
+## The `.harnery/` coord root is kept by default
+
+`init` also creates the `.harnery/` directory, which holds **runtime state**: the event stream, council manifests, agent identities, scratchpads. `deinit` leaves it alone unless you ask, because that history may be worth keeping.
+
+Pass `--purge-state` to delete it (and the `binName` stamp in `.harnery/config.jsonc` along with it):
+
+```bash
+harn deinit --purge-state   # also rm -rf .harnery/  (destructive)
+```
+
+On a terminal you don't need the flag: standalone `harn deinit` **asks** before deleting `.harnery/` (defaulting to no) whenever `--purge-state` wasn't passed and a coord root exists. The prompt never fires off a TTY, so piped / CI runs stay flag-driven. After a real run it also prints how to remove the harnery CLI itself, since a running command can't delete its own package. An embedding host's `<bin> deinit` skips both — it owns its own output and install lifecycle.
+
+`--dry-run` shows the deletion without performing it (and never prompts).
+
+## Removing the CLI
+
+`harn deinit` unwires a project; it never removes the `harn` binary (a running command can't delete its own package). Once you've unwired the projects you care about, remove the CLI itself:
+
+```bash
+curl -fsSL https://harnery.com/uninstall.sh | bash   # or: npm rm -g harnery / bun remove -g harnery
+```
+
+From a git clone, `./scripts/teardown.sh --remove-clone` deletes the checkout instead.
+
+## Idempotent + non-destructive
+
+Safe to re-run. A second pass finds nothing to remove and reports so. If the settings file exists but isn't valid JSON, `deinit` refuses to touch it rather than risk clobbering your config. It only ever removes Harnery's own entries and prunes the keys those entries emptied; every other hook, and every non-hook setting (permissions, model, etc.), is preserved.
+
+## Harness support
+
+Same matrix as `init`; pass `--harness` to target a specific one. `deinit` scans **every** hook key for Harnery commands (not just the ones the named harness wires), so it cleans up entries left behind even if a harness's event set changed between versions.
+
+| `--harness` | Settings file |
+|---|---|
+| `claude-code` (default) | `.claude/settings.json` |
+| `cursor` | `.cursor/hooks.json` |
+| `codex` | `.codex/hooks.json` |
+
+To fully remove Harnery from a project that wired several harnesses, run `deinit` once per harness, then `--purge-state` on the last call.

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { HARNESS_SPECS } from "../core/hooks/harness/events.ts";
+import { engineRemovalHint, shouldPromptForState } from "./deinit.ts";
 import { type SettingsFile, unwireHooks, wireHooks } from "./init.ts";
-import { engineRemovalHint, shouldPromptForState } from "./uninstall.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 const CLAUDE = HARNESS_SPECS["claude-code"];
@@ -116,6 +116,6 @@ describe("engineRemovalHint", () => {
   test("names the npm removal and the clone path", () => {
     const hint = engineRemovalHint();
     expect(hint).toContain("npm rm -g harnery");
-    expect(hint).toContain("uninstall.sh");
+    expect(hint).toContain("teardown.sh");
   });
 });

@@ -80,4 +80,4 @@ $ harn doctor
     ↳ run `harn init` to wire the new hook(s) (idempotent)
 ```
 
-The check only fires for a harness the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. If a release *removed* an event, the stale entry shows up as `orphaned` — re-run `harn uninstall` then `harn init` to reconcile.
+The check only fires for a harness the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. If a release *removed* an event, the stale entry shows up as `orphaned` — re-run `harn deinit` then `harn init` to reconcile.

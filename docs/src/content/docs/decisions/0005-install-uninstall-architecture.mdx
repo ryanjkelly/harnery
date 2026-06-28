@@ -1,6 +1,6 @@
 ---
 title: "ADR 0005: install + uninstall architecture"
-description: A hosted curl one-liner installs the CLI, `harn init`/`uninstall` wire a project, and `scripts/setup.sh`/`teardown.sh` cover the git clone. Why each surface exists and the rules they follow.
+description: A hosted curl one-liner installs the CLI, `harn init` + `harn deinit` wire and unwire a project, and `scripts/setup.sh` / `scripts/teardown.sh` cover the git clone. Why each surface exists and the rules they follow.
 sidebar:
   order: 5
 ---
@@ -40,8 +40,9 @@ it belongs to.
 
 2. **Wire a project — `harn init`.** Unchanged.
 
-3. **Unwire a project — `harn uninstall`.** Unchanged surface; on a TTY it now
-   asks before deleting `.harnery/` and prints how to remove the CLI itself.
+3. **Unwire a project — `harn deinit`.** Renamed from `harn uninstall` (see the
+   naming note below). The inverse of `harn init`; on a TTY it now asks before
+   deleting `.harnery/` and prints how to remove the CLI itself.
 
 4. **Contribute / run the dashboard — `scripts/setup.sh` + `scripts/teardown.sh`.**
    The former repo-root `install.sh`/`uninstall.sh`, moved under `scripts/` and
@@ -50,6 +51,12 @@ it belongs to.
 
 Rules the scripts follow, and why:
 
+- **The project-unwire verb is `deinit`, not `uninstall`.** Once a hosted
+  `uninstall.sh` existed to remove the CLI, "uninstall" named two different
+  scopes: unwire *a project* vs remove *the CLI*. `deinit` (the inverse of
+  `init`, mirroring `git submodule deinit`) keeps the project layer's vocabulary
+  distinct from the CLI layer's install/uninstall, so "uninstall" now means one
+  thing only. Pre-1.0, so the rename is a clean break with no alias.
 - **The hosted scripts are non-interactive.** `curl … | bash` pipes the script
   into bash's stdin, so there is no terminal to read an answer from and no `[ -t
   0 ]`. Every choice is therefore a flag or env var; nothing prompts.
@@ -65,11 +72,11 @@ Rules the scripts follow, and why:
   into installing Bun. We don't install a runtime onto someone's machine by
   default, even though rustup/bun's own installers do; predictability wins for a
   tool that's usually added next to an existing Node/Bun setup.
-- **The `harn uninstall` prompt + the "remove the CLI" hint are gated to
+- **The `harn deinit` prompt + the "remove the CLI" hint are gated to
   standalone `harn`.** An embedding host (`createHarneryProgram({ binName })`)
   routes output through its own emit and owns its install lifecycle, so
-  `<host> uninstall` stays strictly flag-driven and says nothing about removing
-  "the package". Resolved via the `binName` passed to `registerUninstallCommand`,
+  `<host> deinit` stays strictly flag-driven and says nothing about removing
+  "the package". Resolved via the `binName` passed to `registerDeinitCommand`,
   the same value `harn init` already receives.
 
 ## Alternatives considered
@@ -77,10 +84,15 @@ Rules the scripts follow, and why:
 - **Keep a single root `install.sh` and just host it.** Rejected: a hosted
   installer that `git clone`s is unusual, and a clone-bootstrap script that also
   end-users install muddies both jobs. Splitting by audience is clearer.
-- **`init`/`uninstall` → `install`/`uninstall` or `init`/`deinit` for symmetry.**
-  Rejected: renaming `init` breaks the shipped command, the doctor wiring-drift
-  nudge, `scripts/setup.sh`, and muscle memory. `uninstall` is the verb people
-  look for; the small asymmetry is worth the stability.
+- **Keep `harn uninstall` for the project-unwire command.** Rejected: it
+  collides with the hosted `uninstall.sh` (remove the CLI). Same word, two
+  scopes. `harn deinit` resolves the ambiguity (see the naming rule above). The
+  raw discoverability of "uninstall" is a liability here, not a feature: someone
+  who types `harn uninstall` expecting "remove harnery from my machine" gets the
+  surprising answer (it only unwires the current project).
+- **`harn install` / `harn uninstall` as a symmetric project pair.** Rejected:
+  `harn install` would collide head-on with installing the CLI (the one-liner /
+  `npm i -g`), which is the worse ambiguity of the two.
 - **A `harn install` subcommand.** Rejected: bootstrapping the CLI onto PATH is
   inherently the package manager's job (or the one-liner's); a subcommand can't
   install the binary that runs it.
@@ -94,7 +106,8 @@ Rules the scripts follow, and why:
   tarball (via the `HARNERY_INSTALL_SOURCE` seam) on both Node and Bun, plus a
   bash integration test for `scripts/setup.sh`/`teardown.sh`, so the shell
   surface can't silently rot.
-- Uninstall is two layers (project vs CLI). The docs cross-link them so the split
+- Teardown is two layers: unwire a project (`harn deinit`) vs remove the CLI
+  (`uninstall.sh` / `npm rm -g harnery`). The docs cross-link them so the split
   is explicit rather than confusing.
 - **Not done yet:** checksum / signature verification of the curl-piped script.
   Acceptable pre-1.0 (the script is short, served over HTTPS from our own domain,

@@ -27,6 +27,7 @@ import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigGetCommand } from "./commands/config-get.ts";
 import { registerContextCommand } from "./commands/context.ts";
 import { registerCookiesCommand } from "./commands/cookies.ts";
+import { registerDeinitCommand } from "./commands/deinit.ts";
 import { registerDocsCommand } from "./commands/docs.ts";
 import { registerDoctorCommand } from "./commands/doctor.ts";
 import { registerEditBatchCommand } from "./commands/edit-batch.ts";
@@ -45,7 +46,6 @@ import { registerSyncCommand } from "./commands/sync.ts";
 import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
 import { registerTokensCommand } from "./commands/tokens.ts";
 import { registerTunnelCommand } from "./commands/tunnel.ts";
-import { registerUninstallCommand } from "./commands/uninstall.ts";
 import { registerWebCommand } from "./commands/web.ts";
 
 export interface HarneryContextOpts {
@@ -230,7 +230,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerAgentsCommand(program, emit);
   registerDoctorCommand(program, emit);
   registerInitCommand(program, emit, opts.binName);
-  registerUninstallCommand(program, emit, opts.binName);
+  registerDeinitCommand(program, emit, opts.binName);
   registerBackupCommand(program, emit);
   registerSyncCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);

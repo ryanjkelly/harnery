@@ -22,7 +22,7 @@ against `HARNESS_SPECS`:
 Both fire only for a harness the project has already opted into (≥1 Harnery hook
 wired), so a bare `.claude/settings.json` never false-warns. The fix is always
 the same idempotent, additive `harn init`; removed/renamed events show up as
-`orphaned` and are reconciled with `harn uninstall` then `harn init`.
+`orphaned` and are reconciled with `harn deinit` then `harn init`.
 
 The shared types + "is this wired?" matcher moved into a new
 `core/hooks/harness/wiring.ts` so the writer (`init`), the doctor check, and the

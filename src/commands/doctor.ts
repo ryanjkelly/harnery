@@ -259,7 +259,7 @@ function checkHarnessHooks(): Check {
   });
   const hasOrphans = drift.some((d) => d.orphans.length > 0);
   const hint = hasOrphans
-    ? `run \`${bin} init\` to wire missing hooks; remove orphaned entries (renamed/dropped events) with \`${bin} uninstall\` then \`${bin} init\``
+    ? `run \`${bin} init\` to wire missing hooks; remove orphaned entries (renamed/dropped events) with \`${bin} deinit\` then \`${bin} init\``
     : `run \`${bin} init\` to wire the new hook(s) (idempotent)`;
   return { name: "harness hooks", severity: "warn", detail: parts.join("  |  "), hint };
 }

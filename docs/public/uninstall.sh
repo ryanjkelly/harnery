@@ -5,7 +5,7 @@
 #
 # This removes the globally-installed `harnery` package (the CLI + coord engine).
 # It does NOT touch any project you wired: to unwire a project (its .harnery/ +
-# harness hooks), run `harn uninstall` inside that project FIRST, while `harn`
+# harness hooks), run `harn deinit` inside that project FIRST, while `harn`
 # still exists. This script prints that reminder before it removes anything.
 #
 # Non-interactive by design (it's meant to be piped into bash); flag/env driven.
@@ -27,7 +27,7 @@ harnery uninstaller — remove the `harn` CLI.
 
   curl -fsSL https://harnery.com/uninstall.sh | bash
 
-Unwire a PROJECT first (while `harn` still exists):  harn init's inverse →  harn uninstall
+Unwire a PROJECT first (while `harn` still exists):  harn init's inverse →  harn deinit
 
 Flags (pass through the pipe with `bash -s -- <flags>`):
   --method npm|bun     force a package manager        (env HARNERY_INSTALL_METHOD)
@@ -70,7 +70,7 @@ main() {
   fi
 
   echo "Reminder: this removes the harnery CLI, not any project you wired."
-  echo "If you haven't already, run \`harn uninstall\` inside each project first."
+  echo "If you haven't already, run \`harn deinit\` inside each project first."
   echo
   echo "harnery uninstaller"
   echo "  package : $PKG"
