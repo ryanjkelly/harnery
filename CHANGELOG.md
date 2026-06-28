@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- 59406bf: feat(deinit): ask before deleting .harnery/ and point at engine removal
+
+  Standalone `harn deinit`, run on a terminal, now asks before deleting the
+  .harnery/ coord root when --purge-state wasn't passed and a coord root exists
+  (defaulting to no). After a real run it also prints how to remove the harnery
+  CLI itself (`npm rm -g harnery`, or the clone), which a running command can't do
+  to its own package. This mirrors the shell `scripts/teardown.sh` prompts so the
+  npm and git-clone paths feel the same.
+
+  Both are gated to standalone harn: an embedding host routes output through its
+  own emit and owns its install lifecycle, so `<host> deinit` stays strictly
+  flag-driven and silent about removing the package. The prompt also never fires
+  off a TTY, so scripted / CI runs are unchanged. The gating (shouldPromptForState)
+  and the hint text (engineRemovalHint) are pure and unit-tested.
+
+- c6bd828: feat(doctor): detect harness-hook wiring drift after an upgrade + nudge to re-init
+
+  When a release adds or renames a hook event, an existing project's harness
+  settings file keeps the old wiring until `harn init` is re-run — and nothing
+  told you. Updating the package alone never surfaced it, because wired hooks call
+  the `agent-hook` binary (so code fixes land for free), but newly-added events
+  aren't wired until init runs again.
+
+  Two non-intrusive surfaces now catch this, sharing one read-only comparison
+  against `HARNESS_SPECS`:
+
+  - `harn doctor` gains a `harness hooks` check: `wired + current`, or a warning
+    naming the missing (and orphaned) `agent-hook` subcommands with the exact
+    remedy.
+  - SessionStart emits a one-line nudge when wiring is out of date, naming the
+    missing hook(s) and the harnery version.
+
+  Both fire only for a harness the project has already opted into (≥1 Harnery hook
+  wired), so a bare `.claude/settings.json` never false-warns. The fix is always
+  the same idempotent, additive `harn init`; removed/renamed events show up as
+  `orphaned` and are reconciled with `harn deinit` then `harn init`.
+
+  The shared types + "is this wired?" matcher moved into a new
+  `core/hooks/harness/wiring.ts` so the writer (`init`), the doctor check, and the
+  session-start renderer can't drift from one another.
+
+- 59406bf: feat(deinit): rename `harn uninstall` to `harn deinit`
+
+  The project-unwire command is now `harn deinit`, the inverse of `harn init` (the
+  same pairing `git submodule deinit` uses). Behavior is unchanged: it removes
+  harnery's hook entries from the harness settings file and, with `--purge-state`,
+  the `.harnery/` coord root.
+
+  The rename resolves a scope collision introduced when the hosted `uninstall.sh`
+  shipped. "uninstall" now means exactly one thing, removing the CLI from the
+  machine (`curl -fsSL https://harnery.com/uninstall.sh | bash`, or
+  `npm rm -g harnery`), while project wiring is `init` / `deinit`. Pre-1.0, so this
+  is a clean break with no alias; `harn uninstall` no longer exists. `scripts/teardown.sh`,
+  the `harn doctor` drift nudge, and the docs are updated to match.
+
+### Patch Changes
+
+- 0b4ed15: fix(coord): stop committed claims from blocking edits + make release-claim form-robust
+
+  Two coord-layer rough edges surfaced in long multi-agent sessions:
+
+  - The claim ordering rule (which enforces sorted-order acquisition to prevent
+    deadlock when a fresh peer is active) computed the "highest held claim" over
+    ALL of an agent's `files_touched` — including files it had already committed.
+    A committed file is a finished edit, not a held lock, so over a long session
+    the accumulated committed claims walled off every earlier-sorted path with
+    spurious `claim.ordering_violation` blocks (no real deadlock risk, since the
+    files weren't being touched). The check now prunes committed-clean claims
+    lazily on the would-block path — mirroring the existing peer stale-claim
+    self-heal — and only blocks when a genuinely active (uncommitted) higher claim
+    remains.
+
+  - `release-claim` did an exact-string filter, but `files_touched` can hold a mix
+    of absolute-under-coordRoot and canonical monorepo-relative entries, so a
+    release by the "wrong" form silently no-op'd. Both sides are now normalized
+    before comparison. `isFileCommittedClean` was likewise hardened to tolerate
+    either path form.
+
+- b940b3c: fix(coord): make the commit-guard wiring check portable (drop host-specific paths)
+
+  The SessionStart "coordination hooks are NOT wired" check baked two
+  host-specific assumptions into the published package — a leak from when the
+  coord layer was extracted from its origin monorepo and the bash UX was ported
+  to TS verbatim:
+
+  - It hardcoded the git-hooks location as `<root>/scripts/hooks` and compared
+    `core.hooksPath` against it, so any host using a different convention (or the
+    default `.git/hooks`) got a false "NOT wired" warning even when the guard was
+    correctly installed.
+  - The remediation told every host to run `scripts/setup-hooks.sh`, a script
+    that only exists in the origin repo.
+
+  The check now asserts the _functional_ property instead of a path convention:
+  it resolves each repo's effective hooks dir via `git rev-parse --git-path hooks`
+  (which already honors `core.hooksPath`, worktrees, and submodule gitdirs) and
+  verifies the `pre-commit` there actually invokes `agent-coord` / `agent-hook`.
+  The remedy command is host-supplied via a new optional `hooksSetupHint` field in
+  `.harnery/config.jsonc` (read through `resolveHooksSetupHint`); unset → a
+  generic, host-agnostic message. harnery doesn't install git hooks itself, so the
+  "how to fix it here" string belongs to the host, the same way `binName` does.
+
 ## 0.3.2
 
 ### Patch Changes
