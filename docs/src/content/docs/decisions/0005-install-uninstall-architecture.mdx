@@ -1,0 +1,101 @@
+---
+title: "ADR 0005: install + uninstall architecture"
+description: A hosted curl one-liner installs the CLI, `harn init`/`uninstall` wire a project, and `scripts/setup.sh`/`teardown.sh` cover the git clone. Why each surface exists and the rules they follow.
+sidebar:
+  order: 5
+---
+
+**Date:** 2026-06-28
+**Status:** Accepted
+
+## Context
+
+Install and uninstall had grown organically into a set of surfaces that worked
+but didn't read like a mature project's:
+
+- `npm install -g harnery` gave you the CLI, but nothing told you to then run
+  `harn init` to wire a project, so the README left users with an unwired engine.
+- A repo-root `install.sh` did clone-time setup (deps, build, `harn init`, PATH
+  symlinks), but its name implied "this is THE installer" even though it required
+  a `git clone` first and wasn't served anywhere. It blurred *end-user install*
+  with *contributor/dashboard setup*.
+- `harn uninstall` reversed the project wiring; a repo-root `uninstall.sh`
+  mirrored `install.sh`. Neither was reachable as a one-liner, and the shell
+  scripts had no CI coverage.
+
+The shape was sound; the packaging and positioning weren't.
+
+## Decision
+
+Four surfaces, one per intent, each following the conventions of the tool class
+it belongs to.
+
+1. **Get the CLI — a hosted one-liner.**
+   `curl -fsSL https://harnery.com/install.sh | bash`, served from
+   `docs/public/install.sh` (GitHub Pages copies `public/` to the site root).
+   It installs the published npm package globally with whatever package manager
+   is present (npm preferred for a predictable global bin, Bun otherwise),
+   PATH-checks, verifies `harn --version`, and points at `harn init`. A mirror
+   `uninstall.sh` removes it. Equivalent manual path: `npm install -g harnery`.
+
+2. **Wire a project — `harn init`.** Unchanged.
+
+3. **Unwire a project — `harn uninstall`.** Unchanged surface; on a TTY it now
+   asks before deleting `.harnery/` and prints how to remove the CLI itself.
+
+4. **Contribute / run the dashboard — `scripts/setup.sh` + `scripts/teardown.sh`.**
+   The former repo-root `install.sh`/`uninstall.sh`, moved under `scripts/` and
+   reframed as clone setup. This frees the name `install.sh` for the real hosted
+   installer and signals "this is for a checkout, not for end users."
+
+Rules the scripts follow, and why:
+
+- **The hosted scripts are non-interactive.** `curl … | bash` pipes the script
+  into bash's stdin, so there is no terminal to read an answer from and no `[ -t
+  0 ]`. Every choice is therefore a flag or env var; nothing prompts.
+- **They are wrapped in a `main()` called on the last line.** If the download is
+  truncated mid-flight, bash refuses to run a half-written function rather than
+  executing a partial install. Standard curl-pipe-bash safety.
+- **No auto-`init`.** Installing the CLI and wiring a project are separate steps
+  (mirrors husky/pre-commit/tailwind). The one-liner isn't necessarily run from
+  inside a target project, and silently wiring the current directory would be
+  surprising.
+- **Missing runtime: instruct and exit.** If neither Bun nor Node is present the
+  installer prints how to get one and exits non-zero. `--install-runtime` opts
+  into installing Bun. We don't install a runtime onto someone's machine by
+  default, even though rustup/bun's own installers do; predictability wins for a
+  tool that's usually added next to an existing Node/Bun setup.
+- **The `harn uninstall` prompt + the "remove the CLI" hint are gated to
+  standalone `harn`.** An embedding host (`createHarneryProgram({ binName })`)
+  routes output through its own emit and owns its install lifecycle, so
+  `<host> uninstall` stays strictly flag-driven and says nothing about removing
+  "the package". Resolved via the `binName` passed to `registerUninstallCommand`,
+  the same value `harn init` already receives.
+
+## Alternatives considered
+
+- **Keep a single root `install.sh` and just host it.** Rejected: a hosted
+  installer that `git clone`s is unusual, and a clone-bootstrap script that also
+  end-users install muddies both jobs. Splitting by audience is clearer.
+- **`init`/`uninstall` → `install`/`uninstall` or `init`/`deinit` for symmetry.**
+  Rejected: renaming `init` breaks the shipped command, the doctor wiring-drift
+  nudge, `scripts/setup.sh`, and muscle memory. `uninstall` is the verb people
+  look for; the small asymmetry is worth the stability.
+- **A `harn install` subcommand.** Rejected: bootstrapping the CLI onto PATH is
+  inherently the package manager's job (or the one-liner's); a subcommand can't
+  install the binary that runs it.
+
+## Consequences
+
+- The one-liner URL only resolves after the docs site deploys from `main`
+  (`docs.yml` runs on `main`). Work lands on `next`, so the URL is live at the
+  next release, not the moment the file is committed.
+- A CI `installers` job exercises the hosted scripts against a freshly-packed
+  tarball (via the `HARNERY_INSTALL_SOURCE` seam) on both Node and Bun, plus a
+  bash integration test for `scripts/setup.sh`/`teardown.sh`, so the shell
+  surface can't silently rot.
+- Uninstall is two layers (project vs CLI). The docs cross-link them so the split
+  is explicit rather than confusing.
+- **Not done yet:** checksum / signature verification of the curl-piped script.
+  Acceptable pre-1.0 (the script is short, served over HTTPS from our own domain,
+  and the docs link to it so it can be read first); revisit before 1.0.

@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# harnery installer: turn a fresh git clone into a project that's harnery-ready
-# in one command.
+# harnery dev/clone setup: turn a fresh `git clone` into a project that's
+# harnery-ready, in one command. This is for contributing to harnery or running
+# the web dashboard (neither ships on npm).
 #
-#   bash harnery/install.sh
+#   ./scripts/setup.sh            # run from the repo root
 #
-# It (1) installs harnery's deps, (2) builds the Node dist/ when Bun isn't
-# present, (3) runs `harn init` to create .harnery/ + wire the harness hooks in
-# your project, and (4) links the bins onto PATH (best-effort).
+# Just want the CLI? You don't need a clone:
+#   curl -fsSL https://harnery.com/install.sh | bash
 #
-# To reverse everything this did, run the mirror:  bash harnery/uninstall.sh
+# This script (1) installs harnery's deps, (2) builds the Node dist/ when Bun
+# isn't present, (3) runs `harn init` to create .harnery/ + wire the harness
+# hooks in your project, and (4) links the bins onto PATH (best-effort).
+#
+# To reverse everything this did, run the mirror:  ./scripts/teardown.sh
 #
 # Re-runnable: every step is idempotent. Flags:
 #   --project-root <dir>   project to wire (default: git toplevel of CWD, else
@@ -26,7 +30,8 @@ while [ -L "$SOURCE" ]; do
   SOURCE="$(readlink "$SOURCE")"
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
-HARNERY_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+# This script lives in scripts/, so the harnery clone root is one level up.
+HARNERY_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 PROJECT_ROOT=""
@@ -39,8 +44,8 @@ while [ $# -gt 0 ]; do
     --link-dir)     LINK_DIR="$2"; shift 2 ;;
     --no-link)      DO_LINK=0; shift ;;
     --harness)      HARNESS="$2"; shift 2 ;;
-    -h|--help)      sed -n '2,18p' "$SOURCE"; exit 0 ;;
-    *) echo "harnery install: unknown argument '$1'" >&2; exit 1 ;;
+    -h|--help)      sed -n '2,22p' "$SOURCE"; exit 0 ;;
+    *) echo "harnery setup: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
 
@@ -64,7 +69,7 @@ if have bun; then
   bun install
 else
   if ! have npm; then
-    echo "harnery install: need either Bun (https://bun.sh) or Node+npm (>=20)." >&2
+    echo "harnery setup: need either Bun (https://bun.sh) or Node+npm (>=20)." >&2
     exit 1
   fi
   echo "→ npm install"
@@ -94,4 +99,4 @@ if [ "$DO_LINK" -eq 1 ]; then
 fi
 
 echo "Done. Verify with:  harn doctor"
-echo "To undo:   bash $HARNERY_DIR/uninstall.sh"
+echo "To undo:   bash $HARNERY_DIR/scripts/teardown.sh"

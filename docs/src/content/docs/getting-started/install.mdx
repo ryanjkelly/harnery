@@ -20,44 +20,57 @@ The published npm package ships a prebuilt `dist/`, so it runs on plain Node out
 
 ## Install
 
+One line, no clone needed:
+
+```bash
+curl -fsSL https://harnery.com/install.sh | bash
+```
+
+It installs the `harn` CLI globally with a package manager you already have (npm preferred for a predictable global bin, Bun otherwise), checks that bin dir is on your `PATH`, verifies `harn --version`, and points you at `harn init`. It's non-interactive and idempotent, so it's safe to pipe and safe to re-run.
+
+Prefer to drive your package manager yourself? Same result:
+
 <Tabs>
-  <TabItem label="Global">
+  <TabItem label="npm">
     ```bash
     npm install -g harnery
-    harn --help
-    ```
-  </TabItem>
-  <TabItem label="Project">
-    ```bash
-    npm install harnery
-    npx harn --help
     ```
   </TabItem>
   <TabItem label="bun">
     ```bash
     bun add -g harnery
-    harn --help
+    ```
+  </TabItem>
+  <TabItem label="project dep">
+    ```bash
+    npm install harnery   # then run it with: npx harn …
     ```
   </TabItem>
 </Tabs>
 
-## npm vs git clone: what each gives you
-
-`npm install harnery` ships the **CLI + coord engine** (`bin`, `dist`, `src`, `schemas`): everything you need to compose Harnery into a CLI, wire hooks with [`harn init`](/cli/init/), and run the coord layer. It does **not** include the `web/` dashboard or this `docs/` site; those are heavy app/build trees that live in the git repo only.
-
-To run the dashboard ([`harn web up`](/cli/web/)), `git clone` the repo and launch it from there, pointing at your project with `--coord-root <dir>` or running it from inside the project. (`harn web up` prints these steps if invoked without the clone present.)
-
-## From a git clone (one step)
-
-Cloned the repo instead of installing from npm? One script does everything: it installs deps, builds the Node `dist/` (skipped when Bun is present), runs [`harn init`](/cli/init/) to wire your project, and links the bins onto your `PATH`:
+Pass flags to the one-liner through `bash -s --`:
 
 ```bash
-bash harnery/install.sh
+curl -fsSL https://harnery.com/install.sh | bash -s -- --method bun --version 0.3.2
 ```
 
-Run it from your project (it auto-detects the project root via git, falling back to Harnery's parent directory). It's idempotent, so it's safe to re-run. Flags: `--project-root <dir>`, `--link-dir <dir>` (default `~/.local/bin`), `--no-link`, `--harness <id>`.
+`--version` (or `HARNERY_VERSION`) pins a version, `--method npm|bun` forces a package manager, and `--install-runtime` installs Bun when neither Bun nor Node is present (without it, the installer prints how to get a runtime and exits). It's served straight from the docs site, so you can read it before running: [harnery.com/install.sh](https://harnery.com/install.sh).
 
-To reverse it, run the mirror script — `bash harnery/uninstall.sh` (see [Uninstall](#uninstall) below).
+## What npm gives you vs a git clone
+
+`npm install harnery` (what the one-liner runs) ships the **CLI + coord engine** (`bin`, `dist`, `src`, `schemas`): everything you need to wire hooks with [`harn init`](/cli/init/) and run the coord layer. It does **not** include the `web/` dashboard or this `docs/` site; those are heavy app/build trees that live in the git repo only.
+
+To run the dashboard ([`harn web up`](/cli/web/)) or hack on Harnery itself, clone the repo (next section).
+
+## From a git clone (contributing or the dashboard)
+
+Cloned the repo? One script turns it into a harnery-ready checkout: it installs deps, builds the Node `dist/` (skipped when Bun is present), runs [`harn init`](/cli/init/) to wire your project, and links the bins onto your `PATH`:
+
+```bash
+./scripts/setup.sh
+```
+
+Run it from the repo root. It auto-detects the project to wire (git toplevel of the CWD, else Harnery's parent directory), and it's idempotent. Flags: `--project-root <dir>`, `--link-dir <dir>` (default `~/.local/bin`), `--no-link`, `--harness <id>`. Reverse it with the mirror, `./scripts/teardown.sh` (see [Uninstall](#uninstall)).
 
 ## First-run check
 
@@ -77,23 +90,23 @@ Run once per project to create the `.harnery/` coord root and wire the harness h
 
 ## Uninstall
 
-Reverse what `harn init` (or `install.sh`) wired in — one command. Your `.harnery/` history is kept by default.
+Two layers, mirroring install. **Unwire a project** with [`harn uninstall`](/cli/uninstall/) (on a terminal it asks before deleting `.harnery/`; keeps it by default). **Remove the CLI** with the hosted one-liner:
 
 <Tabs>
-  <TabItem label="npm">
+  <TabItem label="CLI (npm/bun)">
     ```bash
-    harn uninstall      # unwire the harness hooks (keeps .harnery/)
-    npm rm -g harnery   # remove the engine + CLI
+    harn uninstall                                       # unwire a project (keeps .harnery/)
+    curl -fsSL https://harnery.com/uninstall.sh | bash   # remove the CLI itself
     ```
   </TabItem>
   <TabItem label="git clone">
     ```bash
-    bash harnery/uninstall.sh   # mirror of install.sh; also prompts to remove state + clone
+    ./scripts/teardown.sh   # mirror of setup.sh; also offers to remove state + the clone
     ```
   </TabItem>
 </Tabs>
 
-Run on a terminal, `uninstall.sh` asks whether to also delete this project's `.harnery/` history and the harnery clone itself — both default to no. Pre-answer either for unattended runs: `--purge-state` (delete `.harnery/`) or `--remove-clone` (delete the clone). It also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run` (which never prompts). The npm `harn uninstall` path takes `--purge-state` too; see [`harn uninstall`](/cli/uninstall/) for its surgical, hook-preserving behavior.
+From a clone, `./scripts/teardown.sh` runs `harn uninstall`, removes the `PATH` symlinks, and (on a terminal) asks whether to also delete this project's `.harnery/` history and the clone itself — both default to no. Pre-answer for unattended runs with `--purge-state` and `--remove-clone`; it also takes `--link-dir`, `--keep-links`, `--project-root`, `--harness`, and `--dry-run`. See [`harn uninstall`](/cli/uninstall/) for the surgical, hook-preserving details.
 
 ## Next steps
 

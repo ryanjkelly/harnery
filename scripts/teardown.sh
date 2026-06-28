@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# harnery uninstaller: reverse what install.sh wired into a project, in one
-# command. The mirror of install.sh.
+# harnery dev/clone teardown: reverse what scripts/setup.sh wired into a
+# project, in one command. The mirror of scripts/setup.sh.
 #
-#   bash harnery/uninstall.sh
+#   ./scripts/teardown.sh         # run from the repo root
 #
-# It always (1) runs `harn uninstall` to unwire the harness hooks and (2)
-# removes the bin symlinks install.sh put on your PATH. Then, when run in a
-# terminal, it asks about the two destructive extras:
+# Removing just the CLI (installed via the hosted one-liner / npm)? Use:
+#   curl -fsSL https://harnery.com/uninstall.sh | bash
+#
+# This always (1) runs `harn uninstall` to unwire the harness hooks and (2)
+# removes the bin symlinks scripts/setup.sh put on your PATH. Then, when run in
+# a terminal, it asks about the two destructive extras:
 #   - deleting this project's .harnery/ state (your coordination history), and
 #   - deleting the harnery clone itself.
 # Both default to no, and either can be pre-answered with a flag so the script
@@ -15,7 +18,7 @@
 # Re-runnable: every step is idempotent. Flags:
 #   --project-root <dir>   project to unwire (default: git toplevel of CWD, else
 #                          harnery's parent directory)
-#   --link-dir <dir>       where install.sh symlinked the bins (default: ~/.local/bin)
+#   --link-dir <dir>       where scripts/setup.sh symlinked the bins (default: ~/.local/bin)
 #   --keep-links           leave the PATH symlinks in place
 #   --purge-state          delete the .harnery/ coord root (skips its prompt)
 #   --remove-clone         delete the harnery clone too (skips its prompt)
@@ -31,7 +34,8 @@ while [ -L "$SOURCE" ]; do
   SOURCE="$(readlink "$SOURCE")"
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
-HARNERY_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+# This script lives in scripts/, so the harnery clone root is one level up.
+HARNERY_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 PROJECT_ROOT=""
@@ -50,8 +54,8 @@ while [ $# -gt 0 ]; do
     --remove-clone) REMOVE_CLONE=1; shift ;;
     --harness)      HARNESS="$2"; shift 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
-    -h|--help)      sed -n '2,23p' "$SOURCE"; exit 0 ;;
-    *) echo "harnery uninstall: unknown argument '$1'" >&2; exit 1 ;;
+    -h|--help)      sed -n '2,26p' "$SOURCE"; exit 0 ;;
+    *) echo "harnery teardown: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
 
