@@ -246,6 +246,11 @@ function checkNamingConvention(repoName: string, _repoPath: string, files: strin
     const name = basename(rel);
     // Allowlisted names
     if (ROOT_FILE_ALLOWLIST.has(name)) continue;
+    // Leading-underscore files are deliberate templates / meta files
+    // (e.g. _template.md), not content. The underscore is a convention
+    // marking "copy me, don't read me as a real doc", so exempt them
+    // from naming discipline rather than forcing kebab-case.
+    if (name.startsWith("_")) continue;
     // Dated files (audits/issues)
     if (DATED_FILE_PATTERN.test(name)) continue;
     // Changelogs
