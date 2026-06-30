@@ -143,6 +143,40 @@ function truncate(s: string, n: number): string {
 }
 
 /**
+ * DYNAMIC zsh completion: a thin, tree-independent shim that calls
+ * `<bin> __complete-line` on every <Tab> (see bash.ts generateBashDynamic for
+ * the rationale). Candidate lines are `value\tdescription`; the shim converts
+ * the tab to `:` so `_describe` renders descriptions. The trailing `\x1f:<n>`
+ * line carries the directive (bit 0 = file fallback → `_files`).
+ */
+export function generateZshDynamic(binName: string): string {
+  const fn = fnPrefix(binName);
+  return `#compdef ${binName}
+# ${binName} zsh completion (dynamic; install once, never stale). Do not edit.
+${fn}() {
+  emulate -L zsh
+  local line directive=0
+  local -a raw display
+  raw=( "\${(@f)$(${binName} __complete-line $((CURRENT-1)) -- "\${words[@]}" 2>/dev/null)}" )
+  for line in $raw; do
+    [ -z "$line" ] && continue
+    if [[ "$line" == $'\\x1f:'* ]]; then
+      directive="\${line#$'\\x1f:'}"
+    else
+      display+=( "\${line//$'\\t'/:}" )
+    fi
+  done
+  if (( directive & 1 )); then
+    _files
+    return
+  fi
+  _describe -t values 'completions' display
+}
+compdef ${fn} ${binName}
+`;
+}
+
+/**
  * The driver walks `$words` to determine the current command path, then
  * dispatches to subcommand / option / value completion. `fn` is the
  * function-name prefix; `binName` is the CLI name for the `__complete` callback.

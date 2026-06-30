@@ -1,0 +1,76 @@
+---
+title: "ADR 0006: dynamic (install-once) shell completion"
+description: Static completion scripts bake the command tree and go stale on every command/flag change. A dynamic shim delegates to the live binary at tab-time, so it never needs regenerating. Why we added it alongside (not instead of) static generation.
+sidebar:
+  order: 6
+---
+
+**Date:** 2026-06-30
+**Status:** Accepted
+
+## Context
+
+`completion bash|zsh|fish` generate a shell script by walking the Commander
+tree and baking it into shell case-tables (subcommand names, option names,
+which options take values, enum choices). Dynamic *values* — workspace IDs, env
+aliases, etc. — were already delegated to the live binary via a hidden
+`__complete <provider>` callback, but the **structure** of the tree was static.
+
+That makes the installed script a point-in-time snapshot. Add a command or a
+flag and the script is wrong until you re-run `completion install`. The script
+also lives outside the repo (`~/.local/share/bash-completion/...`), so a
+`git pull` that brings new commands never updates it — every machine needs a
+manual refresh, and a locally-added command silently isn't completed until you
+remember to reinstall. Three separate shell drivers each re-implemented the
+COMP_WORDS path-walk, so the staleness (and any walk bug) was tripled.
+
+## Alternatives considered
+
+- **Auto-refresh on `git pull`** via a `post-merge`/`post-checkout` git hook
+  that re-runs `completion install` when the CLI source changed. Rejected as the
+  primary fix: it only covers the pull path (not locally-added commands), it's
+  machine-setup-dependent (needs the hook wired), and it automates a step that
+  shouldn't need to exist. Still viable as a zero-tab-latency convenience for
+  static installs, but it doesn't dissolve the problem.
+- **Make dynamic the only mode.** Rejected — it's a breaking change for existing
+  installs and forces a per-`<Tab>` subprocess on consumers who prefer
+  zero-latency static completion. Additive is safer for a published package.
+
+## Decision
+
+Add a **dynamic** completion mode alongside static generation:
+
+- A shared `resolveCompletions(program, words, cword, lookup, runProvider)` in
+  `src/lib/completion/resolve.ts` is the single, authoritative resolver. It
+  walks the live `CommandSpec` tree (same `walkProgram` the generators use) and
+  returns candidates (subcommands / option names / enum choices /
+  dynamic-provider values) plus a Cobra-style directive bitmask (bit 0 = the
+  shell should fall back to file completion).
+- A hidden `__complete-line <cword> [words...]` command feeds the live command
+  line to that resolver and emits the wire protocol: one `value\tdescription`
+  line per candidate, then a trailing `\x1f:<directive>` line (the `\x1f` unit
+  separator makes the directive unambiguous against real values).
+- `completion {bash,zsh,fish} --dynamic` (and `completion install --dynamic`)
+  emit a thin, tree-independent shim that calls `__complete-line` on every
+  `<Tab>`. Because the binary always knows its own current tree, the shim never
+  goes stale — install once, ever.
+
+Static generation and the legacy `__complete <provider>` callback are untouched,
+so existing installed scripts keep working and a binary serves both old static
+scripts and new dynamic shims.
+
+## Result / gotchas
+
+- **Cost:** one subprocess spawn per `<Tab>`. This is the same cost already paid
+  for dynamic *values*, now extended to the whole tree — no new latency class.
+  It's the model `gh`, `kubectl`/Cobra, `npm`, and Click-based CLIs use.
+- **Prefix filtering** stays shell-side: the resolver returns the full candidate
+  set for the slot and each shell filters against the current token (`compgen`,
+  `_describe`, fish's native `-a`). Descriptions ride the `\t` so zsh/fish can
+  render them; bash drops them.
+- **Fish file fallback** is a no-op in dynamic mode — fish's declarative
+  `complete -a` can't switch to file completion from inside the helper. A
+  path-valued positional that wants file completion should use static fish
+  generation. bash/zsh honor the `File` directive (`compgen -f` / `_files`).
+- The resolver mirrors the static bash driver's path-walk; both are covered by
+  `tests/unit/completion-resolve.test.ts`.

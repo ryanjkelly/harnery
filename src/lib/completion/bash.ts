@@ -162,6 +162,42 @@ function bashEscape(s: string): string {
  * to subcommand / option / value completion. `fn` is the function-name prefix
  * and `binName` is the CLI name used for the `__complete` callback.
  */
+/**
+ * DYNAMIC bash completion: a thin, tree-independent shim. Instead of baking the
+ * command tree into case-tables (which go stale on any command/flag change),
+ * it hands the live command line to `<bin> __complete-line` on every <Tab> and
+ * lets the binary — which always knows its own current tree — answer. Install
+ * once; never regenerate. The trailing `\x1f:<n>` line carries the directive
+ * bitmask (bit 0 = fall back to file completion).
+ */
+export function generateBashDynamic(binName: string): string {
+  const fn = fnPrefix(binName);
+  return `# ${binName} bash completion (dynamic; install once, never stale). Do not edit.
+# Source via:  eval "$(${binName} completion bash --dynamic)"
+${fn}() {
+  local cur="\${COMP_WORDS[COMP_CWORD]}"
+  local raw line directive=0
+  local -a cands=()
+  raw="$(${binName} __complete-line "$COMP_CWORD" -- "\${COMP_WORDS[@]}" 2>/dev/null)" || return
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    if [ "\${line:0:2}" = $'\\x1f:' ]; then
+      directive="\${line:2}"
+    else
+      cands+=( "\${line%%$'\\t'*}" )
+    fi
+  done <<< "$raw"
+  if (( directive & 1 )); then
+    COMPREPLY=( $(compgen -f -- "$cur") )
+    return
+  fi
+  local IFS=$'\\n'
+  COMPREPLY=( $(compgen -W "\${cands[*]}" -- "$cur") )
+}
+complete -F ${fn} ${binName}
+`;
+}
+
 function bashDriver(fn: string, binName: string): string {
   return `${fn}() {
   local cur prev words cword

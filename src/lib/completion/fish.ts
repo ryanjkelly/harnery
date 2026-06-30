@@ -67,6 +67,28 @@ function valueAction(
   return { flag: "-r", arg: "" };
 }
 
+/**
+ * DYNAMIC fish completion: a thin, tree-independent shim that calls
+ * `<bin> __complete-line` on every <Tab> (see bash.ts generateBashDynamic for
+ * the rationale). Fish renders `value\tdescription` lines natively, so the
+ * helper just strips the trailing `\x1f:<n>` directive line. Note: fish's
+ * declarative `complete -a` cannot switch to file completion from inside the
+ * helper, so the File directive is a no-op here — use static fish completion
+ * (`completion fish`) if you need file fallback on a path-valued positional.
+ */
+export function generateFishDynamic(binName: string): string {
+  const fn = `__${binName.replace(/[^a-zA-Z0-9_]/g, "_")}_complete`;
+  return `# ${binName} fish completion (dynamic; install once, never stale). Do not edit.
+# Source via:  ${binName} completion fish --dynamic | source
+function ${fn}
+  set -l toks (commandline -opc)
+  set -l cur (commandline -ct)
+  ${binName} __complete-line (count $toks) -- $toks $cur 2>/dev/null | string match -rv '^\\x1f:'
+end
+complete -c ${binName} -f -a '(${fn})'
+`;
+}
+
 export function generateFish(root: CommandSpec, binName: string): string {
   const out: string[] = [];
   out.push(

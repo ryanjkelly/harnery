@@ -1,0 +1,59 @@
+---
+title: harn completion
+description: Generate and install shell tab-completion for bash, zsh, and fish — static (baked) or dynamic (install-once, never stale).
+sidebar:
+  order: 9
+---
+
+```
+harn completion bash|zsh|fish [--dynamic]
+harn completion install [--shell bash|zsh|fish] [--path <file>] [--dynamic] [--print-path]
+```
+
+Generates shell tab-completion from the live command tree. The bin name is the
+host CLI's (`harn`, or whatever the host registers), so the examples below use
+`harn` — substitute your bin.
+
+## Two modes
+
+**Static** (default) bakes the entire command tree — subcommands, options, enum
+choices — into the generated script. Fast (no process per `<Tab>`), but it's a
+point-in-time snapshot: add a command or flag and you must regenerate and
+reinstall. Dynamic *values* (e.g. IDs that vary per run) are still resolved live.
+
+**Dynamic** (`--dynamic`) installs a thin shim that asks the binary for
+candidates on every `<Tab>`. Because the binary always knows its current tree,
+the shim **never goes stale** — install once and new commands/flags just work,
+including after a `git pull` or a locally-added command. Cost: one subprocess
+per `<Tab>` (the model `gh`/`kubectl`/`npm` use). Recommended unless you need
+zero tab latency.
+
+```bash
+# Recommended: install once, never regenerate
+harn completion install --dynamic
+
+# Static (regenerate after adding commands/flags)
+harn completion install
+
+# Emit to stdout instead of installing
+harn completion bash --dynamic
+eval "$(harn completion zsh --dynamic)"
+```
+
+`install` auto-detects the shell from `$SHELL` (override with `--shell`) and
+writes to the conventional per-shell location (override with `--path`;
+`--print-path` prints it without writing). It prints an activation hint for the
+chosen shell.
+
+## Notes
+
+- **Descriptions** show in zsh and fish; bash shows values only (a shell
+  limitation).
+- **Fish + `--dynamic`:** file completion on a path-valued positional doesn't
+  work (fish's declarative `complete` can't switch to files from the helper) —
+  use static fish completion there. bash and zsh honor file fallback.
+- Dynamic completion is delegated through a hidden `__complete-line` entry
+  point; the legacy `__complete <provider>` callback (used by static scripts for
+  dynamic values) is unchanged, so old installed scripts keep working.
+
+See [ADR 0006](/decisions/0006-dynamic-shell-completion/) for the design.

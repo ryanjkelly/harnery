@@ -4,9 +4,15 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import {
   type CompletionContextLookup,
+  type CompletionProviderRunner,
+  encodeResult,
   generateBash,
+  generateBashDynamic,
   generateFish,
+  generateFishDynamic,
   generateZsh,
+  generateZshDynamic,
+  resolveCompletions,
   walkProgram,
 } from "../lib/completion/index.ts";
 
@@ -39,27 +45,39 @@ export function registerCompletionCommand(
       "Shell tab-completion. Emit a script per shell or install to the standard location.",
     );
 
+  const dynamicHint =
+    "Emit a thin shim that calls the binary at tab-time (never goes stale; install once)";
+
   root
     .command("bash")
     .description("Emit bash completion script to stdout")
-    .action(() => {
-      const out = generateBash(walkProgram(program, lookup), program.name());
+    .option("--dynamic", dynamicHint)
+    .action((opts: { dynamic?: boolean }) => {
+      const out = opts.dynamic
+        ? generateBashDynamic(program.name())
+        : generateBash(walkProgram(program, lookup), program.name());
       process.stdout.write(out); // raw bytes: shell completion scripts must be unframed (consumer evals stdout).
     });
 
   root
     .command("zsh")
     .description("Emit zsh completion script to stdout")
-    .action(() => {
-      const out = generateZsh(walkProgram(program, lookup), program.name());
+    .option("--dynamic", dynamicHint)
+    .action((opts: { dynamic?: boolean }) => {
+      const out = opts.dynamic
+        ? generateZshDynamic(program.name())
+        : generateZsh(walkProgram(program, lookup), program.name());
       process.stdout.write(out); // raw bytes: shell completion scripts must be unframed (consumer evals stdout).
     });
 
   root
     .command("fish")
     .description("Emit fish completion script to stdout")
-    .action(() => {
-      const out = generateFish(walkProgram(program, lookup), program.name());
+    .option("--dynamic", dynamicHint)
+    .action((opts: { dynamic?: boolean }) => {
+      const out = opts.dynamic
+        ? generateFishDynamic(program.name())
+        : generateFish(walkProgram(program, lookup), program.name());
       process.stdout.write(out); // raw bytes: shell completion scripts must be unframed (consumer evals stdout).
     });
 
@@ -69,6 +87,7 @@ export function registerCompletionCommand(
     .option("--shell <name>", "bash | zsh | fish (default: auto-detect from $SHELL)")
     .option("--path <file>", "Override destination path")
     .option("--print-path", "Print the destination path and exit (no write)")
+    .option("--dynamic", `${dynamicHint} (recommended)`)
     .action(async (opts: InstallOpts) => {
       await installCompletion(program, opts, lookup);
     });
@@ -92,6 +111,32 @@ export function registerCompletionCommand(
     });
   // Keep TS happy that the variable is used.
   void hidden;
+
+  // Hidden internal entry for DYNAMIC completion: the thin shim passes the live
+  // command line (cursor index + all words after `--`) and we compute the full
+  // candidate set from the live command tree. `--` stops option parsing so
+  // words like `-h` reach the variadic instead of being read as our flags.
+  const hiddenLine = program
+    .command("__complete-line <cword> [words...]", { hidden: true })
+    .description("Internal: full-line completion callback for the dynamic shell shim")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (cword: string, words: string[] | undefined) => {
+      try {
+        const result = await resolveCompletions(
+          program,
+          words ?? [],
+          Number.parseInt(cword, 10) || 0,
+          lookup,
+          runProvider as CompletionProviderRunner,
+        );
+        process.stdout.write(encodeResult(result)); // lint-ok-emission: shell callback; the encoded candidate/directive stream is the contract with the shim.
+      } catch {
+        // Never break the user's tab: emit just the file-fallback directive.
+        process.stdout.write("\x1f:1\n"); // lint-ok-emission: shell callback fallback directive.
+      }
+    });
+  void hiddenLine;
 }
 
 interface InstallOpts {
