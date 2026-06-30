@@ -143,6 +143,7 @@ interface InstallOpts {
   shell?: string;
   path?: string;
   printPath?: boolean;
+  dynamic?: boolean;
 }
 
 async function installCompletion(
@@ -162,16 +163,23 @@ async function installCompletion(
     return;
   }
 
+  const name = program.name();
   let content: string;
   switch (shell) {
     case "bash":
-      content = generateBash(walkProgram(program, lookup), program.name());
+      content = opts.dynamic
+        ? generateBashDynamic(name)
+        : generateBash(walkProgram(program, lookup), name);
       break;
     case "zsh":
-      content = generateZsh(walkProgram(program, lookup), program.name());
+      content = opts.dynamic
+        ? generateZshDynamic(name)
+        : generateZsh(walkProgram(program, lookup), name);
       break;
     case "fish":
-      content = generateFish(walkProgram(program, lookup), program.name());
+      content = opts.dynamic
+        ? generateFishDynamic(name)
+        : generateFish(walkProgram(program, lookup), name);
       break;
     default:
       process.stderr.write(`Unknown shell: ${shell}\n`); // lint-ok-emission: install-time error, see above.
