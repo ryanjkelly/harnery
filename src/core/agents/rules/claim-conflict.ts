@@ -118,7 +118,7 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
           allow: false,
           exit_code: 2,
           rule: "claim.ordering_violation",
-          reason: `Cannot acquire ${req.path} while holding ${highest} (claim ordering rule: paths must be acquired in sorted order). Release the higher claim first.`,
+          reason: `Cannot acquire ${req.path}: you already hold ${highest}, which sorts after it (claim ordering rule: acquire paths in sorted order to prevent deadlock between concurrent agents). Fix by editing in sorted order, or by committing ${highest} first, since a committed-clean file no longer blocks and is auto-pruned.`,
         };
       }
       // Every blocker is a finished (committed-clean) edit: prune them so they

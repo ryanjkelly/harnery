@@ -42,6 +42,7 @@ import {
 } from "./effects/index.ts";
 import { emit } from "./events/emit.ts";
 import type { Harness } from "./events/schema.ts";
+import { canonicalize } from "./guard-path.ts";
 import { detectHarness } from "./harness/detect.ts";
 import {
   extractBashCommand,
@@ -774,7 +775,9 @@ async function runPreToolUseGuard(
   harness: Harness,
 ): Promise<void> {
   const toolName = (data.tool_name as string | undefined) ?? "";
-  const targets = collectGuardTargets(toolName, data).map((p) => canonicalize(coordRoot, p));
+  const targets = collectGuardTargets(toolName, data)
+    .map((p) => canonicalize(coordRoot, p))
+    .filter((p): p is string => p !== null);
   if (targets.length === 0) return;
 
   const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
@@ -822,13 +825,6 @@ async function runPreToolUseGuard(
 /** Canonicalize a path to monorepo-relative form. Absolute paths under
  * coordRoot get the prefix stripped; relative paths pass through (assumed
  * already canonical). */
-function canonicalize(coordRoot: string, p: string): string {
-  if (!p) return p;
-  if (p.startsWith(`${coordRoot}/`)) return p.slice(coordRoot.length + 1);
-  if (p === coordRoot) return ".";
-  return p;
-}
-
 /** Pull the candidate path(s) out of a write-tool payload. Empty array when
  * the tool isn't a write or no path could be derived. */
 function collectGuardTargets(toolName: string, data: Record<string, unknown>): string[] {
