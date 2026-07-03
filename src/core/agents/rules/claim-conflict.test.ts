@@ -181,4 +181,26 @@ describe("evaluateClaim: ordering self-prune", () => {
     const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
     expect(v.allow).toBe(true);
   });
+
+  test("re-editing an already-held lower path is allowed despite a higher active claim", () => {
+    seedFreshOtherPeer();
+    // non-git tmpdir → src/z-higher.ts reads as active. Self already holds the
+    // lower path, so re-acquiring it must NOT trip the ordering rule (no new
+    // lock edge → no circular-wait risk).
+    seedPeer("self", { name: "Maya", files: ["src/a-lower.ts", "src/z-higher.ts"] });
+    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("claim.pass");
+  });
+
+  test("a genuinely-new lower acquisition still blocks even when a higher path is held", () => {
+    seedFreshOtherPeer();
+    // self holds only the higher path; the lower path is NOT already held, so
+    // the deadlock-prevention ordering rule still fires (regression guard for
+    // the re-edit exemption above).
+    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
+    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
+    expect(v.allow).toBe(false);
+    expect(v.rule).toBe("claim.ordering_violation");
+  });
 });

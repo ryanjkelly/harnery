@@ -101,7 +101,15 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
   const hasFreshPeers = otherPeers.some(
     (p) => isFresh(p.last_heartbeat) && p.files_touched.length > 0,
   );
-  if (hasFreshPeers && myPeer && myPeer.files_touched.length > 0) {
+  // Re-editing a path already in our own files_touched acquires no new lock
+  // edge, so it can't create a circular wait — the ordering rule must not block
+  // it. Without this exemption, an agent that edits a higher-sorting file and
+  // then makes a second pass over an already-held lower-sorting file gets a
+  // spurious ordering_violation (the dominant friction source under concurrency:
+  // both agent-Gibson holding README.md and agent-Ophelia holding AGENTS.md were
+  // blocked re-editing those held files after touching a higher path, 2026-07-03).
+  const alreadyHeld = myPeer?.files_touched.includes(req.path) ?? false;
+  if (hasFreshPeers && myPeer && myPeer.files_touched.length > 0 && !alreadyHeld) {
     // Only ACTIVE (uncommitted) edits should constrain lock ordering. A claim on
     // a committed-clean file is a finished edit, not a held lock, so it must not
     // wall off a lower-sorted acquisition. Without this, a long session
