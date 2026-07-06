@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- 50b86b6: completion: add dynamic (install-once) shell completion via `--dynamic`. The new shim is tree-independent — it asks the live binary for candidates on every `<Tab>` through a hidden `__complete-line` entry point, so it never goes stale when commands or flags change (no regeneration/reinstall needed). `completion bash|zsh|fish --dynamic` emit the shim; `completion install --dynamic` installs it. Static generation and the legacy `__complete <provider>` callback are unchanged, so existing installed scripts keep working. A shared `resolveCompletions()` resolver (one place, all three shells) computes subcommand / option / enum / dynamic-provider candidates plus a Cobra-style directive for file fallback.
+
+### Patch Changes
+
+- de002fc: docs-lint: exempt leading-underscore filenames (e.g. `_template.md`) from the kebab-case naming check. The underscore prefix is a deliberate "this is a template, not a real doc" convention, so these files no longer emit a `non-kebab-filename` warning.
+- 1b130a9: Claim guard: skip out-of-repo paths (fixes spurious ordering blocks from scratchpad/temp writes)
+
+  The PreToolUse claim guard canonicalized write-tool targets but passed
+  absolute out-of-repo paths (e.g. a `/tmp` scratchpad) through verbatim, so
+  they entered the claim system. Because the ordering rule compares raw path
+  strings, an absolute `/tmp/…` sorts before every repo-relative path
+  (`/` = 0x2F < any letter), so a scratchpad write spuriously "blocked" a
+  legitimately-held repo file with an ordering_violation.
+
+  `canonicalize` now returns `null` for any absolute path not under `coordRoot`,
+  and the guard filters those out. Session-private temp files are never shared
+  coordinated resources and must not be claimed. The logic moved to
+  `guard-path.ts` with unit coverage. The ordering_violation message was also
+  corrected: it advised "release the higher claim first", but releasing does not
+  stick (the heartbeat is re-projected), so it now points to the working escapes
+  (edit in sorted order, or commit the blocker so it auto-prunes).
+
+- e41fb65: Claim guard: re-editing a file you already hold no longer trips the ordering rule
+
+  The ordering check blocked acquiring path B while holding a higher-sorting
+  uncommitted path A — even when B was already in your own `files_touched`.
+  Re-editing a claim you already hold acquires no new lock edge, so it cannot
+  create a circular wait; the ordering rule must not block it. This was the
+  dominant source of spurious `claim.ordering_violation` friction under
+  concurrency: an agent doing multiple edit passes over a set of files it had
+  already claimed got blocked on the second pass the moment it also touched a
+  higher-sorting file (e.g. hold `README.md`, then edit `docs/x.md`, then
+  re-edit the already-held `README.md` → blocked). The ordering guard now
+  exempts already-held targets; genuinely-new lower acquisitions still block
+  (the deadlock-prevention invariant is unchanged).
+
 ## 0.4.0
 
 ### Minor Changes
