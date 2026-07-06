@@ -16,6 +16,7 @@ import {
   COUNCIL_ACTION_EVENT,
   type CouncilActionDetail,
 } from "@/components/CouncilActionTrigger";
+import { fireArchiveConfetti } from "@/lib/confetti";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -164,6 +165,11 @@ export function CouncilActions({
         }
         setOpen(null);
         setForceAdvance(false);
+        // Archive earns the one-shot side-cannon confetti burst (restored
+        // from the pre-Harnery original, bp-web a82d27bdc). Fired before
+        // router.refresh() so the body-attached canvas is up and falling
+        // while the archived-state banner swaps in. Other actions: none.
+        if (action === "archive") fireArchiveConfetti();
         if (action === "delete") {
           router.push("/councils");
         } else {
