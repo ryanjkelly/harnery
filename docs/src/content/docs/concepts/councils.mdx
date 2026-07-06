@@ -66,6 +66,14 @@ The manifest is JSON at `.harnery/councils/<id>.json`. Key fields:
 }
 ```
 
+## Running effective rounds
+
+Councils converge on what the prompts ask for, so the steward's round prompts do most of the quality work. Three practices that consistently pay off:
+
+- **Charge a completeness critic in round 1.** Give at least one member (or add it as a second charge to one member's lens) the explicit question: *"What important thing is NOT in this document at all — a missing dimension, not a flaw in what's written?"* Lens-scoped reviewers reliably improve what exists and reliably miss whole absent dimensions; a council can unanimously approve a plan whose biggest problem is a chapter that was never written. Name the charge in the prompt — don't assume a security or ops lens covers it implicitly.
+- **Spell out the status marker.** Convergence detection parses a `<trivial>` / `<substantive>` tag on each contribution (bare words on the final line work as a fallback, but the angle-bracket form is the contract). A council whose members write free-form "nothing major" endings reads as untagged, and the exit criterion never fires.
+- **Keep phrasing consistent across members.** Contributions are only comparable when every member answered the same question through their own lens. Draft one round prompt, then specialize per member, rather than writing each from scratch.
+
 ## Web UI
 
 The standalone dashboard renders all of this for browsing:
