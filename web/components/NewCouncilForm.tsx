@@ -98,8 +98,12 @@ export function NewCouncilForm({
           setError(msg);
           return;
         }
+        // Guard: if the API ever omits council_id, land on the list page
+        // rather than a broken /councils/undefined URL.
         router.push(
-          `/councils/${encodeURIComponent(data.council_id)}`,
+          data.council_id
+            ? `/councils/${encodeURIComponent(data.council_id)}`
+            : "/councils",
         );
       } catch (err) {
         setError((err as Error).message);

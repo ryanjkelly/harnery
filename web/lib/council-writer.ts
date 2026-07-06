@@ -164,8 +164,14 @@ export async function createCouncil(
   const result = await runHarn(args);
   if (!result.ok) return result;
   try {
-    const parsed = JSON.parse(result.stdout) as { council_id?: string };
-    return { ...result, council_id: parsed.council_id };
+    // `--json` emits the standard envelope { rows: [{ council_id, … }], meta };
+    // accept a bare { council_id } too for forward/backward compatibility.
+    const parsed = JSON.parse(result.stdout) as {
+      council_id?: string;
+      rows?: Array<{ council_id?: string }>;
+    };
+    const councilId = parsed.rows?.[0]?.council_id ?? parsed.council_id;
+    return { ...result, council_id: councilId };
   } catch {
     return result;
   }
