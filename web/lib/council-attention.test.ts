@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   councilAttentionRequest,
+  councilStewardKickoffAttentionRequest,
   councilWrapupAttentionRequest,
 } from "./council-attention";
 
@@ -135,5 +136,42 @@ describe("councilWrapupAttentionRequest", () => {
   test("not closed (active or archived) → null", () => {
     const req = councilWrapupAttentionRequest({ ...wrapBase, closed: false });
     expect(req).toBeNull();
+  });
+});
+
+describe("councilStewardKickoffAttentionRequest", () => {
+  test("alerts when the round has no prompts and the steward is idle", () => {
+    const req = councilStewardKickoffAttentionRequest({
+      councilId: "c1",
+      currentRound: 2,
+      stewardWorking: false,
+    });
+    expect(req).not.toBeNull();
+    expect(req?.key).toBe("att:council:c1:r2:steward-kickoff");
+    expect(req?.label).toContain("Round 2");
+  });
+
+  test("quiet while the steward is heartbeating (already drafting)", () => {
+    expect(
+      councilStewardKickoffAttentionRequest({
+        councilId: "c1",
+        currentRound: 2,
+        stewardWorking: true,
+      }),
+    ).toBeNull();
+  });
+
+  test("key is round-scoped so each new round re-alerts", () => {
+    const r2 = councilStewardKickoffAttentionRequest({
+      councilId: "c1",
+      currentRound: 2,
+      stewardWorking: false,
+    });
+    const r3 = councilStewardKickoffAttentionRequest({
+      councilId: "c1",
+      currentRound: 3,
+      stewardWorking: false,
+    });
+    expect(r2?.key).not.toBe(r3?.key);
   });
 });

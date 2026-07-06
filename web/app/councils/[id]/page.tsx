@@ -356,6 +356,7 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
                       councilId={manifest.council_id}
                       currentRound={manifest.current_round}
                       steward={steward}
+                      stewardWorking={Boolean(activityByMember[steward])}
                     />
                   ) : (
                     <div>

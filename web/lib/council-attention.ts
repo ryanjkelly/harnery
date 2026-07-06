@@ -137,3 +137,32 @@ export function councilWrapupAttentionRequest({
     label: "Archive the council: final step",
   };
 }
+
+/**
+ * Fresh-round empty state (components/WaitingOnSteward.tsx): the round is
+ * open with ZERO prompts drafted, so NextActionBanner (and its attention
+ * mount) doesn't render — but the state still waits on the HUMAN: copy the
+ * steward kickoff one-liner into the steward's chat. Without this request the
+ * post-advance moment was silent (operator feedback, 2026-07-06).
+ *
+ * Same live-working quiet rule as routing stage 1: while the steward's agent
+ * is heartbeating they're likely already drafting prompts, so alerting would
+ * be the annoying post-paste alarm. Key carries council + round so each new
+ * round's kickoff moment alerts once.
+ */
+export function councilStewardKickoffAttentionRequest({
+  councilId,
+  currentRound,
+  stewardWorking,
+}: {
+  councilId: string;
+  currentRound: number;
+  /** True while the steward's agent is heartbeating right now. */
+  stewardWorking: boolean;
+}): AttentionRequest | null {
+  if (stewardWorking) return null;
+  return {
+    key: `att:council:${councilId}:r${currentRound}:steward-kickoff`,
+    label: `Round ${currentRound} needs prompts: copy the steward kickoff`,
+  };
+}
