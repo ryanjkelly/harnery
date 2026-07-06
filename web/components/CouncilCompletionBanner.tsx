@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { CheckCircle2, Copy, FileText, PartyPopper } from "lucide-react";
 
+import { ConfettiBurst } from "@/components/ConfettiBurst";
+
 import { AgentChip } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
@@ -50,6 +52,10 @@ export function CouncilCompletionBanner({
   if (archived) {
     return (
       <div className="mb-6 rounded-md border-2 border-emerald-500/50 bg-emerald-500/10 px-4 py-3.5">
+        {/* One-shot celebration on the done-done moment (operator request,
+            2026-07-06 — "I was expecting to see the celebration animation").
+            Dedup key = council id, so revisits don't re-fire. */}
+        <ConfettiBurst dedupKey={`council-archived:${councilId}`} />
         <div className="flex items-start gap-3">
           <PartyPopper className="size-5 shrink-0 text-emerald-300 mt-0.5" aria-hidden />
           <div className="space-y-1.5 flex-1">
