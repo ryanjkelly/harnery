@@ -218,7 +218,6 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
           consecutiveAllTrivialRounds={consecutive_all_trivial_rounds}
           totalRounds={manifest.current_round}
           closeHandoffPath={summary.close_handoff_path}
-          stewardWorking={Boolean(activityByMember[steward])}
         />
 
         {contribution_matrix.rounds.length > 0 && contribution_matrix.mapping.length > 0 && (

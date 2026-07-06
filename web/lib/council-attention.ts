@@ -101,10 +101,9 @@ export function councilAttentionRequest({
  * to the steward, then Archive. Both are real waits-on-the-human moments, so
  * they alert like the routing stages do:
  *
- *   step 1 (handoff pending) → alert: copy the kickoff prompt, suppressed
- *                              while the steward is heartbeating (they're
- *                              already writing it; same post-paste quiet rule
- *                              as routing stage 1)
+ *   step 1 (handoff pending) → alert: copy the kickoff prompt (no
+ *                              steward-working suppression — see the inline
+ *                              comment; ack-dedup handles post-paste quiet)
  *   step 2 (handoff landed)  → alert: Archive is the final, purely-operator
  *                              click
  *
@@ -115,18 +114,21 @@ export function councilWrapupAttentionRequest({
   councilId,
   closed,
   handoffDone,
-  stewardWorking,
 }: {
   councilId: string;
   /** status === "closed" and not archived (the only wrap-up-actionable state). */
   closed: boolean;
   handoffDone: boolean;
-  /** True while the steward's agent is heartbeating right now. */
-  stewardWorking: boolean;
 }): AttentionRequest | null {
   if (!closed) return null;
   if (!handoffDone) {
-    if (stewardWorking) return null;
+    // No steward-working suppression here (removed 2026-07-06): the steward
+    // agent is almost always heartbeating at the moment of Close (they just
+    // stewarded the final round), so the quiet rule silenced the alert at
+    // exactly the moment the OPERATOR needed it — steward liveness says
+    // nothing about whether the handoff kickoff was routed. The post-paste
+    // re-alarm the suppression guarded against is already prevented by the
+    // ack-dedup: the operator's copy click acks this key for the tab.
     return {
       key: `att:council:${councilId}:wrapup:handoff`,
       label: "Route the close-out handoff prompt to the steward",

@@ -106,20 +106,11 @@ describe("councilWrapupAttentionRequest", () => {
     councilId: "c-887c",
     closed: true,
     handoffDone: false,
-    stewardWorking: false,
   };
 
-  test("step 1: handoff pending + idle steward → handoff alert", () => {
+  test("step 1: handoff pending → handoff alert, regardless of steward liveness (suppression removed 2026-07-06: the steward is almost always heartbeating at Close, which silenced the alert exactly when the operator needed it; ack-dedup covers post-paste quiet)", () => {
     const req = councilWrapupAttentionRequest(wrapBase);
     expect(req?.key).toBe("att:council:c-887c:wrapup:handoff");
-  });
-
-  test("step 1: suppressed while the steward is working on it", () => {
-    const req = councilWrapupAttentionRequest({
-      ...wrapBase,
-      stewardWorking: true,
-    });
-    expect(req).toBeNull();
   });
 
   test("step 2: handoff landed → archive alert (fresh key past step-1 ack)", () => {

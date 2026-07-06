@@ -33,7 +33,6 @@ export function CouncilCompletionBanner({
   consecutiveAllTrivialRounds,
   totalRounds,
   closeHandoffPath,
-  stewardWorking,
 }: {
   status: "active" | "closed" | "archived";
   archived: boolean;
@@ -45,7 +44,6 @@ export function CouncilCompletionBanner({
   totalRounds: number;
   closeHandoffPath: string | null;
   /** True while the steward's agent is heartbeating (quiets the step-1 alert). */
-  stewardWorking?: boolean;
 }) {
   if (status === "active" && !archived) return null;
 
@@ -87,7 +85,6 @@ export function CouncilCompletionBanner({
       consecutiveAllTrivialRounds={consecutiveAllTrivialRounds}
       totalRounds={totalRounds}
       closeHandoffPath={closeHandoffPath}
-      stewardWorking={stewardWorking ?? false}
     />
   );
 }
@@ -99,7 +96,6 @@ function ClosedHandoffState({
   consecutiveAllTrivialRounds,
   totalRounds,
   closeHandoffPath,
-  stewardWorking,
 }: {
   closedAt?: string | null;
   councilId: string;
@@ -107,7 +103,6 @@ function ClosedHandoffState({
   consecutiveAllTrivialRounds: number;
   totalRounds: number;
   closeHandoffPath: string | null;
-  stewardWorking: boolean;
 }) {
   const handoffDone = closeHandoffPath !== null;
   const handoffBasename = closeHandoffPath
@@ -117,7 +112,6 @@ function ClosedHandoffState({
     councilId,
     closed: true,
     handoffDone,
-    stewardWorking,
   });
 
   return (
