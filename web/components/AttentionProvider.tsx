@@ -29,8 +29,9 @@ import {
  * by mounting `<Attention request={{ key, label }}>` (components/Attention.tsx);
  * this provider drives the channels (title flash, favicon dot, chime, plus
  * the viewport edge pulse and the cursor→target flow lines it renders itself)
- * and silences everything on the operator's first interaction
- * (pointer/key/wheel/touch), recording the key in sessionStorage so
+ * and silences everything on the operator's first DELIBERATE interaction
+ * (click/tap, or a keystroke while a form field is focused — scrolling and
+ * stray keys don't ack), recording the key in sessionStorage so
  * `router.refresh()` re-renders never re-alarm a moment the operator already
  * acknowledged.
  *
@@ -174,12 +175,26 @@ export function AttentionProvider({
   // Interaction tracking: unlocks audio (autoplay policy), feeds the engaged
   // heuristic, and acks whatever is currently alerting. The replay bell is
   // exempt: its click must not ack the alert it just re-fired.
+  //
+  // Only DELIBERATE interactions ack: a click/tap (pointerdown) or typing
+  // into a form field. Scrolling (wheel/touchstart) and stray keystrokes with
+  // no form element focused still unlock audio + feed the engaged heuristic,
+  // but must NOT silence the alert — reading the page isn't acknowledging it
+  // (operator feedback, 2026-07-06).
   useEffect(() => {
+    const isFormTarget = (el: Element | null): boolean =>
+      !!el &&
+      (el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement ||
+        (el instanceof HTMLElement && el.isContentEditable));
     const onInteract = (e: Event) => {
       ensureAudioUnlocked();
       const target = e.target as Element | null;
       if (target?.closest?.("[data-attention-replay]")) return;
       lastInteraction.current = Date.now();
+      if (e.type === "wheel" || e.type === "touchstart") return;
+      if (e.type === "keydown" && !isFormTarget(document.activeElement)) return;
       ackRef.current();
     };
     const opts: AddEventListenerOptions = { passive: true };
