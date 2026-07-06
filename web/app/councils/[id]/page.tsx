@@ -357,6 +357,7 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
                       currentRound={manifest.current_round}
                       steward={steward}
                       stewardWorking={Boolean(activityByMember[steward])}
+                      closeRecommended={closeRecommended}
                     />
                   ) : (
                     <div>

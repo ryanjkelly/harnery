@@ -87,3 +87,31 @@ describe("countConsecutiveAllTrivialRoundsFromTags", () => {
     expect(countConsecutiveAllTrivialRoundsFromTags([])).toBe(0);
   });
 });
+
+describe("lastStatusMarker bare-word fallback", () => {
+  test("plain trailing word", () => {
+    expect(lastStatusMarker("Findings resolved.\n\ntrivial")).toBe("trivial");
+  });
+  test("classification-prefixed", () => {
+    expect(lastStatusMarker("body\n\nclassification: substantive")).toBe("substantive");
+  });
+  test("bold Status form", () => {
+    expect(lastStatusMarker("body\n\n**Status: trivial**")).toBe("trivial");
+  });
+  test("tag at end of a short closing sentence", () => {
+    expect(lastStatusMarker("Verified.\n\nNo new issues. trivial")).toBe("trivial");
+  });
+  test("long closing prose paragraph mentioning the word does NOT fire", () => {
+    expect(
+      lastStatusMarker(
+        "body\n\nOverall this felt like a fairly trivial set of changes to review, though the discussion around isolation boundaries was anything but simple.",
+      ),
+    ).toBeNull();
+  });
+  test("angle-bracket marker still wins over bare words", () => {
+    expect(lastStatusMarker("<substantive>\n\ntrivial-sounding close")).toBe("substantive");
+  });
+  test("untagged body stays null", () => {
+    expect(lastStatusMarker("no tags anywhere")).toBeNull();
+  });
+});

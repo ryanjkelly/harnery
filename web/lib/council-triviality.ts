@@ -24,6 +24,15 @@ export type RoundBodies = {
  * if a defect surfaces"), but the status line sits at the end by convention.
  * Backticks around the tag don't matter (substring match); case-insensitive.
  * No marker at all → null (an untagged contribution never counts as trivial).
+ *
+ * Bare-word fallback: in practice agents across harnesses end with plain
+ * "trivial", "classification: substantive", or "**Status: trivial**" instead
+ * of the angle-bracket form (a whole 4-round council shipped 25/25 bodies
+ * that way, 2026-07-06, silently reading as untagged and keeping the exit
+ * criterion permanently unmet). When no angle-bracket marker exists, accept
+ * a tag word on the final non-empty line — line-scoped and capped at 64
+ * chars so a closing prose PARAGRAPH (one long line in markdown) that merely
+ * mentions the word can't fire. The last tag word on that line wins.
  */
 export function lastStatusMarker(
   body: string,
@@ -31,8 +40,13 @@ export function lastStatusMarker(
   const lower = body.toLowerCase();
   const t = lower.lastIndexOf("<trivial>");
   const s = lower.lastIndexOf("<substantive>");
-  if (t === -1 && s === -1) return null;
-  return t > s ? "trivial" : "substantive";
+  if (t !== -1 || s !== -1) return t > s ? "trivial" : "substantive";
+  const lines = lower.trimEnd().split("\n");
+  const last = (lines[lines.length - 1] ?? "").trim();
+  if (last.length === 0 || last.length > 64) return null;
+  const matches = [...last.matchAll(/\b(trivial|substantive)\b/g)];
+  if (matches.length === 0) return null;
+  return matches[matches.length - 1][1] as "trivial" | "substantive";
 }
 
 /**

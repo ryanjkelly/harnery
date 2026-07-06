@@ -23,12 +23,21 @@ export function WaitingOnSteward({
   currentRound,
   steward,
   stewardWorking = false,
+  closeRecommended = false,
 }: {
   councilId: string;
   currentRound: number;
   steward: string;
   /** True while the steward's agent is heartbeating right now. */
   stewardWorking?: boolean;
+  /**
+   * True when the exit criterion is met and closing is the recommended move.
+   * Suppresses THIS banner's attention request: the provider is single-slot
+   * (last mounted leaf wins), and this component mounts after
+   * NextActionBanner — without the guard, the "draft prompts" alert clobbers
+   * the "close the council" alert at the exact moment continuing is wrong.
+   */
+  closeRecommended?: boolean;
 }) {
   const kickoff = `Draft round ${currentRound} routing prompts for council \`${councilId}\`.`;
   const [copied, setCopied] = useState(false);
@@ -45,11 +54,15 @@ export function WaitingOnSteward({
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5 text-xs leading-relaxed space-y-2">
       <Attention
-        request={councilStewardKickoffAttentionRequest({
-          councilId,
-          currentRound,
-          stewardWorking,
-        })}
+        request={
+          closeRecommended
+            ? null
+            : councilStewardKickoffAttentionRequest({
+                councilId,
+                currentRound,
+                stewardWorking,
+              })
+        }
       />
       <div>
         <strong className="text-amber-300">Waiting on steward.</strong> No
