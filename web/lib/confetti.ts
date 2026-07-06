@@ -1,11 +1,12 @@
 /**
- * Side-cannon confetti burst — fires when a council archives.
- *
- * Restoration of the pre-extraction original (bp-web `a82d27bdc`, dropped in
- * the agents-coord → Harnery migration, rediscovered 2026-07-06): two cannons
- * angle inward from the bottom corners for ~800ms of fire, ~3s of fall. The
- * original used the `canvas-confetti` package; this replicates its side-cannon
- * config dependency-free so harnery's web app stays lean.
+ * Side-cannon confetti burst — fires when a council CLOSES (deliberation
+ * complete, the actual accomplishment). The pre-extraction original (bp-web
+ * `a82d27bdc`, dropped in the agents-coord → Harnery migration, rediscovered
+ * 2026-07-06) fired on archive; operator feedback the same day moved it to
+ * close — archive is housekeeping, not the win. Two cannons angle inward from
+ * the bottom corners for ~800ms of fire, ~3s of fall. The original used the
+ * `canvas-confetti` package; this replicates its side-cannon config
+ * dependency-free so harnery's web app stays lean.
  *
  * The canvas is appended imperatively to `document.body` (exactly why the
  * original survived the React re-render that follows `router.refresh()` — the
@@ -30,7 +31,7 @@ const CANNON_MS = 800; // how long the cannons keep firing
 const LIFE_MS = 3000; // per-particle fall time
 const PER_FRAME_PER_CANNON = 4;
 
-export function fireArchiveConfetti(): void {
+export function fireCouncilConfetti(): void {
   if (typeof window === "undefined") return;
   try {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
