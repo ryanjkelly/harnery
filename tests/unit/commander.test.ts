@@ -8,8 +8,8 @@ describe("createHarneryProgram", () => {
   });
 
   test("respects custom binName from opts", () => {
-    const program = createHarneryProgram({ binName: "bp" });
-    expect(program.name()).toBe("bp");
+    const program = createHarneryProgram({ binName: "acme" });
+    expect(program.name()).toBe("acme");
   });
 
   test("version string is set", () => {

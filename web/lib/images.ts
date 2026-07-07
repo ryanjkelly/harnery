@@ -9,17 +9,9 @@
  * route. No sibling-JSON store: the event stream IS the context.
  */
 
-import {
-  constants,
-  closeSync,
-  existsSync,
-  fstatSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-} from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { eventsPath, harneryDir, readAgents, readInstanceIdentities } from "./coord-reader";
+import { harneryDir, readAgents, readInstanceIdentities, scanEventsTail } from "./coord-reader";
 
 /** ext → HTTP content-type. Mirrors the IMAGE_EXTS set in the capture effect. */
 const CONTENT_TYPES: Record<string, string> = {
@@ -112,10 +104,6 @@ function displayName(instanceId: string | undefined, nameMap: Record<string, str
 export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesResponse {
   const limit = opts.limit ?? 300;
   const dir = imagesDir();
-  const p = eventsPath();
-  if (!existsSync(p)) {
-    return { images: [], meta: { dir, distinct: 0, total_touches: 0 } };
-  }
 
   const nameMap = buildNameMap();
   const blobExt = blobExtIndex(dir); // hash → ext present on disk
@@ -123,30 +111,19 @@ export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesR
   const byHash = new Map<string, ImageCapture>();
   let totalTouches = 0;
 
-  let text: string;
-  try {
-    text = readFileSync(p, "utf-8");
-  } catch {
-    return { images: [], meta: { dir, distinct: 0, total_touches: 0 } };
-  }
+  // Tail-scan the ledger newest-first. `image.captured` events are sparse, so
+  // we walk back (bounded by scanEventsTail's cap) collecting the newest
+  // `limit` distinct images; the whole-file readFileSync this replaced silently
+  // returned [] once events.ndjson passed V8's ~512MB max string length.
+  scanEventsTail((row) => {
+    if (row.event_type !== "image.captured") return;
+    const d = row.data as unknown as ImageCaptureData | undefined;
+    if (!d?.hash) return;
+    const existing = byHash.get(d.hash);
+    // Newest `limit` distinct images already collected — the next new hash is
+    // an older image the feed won't show, so stop the scan.
+    if (!existing && byHash.size >= limit) return false;
 
-  for (const line of text.split("\n")) {
-    // Cheap pre-filter: skip JSON.parse for every non-image line.
-    if (!line.includes('"image.captured"')) continue;
-    let row: {
-      ts?: string;
-      instance_id?: string;
-      event_type?: string;
-      harness?: string;
-      data?: ImageCaptureData;
-    };
-    try {
-      row = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (row.event_type !== "image.captured" || !row.data?.hash) continue;
-    const d = row.data;
     const ts = row.ts ?? "";
     const touch: ImageTouch = {
       instance_id: row.instance_id ?? "",
@@ -161,7 +138,6 @@ export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesR
     };
     totalTouches++;
 
-    const existing = byHash.get(d.hash);
     if (existing) {
       existing.touches.push(touch);
       existing.touch_count++;
@@ -183,7 +159,7 @@ export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesR
         blob_exists: blobExt.has(d.hash),
       });
     }
-  }
+  });
 
   const images = [...byHash.values()];
   for (const img of images) {

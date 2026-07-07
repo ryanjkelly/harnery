@@ -1,0 +1,117 @@
+---
+title: harn decision
+description: A persistent queue of decisions an agent would otherwise escalate to a human — triage, deliberate, resolve with cited evidence, review async.
+sidebar:
+  order: 12
+---
+
+```
+harn decision <subcommand> [options]
+```
+
+The **decision docket**: a persistent queue of decisions an agent would
+otherwise route to a human. Instead of blocking on a synchronous question, an
+agent files the decision, proceeds on a reversible default, and the docket
+carries it through triage → deliberation → an evidence-cited resolution → a
+review the human skims asynchronously.
+
+The engine is deliberately generic. It stores a **tier** (`0`/`1`/`2`,
+human-involvement level) and **stakes** (`small`/`medium`/`high`) on every
+decision, but it never decides *what* belongs in which tier — that is host
+policy, applied by the filing agent (a host project supplies the rubric, e.g.
+via its own decision skill). State lives under `.harnery/decisions/`, one JSON
+manifest per decision plus a sibling dir for long-form bodies, mirroring
+councils.
+
+## Subcommands
+
+```
+harn decision file <question...>   # file a decision; --tier --stakes --context --default-taken --brief
+harn decision list                 # active queue, newest first; --status --tier --stakes --open --archived
+harn decision show <id>            # one decision: manifest + long-form bodies
+harn decision search <query...>    # substring search over questions/context/resolutions/bodies (incl. archive)
+harn decision claim <id>           # claim for deliberation (--owner to override)
+harn decision resolve <id>         # resolve; --recommendation (req) + --evidence (≥1 req) + --confidence/--reversal-cost/--wrong-if/--revisit-when
+harn decision review <id>          # record a verdict: --verdict ratified|overridden|wrong-tier-high|wrong-tier-low
+harn decision triage <id>          # adjust an already-filed decision's --tier/--stakes
+harn decision archive <id>         # graduate a reviewed decision (terminal); --graduated-to <ref>
+harn decision reopen <id>          # unarchive back to reviewed (the inverse of archive)
+harn decision supersede <id>       # mark superseded by a newer decision (terminal); --by <id>
+harn decision wontfix <id>         # close an un-deliberated decision without action (terminal); --reason <text>
+```
+
+## Tiers
+
+| Tier | Meaning (host defines the criteria) | Human sees it |
+| ---- | ----------------------------------- | ------------- |
+| 0    | agent decides; no human involvement | never live |
+| 1    | agent decides + proceeds; human reviews after | async review feed |
+| 2    | human decides — but from a deliberated brief, not a raw question | before enactment |
+
+## Lifecycle
+
+```
+filed → triaged → deliberating → resolved → enacted → reviewed → archived
+```
+
+`superseded` is reachable from any non-terminal state; `wontfix` closes an
+un-deliberated decision. `deliberating → triaged` lets a deliberator re-check
+a decision's tier on first touch. `archived`, `superseded`, and `wontfix` are
+terminal (read-only).
+
+**`archive` is the graduation exit.** Once you've reviewed a decision and its
+output has a canonical home (an ADR, `AGENTS.md`, a code change),
+`harn decision archive <id> --graduated-to <ref>` closes the loop: the manifest
+and its bodies move to `.harnery/decisions/archive/`, out of the live review
+feed but still returned by `search` (and `list --archived`) as precedent.
+Without an exit, a reviewed decision would sit in the feed forever.
+
+`archive` is terminal, but `harn decision reopen <id>` (alias `unarchive`) is the
+one sanctioned way back out — for a fat-fingered `--graduated-to` or the wrong
+decision archived. It pulls the decision back to `reviewed`, moves it out of the
+archive, and clears `graduated_to` (a re-archive sets it fresh). Only `archived`
+decisions reopen; `superseded` and `wontfix` stay terminal.
+
+## The evidence guard
+
+`resolve` **requires at least one `--evidence` citation** (a query run, a file
+read, a cost computed). A resolution with no cited evidence is structurally
+incomplete and is rejected — the same guard a background deliberator enforces,
+so "confident prose with no facts" never lands as a resolution.
+
+## Events
+
+`file`, `resolve`, and `review` emit canonical `decision.filed`,
+`decision.resolved`, and `decision.reviewed` events into `.harnery/events.ndjson`
+(carrying `decision_id`, `tier`, `stakes`/`verdict`) when run inside an agent
+session — enough to compute interrupt-rate and override-rate metrics with no
+extra telemetry plumbing. Operator-side runs (no agent session) skip the event.
+
+## Examples
+
+```bash
+# File a researchable decision, proceed on a default, keep working
+harn decision file "Which retry backoff for the ingest cron?" \
+  --tier 1 --stakes small --default-taken "exponential, cap 5m"
+
+# The live queue, highest-tier first is up to the reader; default is newest-first
+harn decision list --open
+
+# Deliberate + resolve with cited evidence
+harn decision claim <id>
+harn decision resolve <id> \
+  --recommendation "Exponential backoff, base 2s, cap 5m, 6 attempts" \
+  --evidence "vendor 429s clear within ~90s in the last 30d of logs" \
+  --evidence "cap 5m keeps a stuck job from blocking the next cron tick" \
+  --reversal-cost "config-only, one-line revert" \
+  --wrong-if "the vendor introduces a longer rate-limit window"
+
+# Async review — calibration, not approval; the work already proceeded
+harn decision review <id> --verdict ratified
+
+# Graduate the reviewed decision to its canonical home, then close it out
+harn decision archive <id> --graduated-to "docs/decisions.md#retry-backoff"
+
+# Check precedent before filing something similar (searches the archive too)
+harn decision search "retry backoff"
+```

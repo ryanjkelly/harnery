@@ -11,8 +11,12 @@
  * with a bounded **tail read** (reading only the last `tailBytes` of the file
  * and locating the cursor there) which turns an O(file-size) read into
  * O(window). If the cursor is older than the window (a long-idle system, or a
- * cursor that's been rotated out) we fall back to a full read. The fallback is
- * always correct, just slower, so undersizing the window can never lose events.
+ * cursor that's been rotated out) we fall back to a wider read that is itself
+ * capped (`fallbackCapBytes`): the stream is an append-only ledger that grows
+ * without bound, so a whole-file `readFileSync` throws V8's max-string-length
+ * error ("Cannot create a string longer than 0x1fffffe8 characters") once it
+ * passes ~512MB, which would abort the projection. Events older than the cap are
+ * stale for coord-state purposes, so a bounded replay is the correct fallback.
  *
  * Idempotency: projectors are idempotent by `event_id`. The
  * cursor file makes this cheap (we never replay an already-projected event by
@@ -36,6 +40,11 @@ import { coordEnv } from "../../../lib/env.ts";
 const STREAM_REL = ".harnery/events.ndjson";
 const CURSOR_REL = ".harnery/.events-cursor";
 const DEFAULT_TAIL_BYTES = 2 * 1024 * 1024; // 2 MiB, thousands of events of headroom
+/** Cap for the fall-through read when the cursor misses the tail window. Well
+ * under V8's ~512MB max string length so it never throws on the unbounded
+ * ledger; comfortably larger than any realistic cursor drift (the global cursor
+ * advances on every agent's turn.stop, so it sits near EOF in practice). */
+const DEFAULT_FALLBACK_CAP_BYTES = 64 * 1024 * 1024; // 64 MiB
 
 export interface CanonicalEvent {
   schema_version: number;
@@ -69,6 +78,13 @@ export interface ConsumeOpts {
    * callers should leave it unset.
    */
   tailBytes?: number;
+  /**
+   * Cap in bytes for the fall-through read (cursor missed the tail window).
+   * Defaults to `HARNERY_AGENT_COORD_FALLBACK_CAP_BYTES` env or 64 MiB. Bounds
+   * the read so the unbounded ledger can never overflow V8's max string length.
+   * Mainly a test seam; production callers should leave it unset.
+   */
+  fallbackCapBytes?: number;
 }
 
 /**
@@ -103,8 +119,19 @@ export function consumeSince(coordRoot: string, opts: ConsumeOpts = {}): Consume
     // Cursor older than the tail window → fall through to a full read.
   }
 
-  // Full read: first run, replayAll, small file, or cursor not found in tail.
-  const all = parseLines(readFileSync(streamPath, "utf8"));
+  // Bounded fall-through: first run, replayAll, small file, or cursor not found
+  // in the tail. This must NEVER read the whole file: the stream grows without
+  // bound and a >512MB readFileSync throws V8's max-string-length error, which
+  // would abort the projection. Read at most `cap` bytes from the tail; when we
+  // start mid-file, drop the (likely partial) first line.
+  const cap = resolveFallbackCap(opts.fallbackCapBytes);
+  const readBytes = Math.min(fileSize, cap);
+  let text = readTailUtf8(streamPath, fileSize, readBytes);
+  if (readBytes < fileSize) {
+    const firstNl = text.indexOf("\n");
+    text = firstNl >= 0 ? text.slice(firstNl + 1) : "";
+  }
+  const all = parseLines(text);
   const parsed = eventsAfterCursor(all, cursor);
   if (parsed.foundCursor) {
     return {
@@ -114,10 +141,17 @@ export function consumeSince(coordRoot: string, opts: ConsumeOpts = {}): Consume
     };
   }
 
-  // The cursor names an event that's been rotated out of the file, so replay
-  // everything (safer than silent state drift; the projector is idempotent by
-  // event_id).
+  // The cursor names an event older than the capped window (or rotated out), so
+  // replay what the window holds (safer than silent state drift; the projector
+  // is idempotent by event_id). lastEventId null keeps the cursor put.
   return { events: all, lastEventId: null, streamBytes: fileSize };
+}
+
+function resolveFallbackCap(override?: number): number {
+  if (override !== undefined && override > 0) return override;
+  const env = coordEnv("AGENT_COORD_FALLBACK_CAP_BYTES");
+  const n = env ? Number(env) : Number.NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_FALLBACK_CAP_BYTES;
 }
 
 function resolveTailBytes(override?: number): number {
@@ -125,6 +159,30 @@ function resolveTailBytes(override?: number): number {
   const env = coordEnv("AGENT_COORD_TAIL_BYTES");
   const n = env ? Number(env) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TAIL_BYTES;
+}
+
+/**
+ * Read at most `capBytes` from the tail of the event stream as UTF-8, dropping
+ * the (partial) leading line when the file is larger than the cap. Shared
+ * bounded reader for CLI consumers (`agents trace` / `agents health`) that must
+ * never `readFileSync` the whole unbounded ledger — a >512MB read throws V8's
+ * max-string-length error. `truncated` is true when older bytes were skipped, so
+ * callers can surface the cap rather than silently under-reporting.
+ */
+export function readStreamTailBounded(
+  streamPath: string,
+  capBytes: number,
+): { text: string; truncated: boolean } {
+  if (!existsSync(streamPath)) return { text: "", truncated: false };
+  const fileSize = statSync(streamPath).size;
+  const readBytes = Math.min(fileSize, capBytes);
+  let text = readTailUtf8(streamPath, fileSize, readBytes);
+  const truncated = readBytes < fileSize;
+  if (truncated) {
+    const nl = text.indexOf("\n");
+    text = nl >= 0 ? text.slice(nl + 1) : "";
+  }
+  return { text, truncated };
 }
 
 /** Read the trailing `windowBytes` of a file as UTF-8 without loading the rest. */

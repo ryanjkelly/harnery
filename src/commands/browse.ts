@@ -10,6 +10,7 @@ import {
   type DevOverlayResult,
   type Diagnostics,
   type OverflowResult,
+  type RuntsResult,
   type VisibilityResult,
   type WidthResult,
 } from "../lib/browser/index.ts";
@@ -77,16 +78,22 @@ interface BrowseOpts {
   checkVisibleThreshold?: string;
   checkVisibleFail?: boolean;
   checkVisibleSampleGrid?: string;
-  checkVisibleNoAnnotate?: boolean;
+  // Commander maps `--no-check-visible-annotate` to `checkVisibleAnnotate: false`.
+  checkVisibleAnnotate?: boolean;
   // Width-fill check
   checkWidth?: string[];
   checkWidthThreshold?: string;
   checkWidthFail?: boolean;
-  checkWidthNoAnnotate?: boolean;
+  checkWidthAnnotate?: boolean;
+  // `--check-runts [selector]`: true = whole body, string = scope selector.
+  checkRunts?: boolean | string;
+  checkRuntsMinChars?: string;
+  checkRuntsFail?: boolean;
+  checkRuntsAnnotate?: boolean;
   // Horizontal-overflow check
   checkOverflow?: boolean;
   checkOverflowFail?: boolean;
-  checkOverflowNoAnnotate?: boolean;
+  checkOverflowAnnotate?: boolean;
   // Visual regression
   baseline?: string;
   diff?: string;
@@ -233,6 +240,24 @@ export function registerBrowseCommand(
       "Skip drawing overflow annotations on the screenshot (JSON still emitted).",
     )
     .option(
+      "--check-runts [selector]",
+      "Scan text blocks for runts (a single word alone on a block's last visual line) " +
+        "by counting words on the last line via per-word Range rects — width thresholds " +
+        "miss narrow-column runts. Optional selector scopes the sweep (default: whole body). " +
+        "Atomic tokens (URLs, emails, phone numbers) are excluded. Reports hits in the JSON " +
+        "envelope under `runts` and annotates them on the screenshot.",
+    )
+    .option(
+      "--check-runts-min-chars <n>",
+      "Minimum block text length to scan (default 40; smaller labels can't meaningfully wrap).",
+      "40",
+    )
+    .option("--check-runts-fail", "Exit non-zero if any runt is detected.")
+    .option(
+      "--no-check-runts-annotate",
+      "Skip drawing runt boxes on the screenshot (JSON still emitted).",
+    )
+    .option(
       "--baseline <name>",
       "Save the captured screenshot as a named baseline at " +
         "~/.cache/harnery/visual-baselines/<name>.png. Use --diff <name> later to " +
@@ -275,7 +300,7 @@ async function runBrowse(
   const jar =
     opts.cookies === false
       ? null
-      : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "bp-browse" });
+      : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse" });
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
 
@@ -330,7 +355,7 @@ async function runBrowse(
       visibility = await browser.checkVisibility(opts.checkVisible, {
         sampleGrid: Number.parseInt(opts.checkVisibleSampleGrid ?? "3", 10),
       });
-      if (opts.checkVisibleNoAnnotate !== true) {
+      if (opts.checkVisibleAnnotate !== false) {
         await browser.annotateVisibility(visibility);
       }
     }
@@ -343,15 +368,26 @@ async function runBrowse(
     if (opts.checkOverflow) {
       overflow = await browser.checkOverflow();
     }
+    let runts: RuntsResult | undefined;
+    if (opts.checkRunts) {
+      runts = await browser.checkRunts({
+        scope: typeof opts.checkRunts === "string" ? opts.checkRunts : null,
+        minChars: Number.parseInt(opts.checkRuntsMinChars ?? "40", 10),
+      });
+    }
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
-    const annotateWidth = widths && opts.checkWidthNoAnnotate !== true;
-    const annotateOverflow = overflow && opts.checkOverflowNoAnnotate !== true;
+    const annotateWidth = widths && opts.checkWidthAnnotate !== false;
+    const annotateOverflow = overflow && opts.checkOverflowAnnotate !== false;
     if (annotateWidth || annotateOverflow) {
       await browser.annotateLayout({
         widths: annotateWidth ? widths! : [],
         overflow: annotateOverflow ? overflow! : null,
         widthThreshold,
       });
+    }
+    const annotateRunts = runts && runts.runts.length > 0 && opts.checkRuntsAnnotate !== false;
+    if (annotateRunts) {
+      await browser.annotateRunts(runts!);
     }
 
     if (opts.login) {
@@ -385,6 +421,7 @@ async function runBrowse(
         visibility,
         widths,
         overflow,
+        runts,
         devOverlay,
         batchResult,
       );
@@ -397,16 +434,20 @@ async function runBrowse(
         visibility,
         widths,
         overflow,
+        runts,
         devOverlay,
         batchResult,
       );
     }
 
-    if (visibility && opts.checkVisibleNoAnnotate !== true) {
+    if (visibility && opts.checkVisibleAnnotate !== false) {
       await browser.clearVisibilityAnnotations();
     }
     if (annotateWidth || annotateOverflow) {
       await browser.clearLayoutAnnotations();
+    }
+    if (annotateRunts) {
+      await browser.clearRuntsAnnotations();
     }
 
     if (opts.checkVisibleFail && visibility) {
@@ -444,6 +485,16 @@ async function runBrowse(
         }
         process.exitCode = 2;
       }
+    }
+
+    if (opts.checkRuntsFail && runts && runts.runts.length > 0) {
+      for (const hit of runts.runts) {
+        emit.log(
+          `check-runts FAIL ${hit.block}: last line is a lone "${hit.word}" ("…${hit.snippet.slice(-40)}")`,
+          "warn",
+        );
+      }
+      process.exitCode = 2;
     }
 
     if (opts.checkOverflowFail && overflow?.hasHorizontalOverflow) {
@@ -578,6 +629,7 @@ async function runPrintMode(
   visibility: VisibilityResult[] | undefined,
   widths: WidthResult[] | undefined,
   overflow: OverflowResult | undefined,
+  runts: RuntsResult | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -605,6 +657,7 @@ async function runPrintMode(
     if (visibility) result.visibility = visibility;
     if (widths) result.width = widths;
     if (overflow) result.overflow = overflow;
+    if (runts) result.runts = runts;
     if (devOverlay) result.devOverlay = devOverlay;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
@@ -634,6 +687,7 @@ async function runTrioMode(
   visibility: VisibilityResult[] | undefined,
   widths: WidthResult[] | undefined,
   overflow: OverflowResult | undefined,
+  runts: RuntsResult | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -675,6 +729,7 @@ async function runTrioMode(
   if (visibility) envelope.visibility = visibility;
   if (widths) envelope.width = widths;
   if (overflow) envelope.overflow = overflow;
+  if (runts) envelope.runts = runts;
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;

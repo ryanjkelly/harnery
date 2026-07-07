@@ -1,0 +1,89 @@
+---
+title: "ADR 0007: decision docket"
+description: A persistent queue for decisions an agent would otherwise escalate to a human, with a tiered triage model and an evidence-required resolution. Why the engine is generic (tier/stakes only) and dispatch stays out of it.
+sidebar:
+  order: 7
+---
+
+**Date:** 2026-07-06
+**Status:** Accepted
+
+## Context
+
+Councils give harnery a deliberation *engine* — a multi-round debate among
+agents — but a human spins each one up by hand, one topic at a time. There is
+no persistent place for the decisions an agent hits mid-task and would
+otherwise route to a human ("which approach", "what default", "is there a
+gotcha"). Those escalations block synchronously, get answered off the cuff, and
+evaporate unrecorded. The same questions then recur across sessions with no
+precedent to cite.
+
+The gap is a **front door**: capture a decision, triage how much human
+involvement it actually needs, dispatch deliberation to an engine we already
+have, resolve it with evidence, and keep the resolved entry as searchable
+precedent.
+
+## Alternatives considered
+
+- **Reuse councils directly for every decision.** Rejected: a council is
+  heavyweight (members, rounds, a steward) and human-convened. Most decisions
+  want a lighter path; some want no human at all. The docket *dispatches to*
+  councils for the heavyweight ones rather than replacing them.
+- **A markdown-convention queue with no engine** (a docs dir + a skill).
+  Rejected: no lifecycle validation, no events, no typed state, and nothing a
+  second host (or a web UI) could build on. The docket is agent-fileable state
+  that belongs next to scratch and councils in `.harnery/`.
+- **Bake the triage rubric into the engine.** Rejected as a portability
+  violation. What counts as "needs a human" is entirely host-specific (business
+  taste, spend authority, risk appetite). The engine stores an opaque `tier`
+  and `stakes`; the *criteria* are host policy, applied by the filing agent.
+- **A binary triage (human / not-human).** Superseded by three tiers: decisions
+  that genuinely need a human still benefit from being deliberated into a brief
+  first, so the human decides from options + evidence, not from a cold prompt.
+- **Gate resolved decisions behind human approval.** Rejected in favor of
+  *always-proceed, review-async*: the agent acts on a resolved decision
+  immediately (reversibility pushes genuinely expensive calls up to tier 2,
+  where a human sees them before enactment by definition). Review is
+  calibration sampling, not an approval queue.
+
+## Decision
+
+Add a generic decision docket to harnery:
+
+- **State** at `.harnery/decisions/<id>.json` (manifest) + `<id>/` (long-form
+  bodies) + `archive/` (terminal/graduated), mirroring councils. One file per
+  decision — no shared index — so concurrent filers never contend; writes are
+  atomic (temp → rename); `claim` is last-writer-wins.
+- **Lifecycle** `filed → triaged → deliberating → resolved → enacted →
+  reviewed → archived`, with `superseded`/`wontfix` as escape hatches and a
+  `deliberating → triaged` edge for re-triage. Terminal states are read-only.
+  A single `transition()` chokepoint enforces legality + terminality.
+- **`tier` (0/1/2)** and **`stakes` (small/medium/high)** are stored but never
+  interpreted by the engine.
+- **Evidence is required at resolve** (≥1 citation): an evidence-free
+  resolution is structurally incomplete and bounced.
+- **`decision.filed|resolved|reviewed`** canonical events feed the metrics
+  (interrupt rate, override rate) with no new telemetry.
+- **Dispatch stays out of the engine.** How a decision gets deliberated —
+  inline, a background sweeper, a workflow fan-out, or an escalated council —
+  is the host's concern. `escalateToCouncil` links a decision to a council id
+  and nothing more.
+
+`harn decision file|list|show|search|claim|resolve|review|triage|archive|reopen|supersede|wontfix`
+is the CLI surface. `archive --graduated-to <ref>` is the graduation exit: a
+reviewed decision closes into the searchable archive once its output has a
+canonical home, rather than sitting in the review feed indefinitely. `reopen`
+(alias `unarchive`) is its inverse, the one sanctioned way out of the terminal
+archive for a mis-archive. Host projects layer their triage rubric + a capture
+skill on top.
+
+## Result / gotchas
+
+- Full lifecycle + evidence guard verified end-to-end through a host CLI
+  (`file → resolve[bounced] → resolve[ok] → review`, three `decision.*` events
+  emitted). 37 unit tests cover the state machine, enum validation, archive
+  move, list filters, and search.
+- The web UI (queue + review feed) and a background sweeper are intentionally
+  **not** in this ADR — the engine ships first, surfaces follow.
+- Portability watch: any host name or rubric text leaking into `src/` breaks
+  the npm story. Tier *numbers* are engine; tier *criteria* are host policy.

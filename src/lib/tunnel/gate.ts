@@ -109,5 +109,5 @@ const server = Bun.serve<WsData, never>({
 // This worker runs detached via `bun run gate.ts`, outside the CLI command
 // framework, so no AsyncLocalStorage context is available. stdout/stderr is
 // captured into .cache/tunnel/gate.log by the spawning command.
-console.log(`bp-tunnel-gate :${server.port} -> ${UPSTREAM_HTTP} (Host: ${VHOST})`); // lint-ok-emission: detached worker, see file note above
+console.log(`harn-tunnel-gate :${server.port} -> ${UPSTREAM_HTTP} (Host: ${VHOST})`); // lint-ok-emission: detached worker, see file note above
 console.log(`allow: ${[...ALLOW].join(", ") || "(empty, denies all)"}`); // lint-ok-emission: detached worker, see file note above

@@ -167,7 +167,7 @@ export function CouncilActions({
         setForceAdvance(false);
         // Close earns the one-shot side-cannon confetti burst — deliberation
         // complete is the accomplishment; archive is just housekeeping
-        // (operator call, 2026-07-06; the pre-Harnery original at bp-web
+        // (operator call, 2026-07-06; the pre-Harnery original in the host repo
         // a82d27bdc fired on archive). Fired before router.refresh() so the
         // body-attached canvas is up and falling while the closed-state
         // banner swaps in. Other actions: none.

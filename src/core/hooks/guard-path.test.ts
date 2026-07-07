@@ -10,9 +10,7 @@ describe("canonicalize (claim-guard path)", () => {
   const root = "/home/user/projects/repo";
 
   test("strips coordRoot prefix → monorepo-relative", () => {
-    expect(canonicalize(root, `${root}/bp-openclaw/docs/gotchas.md`)).toBe(
-      "bp-openclaw/docs/gotchas.md",
-    );
+    expect(canonicalize(root, `${root}/app-web/docs/notes.md`)).toBe("app-web/docs/notes.md");
   });
 
   test("coordRoot itself → '.'", () => {
@@ -41,7 +39,7 @@ describe("canonicalize (claim-guard path)", () => {
   test("regression: out-of-repo path can never sort-block a held repo file", () => {
     // This is the whole point: the scratchpad path is dropped before it ever
     // reaches the ordering comparison against a held repo-relative claim.
-    const held = "bp-openclaw/docs/gotchas.md";
+    const held = "app-web/docs/notes.md";
     const scratch = canonicalize(root, "/tmp/x/scratchpad/fix.py");
     expect(scratch).toBeNull();
     // Sanity-check the hazard the null guards against: had it passed through raw,

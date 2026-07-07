@@ -12,8 +12,10 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } fro
 import os from "node:os";
 import path from "node:path";
 import {
+  __resetCoordRootCache,
   type IdentityIndex,
   mergeIdentitiesFromChunk,
+  readEvents,
   refreshIdentityIndex,
 } from "./coord-reader.ts";
 
@@ -212,5 +214,100 @@ describe("refreshIdentityIndex: persisted index round-trip", () => {
     const cold = refreshIdentityIndex(root, null);
     expect(Object.keys(cold.identities).sort()).toEqual(["sess-1", "sess-2"]);
     expect(cold.offset).toBeGreaterThanOrEqual(first.offset);
+  });
+});
+
+/**
+ * Locks the bounded backward-chunked tail read that replaced the whole-file
+ * `readFileSync` in `readEvents`. The whole-file read crashed once events.ndjson
+ * (an append-only ledger) passed ~512MB — V8's max string length — with "Cannot
+ * create a string longer than 0x1fffffe8 characters". The invariants: newest
+ * events first, `limit` respected, filters honoured, and — the boundary case —
+ * lines that straddle a chunk boundary are reconstituted, not corrupted.
+ */
+describe("readEvents", () => {
+  function eventLine(
+    seq: number,
+    opts: { type?: string; instanceId?: string; pad?: number } = {},
+  ): string {
+    const { type = "tool.pre_use", instanceId = "sess-1", pad = 0 } = opts;
+    return JSON.stringify({
+      schema_version: 1,
+      event_id: `01ev-${seq}`,
+      event_type: type,
+      ts: "2026-06-04T00:00:00Z",
+      instance_id: instanceId,
+      session_id: instanceId,
+      harness: "claude-code",
+      source: "test",
+      data: { seq, filler: "x".repeat(pad) },
+    });
+  }
+
+  function withRoot(body: string, fn: () => void): void {
+    const root = freshRoot();
+    writeFileSync(streamPath(root), body, "utf8");
+    const prev = process.env.HARNERY_COORD_ROOT;
+    process.env.HARNERY_COORD_ROOT = root;
+    __resetCoordRootCache();
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.HARNERY_COORD_ROOT;
+      else process.env.HARNERY_COORD_ROOT = prev;
+      __resetCoordRootCache();
+    }
+  }
+
+  test("returns newest-first and respects limit", () => {
+    const body = `${[0, 1, 2, 3, 4].map((s) => eventLine(s)).join("\n")}\n`;
+    withRoot(body, () => {
+      const resp = readEvents({ limit: 3 });
+      expect(resp.rows.map((r) => r.data?.seq)).toEqual([4, 3, 2]);
+      expect(resp.meta.returned).toBe(3);
+    });
+  });
+
+  test("filters by instanceId and type", () => {
+    const body = `${[
+      eventLine(0, { instanceId: "a", type: "turn.stop" }),
+      eventLine(1, { instanceId: "b", type: "tool.pre_use" }),
+      eventLine(2, { instanceId: "a", type: "tool.pre_use" }),
+      eventLine(3, { instanceId: "a", type: "turn.stop" }),
+    ].join("\n")}\n`;
+    withRoot(body, () => {
+      expect(readEvents({ instanceId: "a" }).rows.map((r) => r.data?.seq)).toEqual([3, 2, 0]);
+      expect(readEvents({ type: "turn.stop" }).rows.map((r) => r.data?.seq)).toEqual([3, 0]);
+      expect(
+        readEvents({ instanceId: "a", type: "tool.pre_use" }).rows.map((r) => r.data?.seq),
+      ).toEqual([2]);
+    });
+  });
+
+  test("tolerates a torn final line (no trailing newline, in-progress append)", () => {
+    // Last line is valid JSON but unterminated; a mid-write torn line would be
+    // dropped by JSON.parse — either way no crash.
+    const body = `${eventLine(0)}\n${eventLine(1)}\n${eventLine(2)}`;
+    withRoot(body, () => {
+      expect(readEvents({ limit: 10 }).rows.map((r) => r.data?.seq)).toEqual([2, 1, 0]);
+    });
+  });
+
+  test("reconstitutes lines across the chunk boundary on a multi-chunk file", () => {
+    // Force many backward chunks: ~9000 rows padded to ~600B each ≈ 5.4MB,
+    // spanning more than one EVENTS_CHUNK_BYTES (4MB) window. If carry-gluing
+    // were wrong, the rows straddling each 4MB boundary would fail to parse and
+    // the count/order would drift.
+    const rows = 9000;
+    const body = `${Array.from({ length: rows }, (_, s) => eventLine(s, { pad: 500 })).join("\n")}\n`;
+    expect(body.length).toBeGreaterThan(4_000_000);
+    withRoot(body, () => {
+      const resp = readEvents({ limit: rows });
+      expect(resp.rows.length).toBe(rows);
+      // Newest-first, contiguous, no gaps or dupes → every boundary line parsed.
+      expect(resp.rows.map((r) => r.data?.seq)).toEqual(
+        Array.from({ length: rows }, (_, i) => rows - 1 - i),
+      );
+    });
   });
 });

@@ -118,16 +118,16 @@ describe("stampBinName", () => {
 
   test("creates a commented stub when config is absent", () => {
     const p = cfgPath();
-    const action = stampBinName(p, "bp", false);
+    const action = stampBinName(p, "acme", false);
     expect(action).toContain("stamped");
-    expect(parse(p)).toEqual({ binName: "bp" });
+    expect(parse(p)).toEqual({ binName: "acme" });
     expect(readFileSync(p, "utf8")).toContain("//"); // keeps the explanatory comment
   });
 
   test("no-op when binName already matches", () => {
     const p = cfgPath();
-    writeFileSync(p, `{ "binName": "bp" }`);
-    expect(stampBinName(p, "bp", false)).toBeNull();
+    writeFileSync(p, `{ "binName": "acme" }`);
+    expect(stampBinName(p, "acme", false)).toBeNull();
   });
 
   test("swaps an existing differing value, preserving comments", () => {
@@ -142,17 +142,17 @@ describe("stampBinName", () => {
   test("splices binName as first key, preserving a files section + comments", () => {
     const p = cfgPath();
     writeFileSync(p, `{\n  // policy\n  "files": { "deny_globs": ["**/*.secret"] }\n}\n`);
-    const action = stampBinName(p, "bp", false);
+    const action = stampBinName(p, "acme", false);
     expect(action).toContain("added");
     const parsed = parse(p);
-    expect(parsed.binName).toBe("bp");
+    expect(parsed.binName).toBe("acme");
     expect(parsed.files).toEqual({ deny_globs: ["**/*.secret"] });
     expect(readFileSync(p, "utf8")).toContain("// policy");
   });
 
   test("dry-run reports without writing", () => {
     const p = cfgPath();
-    const action = stampBinName(p, "bp", true);
+    const action = stampBinName(p, "acme", true);
     expect(action).toContain("would");
     expect(existsSync(p)).toBe(false);
   });

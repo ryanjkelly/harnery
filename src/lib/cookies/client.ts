@@ -41,7 +41,7 @@ export interface CookieStore {
 export interface CookieJarOptions {
   /** Absolute path to the JSON store. Caller must provide. */
   path: string;
-  /** `exportedFrom` tag stamped on every save. Defaults to `"bp-cookies"`. */
+  /** `exportedFrom` tag stamped on every save. Defaults to `"harn-cookies"`. */
   source?: string;
 }
 
@@ -64,7 +64,7 @@ export class CookieJar {
 
   constructor(opts: CookieJarOptions) {
     this.path = opts.path;
-    this.source = opts.source ?? "bp-cookies";
+    this.source = opts.source ?? "harn-cookies";
   }
 
   exists(): boolean {

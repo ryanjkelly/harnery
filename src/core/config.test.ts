@@ -39,9 +39,9 @@ describe("resolveBinName", () => {
   });
 
   test("reads binName from config.jsonc when no env", () => {
-    const root = makeRoot(`{ "binName": "bp" }`);
+    const root = makeRoot(`{ "binName": "acme" }`);
     roots.push(root);
-    expect(resolveBinName(root)).toBe("bp");
+    expect(resolveBinName(root)).toBe("acme");
   });
 
   test("parses JSONC with comments", () => {

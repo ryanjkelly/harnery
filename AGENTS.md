@@ -6,6 +6,8 @@ Multi-agent coordination + harness adapters + portable CLI utilities for Claude 
 
 This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`events.ndjson`, `active/`, `councils/`, `scratch/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
 
+**Enforced, not just documented.** [scripts/check-portability.ts](scripts/check-portability.ts) scans committable source for host-specific tokens (a consumer's bin abbreviation, business name, submodule paths, dbt marts, skills, and `BP_`-style env prefixes) and fails on any hit. It runs as `bun run check:portability`, as the CI-gating [tests/unit/portability.test.ts](tests/unit/portability.test.ts), and (host-side) in the embedding monorepo's pre-commit hook. Env vars are the sneakiest leak: read every coord var through `coordEnv()` (which prepends `HARNERY_`), never a bare `process.env.BP_*`. Escape hatch for a genuine non-host use: `portability-allow: <reason>` on the line (rare — prefer a neutral token).
+
 **Bin name in agent-facing strings.** Any user-facing string that tells an agent to run a command (council prompts, end-of-turn nudges, command help/errors) must use `resolveBinName()` from [src/core/config.ts](src/core/config.ts), never a literal bin name. Commands can see the live program name, but the coord binaries (`agent-hook`/`agent-coord`) and the web UI run *as harnery* and can't, so the bin name is read back from `.harnery/config.jsonc` (`binName`). Resolution precedence: `HARNERY_BIN` env → config `binName` → `"harn"`. `harn init` stamps `binName` for a consumer (any bin ≠ `harn`); a host CLI commits its own `.harnery/config.jsonc` carrying its bin name.
 
 ## Layout
@@ -25,7 +27,8 @@ bun install
 bun test                 # unit + alongside-source tests
 bun run test:integration
 bun run typecheck        # tsc --noEmit (strict mode)
-bun run lint             # Biome over src/; `bun run format` to fix
+bun run lint             # Biome over src/ (check + assists, read-only)
+bun run lint:fix         # auto-fix lint AND import-sort/assists (`format` only fixes whitespace)
 bun run build            # tsc -> dist/ (JS + .d.ts) for the Node target; prepublishOnly runs this
 bun run docs:dev         # Starlight docs site
 bin/harn --help

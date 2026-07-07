@@ -27,6 +27,7 @@ import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigGetCommand } from "./commands/config-get.ts";
 import { registerContextCommand } from "./commands/context.ts";
 import { registerCookiesCommand } from "./commands/cookies.ts";
+import { registerDecisionCommand } from "./commands/decision.ts";
 import { registerDeinitCommand } from "./commands/deinit.ts";
 import { registerDocsCommand } from "./commands/docs.ts";
 import { registerDoctorCommand } from "./commands/doctor.ts";
@@ -130,6 +131,16 @@ export interface HarneryProgramContext {
    */
   extraDocsExcludedPrefixes?: readonly string[];
   /**
+   * Filenames permitted at the host project's `docs/` root (parent repo only).
+   * When set, `harn docs lint` flags any other `.md`/`.json` file sitting
+   * loose at `docs/` root (rule `docs-root-file`) — topic docs belong in
+   * `docs/<topic>/` subdirs. Names are matched exactly (basename). When
+   * omitted or empty, the rule is a no-op, so standalone `harn` and consumers
+   * that don't opt in are unaffected. Submodule `docs/` roots are never
+   * checked (their entry tiers differ from the parent's).
+   */
+  docsRootAllowlist?: readonly string[];
+  /**
    * Default Host header for `tunnel up` when `--vhost` is omitted: a literal
    * host, or a resolver evaluated at start time (e.g. read a dev stack's
    * configured hostname so the tunnel lands on the right vhost). When unset, or
@@ -225,6 +236,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCompletionCommand(program, emit, opts.context);
   registerContextCommand(program, emit, opts.context);
   registerScratchCommand(program, emit);
+  registerDecisionCommand(program, emit);
   registerTunnelCommand(program, emit, opts.context);
   registerDocsCommand(program, emit, opts.context);
   registerAgentsCommand(program, emit);

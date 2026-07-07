@@ -8,6 +8,7 @@ import {
   buildEndedAgentSummaries,
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
+import { hostInfo } from "@/lib/config";
 import {
   coordRoot,
   readAgents,
@@ -40,6 +41,7 @@ interface PageProps {
  */
 export default async function LivePage({ searchParams }: PageProps) {
   const { agent } = await searchParams;
+  const { binName } = hostInfo();
   const snap = readAgents();
   const all = [...snap.active, ...snap.stale];
   // Durable instance_id → identity from session.start (main agents) +
@@ -74,8 +76,8 @@ export default async function LivePage({ searchParams }: PageProps) {
           <div className="flex flex-col gap-0.5">
             <h1 className="text-xl font-semibold tracking-tight">Live session</h1>
             <p className="text-xs text-muted-foreground">
-              Every shell command + its intent: <code className="font-mono">bp</code>/
-              <code className="font-mono">the host CLI</code> and bare shell (
+              Every shell command + its intent: <code className="font-mono">{binName}</code> (the
+              host CLI) and bare shell (
               <code className="font-mono">git</code>, <code className="font-mono">grep</code>,{" "}
               <code className="font-mono">curl</code>…). File reads, edits, and other
               non-command tool calls stream to{" "}

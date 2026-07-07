@@ -19,6 +19,12 @@ import {
   type WidthResult,
 } from "./layout.js";
 import {
+  buildClearRuntsAnnotationsScript,
+  buildRuntsAnnotateScript,
+  buildRuntsCheck,
+  type RuntsResult,
+} from "./runts.js";
+import {
   buildAnnotateScript,
   buildClearAnnotationsScript,
   buildVisibilityCheck,
@@ -355,6 +361,28 @@ export class Browser {
     return await this.currentPage.evaluate(buildOverflowCheck(), {
       sampleLimit: opts.sampleLimit ?? 5,
     });
+  }
+
+  /**
+   * Scan text blocks for runts — a single word alone on a block's last
+   * visual line. Word-count per line via per-word Range rects (the width
+   * of the last line is deliberately NOT the signal; see runts.ts).
+   */
+  async checkRunts(opts: { scope?: string | null; minChars?: number } = {}): Promise<RuntsResult> {
+    return await this.currentPage.evaluate(buildRuntsCheck(), {
+      scope: opts.scope ?? null,
+      minChars: opts.minChars ?? 40,
+    });
+  }
+
+  /** Inject annotation overlays for runt hits. Used before screenshot. */
+  async annotateRunts(result: RuntsResult): Promise<void> {
+    await this.currentPage.evaluate(buildRuntsAnnotateScript(), { runts: result.runts });
+  }
+
+  /** Remove runt annotation overlays. */
+  async clearRuntsAnnotations(): Promise<void> {
+    await this.currentPage.evaluate(buildClearRuntsAnnotationsScript());
   }
 
   /** Inject annotation overlays for width + overflow results. Used before screenshot. */

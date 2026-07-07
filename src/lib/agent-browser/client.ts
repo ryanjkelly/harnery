@@ -124,7 +124,7 @@ export class AgentBrowser {
         return;
       }
       const stateFile =
-        this.opts.stateFilePath ?? `/tmp/bp-agent-browser-state-${process.pid}.json`;
+        this.opts.stateFilePath ?? `/tmp/harn-agent-browser-state-${process.pid}.json`;
       writeFileSync(stateFile, JSON.stringify(jarStore, null, 2));
       this.exec(["state", "load", stateFile], 10_000);
       this.cookiesSeeded = true;

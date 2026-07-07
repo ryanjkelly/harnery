@@ -99,7 +99,7 @@ function runBrowseAi(url: string, opts: BrowseAiOpts): void {
   const jar =
     opts.cookies === false
       ? null
-      : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "bp-browse-ai" });
+      : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse-ai" });
   const ab = new AgentBrowser({
     jar,
     timeoutMs: Number.parseInt(opts.timeout, 10),

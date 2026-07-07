@@ -460,7 +460,7 @@ describe("codex stop + shell-warn via agent-hook", () => {
     expect(stderr).toContain("rule (3/3)");
   });
 
-  test("codex stop matches wrapped invocations (cd && bp; PATH= bp)", () => {
+  test("codex stop matches wrapped invocations (cd && harn; PATH= harn)", () => {
     const root = makeSandbox();
     const tp = codexTranscript(root, [
       META,

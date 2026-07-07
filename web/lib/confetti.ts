@@ -1,6 +1,6 @@
 /**
  * Side-cannon confetti burst — fires when a council CLOSES (deliberation
- * complete, the actual accomplishment). The pre-extraction original (bp-web
+ * complete, the actual accomplishment). The pre-extraction original (host repo
  * `a82d27bdc`, dropped in the agents-coord → Harnery migration, rediscovered
  * 2026-07-06) fired on archive; operator feedback the same day moved it to
  * close — archive is housekeeping, not the win. Two cannons angle inward from

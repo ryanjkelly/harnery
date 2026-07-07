@@ -131,7 +131,7 @@ let originalRoot: string | undefined;
 
 beforeAll(() => {
   originalRoot = process.env.HARNERY_COORD_ROOT_OVERRIDE;
-  sandboxRoot = mkdtempSync(resolve(tmpdir(), "bp-council-test-"));
+  sandboxRoot = mkdtempSync(resolve(tmpdir(), "harn-council-test-"));
   process.env.HARNERY_COORD_ROOT_OVERRIDE = sandboxRoot;
   mkdirSync(resolve(sandboxRoot, ".harnery", "councils"), { recursive: true });
 });

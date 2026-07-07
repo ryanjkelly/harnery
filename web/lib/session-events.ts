@@ -141,7 +141,7 @@ function project(raw: Record<string, unknown>): SessionEvent | null {
     // double-render in the common case. The one residual overlap is a compound
     // Bash call that wraps a harn invocation (e.g. `cd x && harn y`): the tap emits
     // a tool.pre_use for the whole wrapper AND the middleware emits command.* for
-    // the inner bp, so both rows show. Accepted: the wrapper row still carries
+    // the inner host CLI, so both rows show. Accepted: the wrapper row still carries
     // useful intent + context, and stateless de-dup here would risk hiding real
     // bare commands (a literal "harn " can appear inside a grep/echo). Failures
     // route to tool.post_use_failure. Non-Bash tools (Read/Edit/Write/

@@ -28,6 +28,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
   emitCanonical,
   type Heartbeat,
@@ -38,6 +39,12 @@ import {
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
+
+/** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
+ * under V8's ~512MB max string length so a `readFileSync` of the whole file can
+ * never throw; covers ample recent history for a diagnostic scan. */
+const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
+
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
 import {
   buildCouncilId,
@@ -2098,8 +2105,12 @@ function readStreamStats(root: string): { bytes: number; lines: number; cursor_b
   let backlog = 0;
   let seenCursor = cursor === null; // no cursor → everything is "backlog"
   try {
-    const raw = readFileSync(streamPath, "utf8");
-    for (const line of raw.split("\n")) {
+    // Bounded tail read: the ledger grows without bound and a whole-file
+    // readFileSync throws past V8's ~512MB string limit. lines/backlog are then
+    // scoped to the scanned window; `bytes` (full size, via statSync above) still
+    // reflects the true stream size for the health rollup.
+    const { text } = readStreamTailBounded(streamPath, STREAM_SCAN_CAP_BYTES);
+    for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       lines++;
       if (seenCursor) {
@@ -2225,23 +2236,33 @@ function runTrace(
   const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 200);
   const candidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
 
-  // Scan the full stream once, bucket events by instance_id for the candidates.
+  // Scan the stream tail once, bucket events by instance_id for the candidates.
+  // Bounded read: the ledger grows without bound and a whole-file readFileSync
+  // throws past V8's ~512MB string limit. A trace of an agent whose events all
+  // predate the window is reported as truncated rather than crashing.
   const streamPath = resolve(root, ".harnery", "events.ndjson");
   const byId = new Map<string, CanonicalEvent[]>();
-  if (existsSync(streamPath)) {
-    for (const line of readFileSync(streamPath, "utf8").split("\n")) {
-      if (!line) continue;
-      try {
-        const ev = JSON.parse(line) as CanonicalEvent;
-        if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
-        if (sinceMs && Date.parse(ev.ts) < sinceMs) continue;
-        const arr = byId.get(ev.instance_id) ?? [];
-        arr.push(ev);
-        byId.set(ev.instance_id, arr);
-      } catch {
-        /* skip */
-      }
+  const { text: streamText, truncated: streamTruncated } = readStreamTailBounded(
+    streamPath,
+    STREAM_SCAN_CAP_BYTES,
+  );
+  for (const line of streamText.split("\n")) {
+    if (!line) continue;
+    try {
+      const ev = JSON.parse(line) as CanonicalEvent;
+      if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
+      if (sinceMs && Date.parse(ev.ts) < sinceMs) continue;
+      const arr = byId.get(ev.instance_id) ?? [];
+      arr.push(ev);
+      byId.set(ev.instance_id, arr);
+    } catch {
+      /* skip */
     }
+  }
+  if (streamTruncated) {
+    process.stderr.write(
+      `note: event ledger exceeds ${Math.round(STREAM_SCAN_CAP_BYTES / 1024 / 1024)}MB; traced only the most recent window (older events omitted)\n`,
+    );
   }
 
   // If the name mapped to multiple instances, trace the one with the latest event.
@@ -2629,7 +2650,7 @@ function renderHealthBox(report: HealthReport): void {
   const localTime = formatLocalTime(new Date(report.generated_at));
   const title = `Coord Health (${localTime})`;
 
-  process.stdout.write(`${formatBox(title, rows)}\n`); // lint-ok-emission: chat-paste path; mirrors runStatus's direct write so the box surfaces in both TTY + bp-session-teed contexts
+  process.stdout.write(`${formatBox(title, rows)}\n`); // lint-ok-emission: chat-paste path; mirrors runStatus's direct write so the box surfaces in both TTY + harn-session-teed contexts
 
   if (report.anomalies.length > 0) {
     process.stdout.write("\n"); // lint-ok-emission: same chat-paste path
@@ -2686,7 +2707,7 @@ function runHarnessProbe(
   // and `resolveOwner` here, so the probe reports exactly what the live hot
   // path resolves.
   const anchorTokens = new Set(["claude", "claude-code", "cursor", "codex"]);
-  const override = process.env.BP_AGENT_COORD_TEST_ANCHOR_PID;
+  const override = process.env.HARNERY_AGENT_COORD_TEST_ANCHOR_PID;
   let anchorPid = override && Number(override) > 0 ? override : "";
   const chainParts: string[] = [];
   let walkPid = process.pid;
@@ -2795,12 +2816,12 @@ function runHarnessProbe(
  * dispatcher in an isolated sandbox.
  *
  * Sandbox isolation strategy:
- *   - mkdtempSync(tmpdir(), "bp-harness-probe-") creates a non-git tmp dir.
+ *   - mkdtempSync(tmpdir(), "harn-harness-probe-") creates a non-git tmp dir.
  *   - The dispatcher's coord-root resolution falls back to
- *     `BP_COORD_ROOT_OVERRIDE` when git rev-parse fails. We set it to the sandbox.
+ *     `HARNERY_COORD_ROOT_OVERRIDE` when git rev-parse fails. We set it to the sandbox.
  *   - We rewrite the payload's `cwd` field (Cursor cds to it) to the sandbox,
  *     so real `.harnery/` never gets touched.
- *   - We set `BP_AGENT_COORD_OFF=0` explicitly so any user-side off-switch in
+ *   - We set `HARNERY_AGENT_COORD_OFF=0` explicitly so any user-side off-switch in
  *     the environment doesn't mask adapter crashes.
  *
  * Sample shape: probe-meta wrapped (`_probe_meta.event` + `.payload`) OR bare
@@ -2880,7 +2901,7 @@ function replayHarnessSamples(
   };
   const harnessFlag = harness === "claude_code" ? "claude-code" : harness;
 
-  const sandbox = mkdtempSync(join(tmpdir(), "bp-harness-probe-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "harn-harness-probe-"));
   const results: SampleReplayResult[] = [];
 
   try {
@@ -2928,10 +2949,10 @@ function replayHarnessSamples(
         timeout: 10_000,
         env: {
           ...process.env,
-          BP_COORD_ROOT_OVERRIDE: sandbox,
-          BP_AGENT_COORD_HARNESS: harness,
-          BP_AGENT_COORD_PLATFORM: harness,
-          BP_AGENT_COORD_OFF: "0",
+          HARNERY_COORD_ROOT_OVERRIDE: sandbox,
+          HARNERY_AGENT_COORD_HARNESS: harness,
+          HARNERY_AGENT_COORD_PLATFORM: harness,
+          HARNERY_AGENT_COORD_OFF: "0",
         },
       });
 
