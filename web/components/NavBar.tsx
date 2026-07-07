@@ -29,6 +29,9 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
             <Link href="/councils" className="hover:text-foreground">
               Councils
             </Link>
+            <Link href="/decisions" className="hover:text-foreground">
+              Decisions
+            </Link>
             <Link href="/live" className="hover:text-foreground">
               Live
             </Link>
