@@ -39,6 +39,30 @@ describe("renderInstructionsBlock", () => {
   test("region name is stable", () => {
     expect(INSTRUCTIONS_REGION).toBe("instructions");
   });
+
+  test("with both skills excluded, points at --help instead of dangling skill refs", () => {
+    const block = renderInstructionsBlock("acme", { decide: false, council: false });
+    expect(block).not.toContain("`harn-decide` skill");
+    expect(block).not.toContain("`harn-council` skill");
+    expect(block).toContain("acme decision --help");
+    expect(block).toContain("acme council --help");
+  });
+
+  test("mixed availability names only the present skill", () => {
+    const block = renderInstructionsBlock("acme", { decide: false, council: true });
+    // intro + council pointer reference harn-council; decide falls back to --help
+    expect(block).toContain("`harn-council`");
+    expect(block).toContain("acme decision --help");
+    expect(block).not.toContain("`harn-decide` skill");
+    // intro lists only the present skill (singular "skill", no "harn-decide and")
+    expect(block).not.toContain("`harn-decide` and");
+  });
+
+  test("default (no arg) still references both skills — bare-consumer case", () => {
+    const block = renderInstructionsBlock("harn");
+    expect(block).toContain("`harn-decide` skill");
+    expect(block).toContain("`harn-council` skill");
+  });
 });
 
 describe("SKILLS", () => {

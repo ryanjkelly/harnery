@@ -18,22 +18,52 @@ export const INSTRUCTIONS_REGION = "instructions";
 /** Managed-region name for the CLAUDE.md `@AGENTS.md` import shim. */
 export const IMPORT_REGION = "import";
 
+/** Which shipped skills exist in the project the block is rendered for. */
+export interface BlockSkills {
+  /** the `harn-decide` skill file is present (claude-code, not excluded) */
+  decide: boolean;
+  /** the `harn-council` skill file is present */
+  council: boolean;
+}
+
 /**
  * The always-on orientation spliced into `AGENTS.md`. Target ≤ 80 rendered
  * lines: it costs every agent context on every turn, so it states that each
  * surface *exists* and gives one line of *when* — the *how* lives in the skills
  * and each command's `--help`. Skill names are fixed (`harn-decide`,
  * `harn-council`) even for a renamed bin; only command strings track `binName`.
+ *
+ * The block only points at a skill that actually exists here: a host that
+ * excludes one via `skills.exclude`, or a harness with no skill primitive
+ * (cursor/codex get the block but no skill files), gets a `--help` pointer
+ * instead of a dangling reference to a skill it doesn't have.
  */
-export function renderInstructionsBlock(binName: string): string {
+export function renderInstructionsBlock(
+  binName: string,
+  skills: BlockSkills = { decide: true, council: true },
+): string {
   const b = binName;
+
+  const named = [skills.decide && "`harn-decide`", skills.council && "`harn-council`"].filter(
+    Boolean,
+  ) as string[];
+  const deeper =
+    named.length > 0
+      ? `Procedures for the deeper flows live in the ${named.join(" and ")} skill${named.length > 1 ? "s" : ""}.`
+      : `See \`${b} decision --help\` and \`${b} council --help\` for the deeper procedures.`;
+  const decidePointer = skills.decide
+    ? "The `harn-decide` skill has the file / claim / resolve-with-evidence procedure."
+    : `See \`${b} decision --help\` for the file / claim / resolve-with-evidence procedure.`;
+  const councilPointer = skills.council
+    ? "The `harn-council` skill has the steward and member flow."
+    : `See \`${b} council --help\` for the steward and member flow.`;
+
   return `## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
 You share this checkout with other agents; the surfaces below keep you oriented
 and out of each other's way. Run \`${b} <command> --help\` for any command's full
-surface. Procedures for the deeper flows live in the \`harn-decide\` and
-\`harn-council\` skills.
+surface. ${deeper}
 
 **Identity + peers.** You are one of several agents in this repo.
 \`${b} agents whoami\` is you; \`${b} agents status\` shows your session plus the
@@ -54,12 +84,10 @@ Use it for anything future-you or a peer will need to pick up your thread.
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`
 records it and lets you proceed on a stated default; \`${b} decision search "<terms>"\`
-surfaces prior decisions, so check for precedent before re-deciding. The
-\`harn-decide\` skill has the file / claim / resolve-with-evidence procedure.
+surfaces prior decisions, so check for precedent before re-deciding. ${decidePointer}
 
 **Councils.** For a hard or contested decision, convene a council of agents.
-\`${b} council create "<objective>"\` runs structured rounds toward a decision. The
-\`harn-council\` skill has the steward and member flow.`;
+\`${b} council create "<objective>"\` runs structured rounds toward a decision. ${councilPointer}`;
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────

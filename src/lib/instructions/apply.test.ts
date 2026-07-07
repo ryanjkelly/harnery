@@ -77,6 +77,21 @@ describe("applyInstructions (claude-code)", () => {
     expect(has(".claude/skills/harn-decide/SKILL.md")).toBe(false);
     expect(has(".claude/skills/harn-council/SKILL.md")).toBe(true);
   });
+
+  test("excluding both skills renders a block that points at --help, not dangling skills", () => {
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery/config.jsonc"),
+      '{ "skills": { "exclude": ["harn-decide", "harn-council"] } }',
+    );
+    applyInstructions(root, { binName: BIN, harness: "claude-code", dryRun: false });
+    const md = read("AGENTS.md");
+    expect(md).not.toContain("`harn-decide` skill");
+    expect(md).not.toContain("`harn-council` skill");
+    expect(md).toContain("acme decision --help");
+    // and re-check stays fresh (the check renders the same exclusion-aware block)
+    expect(checkInstructions(root, { binName: BIN, harness: "claude-code" }).status).toBe("fresh");
+  });
 });
 
 describe("applyInstructions (cursor)", () => {
@@ -85,6 +100,14 @@ describe("applyInstructions (cursor)", () => {
     expect(has("AGENTS.md")).toBe(true);
     expect(has("CLAUDE.md")).toBe(false);
     expect(has(".claude/skills/harn-decide/SKILL.md")).toBe(false);
+  });
+
+  test("cursor block points at --help (no skill files exist for cursor)", () => {
+    applyInstructions(root, { binName: BIN, harness: "cursor", dryRun: false });
+    const md = read("AGENTS.md");
+    expect(md).not.toContain("`harn-decide` skill");
+    expect(md).toContain("acme decision --help");
+    expect(checkInstructions(root, { binName: BIN, harness: "cursor" }).status).toBe("fresh");
   });
 });
 

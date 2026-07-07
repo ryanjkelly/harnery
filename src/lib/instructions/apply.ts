@@ -38,6 +38,7 @@ import {
   spliceRegion,
 } from "./splice.ts";
 import {
+  type BlockSkills,
   IMPORT_REGION,
   INSTRUCTIONS_REGION,
   renderInstructionsBlock,
@@ -74,6 +75,21 @@ export function readSkillsExclude(projectRoot: string): Set<string> {
   return new Set();
 }
 
+/**
+ * Which shipped skills exist for this project, so the block references only the
+ * ones actually present: claude-code writes skills (unless excluded); cursor and
+ * codex get the block but no skill files, so both read false there. Kept in one
+ * place so `applyInstructions` and `checkInstructions` render byte-identical blocks.
+ */
+function blockSkills(projectRoot: string, harness: string): BlockSkills {
+  const claudeCode = harness === "claude-code";
+  const exclude = readSkillsExclude(projectRoot);
+  return {
+    decide: claudeCode && !exclude.has("harn-decide"),
+    council: claudeCode && !exclude.has("harn-council"),
+  };
+}
+
 interface ApplyOpts {
   binName: string;
   harness: string;
@@ -101,7 +117,7 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
   const agentsPath = join(projectRoot, AGENTS_FILE);
   const agentsExisted = existsSync(agentsPath);
   const agentsBefore = agentsExisted ? readFileSync(agentsPath, "utf8") : "";
-  const body = renderInstructionsBlock(opts.binName);
+  const body = renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.harness));
   const spliced = spliceRegion(agentsBefore, INSTRUCTIONS_REGION, body);
   if (!spliced.changed) {
     actions.push(`· ${AGENTS_FILE} instructions block already current`);
@@ -276,7 +292,11 @@ export function checkInstructions(
     const content = existsSync(agentsPath) ? readFileSync(agentsPath, "utf8") : "";
     note(
       `${AGENTS_FILE} block`,
-      checkRegion(content, INSTRUCTIONS_REGION, renderInstructionsBlock(opts.binName)),
+      checkRegion(
+        content,
+        INSTRUCTIONS_REGION,
+        renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.harness)),
+      ),
     );
 
     if (opts.harness === "claude-code") {
