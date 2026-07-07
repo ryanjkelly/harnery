@@ -18,6 +18,10 @@ export type {
   WidthResult,
 } from "./layout.js";
 export type {
+  RuntHit,
+  RuntsResult,
+} from "./runts.js";
+export type {
   CheckVisibilityOptions,
   VisibilityResult,
   VisibilitySample,
