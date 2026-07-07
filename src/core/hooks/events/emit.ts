@@ -1,5 +1,6 @@
 import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { maybeRotateEventStream } from "./rotate.ts";
 import {
   type EventEnvelope,
   type EventType,
@@ -68,6 +69,10 @@ export function emit<TType extends EventType, TData>(
   const envelope = buildEnvelope(input);
   const streamPath = join(coordRoot, STREAM_FILE);
   const lockPath = join(coordRoot, LOCK_FILE);
+
+  // Size-triggered rotation: roll the active file to a dated archive when it
+  // crosses the cap, so this append lands in a bounded fresh file. Fail-soft.
+  maybeRotateEventStream(coordRoot);
 
   ensureDir(dirname(streamPath));
   ensureFile(lockPath);

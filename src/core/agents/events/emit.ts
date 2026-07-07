@@ -11,6 +11,7 @@
 
 import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { maybeRotateEventStream } from "../../hooks/events/rotate.ts";
 import { ulid } from "./ulid.ts";
 
 const SCHEMA_VERSION = 1 as const;
@@ -70,6 +71,10 @@ export function emit(coordRoot: string, input: EmitInput): Envelope {
   const envelope = buildEnvelope(input);
   const streamPath = join(coordRoot, STREAM_FILE);
   const lockPath = join(coordRoot, LOCK_FILE);
+
+  // Size-triggered rotation (shared with the agent-hooks emitter): roll the
+  // active file to a dated archive when it crosses the cap. Fail-soft.
+  maybeRotateEventStream(coordRoot);
 
   ensureDir(dirname(streamPath));
   ensureFile(lockPath);

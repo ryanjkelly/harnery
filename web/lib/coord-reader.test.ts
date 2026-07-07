@@ -8,7 +8,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -179,18 +186,25 @@ describe("refreshIdentityIndex: incremental consumption", () => {
     expect(Object.keys(second.identities).sort()).toEqual(["sess-1", "sub-2"]);
   });
 
-  test("a shrunk/replaced log rebuilds from scratch", () => {
+  test("a shrunk active file resets the offset but keeps prior identities", () => {
+    // A shrink means a rotation happened (the active file rolled to an archive),
+    // so the offset must reset to re-read the fresh file — but prior identities
+    // must be KEPT, not wiped: the rolled-out agents live on in the archive (and
+    // are re-resolvable by folding it), and wiping them would reintroduce the
+    // exact "rolled agents lose their names" bug rotation exists to avoid.
     const root = freshRoot();
     const big = `${startLine("session.start", "old-1", "Old")}\n${startLine("session.start", "old-2", "Older")}\n`;
     writeFileSync(streamPath(root), big, "utf8");
     const first = refreshIdentityIndex(root, null);
     expect(first.offset).toBe(Buffer.byteLength(big, "utf8"));
 
-    // Replace with a smaller file (size < prior offset).
+    // Replace with a smaller file (size < prior offset), as a fresh post-roll
+    // active file would be. No archive on disk here, so the fold step is a no-op
+    // and we're asserting the in-memory-cache retention path specifically.
     const small = `${startLine("session.start", "new-1", "New")}\n`;
     writeFileSync(streamPath(root), small, "utf8");
     const second = refreshIdentityIndex(root, first);
-    expect(Object.keys(second.identities)).toEqual(["new-1"]);
+    expect(Object.keys(second.identities).sort()).toEqual(["new-1", "old-1", "old-2"]);
     expect(second.offset).toBe(Buffer.byteLength(small, "utf8"));
   });
 
@@ -309,5 +323,108 @@ describe("readEvents", () => {
         Array.from({ length: rows }, (_, i) => rows - 1 - i),
       );
     });
+  });
+});
+
+function archivePath(root: string, name: string): string {
+  return path.join(root, ".harnery", name);
+}
+
+function withCoordRoot(root: string, fn: () => void): void {
+  const prev = process.env.HARNERY_COORD_ROOT;
+  process.env.HARNERY_COORD_ROOT = root;
+  __resetCoordRootCache();
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.HARNERY_COORD_ROOT;
+    else process.env.HARNERY_COORD_ROOT = prev;
+    __resetCoordRootCache();
+  }
+}
+
+function evLine(seq: number, instanceId = "sess-1"): string {
+  return JSON.stringify({
+    schema_version: 1,
+    event_id: `01ev-${seq}`,
+    event_type: "tool.pre_use",
+    ts: "2026-06-04T00:00:00Z",
+    instance_id: instanceId,
+    session_id: instanceId,
+    harness: "claude-code",
+    source: "test",
+    data: { seq },
+  });
+}
+
+describe("scanEventsTail spans rotation archives", () => {
+  test("a tail scan continues from the active file into an archive, newest-first", () => {
+    const root = freshRoot();
+    // Older events live in a rolled archive; newer ones in the active file.
+    writeFileSync(archivePath(root, "events-2026-07-06.ndjson"), `${evLine(0)}\n${evLine(1)}\n`);
+    writeFileSync(streamPath(root), `${evLine(2)}\n${evLine(3)}\n`);
+    withCoordRoot(root, () => {
+      const seqs = readEvents({ limit: 10 }).rows.map((r) => r.data?.seq);
+      // Active (3,2) first, then the archive (1,0) — the roll boundary is invisible.
+      expect(seqs).toEqual([3, 2, 1, 0]);
+    });
+  });
+
+  test("limit is satisfied from the active file alone without touching archives", () => {
+    const root = freshRoot();
+    writeFileSync(archivePath(root, "events-2026-07-06.ndjson"), `${evLine(0)}\n`);
+    writeFileSync(streamPath(root), `${evLine(2)}\n${evLine(3)}\n`);
+    withCoordRoot(root, () => {
+      expect(readEvents({ limit: 2 }).rows.map((r) => r.data?.seq)).toEqual([3, 2]);
+    });
+  });
+});
+
+describe("refreshIdentityIndex survives rotation", () => {
+  test("folds a pre-existing archive so a rolled-out agent still resolves", () => {
+    const root = freshRoot();
+    writeFileSync(
+      archivePath(root, "events-2026-07-05.ndjson"),
+      `${startLine("session.start", "old", "Older")}\n`,
+    );
+    writeFileSync(streamPath(root), `${startLine("session.start", "new", "Newer")}\n`);
+
+    const idx = refreshIdentityIndex(root, null);
+    expect(idx.identities.old?.name).toBe("Older");
+    expect(idx.identities.new?.name).toBe("Newer");
+    expect(idx.foldedArchives).toContain("events-2026-07-05.ndjson");
+  });
+
+  test("a live roll (active shrinks) keeps prior identities via the archive fold", () => {
+    const root = freshRoot();
+    writeFileSync(streamPath(root), `${startLine("session.start", "a", "Alice")}\n`);
+    let idx = refreshIdentityIndex(root, null);
+    expect(idx.identities.a?.name).toBe("Alice");
+
+    // Simulate rotation: the active file becomes a dated archive; a fresh, empty
+    // active file takes its place, then a new agent appends to it.
+    renameSync(streamPath(root), archivePath(root, "events-2026-07-07.ndjson"));
+    writeFileSync(streamPath(root), "");
+    appendFileSync(streamPath(root), `${startLine("session.start", "b", "Bob")}\n`);
+
+    idx = refreshIdentityIndex(root, idx);
+    expect(idx.identities.a?.name).toBe("Alice"); // survived the roll
+    expect(idx.identities.b?.name).toBe("Bob");
+    expect(idx.foldedArchives).toContain("events-2026-07-07.ndjson");
+  });
+
+  test("each archive is folded exactly once across repeated refreshes", () => {
+    const root = freshRoot();
+    writeFileSync(
+      archivePath(root, "events-2026-07-05.ndjson"),
+      `${startLine("session.start", "old", "Older")}\n`,
+    );
+    writeFileSync(streamPath(root), `${startLine("session.start", "new", "Newer")}\n`);
+
+    const first = refreshIdentityIndex(root, null);
+    const second = refreshIdentityIndex(root, first);
+    // Steady state: same folded set, no re-fold work.
+    expect(second.foldedArchives).toEqual(first.foldedArchives);
+    expect(second.offset).toBe(first.offset);
   });
 });

@@ -444,35 +444,50 @@ const EVENTS_CHUNK_BYTES = 4_000_000;
  * own stop condition, file start, or this cap. */
 const EVENTS_MAX_SCAN_BYTES = 64_000_000;
 
-/**
- * Scan events.ndjson from EOF backward, parsing complete lines and invoking
- * `onRow` for each parsed row **newest-first**. Stops when `onRow` returns
- * `false`, the file start is reached, or `maxScanBytes` have been consumed.
- * Malformed lines are skipped. Returns the count of non-empty lines scanned.
- *
- * This is the one bounded reader every events.ndjson consumer must ride — a
- * whole-file `readFileSync` crashes once the ledger passes V8's ~512MB max
- * string length (see `EVENTS_MAX_SCAN_BYTES`).
- */
-export function scanEventsTail(
+/** Rolled event-stream archives (`events-*.ndjson`) newest-first, so a tail scan
+ * can continue past the active file into recent history across a rotation
+ * boundary. Sorted by mtime (not filename) so the manual `events-legacy.ndjson`
+ * and same-day `.N` dedupe suffixes order correctly. The naming convention is
+ * produced by src/core/hooks/events/rotate.ts — kept in sync with it. */
+function archiveFilesNewestFirst(): string[] {
+  const dir = harneryDir();
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => n.startsWith("events-") && n.endsWith(".ndjson"))
+    .map((n) => {
+      const p = path.join(dir, n);
+      try {
+        return { p, m: statSync(p).mtimeMs };
+      } catch {
+        return { p, m: 0 };
+      }
+    })
+    .sort((a, b) => b.m - a.m)
+    .map((e) => e.p);
+}
+
+/** Scan one ndjson file from EOF backward, newest-first, up to `remaining`
+ * bytes. Returns whether `onRow` asked to stop, plus bytes/lines consumed.
+ * Lines never span files, so `carry` is file-local. */
+function scanFileBackward(
+  p: string,
   onRow: (row: EventRow) => boolean | void,
-  opts: { chunkBytes?: number; maxScanBytes?: number } = {},
-): { linesScanned: number } {
-  const p = eventsPath();
+  chunkBytes: number,
+  remaining: number,
+): { stop: boolean; bytesConsumed: number; linesScanned: number } {
   let linesScanned = 0;
-  if (!existsSync(p)) return { linesScanned };
-  const chunkBytes = opts.chunkBytes ?? EVENTS_CHUNK_BYTES;
-  const maxScanBytes = opts.maxScanBytes ?? EVENTS_MAX_SCAN_BYTES;
+  let stop = false;
   const size = statSync(p).size;
   let end = size;
-  // Leading partial-line fragment carried from the later (already-read) chunk:
-  // the tail of a line whose head lives in the next (earlier) chunk. We append
-  // it to that chunk's bytes to reconstitute the full line across the boundary.
   let carry = "";
-  let stop = false;
   const fd = openSync(p, "r");
   try {
-    while (!stop && end > 0 && size - end < maxScanBytes) {
+    while (!stop && end > 0 && size - end < remaining) {
       const start = Math.max(0, end - chunkBytes);
       const len = end - start;
       const buf = Buffer.allocUnsafe(len);
@@ -519,6 +534,40 @@ export function scanEventsTail(
     }
   } finally {
     closeSync(fd);
+  }
+  return { stop, bytesConsumed: size - end, linesScanned };
+}
+
+/**
+ * Scan the event stream from newest to oldest, parsing complete lines and
+ * invoking `onRow` for each parsed row **newest-first**. Reads the active
+ * `events.ndjson` first, then continues into rolled `events-*.ndjson` archives
+ * newest-first, so a rotation boundary is invisible to callers. Stops when
+ * `onRow` returns `false`, all files are exhausted, or `maxScanBytes` (summed
+ * across files) have been consumed. Malformed lines are skipped. Returns the
+ * count of non-empty lines scanned.
+ *
+ * This is the one bounded reader every events.ndjson consumer must ride — a
+ * whole-file `readFileSync` crashes once a single file passes V8's ~512MB max
+ * string length (see `EVENTS_MAX_SCAN_BYTES`).
+ */
+export function scanEventsTail(
+  onRow: (row: EventRow) => boolean | void,
+  opts: { chunkBytes?: number; maxScanBytes?: number } = {},
+): { linesScanned: number } {
+  const chunkBytes = opts.chunkBytes ?? EVENTS_CHUNK_BYTES;
+  const maxScanBytes = opts.maxScanBytes ?? EVENTS_MAX_SCAN_BYTES;
+  let linesScanned = 0;
+  let bytesConsumed = 0;
+
+  const files = [eventsPath(), ...archiveFilesNewestFirst()];
+  for (const p of files) {
+    if (bytesConsumed >= maxScanBytes) break;
+    if (!existsSync(p)) continue;
+    const res = scanFileBackward(p, onRow, chunkBytes, maxScanBytes - bytesConsumed);
+    linesScanned += res.linesScanned;
+    bytesConsumed += res.bytesConsumed;
+    if (res.stop) break;
   }
   return { linesScanned };
 }
@@ -578,13 +627,24 @@ export interface IdentityIndex {
    * built by an older parser has already consumed the bytes that carry the new
    * data, so a version mismatch forces one full rebuild. */
   version?: number;
-  /** Bytes of events.ndjson consumed so far, always a line boundary. */
+  /** Bytes of the ACTIVE events.ndjson consumed so far, always a line boundary. */
   offset: number;
+  /** Basenames of rolled `events-*.ndjson` archives already folded into
+   * `identities`. Each archive is folded exactly once, ever, so identities
+   * survive a rotation (the active offset resets to 0 after a roll, but the
+   * rolled content lives on in an archive folded here). */
+  foldedArchives?: string[];
   identities: Record<string, InstanceIdentity>;
 }
 
-/** v2: turn.stop model harvesting (2026-06-10). */
-const IDENTITY_INDEX_VERSION = 2;
+/** v2: turn.stop model harvesting (2026-06-10). v3: fold rolled archives so
+ * identities survive events.ndjson rotation (2026-07-07). */
+const IDENTITY_INDEX_VERSION = 3;
+
+/** Line-aligned window for folding a file range into the identity index without
+ * ever materializing a >512MB string (V8's max string length). A just-rolled
+ * archive can be hundreds of MB, so it must be read in bounded windows. */
+const IDENTITY_FOLD_WINDOW_BYTES = 64 * 1024 * 1024;
 
 let identityIndexCache: IdentityIndex | null = null;
 
@@ -677,6 +737,7 @@ function loadPersistedIndex(indexPath: string): IdentityIndex {
       return {
         version: parsed.version,
         offset: parsed.offset,
+        foldedArchives: Array.isArray(parsed.foldedArchives) ? parsed.foldedArchives : [],
         identities: parsed.identities as Record<string, InstanceIdentity>,
       };
     }
@@ -684,7 +745,57 @@ function loadPersistedIndex(indexPath: string): IdentityIndex {
     // missing or corrupt → rebuild from scratch
   }
   // Missing, corrupt, or built by an older parser version → one full re-scan.
-  return { offset: 0, identities: {} };
+  return { offset: 0, foldedArchives: [], identities: {} };
+}
+
+/** Rolled `events-*.ndjson` archives under `.harnery`, oldest-first by mtime so
+ * a later `session.start` wins per instance_id when folded in order. Basenames
+ * only (the index keys `foldedArchives` by basename). */
+function listIdentityArchives(harneryDirPath: string): string[] {
+  try {
+    return readdirSync(harneryDirPath)
+      .filter((n) => n.startsWith("events-") && n.endsWith(".ndjson"))
+      .map((n) => {
+        try {
+          return { n, m: statSync(path.join(harneryDirPath, n)).mtimeMs };
+        } catch {
+          return { n, m: 0 };
+        }
+      })
+      .sort((a, b) => a.m - b.m)
+      .map((e) => e.n);
+  } catch {
+    return [];
+  }
+}
+
+/** Fold `[start, size)` of `p` into `identities` in line-aligned windows no
+ * larger than `IDENTITY_FOLD_WINDOW_BYTES`, so a huge (just-rolled) file never
+ * overflows V8's max string length. Returns the offset of the last COMPLETE
+ * line consumed (a torn final write is left for the next call to re-read). */
+function foldRangeIntoIdentities(
+  p: string,
+  start: number,
+  size: number,
+  identities: Record<string, InstanceIdentity>,
+): number {
+  let off = start;
+  while (off < size) {
+    const end = Math.min(size, off + IDENTITY_FOLD_WINDOW_BYTES);
+    const chunk = readRange(p, off, end);
+    const isLast = end >= size;
+    const nl = chunk.lastIndexOf("\n");
+    if (nl < 0) {
+      if (isLast) break; // trailing partial line, nothing complete to fold
+      off = end; // pathological line longer than the window — step past it
+      continue;
+    }
+    const complete = chunk.slice(0, nl + 1);
+    mergeIdentitiesFromChunk(complete, identities);
+    off += Buffer.byteLength(complete, "utf8");
+    if (isLast) break;
+  }
+  return off;
 }
 
 function persistIndex(indexPath: string, idx: IdentityIndex): void {
@@ -704,47 +815,68 @@ function persistIndex(indexPath: string, idx: IdentityIndex): void {
  * returns the refreshed index after consuming any appended events.
  */
 export function refreshIdentityIndex(root: string, prev: IdentityIndex | null): IdentityIndex {
-  const p = path.join(root, ".harnery", "events.ndjson");
-  const indexPath = path.join(root, ".harnery", ".identity-index.json");
-  if (!existsSync(p)) return prev ?? { offset: 0, identities: {} };
+  const harneryDirPath = path.join(root, ".harnery");
+  const p = path.join(harneryDirPath, "events.ndjson");
+  const indexPath = path.join(harneryDirPath, ".identity-index.json");
+  const empty: IdentityIndex = { offset: 0, foldedArchives: [], identities: {} };
+  if (!existsSync(p)) return prev ?? empty;
 
   let size: number;
   try {
     size = statSync(p).size;
   } catch {
-    return prev ?? { offset: 0, identities: {} };
+    return prev ?? empty;
   }
 
   // Cold start: hydrate from the persisted index so we don't re-read the whole
   // log on the first request after a process restart.
-  let { offset, identities } = prev ?? loadPersistedIndex(indexPath);
+  const base = prev ?? loadPersistedIndex(indexPath);
+  let { offset } = base;
+  const identities = base.identities;
+  const folded = new Set(base.foldedArchives ?? []);
+  let dirty = false;
 
-  // File shrank (deleted + recreated) → the old offset is meaningless; rebuild.
+  // Fold any rolled archives not yet seen (each exactly once, ever), oldest-
+  // first so a later session.start wins. Windowed reads keep a just-rolled
+  // multi-hundred-MB archive under V8's max string length.
+  for (const name of listIdentityArchives(harneryDirPath)) {
+    if (folded.has(name)) continue;
+    const archivePath = path.join(harneryDirPath, name);
+    try {
+      const archiveSize = statSync(archivePath).size;
+      foldRangeIntoIdentities(archivePath, 0, archiveSize, identities);
+    } catch {
+      // Unreadable archive — mark folded anyway so we don't retry it forever.
+    }
+    folded.add(name);
+    dirty = true;
+  }
+
+  // Active file shrank (rolled, or deleted + recreated) → the old offset is
+  // meaningless. The rolled content is now an archive folded above, so just
+  // reset the active offset rather than wiping identities.
   if (size < offset) {
     offset = 0;
-    identities = {};
+    dirty = true;
   }
 
-  // Nothing new since last index → return as-is (the steady-state fast path).
-  if (size === offset) return { offset, identities };
-
-  // Read only the appended delta. Advance the offset to the LAST COMPLETE line
-  // so a torn final write (statSync caught mid-append) is re-read next call
-  // rather than dropped.
-  const delta = readRange(p, offset, size);
-  const lastNl = delta.lastIndexOf("\n");
-  if (lastNl < 0) {
-    // No complete line yet; don't advance.
-    return { offset, identities };
+  // Read the appended delta (line-aligned, windowed) and advance the offset to
+  // the last COMPLETE line so a torn final write is re-read next call.
+  if (size > offset) {
+    const newOffset = foldRangeIntoIdentities(p, offset, size, identities);
+    if (newOffset !== offset) {
+      offset = newOffset;
+      dirty = true;
+    }
   }
-  const complete = delta.slice(0, lastNl + 1);
-  mergeIdentitiesFromChunk(complete, identities);
+
   const next: IdentityIndex = {
     version: IDENTITY_INDEX_VERSION,
-    offset: offset + Buffer.byteLength(complete, "utf8"),
+    offset,
+    foldedArchives: [...folded],
     identities,
   };
-  persistIndex(indexPath, next);
+  if (dirty) persistIndex(indexPath, next);
   return next;
 }
 
