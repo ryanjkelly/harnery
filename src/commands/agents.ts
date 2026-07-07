@@ -2650,7 +2650,7 @@ function renderHealthBox(report: HealthReport): void {
   const localTime = formatLocalTime(new Date(report.generated_at));
   const title = `Coord Health (${localTime})`;
 
-  process.stdout.write(`${formatBox(title, rows)}\n`); // lint-ok-emission: chat-paste path; mirrors runStatus's direct write so the box surfaces in both TTY + bp-session-teed contexts
+  process.stdout.write(`${formatBox(title, rows)}\n`); // lint-ok-emission: chat-paste path; mirrors runStatus's direct write so the box surfaces in both TTY + harn-session-teed contexts
 
   if (report.anomalies.length > 0) {
     process.stdout.write("\n"); // lint-ok-emission: same chat-paste path
@@ -2816,7 +2816,7 @@ function runHarnessProbe(
  * dispatcher in an isolated sandbox.
  *
  * Sandbox isolation strategy:
- *   - mkdtempSync(tmpdir(), "bp-harness-probe-") creates a non-git tmp dir.
+ *   - mkdtempSync(tmpdir(), "harn-harness-probe-") creates a non-git tmp dir.
  *   - The dispatcher's coord-root resolution falls back to
  *     `BP_COORD_ROOT_OVERRIDE` when git rev-parse fails. We set it to the sandbox.
  *   - We rewrite the payload's `cwd` field (Cursor cds to it) to the sandbox,
@@ -2901,7 +2901,7 @@ function replayHarnessSamples(
   };
   const harnessFlag = harness === "claude_code" ? "claude-code" : harness;
 
-  const sandbox = mkdtempSync(join(tmpdir(), "bp-harness-probe-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "harn-harness-probe-"));
   const results: SampleReplayResult[] = [];
 
   try {

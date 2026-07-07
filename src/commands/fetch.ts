@@ -80,7 +80,7 @@ async function runFetch(
 
   const jar =
     opts.cookies !== false
-      ? new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "bp-fetch" })
+      ? new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-fetch" })
       : null;
 
   const timeoutMs = Number.parseInt(opts.timeout, 10);

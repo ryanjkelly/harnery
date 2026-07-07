@@ -300,7 +300,7 @@ async function runBrowse(
   const jar =
     opts.cookies === false
       ? null
-      : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "bp-browse" });
+      : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse" });
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
 

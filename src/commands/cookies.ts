@@ -22,7 +22,7 @@ interface CommonOpts {
 function jarFrom(opts: CommonOpts): CookieJar {
   return new CookieJar({
     path: opts.store ?? DEFAULT_STORE,
-    source: "bp-cookies",
+    source: "harn-cookies",
   });
 }
 
