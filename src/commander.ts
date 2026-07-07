@@ -130,6 +130,16 @@ export interface HarneryProgramContext {
    */
   extraDocsExcludedPrefixes?: readonly string[];
   /**
+   * Filenames permitted at the host project's `docs/` root (parent repo only).
+   * When set, `harn docs lint` flags any other `.md`/`.json` file sitting
+   * loose at `docs/` root (rule `docs-root-file`) — topic docs belong in
+   * `docs/<topic>/` subdirs. Names are matched exactly (basename). When
+   * omitted or empty, the rule is a no-op, so standalone `harn` and consumers
+   * that don't opt in are unaffected. Submodule `docs/` roots are never
+   * checked (their entry tiers differ from the parent's).
+   */
+  docsRootAllowlist?: readonly string[];
+  /**
    * Default Host header for `tunnel up` when `--vhost` is omitted: a literal
    * host, or a resolver evaluated at start time (e.g. read a dev stack's
    * configured hostname so the tunnel lands on the right vhost). When unset, or

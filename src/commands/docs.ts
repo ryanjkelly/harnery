@@ -16,7 +16,11 @@ function ensureContext(context: HarneryProgramContext | undefined): void {
   const opts = { repoRoot: context.repoRoot, submodules: context.submodules };
   initDocs(opts);
   initDocsIndex(opts);
-  initDocsLint({ ...opts, extraExcludedPrefixes: context.extraDocsExcludedPrefixes });
+  initDocsLint({
+    ...opts,
+    extraExcludedPrefixes: context.extraDocsExcludedPrefixes,
+    docsRootAllowlist: context.docsRootAllowlist,
+  });
   initDocsSweep(opts);
 }
 

@@ -9,15 +9,18 @@ import { sh } from "./exec.ts";
 let REPO_ROOT = "";
 let SUBMODULES: readonly string[] = [];
 let EXTRA_EXCLUDED_PREFIXES: readonly string[] = [];
+let DOCS_ROOT_ALLOWLIST: readonly string[] = [];
 
 export function initDocsContext(opts: {
   repoRoot: string;
   submodules: readonly string[];
   extraExcludedPrefixes?: readonly string[];
+  docsRootAllowlist?: readonly string[];
 }): void {
   REPO_ROOT = opts.repoRoot;
   SUBMODULES = opts.submodules;
   EXTRA_EXCLUDED_PREFIXES = opts.extraExcludedPrefixes ?? [];
+  DOCS_ROOT_ALLOWLIST = opts.docsRootAllowlist ?? [];
 }
 
 function submodulePath(name: string): string {
@@ -239,6 +242,46 @@ function checkRootAllowlist(repoName: string, repoPath: string): Violation[] {
   return violations;
 }
 
+/**
+ * The host project's `docs/` root is an entry tier: only allowlisted files may
+ * sit loose there; topic docs belong in `docs/<topic>/` subdirs. Config-gated —
+ * a no-op unless the host supplies `docsRootAllowlist`. Parent-repo only:
+ * submodule `docs/` roots have their own entry tiers, not this one.
+ */
+function checkDocsRootAllowlist(repoName: string, repoPath: string): Violation[] {
+  const violations: Violation[] = [];
+  if (DOCS_ROOT_ALLOWLIST.length === 0) return violations; // opt-in
+  if (repoName !== "(root)") return violations; // parent repo only
+  const allow = new Set(DOCS_ROOT_ALLOWLIST);
+  const docsDir = join(repoPath, "docs");
+  let entries: string[];
+  try {
+    entries = readdirSync(docsDir);
+  } catch {
+    return violations; // no docs/ dir — nothing to check
+  }
+  for (const entry of entries) {
+    // Subdirs are the intended home for topic docs; only loose files matter.
+    let isFile: boolean;
+    try {
+      isFile = statSync(join(docsDir, entry)).isFile();
+    } catch {
+      continue;
+    }
+    if (!isFile) continue;
+    if (!(entry.endsWith(".md") || entry.endsWith(".json"))) continue;
+    if (allow.has(entry)) continue;
+    violations.push({
+      severity: "error",
+      repo: repoName,
+      path: join("docs", entry),
+      rule: "docs-root-file",
+      message: `${entry} is not allowed loose at docs/ root — move it into a docs/<topic>/ subdir (or add it to context.docsRootAllowlist if it's a genuine entry-tier doc)`,
+    });
+  }
+  return violations;
+}
+
 /** No SCREAMING_SNAKE_CASE filenames anywhere */
 function checkNamingConvention(repoName: string, _repoPath: string, files: string[]): Violation[] {
   const violations: Violation[] = [];
@@ -402,6 +445,7 @@ export async function runLint(opts: LintOpts): Promise<Violation[]> {
   for (const { name, path, isSubmodule } of repos) {
     violations.push(...checkEntryTier(name, path, isSubmodule));
     violations.push(...checkRootAllowlist(name, path));
+    violations.push(...checkDocsRootAllowlist(name, path));
 
     const files = await findMarkdownFiles(path);
     violations.push(...checkNamingConvention(name, path, files));
