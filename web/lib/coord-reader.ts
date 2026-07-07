@@ -433,6 +433,18 @@ export interface EventsResponse {
   };
 }
 
+/** Bytes read per backward step when tailing events.ndjson. At ~550 bytes/row
+ * this holds ~7k rows — comfortably more than any caller's `limit` (max 600) —
+ * so unfiltered queries are satisfied in a single read. */
+const EVENTS_CHUNK_BYTES = 4_000_000;
+/** Hard cap on how far back a single `readEvents` call scans. events.ndjson is
+ * an append-only ledger that grows without bound, so we can never load it whole
+ * (a >512MB file also overflows V8's max string length via `readFileSync` — the
+ * "Cannot create a string longer than 0x1fffffe8 characters" crash this replaced).
+ * Sparse filtered queries (a specific instance_id) walk back until they hit
+ * `limit`, file start, or this cap. */
+const EVENTS_MAX_SCAN_BYTES = 64_000_000;
+
 export function readEvents(
   opts: { limit?: number; instanceId?: string; type?: string } = {},
 ): EventsResponse {
@@ -441,21 +453,63 @@ export function readEvents(
   if (!existsSync(p)) {
     return { rows: [], meta: { path: p, total_lines: 0, returned: 0 } };
   }
-  const text = readFileSync(p, "utf-8");
-  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  const size = statSync(p).size;
   const out: EventRow[] = [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (out.length >= limit) break;
-    try {
-      const row = JSON.parse(lines[i]) as EventRow;
-      if (opts.instanceId && row.instance_id !== opts.instanceId) continue;
-      if (opts.type && row.event_type !== opts.type) continue;
-      out.push(row);
-    } catch {
-      // skip malformed line
+  let linesScanned = 0;
+  let end = size;
+  // Leading partial-line fragment carried from the later (already-read) chunk:
+  // the tail of a line whose head lives in the next (earlier) chunk. We append
+  // it to that chunk's bytes to reconstitute the full line across the boundary.
+  let carry = "";
+  const fd = openSync(p, "r");
+  try {
+    while (end > 0 && out.length < limit && size - end < EVENTS_MAX_SCAN_BYTES) {
+      const start = Math.max(0, end - EVENTS_CHUNK_BYTES);
+      const len = end - start;
+      const buf = Buffer.allocUnsafe(len);
+      let read = 0;
+      while (read < len) {
+        const n = readSync(fd, buf, read, len - read, start + read);
+        if (n === 0) break;
+        read += n;
+      }
+      let text = buf.toString("utf8", 0, read) + carry;
+      if (start > 0) {
+        // First line is partial (its head is before `start`). Hold it to glue
+        // onto the next (earlier) chunk; process only the complete lines here.
+        const nl = text.indexOf("\n");
+        if (nl < 0) {
+          carry = text; // whole chunk is one unterminated line — keep going back
+          end = start;
+          continue;
+        }
+        carry = text.slice(0, nl);
+        text = text.slice(nl + 1);
+      } else {
+        carry = "";
+      }
+      const lines = text.split("\n");
+      // Newest-first: iterate this chunk's lines newest→oldest; chunks read
+      // earlier in the loop are already newer than this one.
+      for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+        const line = lines[i];
+        if (line.trim() === "") continue;
+        linesScanned++;
+        try {
+          const row = JSON.parse(line) as EventRow;
+          if (opts.instanceId && row.instance_id !== opts.instanceId) continue;
+          if (opts.type && row.event_type !== opts.type) continue;
+          out.push(row);
+        } catch {
+          // skip malformed line
+        }
+      }
+      end = start;
     }
+  } finally {
+    closeSync(fd);
   }
-  return { rows: out, meta: { path: p, total_lines: lines.length, returned: out.length } };
+  return { rows: out, meta: { path: p, total_lines: linesScanned, returned: out.length } };
 }
 
 /** Durable identity for one agent instance, harvested from the append-only
