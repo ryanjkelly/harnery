@@ -526,7 +526,10 @@ export function reopenDecision(coordRoot: string, id: string): DecisionOpResult 
   const manifest = readManifest(coordRoot, id);
   if (!manifest) return { ok: false, reason: `no decision "${id}"` };
   if (manifest.status !== "archived") {
-    return { ok: false, reason: `only archived decisions can be reopened (this is ${manifest.status})` };
+    return {
+      ok: false,
+      reason: `only archived decisions can be reopened (this is ${manifest.status})`,
+    };
   }
 
   const archivedBody = join(archiveDir(coordRoot), id);

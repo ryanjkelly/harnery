@@ -24,6 +24,7 @@ import {
   listDecisions,
   manifestPath,
   readManifest,
+  reopenDecision,
   resolveDecision,
   reviewDecision,
   searchDecisions,
@@ -328,6 +329,70 @@ describe("archiveDecision", () => {
     archiveDecision(root, id);
     expect(listDecisions(root)).toHaveLength(0);
     expect(listDecisions(root, { includeArchived: true })).toHaveLength(1);
+  });
+});
+
+// ─── reopen (unarchive) ─────────────────────────────────────────────────────────────
+describe("reopenDecision", () => {
+  function toArchived(): string {
+    const id = file({ brief: "the brief" });
+    claimDecision(root, id, "agent-Sweeper");
+    resolveDecision(root, id, goodResolution);
+    reviewDecision(root, id, { verdict: "ratified" });
+    archiveDecision(root, id, "docs/decisions.md#foo");
+    return id;
+  }
+
+  test("moves an archived decision back to active as reviewed and clears graduated_to", () => {
+    const id = toArchived();
+    const r = reopenDecision(root, id);
+    expect(r.ok).toBe(true);
+    expect(r.manifest?.status).toBe("reviewed");
+    expect(r.manifest?.graduated_to).toBeNull();
+    // manifest is back in the active dir, gone from archive
+    expect(existsSync(manifestPath(root, id))).toBe(true);
+    expect(existsSync(archivedManifestPath(root, id))).toBe(false);
+    // body dir moved back too, still readable
+    expect(existsSync(join(decisionBodyDir(root, id), "brief.md"))).toBe(true);
+    const detail = showDecision(root, id);
+    expect(detail?.archived).toBe(false);
+    expect(detail?.bodies.some((b) => b.name === "brief.md")).toBe(true);
+    // review is preserved (only status + graduated_to change)
+    expect(readManifest(root, id)?.review?.verdict).toBe("ratified");
+    // shows in the default (active) list again
+    expect(listDecisions(root).map((d) => d.decision_id)).toContain(id);
+  });
+
+  test("archive → reopen → re-archive round-trips", () => {
+    const id = toArchived();
+    expect(reopenDecision(root, id).ok).toBe(true);
+    const r = archiveDecision(root, id, "AGENTS.md#bar");
+    expect(r.ok).toBe(true);
+    expect(readManifest(root, id)?.status).toBe("archived");
+    expect(readManifest(root, id)?.graduated_to).toBe("AGENTS.md#bar");
+  });
+
+  test("refuses to reopen a non-archived decision", () => {
+    const id = file();
+    claimDecision(root, id, "agent-Sweeper");
+    resolveDecision(root, id, goodResolution);
+    reviewDecision(root, id, { verdict: "ratified" });
+    const r = reopenDecision(root, id); // still reviewed, not archived
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain("only archived");
+  });
+
+  test("refuses superseded / wontfix (terminal, but not archived)", () => {
+    const s = file();
+    supersedeDecision(root, s, "newer");
+    expect(reopenDecision(root, s).ok).toBe(false);
+    const w = file();
+    wontfixDecision(root, w, "dup");
+    expect(reopenDecision(root, w).ok).toBe(false);
+  });
+
+  test("reopening a missing decision fails cleanly", () => {
+    expect(reopenDecision(root, "does-not-exist").ok).toBe(false);
   });
 });
 

@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
 import { DecisionArchiveActions } from "@/components/DecisionArchiveActions";
+import { DecisionReopenActions } from "@/components/DecisionReopenActions";
 import { DecisionReviewActions } from "@/components/DecisionReviewActions";
 import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
@@ -173,6 +174,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
                 graduated to <span className="font-mono text-foreground/80">{m.graduated_to}</span>
               </p>
             )}
+            {m.status === "archived" && <DecisionReopenActions decisionId={m.decision_id} />}
           </>
         ) : awaitingReview ? (
           <DecisionReviewActions decisionId={m.decision_id} />

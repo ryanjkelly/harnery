@@ -35,6 +35,7 @@ harn decision resolve <id>         # resolve; --recommendation (req) + --evidenc
 harn decision review <id>          # record a verdict: --verdict ratified|overridden|wrong-tier-high|wrong-tier-low
 harn decision triage <id>          # adjust an already-filed decision's --tier/--stakes
 harn decision archive <id>         # graduate a reviewed decision (terminal); --graduated-to <ref>
+harn decision reopen <id>          # unarchive back to reviewed (the inverse of archive)
 harn decision supersede <id>       # mark superseded by a newer decision (terminal); --by <id>
 harn decision wontfix <id>         # close an un-deliberated decision without action (terminal); --reason <text>
 ```
@@ -64,6 +65,12 @@ output has a canonical home (an ADR, `AGENTS.md`, a code change),
 and its bodies move to `.harnery/decisions/archive/`, out of the live review
 feed but still returned by `search` (and `list --archived`) as precedent.
 Without an exit, a reviewed decision would sit in the feed forever.
+
+`archive` is terminal, but `harn decision reopen <id>` (alias `unarchive`) is the
+one sanctioned way back out — for a fat-fingered `--graduated-to` or the wrong
+decision archived. It pulls the decision back to `reviewed`, moves it out of the
+archive, and clears `graduated_to` (a re-archive sets it fresh). Only `archived`
+decisions reopen; `superseded` and `wontfix` stay terminal.
 
 ## The evidence guard
 

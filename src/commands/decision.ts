@@ -24,6 +24,7 @@ import {
   isVerdict,
   listDecisions,
   type ReviewVerdict,
+  reopenDecision,
   resolveDecision,
   reviewDecision,
   searchDecisions,
@@ -282,6 +283,22 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         tier: r.manifest!.tier,
         graduated_to: opts.graduatedTo ?? null,
       });
+      emit.data(r.manifest);
+    });
+
+  // ── reopen ───────────────────────────────────────────────────────────────────
+  // The inverse of archive: pull an archived decision back to `reviewed`. The one
+  // sanctioned way out of the terminal archive (e.g. a fat-fingered graduated_to
+  // or the wrong decision archived). Clears graduated_to; a re-archive sets it fresh.
+  root
+    .command("reopen <id>")
+    .alias("unarchive")
+    .description("Reopen an archived decision back to reviewed (the inverse of archive).")
+    .action((id: string) => {
+      const coordRoot = coordRootOrExit();
+      const r = reopenDecision(coordRoot, id);
+      if (!r.ok) return fail("reopen_failed", r.reason);
+      emitDecisionEvent("decision.reopened", { decision_id: id, tier: r.manifest!.tier });
       emit.data(r.manifest);
     });
 

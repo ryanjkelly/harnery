@@ -78,3 +78,11 @@ export async function archiveDecision(id: string, graduatedTo?: string): Promise
   if (graduatedTo?.trim()) args.push("--graduated-to", graduatedTo.trim());
   return runHarn(args);
 }
+
+/**
+ * Reopen an archived decision back to `reviewed` — the inverse of archive, for
+ * fixing a fat-fingered graduation or a wrongly-archived decision.
+ */
+export async function reopenDecision(id: string): Promise<HelperResult> {
+  return runHarn(["decision", "reopen", id]);
+}
