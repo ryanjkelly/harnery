@@ -66,3 +66,15 @@ export async function reviewDecision(
   if (note?.trim()) args.push("--note", note.trim());
   return runHarn(args);
 }
+
+/**
+ * Archive a reviewed decision, recording where its output graduated. The
+ * lifecycle-terminal exit for the review feed: once you've weighed in and the
+ * output has a canonical home, the decision closes into the (still-searchable)
+ * archive.
+ */
+export async function archiveDecision(id: string, graduatedTo?: string): Promise<HelperResult> {
+  const args = ["decision", "archive", id];
+  if (graduatedTo?.trim()) args.push("--graduated-to", graduatedTo.trim());
+  return runHarn(args);
+}

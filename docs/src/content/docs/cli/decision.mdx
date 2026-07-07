@@ -34,6 +34,9 @@ harn decision claim <id>           # claim for deliberation (--owner to override
 harn decision resolve <id>         # resolve; --recommendation (req) + --evidence (≥1 req) + --confidence/--reversal-cost/--wrong-if/--revisit-when
 harn decision review <id>          # record a verdict: --verdict ratified|overridden|wrong-tier-high|wrong-tier-low
 harn decision triage <id>          # adjust an already-filed decision's --tier/--stakes
+harn decision archive <id>         # graduate a reviewed decision (terminal); --graduated-to <ref>
+harn decision supersede <id>       # mark superseded by a newer decision (terminal); --by <id>
+harn decision wontfix <id>         # close an un-deliberated decision without action (terminal); --reason <text>
 ```
 
 ## Tiers
@@ -54,6 +57,13 @@ filed → triaged → deliberating → resolved → enacted → reviewed → arc
 un-deliberated decision. `deliberating → triaged` lets a deliberator re-check
 a decision's tier on first touch. `archived`, `superseded`, and `wontfix` are
 terminal (read-only).
+
+**`archive` is the graduation exit.** Once you've reviewed a decision and its
+output has a canonical home (an ADR, `AGENTS.md`, a code change),
+`harn decision archive <id> --graduated-to <ref>` closes the loop: the manifest
+and its bodies move to `.harnery/decisions/archive/`, out of the live review
+feed but still returned by `search` (and `list --archived`) as precedent.
+Without an exit, a reviewed decision would sit in the feed forever.
 
 ## The evidence guard
 
@@ -92,6 +102,9 @@ harn decision resolve <id> \
 # Async review — calibration, not approval; the work already proceeded
 harn decision review <id> --verdict ratified
 
-# Check precedent before filing something similar
+# Graduate the reviewed decision to its canonical home, then close it out
+harn decision archive <id> --graduated-to "docs/decisions.md#retry-backoff"
+
+# Check precedent before filing something similar (searches the archive too)
 harn decision search "retry backoff"
 ```

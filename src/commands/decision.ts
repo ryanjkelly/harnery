@@ -10,6 +10,7 @@ import {
 } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
+  archiveDecision,
   claimDecision,
   DECISION_STAKES,
   type DecisionManifest,
@@ -27,7 +28,9 @@ import {
   reviewDecision,
   searchDecisions,
   showDecision,
+  supersedeDecision,
   triageDecision,
+  wontfixDecision,
 } from "../lib/decision/index.ts";
 
 /**
@@ -259,6 +262,58 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         stakes: opts.stakes !== undefined ? parseStakes(opts.stakes) : undefined,
       });
       if (!r.ok) return fail("triage_failed", r.reason);
+      emit.data(r.manifest);
+    });
+
+  // ── archive ─────────────────────────────────────────────────────────────────
+  // The graduation exit: a reviewed decision's output has landed in a canonical
+  // home (an ADR, AGENTS.md, a code change), so the decision closes and moves to
+  // the archive, still searchable as precedent. `--graduated-to` records where.
+  root
+    .command("archive <id>")
+    .description("Archive a reviewed decision (terminal). Record where its output graduated.")
+    .option("--graduated-to <ref>", "Where the resolved output landed (e.g. docs/decisions.md#foo)")
+    .action((id: string, opts: { graduatedTo?: string }) => {
+      const coordRoot = coordRootOrExit();
+      const r = archiveDecision(coordRoot, id, opts.graduatedTo);
+      if (!r.ok) return fail("archive_failed", r.reason);
+      emitDecisionEvent("decision.archived", {
+        decision_id: id,
+        tier: r.manifest!.tier,
+        graduated_to: opts.graduatedTo ?? null,
+      });
+      emit.data(r.manifest);
+    });
+
+  // ── supersede ────────────────────────────────────────────────────────────────
+  root
+    .command("supersede <id>")
+    .description("Mark a decision superseded by a newer one (terminal).")
+    .option("--by <id>", "The superseding decision's id")
+    .action((id: string, opts: { by?: string }) => {
+      const coordRoot = coordRootOrExit();
+      const r = supersedeDecision(coordRoot, id, opts.by);
+      if (!r.ok) return fail("supersede_failed", r.reason);
+      emitDecisionEvent("decision.superseded", {
+        decision_id: id,
+        superseded_by: opts.by ?? null,
+      });
+      emit.data(r.manifest);
+    });
+
+  // ── wontfix ──────────────────────────────────────────────────────────────────
+  root
+    .command("wontfix <id>")
+    .description("Close an un-deliberated decision without action (terminal).")
+    .option("--reason <text>", "Why it's being closed")
+    .action((id: string, opts: { reason?: string }) => {
+      const coordRoot = coordRootOrExit();
+      const r = wontfixDecision(coordRoot, id, opts.reason);
+      if (!r.ok) return fail("wontfix_failed", r.reason);
+      emitDecisionEvent("decision.wontfix", {
+        decision_id: id,
+        reason: opts.reason ?? null,
+      });
       emit.data(r.manifest);
     });
 }

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
+import { DecisionArchiveActions } from "@/components/DecisionArchiveActions";
 import { DecisionReviewActions } from "@/components/DecisionReviewActions";
 import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
@@ -150,21 +151,29 @@ export default async function DecisionDetailPage({ params }: PageProps) {
         ))}
 
         {m.review ? (
-          <Card className="mb-4">
-            <CardHeader>
-              <CardTitle>Review</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Verdict:</span>
-                <VerdictPill verdict={m.review.verdict} />
-              </div>
-              {m.review.note && <p className="text-sm whitespace-pre-wrap">{m.review.note}</p>}
+          <>
+            <Card className="mb-4">
+              <CardHeader>
+                <CardTitle>Review</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Verdict:</span>
+                  <VerdictPill verdict={m.review.verdict} />
+                </div>
+                {m.review.note && <p className="text-sm whitespace-pre-wrap">{m.review.note}</p>}
+                <p className="text-[11px] text-muted-foreground">
+                  reviewed <FormattedDateTime iso={m.review.reviewed_at} />
+                </p>
+              </CardContent>
+            </Card>
+            {m.status === "reviewed" && <DecisionArchiveActions decisionId={m.decision_id} />}
+            {m.graduated_to && (
               <p className="text-[11px] text-muted-foreground">
-                reviewed <FormattedDateTime iso={m.review.reviewed_at} />
+                graduated to <span className="font-mono text-foreground/80">{m.graduated_to}</span>
               </p>
-            </CardContent>
-          </Card>
+            )}
+          </>
         ) : awaitingReview ? (
           <DecisionReviewActions decisionId={m.decision_id} />
         ) : null}
