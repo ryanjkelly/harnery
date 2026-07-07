@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- f4fc810: `harn browse --check-runts [selector]`: detect runts (a single word alone on a text block's last visual line) by counting words per line via per-word Range rects. Reports hits in the JSON envelope under `runts`, annotates them on the screenshot, and `--check-runts-fail` exits non-zero on any hit. Also fixes the `--no-check-visible-annotate` / `--no-check-width-annotate` / `--no-check-overflow-annotate` opt-outs, which read the wrong Commander attribute and never disabled annotation.
+- f4fc810: Add `harn decision`: a decision docket — a persistent queue for decisions an agent would otherwise escalate to a human. State lives at `.harnery/decisions/` (one manifest per decision + a bodies dir + an archive), mirroring councils. Lifecycle `filed → triaged → deliberating → resolved → enacted → reviewed → archived` (plus `superseded`/`wontfix`), validated through a single transition chokepoint. The engine is generic: it stores a `tier` (0/1/2) + `stakes` but never interprets them — the triage rubric is host policy applied by the filing agent. `resolve` requires ≥1 evidence citation (evidence-free resolutions are bounced). `file`/`resolve`/`review`/`archive` emit canonical `decision.*` events. Surface: `file|list|show|search|claim|resolve|review|triage|archive|reopen|supersede|wontfix` — `archive --graduated-to <ref>` is the graduation exit that closes a reviewed decision into the searchable archive, and `reopen` (alias `unarchive`) is its inverse for a mis-archive. Automated deliberation dispatch (a scheduled sweeper, council escalation) is intentionally left to a follow-up.
+- f4fc810: docs lint: add opt-in `docs-root-file` rule. Hosts can pass `context.docsRootAllowlist` (a list of filenames permitted loose at the parent repo's `docs/` root); any other `.md`/`.json` there is flagged so topic docs stay in `docs/<topic>/` subdirs. No-op when the allowlist is unset, so standalone `harn` and non-opting consumers are unaffected. Parent-repo only — submodule `docs/` roots keep their own entry tiers.
+
+### Patch Changes
+
+- f4fc810: `consumeSince` no longer reads the whole event stream on its fall-through path. When the cursor missed the 2MB tail window it did a `readFileSync` of the entire `.harnery/events.ndjson`, which throws V8's max-string-length error ("Cannot create a string longer than 0x1fffffe8 characters") once the append-only ledger passes ~512MB, silently aborting Stop-hook heartbeat projection (caught + logged as `stop-projection`). The fall-through now reads at most a capped tail (`fallbackCapBytes`, default 64 MiB, env `HARNERY_AGENT_COORD_FALLBACK_CAP_BYTES`), dropping the partial leading line, so projection stays correct on an arbitrarily large ledger. Events older than the cap are stale for coord-state purposes and the projector is idempotent, so the bounded replay is safe.
+
+  The same overflow was fixed in the `agents trace` and `agents health` CLI scans, which also read the whole stream (`trace` unguarded, so it hard-crashed past 512MB). Both now use the shared `readStreamTailBounded` helper (128 MiB cap); `trace` prints a stderr note when the ledger exceeds the window so the truncation is not silent.
+
+- f4fc810: The harness-probe helper (`harn agents probe` machinery) set and read stale host-prefixed coordination env vars that core no longer honors, so its `TEST_ANCHOR_PID` / root-override / off-switch overrides silently never applied. Aligned them to the `HARNERY_`-prefixed names core reads via `coordEnv()` — the probe now exercises the same env contract as the live hot path.
+- f4fc810: Internal runtime identifiers that embedded the host abbreviation are retagged to harnery's own `harn-` prefix: cookie-jar `source`/`exportedFrom` tags (`harn-cookies`, `harn-browse`, `harn-fetch`, `harn-browse-ai`), temp-file name prefixes (`harn-agent-browser-state-`, `harn-harness-probe-`), and the tunnel-gate log label. Provenance-only tags — no behavior keys on their values.
+- f4fc810: `syncClaudeSessions` now resolves the host CLI bin via `resolveBinName()` instead of a hardcoded literal, so the Claude-Code session-telemetry sync fires for any consumer regardless of its bin name (previously it silently no-op'd unless the bin matched the previously-hardcoded name). The scratchpad UI-edit audit marker is now host-agnostic ("edited via UI by the operator") rather than naming a specific operator.
+
 ## 0.5.0
 
 ### Minor Changes
