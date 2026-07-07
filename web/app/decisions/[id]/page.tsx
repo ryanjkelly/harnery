@@ -11,7 +11,12 @@ import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import { coordRoot } from "@/lib/coord-reader";
+import {
+  coordRoot,
+  type InstanceIdentity,
+  readAgents,
+  readInstanceIdentities,
+} from "@/lib/coord-reader";
 import { readDecision } from "@/lib/decision-reader";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +30,19 @@ function norm(name: string | null | undefined): string | null {
   return name.startsWith("agent-") ? name : `agent-${name}`;
 }
 
+/** Resolve an actor field to a chip name. `claimed_by` stores an instance_id
+ * (from `resolveOwner`), unlike `filed_by`/`resolved_by` which store the name;
+ * map the id back through the identity index so the chip resolves + hovers
+ * instead of showing a raw `agent-<uuid>`. */
+function actorName(
+  value: string | null | undefined,
+  identities: Record<string, InstanceIdentity>,
+): string | null {
+  if (!value) return null;
+  const bare = value.startsWith("agent-") ? value.slice("agent-".length) : value;
+  return norm(identities[bare]?.name ?? identities[value]?.name ?? value);
+}
+
 export default async function DecisionDetailPage({ params }: PageProps) {
   const { id } = await params;
   const decoded = decodeURIComponent(id);
@@ -33,9 +51,22 @@ export default async function DecisionDetailPage({ params }: PageProps) {
 
   const { manifest: m, bodies } = detail;
   const awaitingReview = m.status === "resolved" || m.status === "enacted";
+  const identities = readInstanceIdentities();
   const filedBy = norm(m.filed_by);
   const resolvedBy = norm(m.resolution?.resolved_by);
-  const claimedBy = norm(m.claimed_by);
+  const claimedBy = actorName(m.claimed_by, identities);
+  const claimerBare = m.claimed_by?.startsWith("agent-")
+    ? m.claimed_by.slice("agent-".length)
+    : m.claimed_by;
+  // "working" = the claimer is live AND the decision is still being deliberated.
+  // Once resolved/reviewed, claimed_by lingers but the agent isn't working it,
+  // so a live session shouldn't imply active work on this decision.
+  const claimerWorking =
+    m.status === "deliberating" &&
+    !!claimerBare &&
+    readAgents().active.some(
+      (a) => a.instance_id === claimerBare || a.instance_id === m.claimed_by,
+    );
 
   const names = new Set<string>();
   for (const n of [filedBy, resolvedBy, claimedBy]) if (n) names.add(n);
@@ -53,7 +84,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
 
         <header className="mb-6">
           <div className="flex items-start justify-between gap-4 flex-wrap">
-            <h1 className="text-lg font-semibold leading-snug max-w-2xl">{m.question}</h1>
+            <h1 className="min-w-0 text-lg font-semibold leading-snug max-w-2xl">{m.question}</h1>
             <TierPill tier={m.tier} />
           </div>
           <div className="mt-2.5 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
@@ -71,8 +102,13 @@ export default async function DecisionDetailPage({ params }: PageProps) {
             </span>
             {claimedBy && (
               <span className="inline-flex items-center gap-1">
-                <span className="text-muted-foreground/60">claimed by</span>
+                {claimerWorking ? (
+                  <span className="live-dot" aria-hidden />
+                ) : (
+                  <span className="text-muted-foreground/60">claimed by</span>
+                )}
                 <AgentChip name={claimedBy} className="font-mono text-foreground/80" />
+                {claimerWorking && <span className="text-emerald-400/90">working</span>}
               </span>
             )}
           </div>

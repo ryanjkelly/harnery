@@ -7,7 +7,12 @@ import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
 import { hostInfo } from "@/lib/config";
-import { coordRoot } from "@/lib/coord-reader";
+import {
+  coordRoot,
+  type InstanceIdentity,
+  readAgents,
+  readInstanceIdentities,
+} from "@/lib/coord-reader";
 import { sortReviewFeed } from "@/lib/decision-attention";
 import { type DecisionManifest, readDecisions } from "@/lib/decision-reader";
 
@@ -19,17 +24,50 @@ function norm(name: string | null | undefined): string | null {
   return name.startsWith("agent-") ? name : `agent-${name}`;
 }
 
+/** Resolve an actor field to a chip name. `claimed_by` stores an instance_id
+ * (from `resolveOwner`), unlike `filed_by`/`resolved_by` which store the name;
+ * map the id back through the identity index so the chip resolves + hovers. */
+function actorName(
+  value: string | null | undefined,
+  identities: Record<string, InstanceIdentity>,
+): string | null {
+  if (!value) return null;
+  const bare = value.startsWith("agent-") ? value.slice("agent-".length) : value;
+  return norm(identities[bare]?.name ?? identities[value]?.name ?? value);
+}
+
+/** Per-decision claimer, resolved to a name + whether that agent is live now. */
+export interface ClaimerInfo {
+  name: string | null;
+  active: boolean;
+}
+
 export default function DecisionsPage() {
   const snap = readDecisions();
   const { binName } = hostInfo();
   const reviewFeed = sortReviewFeed(snap.review);
 
+  const identities = readInstanceIdentities();
+  const activeIds = new Set(readAgents().active.map((a) => a.instance_id));
+
   const everyName = new Set<string>();
+  const claimers: Record<string, ClaimerInfo> = {};
   for (const d of [...snap.queue, ...reviewFeed, ...snap.reviewed, ...snap.closed]) {
     const f = norm(d.filed_by);
     if (f) everyName.add(f);
     const r = norm(d.resolution?.resolved_by);
     if (r) everyName.add(r);
+    if (d.claimed_by) {
+      const name = actorName(d.claimed_by, identities);
+      if (name) everyName.add(name);
+      const bare = d.claimed_by.startsWith("agent-")
+        ? d.claimed_by.slice("agent-".length)
+        : d.claimed_by;
+      claimers[d.decision_id] = {
+        name,
+        active: activeIds.has(bare) || activeIds.has(d.claimed_by),
+      };
+    }
   }
   const summaries = buildAgentSummaryMap(everyName);
 
@@ -72,6 +110,7 @@ export default function DecisionsPage() {
           hint="Resolved and already enacted. Ratify, override, or flag the tier."
           tone="act"
           decisions={reviewFeed}
+          claimers={claimers}
           emptyText="Nothing awaiting review."
         />
         <Section
@@ -79,6 +118,7 @@ export default function DecisionsPage() {
           hint="Filed or in deliberation. Not yet resolved."
           tone="wait"
           decisions={snap.queue}
+          claimers={claimers}
           emptyText="Empty queue."
         />
         <Section
@@ -86,12 +126,14 @@ export default function DecisionsPage() {
           hint="You've weighed in. Kept for precedent."
           tone="done"
           decisions={snap.reviewed}
+          claimers={claimers}
         />
         <Section
           title="Closed"
           hint="Archived, superseded, or wontfix."
           tone="muted"
           decisions={snap.closed}
+          claimers={claimers}
         />
 
         {snap.meta.count === 0 && (
@@ -121,12 +163,14 @@ function Section({
   hint,
   tone,
   decisions,
+  claimers,
   emptyText,
 }: {
   title: string;
   hint: string;
   tone: Tone;
   decisions: DecisionManifest[];
+  claimers: Record<string, ClaimerInfo>;
   emptyText?: string;
 }) {
   if (decisions.length === 0) {
@@ -143,7 +187,7 @@ function Section({
       <SectionHeader title={title} hint={hint} count={decisions.length} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {decisions.map((d) => (
-          <DecisionCard key={d.decision_id} d={d} tone={tone} />
+          <DecisionCard key={d.decision_id} d={d} tone={tone} claimer={claimers[d.decision_id]} />
         ))}
       </div>
     </section>
@@ -168,7 +212,15 @@ const TONE_RING: Record<Tone, string> = {
   muted: "border-border/60 opacity-80 hover:opacity-100",
 };
 
-function DecisionCard({ d, tone }: { d: DecisionManifest; tone: Tone }) {
+function DecisionCard({
+  d,
+  tone,
+  claimer,
+}: {
+  d: DecisionManifest;
+  tone: Tone;
+  claimer?: ClaimerInfo;
+}) {
   const who = norm(d.filed_by);
   return (
     <Link
@@ -176,7 +228,8 @@ function DecisionCard({ d, tone }: { d: DecisionManifest; tone: Tone }) {
       className={`block rounded-lg border ${TONE_RING[tone]} bg-card p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50`}
     >
       <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-medium leading-snug">{d.question}</p>
+        {/* min-w-0 lets the question shrink + wrap; the pill (shrink-0) stays put. */}
+        <p className="min-w-0 text-sm font-medium leading-snug">{d.question}</p>
         <TierPill tier={d.tier} />
       </div>
       {/* Meta row: colour-graded pills carry the state; the divider + right-aligned
@@ -191,6 +244,24 @@ function DecisionCard({ d, tone }: { d: DecisionManifest; tone: Tone }) {
             <AgentChip name={who} className="font-mono text-foreground/80" />
           </span>
         )}
+        {claimer?.name &&
+          (() => {
+            // "working" only while actively deliberating; a resolved decision
+            // keeps claimed_by but the live session isn't working it anymore.
+            const working = claimer.active && d.status === "deliberating";
+            return (
+              <span className="text-muted-foreground inline-flex items-center gap-1">
+                <span className="text-muted-foreground/60">·</span>
+                {working ? (
+                  <span className="live-dot" aria-hidden />
+                ) : (
+                  <span className="text-muted-foreground/60">claimed by</span>
+                )}
+                <AgentChip name={claimer.name} className="font-mono text-foreground/80" />
+                {working && <span className="text-emerald-400/90">working</span>}
+              </span>
+            );
+          })()}
         <FormattedDateTime iso={d.filed_at} className="ml-auto text-muted-foreground" />
       </div>
     </Link>

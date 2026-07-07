@@ -17,9 +17,13 @@ import type {
 
 function Pill({ children, cls, tip }: { children: ReactNode; cls: string; tip: string }) {
   return (
-    <Tooltip content={tip}>
+    // `triggerClassName="shrink-0"`: the Tooltip's wrapper span is the actual
+    // flex item in a pill row, so the pill must be marked non-shrinking THERE —
+    // shrink-0 on the inner span below is invisible to the parent flex. Without
+    // it a long sibling (a decision question) pushes the pill past the card edge.
+    <Tooltip content={tip} triggerClassName="shrink-0">
       <span
-        className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${cls}`}
+        className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${cls}`}
       >
         {children}
       </span>
