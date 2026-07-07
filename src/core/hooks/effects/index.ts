@@ -17,6 +17,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
+import { resolveBinName } from "../../config.ts";
 
 export type { CaptureContext } from "./image-capture.ts";
 export { captureImages, imageJanitor } from "./image-capture.ts";
@@ -126,7 +127,7 @@ export function scratchArchive(repoRoot: string, owner: string): void {
  */
 export function syncClaudeSessions(repoRoot: string, force: boolean): void {
   try {
-    const bin = join(repoRoot, "bin", "bp");
+    const bin = join(repoRoot, "bin", resolveBinName(repoRoot));
     if (!existsSync(bin)) return;
     const env: Record<string, string | undefined> = {
       ...process.env,

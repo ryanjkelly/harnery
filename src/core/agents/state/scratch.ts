@@ -81,7 +81,7 @@ export function appendScratch(
 
 /**
  * Replace the scratchpad with new body, archiving prior contents and
- * appending an "(edited via UI by Ryan)" audit-marker note.
+ * appending an "(edited via UI by the operator)" audit-marker note.
  */
 export function editScratchpad(
   coordRoot: string,
@@ -112,7 +112,7 @@ export function editScratchpad(
 
   const summaryText = summary && summary.length > 0 ? summary : "(no summary)";
   const auditMarker =
-    `## [${ts}] note (edited via UI by Ryan)\n` +
+    `## [${ts}] note (edited via UI by the operator)\n` +
     `${summaryText}\n` +
     `Pre-edit archived at .harnery/scratch/archived/${instanceId}-${archiveSuffix}.md\n\n`;
 
