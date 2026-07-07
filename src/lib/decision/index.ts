@@ -510,6 +510,52 @@ export function archiveDecision(
   return result;
 }
 
+/**
+ * Reopen an archived decision back to `reviewed` — the inverse of `archive`,
+ * and the one sanctioned way out of the (otherwise terminal) archived state.
+ * Since `archived` has no legal outgoing transition, this deliberately bypasses
+ * the `transition` guard, the same way `archive` does its file moves outside it.
+ * Moves the manifest + body dir back from `archive/` into the active dir and
+ * clears `graduated_to` (a re-archive sets it fresh). Only `archived` decisions
+ * reopen; `superseded`/`wontfix` stay terminal.
+ *
+ * Ordering is write-active-then-remove-archived so an interrupted call leaves
+ * the decision reopened (active copy wins in `readManifest`) rather than lost.
+ */
+export function reopenDecision(coordRoot: string, id: string): DecisionOpResult {
+  const manifest = readManifest(coordRoot, id);
+  if (!manifest) return { ok: false, reason: `no decision "${id}"` };
+  if (manifest.status !== "archived") {
+    return { ok: false, reason: `only archived decisions can be reopened (this is ${manifest.status})` };
+  }
+
+  const archivedBody = join(archiveDir(coordRoot), id);
+  const activeBody = decisionBodyDir(coordRoot, id);
+  if (existsSync(archivedBody)) {
+    if (existsSync(activeBody)) {
+      rmSync(archivedBody, { recursive: true, force: true });
+    } else {
+      try {
+        renameSync(archivedBody, activeBody);
+      } catch {
+        cpSync(archivedBody, activeBody, { recursive: true });
+        rmSync(archivedBody, { recursive: true, force: true });
+      }
+    }
+  }
+
+  const reopened: DecisionManifest = {
+    ...manifest,
+    status: "reviewed",
+    graduated_to: null,
+    updated_at: nowIso(),
+  };
+  atomicWriteText(manifestPath(coordRoot, id), `${JSON.stringify(reopened, null, 2)}\n`);
+  const archived = archivedManifestPath(coordRoot, id);
+  if (existsSync(archived)) rmSync(archived, { force: true });
+  return { ok: true, manifest: reopened };
+}
+
 // ─── Read / query ─────────────────────────────────────────────────────────────
 
 export interface ListFilter {
