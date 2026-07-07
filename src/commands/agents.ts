@@ -2707,7 +2707,7 @@ function runHarnessProbe(
   // and `resolveOwner` here, so the probe reports exactly what the live hot
   // path resolves.
   const anchorTokens = new Set(["claude", "claude-code", "cursor", "codex"]);
-  const override = process.env.BP_AGENT_COORD_TEST_ANCHOR_PID;
+  const override = process.env.HARNERY_AGENT_COORD_TEST_ANCHOR_PID;
   let anchorPid = override && Number(override) > 0 ? override : "";
   const chainParts: string[] = [];
   let walkPid = process.pid;
@@ -2818,10 +2818,10 @@ function runHarnessProbe(
  * Sandbox isolation strategy:
  *   - mkdtempSync(tmpdir(), "harn-harness-probe-") creates a non-git tmp dir.
  *   - The dispatcher's coord-root resolution falls back to
- *     `BP_COORD_ROOT_OVERRIDE` when git rev-parse fails. We set it to the sandbox.
+ *     `HARNERY_COORD_ROOT_OVERRIDE` when git rev-parse fails. We set it to the sandbox.
  *   - We rewrite the payload's `cwd` field (Cursor cds to it) to the sandbox,
  *     so real `.harnery/` never gets touched.
- *   - We set `BP_AGENT_COORD_OFF=0` explicitly so any user-side off-switch in
+ *   - We set `HARNERY_AGENT_COORD_OFF=0` explicitly so any user-side off-switch in
  *     the environment doesn't mask adapter crashes.
  *
  * Sample shape: probe-meta wrapped (`_probe_meta.event` + `.payload`) OR bare
@@ -2949,10 +2949,10 @@ function replayHarnessSamples(
         timeout: 10_000,
         env: {
           ...process.env,
-          BP_COORD_ROOT_OVERRIDE: sandbox,
-          BP_AGENT_COORD_HARNESS: harness,
-          BP_AGENT_COORD_PLATFORM: harness,
-          BP_AGENT_COORD_OFF: "0",
+          HARNERY_COORD_ROOT_OVERRIDE: sandbox,
+          HARNERY_AGENT_COORD_HARNESS: harness,
+          HARNERY_AGENT_COORD_PLATFORM: harness,
+          HARNERY_AGENT_COORD_OFF: "0",
         },
       });
 
