@@ -69,8 +69,11 @@ Add a generic decision docket to harnery:
   is the host's concern. `escalateToCouncil` links a decision to a council id
   and nothing more.
 
-`harn decision file|list|show|search|claim|resolve|review|triage` is the CLI
-surface. Host projects layer their triage rubric + a capture skill on top.
+`harn decision file|list|show|search|claim|resolve|review|triage|archive|supersede|wontfix`
+is the CLI surface. `archive --graduated-to <ref>` is the graduation exit: a
+reviewed decision closes into the searchable archive once its output has a
+canonical home, rather than sitting in the review feed indefinitely. Host
+projects layer their triage rubric + a capture skill on top.
 
 ## Result / gotchas
 
