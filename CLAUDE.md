@@ -27,7 +27,8 @@ bun install
 bun test                 # unit + alongside-source tests
 bun run test:integration
 bun run typecheck        # tsc --noEmit (strict mode)
-bun run lint             # Biome over src/; `bun run format` to fix
+bun run lint             # Biome over src/ (check + assists, read-only)
+bun run lint:fix         # auto-fix lint AND import-sort/assists (`format` only fixes whitespace)
 bun run build            # tsc -> dist/ (JS + .d.ts) for the Node target; prepublishOnly runs this
 bun run docs:dev         # Starlight docs site
 bin/harn --help

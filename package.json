@@ -128,6 +128,7 @@
     "prepublishOnly": "npm run clean && npm run build",
     "typecheck": "bun x tsc --noEmit",
     "lint": "bun x @biomejs/biome check src",
+    "lint:fix": "bun x @biomejs/biome check --write src",
     "format": "bun x @biomejs/biome format --write src",
     "test": "bun test src tests",
     "test:web": "cd web && bun install && bun test",
