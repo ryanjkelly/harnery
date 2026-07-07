@@ -161,6 +161,30 @@ function resolveTailBytes(override?: number): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TAIL_BYTES;
 }
 
+/**
+ * Read at most `capBytes` from the tail of the event stream as UTF-8, dropping
+ * the (partial) leading line when the file is larger than the cap. Shared
+ * bounded reader for CLI consumers (`agents trace` / `agents health`) that must
+ * never `readFileSync` the whole unbounded ledger — a >512MB read throws V8's
+ * max-string-length error. `truncated` is true when older bytes were skipped, so
+ * callers can surface the cap rather than silently under-reporting.
+ */
+export function readStreamTailBounded(
+  streamPath: string,
+  capBytes: number,
+): { text: string; truncated: boolean } {
+  if (!existsSync(streamPath)) return { text: "", truncated: false };
+  const fileSize = statSync(streamPath).size;
+  const readBytes = Math.min(fileSize, capBytes);
+  let text = readTailUtf8(streamPath, fileSize, readBytes);
+  const truncated = readBytes < fileSize;
+  if (truncated) {
+    const nl = text.indexOf("\n");
+    text = nl >= 0 ? text.slice(nl + 1) : "";
+  }
+  return { text, truncated };
+}
+
 /** Read the trailing `windowBytes` of a file as UTF-8 without loading the rest. */
 function readTailUtf8(streamPath: string, fileSize: number, windowBytes: number): string {
   const start = Math.max(0, fileSize - windowBytes);

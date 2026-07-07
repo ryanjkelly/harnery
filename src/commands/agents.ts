@@ -28,6 +28,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
   emitCanonical,
   type Heartbeat,
@@ -38,6 +39,12 @@ import {
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
+
+/** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
+ * under V8's ~512MB max string length so a `readFileSync` of the whole file can
+ * never throw; covers ample recent history for a diagnostic scan. */
+const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
+
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
 import {
   buildCouncilId,
@@ -2098,8 +2105,12 @@ function readStreamStats(root: string): { bytes: number; lines: number; cursor_b
   let backlog = 0;
   let seenCursor = cursor === null; // no cursor → everything is "backlog"
   try {
-    const raw = readFileSync(streamPath, "utf8");
-    for (const line of raw.split("\n")) {
+    // Bounded tail read: the ledger grows without bound and a whole-file
+    // readFileSync throws past V8's ~512MB string limit. lines/backlog are then
+    // scoped to the scanned window; `bytes` (full size, via statSync above) still
+    // reflects the true stream size for the health rollup.
+    const { text } = readStreamTailBounded(streamPath, STREAM_SCAN_CAP_BYTES);
+    for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       lines++;
       if (seenCursor) {
@@ -2225,23 +2236,33 @@ function runTrace(
   const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 200);
   const candidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
 
-  // Scan the full stream once, bucket events by instance_id for the candidates.
+  // Scan the stream tail once, bucket events by instance_id for the candidates.
+  // Bounded read: the ledger grows without bound and a whole-file readFileSync
+  // throws past V8's ~512MB string limit. A trace of an agent whose events all
+  // predate the window is reported as truncated rather than crashing.
   const streamPath = resolve(root, ".harnery", "events.ndjson");
   const byId = new Map<string, CanonicalEvent[]>();
-  if (existsSync(streamPath)) {
-    for (const line of readFileSync(streamPath, "utf8").split("\n")) {
-      if (!line) continue;
-      try {
-        const ev = JSON.parse(line) as CanonicalEvent;
-        if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
-        if (sinceMs && Date.parse(ev.ts) < sinceMs) continue;
-        const arr = byId.get(ev.instance_id) ?? [];
-        arr.push(ev);
-        byId.set(ev.instance_id, arr);
-      } catch {
-        /* skip */
-      }
+  const { text: streamText, truncated: streamTruncated } = readStreamTailBounded(
+    streamPath,
+    STREAM_SCAN_CAP_BYTES,
+  );
+  for (const line of streamText.split("\n")) {
+    if (!line) continue;
+    try {
+      const ev = JSON.parse(line) as CanonicalEvent;
+      if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
+      if (sinceMs && Date.parse(ev.ts) < sinceMs) continue;
+      const arr = byId.get(ev.instance_id) ?? [];
+      arr.push(ev);
+      byId.set(ev.instance_id, arr);
+    } catch {
+      /* skip */
     }
+  }
+  if (streamTruncated) {
+    process.stderr.write(
+      `note: event ledger exceeds ${Math.round(STREAM_SCAN_CAP_BYTES / 1024 / 1024)}MB; traced only the most recent window (older events omitted)\n`,
+    );
   }
 
   // If the name mapped to multiple instances, trace the one with the latest event.
