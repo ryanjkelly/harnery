@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
 import { DecisionReviewActions } from "@/components/DecisionReviewActions";
+import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { buildAgentSummaryMap } from "@/lib/agent-summary";
 import { coordRoot } from "@/lib/coord-reader";
 import { readDecision } from "@/lib/decision-reader";
 
@@ -13,6 +16,11 @@ export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+}
+
+function norm(name: string | null | undefined): string | null {
+  if (!name) return null;
+  return name.startsWith("agent-") ? name : `agent-${name}`;
 }
 
 export default async function DecisionDetailPage({ params }: PageProps) {
@@ -23,9 +31,16 @@ export default async function DecisionDetailPage({ params }: PageProps) {
 
   const { manifest: m, bodies } = detail;
   const awaitingReview = m.status === "resolved" || m.status === "enacted";
+  const filedBy = norm(m.filed_by);
+  const resolvedBy = norm(m.resolution?.resolved_by);
+  const claimedBy = norm(m.claimed_by);
+
+  const names = new Set<string>();
+  for (const n of [filedBy, resolvedBy, claimedBy]) if (n) names.add(n);
+  const summaries = buildAgentSummaryMap(names);
 
   return (
-    <>
+    <AgentChipProvider summaries={summaries}>
       <NavBar scannedDir={coordRoot()} />
       <main className="w-full max-w-4xl mx-auto px-6 pb-10">
         <nav className="mb-4 text-xs text-muted-foreground">
@@ -39,16 +54,27 @@ export default async function DecisionDetailPage({ params }: PageProps) {
             <h1 className="text-lg font-semibold leading-snug max-w-2xl">{m.question}</h1>
             <TierPill tier={m.tier} />
           </div>
-          <div className="mt-2 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+          <div className="mt-2.5 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
             <StatusPill status={m.status} />
             <StakesPill stakes={m.stakes} />
-            {m.filed_by && <span className="font-mono">filed by {m.filed_by}</span>}
+            {m.review && <VerdictPill verdict={m.review.verdict} />}
+            {filedBy && (
+              <span className="inline-flex items-center gap-1">
+                <span className="text-muted-foreground/60">filed by</span>
+                <AgentChip name={filedBy} className="font-mono text-foreground/80" />
+              </span>
+            )}
             <span>
-              filed <FormattedDateTime iso={m.filed_at} />
+              <FormattedDateTime iso={m.filed_at} />
             </span>
-            {m.claimed_by && <span className="font-mono">claimed by {m.claimed_by}</span>}
-            <span className="font-mono text-muted-foreground/70">{m.decision_id}</span>
+            {claimedBy && (
+              <span className="inline-flex items-center gap-1">
+                <span className="text-muted-foreground/60">claimed by</span>
+                <AgentChip name={claimedBy} className="font-mono text-foreground/80" />
+              </span>
+            )}
           </div>
+          <p className="mt-1 font-mono text-[11px] text-muted-foreground/60">{m.decision_id}</p>
         </header>
 
         {awaitingReview && (
@@ -97,8 +123,13 @@ export default async function DecisionDetailPage({ params }: PageProps) {
                 <Field label="Wrong if" value={m.resolution.wrong_if} />
                 <Field label="Revisit when" value={m.resolution.revisit_when} />
               </dl>
-              <p className="text-[11px] text-muted-foreground">
-                resolved by <span className="font-mono">{m.resolution.resolved_by}</span>{" "}
+              <p className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
+                resolved by{" "}
+                {resolvedBy ? (
+                  <AgentChip name={resolvedBy} className="font-mono text-foreground/80" />
+                ) : (
+                  <span className="font-mono">unknown</span>
+                )}{" "}
                 <FormattedDateTime iso={m.resolution.resolved_at} />
               </p>
             </CardContent>
@@ -123,13 +154,13 @@ export default async function DecisionDetailPage({ params }: PageProps) {
             <CardHeader>
               <CardTitle>Review</CardTitle>
             </CardHeader>
-            <CardContent>
-              <p className="text-sm">
-                <span className="text-muted-foreground">Verdict: </span>
-                <span className="font-medium">{m.review.verdict}</span>
-              </p>
-              {m.review.note && <p className="text-sm mt-1 whitespace-pre-wrap">{m.review.note}</p>}
-              <p className="text-[11px] text-muted-foreground mt-2">
+            <CardContent className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Verdict:</span>
+                <VerdictPill verdict={m.review.verdict} />
+              </div>
+              {m.review.note && <p className="text-sm whitespace-pre-wrap">{m.review.note}</p>}
+              <p className="text-[11px] text-muted-foreground">
                 reviewed <FormattedDateTime iso={m.review.reviewed_at} />
               </p>
             </CardContent>
@@ -138,7 +169,7 @@ export default async function DecisionDetailPage({ params }: PageProps) {
           <DecisionReviewActions decisionId={m.decision_id} />
         ) : null}
       </main>
-    </>
+    </AgentChipProvider>
   );
 }
 
@@ -149,37 +180,5 @@ function Field({ label, value }: { label: string; value?: string }) {
       <dt className="text-xs uppercase tracking-wider text-muted-foreground">{label}</dt>
       <dd className="mt-0.5">{value}</dd>
     </div>
-  );
-}
-
-function TierPill({ tier }: { tier: number }) {
-  const label =
-    tier === 2 ? "Tier 2 · your call" : tier === 1 ? "Tier 1 · review" : "Tier 0 · auto";
-  const cls =
-    tier === 2
-      ? "bg-sky-500/15 text-sky-300 border-sky-500/30"
-      : tier === 1
-        ? "bg-muted/60 text-foreground/80 border-border"
-        : "bg-muted/30 text-muted-foreground border-border/60";
-  return (
-    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {label}
-    </span>
-  );
-}
-
-function StakesPill({ stakes }: { stakes: string }) {
-  const cls =
-    stakes === "high"
-      ? "text-red-300 border-red-500/30"
-      : stakes === "medium"
-        ? "text-amber-300 border-amber-500/30"
-        : "text-muted-foreground border-border/60";
-  return <span className={`rounded-full border px-1.5 py-0.5 ${cls}`}>{stakes}</span>;
-}
-
-function StatusPill({ status }: { status: string }) {
-  return (
-    <span className="rounded-full border border-border/60 px-1.5 py-0.5 font-mono">{status}</span>
   );
 }

@@ -1,20 +1,38 @@
 import Link from "next/link";
 
+import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { Attention } from "@/components/Attention";
+import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/decision/DecisionPills";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
+import { buildAgentSummaryMap } from "@/lib/agent-summary";
 import { coordRoot } from "@/lib/coord-reader";
 import { sortReviewFeed } from "@/lib/decision-attention";
 import { type DecisionManifest, readDecisions } from "@/lib/decision-reader";
 
 export const dynamic = "force-dynamic";
 
+/** Normalize a stored agent name (heartbeat form "Quill") to the chip form "agent-Quill". */
+function norm(name: string | null | undefined): string | null {
+  if (!name) return null;
+  return name.startsWith("agent-") ? name : `agent-${name}`;
+}
+
 export default function DecisionsPage() {
   const snap = readDecisions();
   const reviewFeed = sortReviewFeed(snap.review);
 
+  const everyName = new Set<string>();
+  for (const d of [...snap.queue, ...reviewFeed, ...snap.reviewed, ...snap.closed]) {
+    const f = norm(d.filed_by);
+    if (f) everyName.add(f);
+    const r = norm(d.resolution?.resolved_by);
+    if (r) everyName.add(r);
+  }
+  const summaries = buildAgentSummaryMap(everyName);
+
   return (
-    <>
+    <AgentChipProvider summaries={summaries}>
       <NavBar scannedDir={coordRoot()} />
       <main className="w-full max-w-screen-2xl mx-auto px-6 pb-10">
         <nav className="mb-4 text-xs text-muted-foreground">
@@ -82,7 +100,7 @@ export default function DecisionsPage() {
           </p>
         )}
       </main>
-    </>
+    </AgentChipProvider>
   );
 }
 
@@ -144,11 +162,12 @@ function SectionHeader({ title, hint, count }: { title: string; hint: string; co
 const TONE_RING: Record<Tone, string> = {
   act: "border-sky-500/40 hover:border-sky-400/70",
   wait: "border-border hover:border-foreground/30",
-  done: "border-emerald-500/30 hover:border-emerald-400/60",
+  done: "border-emerald-500/25 hover:border-emerald-400/50",
   muted: "border-border/60 opacity-80 hover:opacity-100",
 };
 
 function DecisionCard({ d, tone }: { d: DecisionManifest; tone: Tone }) {
+  const who = norm(d.filed_by);
   return (
     <Link
       href={`/decisions/${encodeURIComponent(d.decision_id)}`}
@@ -158,44 +177,20 @@ function DecisionCard({ d, tone }: { d: DecisionManifest; tone: Tone }) {
         <p className="text-sm font-medium leading-snug">{d.question}</p>
         <TierPill tier={d.tier} />
       </div>
-      <div className="mt-2 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+      {/* Meta row: colour-graded pills carry the state; the divider + right-aligned
+          timestamp give it hierarchy instead of a flat gray run. */}
+      <div className="mt-2.5 flex items-center gap-2 flex-wrap text-[11px]">
         <StatusPill status={d.status} />
         <StakesPill stakes={d.stakes} />
-        {d.review && <span className="font-mono">verdict: {d.review.verdict}</span>}
-        {d.filed_by && <span className="font-mono">{d.filed_by}</span>}
-        <FormattedDateTime iso={d.filed_at} className="ml-auto" />
+        {d.review && <VerdictPill verdict={d.review.verdict} />}
+        {who && (
+          <span className="text-muted-foreground inline-flex items-center gap-1">
+            <span className="text-muted-foreground/60">by</span>
+            <AgentChip name={who} className="font-mono text-foreground/80" />
+          </span>
+        )}
+        <FormattedDateTime iso={d.filed_at} className="ml-auto text-muted-foreground" />
       </div>
     </Link>
-  );
-}
-
-function TierPill({ tier }: { tier: number }) {
-  const label = tier === 2 ? "T2 · your call" : tier === 1 ? "T1 · review" : "T0 · auto";
-  const cls =
-    tier === 2
-      ? "bg-sky-500/15 text-sky-300 border-sky-500/30"
-      : tier === 1
-        ? "bg-muted/60 text-foreground/80 border-border"
-        : "bg-muted/30 text-muted-foreground border-border/60";
-  return (
-    <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
-      {label}
-    </span>
-  );
-}
-
-function StakesPill({ stakes }: { stakes: string }) {
-  const cls =
-    stakes === "high"
-      ? "text-red-300 border-red-500/30"
-      : stakes === "medium"
-        ? "text-amber-300 border-amber-500/30"
-        : "text-muted-foreground border-border/60";
-  return <span className={`rounded-full border px-1.5 py-0.5 ${cls}`}>{stakes}</span>;
-}
-
-function StatusPill({ status }: { status: string }) {
-  return (
-    <span className="rounded-full border border-border/60 px-1.5 py-0.5 font-mono">{status}</span>
   );
 }
