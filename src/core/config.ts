@@ -23,7 +23,7 @@ import { findCoordRoot } from "./hooks/resolve/coord-root.ts";
 export const DEFAULT_BIN_NAME = "harn";
 
 interface HarneryConfig {
-  /** Host CLI bin name, stamped by `harn init` for a consumer (e.g. "bp"). */
+  /** Host CLI bin name, stamped by `harn init` for a consumer (e.g. "acme"). */
   binName?: string;
   /**
    * Host-specific command that (re)installs the project's git hooks, surfaced

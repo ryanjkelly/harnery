@@ -25,7 +25,7 @@ import { isoFromChangelogTs } from "@/lib/format/datetime";
  * criterion.
  *
  * Rendered through `<FinancialTable>` so the row chrome (zebra stripe + hover
- * transition) matches the upstream app's daily-exec and master-dashboard surfaces.
+ * transition) matches the upstream app's other dense-table surfaces.
  */
 export function ContributionMatrixCard({
   matrix,

@@ -84,7 +84,7 @@ function walkCommand(
   // The root program represents `harn` itself; its path stays empty so that
   // top-level subcommands have paths like "anthropic", not "harn anthropic".
   // The shell driver walks COMP_WORDS[1..], so it's already operating in
-  // post-`harn` space and shouldn't see "bp" in its lookup keys.
+  // post-`harn` space and shouldn't see the host bin name in its lookup keys.
   const path = isRoot ? "" : parentPath ? `${parentPath} ${name}` : name;
 
   const subcommands: CommandSpec[] = cmd.commands

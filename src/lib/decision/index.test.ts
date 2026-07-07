@@ -48,7 +48,7 @@ afterEach(() => {
 /** File a decision and return its id (helper for transition tests). */
 function file(overrides: Partial<Parameters<typeof fileDecision>[1]> = {}): string {
   const r = fileDecision(root, {
-    question: "Should fct_foo be incremental or a full rebuild?",
+    question: "Should the cache layer use redis or in-memory?",
     tier: 1,
     stakes: "medium",
     ...overrides,
@@ -58,8 +58,8 @@ function file(overrides: Partial<Parameters<typeof fileDecision>[1]> = {}): stri
 }
 
 const goodResolution = {
-  recommendation: "Make it incremental, partitioned by day.",
-  evidence: ["bp bq inventory shows 4y of data", "full rebuild timed out at PER_PAGE=5000"],
+  recommendation: "Use redis with a 60s TTL.",
+  evidence: ["load test shows 4x headroom", "in-memory cache OOM'd at 2GB"],
   resolved_by: "agent-Sweeper",
 };
 
@@ -67,8 +67,8 @@ const goodResolution = {
 
 describe("deriveSlug / buildDecisionId", () => {
   test("slug keeps first 5 words, kebab, alnum-only", () => {
-    expect(deriveSlug("Should fct_foo be incremental or full??")).toBe(
-      "should-fct-foo-be-incremental",
+    expect(deriveSlug("Should the api_cache use redis or memory??")).toBe(
+      "should-the-api-cache-use",
     );
   });
 
@@ -432,14 +432,14 @@ describe("listDecisions", () => {
 describe("searchDecisions", () => {
   test("finds substrings across question, context, resolution and body; case-insensitive", () => {
     const id = file({
-      question: "Which timezone for the daily-exec report?",
-      context: "Joe's sheet uses America/Chicago",
+      question: "Which timezone should the scheduler use?",
+      context: "the source spreadsheet uses America/Chicago",
       brief: "options include UTC and NY",
     });
     claimDecision(root, id, "agent-Sweeper");
     resolveDecision(root, id, {
-      recommendation: "Use America/New_York for order bucketing",
-      evidence: ["fct_orders uses NY day boundaries"],
+      recommendation: "Use America/New_York for bucketing",
+      evidence: ["the upstream uses NY day boundaries"],
       resolved_by: "agent-Sweeper",
     });
 

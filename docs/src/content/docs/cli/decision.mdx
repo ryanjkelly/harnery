@@ -19,7 +19,7 @@ The engine is deliberately generic. It stores a **tier** (`0`/`1`/`2`,
 human-involvement level) and **stakes** (`small`/`medium`/`high`) on every
 decision, but it never decides *what* belongs in which tier — that is host
 policy, applied by the filing agent (a host project supplies the rubric, e.g.
-via its own `/decide` skill). State lives under `.harnery/decisions/`, one JSON
+via its own decision skill). State lives under `.harnery/decisions/`, one JSON
 manifest per decision plus a sibling dir for long-form bodies, mirroring
 councils.
 

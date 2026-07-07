@@ -74,7 +74,7 @@ describe("parsePsChainLine (macOS/BSD `ps -o ppid=,comm=` fallback)", () => {
     // extension dir; only the basename `claude` matches the comm token set.
     expect(
       parsePsChainLine(
-        "83268 /Users/ryan/.vscode/extensions/anthropic.claude-code-2.1.191-darwin-arm64/resources/native-binary/claude",
+        "83268 /Users/user/.vscode/extensions/anthropic.claude-code-2.1.191-darwin-arm64/resources/native-binary/claude",
       ),
     ).toEqual({ ppid: 83268, comm: "claude" });
   });

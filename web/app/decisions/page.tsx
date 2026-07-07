@@ -6,6 +6,7 @@ import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/deci
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
+import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import { sortReviewFeed } from "@/lib/decision-attention";
 import { type DecisionManifest, readDecisions } from "@/lib/decision-reader";
@@ -20,6 +21,7 @@ function norm(name: string | null | undefined): string | null {
 
 export default function DecisionsPage() {
   const snap = readDecisions();
+  const { binName } = hostInfo();
   const reviewFeed = sortReviewFeed(snap.review);
 
   const everyName = new Set<string>();
@@ -95,8 +97,8 @@ export default function DecisionsPage() {
         {snap.meta.count === 0 && (
           <p className="text-sm text-muted-foreground italic">
             No decisions filed yet. An agent files one with{" "}
-            <code className="font-mono text-xs">bp decision file &quot;...&quot;</code> (or the{" "}
-            <code className="font-mono text-xs">/decide</code> skill).
+            <code className="font-mono text-xs">{`${binName} decision file "..."`}</code> (or the{" "}
+            <code className="font-mono text-xs">decision</code> skill).
           </p>
         )}
       </main>

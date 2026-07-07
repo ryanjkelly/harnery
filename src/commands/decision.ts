@@ -41,7 +41,7 @@ import {
  *
  * The engine is generic: it stores `tier` (0/1/2) + `stakes` but never decides
  * what belongs in which tier — that's host policy, applied by the filing agent
- * (for a host, via its own /decide skill + rubric).
+ * (for a host, via its own decision skill + rubric).
  */
 let emit: EmitContext;
 

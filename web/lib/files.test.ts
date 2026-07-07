@@ -67,16 +67,16 @@ function buildFixture(): string {
   w(root, "README.md", "# readme\n");
   w(root, "app-web/next-app/components/ui/badge.tsx", "export const Badge = () => null;\n");
   w(root, "app-web/src/data.json", '{"a":1}\n');
-  w(root, "bp-dbt/models/orders.sql", "select 1\n");
+  w(root, "app-data/models/orders.sql", "select 1\n");
   // nested secrets per submodule
   w(root, "app-web/.credentials/acme.env", "ACME_KEY=topsecret\n");
   w(root, "app-api/.env", "OPENAI_KEY=topsecret\n");
-  w(root, "bp-shopify/theme/.env", "SHOPIFY_TOKEN=topsecret\n");
+  w(root, "app-store/theme/.env", "SHOPIFY_TOKEN=topsecret\n");
   w(root, ".env", "ROOT_SECRET=1\n");
   w(root, ".env.example", "ROOT_SECRET=fill-me-in\n");
   w(root, ".credentials/gcp-sa-key.json", '{"private_key":"x"}\n');
   // SA-key / oauth family, outside any "credentials"-named dir
-  w(root, "bp-cloud-functions/gcf-x/gcp-sa-key.json", '{"k":1}\n');
+  w(root, "app-functions/fn-x/gcp-sa-key.json", '{"k":1}\n');
   w(root, "tools/my-service-account.json", '{"k":1}\n');
   w(root, "tools/refresh-token.json", '{"k":1}\n');
   w(root, "tools/client_secret_123.apps.googleusercontent.com.json", '{"k":1}\n');
@@ -171,7 +171,7 @@ describe("evaluateDeny (floor semantics)", () => {
   test("env family (soft) denies nested at any depth", () => {
     expect(denied(".env")).toBe(true);
     expect(denied("app-api/.env")).toBe(true);
-    expect(denied("bp-shopify/theme/.env")).toBe(true);
+    expect(denied("app-store/theme/.env")).toBe(true);
     expect(denied("a/b/c/d/e/.env.production")).toBe(true);
     expect(denied("x/staging.env")).toBe(true);
   });
@@ -251,7 +251,7 @@ describe("evaluateDeny (floor semantics)", () => {
       "docs/plans/plan.md",
       "app-web/next-app/components/ui/badge.tsx",
       "app-web/src/data.json",
-      "bp-dbt/models/orders.sql",
+      "app-data/models/orders.sql",
       "README.md",
       "assets/img.png",
       "environment.md", // contains "env" but doesn't match *.env / .env*
@@ -524,10 +524,10 @@ describe("resolveFile denylist + oracle closure", () => {
     for (const p of [
       "app-web/.credentials/acme.env",
       "app-api/.env",
-      "bp-shopify/theme/.env",
+      "app-store/theme/.env",
       ".env",
       ".credentials/gcp-sa-key.json",
-      "bp-cloud-functions/gcf-x/gcp-sa-key.json",
+      "app-functions/fn-x/gcp-sa-key.json",
       "tools/my-service-account.json",
       "tools/refresh-token.json",
       "tools/client_secret_123.apps.googleusercontent.com.json",
@@ -623,7 +623,7 @@ describe("resolveFile categories + content scan", () => {
   test("extension map", () => {
     expect(cat("docs/plans/plan.md")).toBe("markdown");
     expect(cat("app-web/next-app/components/ui/badge.tsx")).toBe("code");
-    expect(cat("bp-dbt/models/orders.sql")).toBe("code");
+    expect(cat("app-data/models/orders.sql")).toBe("code");
     expect(cat("app-web/src/data.json")).toBe("json");
     expect(cat("assets/conf.yaml")).toBe("yaml");
     expect(cat("assets/page.html")).toBe("html");
@@ -776,7 +776,7 @@ describe("resolveFile host config", () => {
   test("hard-family override is dropped at load, file stays denied", () => {
     const root = buildFixture();
     writeConfig(root, { allow_overrides: ["**/gcp-sa-key.json"] });
-    expectReject(resolveFile("bp-cloud-functions/gcf-x/gcp-sa-key.json", { root }), "denied", 403);
+    expectReject(resolveFile("app-functions/fn-x/gcp-sa-key.json", { root }), "denied", 403);
   });
 
   test("unparseable config fails closed: every request rejects config_error", () => {

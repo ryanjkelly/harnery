@@ -635,7 +635,7 @@ export interface SearchHit {
 
 /**
  * Case-insensitive substring search over manifests + bodies. Deliberately
- * dumb: precedent recall depends on the /decide skill running this before
+ * dumb: precedent recall depends on the host's decision skill running this before
  * filing, not on ranking sophistication. Includes the archive (precedent
  * lives there).
  */
