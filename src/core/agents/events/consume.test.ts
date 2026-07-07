@@ -146,3 +146,33 @@ describe("consumeSince: cursor rotated out", () => {
     expect(res.lastEventId).toBeNull();
   });
 });
+
+describe("consumeSince: bounded fall-through cap", () => {
+  // The fall-through read is capped so the unbounded events.ndjson can never
+  // overflow V8's ~512MB max string length via readFileSync (the crash that
+  // silently blanked the web feed and could abort heartbeat projection). These
+  // drive the cap tiny to prove the fall-through reads only a window, not the
+  // whole file.
+  test("fall-through is capped: an old cursor replays only the capped tail, not the whole file", () => {
+    const root = freshRoot();
+    writeStream(root, ["a", "b", "c", "d", "e", "f"], 200);
+    writeCursor(root, "a"); // oldest; misses both the tail window and the cap window
+    // tail window (250B) misses 'a' → fall-through; cap (450B) covers ~2 lines.
+    const res = consumeSince(root, { tailBytes: 250, fallbackCapBytes: 450 });
+    // Bounded: the read never reached 'a'..'d'; the newest events survive.
+    expect(res.events.map((e) => e.event_id)).toEqual(["e", "f"]);
+    expect(res.events.length).toBeLessThan(6); // proves the cap bounded the read
+    expect(res.lastEventId).toBeNull(); // cursor not found in window → replay signal
+  });
+
+  test("cursor found inside the capped fall-through window → returns events after it", () => {
+    const root = freshRoot();
+    writeStream(root, ["a", "b", "c", "d", "e", "f"], 200);
+    writeCursor(root, "d");
+    // tail window (250B) misses 'd' → fall-through; cap (700B) covers ~3 lines
+    // ('d','e','f' after dropping the partial leading line), so 'd' is found.
+    const res = consumeSince(root, { tailBytes: 250, fallbackCapBytes: 700 });
+    expect(res.events.map((e) => e.event_id)).toEqual(["e", "f"]);
+    expect(res.lastEventId).toBe("f");
+  });
+});
