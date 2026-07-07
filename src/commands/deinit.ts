@@ -34,6 +34,7 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME } from "../core/config.ts";
 import { HARNESS_SPECS, type HarnessId } from "../core/hooks/harness/events.ts";
+import { removeInstructions } from "../lib/instructions/apply.ts";
 import { type SettingsFile, unwireHooks } from "./init.ts";
 
 interface DeinitOpts {
@@ -132,6 +133,10 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
           );
         }
       }
+
+      // ── 1b. agent-facing instructions block + skills ───────────────────────
+      const removed = removeInstructions(projectRoot, { harness, dryRun });
+      actions.push(...removed.actions, ...removed.warnings.map((w) => `! ${w}`));
 
       // ── 2. coord root (opt-in; destructive) ────────────────────────────────
       if (purgeState) {

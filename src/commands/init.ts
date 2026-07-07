@@ -31,6 +31,7 @@ import {
   makeEntry,
   type SettingsFile,
 } from "../core/hooks/harness/wiring.ts";
+import { applyInstructions, checkInstructions } from "../lib/instructions/apply.ts";
 
 // Re-exported for back-compat: callers (deinit, tests) import these names
 // from init.ts. The definitions now live in core/hooks/harness/wiring.ts.
@@ -42,6 +43,7 @@ const HARNERY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."
 interface InitOpts {
   harness: string;
   dryRun?: boolean;
+  check?: boolean;
   projectRoot?: string;
 }
 
@@ -49,11 +51,14 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
   program
     .command("init")
     .description(
-      "Bootstrap harnery in this project: create .harnery/ and wire the harness " +
-        "hooks (idempotent; safe to re-run). Use --dry-run to preview.",
+      "Bootstrap harnery in this project: create .harnery/, wire the harness " +
+        "hooks, and inject the agent-facing instructions block + skills " +
+        "(idempotent; safe to re-run). Use --dry-run to preview, --check to " +
+        "report drift without writing (exit 0 fresh / 2 drift / 1 error).",
     )
     .option("--harness <id>", "claude-code | cursor | codex", "claude-code")
     .option("--dry-run", "Show what would change without writing")
+    .option("--check", "Report instructions/skills drift without writing; exit 0/2/1")
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .action((opts: InitOpts) => {
       const harness = opts.harness as HarnessId;
@@ -65,6 +70,23 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       }
 
       const projectRoot = resolve(opts.projectRoot ?? gitTopLevel() ?? process.cwd());
+      const bin = binName?.trim() ? binName : DEFAULT_BIN_NAME;
+
+      // ── --check: read-only drift report on the block + skills ──────────────
+      if (opts.check === true) {
+        const { status, issues } = checkInstructions(projectRoot, { binName: bin, harness });
+        const head =
+          status === "fresh"
+            ? "harn init --check: instructions + skills are current"
+            : status === "drift"
+              ? "harn init --check: drift found (re-run `init` to refresh)"
+              : "harn init --check: error";
+        const lines = issues.length ? `\n${issues.map((i) => `  ✗ ${i}`).join("\n")}` : "";
+        emit.text(`${head}${lines}`);
+        emit.setExitCode(status === "fresh" ? 0 : status === "drift" ? 2 : 1);
+        return;
+      }
+
       const dryRun = opts.dryRun === true;
       const actions: string[] = [];
 
@@ -129,7 +151,11 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         );
       }
 
-      emit.text(render(projectRoot, dryRun, actions));
+      // ── 3. agent-facing instructions block + skills ────────────────────────
+      const applied = applyInstructions(projectRoot, { binName: bin, harness, dryRun });
+      actions.push(...applied.actions);
+
+      emit.text(render(projectRoot, dryRun, actions, applied.warnings));
     });
 }
 
@@ -288,12 +314,18 @@ function firstBraceIndex(raw: string): number {
   return -1;
 }
 
-function render(projectRoot: string, dryRun: boolean, actions: string[]): string {
+function render(
+  projectRoot: string,
+  dryRun: boolean,
+  actions: string[],
+  warnings: string[] = [],
+): string {
   const head = dryRun ? "harn init (dry run): no changes written" : "harn init";
+  const warnBlock = warnings.length ? `\n${warnings.map((w) => `  ! ${w}`).join("\n")}` : "";
   const tail = dryRun
     ? "\nRe-run without --dry-run to apply."
     : "\nDone. Start a session and check `harn agents whoami`.";
-  return `${head}\n  root: ${projectRoot}\n${actions.map((a) => `  ${a}`).join("\n")}${tail}`;
+  return `${head}\n  root: ${projectRoot}\n${actions.map((a) => `  ${a}`).join("\n")}${warnBlock}${tail}`;
 }
 
 function gitTopLevel(): string | null {

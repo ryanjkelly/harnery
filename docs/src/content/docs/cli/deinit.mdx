@@ -15,10 +15,13 @@ The inverse of [`harn init`](/cli/init/) (the same pairing as `git submodule dei
 `harn deinit` reverses the *project wiring* but leaves the `PATH` symlinks that [`scripts/setup.sh`](/getting-started/install/) created for a git clone. From a clone, run `./scripts/teardown.sh` instead — the one-command mirror of `scripts/setup.sh`. It calls `harn deinit` for you, removes those symlinks, and (on a terminal) offers to delete this project's `.harnery/` state and the clone itself. It forwards `--purge-state`, `--remove-clone`, `--dry-run`, `--project-root`, and `--harness` straight through.
 :::
 
-By default it does one thing: **removes Harnery's hook entries** from the chosen harness's settings file. A hook counts as Harnery's when its command contains `agent-hook `, so any hook *you* added stays put. If pulling Harnery's entries leaves the settings file with nothing but what `init` itself wrote (no hooks, at most a `version` key), the file is deleted rather than left as an empty shell.
+By default it reverses everything `init` wrote outside the CLI, surgically:
+
+1. **Removes Harnery's hook entries** from the chosen harness's settings file. A hook counts as Harnery's when its command contains `agent-hook `, so any hook *you* added stays put. If pulling Harnery's entries leaves the settings file with nothing but what `init` itself wrote (no hooks, at most a `version` key), the file is deleted rather than left as an empty shell.
+2. **Strips the agent-facing guidance** ([ADR 0008](/decisions/0008-agent-facing-skills/)): the `AGENTS.md` instructions block (and the `CLAUDE.md` import shim) are spliced out; a file left empty once its region is gone is deleted, one with your own content around the region is preserved. The `harn-decide` / `harn-council` skill files are deleted — but only if they still carry Harnery's ownership marker. A skill you hand-edited (marker gone) is left in place with a warning, never silently clobbered.
 
 ```bash
-harn deinit            # unwire Claude Code hooks; keep .harnery/ state
+harn deinit            # unwire hooks + strip the block/skills; keep .harnery/ state
 harn deinit --dry-run  # preview every change without writing
 ```
 
@@ -26,6 +29,9 @@ harn deinit --dry-run  # preview every change without writing
 harn deinit
   root: /path/to/project
   + removed 10 harnery hook(s) from .claude/settings.json (1 other hook(s) kept)
+  + removed the instructions block from AGENTS.md
+  + deleted skill harn-decide
+  + deleted skill harn-council
   · left .harnery/ coord root in place (pass --purge-state to delete it)
 Done. harnery hooks are unwired; restart your harness session to drop them.
 ```

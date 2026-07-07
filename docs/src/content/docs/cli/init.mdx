@@ -6,13 +6,17 @@ sidebar:
 ---
 
 ```
-harn init [--harness claude-code|cursor|codex] [--dry-run] [--project-root <path>]
+harn init [--harness claude-code|cursor|codex] [--dry-run] [--check] [--project-root <path>]
 ```
 
-One command to make a project harnery-ready. It does the two setup steps that are otherwise easy to miss, and that fail **silently** when missed:
+One command to make a project harnery-ready. It does the setup steps that are otherwise easy to miss, and that fail **silently** when missed:
 
 1. **Creates the `.harnery/` coord root.** Without it, `findCoordRoot` returns null and every hook no-ops forever. `init` also drops a `.harnery/.gitignore` (`*`) so machine-local runtime state (heartbeats, the event stream) never gets committed.
 2. **Wires the agent-hook entries** into the chosen harness's settings file (10 events each; see the table below).
+3. **Injects the agent-facing guidance** so a fresh consumer's agent actually knows the coord surfaces exist (design: [ADR 0008](/decisions/0008-agent-facing-skills/)):
+   - A machine-owned **instructions block** spliced into `AGENTS.md` (a hash-versioned `<!-- harnery:begin instructions -->` region; everything outside the markers is untouched). Every command in it renders in *your* bin name.
+   - The generic **skills** `harn-decide` and `harn-council` written to `.claude/skills/` (claude-code only — Cursor and Codex read `AGENTS.md` natively). Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you ship your own richer version.
+   - A `CLAUDE.md` `@AGENTS.md` import shim when `CLAUDE.md` is absent (Claude Code reads `CLAUDE.md`, not `AGENTS.md`). A `CLAUDE.md` that already imports `AGENTS.md`, or already carries the block, is left alone.
 
 When you run `init` through a host CLI that composes Harnery under its own bin name (e.g. `mycli init`), it also **stamps `binName` into `.harnery/config.jsonc`** so Harnery's coord binaries and web UI tell agents to run *your* command (`mycli agents status`, …) rather than the `harn` default. The stamp is comment-preserving and idempotent. Standalone `harn` needs no stamp; it's the resolver's default. See [the config reference](/reference/config-schema/#binname).
 
@@ -35,6 +39,25 @@ harn init
 ## Re-run after a Harnery upgrade that adds hooks
 
 Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds or renames a hook event**: re-run `harn init` to wire it (additive, so it only fills the gap). [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the missing hook(s).
+
+The same is true of the instructions block and skills: they're committed by you, and the source of truth is the installed Harnery version's templates, so a package upgrade shows up as drift until you re-run `init`.
+
+## Drift check (`--check`)
+
+`--check` is read-only: it reports whether the instructions block and skills match what the installed version would render, and writes nothing. It's the exit-code contract you wire into a pre-commit hook or CI:
+
+| Exit | Meaning |
+|---|---|
+| `0` | Fresh — block and skills are current |
+| `2` | Drift — a block or skill is stale, missing, or hand-edited |
+| `1` | Error — a file couldn't be read |
+
+```text
+harn init --check: drift found (re-run `init` to refresh)
+  ✗ skill harn-council: stale (re-run init)
+```
+
+A skill you excluded via `skills.exclude` is not required, so `--check` never flags it missing.
 
 ## Project root
 
