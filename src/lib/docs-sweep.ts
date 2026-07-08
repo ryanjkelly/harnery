@@ -34,6 +34,10 @@ import { join, relative } from "node:path";
  *
  * Audit files and issue files under `docs/audits/` are explicitly **not**
  * flagged for age; they're immutable records by design.
+ *
+ * Performance: ages come from one `git log --name-only` per repo (not one
+ * `git log` per file). A naive per-file spawn was ~1min+ on large hosts
+ * (thousands of topic docs) and looked hung when piped.
  */
 
 export interface SweepOpts {
@@ -65,12 +69,48 @@ const RUNBOOK_DAYS = 180;
 const TOPIC_DOC_DAYS = 365;
 const DECISIONS_DORMANT_DAYS = 180;
 
-/** Days since last git commit touching a file */
-async function lastCommitAgeDays(cwd: string, file: string): Promise<number | null> {
-  const result = await sh(`git log -1 --format=%aI -- "${file}"`, { cwd });
-  if (result.exitCode !== 0 || !result.stdout.trim()) return null;
-  const ms = Date.now() - new Date(result.stdout.trim()).getTime();
-  return Math.floor(ms / (1000 * 60 * 60 * 24));
+type AgeMap = Map<string, number>;
+
+/**
+ * Parse a `git log --format="COMMIT %aI" --name-only` body into
+ * repo-relative path → age in days. Newest commit wins.
+ * Exported for unit tests.
+ */
+export function parseDocsAgeLog(stdout: string, nowMs: number = Date.now()): AgeMap {
+  const ages: AgeMap = new Map();
+  let currentAge: number | null = null;
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("COMMIT ")) {
+      const iso = line.slice("COMMIT ".length).trim();
+      const ms = Date.parse(iso);
+      currentAge = Number.isNaN(ms) ? null : Math.floor((nowMs - ms) / (1000 * 60 * 60 * 24));
+      continue;
+    }
+    if (!line || currentAge == null) continue;
+    if (!line.endsWith(".md")) continue;
+    // First (newest) sighting wins
+    if (!ages.has(line)) ages.set(line, currentAge);
+  }
+  return ages;
+}
+
+/**
+ * One `git log --name-only` for the whole docs/ tree. Docs histories are
+ * small even without --since (a large host's full docs log is ~5k lines / <100ms),
+ * so we take the full history for accurate ages on old files.
+ */
+async function loadDocsAges(cwd: string): Promise<AgeMap> {
+  const result = await sh(`git log --format="COMMIT %aI" --name-only -- docs/`, {
+    cwd,
+    timeout: 120_000,
+  });
+  if (result.exitCode !== 0 || !result.stdout.trim()) return new Map();
+  return parseDocsAgeLog(result.stdout);
+}
+
+/** Age for a tracked path, or null if untracked / never under docs/. */
+function ageDays(ages: AgeMap, rel: string): number | null {
+  return ages.has(rel) ? ages.get(rel)! : null;
 }
 
 /** Days since ANY commit in the repo (measures repo activity) */
@@ -92,36 +132,35 @@ function readStatus(filePath: string): string | null {
   }
 }
 
-async function sweepPlans(repoName: string, repoPath: string, items: SweepItem[]): Promise<void> {
+function walkMdFiles(dir: string, skipReadme = false): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    let st: ReturnType<typeof statSync> | undefined;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      out.push(...walkMdFiles(full, skipReadme));
+    } else if (entry.endsWith(".md") && !(skipReadme && entry === "README.md")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function sweepPlans(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
   const plansDir = join(repoPath, "docs", "plans");
   if (!existsSync(plansDir)) return;
 
-  const walk = (dir: string): string[] => {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      let st: ReturnType<typeof statSync> | undefined;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) {
-        out.push(...walk(full));
-      } else if (entry.endsWith(".md") && entry !== "README.md") {
-        out.push(full);
-      }
-    }
-    return out;
-  };
-
-  const files = walk(plansDir);
-  for (const full of files) {
+  for (const full of walkMdFiles(plansDir, true)) {
     const rel = relative(repoPath, full);
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     const isArchived = rel.includes("/archive/");
     const status = readStatus(full);
-    const age = await lastCommitAgeDays(repoPath, rel);
+    const age = ageDays(ages, rel);
     if (age == null) continue;
 
     if (!isArchived && status === "in-progress" && age > STALLED_PLAN_DAYS) {
@@ -145,7 +184,7 @@ async function sweepPlans(repoName: string, repoPath: string, items: SweepItem[]
   }
 }
 
-async function sweepIssues(repoName: string, repoPath: string, items: SweepItem[]): Promise<void> {
+function sweepIssues(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
   const issuesDir = join(repoPath, "docs", "issues");
   if (!existsSync(issuesDir)) return;
 
@@ -156,7 +195,7 @@ async function sweepIssues(repoName: string, repoPath: string, items: SweepItem[
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     const status = readStatus(full);
     if (status !== "open") continue;
-    const age = await lastCommitAgeDays(repoPath, rel);
+    const age = ageDays(ages, rel);
     if (age == null || age <= OPEN_ISSUE_DAYS) continue;
     items.push({
       kind: "open-issue-cold",
@@ -168,38 +207,15 @@ async function sweepIssues(repoName: string, repoPath: string, items: SweepItem[
   }
 }
 
-async function sweepHandoffs(
-  repoName: string,
-  repoPath: string,
-  items: SweepItem[],
-): Promise<void> {
+function sweepHandoffs(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
   const handoffsDir = join(repoPath, "docs", "handoffs");
   if (!existsSync(handoffsDir)) return;
 
-  const walk = (dir: string): string[] => {
-    const out: string[] = [];
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      let st: ReturnType<typeof statSync> | undefined;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) {
-        out.push(...walk(full));
-      } else if (entry.endsWith(".md")) {
-        out.push(full);
-      }
-    }
-    return out;
-  };
-
-  for (const full of walk(handoffsDir)) {
+  for (const full of walkMdFiles(handoffsDir)) {
     const rel = relative(repoPath, full);
     const status = readStatus(full);
     if (status !== "open") continue;
-    const age = await lastCommitAgeDays(repoPath, rel);
+    const age = ageDays(ages, rel);
     if (age == null || age <= COLD_HANDOFF_DAYS) continue;
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     items.push({
@@ -212,10 +228,10 @@ async function sweepHandoffs(
   }
 }
 
-async function sweepRunbook(repoName: string, repoPath: string, items: SweepItem[]): Promise<void> {
+function sweepRunbook(repoName: string, repoPath: string, ages: AgeMap, items: SweepItem[]): void {
   const runbook = join(repoPath, "docs", "runbook.md");
   if (!existsSync(runbook)) return;
-  const age = await lastCommitAgeDays(repoPath, "docs/runbook.md");
+  const age = ageDays(ages, "docs/runbook.md");
   if (age == null || age <= RUNBOOK_DAYS) return;
   const displayPath = join(repoName === "(root)" ? "" : repoName, "docs/runbook.md");
   items.push({
@@ -227,21 +243,27 @@ async function sweepRunbook(repoName: string, repoPath: string, items: SweepItem
   });
 }
 
-async function sweepTopicDocs(
+function sweepTopicDocs(
   repoName: string,
   repoPath: string,
+  ages: AgeMap,
   items: SweepItem[],
-): Promise<void> {
+): void {
   const docsDir = join(repoPath, "docs");
   if (!existsSync(docsDir)) return;
 
-  // Skip known date-stamped or lifecycle-managed dirs
+  // Skip known date-stamped or lifecycle-managed dirs (and vendor dumps).
+  // handoffs/inquiries are lifecycle-managed elsewhere; vendors match the
+  // docs freshness scanner's IGNORE_DIRS.
   const skipDirs = new Set([
     "audits",
     "issues",
     "plans",
     "changelogs",
     "emails", // parent-specific
+    "handoffs",
+    "inquiries",
+    "vendors",
   ]);
 
   for (const entry of readdirSync(docsDir)) {
@@ -255,26 +277,9 @@ async function sweepTopicDocs(
     }
     if (!st.isDirectory()) continue;
 
-    // For each topic dir, find .md files and check age
-    const walk = (dir: string): string[] => {
-      const out: string[] = [];
-      for (const f of readdirSync(dir)) {
-        const fp = join(dir, f);
-        let s: ReturnType<typeof statSync> | undefined;
-        try {
-          s = statSync(fp);
-        } catch {
-          continue;
-        }
-        if (s.isDirectory()) out.push(...walk(fp));
-        else if (f.endsWith(".md")) out.push(fp);
-      }
-      return out;
-    };
-
-    for (const full2 of walk(full)) {
+    for (const full2 of walkMdFiles(full)) {
       const rel = relative(repoPath, full2);
-      const age = await lastCommitAgeDays(repoPath, rel);
+      const age = ageDays(ages, rel);
       if (age == null || age <= TOPIC_DOC_DAYS) continue;
       const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
       items.push({
@@ -291,11 +296,12 @@ async function sweepTopicDocs(
 async function sweepDecisions(
   repoName: string,
   repoPath: string,
+  ages: AgeMap,
   items: SweepItem[],
 ): Promise<void> {
   const decisions = join(repoPath, "docs", "decisions.md");
   if (!existsSync(decisions)) return;
-  const age = await lastCommitAgeDays(repoPath, "docs/decisions.md");
+  const age = ageDays(ages, "docs/decisions.md");
   const repoAge = await lastRepoCommitAgeDays(repoPath);
   if (age == null || repoAge == null) return;
   // Only flag if the repo is active (recent commits) but decisions haven't moved
@@ -322,13 +328,18 @@ export async function runSweep(opts: SweepOpts): Promise<SweepItem[]> {
   const filtered = filter ? targets.filter((t) => t.name === filter) : targets;
 
   const items: SweepItem[] = [];
-  for (const { name, path } of filtered) {
-    await sweepPlans(name, path, items);
-    await sweepIssues(name, path, items);
-    await sweepHandoffs(name, path, items);
-    await sweepRunbook(name, path, items);
-    await sweepTopicDocs(name, path, items);
-    await sweepDecisions(name, path, items);
+  // Load ages per repo in parallel — one git log each, not one per file.
+  const ageMaps = await Promise.all(filtered.map((t) => loadDocsAges(t.path)));
+
+  for (let i = 0; i < filtered.length; i++) {
+    const { name, path } = filtered[i]!;
+    const ages = ageMaps[i]!;
+    sweepPlans(name, path, ages, items);
+    sweepIssues(name, path, ages, items);
+    sweepHandoffs(name, path, ages, items);
+    sweepRunbook(name, path, ages, items);
+    sweepTopicDocs(name, path, ages, items);
+    await sweepDecisions(name, path, ages, items);
   }
 
   // Sort by severity proxy: oldest first within kind
@@ -343,6 +354,7 @@ export async function runSweep(opts: SweepOpts): Promise<SweepItem[]> {
  */
 export async function countColdHandoffs(): Promise<number> {
   const items: SweepItem[] = [];
-  await sweepHandoffs("(root)", REPO_ROOT, items);
+  const ages = await loadDocsAges(REPO_ROOT);
+  sweepHandoffs("(root)", REPO_ROOT, ages, items);
   return items.length;
 }
