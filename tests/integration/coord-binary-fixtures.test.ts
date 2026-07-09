@@ -295,6 +295,37 @@ describe("agent-hook session-start", () => {
   });
 });
 
+// ── harn agents cursor lazy bootstrap ──────────────────────────────────────
+describe("harn agents cursor lazy bootstrap", () => {
+  function runWhoami(root: string, conversationId: string): Record<string, unknown> {
+    const result = run(
+      HARN,
+      ["agents", "whoami", "--json"],
+      "",
+      root,
+      {
+        CURSOR_AGENT: "1",
+        CURSOR_CONVERSATION_ID: conversationId,
+      },
+    );
+    expect(result.status).toBe(0);
+    return JSON.parse(result.stdout) as Record<string, unknown>;
+  }
+
+  test("bootstraps missing Glass sessions from CURSOR_CONVERSATION_ID", () => {
+    const root = makeSandbox();
+
+    const first = runWhoami(root, "bc-glass-one");
+    const second = runWhoami(root, "bc-glass-two");
+
+    expect(first.instance_id).toBe("glass-one");
+    expect(second.instance_id).toBe("glass-two");
+    expect(first.name).not.toBe(second.name);
+    expect(existsSync(path.join(root, ".harnery", "active", "glass-one.json"))).toBe(true);
+    expect(existsSync(path.join(root, ".harnery", "active", "glass-two.json"))).toBe(true);
+  });
+});
+
 // ── agent-hook user-prompt-submit peer refresh + task nudge ────────────────
 describe("agent-hook user-prompt-submit", () => {
   test("cursor beforeSubmitPrompt emits additional_context naming the peer", () => {

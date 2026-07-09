@@ -153,6 +153,17 @@ export function resolveOwnerWithSource(): {
 
   const root = monorepoRoot();
   if (!root) return { owner: null, source: "none" };
+
+  // Cursor's Glass/Agents UI can run several chats under one long-lived node
+  // process, so the pid-map row for that shared ancestor is last-writer-wins.
+  // Prefer the per-chat session id when Cursor exposes one in the tool env.
+  if (shouldPreferSessionEnv()) {
+    const bySession = resolveOwnerBySessionEnv(root);
+    if (bySession) {
+      return { owner: bySession, source: "session_env" };
+    }
+  }
+
   const pidmapDir = resolve(root, ".harnery", "pid-map");
   if (!existsSync(pidmapDir)) return { owner: null, source: "none" };
 
@@ -216,16 +227,32 @@ const SESSION_ID_ENV_VARS = [
   "HARNERY_AGENT_COORD_SESSION_ID", // explicit override, wins if set
   "CLAUDE_CODE_SESSION_ID",
   "CURSOR_SESSION_ID",
+  "CURSOR_CONVERSATION_ID",
   "CODEX_SESSION_ID",
 ] as const;
 
-/** Read the first non-empty harness session-id env var, or null. */
-function sessionIdFromEnv(): string | null {
+/** Read normalized candidates from the first non-empty harness session-id env var. */
+function sessionIdsFromEnv(): string[] {
   for (const key of SESSION_ID_ENV_VARS) {
     const v = process.env[key]?.trim();
-    if (v) return v;
+    if (!v) continue;
+    if (key === "CURSOR_CONVERSATION_ID" && v.startsWith("bc-") && v.length > 3) {
+      return [v.slice(3), v];
+    }
+    return [v];
   }
-  return null;
+  return [];
+}
+
+/** Read the first non-empty harness session-id env var, or null. */
+function sessionIdFromEnv(): string | null {
+  return sessionIdsFromEnv()[0] ?? null;
+}
+
+function shouldPreferSessionEnv(): boolean {
+  if (!sessionIdFromEnv()) return false;
+  const platform = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim();
+  return process.env.CURSOR_AGENT === "1" || platform === "cursor";
 }
 
 /**
@@ -239,8 +266,8 @@ function sessionIdFromEnv(): string | null {
  * Exported for unit testing with an injectable root.
  */
 export function resolveOwnerBySessionEnv(root: string): string | null {
-  const sessionId = sessionIdFromEnv();
-  if (!sessionId) return null;
+  const sessionIds = sessionIdsFromEnv();
+  if (sessionIds.length === 0) return null;
 
   const activeDir = resolve(root, ".harnery", "active");
   if (!existsSync(activeDir)) return null;
@@ -256,7 +283,7 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
     if (!file.endsWith(".json")) continue;
     try {
       const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
-      if (!parsed || parsed.session_id !== sessionId) continue;
+      if (!parsed || !sessionIds.includes(parsed.session_id)) continue;
       if (typeof parsed.instance_id !== "string") continue;
       const ts = Date.parse(parsed.last_heartbeat);
       if (Number.isFinite(ts) && ts >= cutoffMs) return parsed.instance_id;

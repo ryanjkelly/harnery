@@ -12,6 +12,7 @@ import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts"
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import {
   resolveOwnerBySessionEnv,
+  resolveOwnerWithSource,
   resolveSingleActiveOwner,
 } from "../../src/core/agents/coord-client.ts";
 
@@ -21,6 +22,7 @@ const SESSION_ID_ENV_KEYS = [
   "HARNERY_AGENT_COORD_SESSION_ID",
   "CLAUDE_CODE_SESSION_ID",
   "CURSOR_SESSION_ID",
+  "CURSOR_CONVERSATION_ID",
   "CODEX_SESSION_ID",
 ] as const;
 
@@ -175,6 +177,9 @@ describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)",
   let root: string;
   let activeDir: string;
   const SAVED = SESSION_ID_ENV_KEYS.map((k) => [k, process.env[k]] as const);
+  const savedCursorAgent = process.env.CURSOR_AGENT;
+  const savedPlatform = process.env.HARNERY_AGENT_COORD_PLATFORM;
+  const savedRootOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-session-env-"));
@@ -189,6 +194,12 @@ describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)",
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
+    if (savedCursorAgent === undefined) delete process.env.CURSOR_AGENT;
+    else process.env.CURSOR_AGENT = savedCursorAgent;
+    if (savedPlatform === undefined) delete process.env.HARNERY_AGENT_COORD_PLATFORM;
+    else process.env.HARNERY_AGENT_COORD_PLATFORM = savedPlatform;
+    if (savedRootOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    else process.env.HARNERY_COORD_ROOT_OVERRIDE = savedRootOverride;
   });
 
   const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -250,5 +261,27 @@ describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)",
     writeHeartbeat("agent-cdx", "sess-cdx", 30_000);
     process.env.CODEX_SESSION_ID = "sess-cdx";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx");
+  });
+
+  test("Cursor conversation id env resolves and strips the Glass bc- prefix", () => {
+    writeHeartbeat("agent-cur", "sess-cur", 30_000);
+    process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
+  });
+
+  test("Cursor session env wins over a shared cursor pid-map row", () => {
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    writeHeartbeat("agent-current", "sess-current", 30_000);
+    writeHeartbeat("agent-shared-row", "sess-shared", 30_000);
+    writePidmapRow(root, process.pid, "agent-shared-row", "cursor");
+
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.CURSOR_AGENT = "1";
+    process.env.CURSOR_CONVERSATION_ID = "sess-current";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "agent-current",
+      source: "session_env",
+    });
   });
 });

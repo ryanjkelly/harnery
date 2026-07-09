@@ -36,6 +36,7 @@ import {
   normalizeHarness,
   readHeartbeat,
   resolveOwner,
+  resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
@@ -694,6 +695,7 @@ function runWhoami(opts: { json?: boolean }): void {
     process.exit(1);
   }
 
+  ensureCursorSession(root);
   const resolved = resolveOwnerWithSource();
   const myOwner = resolved.owner;
   if (!myOwner) {
@@ -1172,6 +1174,50 @@ function formatLocalShort(iso: string): string {
   }).format(d);
 }
 
+function cursorEnvSessionId(): string | null {
+  const raw = process.env.CURSOR_SESSION_ID?.trim() || process.env.CURSOR_CONVERSATION_ID?.trim();
+  if (!raw) return null;
+  return raw.startsWith("bc-") && raw.length > 3 ? raw.slice(3) : raw;
+}
+
+function shouldBootstrapCursorSession(): boolean {
+  return process.env.CURSOR_AGENT === "1" && cursorEnvSessionId() !== null;
+}
+
+function ensureCursorSession(root: string): void {
+  if (!shouldBootstrapCursorSession()) return;
+  if (resolveOwnerBySessionEnv(root)) return;
+
+  const sessionId = cursorEnvSessionId();
+  if (!sessionId) return;
+  const agentHook = resolve(root, "harnery", "bin", "agent-hook");
+  if (!existsSync(agentHook)) return;
+
+  const payload = JSON.stringify({
+    conversation_id: sessionId,
+    session_id: sessionId,
+    hook_event_name: "sessionStart",
+    workspace_roots: [root],
+    cwd: root,
+    composer_mode: "agent",
+    is_background_agent: false,
+  });
+
+  spawnSync("bash", [agentHook, "session-start", "--harness", "cursor"], {
+    input: payload,
+    cwd: root,
+    encoding: "utf8",
+    timeout: 3000,
+    env: {
+      ...process.env,
+      HARNERY_AGENT_COORD_PLATFORM: "cursor",
+      HARNERY_COORD_ROOT_OVERRIDE: root,
+      CURSOR_SESSION_ID: sessionId,
+      CURSOR_CONVERSATION_ID: sessionId,
+    },
+  });
+}
+
 function runReleaseClaim(path: string): void {
   const root = monorepoRoot();
   if (!root) {
@@ -1220,6 +1266,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // Identity: prefer explicit --session-id (the ppid-walk-free escape hatch,
   // mirrors `status`), fall back to the ppid walk. Cursor shell tool calls
   // don't descend from a pid-map-registered anchor, so the walk can miss there.
+  if (!opts?.sessionId) ensureCursorSession(root);
   const myOwner = opts?.sessionId ?? resolveOwner();
   if (!myOwner) {
     emit.error({
@@ -1272,6 +1319,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
 
   // Identity resolution: prefer explicit --session-id (hook-friendly), fall
   // back to ppid walk for interactive shell usage.
+  if (!opts.sessionId) ensureCursorSession(root);
   const myOwner = opts.sessionId ?? resolveOwner();
   if (!myOwner) {
     emit.error({
