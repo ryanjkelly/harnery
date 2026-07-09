@@ -1,8 +1,9 @@
-// Reverse-proxy worker spawned by `tunnel up`. Listens on 127.0.0.1:<port>,
-// checks CF-Connecting-IP against an allowlist passed via env, and forwards
-// HTTP + WebSocket requests to an upstream with a Host header rewrite and
-// Content-Encoding stripped (Bun's fetch auto-decompresses the body but
-// retains the encoding header, which breaks browser decoding downstream).
+// Reverse-proxy worker spawned by `tunnel up`. Listens on 127.0.0.1:<port>
+// and forwards HTTP + WebSocket requests to an upstream with a Host header
+// rewrite and Content-Encoding stripped (Bun's fetch auto-decompresses the
+// body but retains the encoding header, which breaks browser decoding
+// downstream). Cloudflare provider mode checks CF-Connecting-IP against an
+// allowlist; trusted local proxy mode lets the local exposer own access.
 //
 // Runs detached, outside the CLI command framework; no command context is
 // available; stdout/stderr is captured into .cache/tunnel/gate.log by the
@@ -28,6 +29,7 @@ const ALLOW = new Set(
 const TARGET = process.env.HARNERY_TUNNEL_TARGET ?? "127.0.0.1:8001";
 const VHOST = process.env.HARNERY_TUNNEL_VHOST ?? "localhost";
 const PORT = Number(process.env.HARNERY_TUNNEL_PORT ?? argvFlag("--port") ?? "9001");
+const ACCESS = process.env.HARNERY_TUNNEL_ACCESS ?? "cloudflare-allowlist";
 
 const UPSTREAM_HTTP = `http://${TARGET}`;
 const UPSTREAM_WS = `ws://${TARGET}`;
@@ -45,9 +47,11 @@ const server = Bun.serve<WsData, never>({
   // Bun's max, and beyond any realistic single-turn delay.
   idleTimeout: 255,
   async fetch(req, server) {
-    const ip = req.headers.get("cf-connecting-ip") ?? "";
-    if (!ALLOW.has(ip)) {
-      return new Response("403 Forbidden\n", { status: 403 });
+    if (ACCESS === "cloudflare-allowlist") {
+      const ip = req.headers.get("cf-connecting-ip") ?? "";
+      if (!ALLOW.has(ip)) {
+        return new Response("403 Forbidden\n", { status: 403 });
+      }
     }
     const url = new URL(req.url);
 
@@ -110,4 +114,5 @@ const server = Bun.serve<WsData, never>({
 // framework, so no AsyncLocalStorage context is available. stdout/stderr is
 // captured into .cache/tunnel/gate.log by the spawning command.
 console.log(`harn-tunnel-gate :${server.port} -> ${UPSTREAM_HTTP} (Host: ${VHOST})`); // lint-ok-emission: detached worker, see file note above
-console.log(`allow: ${[...ALLOW].join(", ") || "(empty, denies all)"}`); // lint-ok-emission: detached worker, see file note above
+console.log(`access: ${ACCESS}`); // lint-ok-emission: detached worker, see file note above
+console.log(`allow: ${[...ALLOW].join(", ") || "(empty, not used outside allowlist mode)"}`); // lint-ok-emission: detached worker, see file note above

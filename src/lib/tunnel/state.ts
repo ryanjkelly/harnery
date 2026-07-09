@@ -1,5 +1,5 @@
-// Tunnel config + state persistence + cloudflared-install helper. Lives
-// under <cwd>/.cache/tunnel/; gitignored, so the allowlist is per-machine.
+// Tunnel config + state persistence + provider helpers. Lives under
+// <cwd>/.cache/tunnel/; gitignored, so the allowlist is per-machine.
 
 import { execSync } from "node:child_process";
 import {
@@ -41,6 +41,11 @@ export function cfdLogFile(name: string): string {
   return name === DEFAULT_INSTANCE ? "cloudflared.log" : `cloudflared-${name}.log`;
 }
 
+export function providerLogFile(name: string, provider: TunnelProvider): string {
+  if (provider === "cloudflare") return cfdLogFile(name);
+  return name === DEFAULT_INSTANCE ? "tailscale.log" : `tailscale-${name}.log`;
+}
+
 /** Map a state filename back to its instance name (inverse of stateFile). */
 function nameFromStateFile(file: string): string | null {
   if (file === "state.json") return DEFAULT_INSTANCE;
@@ -59,20 +64,30 @@ export interface TunnelConfig {
   allowed_ips: string[];
 }
 
+export type TunnelProvider = "cloudflare" | "tailscale";
+export type TailscaleMode = "serve" | "funnel";
+
 export interface TunnelState {
   name: string;
+  provider: TunnelProvider;
   url: string;
   gate_pid: number;
-  cloudflared_pid: number;
+  /** Present for Cloudflare quick tunnels; absent for Tailscale Serve/Funnel. */
+  cloudflared_pid?: number;
+  /** Optional provider-side process when a provider owns one. */
+  provider_pid?: number;
   started_at: string;
   target: string;
   vhost: string;
   gate_port: number;
+  tailscale_mode?: TailscaleMode;
+  tailscale_path?: string;
+  tailscale_https_port?: number;
 }
 
 /** Normalize a parsed state blob; supply `name` for pre-multi-instance files. */
 function normalizeState(raw: TunnelState, fallbackName: string): TunnelState {
-  return { ...raw, name: raw.name ?? fallbackName };
+  return { ...raw, name: raw.name ?? fallbackName, provider: raw.provider ?? "cloudflare" };
 }
 
 export function readConfig(): TunnelConfig {

@@ -12,30 +12,33 @@ import { existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
-  cfdLogFile,
   clearState,
   DEFAULT_INSTANCE,
   ensureCloudflared,
   gateLogFile,
   isProcessAlive,
   listStates,
+  providerLogFile,
   readConfig,
   readState,
+  type TailscaleMode,
+  type TunnelProvider,
   type TunnelState,
   writeConfig,
   writeState,
 } from "../lib/tunnel/state.ts";
 
 /**
- * `tunnel`: IP-gated Cloudflare quick tunnel in front of a local upstream.
+ * `tunnel`: provider-backed tunnel in front of a local upstream.
  *
- * Two-process design: a Bun reverse-proxy worker (lib/tunnel/gate.ts) checks
- * the Cloudflare-set `CF-Connecting-IP` header against an allowlist and
- * rewrites Host for the upstream; cloudflared --url then exposes the gate
- * as a random `<words>.trycloudflare.com` hostname.
+ * A Bun reverse-proxy worker (lib/tunnel/gate.ts) rewrites Host for the
+ * upstream. Cloudflare quick tunnels add an IP allowlist at the gate via the
+ * Cloudflare-set `CF-Connecting-IP` header; Tailscale Serve/Funnel exposes the
+ * same gate through tailscaled, with Tailscale owning the access boundary.
  *
  * State + config persisted under `.cache/tunnel/`. cloudflared auto-installs
- * to ~/.local/bin/ on first run (Linux only; macOS users `brew install`).
+ * to ~/.local/bin/ on first run (Linux only; macOS users `brew install`);
+ * Tailscale requires an installed/authenticated `tailscale` CLI.
  */
 
 const DEFAULT_TARGET = "127.0.0.1:8001";
@@ -45,9 +48,13 @@ const MAX_GATE_PORT = DEFAULT_GATE_PORT + 99; // auto-allocation scan ceiling
 
 interface UpOpts {
   name?: string;
+  provider?: string;
   target?: string;
   vhost?: string;
   gatePort?: string;
+  visibility?: string;
+  path?: string;
+  httpsPort?: string;
 }
 
 interface DownOpts {
@@ -64,6 +71,7 @@ interface LogsOpts {
   follow?: boolean;
   gate?: boolean;
   cloudflared?: boolean;
+  provider?: boolean;
 }
 
 /**
@@ -83,6 +91,55 @@ function resolveName(raw: string | undefined): string {
   return name;
 }
 
+function resolveProvider(raw: string | undefined): TunnelProvider {
+  const provider = (raw ?? "cloudflare").trim().toLowerCase();
+  if (provider === "cloudflare" || provider === "cf") return "cloudflare";
+  if (provider === "tailscale" || provider === "ts") return "tailscale";
+  emit.error({
+    code: "tunnel_bad_provider",
+    message: `Invalid provider "${raw}". Use cloudflare or tailscale.`,
+  });
+  process.exit(1);
+}
+
+function resolveTailscaleMode(raw: string | undefined): TailscaleMode {
+  const visibility = (raw ?? "tailnet").trim().toLowerCase();
+  if (visibility === "tailnet" || visibility === "serve") return "serve";
+  if (visibility === "public" || visibility === "internet" || visibility === "funnel") {
+    return "funnel";
+  }
+  emit.error({
+    code: "tunnel_bad_visibility",
+    message: `Invalid Tailscale visibility "${raw}". Use tailnet or public.`,
+  });
+  process.exit(1);
+}
+
+function resolveTailscalePath(raw: string | undefined, name: string): string {
+  const fallback = name === DEFAULT_INSTANCE ? "/" : `/${name}`;
+  const path = (raw ?? fallback).trim();
+  if (!path.startsWith("/")) {
+    emit.error({
+      code: "tunnel_bad_path",
+      message: `Tailscale path "${path}" must start with /.`,
+    });
+    process.exit(1);
+  }
+  return path === "" ? "/" : path;
+}
+
+function resolveHttpsPort(raw: string | undefined): number {
+  const port = raw === undefined ? 443 : Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    emit.error({
+      code: "tunnel_bad_https_port",
+      message: `Invalid HTTPS port "${raw}". Use a number from 1 to 65535.`,
+    });
+    process.exit(1);
+  }
+  return port;
+}
+
 function gateScriptPath(): string {
   return resolve(import.meta.dirname, "..", "lib", "tunnel", "gate.ts");
 }
@@ -96,6 +153,10 @@ function gateScriptPath(): string {
  */
 function bunAvailable(): boolean {
   return spawnSync("bun", ["--version"], { stdio: "ignore" }).status === 0;
+}
+
+function tailscaleAvailable(): boolean {
+  return spawnSync("tailscale", ["version"], { stdio: "ignore" }).status === 0;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -226,11 +287,96 @@ async function waitForReady(
   return { url, registered: false };
 }
 
+function tailscaleDnsName(): string {
+  const r = spawnSync("tailscale", ["status", "--json"], { encoding: "utf-8" });
+  if (r.status !== 0) {
+    emit.error({
+      code: "tunnel_tailscale_status_failed",
+      message:
+        "Failed to read `tailscale status --json`. Install Tailscale and connect this machine to a tailnet first.",
+    });
+    process.exit(1);
+  }
+  try {
+    const parsed = JSON.parse(r.stdout) as { Self?: { DNSName?: string } };
+    const dns = parsed.Self?.DNSName?.replace(/\.$/, "");
+    if (dns) return dns;
+  } catch {
+    /* handled below */
+  }
+  emit.error({
+    code: "tunnel_tailscale_no_dns",
+    message:
+      "Tailscale status did not report a MagicDNS name. Enable MagicDNS for the tailnet, then retry.",
+  });
+  process.exit(1);
+}
+
+function tailscaleUrl(path: string, httpsPort: number): string {
+  const base = `https://${tailscaleDnsName()}${httpsPort === 443 ? "" : `:${httpsPort}`}`;
+  return path === "/" ? `${base}/` : `${base}${path}`;
+}
+
+function tailscaleCommand(mode: TailscaleMode): "serve" | "funnel" {
+  return mode === "funnel" ? "funnel" : "serve";
+}
+
+function runTailscaleShare(
+  mode: TailscaleMode,
+  targetUrl: string,
+  path: string,
+  httpsPort: number,
+  logPath: string,
+): void {
+  const fd = openSync(logPath, "a");
+  const args = [
+    tailscaleCommand(mode),
+    "--bg",
+    "--yes",
+    `--https=${httpsPort}`,
+    `--set-path=${path}`,
+    targetUrl,
+  ];
+  const r = spawnSync("tailscale", args, {
+    stdio: ["ignore", fd, fd],
+  });
+  if (r.status !== 0) {
+    emit.error({
+      code: "tunnel_tailscale_failed",
+      message: `tailscale ${tailscaleCommand(mode)} failed. Check log: ${logPath}`,
+    });
+    process.exit(r.status ?? 1);
+  }
+}
+
+function stopTailscaleShare(state: TunnelState): void {
+  if (state.provider !== "tailscale" || !state.tailscale_mode) return;
+  const logPath = cachePath("tunnel", providerLogFile(state.name, "tailscale"));
+  const fd = openSync(logPath, "a");
+  const args = [
+    tailscaleCommand(state.tailscale_mode),
+    `--https=${state.tailscale_https_port ?? 443}`,
+    `--set-path=${state.tailscale_path ?? "/"}`,
+    "off",
+  ];
+  spawnSync("tailscale", args, { stdio: ["ignore", fd, fd] });
+}
+
 /** Resolve the context-supplied default vhost (literal or lazy resolver). */
 function contextVhost(): string | null {
   const v = context?.tunnelDefaultVhost;
   const resolved = typeof v === "function" ? v() : v;
   return resolved ?? null;
+}
+
+function providerIsAlive(state: TunnelState): boolean {
+  if (state.provider === "tailscale") return true;
+  const pid = state.cloudflared_pid ?? state.provider_pid;
+  return typeof pid === "number" && isProcessAlive(pid);
+}
+
+function tunnelIsAlive(state: TunnelState): boolean {
+  return isProcessAlive(state.gate_pid) && providerIsAlive(state);
 }
 
 async function up(opts: UpOpts): Promise<void> {
@@ -244,18 +390,33 @@ async function up(opts: UpOpts): Promise<void> {
     process.exit(1);
   }
   const name = resolveName(opts.name);
+  const provider = resolveProvider(opts.provider);
   const target = opts.target ?? DEFAULT_TARGET;
   // Precedence: explicit --vhost > the consumer's configured default (via
   // context.tunnelDefaultVhost) > "localhost".
   const vhost = opts.vhost ?? contextVhost() ?? DEFAULT_VHOST;
+  const tailscaleMode =
+    provider === "tailscale" ? resolveTailscaleMode(opts.visibility) : undefined;
+  const tailscalePath =
+    provider === "tailscale" ? resolveTailscalePath(opts.path, name) : undefined;
+  const tailscaleHttpsPort =
+    provider === "tailscale" ? resolveHttpsPort(opts.httpsPort) : undefined;
 
   const existing = readState(name);
-  if (existing && isProcessAlive(existing.gate_pid) && isProcessAlive(existing.cloudflared_pid)) {
+  if (existing && tunnelIsAlive(existing)) {
+    if (existing.provider !== provider) {
+      emit.error({
+        code: "tunnel_instance_in_use",
+        message: `Tunnel [${name}] is already up with provider ${existing.provider}. Stop it before starting ${provider}.`,
+      });
+      process.exit(1);
+    }
     emit.text(`Already up [${name}]: ${existing.url}\n`);
+    emit.text(`  Provider:   ${existing.provider}\n`);
     emit.text(`  Forwarding: ${existing.target} (Host: ${existing.vhost})\n`);
     return;
   }
-  if (existing) clearState(name);
+  if (existing) downOne(name, new Set());
 
   // Allocate the gate port (after clearing dead state so its old port frees up
   // for reuse). Explicit --gate-port is validated; otherwise auto-scan.
@@ -266,7 +427,7 @@ async function up(opts: UpOpts): Promise<void> {
   if (sweepStrays(gatePort, new Set())) await sleep(500);
 
   const cfg = readConfig();
-  if (cfg.allowed_ips.length === 0) {
+  if (provider === "cloudflare" && cfg.allowed_ips.length === 0) {
     emit.error({
       code: "tunnel_allowlist_empty",
       message: "Allowlist is empty; refusing to start. Add an IP first: harn tunnel allow add <ip>",
@@ -274,12 +435,19 @@ async function up(opts: UpOpts): Promise<void> {
     process.exit(1);
   }
 
-  const cloudflaredBin = ensureCloudflared();
+  const cloudflaredBin = provider === "cloudflare" ? ensureCloudflared() : null;
+  if (provider === "tailscale" && !tailscaleAvailable()) {
+    emit.error({
+      code: "tunnel_tailscale_missing",
+      message: "tailscale CLI not found or unavailable. Install Tailscale and sign in, then retry.",
+    });
+    process.exit(1);
+  }
 
   const gateLogPath = cachePath("tunnel", gateLogFile(name));
-  const cfdLogPath = cachePath("tunnel", cfdLogFile(name));
+  const providerLogPath = cachePath("tunnel", providerLogFile(name, provider));
   writeFileSync(gateLogPath, "");
-  writeFileSync(cfdLogPath, "");
+  writeFileSync(providerLogPath, "");
 
   const gateFd = openSync(gateLogPath, "a");
   // `--name`/`--port` on argv mirror the env vars; they're what makes the gate
@@ -293,6 +461,8 @@ async function up(opts: UpOpts): Promise<void> {
       env: {
         ...process.env,
         HARNERY_TUNNEL_ALLOW: cfg.allowed_ips.join(","),
+        HARNERY_TUNNEL_ACCESS:
+          provider === "cloudflare" ? "cloudflare-allowlist" : "trusted-local-proxy",
         HARNERY_TUNNEL_TARGET: target,
         HARNERY_TUNNEL_VHOST: vhost,
         HARNERY_TUNNEL_PORT: String(gatePort),
@@ -311,60 +481,93 @@ async function up(opts: UpOpts): Promise<void> {
     process.exit(1);
   }
 
-  const cfdFd = openSync(cfdLogPath, "a");
-  // Force HTTP/2 transport. The default QUIC transport wedges at precheck on
-  // constrained hosts (e.g. WSL, where UDP receive buffers can't grow and ICMP
-  // is restricted): the URL prints but the edge never registers. HTTP/2 is
-  // marginally higher-latency but registers reliably, which is what a dev
-  // tunnel needs.
-  const cfdProc = spawn(
-    cloudflaredBin,
-    ["tunnel", "--protocol", "http2", "--url", `http://localhost:${gatePort}`],
-    {
-      detached: true,
-      stdio: ["ignore", cfdFd, cfdFd],
-    },
-  );
-  cfdProc.unref();
+  let url: string;
+  let registered = true;
+  let cloudflaredPid: number | undefined;
 
-  const { url, registered } = await waitForReady(cfdLogPath, 30_000);
-  if (!url) {
-    try {
-      process.kill(gateProc.pid!);
-    } catch {
-      /* already dead */
+  if (provider === "cloudflare") {
+    const cfdFd = openSync(providerLogPath, "a");
+    // Force HTTP/2 transport. The default QUIC transport wedges at precheck on
+    // constrained hosts (e.g. WSL, where UDP receive buffers can't grow and ICMP
+    // is restricted): the URL prints but the edge never registers. HTTP/2 is
+    // marginally higher-latency but registers reliably, which is what a dev
+    // tunnel needs.
+    const cfdProc = spawn(
+      cloudflaredBin!,
+      ["tunnel", "--protocol", "http2", "--url", `http://localhost:${gatePort}`],
+      {
+        detached: true,
+        stdio: ["ignore", cfdFd, cfdFd],
+      },
+    );
+    cfdProc.unref();
+    cloudflaredPid = cfdProc.pid!;
+
+    const ready = await waitForReady(providerLogPath, 30_000);
+    registered = ready.registered;
+    if (!ready.url) {
+      try {
+        process.kill(gateProc.pid!);
+      } catch {
+        /* already dead */
+      }
+      try {
+        process.kill(cloudflaredPid);
+      } catch {
+        /* already dead */
+      }
+      emit.error({
+        code: "tunnel_url_timeout",
+        message: `Failed to obtain tunnel URL within 30s. Check log: ${providerLogPath}`,
+      });
+      process.exit(1);
     }
-    try {
-      process.kill(cfdProc.pid!);
-    } catch {
-      /* already dead */
-    }
-    emit.error({
-      code: "tunnel_url_timeout",
-      message: `Failed to obtain tunnel URL within 30s. Check log: ${cfdLogPath}`,
-    });
-    process.exit(1);
+    url = ready.url;
+  } else {
+    const gateTarget = `http://127.0.0.1:${gatePort}`;
+    runTailscaleShare(
+      tailscaleMode!,
+      gateTarget,
+      tailscalePath!,
+      tailscaleHttpsPort!,
+      providerLogPath,
+    );
+    url = tailscaleUrl(tailscalePath!, tailscaleHttpsPort!);
   }
 
   const state: TunnelState = {
     name,
+    provider,
     url,
     gate_pid: gateProc.pid!,
-    cloudflared_pid: cfdProc.pid!,
+    cloudflared_pid: cloudflaredPid,
     started_at: new Date().toISOString(),
     target,
     vhost,
     gate_port: gatePort,
+    tailscale_mode: tailscaleMode,
+    tailscale_path: tailscalePath,
+    tailscale_https_port: tailscaleHttpsPort,
   };
   writeState(state);
 
   const stopHint =
     name === DEFAULT_INSTANCE ? "harn tunnel down" : `harn tunnel down --name ${name}`;
   emit.text(`\n  Instance: ${name}\n`);
+  emit.text(`  Provider: ${provider}${tailscaleMode ? ` (${tailscaleMode})` : ""}\n`);
   emit.text(`  URL: ${url}\n\n`);
   emit.text(`  Forwarding: ${target} (Host: ${vhost})\n`);
   emit.text(`  Gate port: ${gatePort}\n`);
-  emit.text(`  Allowed IPs: ${cfg.allowed_ips.join(", ")}\n\n`);
+  if (provider === "cloudflare") {
+    emit.text(`  Allowed IPs: ${cfg.allowed_ips.join(", ")}\n\n`);
+  } else {
+    emit.text(`  Tailscale path: ${tailscalePath}\n`);
+    emit.text(
+      tailscaleMode === "funnel"
+        ? "  Visibility: public internet via Tailscale Funnel\n\n"
+        : "  Visibility: tailnet only via Tailscale Serve\n\n",
+    );
+  }
   if (!registered) {
     emit.text(
       `  ⚠ Edge connection didn't register within 30s (QUIC can wedge on a cold\n    start). If the URL 404s or times out, bounce it: ${stopHint} && harn tunnel up\n\n`,
@@ -379,7 +582,9 @@ function downOne(name: string, killed: Set<number>): number {
   const before = killed.size;
   const state = readState(name);
   if (state) {
-    for (const pid of [state.gate_pid, state.cloudflared_pid]) {
+    if (state.provider === "tailscale") stopTailscaleShare(state);
+    for (const pid of [state.gate_pid, state.cloudflared_pid, state.provider_pid]) {
+      if (typeof pid !== "number") continue;
       if (isProcessAlive(pid)) {
         try {
           process.kill(pid);
@@ -435,7 +640,7 @@ function down(opts: DownOpts): void {
 }
 
 function instanceState(state: TunnelState): "up" | "stale" {
-  return isProcessAlive(state.gate_pid) && isProcessAlive(state.cloudflared_pid) ? "up" : "stale";
+  return tunnelIsAlive(state) ? "up" : "stale";
 }
 
 function fmtUptime(startedAt: string): string {
@@ -449,15 +654,25 @@ function fmtUptime(startedAt: string): string {
 /** Detailed single-instance block (the pre-multi-instance format). */
 function statusDetail(state: TunnelState): void {
   const gateAlive = isProcessAlive(state.gate_pid);
-  const cfdAlive = isProcessAlive(state.cloudflared_pid);
+  const providerAlive = providerIsAlive(state);
+  const providerPid = state.cloudflared_pid ?? state.provider_pid;
   const cfg = readConfig();
-  emit.text(`${gateAlive && cfdAlive ? "up" : "stale"} [${state.name}]\n`);
+  emit.text(`${gateAlive && providerAlive ? "up" : "stale"} [${state.name}]\n`);
+  emit.text(
+    `  Provider:    ${state.provider}${state.tailscale_mode ? ` (${state.tailscale_mode})` : ""}\n`,
+  );
   emit.text(`  URL:         ${state.url}\n`);
   emit.text(`  Forwarding:  ${state.target} (Host: ${state.vhost})\n`);
   emit.text(`  Gate port:   ${state.gate_port}\n`);
-  emit.text(`  Allowed IPs: ${cfg.allowed_ips.join(", ")}\n`);
+  if (state.provider === "cloudflare") {
+    emit.text(`  Allowed IPs: ${cfg.allowed_ips.join(", ")}\n`);
+  } else {
+    emit.text(`  TS path:     ${state.tailscale_path ?? "/"}\n`);
+  }
   emit.text(`  Gate PID:    ${state.gate_pid}${gateAlive ? "" : " (DEAD)"}\n`);
-  emit.text(`  CFD PID:     ${state.cloudflared_pid}${cfdAlive ? "" : " (DEAD)"}\n`);
+  if (state.provider === "cloudflare") {
+    emit.text(`  CFD PID:     ${providerPid ?? "?"}${providerAlive ? "" : " (DEAD)"}\n`);
+  }
   emit.text(`  Uptime:      ${fmtUptime(state.started_at)}\n`);
 }
 
@@ -487,6 +702,7 @@ function status(opts: StatusOpts): void {
 
   const rows = states.map((s) => ({
     name: s.name,
+    provider: s.provider,
     state: instanceState(s),
     url: s.url,
     fwd: `${s.target} (${s.vhost})`,
@@ -495,6 +711,7 @@ function status(opts: StatusOpts): void {
   }));
   const w = {
     name: Math.max(4, ...rows.map((r) => r.name.length)),
+    provider: Math.max(8, ...rows.map((r) => r.provider.length)),
     state: 5,
     url: Math.max(3, ...rows.map((r) => r.url.length)),
     fwd: Math.max(10, ...rows.map((r) => r.fwd.length)),
@@ -502,18 +719,21 @@ function status(opts: StatusOpts): void {
   };
   const pad = (s: string, n: number) => s.padEnd(n);
   emit.text(
-    `${pad("NAME", w.name)}  ${pad("STATE", w.state)}  ${pad("URL", w.url)}  ${pad("FORWARDING", w.fwd)}  ${pad("PORT", w.port)}  UPTIME\n`,
+    `${pad("NAME", w.name)}  ${pad("PROVIDER", w.provider)}  ${pad("STATE", w.state)}  ${pad("URL", w.url)}  ${pad("FORWARDING", w.fwd)}  ${pad("PORT", w.port)}  UPTIME\n`,
   );
   for (const r of rows) {
     emit.text(
-      `${pad(r.name, w.name)}  ${pad(r.state, w.state)}  ${pad(r.url, w.url)}  ${pad(r.fwd, w.fwd)}  ${pad(r.port, w.port)}  ${r.up}\n`,
+      `${pad(r.name, w.name)}  ${pad(r.provider, w.provider)}  ${pad(r.state, w.state)}  ${pad(r.url, w.url)}  ${pad(r.fwd, w.fwd)}  ${pad(r.port, w.port)}  ${r.up}\n`,
     );
   }
 }
 
 function logs(opts: LogsOpts): void {
   const name = resolveName(opts.name);
-  const which = opts.cloudflared ? cfdLogFile(name) : gateLogFile(name);
+  const state = readState(name);
+  const provider = state?.provider ?? "cloudflare";
+  const which =
+    opts.cloudflared || opts.provider ? providerLogFile(name, provider) : gateLogFile(name);
   const path = cachePath("tunnel", which);
   if (!existsSync(path)) {
     emit.error({ code: "tunnel_no_log", message: `No log file at ${path}` });
@@ -542,10 +762,10 @@ function allowAdd(ip: string): void {
   cfg.allowed_ips.push(ip);
   writeConfig(cfg);
   emit.text(`Added ${ip}.\n`);
-  const up = listStates();
+  const up = listStates().filter((s) => s.provider === "cloudflare");
   if (up.length > 0) {
     emit.text(
-      `Allowlist is shared across all tunnels; restart each to apply (${up.map((s) => s.name).join(", ")}).\n`,
+      `Cloudflare allowlist is shared across Cloudflare tunnels; restart each to apply (${up.map((s) => s.name).join(", ")}).\n`,
     );
   }
 }
@@ -560,10 +780,10 @@ function allowRm(ip: string): void {
   cfg.allowed_ips.splice(idx, 1);
   writeConfig(cfg);
   emit.text(`Removed ${ip}.\n`);
-  const up = listStates();
+  const up = listStates().filter((s) => s.provider === "cloudflare");
   if (up.length > 0) {
     emit.text(
-      `Allowlist is shared across all tunnels; restart each to apply (${up.map((s) => s.name).join(", ")}).\n`,
+      `Cloudflare allowlist is shared across Cloudflare tunnels; restart each to apply (${up.map((s) => s.name).join(", ")}).\n`,
     );
   }
 }
@@ -581,14 +801,15 @@ export function registerTunnelCommand(
   const cmd = program
     .command("tunnel")
     .description(
-      "IP-gated Cloudflare quick tunnel(s) in front of a local upstream (default upstream: 127.0.0.1:8001). " +
+      "Provider-backed tunnel(s) in front of a local upstream (default upstream: 127.0.0.1:8001). " +
         "Run several at once with --name <instance>.",
     );
 
   cmd
     .command("up")
-    .description("Start a gate + cloudflared tunnel (one per --name instance)")
+    .description("Start a gate + provider tunnel (one per --name instance)")
     .option("--name <name>", "instance name; run multiple tunnels side by side", DEFAULT_INSTANCE)
+    .option("--provider <provider>", "provider: cloudflare (default) or tailscale", "cloudflare")
     .option("--target <addr>", "upstream to forward to", DEFAULT_TARGET)
     .option(
       "--vhost <host>",
@@ -599,6 +820,16 @@ export function registerTunnelCommand(
       "--gate-port <port>",
       "local port the gate binds to (default: auto-allocate the first free port from 9001)",
     )
+    .option(
+      "--visibility <visibility>",
+      "Tailscale only: tailnet (Serve, default) or public (Funnel)",
+      "tailnet",
+    )
+    .option(
+      "--path <path>",
+      "Tailscale only: URL path mount (default: / for default, /<name> for named instances)",
+    )
+    .option("--https-port <port>", "Tailscale only: HTTPS listen port (default: 443)", "443")
     .action(up);
 
   cmd
@@ -616,16 +847,17 @@ export function registerTunnelCommand(
 
   cmd
     .command("logs")
-    .description("Tail the gate log (default) or cloudflared log for an instance")
+    .description("Tail the gate log (default) or provider log for an instance")
     .option("--name <name>", "instance whose log to tail", DEFAULT_INSTANCE)
     .option("-f, --follow", "follow the log")
     .option("--gate", "tail the gate log (default)")
-    .option("--cloudflared", "tail the cloudflared log instead")
+    .option("--provider", "tail the provider log instead")
+    .option("--cloudflared", "tail the Cloudflare provider log instead (legacy alias)")
     .action(logs);
 
   const allow = cmd
     .command("allow")
-    .description("Manage the CF-Connecting-IP allowlist")
+    .description("Manage the Cloudflare CF-Connecting-IP allowlist")
     .action(allowList);
   allow.command("add <ip>").description("Add an IP to the allowlist").action(allowAdd);
   allow.command("rm <ip>").description("Remove an IP from the allowlist").action(allowRm);

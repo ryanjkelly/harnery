@@ -1,6 +1,6 @@
 ---
 title: harn tunnel
-description: Expose the local dev stack or web UI to another device through an IP-gated Cloudflare quick tunnel.
+description: Expose the local dev stack or web UI through Cloudflare quick tunnels or Tailscale Serve/Funnel.
 sidebar:
   order: 7
 ---
@@ -9,7 +9,7 @@ sidebar:
 harn tunnel up | down | status | logs | allow [...]
 ```
 
-`harn tunnel` puts an **IP-gated reverse proxy** in front of a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/), so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. A small gate process checks Cloudflare's `CF-Connecting-IP` against an allowlist, rewrites the upstream `Host` header, and forwards the request. `cloudflared` exposes the gate as a random `*.trycloudflare.com` URL.
+`harn tunnel` puts a local reverse-proxy gate in front of a provider tunnel, so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. The gate rewrites the upstream `Host` header and forwards the request. Cloudflare mode uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) plus an IP allowlist checked against `CF-Connecting-IP`; Tailscale mode uses [Tailscale Serve/Funnel](https://tailscale.com/docs/reference/tailscale-cli/serve) and lets Tailscale own the access boundary.
 
 :::caution[Requires Bun]
 This is the one Harnery command that needs [Bun](https://bun.sh) installed: the gate worker is a `Bun.serve` process. Every other command runs on plain Node. Without Bun, `harn tunnel up` fails fast with a clear message.
@@ -21,14 +21,28 @@ This is the one Harnery command that needs [Bun](https://bun.sh) installed: the 
 harn tunnel up                       # start the default instance
 harn tunnel up --target 127.0.0.1:9000 --vhost localhost:9000   # custom upstream + Host
 harn tunnel up --name web            # a second, independently-managed instance
+harn tunnel up --provider cloudflare # default: random *.trycloudflare.com URL + IP allowlist
+harn tunnel up --provider tailscale  # tailnet-only Tailscale Serve URL
+harn tunnel up --provider tailscale --visibility public # public Tailscale Funnel URL
+harn tunnel up --provider tailscale --name web --path /web # named instance at a path
 harn tunnel status                   # table of running instances + their URLs
 harn tunnel down [--name <id>|--all] # stop one / all
-harn tunnel logs [-f]                # tail the gate log (--cloudflared for the tunnel log)
+harn tunnel logs [-f]                # tail the gate log (--provider for the provider log)
 ```
 
-## Allowlist
+## Providers
 
-The gate denies every request whose origin IP isn't on the allowlist (shared across instances):
+| Provider | Command | URL shape | Access model |
+|---|---|---|---|
+| Cloudflare | `harn tunnel up --provider cloudflare` | random `https://*.trycloudflare.com` | gate requires Cloudflare's `CF-Connecting-IP` to match `harn tunnel allow` |
+| Tailscale Serve | `harn tunnel up --provider tailscale` | `https://<machine>.<tailnet>.ts.net/` | tailnet members only |
+| Tailscale Funnel | `harn tunnel up --provider tailscale --visibility public` | `https://<machine>.<tailnet>.ts.net/` | public internet, if Funnel is enabled in the tailnet policy |
+
+Cloudflare gives each instance a separate random hostname. Tailscale gives the machine one MagicDNS hostname, so named instances default to path mounts: the default instance uses `/`, and `--name web` uses `/web` unless you pass `--path`.
+
+## Cloudflare Allowlist
+
+The Cloudflare provider denies every request whose origin IP isn't on the allowlist (shared across Cloudflare instances):
 
 ```bash
 harn tunnel allow              # list allowed IPs
@@ -40,4 +54,6 @@ harn tunnel allow rm 1.2.3.4   # remove
 
 - **Quick tunnels reroll their hostname on every restart.** A stable URL would need a named Cloudflare tunnel tied to a domain, which isn't built today.
 - `cloudflared` auto-installs to `~/.local/bin/` on first run (Linux); on macOS, `brew install cloudflared`.
+- Tailscale mode requires the `tailscale` CLI to be installed, signed in, and reporting a MagicDNS name from `tailscale status --json`.
+- Tailscale Funnel is public internet exposure. Use Tailscale Serve when the reviewing device is in the tailnet.
 - State lives under `.cache/tunnel/`.
