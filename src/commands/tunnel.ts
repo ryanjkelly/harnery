@@ -349,17 +349,31 @@ function runTailscaleShare(
   }
 }
 
-function stopTailscaleShare(state: TunnelState): void {
-  if (state.provider !== "tailscale" || !state.tailscale_mode) return;
+function stopTailscaleShare(state: TunnelState): boolean {
+  if (state.provider !== "tailscale" || !state.tailscale_mode) return true;
+  const cmd = tailscaleCommand(state.tailscale_mode);
   const logPath = cachePath("tunnel", providerLogFile(state.name, "tailscale"));
   const fd = openSync(logPath, "a");
   const args = [
-    tailscaleCommand(state.tailscale_mode),
+    cmd,
     `--https=${state.tailscale_https_port ?? 443}`,
     `--set-path=${state.tailscale_path ?? "/"}`,
     "off",
   ];
-  spawnSync("tailscale", args, { stdio: ["ignore", fd, fd] });
+  const r = spawnSync("tailscale", args, { stdio: ["ignore", fd, fd] });
+  if (r.status !== 0) {
+    // The gate is torn down and its port is freed for reuse regardless, so a
+    // surviving serve/funnel mapping could later re-expose whatever next binds
+    // that port. Surface it loudly so the operator can clear it by hand.
+    emit.text(
+      `\n  ⚠ Failed to remove the Tailscale ${cmd} mapping (path ${state.tailscale_path ?? "/"}).\n` +
+        `    It may still be exposing this machine. Clear it with:\n` +
+        `      tailscale ${cmd} --https=${state.tailscale_https_port ?? 443} --set-path=${state.tailscale_path ?? "/"} off\n` +
+        `    Log: ${logPath}\n\n`,
+    );
+    return false;
+  }
+  return true;
 }
 
 /** Resolve the context-supplied default vhost (literal or lazy resolver). */
@@ -524,6 +538,12 @@ async function up(opts: UpOpts): Promise<void> {
     }
     url = ready.url;
   } else {
+    // Resolve the public URL (MagicDNS name) BEFORE starting the share.
+    // tailscaleUrl -> tailscaleDnsName() hard-exits when MagicDNS is
+    // unavailable; doing it first means we fail cleanly rather than leaving a
+    // live serve/funnel exposure with no state file — which `down`/`status`/
+    // `heal` would then be unable to see or clean up.
+    url = tailscaleUrl(tailscalePath!, tailscaleHttpsPort!);
     const gateTarget = `http://127.0.0.1:${gatePort}`;
     runTailscaleShare(
       tailscaleMode!,
@@ -532,7 +552,6 @@ async function up(opts: UpOpts): Promise<void> {
       tailscaleHttpsPort!,
       providerLogPath,
     );
-    url = tailscaleUrl(tailscalePath!, tailscaleHttpsPort!);
   }
 
   const state: TunnelState = {
