@@ -37,6 +37,7 @@ export type HookGroup = ClaudeHookGroup | CursorHookGroup;
 
 export interface SettingsFile {
   version?: number;
+  description?: string;
   hooks?: Record<string, HookGroup[]>;
   [k: string]: unknown;
 }
@@ -80,6 +81,10 @@ export interface WiringDiff {
    * these — they need explicit removal — so they're surfaced separately.
    */
   orphans: string[];
+  /** Settings fields rejected by a harness with a strict top-level schema. */
+  invalidTopLevelKeys: string[];
+  /** Hook event names rejected by a harness with a strict event schema. */
+  invalidEventKeys: string[];
 }
 
 /**
@@ -111,7 +116,24 @@ export function diffWiring(settings: SettingsFile, spec: HarnessSpec): WiringDif
     }
   }
 
-  return { missing, present, orphans: [...orphans].sort() };
+  const invalidTopLevelKeys = spec.allowedTopLevelKeys
+    ? Object.keys(settings)
+        .filter((key) => !spec.allowedTopLevelKeys!.includes(key))
+        .sort()
+    : [];
+  const invalidEventKeys = spec.allowedEventKeys
+    ? Object.keys(hooks)
+        .filter((key) => !spec.allowedEventKeys!.includes(key))
+        .sort()
+    : [];
+
+  return {
+    missing,
+    present,
+    orphans: [...orphans].sort(),
+    invalidTopLevelKeys,
+    invalidEventKeys,
+  };
 }
 
 export interface HarnessWiringStatus {
@@ -120,6 +142,9 @@ export interface HarnessWiringStatus {
   settingsFile: string;
   missing: HookEvent[];
   orphans: string[];
+  invalidTopLevelKeys: string[];
+  invalidEventKeys: string[];
+  parseError?: string;
 }
 
 /**
@@ -141,19 +166,35 @@ export function loadHarnessWiring(projectRoot: string): HarnessWiringStatus[] {
     let settings: SettingsFile;
     try {
       settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
-    } catch {
-      // Unparseable settings file: can't tell opt-in from noise, and the
-      // harness itself will complain about its own malformed config. Skip.
+    } catch (error) {
+      out.push({
+        harness: id,
+        settingsFile: spec.settingsFile,
+        missing: [],
+        orphans: [],
+        invalidTopLevelKeys: [],
+        invalidEventKeys: [],
+        parseError: (error as Error).message,
+      });
       continue;
     }
     const diff = diffWiring(settings, spec);
     if (diff.present.length === 0) continue; // not opted in → not drift
-    if (diff.missing.length === 0 && diff.orphans.length === 0) continue; // current
+    if (
+      diff.missing.length === 0 &&
+      diff.orphans.length === 0 &&
+      diff.invalidTopLevelKeys.length === 0 &&
+      diff.invalidEventKeys.length === 0
+    ) {
+      continue; // current
+    }
     out.push({
       harness: id,
       settingsFile: spec.settingsFile,
       missing: diff.missing,
       orphans: diff.orphans,
+      invalidTopLevelKeys: diff.invalidTopLevelKeys,
+      invalidEventKeys: diff.invalidEventKeys,
     });
   }
   return out;

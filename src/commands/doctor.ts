@@ -251,16 +251,25 @@ function checkHarnessHooks(): Check {
   const bin = resolveBinName(root);
   const parts = drift.map((d) => {
     const bits: string[] = [];
+    if (d.parseError) bits.push(`invalid JSON (${d.parseError})`);
     if (d.missing.length > 0) {
       bits.push(`${d.missing.length} missing (${d.missing.map((m) => m.subcommand).join(", ")})`);
     }
     if (d.orphans.length > 0) bits.push(`${d.orphans.length} orphaned (${d.orphans.join(", ")})`);
+    if (d.invalidTopLevelKeys.length > 0) {
+      bits.push(`invalid fields (${d.invalidTopLevelKeys.join(", ")})`);
+    }
+    if (d.invalidEventKeys.length > 0) {
+      bits.push(`unsupported events (${d.invalidEventKeys.join(", ")})`);
+    }
     return `${d.settingsFile}: ${bits.join("; ")}`;
   });
-  const hasOrphans = drift.some((d) => d.orphans.length > 0);
-  const hint = hasOrphans
-    ? `run \`${bin} init\` to wire missing hooks; remove orphaned entries (renamed/dropped events) with \`${bin} deinit\` then \`${bin} init\``
-    : `run \`${bin} init\` to wire the new hook(s) (idempotent)`;
+  const needsManualRepair = drift.some(
+    (d) => d.parseError || d.invalidTopLevelKeys.length > 0 || d.invalidEventKeys.length > 0,
+  );
+  const hint = needsManualRepair
+    ? `repair the invalid harness settings, then run \`${bin} init\` to migrate harnery hooks`
+    : `run \`${bin} init\` to migrate the hook set (idempotent)`;
   return { name: "harness hooks", severity: "warn", detail: parts.join("  |  "), hint };
 }
 

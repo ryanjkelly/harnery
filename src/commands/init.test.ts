@@ -102,6 +102,26 @@ describe("wireHooks: Codex", () => {
       hooks: [{ type: "command", command: `bash ${HOOK} session-start --harness codex` }],
     });
   });
+
+  test("removes legacy Codex events while preserving unrelated handlers", () => {
+    const settings = {
+      description: "coord hooks",
+      hooks: {
+        SessionEnd: [
+          { hooks: [{ type: "command", command: `bash ${HOOK} session-end --harness codex` }] },
+          { hooks: [{ type: "command", command: "echo keep-me" }] },
+        ],
+        StopFailure: [
+          { hooks: [{ type: "command", command: `bash ${HOOK} stop-failure --harness codex` }] },
+        ],
+      },
+    };
+    const { removed } = wireHooks(settings as never, CODEX, HOOK, "codex");
+    expect(removed).toBe(2);
+    expect(settings.hooks.SessionEnd).toHaveLength(1);
+    expect(settings.hooks.SessionEnd[0]!.hooks[0]!.command).toBe("echo keep-me");
+    expect((settings.hooks as Record<string, unknown>).StopFailure).toBeUndefined();
+  });
 });
 
 describe("stampBinName", () => {

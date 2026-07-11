@@ -96,6 +96,26 @@ describe("diffWiring", () => {
     expect(diff.orphans).toHaveLength(0);
     expect(diff.missing).toHaveLength(CLAUDE_CODE_EVENTS.length);
   });
+
+  test("Codex reports fields and events rejected by its strict schema", () => {
+    const codex = HARNESS_SPECS.codex;
+    const settings: SettingsFile = {
+      _comment: "legacy metadata",
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              { type: "command", command: `bash ${HOOK_BASE} session-start --harness codex` },
+            ],
+          },
+        ],
+        SessionEnd: [{ hooks: [{ type: "command", command: "echo unsupported" }] }],
+      },
+    };
+    const diff = diffWiring(settings, codex);
+    expect(diff.invalidTopLevelKeys).toEqual(["_comment"]);
+    expect(diff.invalidEventKeys).toEqual(["SessionEnd"]);
+  });
 });
 
 describe("loadHarnessWiring (fs-backed)", () => {
@@ -158,12 +178,14 @@ describe("loadHarnessWiring (fs-backed)", () => {
     }
   });
 
-  test("unparseable settings file → skipped (no throw)", () => {
+  test("unparseable settings file → reported as drift (no throw)", () => {
     const root = setup();
     try {
       mkdirSync(join(root, ".claude"), { recursive: true });
       writeFileSync(join(root, ".claude", "settings.json"), "{ not valid json");
-      expect(loadHarnessWiring(root)).toHaveLength(0);
+      const drift = loadHarnessWiring(root);
+      expect(drift).toHaveLength(1);
+      expect(drift[0]!.parseError).toContain("JSON");
     } finally {
       teardown();
     }

@@ -27,7 +27,7 @@ Exits `0` unless a required dep is missing.
 | `git`          | required | Used by `harn share`, `harn wip`, `harn agents`, et al |
 | `bun`          | optional | Daily-driver execution layer; speeds up `harn` startup |
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
-| `harness hooks`| optional | Compares the wired `agent-hook` entries in your harness settings file against the current spec. Warns when an upgrade added or renamed a hook and the project hasn't been re-wired (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
+| `harness hooks`| optional | Compares wired `agent-hook` entries against the current harness spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
 | `restic`       | optional | Required for `harn backup` |
 | `rclone`       | optional | Required for `harn sync` |
 | `playwright`   | optional | Required for `harn browse` (module + browsers installed) |
@@ -71,7 +71,7 @@ $ harn doctor --json
 
 Updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout) is enough for **code** fixes — your wired hooks call the `agent-hook` binary, so they immediately run the new code. No re-`init` needed.
 
-The one exception is when a release **adds or renames a hook event**. New events aren't wired into your settings file until you re-run [`harn init`](/cli/init) (idempotent + additive — it only adds what's missing). `harn doctor`'s `harness hooks` check catches this, and a one-line nudge also appears at the start of your next session:
+The one exception is when a release **adds, renames, or retires a hook event**. Re-run [`harn init`](/cli/init) to migrate the Harnery-owned entries without touching third-party hooks. `harn doctor`'s `harness hooks` check catches this, and a one-line nudge also appears at the start of your next session:
 
 ```bash
 $ harn doctor
@@ -80,4 +80,4 @@ $ harn doctor
     ↳ run `harn init` to wire the new hook(s) (idempotent)
 ```
 
-The check only fires for a harness the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. If a release *removed* an event, the stale entry shows up as `orphaned` — re-run `harn deinit` then `harn init` to reconcile.
+The check only performs missing-hook drift checks for a harness the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. Invalid JSON is always reported. Codex's parser is strict, so `doctor` also flags unsupported top-level fields and event names before they can silently disable every hook. Re-run `harn init` to remove legacy Harnery-owned events after repairing any invalid third-party configuration.

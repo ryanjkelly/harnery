@@ -133,21 +133,23 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       } else {
         settings = {};
       }
-      const { wired, already } = wireHooks(settings, spec, agentHook, harness);
+      const { wired, already, removed } = wireHooks(settings, spec, agentHook, harness);
 
-      if (wired === 0) {
+      if (wired === 0 && removed === 0) {
         actions.push(
           `· all ${spec.events.length} ${harness} hooks already wired in ${rel(projectRoot, settingsPath)}`,
         );
       } else if (dryRun) {
         actions.push(
-          `+ would wire ${wired} hook(s) into ${rel(projectRoot, settingsPath)} (${already} already present)`,
+          `+ would wire ${wired} hook(s) and remove ${removed} legacy hook(s) in ` +
+            `${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       } else {
         mkdirSync(dirname(settingsPath), { recursive: true });
         writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
         actions.push(
-          `+ wired ${wired} hook(s) into ${rel(projectRoot, settingsPath)} (${already} already present)`,
+          `+ wired ${wired} hook(s) and removed ${removed} legacy hook(s) in ` +
+            `${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       }
 
@@ -175,13 +177,24 @@ export function wireHooks(
   spec: HarnessSpec,
   agentHookPath: string,
   harness: HarnessId,
-): { wired: number; already: number } {
+): { wired: number; already: number; removed: number } {
   if (spec.rootVersion !== undefined && settings.version === undefined) {
     settings.version = spec.rootVersion;
   }
   if (!settings.hooks) settings.hooks = {};
   let wired = 0;
   let already = 0;
+  let removed = 0;
+  for (const { settingsKey, subcommand } of spec.legacyEvents ?? []) {
+    const groups = settings.hooks[settingsKey] ?? [];
+    const kept = groups.filter(
+      (group) =>
+        !groupCommands(group).some((command) => commandWiresSubcommand(command, subcommand)),
+    );
+    removed += groups.length - kept.length;
+    if (kept.length === 0) delete settings.hooks[settingsKey];
+    else settings.hooks[settingsKey] = kept;
+  }
   for (const { settingsKey, subcommand } of spec.events) {
     const command = `bash ${agentHookPath} ${subcommand} --harness ${harness}`;
     const groups = settings.hooks[settingsKey] ?? [];
@@ -196,7 +209,7 @@ export function wireHooks(
     settings.hooks[settingsKey] = groups;
     wired++;
   }
-  return { wired, already };
+  return { wired, already, removed };
 }
 
 /**

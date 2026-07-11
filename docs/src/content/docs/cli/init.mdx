@@ -12,7 +12,7 @@ harn init [--harness claude-code|cursor|codex] [--dry-run] [--check] [--project-
 One command to make a project harnery-ready. It does the setup steps that are otherwise easy to miss, and that fail **silently** when missed:
 
 1. **Creates the `.harnery/` coord root.** Without it, `findCoordRoot` returns null and every hook no-ops forever. `init` also drops a `.harnery/.gitignore` (`*`) so machine-local runtime state (heartbeats, the event stream) never gets committed.
-2. **Wires the agent-hook entries** into the chosen harness's settings file (10 events each; see the table below).
+2. **Wires the agent-hook entries** into the chosen harness's settings file (see the harness-specific counts below).
 3. **Injects the agent-facing guidance** so a fresh consumer's agent actually knows the coord surfaces exist (design: [ADR 0008](/decisions/0008-agent-facing-skills/)):
    - A machine-owned **instructions block** spliced into `AGENTS.md` (a hash-versioned `<!-- harnery:begin instructions -->` region; everything outside the markers is untouched). Every command in it renders in *your* bin name.
    - The generic **skills** `harn-decide` and `harn-council` written to `.claude/skills/` (claude-code only — Cursor and Codex read `AGENTS.md` natively). Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you ship your own richer version. The block is **exclusion-aware**: it only points at a skill it actually wrote — an excluded skill (or a harness with no skill files, like Cursor/Codex) gets a `<bin> decision --help` / `<bin> council --help` pointer instead of a dangling reference.
@@ -27,7 +27,7 @@ harn init --dry-run  # preview every change without writing
 
 ## Idempotent + non-destructive
 
-Safe to re-run. `init` merges into an existing settings file: it preserves every hook you already have and skips any agent-hook entry that's already wired, so re-running only fills gaps. If the settings file exists but isn't valid JSON, `init` refuses rather than overwrite.
+Safe to re-run. `init` merges into an existing settings file: it preserves every hook you already have, skips any agent-hook entry that's already wired, and removes Harnery-owned entries retired from that harness's native lifecycle. If the settings file exists but isn't valid JSON, `init` refuses rather than overwrite.
 
 ```text
 harn init
@@ -36,9 +36,9 @@ harn init
   · all 10 claude-code hooks already wired in .claude/settings.json
 ```
 
-## Re-run after a Harnery upgrade that adds hooks
+## Re-run after a Harnery upgrade that changes hooks
 
-Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds or renames a hook event**: re-run `harn init` to wire it (additive, so it only fills the gap). [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the missing hook(s).
+Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds, renames, or retires a hook event**: re-run `harn init` to migrate the Harnery-owned entries. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the drift.
 
 The same is true of the instructions block and skills: they're committed by you, and the source of truth is the installed Harnery version's templates, so a package upgrade shows up as drift until you re-run `init`.
 
@@ -71,7 +71,7 @@ All three harnesses are fully auto-wired. Pass `--harness`:
 |---|---|---|
 | `claude-code` (default) | `.claude/settings.json` | 10 events; nested `{ hooks: [{ type, command }] }` entries |
 | `cursor` | `.cursor/hooks.json` | 10 events; flat `{ command }` entries + `"version": 1` |
-| `codex` | `.codex/hooks.json` | 10 events; same nested shape as Claude Code |
+| `codex` | `.codex/hooks.json` | 7 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
 
 Each writes only its own file, so you can wire several harnesses in one project by running `init` once per harness. The canonical file path + event→subcommand map + entry shape for every harness lives in [`src/core/hooks/harness/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/harness/events.ts) (`HARNESS_SPECS`).
 

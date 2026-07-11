@@ -34,6 +34,12 @@ export interface HarnessSpec {
   entryShape: HookEntryShape;
   /** When set, ensure this top-level `version` key in the file (Cursor requires `1`). */
   rootVersion?: number;
+  /** Harness-owned entries from older specs that `init` should remove during migration. */
+  legacyEvents?: HookEvent[];
+  /** Strict top-level settings keys accepted by this harness, when its parser is closed. */
+  allowedTopLevelKeys?: string[];
+  /** Strict hook event keys accepted by this harness, including events harnery does not wire. */
+  allowedEventKeys?: string[];
 }
 
 /** Claude Code: `.claude/settings.json`. */
@@ -67,18 +73,36 @@ export const CURSOR_EVENTS: HookEvent[] = [
   { settingsKey: "stop", subcommand: "stop" },
 ];
 
-/** Codex: `.codex/hooks.json`. PascalCase keys + the same entry shape as Claude Code. */
+/** Codex events that harnery uses from the current native lifecycle surface. */
 export const CODEX_EVENTS: HookEvent[] = [
   { settingsKey: "SessionStart", subcommand: "session-start" },
-  { settingsKey: "SessionEnd", subcommand: "session-end" },
   { settingsKey: "PreToolUse", subcommand: "pre-tool-use" },
   { settingsKey: "PostToolUse", subcommand: "post-tool-use" },
-  { settingsKey: "PostToolUseFailure", subcommand: "post-tool-use-failure" },
   { settingsKey: "UserPromptSubmit", subcommand: "user-prompt-submit" },
   { settingsKey: "SubagentStart", subcommand: "sub-agent-start" },
   { settingsKey: "SubagentStop", subcommand: "sub-agent-stop" },
   { settingsKey: "Stop", subcommand: "stop" },
+];
+
+/** Entries written by harnery before Codex adopted a strict native hook schema. */
+export const LEGACY_CODEX_EVENTS: HookEvent[] = [
+  { settingsKey: "SessionEnd", subcommand: "session-end" },
+  { settingsKey: "PostToolUseFailure", subcommand: "post-tool-use-failure" },
   { settingsKey: "StopFailure", subcommand: "stop-failure" },
+];
+
+/** Every hook key accepted by Codex 0.144, including events harnery does not consume. */
+export const CODEX_ALLOWED_EVENT_KEYS = [
+  "SessionStart",
+  "PreToolUse",
+  "PermissionRequest",
+  "PostToolUse",
+  "PreCompact",
+  "PostCompact",
+  "UserPromptSubmit",
+  "SubagentStart",
+  "SubagentStop",
+  "Stop",
 ];
 
 /** Every supported harness, fully wireable by `harn init`. */
@@ -98,5 +122,8 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     settingsFile: ".codex/hooks.json",
     events: CODEX_EVENTS,
     entryShape: "claude",
+    legacyEvents: LEGACY_CODEX_EVENTS,
+    allowedTopLevelKeys: ["description", "hooks"],
+    allowedEventKeys: CODEX_ALLOWED_EVENT_KEYS,
   },
 };
