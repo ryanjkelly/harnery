@@ -7,22 +7,23 @@
 
 # Harnery
 
-> Multi-agent coordination + harness adapters + portable CLI utilities for Claude Code / Cursor / Codex.
+> Multi-agent coordination for AI coding agents — Claude Code, Cursor, and Codex.
 
 [![CI](https://github.com/ryanjkelly/harnery/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanjkelly/harnery/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/harnery.svg)](https://www.npmjs.com/package/harnery)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> ⚠️ **Pre-1.0.** API surface is still settling. Pin a specific minor version (`harnery@^0.1.0`) and read the [CHANGELOG](CHANGELOG.md) before each upgrade.
+> ⚠️ **Pre-1.0.** API surface is still settling. Pin a specific minor version (`harnery@^0.6.0`) and read the [CHANGELOG](CHANGELOG.md) before each upgrade.
 
 ## What it is
 
-`harnery` is a utility layer extracted from years of building agent tooling across a multi-project monorepo. It bundles:
+`harnery` keeps multiple AI coding agents from stepping on each other in a shared checkout. It was extracted from years of running several Claude Code / Cursor / Codex sessions at once against the same monorepo:
 
-- **Multi-agent coordination:** per-agent heartbeats in `.harnery/active/`, claim-time and commit-time guards, the canonical event stream, harness adapters for Claude Code / Cursor / Codex.
-- **Portable CLI utilities:** `tokens`, `eml`, `env`, `grep`, `docs`, `repo`, `wip`, `share`, `browse`, `fetch`, `read`, and more. Cross-platform and dependency-light, with sensible defaults out of the box.
+- **Multi-agent coordination:** per-agent heartbeats in `.harnery/active/`, claim-time and commit-time guards, the canonical event stream, councils, a decision docket, per-agent scratchpads, and harness adapters for Claude Code / Cursor / Codex.
 - **Standalone web UI:** `harn web up` boots a local Next.js dashboard for the coord layer, councils, and per-project state. Ships with the git clone, not the npm package (see [Install](#install)).
 - **Backup + sync:** `harn backup` snapshots `.harnery/` via [restic](https://restic.net/); `harn sync` keeps a curated subset live across machines via [rclone](https://rclone.org/) (Google Drive or any rclone remote).
+
+The CLI also ships batteries: portable utility commands (`tokens`, `eml`, `env`, `grep`, `docs`, `repo`, `wip`, `share`, `browse`, `fetch`, `read`, and more) plus the library toolkit they're built from. Useful, cross-platform, dependency-light — and deliberately not the headline. Coordination is why harnery exists; the toolkit exists because the CLI needed it (see [Public surface tiers](#public-surface-tiers)).
 
 ## Install
 
@@ -79,6 +80,15 @@ await program.parseAsync(process.argv);
 ```
 
 `mycli agents status` then resolves to **the same code** as `harn agents status`, loaded as a library. See [examples/extending-with-commander.ts](examples/extending-with-commander.ts) for the full pattern.
+
+### Public surface tiers
+
+The exports map draws the line between what harnery *is* and what it *ships with*:
+
+- **Product tier** — `harnery`, `harnery/commander`, `harnery/core/*`: the coordination layer and CLI composition. This is the API to build against, and the reason to install harnery.
+- **Toolkit tier** — every `harnery/lib/*` subpath (`http`, `cookies`, `format`, `readability`, `browser`, `machine`, …): the supporting utilities harnery's own CLI is built from, exposed for embedding hosts that want to lean on them. Supported, but secondary: it can evolve faster than the product tier, and it isn't a reason to adopt harnery on its own.
+
+The boundary is enforced, not aspirational: CI verifies that no `harnery/lib/*` export imports the coordination core, directly or transitively (`scripts/check-layering.ts`), so pulling a toolkit module never drags in coordination state. Details: [Embedding + surface tiers](https://harnery.com/concepts/embedding/).
 
 ## Documentation
 

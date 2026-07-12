@@ -7,7 +7,8 @@ docs/dist/
 .DS_Store
 coverage/
 *.tsbuildinfo
-.harnery/
+.harnery/*
+!.harnery/config.jsonc
 
 # Editor + OS
 .idea/

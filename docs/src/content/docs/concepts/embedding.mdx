@@ -1,0 +1,62 @@
+---
+title: Embedding + surface tiers
+description: How a host CLI composes Harnery's command tree, and the two-tier public surface — the coordination product vs the supporting toolkit — that keeps the library honest about what it's for.
+sidebar:
+  order: 4
+---
+
+Harnery is a multi-agent coordination layer first, and a CLI second. But the CLI is also a **library**: a project-specific CLI can compose Harnery's command tree and add its own commands on top, so `mycli agents status` resolves to the same code as `harn agents status`.
+
+```ts
+// mycli/src/program.ts
+import { createHarneryProgram } from 'harnery/commander';
+import { deployCommand, dbCommand } from './commands';
+
+const program = createHarneryProgram({
+  binName: 'mycli',
+  context: { projectName: 'my-monorepo' },
+});
+
+program.addCommand(deployCommand);
+program.addCommand(dbCommand);
+
+await program.parseAsync(process.argv);
+```
+
+Once a host embeds Harnery this way, a second question follows immediately: *which of Harnery's internals may the host import?* The answer is the tier system.
+
+## The two tiers
+
+The `package.json` exports map is the tier boundary — not a naming convention, not a docs footnote, the actual public API map:
+
+| Tier | Subpaths | What it is | Stability posture |
+|---|---|---|---|
+| **Product** | `harnery`, `harnery/commander`, `harnery/core/*` | The coordination layer: agents state, session events, hooks, scratch — plus CLI composition. | The API to build against. Semver applies with full force here. |
+| **Toolkit** | `harnery/lib/*` (`http`, `cookies`, `format`, `readability`, `browser`, `agent-browser`, `machine`, `tunnel/state`) | The supporting utilities Harnery's own CLI is built from, exposed so embedding hosts can lean on them instead of re-implementing. | Supported, but secondary. Can evolve faster than the product tier. Never the reason to adopt Harnery. |
+
+Anything not in the exports map is internal, whatever directory it lives in — the source layout under `src/lib/` hosts both toolkit modules and internal coordination libraries, and only the exports map decides which is public.
+
+## The layering rule
+
+One structural rule keeps the toolkit safe to depend on:
+
+> **No toolkit export may reach `src/core/`, directly or transitively.**
+
+Importing `harnery/lib/http` must never drag in coordination state, heartbeats, or hook machinery. The product tier may import the toolkit freely (that is what the toolkit is for); only the upward direction is forbidden.
+
+This is enforced in CI, not just documented: [`scripts/check-layering.ts`](https://github.com/ryanjkelly/harnery/blob/main/scripts/check-layering.ts) walks the transitive import graph of every `./lib/*` export and fails on any path into the core. There is deliberately no per-line waiver. If a toolkit module turns out to need the core, it isn't a toolkit module — its export moves under `./core/*`. (That is exactly what happened to `scratch`, which shipped as `./lib/scratch` while being a coordination feature; it now lives at `harnery/core/scratch`.)
+
+## How something gets into the toolkit
+
+Utilities are born in a host CLI, not in Harnery. A module is promoted into the toolkit tier when at least one of these holds:
+
+1. **A second consumer needs it.** One host wanting a helper is that host's code; two hosts wanting it is a toolkit candidate.
+2. **Harnery's own commands need it.** The toolkit is, first of all, what the `harn` CLI is built from.
+
+This keeps the toolkit from becoming a grab-bag: it grows by demonstrated reuse, never by "this might be useful someday."
+
+## What this means in practice
+
+- **Using Harnery for coordination?** Stay on the product tier. That surface is the project's reason to exist and moves carefully.
+- **Embedding Harnery as your CLI's foundation?** The toolkit is yours to use — that's why it's exported. Pin your minor version and read the changelog; toolkit entries may move faster.
+- **Considering Harnery *only* for a toolkit module?** Don't. Copy the file or find a dedicated package — a utility grab-bag is not a dependency worth taking, and Harnery doesn't try to be one.

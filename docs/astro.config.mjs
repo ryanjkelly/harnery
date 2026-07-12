@@ -10,7 +10,7 @@ export default defineConfig({
       logo: { src: "./src/assets/harnery-emblem.svg", alt: "Harnery" },
       favicon: "/favicon.svg",
       description:
-        "Multi-agent coordination + harness adapters + portable CLI utilities.",
+        "Multi-agent coordination for AI coding agents — Claude Code, Cursor, and Codex.",
       social: [
         {
           icon: "github",

@@ -2,7 +2,7 @@
 
 # harnery: agent instructions
 
-Multi-agent coordination + harness adapters + portable CLI utilities for Claude Code / Cursor / Codex. Pre-1.0, MIT, published to npm as `harnery` (binaries: `harn`, `agent-coord`, `agent-hook`). Bun-first for dev (zero-build TS execution); the published package targets Node ≥ 20. A host CLI composes the command tree via `createHarneryProgram({ binName, context })` from `harnery/commander` and adds its own commands on top. Pattern: [examples/extending-with-commander.ts](examples/extending-with-commander.ts).
+Multi-agent coordination for AI coding agents — Claude Code, Cursor, and Codex. Pre-1.0, MIT, published to npm as `harnery` (binaries: `harn`, `agent-coord`, `agent-hook`). Bun-first for dev (zero-build TS execution); the published package targets Node ≥ 20. A host CLI composes the command tree via `createHarneryProgram({ binName, context })` from `harnery/commander` and adds its own commands on top. Pattern: [examples/extending-with-commander.ts](examples/extending-with-commander.ts).
 
 ## Portability is the prime constraint
 
@@ -12,11 +12,22 @@ This package serves arbitrary host projects. Nothing host-specific may land in `
 
 **Bin name in agent-facing strings.** Any user-facing string that tells an agent to run a command (council prompts, end-of-turn nudges, command help/errors) must use `resolveBinName()` from [src/core/config.ts](src/core/config.ts), never a literal bin name. Commands can see the live program name, but the coord binaries (`agent-hook`/`agent-coord`) and the web UI run *as harnery* and can't, so the bin name is read back from `.harnery/config.jsonc` (`binName`). Resolution precedence: `HARNERY_BIN` env → config `binName` → `"harn"`. `harn init` stamps `binName` for a consumer (any bin ≠ `harn`); a host CLI commits its own `.harnery/config.jsonc` carrying its bin name.
 
+## Surface tiers (ADR 0010)
+
+The `package.json` exports map is the public-API tier boundary. **Product tier** — `.`, `./commander`, `./core/*`: the coordination layer, the reason the package exists, full semver care. **Toolkit tier** — every `./lib/*` subpath: supporting utilities for embedding hosts (http, cookies, format, readability, browser, machine, …), supported but secondary, allowed to evolve faster, never the pitch. Anything unexported is internal regardless of directory — `src/lib/` legitimately hosts unexported coordination libs (council, decision, identities); the directory is NOT the boundary, the exports map is.
+
+Two rules follow, both enforced:
+
+1. **Layering:** no `./lib/*` export may reach `src/core/`, directly or transitively. [scripts/check-layering.ts](scripts/check-layering.ts) walks each toolkit export's import graph and fails on any core path; [tests/unit/layering.test.ts](tests/unit/layering.test.ts) gates CI. No per-line waiver exists — a toolkit module that needs the core gets its export moved under `./core/*` (that's how `./lib/scratch` became `./core/scratch`). Product importing toolkit is fine; only the upward direction is forbidden.
+2. **Promotion:** utilities are born in the host CLI and get promoted into the toolkit only when a second consumer needs them or harnery's own commands do. Never add a `./lib/*` export speculatively.
+
+When writing README/docs/marketing copy, coordination leads and the toolkit is framed as batteries for embedders. Full rationale: [docs/src/content/docs/decisions/0010-surface-tiers.mdx](docs/src/content/docs/decisions/0010-surface-tiers.mdx); user-facing story: [docs/src/content/docs/concepts/embedding.mdx](docs/src/content/docs/concepts/embedding.mdx).
+
 ## Layout
 
 - `src/commands/`: portable CLI commands (Commander pattern). New-command recipe: [CONTRIBUTING.md](CONTRIBUTING.md) § Adding a new command (register fn → wire in `src/commander.ts` → test → docs `.mdx` → changeset).
-- `src/core/`: coord layer (agents state, session events, hooks).
-- `src/lib/`: shared libs. Notables: `lib/council/` (council state machine: `writePrompt` auto-prepends the `<!-- council-route -->` header and auto-appends the `<!-- council-submit-footer -->` block, both idempotent; never hand-write those markers) and `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
+- `src/core/`: coord layer (agents state, session events, hooks, scratch).
+- `src/lib/`: shared libs — a mix of exported toolkit modules and unexported internals (see Surface tiers above). Notables: `lib/council/` (council state machine: `writePrompt` auto-prepends the `<!-- council-route -->` header and auto-appends the `<!-- council-submit-footer -->` block, both idempotent; never hand-write those markers) and `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
 - `bin/`: `harn`, `agent-coord`, `agent-hook` entrypoints.
 - `web/`: standalone Next.js dashboard (private, not published). Booted by `harn web up`; port via `HARNERY_WEB_PORT` (default 9000).
 - `docs/`: Astro Starlight site (harnery.com). Every new CLI command gets a `docs/src/content/docs/cli/<name>.mdx` page; ADRs live in `docs/src/content/docs/decisions/` (not a `docs/decisions.md`).
@@ -70,3 +81,36 @@ harnery can be developed standalone or embedded in a host monorepo as a **git su
 When more than one host checks out harnery (e.g. two separate monorepos each carrying it as a submodule), every checkout is an **independent clone of the same remote branch**. The single rule that keeps them from diverging: **pull before you edit, push immediately after.** Before touching harnery in any host, run `git -C harnery pull --ff-only`; after committing, push right away, then bump that host's pointer. Whoever pushes second without pulling first gets a non-fast-forward rejection.
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
+
+<!-- harnery:begin instructions v=e613f940 -->
+## harnery coordination
+
+This project runs [harnery](https://harnery.com) for multi-agent coordination.
+You share this checkout with other agents; the surfaces below keep you oriented
+and out of each other's way. Run `harn <command> --help` for any command's full
+surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` skills.
+
+**Identity + peers.** You are one of several agents in this repo.
+`harn agents whoami` is you; `harn agents status` shows your session plus the
+active peers and the files they've claimed; `harn agents set-task "<focus>"`
+declares your current focus so peers can see it. Check for peers before editing
+widely-shared files.
+
+**Declare intent on shell commands.** Every command you run is captured to the
+coordination ledger. Lead a shell command with a `# intent: <why>` comment (or set
+the tool's description) so the recorded event carries a reason instead of
+`(no intent)`.
+
+**Scratch journal.** `harn scratch add <category> "<text>"` (category = note, plan,
+decision, blocker, or handoff) leaves breadcrumbs that survive context compaction;
+`harn scratch read` reads yours, `harn scratch read --name <peer>` reads a peer's.
+Use it for anything future-you or a peer will need to pick up your thread.
+
+**Decision docket.** When you would otherwise stop to ask a human a decision you
+can't resolve from the repo, file it instead. `harn decision file "<question>"`
+records it and lets you proceed on a stated default; `harn decision search "<terms>"`
+surfaces prior decisions, so check for precedent before re-deciding. The `harn-decide` skill has the file / claim / resolve-with-evidence procedure.
+
+**Councils.** For a hard or contested decision, convene a council of agents.
+`harn council create "<objective>"` runs structured rounds toward a decision. The `harn-council` skill has the steward and member flow.
+<!-- harnery:end instructions -->
