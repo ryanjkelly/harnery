@@ -18,7 +18,7 @@ import {
   serializeScratch,
   SCRATCH_CATEGORIES,
   type ScratchCategory,
-} from "harnery/lib/scratch";
+} from "harnery/core/scratch";
 import { activeDir, coordRoot } from "./coord-reader";
 
 export { SCRATCH_CATEGORIES, type ScratchCategory };

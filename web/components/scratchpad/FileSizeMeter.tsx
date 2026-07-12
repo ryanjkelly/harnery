@@ -5,7 +5,7 @@ import { cn } from "@/lib/cn";
 
 /**
  * Compact horizontal meter showing scratchpad bytes used vs the 50KB cap.
- * Mirrors the canonical thresholds from `harnery/src/lib/scratch/index.ts`:
+ * Mirrors the canonical thresholds from `harnery/src/core/scratch/index.ts`:
  *
  *   WARN at 40KB (80%):  emerald → amber
  *   HARD CAP at 50KB:    amber  → red (scratch lib starts pruning oldest)

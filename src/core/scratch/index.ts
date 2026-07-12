@@ -9,8 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { monorepoRoot, readHeartbeat, resolveOwner } from "../../core/agents/index.ts";
-import { resolveMachineLabel } from "../machine.ts";
+import { resolveMachineLabel } from "../../lib/machine.ts";
+import { monorepoRoot, readHeartbeat, resolveOwner } from "../agents/index.ts";
 
 /**
  * Agent scratchpad: per-agent markdown journal at `.harnery/scratch/<instance_id>.md`.

@@ -20,7 +20,7 @@ import {
   scratchDir,
   scratchPath,
   sweepOrphanScratchpads,
-} from "../lib/scratch/index.ts";
+} from "../core/scratch/index.ts";
 
 /**
  * `harn scratch`: per-agent markdown journal at `.harnery/scratch/<instance_id>.md`.

@@ -1,6 +1,6 @@
 /**
  * Shared category metadata for the scratchpad UI. Mirrors the
- * `SCRATCH_CATEGORIES` allowlist from `harnery/src/lib/scratch/index.ts`
+ * `SCRATCH_CATEGORIES` allowlist from `harnery/src/core/scratch/index.ts`
  * (the source of truth: the bash + bun CLIs both reject anything outside
  * it). Descriptions are the operator-facing tooltips.
  */

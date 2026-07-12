@@ -16,7 +16,7 @@ import type { EmitContext } from "../commander.ts";
  * harnery repo at the *matching version tag* into a cache dir and install the
  * web app's deps. Subsequent runs reuse the cache.
  *
- * The only thing `web/` pulls from `src/` is `harnery/lib/scratch` (a single,
+ * The only thing `web/` pulls from `src/` is `harnery/core/scratch` (a single,
  * dependency-free module), so the install is `web/` deps only: no root install,
  * no Playwright browser download.
  */

@@ -47,6 +47,7 @@ import { resolveBinName } from "../core/config.ts";
 const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
+import { appendEntry, resolveOwnerByName } from "../core/scratch/index.ts";
 import {
   buildCouncilId,
   buildInviteMarkdown,
@@ -81,7 +82,6 @@ import {
   lookupById as lookupIdentityById,
   lookupByName as lookupIdentityByName,
 } from "../lib/identities/index.ts";
-import { appendEntry, resolveOwnerByName } from "../lib/scratch/index.ts";
 
 const FRESHNESS_SECS = 600; // 10-minute heartbeat-freshness window.
 

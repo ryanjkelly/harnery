@@ -286,7 +286,7 @@ export interface ScratchDoc {
 }
 
 // Scratchpad entries look like: `## 2026-05-27 10:39 AM CDT · handoff`
-// (see src/lib/scratch/index.ts; appendEntry emits this format).
+// (see src/core/scratch/index.ts; appendEntry emits this format).
 const SCRATCH_HEADER_RE =
   /^##\s+(?<ts>.+?)\s+·\s+(?<cat>note|plan|decision|blocker|question|done|handoff)\s*$/i;
 
@@ -339,7 +339,7 @@ export interface ScratchArchive {
 
 /**
  * List archived scratchpads for one owner. Archive filenames follow two
- * shapes from `harnery/src/lib/scratch/index.ts`:
+ * shapes from `harnery/src/core/scratch/index.ts`:
  *
  *   <owner>-<iso>.md            auto-archive on SessionEnd
  *   <owner>-pre-ui-<iso>.md     pre-edit snapshot from the web UI's wholesale Replace

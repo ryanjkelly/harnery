@@ -13,7 +13,7 @@
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { monorepoRoot } from "../src/core/agents/index.ts";
-import { loadScratch, resolveOwnerByName, scratchDir } from "../src/lib/scratch/index.ts";
+import { loadScratch, resolveOwnerByName, scratchDir } from "../src/core/scratch/index.ts";
 
 const arg = process.argv[2];
 if (!arg) {

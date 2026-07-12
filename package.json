@@ -1,7 +1,7 @@
 {
   "name": "harnery",
   "version": "0.6.0",
-  "description": "Multi-agent coordination + harness adapters + portable CLI utilities for Claude Code / Cursor / Codex.",
+  "description": "Multi-agent coordination for AI coding agents - Claude Code, Cursor, and Codex.",
   "license": "MIT",
   "author": "Ryan Kelly",
   "homepage": "https://harnery.com",
@@ -87,10 +87,10 @@
       "types": "./dist/lib/readability/index.d.ts",
       "import": "./dist/lib/readability/index.js"
     },
-    "./lib/scratch": {
-      "bun": "./src/lib/scratch/index.ts",
-      "types": "./dist/lib/scratch/index.d.ts",
-      "import": "./dist/lib/scratch/index.js"
+    "./core/scratch": {
+      "bun": "./src/core/scratch/index.ts",
+      "types": "./dist/core/scratch/index.d.ts",
+      "import": "./dist/core/scratch/index.js"
     },
     "./lib/tunnel/state": {
       "bun": "./src/lib/tunnel/state.ts",
@@ -129,6 +129,7 @@
     "typecheck": "bun x tsc --noEmit",
     "lint": "bun x @biomejs/biome check src",
     "check:portability": "bun run scripts/check-portability.ts",
+    "check:layering": "bun run scripts/check-layering.ts",
     "lint:fix": "bun x @biomejs/biome check --write src",
     "format": "bun x @biomejs/biome format --write src",
     "test": "bun test src tests",
