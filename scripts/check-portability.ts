@@ -42,7 +42,14 @@ const SCAN_EXT = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
   ".md", ".mdx", ".json", ".jsonc", ".yaml", ".yml", ".sh", ".css", ".astro",
 ]);
-const SCAN_ROOTS = ["src", "web", "docs", "schemas", "tests", "bin", "examples", ".changeset"];
+// Agent-facing surfaces (AGENTS.md block, .claude/ skills + settings) are
+// scanned too: `init` renders them with resolveBinName(), and a host-embedded
+// checkout can silently re-stamp a host bin name into them (it happened —
+// see ADR 0010's adoption notes). File entries are allowed alongside dirs.
+const SCAN_ROOTS = [
+  "src", "web", "docs", "schemas", "tests", "bin", "examples", ".changeset",
+  "AGENTS.md", "CLAUDE.md", ".claude", ".harnery/config.jsonc",
+];
 const SKIP_DIR = new Set([
   "node_modules", "dist", ".git", "coverage", ".next", "build", "out", ".astro", ".turbo", ".vercel",
 ]);
@@ -84,7 +91,20 @@ function walk(dir: string, root: string, out: string[]): void {
 /** Scan committable source under `root` for host-specific tokens. */
 export function scanPortability(root: string): Violation[] {
   const files: string[] = [];
-  for (const r of SCAN_ROOTS) walk(join(root, r), root, files);
+  for (const r of SCAN_ROOTS) {
+    const abs = join(root, r);
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(abs);
+    } catch {
+      continue; // missing scan root is fine (standalone layouts differ)
+    }
+    if (st.isFile()) {
+      files.push(abs);
+    } else {
+      walk(abs, root, files);
+    }
+  }
 
   const violations: Violation[] = [];
   for (const abs of files) {

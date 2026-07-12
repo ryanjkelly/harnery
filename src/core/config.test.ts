@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_BIN_NAME, resolveBinName, stripJsonComments } from "./config.ts";
+import { DEFAULT_BIN_NAME, pinnedBinName, resolveBinName, stripJsonComments } from "./config.ts";
 
 function makeRoot(configBody?: string): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-config-"));
@@ -66,6 +66,38 @@ describe("resolveBinName", () => {
     const root = makeRoot(`{ "binName": `);
     roots.push(root);
     expect(resolveBinName(root)).toBe(DEFAULT_BIN_NAME);
+  });
+});
+
+describe("pinnedBinName", () => {
+  const roots: string[] = [];
+  const savedBin = process.env.HARNERY_BIN;
+
+  afterEach(() => {
+    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    if (savedBin === undefined) {
+      // env vars must be unset, not set to the string "undefined"
+      delete process.env.HARNERY_BIN;
+    } else {
+      process.env.HARNERY_BIN = savedBin;
+    }
+  });
+
+  test("returns the config pin, ignoring HARNERY_BIN", () => {
+    // init must honor the committed pin even under an env override — the pin
+    // guards committed surfaces, not per-process display strings.
+    process.env.HARNERY_BIN = "envbin";
+    const root = makeRoot(`{ "binName": "harn" }`);
+    roots.push(root);
+    expect(pinnedBinName(root)).toBe("harn");
+  });
+
+  test("returns null when nothing is pinned (absent file or field)", () => {
+    const empty = makeRoot();
+    const noField = makeRoot(`{ "files": { "deny_globs": [] } }`);
+    roots.push(empty, noField);
+    expect(pinnedBinName(empty)).toBeNull();
+    expect(pinnedBinName(noField)).toBeNull();
   });
 });
 

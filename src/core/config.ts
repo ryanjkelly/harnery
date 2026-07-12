@@ -119,6 +119,20 @@ export function resolveBinName(coordRoot?: string | null): string {
 }
 
 /**
+ * The binName explicitly pinned in `<projectRoot>/.harnery/config.jsonc`, or
+ * null when absent. Unlike `resolveBinName()` this ignores `HARNERY_BIN` and
+ * never falls back to the default — it answers "did someone deliberately pin
+ * a name for THIS project?". `init` uses it so a re-run from a different host
+ * CLI can't silently re-stamp its own name over a committed pin (the harnery
+ * repo itself pins `"harn"` while living embedded in a host monorepo whose
+ * CLI would otherwise stamp the host's name into public, committed surfaces).
+ */
+export function pinnedBinName(projectRoot: string): string | null {
+  const binName = readConfig(projectRoot).binName;
+  return typeof binName === "string" && binName.trim() ? binName.trim() : null;
+}
+
+/**
  * The host's git-hook (re)install command, for the "commit guard not wired"
  * nudge. Returns the configured `hooksSetupHint` (e.g. "scripts/setup-hooks.sh")
  * or null when unset — callers fall back to a generic, host-agnostic message.

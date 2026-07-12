@@ -22,7 +22,7 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { DEFAULT_BIN_NAME, stripJsonComments } from "../core/config.ts";
+import { DEFAULT_BIN_NAME, pinnedBinName, stripJsonComments } from "../core/config.ts";
 import { HARNESS_SPECS, type HarnessId, type HarnessSpec } from "../core/hooks/harness/events.ts";
 import {
   commandWiresSubcommand,
@@ -70,7 +70,12 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       }
 
       const projectRoot = resolve(opts.projectRoot ?? gitTopLevel() ?? process.cwd());
-      const bin = binName?.trim() ? binName : DEFAULT_BIN_NAME;
+      // A binName already pinned in this project's config.jsonc beats the
+      // invoking CLI's name: the pin is a committed, deliberate declaration;
+      // the invoking bin is circumstantial (any embedding host's CLI can run
+      // init inside any checkout). Without this, re-running init from a host
+      // CLI re-stamps the host's name into committed agent-facing surfaces.
+      const bin = pinnedBinName(projectRoot) ?? (binName?.trim() ? binName : DEFAULT_BIN_NAME);
 
       // ── --check: read-only drift report on the block + skills ──────────────
       if (opts.check === true) {
@@ -107,10 +112,11 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // The coord binaries (agent-hook/agent-coord) and web UI run as harnery
       // itself, so they can't see a consumer CLI's name; they read it back from
       // config.jsonc. Standalone `harn` is the resolver's default, so only a
-      // consumer (binName ≠ "harn") needs the stamp.
-      if (binName && binName !== DEFAULT_BIN_NAME) {
+      // consumer (bin ≠ "harn") needs the stamp. `bin` already honors an
+      // existing pin, so this never overwrites a deliberate config value.
+      if (bin !== DEFAULT_BIN_NAME) {
         const configPath = resolve(coordDir, "config.jsonc");
-        const stamp = stampBinName(configPath, binName, dryRun);
+        const stamp = stampBinName(configPath, bin, dryRun);
         if (stamp) actions.push(stamp);
       }
 
