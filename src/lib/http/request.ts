@@ -42,7 +42,11 @@ export interface RequestWithRetriesOptions {
   method?: string;
   /** Extra headers. Content-Type defaults to application/json when a non-string body is given. */
   headers?: Record<string, string>;
-  /** Request body. Strings pass through; anything else is JSON.stringify'd. */
+  /**
+   * Request body. Strings, Uint8Array, FormData, Blob, and ReadableStream pass
+   * through untouched; any other value is JSON.stringify'd (with a
+   * Content-Type: application/json default).
+   */
   body?: unknown;
   /** Per-attempt timeout (AbortController). Default 30s. */
   timeoutMs?: number;
@@ -95,11 +99,21 @@ export async function requestWithRetries(
 
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     const init: RequestInit = { method, headers, signal: controller.signal };
-    if (opts.body !== undefined) {
-      if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
-        headers["Content-Type"] = "application/json";
+    if (opts.body !== undefined && opts.body !== null) {
+      const passthrough =
+        typeof opts.body === "string" ||
+        opts.body instanceof Uint8Array ||
+        opts.body instanceof FormData ||
+        opts.body instanceof Blob ||
+        opts.body instanceof ReadableStream;
+      if (passthrough) {
+        init.body = opts.body as BodyInit;
+      } else {
+        if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+          headers["Content-Type"] = "application/json";
+        }
+        init.body = JSON.stringify(opts.body);
       }
-      init.body = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
     }
 
     let res: Response;
