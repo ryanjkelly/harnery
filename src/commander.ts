@@ -29,6 +29,7 @@ import { registerContextCommand } from "./commands/context.ts";
 import { registerCookiesCommand } from "./commands/cookies.ts";
 import { registerDecisionCommand } from "./commands/decision.ts";
 import { registerDeinitCommand } from "./commands/deinit.ts";
+import { registerDevtoolsCommand } from "./commands/devtools.ts";
 import { registerDocsCommand } from "./commands/docs.ts";
 import { registerDoctorCommand } from "./commands/doctor.ts";
 import { registerEditBatchCommand } from "./commands/edit-batch.ts";
@@ -237,6 +238,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerContextCommand(program, emit, opts.context);
   registerScratchCommand(program, emit);
   registerDecisionCommand(program, emit);
+  registerDevtoolsCommand(program, emit);
   registerTunnelCommand(program, emit, opts.context);
   registerDocsCommand(program, emit, opts.context);
   registerAgentsCommand(program, emit);

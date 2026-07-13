@@ -1,0 +1,75 @@
+---
+title: harn devtools
+description: Local status of the AI coding agents Harnery supports — Claude Code, Codex, Cursor.
+sidebar:
+  order: 11
+---
+
+```
+harn devtools [--tool <name>] [--usage] [--window-days <n>] [--format table|json]
+```
+
+Reports the on-disk state of the AI coding agents Harnery is built for — Claude
+Code (`~/.claude`), Codex (`~/.codex`), and Cursor (`~/.cursor`) — in one place:
+logged-in status, plan / seat tier, auth expiry, session counts, and, where the
+tool records them locally, rate-limit / quota windows.
+
+Everything comes from files on disk. There is **no network call and no vendor
+API**. Auth tokens are inspected only for their non-secret claims (email, plan,
+expiry); the token strings themselves are never read into the output. A signal
+a tool keeps server-side surfaces as blank with a note rather than a guess.
+
+## What each tool exposes locally
+
+| Signal | Claude Code | Codex | Cursor |
+| --- | --- | --- | --- |
+| Logged-in | ✅ credential + expiry | ✅ `auth.json` | ⚠️ login presence only |
+| Plan / tier | ✅ seat tier | ✅ plan (JWT claim) | ❌ server-side |
+| Auth expiry | ✅ | ✅ | ❌ |
+| Session count | ✅ transcripts | ✅ rollouts | ✅ workspaces |
+| Quota / reset windows | ❌ (live via `/usage`) | ✅ 5h + weekly, from `token_count` | ❌ server-side |
+| Token totals (`--usage`) | ✅ transcript scan | ✅ best-effort | ❌ server-side |
+
+Two honest gaps: **Cursor** keeps usage and billing entirely on `cursor.com`, so
+locally you get login presence and a workspace count only; and true
+**billing-cycle countdown** is not local for any of them — Codex's rate-limit
+`resets_at` windows are the closest local proxy.
+
+## Options
+
+| Flag | Effect |
+| --- | --- |
+| `--tool <name>` | Restrict to a tool (repeatable): `claude-code`, `codex`, `cursor`. Default: all three. |
+| `--usage` | Also scan local transcripts for approximate token totals. Opt-in because transcripts can be gigabytes. |
+| `--window-days <n>` | With `--usage`, only count transcripts modified within N days (default 7). |
+| `--format <type>` | `table` (default) or `json`. |
+
+## Examples
+
+Default report:
+
+```bash
+harn devtools
+```
+
+```
+── codex ───────────────────────────────────
+   logged in    yes
+   account      dev@example.com
+   plan         team
+   auth expires 2026-07-07T08:28:13Z
+   sessions     36
+   quota (5h)   21% used · resets 2026-05-09T09:24:06Z
+   quota (weekly)   43% used · resets 2026-05-12T06:01:50Z
+```
+
+Token totals for the last day, JSON, one tool:
+
+```bash
+harn devtools --tool claude-code --usage --window-days 1 --format json
+```
+
+The JSON envelope is `{ ok, generatedAt, windowDays, tools: ToolStatus[] }`,
+where each `ToolStatus` carries `installed`, `loggedIn`, `account`, `plan`,
+`rateLimitTier`, `authExpiresAt`, `sessions`, `lastActivity`, `quota[]`,
+`tokensUsed`, and `notes[]`.
