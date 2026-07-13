@@ -796,7 +796,12 @@ function IconLink({
       className={
         bordered
           ? "inline-flex items-center justify-center rounded border border-border p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-          : "inline-flex items-center justify-center rounded bg-background/80 p-1 text-foreground backdrop-blur-md hover:bg-background"
+          : // NO backdrop-blur: two of these render per thumbnail card (opacity-0
+            // until hover), and backdrop-filter allocates + blurs a compositor
+            // layer on every paint even while invisible — 142 blurred layers on
+            // a 71-card grid, the dominant cause of the ~2-3fps scroll. A solid
+            // background reads identically behind a tiny icon.
+            "inline-flex items-center justify-center rounded bg-background/90 p-1 text-foreground hover:bg-background"
       }
     >
       {children}
