@@ -815,64 +815,69 @@ function sumClaudeTokens(files: string[], now: number, windowDays: number): numb
 function readCodex(home: string, now: number, usage: boolean, windowDays: number): ToolStatus {
   const dir = join(home, ".codex");
   const status: ToolStatus = base("codex");
-  status.installed = existsSync(dir);
+  const globbed = codexRollouts(home);
+  status.installed = existsSync(dir) || globbed.length > 0;
   if (!status.installed) {
     status.notes.push("~/.codex not found");
     return status;
   }
 
-  // Auth: ~/.codex/auth.json. Decode the id_token's non-secret claims only. The
-  // plan here can be stale (the token is minted infrequently); the live plan
-  // comes from the freshest rollout's rate_limits below and overrides it.
-  const auth = readJson<Record<string, unknown>>(join(dir, "auth.json"));
+  // Codex can have more than one install on a machine (e.g. a WSL CLI and the
+  // Windows desktop app, each its own account). They must not be mixed: read
+  // auth AND rate limits from the SAME install — the one actually in use, which
+  // is whichever owns the most-recently-written rollout.
+  const newestRollout = newestFile(globbed);
+  const activeRoot = newestRollout ? codexRootOf(newestRollout) : dir;
+
+  // Auth: <activeRoot>/auth.json. The id_token carries the non-secret account +
+  // plan claims; the access_token carries the meaningful expiry (it outlives the
+  // id_token and is what refreshes), so we report that, not the id_token's.
+  const auth = readJson<Record<string, unknown>>(join(activeRoot, "auth.json"));
   if (auth) {
     const tokens = auth.tokens as Record<string, unknown> | undefined;
     const idToken = strOr(tokens?.id_token);
-    status.loggedIn = Boolean(strOr(tokens?.access_token) || idToken);
-    const claims = idToken ? decodeJwtClaims(idToken) : null;
-    if (claims) {
-      status.account = strOr(claims.email);
-      const authClaim = claims["https://api.openai.com/auth"] as
+    const accessToken = strOr(tokens?.access_token);
+    const idClaims = idToken ? decodeJwtClaims(idToken) : null;
+    const accessExp = numOr(accessToken ? decodeJwtClaims(accessToken)?.exp : undefined);
+    if (idClaims) {
+      status.account = strOr(idClaims.email);
+      const authClaim = idClaims["https://api.openai.com/auth"] as
         | Record<string, unknown>
         | undefined;
       status.plan = strOr(authClaim?.chatgpt_plan_type);
-      const exp = numOr(claims.exp);
-      if (exp) {
-        status.authExpiresAt = new Date(exp * 1000).toISOString();
-        if (exp * 1000 <= now)
-          status.notes.push("token expired; refreshes via stored refresh token");
-      }
+    }
+    // Prefer the access token's expiry; fall back to the id_token's.
+    const exp = accessExp ?? numOr(idClaims?.exp);
+    status.authExpiresAt = exp ? new Date(exp * 1000).toISOString() : null;
+    status.loggedIn = Boolean(accessToken || idToken) && (exp == null || exp * 1000 > now);
+    if (exp && exp * 1000 <= now) {
+      status.notes.push("token expired; refreshes via stored refresh token");
     }
   } else {
     status.loggedIn = false;
     status.notes.push("no auth.json found (not logged in)");
   }
 
-  // Activity: sqlite/state_5.sqlite (the `threads` table) is Codex's authoritative
-  // live store. The JSONL rollouts under sessions/ can lag it (and on WSL the
-  // live app writes them Windows-side), so prefer the DB for counts + recency.
-  const state = readCodexState(join(dir, "sqlite", "state_5.sqlite"), usage);
+  // Activity: prefer the active install's state_5.sqlite (`threads`) for exact
+  // counts, but only when it's actually the active install's DB — otherwise the
+  // rollouts are the cross-install-consistent source.
+  const state = readCodexState(join(activeRoot, "sqlite", "state_5.sqlite"), usage);
+  const activeRollouts = globbed.filter((f) => codexRootOf(f) === activeRoot);
   if (state) {
     status.sessions = state.sessions;
     if (state.lastMs) status.lastActivity = new Date(state.lastMs).toISOString();
     if (usage && state.tokens != null) status.tokensUsed = state.tokens;
+  } else {
+    // No DB for the active install (e.g. the Windows desktop app uses a
+    // different store): fall back to that install's rollout files.
+    status.sessions = activeRollouts.length || null;
+    status.lastActivity = latestMtimeIso(activeRollouts);
+    if (usage) status.tokensUsed = sumCodexTokens(activeRollouts, now, windowDays);
   }
 
-  // Freshest rollout → current rate-limit windows + live plan_type. Prefer the
-  // newest thread's rollout_path from the DB (it points at the live sessions
-  // dir, Windows-side on WSL); otherwise glob the known sessions roots.
-  const globbed = codexRollouts(home);
-  if (!state) {
-    // No SQLite engine: fall back to the rollout files for counts + recency.
-    status.sessions = globbed.length || null;
-    status.lastActivity = latestMtimeIso(globbed);
-    if (usage) status.tokensUsed = sumCodexTokens(globbed, now, windowDays);
-  }
-  const newest =
-    (state?.newestRollout && existsSync(state.newestRollout) ? state.newestRollout : null) ??
-    newestFile(globbed);
-  if (newest) {
-    const rl = lastRateLimits(newest);
+  // Freshest rollout → current rate-limit windows + live plan_type.
+  if (newestRollout) {
+    const rl = lastRateLimits(newestRollout);
     if (rl) {
       status.quota = [rl.primary, rl.secondary].filter((q): q is QuotaWindow => q !== null);
       if (rl.planType) status.plan = rl.planType; // live plan wins over the id_token
@@ -881,6 +886,12 @@ function readCodex(home: string, now: number, usage: boolean, windowDays: number
   if (!status.quota?.length) status.notes.push("no local rate-limit snapshot in latest session");
 
   return status;
+}
+
+/** The Codex install root that owns a rollout path (the part before `/sessions/`). */
+function codexRootOf(rolloutPath: string): string {
+  const parts = rolloutPath.split(/[/\\]sessions[/\\]/);
+  return parts.length > 1 ? parts[0] : rolloutPath;
 }
 
 interface CodexState {

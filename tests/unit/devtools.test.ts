@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -226,6 +226,61 @@ describe("readDevtools — codex", () => {
     ]);
     expect(cx.tokensUsed).toBe(4242);
     expect(JSON.stringify(cx)).not.toContain("at-secret");
+  });
+
+  test("expiry comes from the access token, not the (short-lived) id_token", () => {
+    const dir = path.join(home, ".codex");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "auth.json"),
+      JSON.stringify({
+        tokens: {
+          // id_token expired days ago, but the access token is still valid and
+          // is what refreshes — the user is NOT logged out.
+          id_token: jwt({
+            email: "codex@example.com",
+            exp: Math.floor((NOW - 6 * 86_400_000) / 1000),
+            "https://api.openai.com/auth": { chatgpt_plan_type: "plus" },
+          }),
+          access_token: jwt({ exp: Math.floor((NOW + 4 * 86_400_000) / 1000) }),
+        },
+      }),
+    );
+    const cx = byTool(readDevtools({ home, now: NOW }).tools, "codex");
+    expect(cx.loggedIn).toBe(true);
+    expect(cx.account).toBe("codex@example.com");
+    expect(cx.plan).toBe("plus");
+    expect(cx.authExpiresAt).toBe(new Date((Math.floor((NOW + 4 * 86_400_000) / 1000)) * 1000).toISOString());
+    expect(cx.notes.some((n) => n.includes("token expired"))).toBe(false);
+  });
+
+  test("rate limits come from the freshest rollout, not an older one", () => {
+    const dir = path.join(home, ".codex");
+    const day = path.join(dir, "sessions", "2026", "07", "13");
+    mkdirSync(day, { recursive: true });
+    const rl = (percent: number, windowMin: number) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            plan_type: "plus",
+            primary: { used_percent: percent, window_minutes: windowMin, resets_at: Math.floor(NOW / 1000) + 3600 },
+          },
+        },
+      });
+    const older = path.join(day, "rollout-2026-07-13T01-00-00-old.jsonl");
+    const newer = path.join(day, "rollout-2026-07-13T05-00-00-new.jsonl");
+    writeFileSync(older, rl(88, 300)); // stale: 5h window at 88%
+    writeFileSync(newer, rl(1, 10080)); // fresh: weekly window at 1%
+    // Force the mtime ordering the filenames imply (older is genuinely older).
+    utimesSync(older, new Date(NOW - 4 * 3_600_000), new Date(NOW - 4 * 3_600_000));
+    utimesSync(newer, new Date(NOW - 3_600_000), new Date(NOW - 3_600_000));
+
+    const cx = byTool(readDevtools({ home, now: NOW }).tools, "codex");
+    expect(cx.quota).toEqual([
+      { window: "weekly", usedPercent: 1, resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString() },
+    ]);
   });
 });
 
