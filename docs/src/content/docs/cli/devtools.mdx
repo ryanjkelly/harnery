@@ -23,17 +23,23 @@ a tool keeps server-side surfaces as blank with a note rather than a guess.
 
 | Signal | Claude Code | Codex | Cursor |
 | --- | --- | --- | --- |
-| Logged-in | ✅ credential + expiry | ✅ `auth.json` | ⚠️ login presence only |
-| Plan / tier | ✅ seat tier | ✅ plan (JWT claim) | ❌ server-side |
+| Logged-in | ✅ credential + expiry | ✅ `auth.json` | ✅ `state.vscdb` |
+| Account | ✅ email | ✅ email (JWT claim) | ✅ email (`state.vscdb`) |
+| Plan / tier | ✅ seat tier | ✅ plan (JWT claim) | ✅ Stripe membership + status |
 | Auth expiry | ✅ | ✅ | ❌ |
-| Session count | ✅ transcripts | ✅ rollouts | ✅ workspaces |
+| Session count | ✅ transcripts | ✅ rollouts | ✅ chats (`composerHeaders`) |
 | Quota / reset windows | ❌ (live via `/usage`) | ✅ 5h + weekly, from `token_count` | ❌ server-side |
 | Token totals (`--usage`) | ✅ transcript scan | ✅ best-effort | ❌ server-side |
 
-Two honest gaps: **Cursor** keeps usage and billing entirely on `cursor.com`, so
-locally you get login presence and a workspace count only; and true
-**billing-cycle countdown** is not local for any of them — Codex's rate-limit
-`resets_at` windows are the closest local proxy.
+Cursor's account, plan (`stripeMembershipType`), and subscription status come
+from its IDE state DB (`state.vscdb`, a SQLite file). That read needs a SQLite
+engine — under Bun (`bun:sqlite`) it works; on a plain-Node host it degrades to
+login-presence only. On WSL the DB lives on the Windows side and is usually
+WAL-locked while Cursor runs, so the reader snapshots it before querying.
+
+Two honest gaps remain: Cursor keeps **token cost + quota** entirely on
+`cursor.com`; and a true **billing-cycle countdown** is not local for any of the
+three — Codex's rate-limit `resets_at` windows are the closest local proxy.
 
 ## Options
 

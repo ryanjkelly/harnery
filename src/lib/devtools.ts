@@ -1,5 +1,13 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -316,30 +324,175 @@ function readCursor(home: string): ToolStatus {
     return status;
   }
 
-  // Login presence: the remote-server tokens and the statsig user id are the
-  // only local login signals; Cursor's account/plan live behind cursor.com.
-  const serverDir = join(home, ".cursor-server");
-  const tokenFiles = existsSync(serverDir)
-    ? readdirSync(serverDir).filter((f) => f.endsWith(".token"))
-    : [];
-  const statsig = readJson<Record<string, unknown>>(join(dir, "statsig-cache.json"));
-  const userId = strOr(statsig?.userID);
-  status.loggedIn = tokenFiles.length > 0 || userId ? true : null;
-  status.account = userId; // opaque statsig id, not an email
+  // Cursor's IDE state DB (state.vscdb, a SQLite file) holds the account email,
+  // Stripe membership type + subscription status, and per-chat activity — all
+  // token-free. It's the richest local Cursor signal. Read it if a SQLite
+  // engine is available (bun:sqlite); otherwise fall back to login-presence
+  // signals from the remote-server tokens / statsig id.
+  const vscdb = cursorGlobalVscdb(home);
+  const items = vscdb
+    ? readVscdbItems(vscdb, [
+        "cursorAuth/cachedEmail",
+        "cursorAuth/stripeMembershipType",
+        "cursorAuth/stripeSubscriptionStatus",
+        "composer.composerHeaders",
+      ])
+    : null;
 
-  // Sessions: per-project workspaces under projects/.
-  const projects = join(dir, "projects");
-  const entries = existsSync(projects)
-    ? readdirSync(projects, { withFileTypes: true }).filter((d) => d.isDirectory())
-    : [];
-  status.sessions = entries.length || null;
-  status.lastActivity = latestMtimeIso(entries.map((d) => join(projects, d.name)));
+  if (items) {
+    const email = strOr(items["cursorAuth/cachedEmail"]);
+    const membership = strOr(items["cursorAuth/stripeMembershipType"]);
+    const subStatus = strOr(items["cursorAuth/stripeSubscriptionStatus"]);
+    status.account = email;
+    status.plan = membership;
+    status.loggedIn = Boolean(email) || subStatus === "active";
+    if (subStatus) status.notes.push(`subscription ${subStatus}`);
 
+    // Per-chat activity from composer headers (session count + last active).
+    const headers = safeJson(items["composer.composerHeaders"]) as {
+      allComposers?: Array<{ lastUpdatedAt?: number; createdAt?: number }>;
+    } | null;
+    const composers = headers?.allComposers ?? [];
+    if (composers.length) {
+      status.sessions = composers.length;
+      let last = 0;
+      for (const c of composers) last = Math.max(last, c.lastUpdatedAt ?? c.createdAt ?? 0);
+      if (last > 0) status.lastActivity = new Date(last).toISOString();
+    }
+  } else {
+    // Fallback: remote-server tokens + statsig id only prove a login exists.
+    const serverDir = join(home, ".cursor-server");
+    const tokenFiles = existsSync(serverDir)
+      ? readdirSync(serverDir).filter((f) => f.endsWith(".token"))
+      : [];
+    const statsig = readJson<Record<string, unknown>>(join(dir, "statsig-cache.json"));
+    status.account = strOr(statsig?.userID); // opaque statsig id, not an email
+    status.loggedIn = tokenFiles.length > 0 || status.account ? true : null;
+    status.notes.push("state.vscdb unreadable (needs a SQLite engine); login-presence only");
+  }
+
+  // Session count fallback: per-project workspace dirs.
+  if (status.sessions == null) {
+    const projects = join(dir, "projects");
+    const entries = existsSync(projects)
+      ? readdirSync(projects, { withFileTypes: true }).filter((d) => d.isDirectory())
+      : [];
+    status.sessions = entries.length || null;
+    if (!status.lastActivity)
+      status.lastActivity = latestMtimeIso(entries.map((d) => join(projects, d.name)));
+  }
+
+  // Token cost + quota are genuinely server-side for individual Cursor plans.
   status.quota = null;
   status.tokensUsed = null;
-  status.notes.push("usage + billing are server-side (cursor.com); not exposed locally");
+  status.notes.push("token cost + quota are server-side (cursor.com); not exposed locally");
 
   return status;
+}
+
+/** First existing Cursor global `state.vscdb` across native / macOS / WSL-Windows roots. */
+function cursorGlobalVscdb(home: string): string | null {
+  const candidates = [
+    join(home, ".config", "Cursor", "User", "globalStorage", "state.vscdb"),
+    join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb"),
+  ];
+  // WSL: Cursor's GUI runs on Windows, so the live DB is under /mnt/c/Users/<u>/.
+  // Gated on the real home so a test with a synthetic `home` never reaches out
+  // to the host's actual Windows-side Cursor install.
+  if (home === homedir()) {
+    try {
+      if (existsSync("/mnt/c/Users")) {
+        for (const u of readdirSync("/mnt/c/Users")) {
+          candidates.push(
+            `/mnt/c/Users/${u}/AppData/Roaming/Cursor/User/globalStorage/state.vscdb`,
+          );
+        }
+      }
+    } catch {
+      // no /mnt/c — not WSL
+    }
+  }
+  return candidates.find((p) => existsSync(p)) ?? null;
+}
+
+/**
+ * Read specific keys from a Cursor `state.vscdb` (VS Code ItemTable). Uses
+ * `bun:sqlite`, lazily required so non-Bun runtimes degrade to null rather than
+ * crashing at import. The live DB is usually WAL-locked (Cursor is running),
+ * and over the WSL 9p mount a direct open throws "disk I/O error" — so on any
+ * open/read failure we snapshot the file (plus -wal/-shm) to a temp dir and
+ * read the copy. Returns a key→value map, or null if no engine / all reads fail.
+ */
+function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> | null {
+  let Database: unknown;
+  try {
+    // biome-ignore lint/style/useNodejsImportProtocol: bun:sqlite is a Bun builtin, not a node: module
+    ({ Database } = require("bun:sqlite"));
+  } catch {
+    return null; // no SQLite engine (plain Node runtime)
+  }
+  const open = (p: string) =>
+    new (Database as new (path: string, opts: { readonly: boolean }) => VscdbHandle)(p, {
+      readonly: true,
+    });
+  const query = (db: VscdbHandle): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const k of keys) {
+      const row = db.query("SELECT value FROM ItemTable WHERE key = ?").get(k) as
+        | { value: string | Uint8Array }
+        | undefined;
+      if (row?.value != null)
+        out[k] =
+          typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
+    }
+    return out;
+  };
+
+  // Attempt 1: open the live file directly.
+  try {
+    const db = open(dbPath);
+    const out = query(db);
+    db.close();
+    return out;
+  } catch {
+    // locked / WAL / 9p — fall through to a snapshot copy
+  }
+
+  // Attempt 2: snapshot the DB (+ sidecars) and read the copy.
+  let tmp: string | null = null;
+  try {
+    tmp = mkdtempSync(join(tmpdir(), "harn-vscdb-"));
+    const dst = join(tmp, "state.vscdb");
+    copyFileSync(dbPath, dst);
+    for (const ext of ["-wal", "-shm"]) {
+      if (existsSync(dbPath + ext)) {
+        try {
+          copyFileSync(dbPath + ext, dst + ext);
+        } catch {
+          // sidecar missing/locked — main file alone is still queryable
+        }
+      }
+    }
+    const db = open(dst);
+    const out = query(db);
+    db.close();
+    return out;
+  } catch {
+    return null;
+  } finally {
+    if (tmp) {
+      try {
+        rmSync(tmp, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+}
+
+interface VscdbHandle {
+  query(sql: string): { get(...params: unknown[]): unknown };
+  close(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +519,16 @@ function base(tool: DevtoolName): ToolStatus {
 function readJson<T>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a JSON string that may be undefined; null on absence or parse error. */
+function safeJson(s: string | undefined): unknown {
+  if (!s) return null;
+  try {
+    return JSON.parse(s);
   } catch {
     return null;
   }

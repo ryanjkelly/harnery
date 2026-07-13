@@ -166,7 +166,47 @@ describe("readDevtools — codex", () => {
 });
 
 describe("readDevtools — cursor", () => {
-  test("login presence from server tokens; usage noted as server-side", () => {
+  test("reads account/plan/subscription + session count from state.vscdb", () => {
+    const dir = path.join(home, ".cursor");
+    mkdirSync(dir, { recursive: true });
+    const gsDir = path.join(home, ".config", "Cursor", "User", "globalStorage");
+    mkdirSync(gsDir, { recursive: true });
+    const dbPath = path.join(gsDir, "state.vscdb");
+
+    // Build a real VS Code ItemTable so the reader exercises its SQLite path.
+    const { Database } = require("bun:sqlite");
+    const db = new Database(dbPath);
+    db.run("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+    const put = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    put.run("cursorAuth/cachedEmail", "dev@example.com");
+    put.run("cursorAuth/stripeMembershipType", "pro_plus");
+    put.run("cursorAuth/stripeSubscriptionStatus", "active");
+    put.run("cursorAuth/accessToken", "secret-should-not-surface");
+    put.run(
+      "composer.composerHeaders",
+      JSON.stringify({
+        allComposers: [
+          { composerId: "a", lastUpdatedAt: Date.parse("2026-07-01T00:00:00Z") },
+          { composerId: "b", lastUpdatedAt: Date.parse("2026-07-05T00:00:00Z") },
+        ],
+      }),
+    );
+    db.close();
+
+    const cu = byTool(readDevtools({ home, now: NOW }).tools, "cursor");
+    expect(cu.installed).toBe(true);
+    expect(cu.loggedIn).toBe(true);
+    expect(cu.account).toBe("dev@example.com");
+    expect(cu.plan).toBe("pro_plus");
+    expect(cu.sessions).toBe(2);
+    expect(cu.lastActivity).toBe("2026-07-05T00:00:00.000Z");
+    expect(cu.quota).toBeNull();
+    expect(cu.notes.join(" ")).toContain("subscription active");
+    expect(cu.notes.join(" ")).toContain("server-side");
+    expect(JSON.stringify(cu)).not.toContain("secret-should-not-surface");
+  });
+
+  test("falls back to login-presence when no vscdb is present", () => {
     const dir = path.join(home, ".cursor");
     mkdirSync(path.join(dir, "projects", "proj-x"), { recursive: true });
     writeFileSync(path.join(dir, "statsig-cache.json"), JSON.stringify({ userID: "user-abc", data: {} }));
@@ -179,8 +219,7 @@ describe("readDevtools — cursor", () => {
     expect(cu.loggedIn).toBe(true);
     expect(cu.account).toBe("user-abc");
     expect(cu.sessions).toBe(1);
-    expect(cu.quota).toBeNull();
-    expect(cu.notes.join(" ")).toContain("server-side");
+    expect(cu.notes.join(" ")).toContain("login-presence only");
   });
 });
 
