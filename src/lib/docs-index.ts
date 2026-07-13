@@ -23,6 +23,7 @@ function isSubmoduleInitialized(name: string): boolean {
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { resolveBinName } from "../core/config.ts";
+import { readDocStatusFromText } from "./docs-frontmatter.ts";
 
 /**
  * Regenerates index READMEs in docs/audits/ and docs/issues/ directories.
@@ -66,10 +67,8 @@ function extractTitle(content: string, fallbackSlug: string): string {
   return fallbackSlug.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function extractStatus(content: string): string | undefined {
-  const head = content.split("\n").slice(0, 20).join("\n");
-  const match = head.match(/\*\*Status:\*\*\s*([a-zA-Z][a-zA-Z-]*)/);
-  return match ? match[1]!.toLowerCase() : undefined;
+export function extractStatus(content: string): string | undefined {
+  return readDocStatusFromText(content, "issue") ?? undefined;
 }
 
 function readEntries(dir: string, includeStatus: boolean): DatedEntry[] {
@@ -138,7 +137,7 @@ function defaultPreamble(kind: "audits" | "issues"): string {
         "# Issues",
         "",
         "Date-stamped post-mortems and investigations. File names follow `YYYY-MM-DD_<slug>.md`.",
-        "Each file carries a `**Status:**` line (open | resolved | wontfix).",
+        "Each file carries lifecycle status in YAML frontmatter (legacy `**Status:**` lines remain accepted during migration).",
         "",
         regen,
         "",

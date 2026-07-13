@@ -1,5 +1,6 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
+import { readDocStatus } from "./docs-frontmatter.ts";
 import { sh } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
@@ -21,7 +22,7 @@ function isSubmoduleInitialized(name: string): boolean {
   return __existsSyncForDocs(__resolveForDocs(REPO_ROOT, name, ".git"));
 }
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /**
@@ -121,17 +122,6 @@ async function lastRepoCommitAgeDays(cwd: string): Promise<number | null> {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
-function readStatus(filePath: string): string | null {
-  try {
-    const content = readFileSync(filePath, "utf8");
-    const head = content.split("\n").slice(0, 20).join("\n");
-    const m = head.match(/\*\*Status:\*\*\s*([a-zA-Z][a-zA-Z-]*)/);
-    return m ? m[1]!.toLowerCase() : null;
-  } catch {
-    return null;
-  }
-}
-
 function walkMdFiles(dir: string, skipReadme = false): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
@@ -159,7 +149,7 @@ function sweepPlans(repoName: string, repoPath: string, ages: AgeMap, items: Swe
     const rel = relative(repoPath, full);
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
     const isArchived = rel.includes("/archive/");
-    const status = readStatus(full);
+    const status = readDocStatus(full, "plan");
     const age = ageDays(ages, rel);
     if (age == null) continue;
 
@@ -193,7 +183,7 @@ function sweepIssues(repoName: string, repoPath: string, ages: AgeMap, items: Sw
     const full = join(issuesDir, entry);
     const rel = join("docs", "issues", entry);
     const displayPath = join(repoName === "(root)" ? "" : repoName, rel);
-    const status = readStatus(full);
+    const status = readDocStatus(full, "issue");
     if (status !== "open") continue;
     const age = ageDays(ages, rel);
     if (age == null || age <= OPEN_ISSUE_DAYS) continue;
@@ -213,7 +203,7 @@ function sweepHandoffs(repoName: string, repoPath: string, ages: AgeMap, items: 
 
   for (const full of walkMdFiles(handoffsDir)) {
     const rel = relative(repoPath, full);
-    const status = readStatus(full);
+    const status = readDocStatus(full, "handoff");
     if (status !== "open") continue;
     const age = ageDays(ages, rel);
     if (age == null || age <= COLD_HANDOFF_DAYS) continue;

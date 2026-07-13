@@ -1,5 +1,6 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
+import { hasAnyStatus } from "./docs-frontmatter.ts";
 import { sh } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
@@ -174,10 +175,13 @@ function isDeclaredMonolith(path: string): boolean {
   return /INTENTIONAL-MONOLITH/i.test(head);
 }
 
-/** Detect whether a file carries a Status line in its opening block */
-function hasStatusHeader(path: string): boolean {
-  const head = readHead(path, 15);
-  return /\*\*Status:\*\*/i.test(head);
+/** Detect whether a file carries lifecycle status in YAML or the legacy bold shape. */
+export function hasStatusHeader(path: string): boolean {
+  try {
+    return hasAnyStatus(readFileSync(path, "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 // --- Individual checks ---
@@ -392,7 +396,7 @@ function checkStatusHeaders(repoName: string, repoPath: string, files: string[])
         repo: repoName,
         path: join(repoName === "(root)" ? "" : repoName, rel),
         rule: "missing-status-header",
-        message: `${kind} missing **Status:** line in opening block`,
+        message: `${kind} missing status in YAML frontmatter or a legacy **Status:** line`,
       });
     }
   }
