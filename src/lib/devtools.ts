@@ -141,6 +141,24 @@ export interface DevtoolsReport {
   tools: ToolStatus[];
 }
 
+/** One endpoint's health, from `probeEndpoints` (the `devtools doctor` check). */
+export interface ProbeResult {
+  tool: DevtoolName;
+  endpoint: string;
+  /** Client version we put in the request's User-Agent, else null. */
+  clientVersion: string | null;
+  /** HTTP status, or null when no call was made / the request threw. */
+  status: number | null;
+  outcome:
+    | "ok" // 200 with the expected shape
+    | "rate_limited" // 429 — back off, not a defect
+    | "auth_rejected" // 401/403 — our auth or required headers may have changed
+    | "shape_changed" // 200 but the expected fields are gone
+    | "unreachable" // network error / other non-2xx
+    | "no_credential"; // nothing to authenticate with locally
+  detail: string;
+}
+
 export interface ReadDevtoolsOpts {
   /** Home directory to resolve tool config against. Defaults to os.homedir(). */
   home?: string;
@@ -199,11 +217,9 @@ const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED
 // So our requests blend in with the tool's own traffic rather than looking like
 // a scraper (a bare fetch would carry a "Bun/…" or "node" User-Agent, which is
 // the anomaly). We send the same first-party client identity the tool sends for
-// the same call — the user's own machine reaching the user's own account.
-//
-/** Recent desktop Chrome UA — cursor.com's usage endpoint is a browser-dashboard XHR. */
-const BROWSER_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+// the same call — the user's own machine reaching the user's own account. Claude
+// uses a claude-cli UA (built below); Cursor uses its Electron UA (see
+// cursorUserAgent), both embedding the live local version.
 
 /** Last-resort Claude Code version when no live source is readable. */
 const CLAUDE_CLI_FALLBACK_VERSION = "2.1.0";
@@ -349,13 +365,134 @@ export async function enrichFromApi(
   // Cursor Cloud Agent activity from a configured API key (optional, separate auth).
   const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
   if (key) {
-    cursor.api = await fetchCursorApi(key, timeoutMs);
+    cursor.api = await fetchCursorApi(key, cursorUserAgent(auth?.version ?? null), timeoutMs);
     // On success the structured `api` fields carry the signal; only note a break.
     if (!cursor.api.ok) {
       cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
     }
   }
   return report;
+}
+
+/**
+ * One live call per usage endpoint (cache-bypassing) to check the integration
+ * still works — the occasional "did a client change its headers?" test. It
+ * exercises the EXACT request builders production uses, so an `auth_rejected`
+ * result means our headers/token stopped being accepted, and `shape_changed`
+ * means the response schema drifted. Rate-limited results are reported as such,
+ * not as failures. Makes at most one request per tool; run it by hand (it is not
+ * scheduled) so it can't itself cause a rate limit.
+ */
+export async function probeEndpoints(
+  opts: { home?: string; timeoutMs?: number; only?: readonly DevtoolName[] } = {},
+): Promise<ProbeResult[]> {
+  const home = opts.home ?? homedir();
+  const timeoutMs = opts.timeoutMs ?? 12_000;
+  const only = new Set(opts.only ?? ALL_TOOLS);
+  const out: ProbeResult[] = [];
+
+  if (only.has("claude-code")) {
+    const version = claudeCodeVersion(home);
+    const token = readClaudeOauthToken(home);
+    if (!token) {
+      out.push(
+        noCred("claude-code", CLAUDE_USAGE_URL, version, "no usable OAuth token in ~/.claude"),
+      );
+    } else {
+      const { url, headers } = claudeUsageRequest(token, version);
+      out.push(
+        await probeOne("claude-code", url, { headers }, version, timeoutMs, (j) => {
+          const o = j as { limits?: unknown; five_hour?: unknown };
+          return Array.isArray(o.limits) || o.five_hour != null;
+        }),
+      );
+    }
+  }
+
+  if (only.has("cursor")) {
+    const auth = readCursorSessionAuth(home);
+    if (!auth) {
+      out.push(noCred("cursor", CURSOR_USAGE_URL, null, "no usable session token in state.vscdb"));
+    } else {
+      const { url, init } = cursorUsageRequest(auth);
+      out.push(
+        await probeOne("cursor", url, init, auth.version, timeoutMs, (j) => {
+          const o = j as { planUsage?: unknown; billingCycleEnd?: unknown };
+          return o.planUsage != null || o.billingCycleEnd != null;
+        }),
+      );
+    }
+  }
+
+  // Codex is read from local files only (no endpoint to probe), so it's omitted.
+  return out;
+}
+
+function noCred(
+  tool: DevtoolName,
+  endpoint: string,
+  clientVersion: string | null,
+  detail: string,
+): ProbeResult {
+  return { tool, endpoint, clientVersion, status: null, outcome: "no_credential", detail };
+}
+
+async function probeOne(
+  tool: DevtoolName,
+  url: string,
+  init: RequestInit,
+  clientVersion: string | null,
+  timeoutMs: number,
+  shapeOk: (json: unknown) => boolean,
+): Promise<ProbeResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const base = { tool, endpoint: url, clientVersion };
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const status = res.status;
+    if (status === 429) {
+      return {
+        ...base,
+        status,
+        outcome: "rate_limited",
+        detail: `429; retry after ${Math.round(retryAfterMs(res) / 1000)}s`,
+      };
+    }
+    if (status === 401 || status === 403) {
+      return {
+        ...base,
+        status,
+        outcome: "auth_rejected",
+        detail: `HTTP ${status} — auth or required headers may have changed`,
+      };
+    }
+    if (!res.ok) return { ...base, status, outcome: "unreachable", detail: `HTTP ${status}` };
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch {
+      return { ...base, status, outcome: "shape_changed", detail: "200 but body was not JSON" };
+    }
+    if (!shapeOk(json)) {
+      return {
+        ...base,
+        status,
+        outcome: "shape_changed",
+        detail: "200 but expected fields absent — schema may have changed",
+      };
+    }
+    return { ...base, status, outcome: "ok", detail: "200, expected shape present" };
+  } catch (err) {
+    return {
+      ...base,
+      status: null,
+      outcome: "unreachable",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 interface UsageCacheEntry<T> {
@@ -454,13 +591,32 @@ const CLAUDE_LIMIT_LABELS: Record<string, string> = {
   weekly_scoped: "weekly",
 };
 
+const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+
 /**
- * Fetch Claude Code's live usage from api.anthropic.com/api/oauth/usage — the
- * same endpoint the `/usage` command hits — with the local OAuth token, sending
- * the same `claude-cli/<version> (external, cli)` User-Agent + `x-app: cli` the
- * CLI sends so the request is indistinguishable from Claude Code's own. Returns
- * a `FetchOutcome`: `ok` with quota + spend, `cooldown` on a 429 (with the
- * server's retry-after), or `fail`.
+ * The request we send to Claude's usage endpoint — the same URL + headers the
+ * `/usage` command sends, so the call is indistinguishable from Claude Code's
+ * own (Bearer token, the oauth beta, and the `claude-cli/<version> (external,
+ * cli)` UA + `x-app: cli`). Extracted so the doctor probe exercises the exact
+ * headers we use in production.
+ */
+function claudeUsageRequest(token: string, version: string): { url: string; headers: HeadersInit } {
+  return {
+    url: CLAUDE_USAGE_URL,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-beta": "oauth-2025-04-20",
+      "anthropic-version": "2023-06-01",
+      "User-Agent": `claude-cli/${version} (external, cli)`,
+      "x-app": "cli",
+    },
+  };
+}
+
+/**
+ * Fetch Claude Code's live usage from api.anthropic.com/api/oauth/usage with the
+ * local OAuth token. Returns a `FetchOutcome`: `ok` with quota + spend,
+ * `cooldown` on a 429 (with the server's retry-after), or `fail`.
  */
 async function fetchClaudeUsage(
   token: string,
@@ -470,16 +626,8 @@ async function fetchClaudeUsage(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "anthropic-beta": "oauth-2025-04-20",
-        "anthropic-version": "2023-06-01",
-        "User-Agent": `claude-cli/${version} (external, cli)`,
-        "x-app": "cli",
-      },
-      signal: controller.signal,
-    });
+    const { url, headers } = claudeUsageRequest(token, version);
+    const res = await fetch(url, { headers, signal: controller.signal });
     if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
     if (!res.ok) return { kind: "fail" };
     const raw = (await res.json()) as {
@@ -567,19 +715,24 @@ function isoOrNull(s: string | undefined): string | null {
 interface CursorSessionAuth {
   token: string;
   userId: string;
+  /** Local Cursor app version (for the client User-Agent), else null. */
+  version: string | null;
 }
 
 /**
  * Read Cursor's locally-stored session token from state.vscdb and derive the
- * WorkOS user id from its JWT `sub` claim. Returns null when the DB is
- * unreadable, no token is present, or the token has expired (so we skip a
- * doomed call). The token string is used only to build the request and is
- * never stored on the report.
+ * WorkOS user id from its JWT `sub` claim, plus the local Cursor version for the
+ * client User-Agent. Returns null when the DB is unreadable, no token is
+ * present, or the token has expired (so we skip a doomed call). The token
+ * string is used only to build the request and is never stored on the report.
  */
 function readCursorSessionAuth(home: string): CursorSessionAuth | null {
   const vscdb = cursorGlobalVscdb(home);
   if (!vscdb) return null;
-  const items = readVscdbItems(vscdb, ["cursorAuth/accessToken"]);
+  const items = readVscdbItems(vscdb, [
+    "cursorAuth/accessToken",
+    "cursor.startupMetrics.lastVersion",
+  ]);
   const token = strOr(items?.["cursorAuth/accessToken"]);
   if (!token) return null;
   const claims = decodeJwtClaims(token);
@@ -590,15 +743,52 @@ function readCursorSessionAuth(home: string): CursorSessionAuth | null {
   if (exp != null && exp * 1000 < Date.now()) return null;
   // sub looks like "auth0|user_01J…"; the WorkOS cookie wants the id after the "|".
   const userId = sub.includes("|") ? (sub.split("|").pop() ?? sub) : sub;
-  return { token, userId };
+  return { token, userId, version: strOr(items?.["cursor.startupMetrics.lastVersion"]) };
+}
+
+// Cursor is an Electron app; its embedded browser presents a VS Code-style UA
+// (`… <App>/<ver> Chrome/<chromium> Electron/<electron> Safari/537.36`). We
+// mirror that, injecting the LIVE Cursor version read from state.vscdb. The
+// Chromium/Electron pair is cosmetic (tracks Cursor's VS Code base) — bump when
+// Cursor's base does; the identifying `Cursor/<version>` part is always live.
+const CURSOR_CHROMIUM = "132.0.6834.210";
+const CURSOR_ELECTRON = "34.5.8";
+
+/** Cursor Electron client User-Agent, embedding the live app version. */
+function cursorUserAgent(version: string | null): string {
+  const ver = version ?? "0.0.0";
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/${ver} Chrome/${CURSOR_CHROMIUM} Electron/${CURSOR_ELECTRON} Safari/537.36`;
+}
+
+const CURSOR_USAGE_URL = "https://cursor.com/api/dashboard/get-current-period-usage";
+
+/**
+ * The request we send to Cursor's usage endpoint — the WorkOS session cookie
+ * (`<userId>::<token>`) plus the browser-consistent Origin/Referer cursor.com
+ * requires, and Cursor's own Electron client UA. Extracted so the doctor probe
+ * exercises the exact request we use in production.
+ */
+function cursorUsageRequest(auth: CursorSessionAuth): { url: string; init: RequestInit } {
+  const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${auth.userId}::${auth.token}`)}`;
+  return {
+    url: CURSOR_USAGE_URL,
+    init: {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+        Origin: "https://cursor.com",
+        Referer: "https://cursor.com/dashboard/spending",
+        "User-Agent": cursorUserAgent(auth.version),
+      },
+      body: "{}",
+    },
+  };
 }
 
 /**
- * Fetch the current-period usage the Cursor UI shows on its Spending page. Auth
- * is the WorkOS session cookie (`<userId>::<token>`); cursor.com rejects the
- * POST without a matching `Origin`, so we send one, plus a browser User-Agent so
- * the request reads as the dashboard's own XHR rather than a scraper. Returns a
- * `FetchOutcome`: `ok`, `cooldown` on a 429, or `fail`.
+ * Fetch the current-period usage the Cursor UI shows on its Spending page.
+ * Returns a `FetchOutcome`: `ok`, `cooldown` on a 429, or `fail`.
  */
 async function fetchCursorUsage(
   auth: CursorSessionAuth,
@@ -607,19 +797,8 @@ async function fetchCursorUsage(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${auth.userId}::${auth.token}`)}`;
-    const res = await fetch("https://cursor.com/api/dashboard/get-current-period-usage", {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        "Content-Type": "application/json",
-        Origin: "https://cursor.com",
-        Referer: "https://cursor.com/dashboard/spending",
-        "User-Agent": BROWSER_UA,
-      },
-      body: "{}",
-      signal: controller.signal,
-    });
+    const { url, init } = cursorUsageRequest(auth);
+    const res = await fetch(url, { ...init, signal: controller.signal });
     if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
     if (!res.ok) return { kind: "fail" };
     const raw = (await res.json()) as {
@@ -674,13 +853,17 @@ function roundPct(v: number | undefined): number | null {
   return Math.round(v * 10) / 10;
 }
 
-async function fetchCursorApi(key: string, timeoutMs: number): Promise<ApiEnrichment> {
+async function fetchCursorApi(
+  key: string,
+  userAgent: string,
+  timeoutMs: number,
+): Promise<ApiEnrichment> {
   const out: ApiEnrichment = { ok: false, keyName: null, cloudAgents: null, error: null };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const get = async (path: string): Promise<unknown> => {
     const res = await fetch(`https://api.cursor.com${path}`, {
-      headers: { Authorization: `Bearer ${key}`, "User-Agent": BROWSER_UA },
+      headers: { Authorization: `Bearer ${key}`, "User-Agent": userAgent },
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);

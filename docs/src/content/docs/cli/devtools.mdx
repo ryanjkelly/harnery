@@ -48,6 +48,15 @@ local token. Cursor's `state.vscdb` read needs a SQLite engine (Bun's
 `bun:sqlite`); on a plain-Node host it degrades to login-presence only, and on
 WSL the reader opens the Windows-side DB immutable rather than copying it.
 
+Codex is read entirely from local files (`auth.json` + the JSONL session
+rollouts), no endpoint — the rollout the running client writes each turn already
+carries the current rate-limit snapshot. A machine can carry more than one Codex
+install (e.g. a WSL CLI and the Windows desktop app, each its own account); the
+reader locks onto the **active** one — whichever owns the most-recently-written
+rollout — and reads auth and rate limits from that same install so the two never
+mix. Auth expiry is reported from the access token (which outlives the shorter
+id token and is what refreshes), so a healthy login isn't shown as "expired".
+
 ### Rate-limit discipline
 
 These endpoints are shared with the tools' own clients — Anthropic's
@@ -64,16 +73,46 @@ never starve that client:
   server's `Retry-After` and suppresses further calls until it passes, serving
   the last-known-good value meanwhile. A rate limit can't cascade into a hammer
   loop.
-- **Requests carry the tool's own client identity** — the `claude-cli/<version>
-  (external, cli)` User-Agent + `x-app: cli` for Claude, a browser User-Agent
-  for the cursor.com dashboard call — so they read as first-party traffic, not a
-  scraper. The Claude version is read live from the `version` field the running
-  client stamps into its newest session transcript, so it tracks auto-updates
-  automatically (Claude Code updates into a versioned install, so that value can
-  be ahead of the bootstrap `package.json` and the updater marker).
+- **Requests carry the tool's own client identity, with a live version.** Claude
+  sends `claude-cli/<version> (external, cli)` + `x-app: cli`; Cursor sends its
+  Electron client UA (`… Cursor/<version> Chrome/… Electron/… Safari/537.36`) —
+  so both read as first-party traffic, not a scraper. Each version is read live
+  from the local install (Claude from the `version` field the running client
+  stamps into its newest session transcript — which tracks auto-updates and can
+  be ahead of the bootstrap `package.json`; Cursor from `state.vscdb`).
+
+You can spot-check that these integrations still work with `harn devtools
+doctor` — see [Checking for drift](#checking-for-drift).
 
 The remaining gap: **exact token totals** aren't exposed by either usage
 endpoint (only percentages and dollar spend).
+
+### Checking for drift
+
+These integrations lean on undocumented endpoints, so a client update could
+change the required headers or the response schema. `harn devtools doctor` is
+the occasional health check: it makes **one** live call per usage endpoint
+(bypassing the cache), using the exact request builders production uses, and
+classifies each result.
+
+```
+harn devtools doctor
+```
+
+```
+✓ claude-code  ok             200, expected shape present
+   https://api.anthropic.com/api/oauth/usage  (client 2.1.207)
+✓ cursor       ok             200, expected shape present
+   https://cursor.com/api/dashboard/get-current-period-usage  (client 3.11.13)
+```
+
+An `auth_rejected` (401/403) means our headers or token stopped being accepted;
+`shape_changed` means a 200 came back without the fields we parse. Either is the
+signal to review the request builder or the parser. `rate_limited` is reported
+as-is (not a defect), and the printed client versions let you eyeball version
+drift. It is intentionally not scheduled — run it by hand so it can't itself
+contribute to a rate limit. Codex is local-file-only, so it has no endpoint to
+probe and is omitted.
 
 ## Options
 

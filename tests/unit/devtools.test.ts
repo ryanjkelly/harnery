@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   enrichFromApi,
+  probeEndpoints,
   readDevtools,
   resolveCursorApiKey,
   type ToolStatus,
@@ -413,28 +414,29 @@ describe("enrichFromApi — cursor usage (session token)", () => {
     globalThis.fetch = origFetch;
   });
 
-  /** Build a Cursor state.vscdb carrying the given accessToken. */
-  function seedVscdb(accessToken: string) {
+  /** Build a Cursor state.vscdb carrying the given accessToken (+ optional version). */
+  function seedVscdb(accessToken: string, version?: string) {
     const gsDir = path.join(home, ".config", "Cursor", "User", "globalStorage");
     mkdirSync(gsDir, { recursive: true });
     const { Database } = require("bun:sqlite");
     const db = new Database(path.join(gsDir, "state.vscdb"));
     db.run("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
-    db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
-      "cursorAuth/accessToken",
-      accessToken,
-    );
+    const put = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    put.run("cursorAuth/accessToken", accessToken);
+    if (version) put.run("cursor.startupMetrics.lastVersion", version);
     db.close();
   }
 
   test("populates usage from get-current-period-usage; token never surfaces", async () => {
     const token = jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW + 86_400_000) / 1000) });
-    seedVscdb(token);
+    seedVscdb(token, "3.11.13");
     let sentAuth = false;
+    let userAgent: string | undefined;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       if (String(url).endsWith("/get-current-period-usage")) {
         // The session cookie must carry userId::token, and an Origin is required.
         const headers = (init?.headers ?? {}) as Record<string, string>;
+        userAgent = headers["User-Agent"];
         sentAuth =
           (headers.Cookie ?? "").includes("user_XYZ") && headers.Origin === "https://cursor.com";
         return new Response(
@@ -459,6 +461,9 @@ describe("enrichFromApi — cursor usage (session token)", () => {
     await enrichFromApi(report, { cursorKey: null, home });
     const cu = byTool(report.tools, "cursor");
     expect(sentAuth).toBe(true);
+    // The request mirrors Cursor's Electron client, embedding the LIVE version.
+    expect(userAgent).toContain("Cursor/3.11.13");
+    expect(userAgent).toContain("Electron/");
     expect(cu.usage).toEqual({
       cycleStart: new Date(1783627244000).toISOString(),
       cycleEnd: new Date(1786305644000).toISOString(),
@@ -674,6 +679,65 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     await enrichFromApi(r2, { home });
     expect(calls).toBe(1);
     expect(byTool(r2.tools, "claude-code").quota?.[0]?.usedPercent).toBe(42);
+  });
+});
+
+describe("probeEndpoints — doctor", () => {
+  const origFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  function seedClaudeCred() {
+    const dir = path.join(home, ".claude");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "sk-ant-oat-OK",
+          expiresAt: NOW + 3_600_000,
+          refreshTokenExpiresAt: NOW + 30 * 86_400_000,
+        },
+      }),
+    );
+  }
+
+  test("healthy endpoint → ok", async () => {
+    seedClaudeCred();
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ limits: [{ kind: "session", percent: 5 }] }), {
+        status: 200,
+      })) as unknown as typeof fetch;
+    const [r] = await probeEndpoints({ home, only: ["claude-code"] });
+    expect(r?.outcome).toBe("ok");
+    expect(r?.status).toBe(200);
+  });
+
+  test("401 → auth_rejected (the header/contract-change signal)", async () => {
+    seedClaudeCred();
+    globalThis.fetch = (async () => new Response("no", { status: 401 })) as unknown as typeof fetch;
+    const [r] = await probeEndpoints({ home, only: ["claude-code"] });
+    expect(r?.outcome).toBe("auth_rejected");
+  });
+
+  test("200 with unexpected body → shape_changed", async () => {
+    seedClaudeCred();
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ surprise: true }), { status: 200 })) as unknown as typeof fetch;
+    const [r] = await probeEndpoints({ home, only: ["claude-code"] });
+    expect(r?.outcome).toBe("shape_changed");
+  });
+
+  test("no local credential → no_credential (no network call)", async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const [r] = await probeEndpoints({ home, only: ["claude-code"] });
+    expect(r?.outcome).toBe("no_credential");
+    expect(called).toBe(false);
   });
 });
 

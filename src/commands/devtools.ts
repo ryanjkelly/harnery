@@ -6,6 +6,8 @@ import {
   cursorApiKeyPath,
   type DevtoolName,
   enrichFromApi,
+  type ProbeResult,
+  probeEndpoints,
   readDevtools,
   resolveCursorApiKey,
   type ToolStatus,
@@ -86,6 +88,61 @@ export function registerDevtoolsCommand(program: Command, emit: EmitContext): vo
     });
 
   registerCursorKeyCommand(cmd, emit);
+  registerDoctorCommand(cmd, emit);
+}
+
+/**
+ * `devtools doctor` — one live call per usage endpoint to check the integrations
+ * still work. Surfaces `auth_rejected` (our headers/token stopped being
+ * accepted) and `shape_changed` (response schema drifted) distinctly from a
+ * mere rate limit. Bypasses the cache; run occasionally, by hand.
+ */
+function registerDoctorCommand(parent: Command, emit: EmitContext): void {
+  parent
+    .command("doctor")
+    .description("Probe the usage endpoints once each to detect header/schema drift")
+    .option("--tool <name>", "Restrict to a tool (repeatable): claude-code | cursor", collect, [])
+    .option("--format <type>", "Output format: table, json", "table")
+    .action(async (opts: { tool: string[]; format: string }) => {
+      const only = (opts.tool ?? []).filter((t): t is DevtoolName =>
+        VALID.includes(t as DevtoolName),
+      );
+      const results = await probeEndpoints({ only: only.length ? only : undefined });
+      if (opts.format === "json") {
+        emit.config({ format: "json" });
+        emit.data({
+          ok: results.every((r) => r.outcome === "ok" || r.outcome === "rate_limited"),
+          results,
+        });
+        return;
+      }
+      emit.text(renderDoctor(results));
+    });
+}
+
+const DOCTOR_MARK: Record<ProbeResult["outcome"], string> = {
+  ok: "✓",
+  rate_limited: "~",
+  no_credential: "-",
+  auth_rejected: "✗",
+  shape_changed: "✗",
+  unreachable: "✗",
+};
+
+function renderDoctor(results: ProbeResult[]): string {
+  if (!results.length) return "no probeable endpoints (Codex is local-only)";
+  const lines: string[] = [];
+  for (const r of results) {
+    lines.push(
+      `${DOCTOR_MARK[r.outcome]} ${r.tool.padEnd(12)} ${r.outcome.padEnd(14)} ${r.detail}`,
+    );
+    lines.push(`   ${r.endpoint}${r.clientVersion ? `  (client ${r.clientVersion})` : ""}`);
+  }
+  lines.push("");
+  lines.push(
+    "✗ auth_rejected / shape_changed = the client's request contract likely changed — review the headers/parser.",
+  );
+  return lines.join("\n");
 }
 
 /** `devtools cursor-key set|clear|status` — store the machine-local Cursor API key. */
