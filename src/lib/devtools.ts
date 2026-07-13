@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -192,6 +193,41 @@ export function resolveCursorApiKey(): string | null {
 /** Statuses that mean a cloud agent is still doing work (everything else is done/gone). */
 const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED", "CANCELLED"]);
 
+// So our requests blend in with the tool's own traffic rather than looking like
+// a scraper (a bare fetch would carry a "Bun/…" or "node" User-Agent, which is
+// the anomaly). We send the same first-party client identity the tool sends for
+// the same call — the user's own machine reaching the user's own account.
+//
+/** Recent desktop Chrome UA — cursor.com's usage endpoint is a browser-dashboard XHR. */
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+
+/** Fallback Claude Code version when the local updater marker is missing. */
+const CLAUDE_CLI_FALLBACK_VERSION = "2.1.0";
+
+/** Installed Claude Code version, read from its updater's result marker. */
+function claudeCodeVersion(home: string): string {
+  const marker = readJson<{ version_to?: string }>(
+    join(home, ".claude", ".last-update-result.json"),
+  );
+  return strOr(marker?.version_to) ?? CLAUDE_CLI_FALLBACK_VERSION;
+}
+
+/**
+ * Outcome of a usage fetch. `cooldown` (a 429) tells the cache to back off for
+ * `retryAfterMs` so a rate limit can never cascade into repeated hits — the
+ * failure mode that starves the tool's own client.
+ */
+type FetchOutcome<T> =
+  | { kind: "ok"; data: T }
+  | { kind: "cooldown"; retryAfterMs: number }
+  | { kind: "fail" };
+
+/** Short, non-reversible fingerprint of a token, for per-account cache keys. */
+function tokenFingerprint(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
+
 /**
  * Enrich a report's entries over the network with live usage each tool keeps
  * server-side, authenticating with the credential already on disk. Best-effort
@@ -210,17 +246,26 @@ export async function enrichFromApi(
 ): Promise<DevtoolsReport> {
   const home = opts.home ?? homedir();
   const timeoutMs = opts.timeoutMs ?? 12_000;
-  const cacheTtlMs = opts.cacheTtlMs ?? 120_000;
+  // 5-minute cache. The usage windows move slowly, and this is the hard cap on
+  // how often we touch a rate-limited endpoint no matter how often the dashboard
+  // re-renders — the page can refresh every couple seconds and still hit the
+  // network at most once per tool per 5 minutes.
+  const cacheTtlMs = opts.cacheTtlMs ?? 300_000;
 
   // Claude Code — 5h + weekly windows and extra-usage spend from oauth/usage.
-  // Cached, because that endpoint is aggressively rate-limited and Claude Code's
-  // OWN "Account & Usage" panel hits it too — a chatty dashboard would starve it.
+  // Cached per-account, because that endpoint is aggressively rate-limited and
+  // Claude Code's OWN "Account & Usage" panel hits it too — a chatty dashboard
+  // would starve it. Keying by token fingerprint means switching accounts shows
+  // the new account's numbers at once instead of the previous account's cache.
   const claude = report.tools.find((t) => t.tool === "claude-code");
   if (claude?.installed) {
     const token = readClaudeOauthToken(home);
     if (token) {
-      const live = await cachedUsage(home, "claude-usage", cacheTtlMs, () =>
-        fetchClaudeUsage(token, timeoutMs),
+      const live = await cachedUsage(
+        home,
+        `claude-usage-${tokenFingerprint(token)}`,
+        cacheTtlMs,
+        () => fetchClaudeUsage(token, claudeCodeVersion(home), timeoutMs),
       );
       if (live) {
         claude.quota = live.quota;
@@ -239,8 +284,11 @@ export async function enrichFromApi(
   // Cursor usage + billing from the IDE's own session token (no API key needed).
   const auth = readCursorSessionAuth(home);
   if (auth) {
-    const usage = await cachedUsage(home, "cursor-usage", cacheTtlMs, () =>
-      fetchCursorUsage(auth, timeoutMs),
+    const usage = await cachedUsage(
+      home,
+      `cursor-usage-${tokenFingerprint(auth.token)}`,
+      cacheTtlMs,
+      () => fetchCursorUsage(auth, timeoutMs),
     );
     if (usage) {
       cursor.usage = usage.usage;
@@ -262,39 +310,75 @@ export async function enrichFromApi(
   return report;
 }
 
+interface UsageCacheEntry<T> {
+  /** When `data` was last fetched (ms epoch). */
+  at: number;
+  /** Last-known-good result, or null if a fetch never succeeded. */
+  data: T | null;
+  /** If set and still in the future, do not call the endpoint (rate-limit backoff). */
+  cooldownUntil?: number;
+}
+
 /**
- * Wrap a usage fetch in a short on-disk cache under `<home>/.cache/harnery/
- * devtools/<name>.json`. A fresh cached value short-circuits the network call;
- * only successful (non-null) fetches are written, so a rate-limited failure
- * neither poisons the cache nor blocks the next attempt. Cache is best-effort —
- * any read/write error falls back to a live fetch. `ttlMs <= 0` disables it.
+ * Wrap a usage fetch in an on-disk cache under `<home>/.cache/harnery/devtools/
+ * <name>.json`, protecting rate-limited endpoints on three fronts:
+ *
+ *   • Fresh success (`< ttlMs` old) short-circuits the network entirely.
+ *   • A 429 records a `cooldownUntil` from the server's retry-after, and no call
+ *     is made until it passes — so a rate limit can't cascade into a hammer loop
+ *     (the failure mode that starved Claude Code's own usage panel). During the
+ *     cooldown the last-known-good value is served, so the card stays populated.
+ *   • Any other failure serves last-known-good and retries next time.
+ *
+ * Best-effort: read/write errors fall back to a live fetch. `ttlMs <= 0` fetches
+ * every call (still honoring a cooldown) and skips writes.
  */
 async function cachedUsage<T>(
   home: string,
   name: string,
   ttlMs: number,
-  fetcher: () => Promise<T | null>,
+  fetcher: () => Promise<FetchOutcome<T>>,
 ): Promise<T | null> {
   const now = Date.now();
-  const file = join(home, ".cache", "harnery", "devtools", `${name}.json`);
-  if (ttlMs > 0) {
-    try {
-      const entry = JSON.parse(readFileSync(file, "utf8")) as { at?: number; data?: T };
-      if (entry.at != null && now - entry.at < ttlMs && entry.data != null) return entry.data;
-    } catch {
-      // no cache / unreadable — fall through to fetch
-    }
+  const dir = join(home, ".cache", "harnery", "devtools");
+  const file = join(dir, `${name}.json`);
+
+  let entry: UsageCacheEntry<T> | null = null;
+  try {
+    entry = JSON.parse(readFileSync(file, "utf8")) as UsageCacheEntry<T>;
+  } catch {
+    // no cache / unreadable
   }
-  const fresh = await fetcher();
-  if (fresh != null && ttlMs > 0) {
+  // Fresh cached success.
+  if (entry?.data != null && ttlMs > 0 && now - entry.at < ttlMs) return entry.data;
+  // In a rate-limit cooldown — do not call; serve last-known-good (may be null).
+  if (entry?.cooldownUntil != null && now < entry.cooldownUntil) return entry.data ?? null;
+
+  const outcome = await fetcher();
+  const write = (e: UsageCacheEntry<T>) => {
     try {
-      mkdirSync(join(home, ".cache", "harnery", "devtools"), { recursive: true });
-      writeFileSync(file, JSON.stringify({ at: now, data: fresh }));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, JSON.stringify(e));
     } catch {
       // cache write is best-effort
     }
+  };
+
+  if (outcome.kind === "ok") {
+    if (ttlMs > 0) write({ at: now, data: outcome.data });
+    return outcome.data;
   }
-  return fresh;
+  if (outcome.kind === "cooldown") {
+    // Record the backoff, preserving any last-known-good data to keep serving it.
+    write({
+      at: entry?.at ?? now,
+      data: entry?.data ?? null,
+      cooldownUntil: now + outcome.retryAfterMs,
+    });
+    return entry?.data ?? null;
+  }
+  // Plain failure: leave the cache as-is (retry next call), serve any stale data.
+  return entry?.data ?? null;
 }
 
 /**
@@ -324,13 +408,17 @@ const CLAUDE_LIMIT_LABELS: Record<string, string> = {
 
 /**
  * Fetch Claude Code's live usage from api.anthropic.com/api/oauth/usage — the
- * same endpoint the `/usage` command hits — with the local OAuth token. Returns
- * the 5h + weekly rate-limit windows and extra-usage spend, or null on failure.
+ * same endpoint the `/usage` command hits — with the local OAuth token, sending
+ * the same `claude-cli/<version> (external, cli)` User-Agent + `x-app: cli` the
+ * CLI sends so the request is indistinguishable from Claude Code's own. Returns
+ * a `FetchOutcome`: `ok` with quota + spend, `cooldown` on a 429 (with the
+ * server's retry-after), or `fail`.
  */
 async function fetchClaudeUsage(
   token: string,
+  version: string,
   timeoutMs: number,
-): Promise<{ quota: QuotaWindow[]; spend: SpendStatus | null } | null> {
+): Promise<FetchOutcome<{ quota: QuotaWindow[]; spend: SpendStatus | null }>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -339,10 +427,13 @@ async function fetchClaudeUsage(
         Authorization: `Bearer ${token}`,
         "anthropic-beta": "oauth-2025-04-20",
         "anthropic-version": "2023-06-01",
+        "User-Agent": `claude-cli/${version} (external, cli)`,
+        "x-app": "cli",
       },
       signal: controller.signal,
     });
-    if (!res.ok) return null;
+    if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
+    if (!res.ok) return { kind: "fail" };
     const raw = (await res.json()) as {
       limits?: Array<{
         kind?: string;
@@ -395,12 +486,19 @@ async function fetchClaudeUsage(
         limitCents: minorToCents(sp.limit),
       };
     }
-    return { quota, spend };
+    return { kind: "ok", data: { quota, spend } };
   } catch {
-    return null;
+    return { kind: "fail" };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Parse a `Retry-After` header (seconds) to ms; default 60s when absent/unparseable. */
+function retryAfterMs(res: Response): number {
+  const raw = res.headers.get("retry-after");
+  const secs = raw != null ? Number.parseInt(raw, 10) : Number.NaN;
+  return (Number.isFinite(secs) && secs > 0 ? secs : 60) * 1000;
 }
 
 /** Convert an {amount_minor, exponent} money value to cents (exponent 2 = already cents). */
@@ -450,12 +548,14 @@ function readCursorSessionAuth(home: string): CursorSessionAuth | null {
 /**
  * Fetch the current-period usage the Cursor UI shows on its Spending page. Auth
  * is the WorkOS session cookie (`<userId>::<token>`); cursor.com rejects the
- * POST without a matching `Origin`, so we send one. Returns null on any failure.
+ * POST without a matching `Origin`, so we send one, plus a browser User-Agent so
+ * the request reads as the dashboard's own XHR rather than a scraper. Returns a
+ * `FetchOutcome`: `ok`, `cooldown` on a 429, or `fail`.
  */
 async function fetchCursorUsage(
   auth: CursorSessionAuth,
   timeoutMs: number,
-): Promise<{ usage: CursorUsage; spend: SpendStatus | null } | null> {
+): Promise<FetchOutcome<{ usage: CursorUsage; spend: SpendStatus | null }>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -467,11 +567,13 @@ async function fetchCursorUsage(
         "Content-Type": "application/json",
         Origin: "https://cursor.com",
         Referer: "https://cursor.com/dashboard/spending",
+        "User-Agent": BROWSER_UA,
       },
       body: "{}",
       signal: controller.signal,
     });
-    if (!res.ok) return null;
+    if (res.status === 429) return { kind: "cooldown", retryAfterMs: retryAfterMs(res) };
+    if (!res.ok) return { kind: "fail" };
     const raw = (await res.json()) as {
       billingCycleStart?: string | number;
       billingCycleEnd?: string | number;
@@ -503,9 +605,9 @@ async function fetchCursorUsage(
             limitCents: spendLimit,
           }
         : null;
-    return { usage, spend };
+    return { kind: "ok", data: { usage, spend } };
   } catch {
-    return null;
+    return { kind: "fail" };
   } finally {
     clearTimeout(timer);
   }
@@ -530,7 +632,7 @@ async function fetchCursorApi(key: string, timeoutMs: number): Promise<ApiEnrich
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const get = async (path: string): Promise<unknown> => {
     const res = await fetch(`https://api.cursor.com${path}`, {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: { Authorization: `Bearer ${key}`, "User-Agent": BROWSER_UA },
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);

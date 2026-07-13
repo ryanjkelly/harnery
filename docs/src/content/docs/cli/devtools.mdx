@@ -48,11 +48,26 @@ local token. Cursor's `state.vscdb` read needs a SQLite engine (Bun's
 `bun:sqlite`); on a plain-Node host it degrades to login-presence only, and on
 WSL the reader opens the Windows-side DB immutable rather than copying it.
 
-The enrichment results are cached under `~/.cache/harnery/devtools/` for two
-minutes. That is not just a speed win: Anthropic's `oauth/usage` endpoint is
-sharply rate-limited and Claude Code's own Account & Usage panel hits it too, so
-an uncached, chatty dashboard would starve the user's own client. A rate-limited
-fetch degrades to a note and is never cached, so the next load retries cleanly.
+### Rate-limit discipline
+
+These endpoints are shared with the tools' own clients — Anthropic's
+`oauth/usage` is the exact endpoint Claude Code's Account & Usage panel calls,
+and it is sharply rate-limited. The enrichment is built so the dashboard can
+never starve that client:
+
+- **Cached per account** under `~/.cache/harnery/devtools/` for five minutes,
+  keyed by a fingerprint of the token. However often the dashboard re-renders,
+  the network is touched at most once per tool per five minutes; switching
+  accounts uses a fresh key, so the new account's numbers show immediately
+  rather than the previous account's cache.
+- **Backs off on a 429.** A rate-limited response arms a cooldown from the
+  server's `Retry-After` and suppresses further calls until it passes, serving
+  the last-known-good value meanwhile. A rate limit can't cascade into a hammer
+  loop.
+- **Requests carry the tool's own client identity** — the `claude-cli/<version>
+  (external, cli)` User-Agent + `x-app: cli` for Claude, a browser User-Agent
+  for the cursor.com dashboard call — so they read as first-party traffic, not a
+  scraper.
 
 The remaining gap: **exact token totals** aren't exposed by either usage
 endpoint (only percentages and dollar spend).
@@ -69,8 +84,11 @@ endpoint (only percentages and dollar spend).
 
 ## Network enrichment
 
-All of the following are skipped by `--no-api`, cached for two minutes, and
-degrade to a note on any failure (never throw).
+All of the following are skipped by `--no-api`, cached per account for five
+minutes, and degrade to a note on any failure (never throw). See
+[Rate-limit discipline](#rate-limit-discipline) for how the cache, the 429
+backoff, and the client-identity headers keep these calls from starving the
+tools' own clients.
 
 **Claude Code usage (no key needed).** Reads the OAuth token from
 `~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` —

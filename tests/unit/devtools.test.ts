@@ -540,6 +540,52 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     expect(cc.notes.some((n) => n.includes("live usage unavailable"))).toBe(true);
   });
 
+  test("a 429 records a cooldown and does NOT re-hit within the retry-after window", async () => {
+    seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response('{"error":{"type":"rate_limit_error"}}', {
+        status: 429,
+        headers: { "retry-after": "48" },
+      });
+    }) as unknown as typeof fetch;
+
+    // First enrichment hits the 429 and arms the cooldown; the second must be
+    // suppressed entirely — this is the guard that stops a rate limit cascading.
+    const r1 = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(r1, { home });
+    const r2 = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(r2, { home });
+    expect(calls).toBe(1);
+    expect(byTool(r2.tools, "claude-code").quota).toBeNull();
+  });
+
+  test("switching accounts (different token) uses a separate cache key, not stale data", async () => {
+    let calls = 0;
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+      calls++;
+      const auth = ((init?.headers ?? {}) as Record<string, string>).Authorization ?? "";
+      const pct = auth.includes("ACCT-A") ? 10 : 90;
+      return new Response(
+        JSON.stringify({ limits: [{ kind: "session", percent: pct, resets_at: "2026-07-13T10:30:00+00:00" }] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    seedClaude("sk-ant-oat-ACCT-A", 3_600_000, 30 * 86_400_000);
+    const rA = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(rA, { home });
+    expect(byTool(rA.tools, "claude-code").quota?.[0]?.usedPercent).toBe(10);
+
+    // Switch accounts: a fresh token must bypass account A's cache and fetch anew.
+    seedClaude("sk-ant-oat-ACCT-B", 3_600_000, 30 * 86_400_000);
+    const rB = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(rB, { home });
+    expect(byTool(rB.tools, "claude-code").quota?.[0]?.usedPercent).toBe(90);
+    expect(calls).toBe(2);
+  });
+
   test("a fresh cache short-circuits the network (protects the rate-limited endpoint)", async () => {
     seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
     let calls = 0;
