@@ -257,7 +257,7 @@ function QuotaBar({
       }
       triggerClassName="block w-full"
     >
-      <div className="cursor-help">
+      <div className="w-full cursor-help">
         <div className="flex items-baseline justify-between gap-2 text-xs">
           <span className="text-muted-foreground">{window} quota</span>
           <span className="font-medium tabular-nums">
