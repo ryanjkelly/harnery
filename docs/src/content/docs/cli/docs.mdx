@@ -8,6 +8,7 @@ sidebar:
 ```bash
 harn docs
 harn docs meta <path> [key] [--json]
+harn docs frontmatter-migrate [--repo <name>] [--yes]
 harn docs lint [--fast] [--repo <name>]
 harn docs sweep [--repo <name>]
 harn docs index [--dry-run] [--repo <name>]
@@ -33,6 +34,23 @@ Relative paths resolve from the configured repository root. Absolute paths also
 work. The command exits nonzero when the file, frontmatter block, or requested
 top-level key is missing. A requested scalar prints plainly in an interactive
 terminal; piped output and `--json` use JSON.
+
+## Migrate lifecycle files
+
+`docs frontmatter-migrate` converts recognized opening bold fields in
+`docs/plans`, `docs/issues`, and `docs/handoffs` into leading YAML frontmatter.
+It scans archives too. The default is a dry-run:
+
+```bash
+harn docs frontmatter-migrate --repo .
+harn docs frontmatter-migrate --repo . --yes
+```
+
+The converter leaves narrative bold labels and body examples alone, merges into
+existing frontmatter that has no `status`, and skips files that already carry
+YAML `status:`. Unsupported status values and conflicting fields are errors; the
+command exits nonzero without guessing or writing any file. `--yes` is the only
+mode that writes, and the apply is all-or-nothing for the selected repository set.
 
 ## Other subcommands
 

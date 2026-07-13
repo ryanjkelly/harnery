@@ -70,6 +70,21 @@ describe("normalizeStatus", () => {
   test("empty token -> null", () => {
     expect(normalizeStatus("   ")).toBeNull();
   });
+
+  test("unknown and wrong-kind tokens -> null", () => {
+    expect(normalizeStatus("council-approved", "plan")).toBeNull();
+    expect(normalizeStatus("unknown", "issue")).toBeNull();
+  });
+
+  test("collapses empirical legacy aliases by kind", () => {
+    expect(normalizeStatus("planning", "plan")).toBe("proposed");
+    expect(normalizeStatus("open", "plan")).toBe("proposed");
+    expect(normalizeStatus("archived", "plan")).toBe("shipped");
+    expect(normalizeStatus("shelved", "plan")).toBe("abandoned");
+    expect(normalizeStatus("in progress", "issue")).toBe("open");
+    expect(normalizeStatus("fixed", "issue")).toBe("resolved");
+    expect(normalizeStatus("blocked", "handoff")).toBe("open");
+  });
 });
 
 describe("readDocStatusFromText (dual-read)", () => {

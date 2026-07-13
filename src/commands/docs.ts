@@ -1,6 +1,10 @@
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { initDocsContext as initDocs, scanDocs } from "../lib/docs.ts";
+import {
+  initDocsMigrationContext,
+  runFrontmatterMigration,
+} from "../lib/docs-frontmatter-migrate.ts";
 import { initDocsContext as initDocsIndex, runIndex } from "../lib/docs-index.ts";
 import { initDocsContext as initDocsLint, runLint } from "../lib/docs-lint.ts";
 import { readDocsMetadata, readDocsMetadataKey } from "../lib/docs-meta.ts";
@@ -16,6 +20,7 @@ function ensureContext(context: HarneryProgramContext | undefined): void {
   }
   const opts = { repoRoot: context.repoRoot, submodules: context.submodules };
   initDocs(opts);
+  initDocsMigrationContext(opts);
   initDocsIndex(opts);
   initDocsLint({
     ...opts,
@@ -78,6 +83,21 @@ export function registerDocsCommand(
     });
 
   docs
+    .command("frontmatter-migrate")
+    .description("Convert lifecycle docs from bold metadata headers to YAML frontmatter")
+    .option("--repo <name>", "Limit to one submodule or '.' for parent")
+    .option("--yes", "Apply changes; without this flag the command is a dry-run")
+    .action(async (opts: { repo?: string; yes?: boolean }) => {
+      try {
+        ensureContext(context);
+        handleFrontmatterMigration(opts);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        emit.error({ code: "docs_error", message: msg });
+      }
+    });
+
+  docs
     .command("lint")
     .description(
       "Verify every repo matches the documentation contract (directory layout + naming rules)",
@@ -126,6 +146,27 @@ export function registerDocsCommand(
         emit.error({ code: "docs_error", message: msg });
       }
     });
+}
+
+// --- `harn docs frontmatter-migrate` ---
+
+function handleFrontmatterMigration(opts: { repo?: string; yes?: boolean }): void {
+  const rows = runFrontmatterMigration({ repo: opts.repo, apply: !!opts.yes });
+  const counts = {
+    would_update: rows.filter((row) => row.status === "would-update").length,
+    updated: rows.filter((row) => row.status === "updated").length,
+    skipped: rows.filter((row) => row.status === "skipped").length,
+    errors: rows.filter((row) => row.status === "error").length,
+  };
+  emit.data({
+    dry_run: !opts.yes,
+    applied: !!opts.yes && counts.errors === 0,
+    aborted: !!opts.yes && counts.errors > 0,
+    repo: opts.repo ?? null,
+    counts,
+    rows,
+  });
+  if (counts.errors > 0) emit.setExitCode(1);
 }
 
 // --- `harn docs meta` ---
