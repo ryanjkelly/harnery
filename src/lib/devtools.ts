@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -202,15 +205,60 @@ const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
-/** Fallback Claude Code version when the local updater marker is missing. */
+/** Last-resort Claude Code version when no live source is readable. */
 const CLAUDE_CLI_FALLBACK_VERSION = "2.1.0";
 
-/** Installed Claude Code version, read from its updater's result marker. */
+/**
+ * The Claude Code version actually running, most-authoritative source first:
+ *   1. the `version` field the running client stamps into its newest session
+ *      transcript (reflects auto-updates immediately),
+ *   2. the updater's last-result marker,
+ *   3. a constant.
+ * Claude Code auto-updates into a versioned install, so the transcript can be
+ * ahead of both the bootstrap `package.json` and the updater marker — which is
+ * why we read what the client itself reports, not what's on the install path.
+ */
 function claudeCodeVersion(home: string): string {
+  const fromTranscript = newestTranscriptVersion(home);
+  if (fromTranscript) return fromTranscript;
   const marker = readJson<{ version_to?: string }>(
     join(home, ".claude", ".last-update-result.json"),
   );
   return strOr(marker?.version_to) ?? CLAUDE_CLI_FALLBACK_VERSION;
+}
+
+/** Pull the `version` field from the head of the newest session transcript. */
+function newestTranscriptVersion(home: string): string | null {
+  const newest = newestFile(listFilesRecursive(join(home, ".claude", "projects"), ".jsonl"));
+  if (!newest) return null;
+  // The version rides every event, so the head of the file is plenty — avoids
+  // reading a multi-MB transcript in full just to read one field.
+  for (const line of readHead(newest, 65_536).split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const v = strOr((JSON.parse(line) as { version?: unknown }).version);
+      if (v) return v;
+    } catch {
+      // partial line at the buffer edge — skip
+    }
+  }
+  return null;
+}
+
+/** Read up to `maxBytes` from the start of a file as UTF-8, "" on any error. */
+function readHead(path: string, maxBytes: number): string {
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      const n = readSync(fd, buf, 0, maxBytes, 0);
+      return buf.toString("utf8", 0, n);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
 }
 
 /**

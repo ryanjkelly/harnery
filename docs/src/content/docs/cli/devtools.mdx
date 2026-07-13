@@ -67,7 +67,10 @@ never starve that client:
 - **Requests carry the tool's own client identity** — the `claude-cli/<version>
   (external, cli)` User-Agent + `x-app: cli` for Claude, a browser User-Agent
   for the cursor.com dashboard call — so they read as first-party traffic, not a
-  scraper.
+  scraper. The Claude version is read live from the `version` field the running
+  client stamps into its newest session transcript, so it tracks auto-updates
+  automatically (Claude Code updates into a versioned install, so that value can
+  be ahead of the bootstrap `package.json` and the updater marker).
 
 The remaining gap: **exact token totals** aren't exposed by either usage
 endpoint (only percentages and dollar spend).

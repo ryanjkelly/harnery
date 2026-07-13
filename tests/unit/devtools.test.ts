@@ -467,10 +467,19 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
   test("populates quota windows + extra-usage spend from oauth/usage; token never surfaces", async () => {
     const token = "sk-ant-oat-TESTSECRET";
     seedClaude(token, 3_600_000, 30 * 86_400_000);
+    // A session transcript stamps the live client version; the UA must mirror it.
+    const proj = path.join(home, ".claude", "projects", "p");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(path.join(proj, "s.jsonl"), `${JSON.stringify({ version: "9.9.9", type: "user" })}\n`);
     let auth: string | undefined;
+    let userAgent: string | undefined;
+    let xApp: string | undefined;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       if (String(url).endsWith("/api/oauth/usage")) {
-        auth = ((init?.headers ?? {}) as Record<string, string>).Authorization;
+        const h = (init?.headers ?? {}) as Record<string, string>;
+        auth = h.Authorization;
+        userAgent = h["User-Agent"];
+        xApp = h["x-app"];
         return new Response(
           JSON.stringify({
             limits: [
@@ -499,6 +508,10 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     await enrichFromApi(report, { home });
     const cc = byTool(report.tools, "claude-code");
     expect(auth).toBe(`Bearer ${token}`);
+    // Client-identity headers mirror Claude Code's own, with the LIVE version
+    // read from the transcript (not a hardcoded / stale marker value).
+    expect(userAgent).toBe("claude-cli/9.9.9 (external, cli)");
+    expect(xApp).toBe("cli");
     expect(cc.quota).toEqual([
       { window: "5h", usedPercent: 87, resetsAt: new Date("2026-07-13T10:30:00+00:00").toISOString() },
       { window: "weekly", usedPercent: 27, resetsAt: new Date("2026-07-18T07:00:00+00:00").toISOString() },
