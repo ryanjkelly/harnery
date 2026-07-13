@@ -69,7 +69,7 @@ describe("parseDocsAgeLog", () => {
   });
 });
 
-describe("runSweep status dual-read", () => {
+describe("runSweep YAML status read", () => {
   test("recognizes an in-progress plan from YAML frontmatter", async () => {
     const root = makeOldPlanRepo("---\nstatus: in_progress\n---\n# Old plan\n");
     initDocsContext({ repoRoot: root, submodules: [] });

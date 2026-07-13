@@ -1,6 +1,6 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
-import { hasAnyStatus } from "./docs-frontmatter.ts";
+import { hasYamlStatus } from "./docs-frontmatter.ts";
 import { sh } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
@@ -175,10 +175,10 @@ function isDeclaredMonolith(path: string): boolean {
   return /INTENTIONAL-MONOLITH/i.test(head);
 }
 
-/** Detect whether a file carries lifecycle status in YAML or the legacy bold shape. */
+/** Detect whether a file carries lifecycle status in leading YAML frontmatter. */
 export function hasStatusHeader(path: string): boolean {
   try {
-    return hasAnyStatus(readFileSync(path, "utf8"));
+    return hasYamlStatus(readFileSync(path, "utf8"));
   } catch {
     return false;
   }
@@ -377,26 +377,28 @@ function checkChangelogNames(repoName: string, _repoPath: string, files: string[
   return violations;
 }
 
-/** Plans and issues must carry a Status header (content check, slow) */
+/** Plans, issues, and handoffs must carry YAML lifecycle status (content check, slow). */
 function checkStatusHeaders(repoName: string, repoPath: string, files: string[]): Violation[] {
   const violations: Violation[] = [];
-  const targetDirs = ["docs/plans/", "docs/issues/"];
+  const targetDirs = ["docs/plans/", "docs/issues/", "docs/handoffs/"];
   for (const rel of files) {
     const dirMatch = targetDirs.some((d) => rel.startsWith(d));
     if (!dirMatch) continue;
     const name = basename(rel);
     if (name === "README.md") continue;
-    // Skip archive subdir
-    if (rel.includes("/archive/")) continue;
     const full = join(repoPath, rel);
     if (!hasStatusHeader(full)) {
-      const kind = rel.startsWith("docs/plans/") ? "plan" : "issue";
+      const kind = rel.startsWith("docs/plans/")
+        ? "plan"
+        : rel.startsWith("docs/issues/")
+          ? "issue"
+          : "handoff";
       violations.push({
-        severity: "warning",
+        severity: "error",
         repo: repoName,
         path: join(repoName === "(root)" ? "" : repoName, rel),
         rule: "missing-status-header",
-        message: `${kind} missing status in YAML frontmatter or a legacy **Status:** line`,
+        message: `${kind} missing status in leading YAML frontmatter`,
       });
     }
   }

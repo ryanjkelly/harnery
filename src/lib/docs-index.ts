@@ -137,7 +137,7 @@ function defaultPreamble(kind: "audits" | "issues"): string {
         "# Issues",
         "",
         "Date-stamped post-mortems and investigations. File names follow `YYYY-MM-DD_<slug>.md`.",
-        "Each file carries lifecycle status in YAML frontmatter (legacy `**Status:**` lines remain accepted during migration).",
+        "Each file carries lifecycle status in leading YAML frontmatter.",
         "",
         regen,
         "",

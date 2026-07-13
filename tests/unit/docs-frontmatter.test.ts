@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  hasAnyStatus,
+  hasYamlStatus,
   normalizeStatus,
   parseFrontmatter,
   readDocStatusFromText,
@@ -87,19 +87,15 @@ describe("normalizeStatus", () => {
   });
 });
 
-describe("readDocStatusFromText (dual-read)", () => {
-  test("prefers YAML status over a bold header", () => {
+describe("readDocStatusFromText (YAML-only)", () => {
+  test("reads and normalizes YAML status", () => {
     const text = "---\nstatus: shipped\n---\n**Status:** in-progress\n";
     expect(readDocStatusFromText(text, "plan")).toBe("shipped");
   });
 
-  test("falls back to bold header when no YAML status", () => {
+  test("ignores a legacy bold status when YAML is absent", () => {
     const text = "# Plan\n\n**Status:** in_progress - phase 1\n";
-    expect(readDocStatusFromText(text, "plan")).toBe("in-progress");
-  });
-
-  test("bold done normalizes by kind on fallback", () => {
-    expect(readDocStatusFromText("**Status:** done\n", "issue")).toBe("resolved");
+    expect(readDocStatusFromText(text, "plan")).toBeNull();
   });
 
   test("neither shape -> null", () => {
@@ -107,14 +103,14 @@ describe("readDocStatusFromText (dual-read)", () => {
   });
 });
 
-describe("hasAnyStatus", () => {
+describe("hasYamlStatus", () => {
   test("true for YAML status", () => {
-    expect(hasAnyStatus("---\nstatus: open\n---\n")).toBe(true);
+    expect(hasYamlStatus("---\nstatus: open\n---\n")).toBe(true);
   });
-  test("true for bold header", () => {
-    expect(hasAnyStatus("**Status:** open\n")).toBe(true);
+  test("false for a legacy bold header", () => {
+    expect(hasYamlStatus("**Status:** open\n")).toBe(false);
   });
   test("false for neither", () => {
-    expect(hasAnyStatus("# Title\nno status\n")).toBe(false);
+    expect(hasYamlStatus("# Title\nno status\n")).toBe(false);
   });
 });
