@@ -246,6 +246,36 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
   // every live SSE fold / keystroke (a fresh inline closure would defeat memo).
   const openImage = useCallback((hash: string) => setSelected(hash), []);
 
+  // Kill hover work during scroll. On a wheel scroll the pointer stays fixed
+  // while cards slide under it, so a different card gets `:hover` every frame —
+  // and with any hover transition (border-color / opacity / scale) that
+  // re-triggers overlapping animations + layer commits across the grid, which
+  // is what dropped scroll to 2-3 fps (a real-pointer effect a programmatic
+  // scrollTop can't reproduce, hence how it hid). Setting pointer-events:none
+  // on the grid while scrolling stops any card from matching :hover; wheel
+  // events pass through to the scroller so scrolling itself is unaffected. Done
+  // imperatively via refs so it never re-renders the grid.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    let idle: ReturnType<typeof setTimeout> | null = null;
+    const onScroll = () => {
+      const grid = gridRef.current;
+      if (grid) grid.style.pointerEvents = "none";
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => {
+        if (gridRef.current) gridRef.current.style.pointerEvents = "";
+      }, 120);
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      if (idle) clearTimeout(idle);
+    };
+  }, []);
+
   const selectedIndex = selected ? filtered.findIndex((i) => i.hash === selected) : -1;
   const selectedImg = selectedIndex >= 0 ? filtered[selectedIndex] : null;
 
@@ -276,7 +306,7 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
         status={status}
       />
 
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-auto">
         {images.length === 0 ? (
           <EmptyState>
             No images captured yet. Read an image file, or run something that produces one (e.g.{" "}
@@ -296,7 +326,10 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
             .
           </EmptyState>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 pb-6">
+          <div
+            ref={gridRef}
+            className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 pb-6"
+          >
             {filtered.map((img) => (
               <ThumbCard key={img.hash} img={img} onOpen={openImage} />
             ))}
@@ -470,7 +503,11 @@ const ThumbCard = memo(function ThumbCard({
   const more = img.agents.length > 1 ? `+${img.agents.length - 1}` : "";
   const filename = filenameFor(img);
   return (
-    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-ring/50">
+    // No `transition` here: with a hover transition, a wheel scroll (fixed
+    // pointer, cards sliding under it) re-triggers a border-color animation on
+    // a new card every frame — the animation churn the DevTools trace flagged.
+    // The border still changes on hover, just instantly.
+    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card hover:border-ring/50">
       <button
         type="button"
         onClick={() => onOpen(img.hash)}
@@ -488,7 +525,10 @@ const ThumbCard = memo(function ThumbCard({
             alt={filename}
             loading="lazy"
             decoding="async"
-            className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+            // No hover scale/transition: a transform on hover promotes the image
+            // to its own compositor layer and re-rasterizes it, and during a
+            // wheel scroll that fires on every card the pointer crosses.
+            className="h-full w-full object-cover"
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
@@ -510,7 +550,7 @@ const ThumbCard = memo(function ThumbCard({
       {/* Hover actions: pop out / download. Outside the open-button so they
           don't trigger the lightbox. */}
       {img.blob_exists && (
-        <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition group-hover:opacity-100">
+        <div className="absolute right-1 top-1 flex gap-1 opacity-0 group-hover:opacity-100">
           <IconLink
             href={`/api/image/${img.hash}`}
             target="_blank"
