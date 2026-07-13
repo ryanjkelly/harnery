@@ -372,19 +372,22 @@ function sumCodexTokens(files: string[], now: number, windowDays: number): numbe
 
 function readCursor(home: string): ToolStatus {
   const dir = join(home, ".cursor");
+  // Cursor's IDE state DB (state.vscdb) holds the account email, Stripe
+  // membership + subscription status, and per-chat activity — all token-free
+  // and the richest local signal. It lives under the OS app-support dir
+  // (Linux ~/.config, macOS ~/Library, WSL the Windows-side path), separate
+  // from ~/.cursor (the agent-CLI config). Treat Cursor as installed if either
+  // exists, so a macOS GUI user who never ran the CLI still resolves.
+  const vscdb = cursorGlobalVscdb(home);
   const status: ToolStatus = base("cursor");
-  status.installed = existsSync(dir);
+  status.installed = existsSync(dir) || vscdb != null;
   if (!status.installed) {
-    status.notes.push("~/.cursor not found");
+    status.notes.push("Cursor not found (no ~/.cursor and no state.vscdb)");
     return status;
   }
 
-  // Cursor's IDE state DB (state.vscdb, a SQLite file) holds the account email,
-  // Stripe membership type + subscription status, and per-chat activity — all
-  // token-free. It's the richest local Cursor signal. Read it if a SQLite
-  // engine is available (bun:sqlite); otherwise fall back to login-presence
-  // signals from the remote-server tokens / statsig id.
-  const vscdb = cursorGlobalVscdb(home);
+  // Read the state DB when a SQLite engine is available (bun:sqlite); otherwise
+  // fall back to login-presence signals from the remote-server tokens / statsig id.
   const items = vscdb
     ? readVscdbItems(vscdb, [
         "cursorAuth/cachedEmail",
