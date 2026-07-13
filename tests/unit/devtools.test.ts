@@ -8,7 +8,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readDevtools, type ToolStatus } from "../../src/lib/devtools.ts";
+import {
+  enrichFromApi,
+  readDevtools,
+  resolveCursorApiKey,
+  type ToolStatus,
+} from "../../src/lib/devtools.ts";
 
 const NOW = Date.parse("2026-07-13T00:00:00.000Z");
 
@@ -279,6 +284,70 @@ describe("readDevtools — cursor", () => {
     expect(cu.account).toBe("user-abc");
     expect(cu.sessions).toBe(1);
     expect(cu.notes.join(" ")).toContain("login-presence only");
+  });
+});
+
+describe("enrichFromApi — cursor Cloud Agent API", () => {
+  const origFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    delete process.env.CURSOR_API_KEY;
+  });
+
+  function mockCursor(routes: Record<string, { status: number; body: unknown }>) {
+    globalThis.fetch = (async (url: string | URL) => {
+      const u = String(url);
+      for (const [suffix, r] of Object.entries(routes)) {
+        if (u.endsWith(suffix)) return new Response(JSON.stringify(r.body), { status: r.status });
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+  }
+
+  test("valid key populates api.ok + cloudAgents (active = non-terminal statuses)", async () => {
+    mkdirSync(path.join(home, ".cursor"), { recursive: true });
+    mockCursor({
+      "/v0/me": { status: 200, body: { apiKeyName: "dev-ai", userEmail: "x@example.com" } },
+      "/v0/agents": {
+        status: 200,
+        body: { agents: [{ status: "EXPIRED" }, { status: "RUNNING" }, { status: "FINISHED" }] },
+      },
+    });
+    const report = readDevtools({ home, now: NOW, only: ["cursor"] });
+    await enrichFromApi(report, { cursorKey: "crsr_test" });
+    const cu = byTool(report.tools, "cursor");
+    expect(cu.api?.ok).toBe(true);
+    expect(cu.api?.keyName).toBe("dev-ai");
+    expect(cu.api?.cloudAgents).toEqual({ total: 3, active: 1 });
+    expect(cu.notes[0]).toContain("API key valid");
+  });
+
+  test("invalid key sets api.ok=false with an error note, never throws", async () => {
+    mkdirSync(path.join(home, ".cursor"), { recursive: true });
+    mockCursor({ "/v0/me": { status: 401, body: { message: "Invalid" } } });
+    const report = readDevtools({ home, now: NOW, only: ["cursor"] });
+    await enrichFromApi(report, { cursorKey: "crsr_bad" });
+    const cu = byTool(report.tools, "cursor");
+    expect(cu.api?.ok).toBe(false);
+    expect(cu.api?.error).toContain("401");
+  });
+
+  test("no key leaves api null (no network)", async () => {
+    mkdirSync(path.join(home, ".cursor"), { recursive: true });
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const report = readDevtools({ home, now: NOW, only: ["cursor"] });
+    await enrichFromApi(report, { cursorKey: null });
+    expect(byTool(report.tools, "cursor").api).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  test("resolveCursorApiKey prefers the CURSOR_API_KEY env var", () => {
+    process.env.CURSOR_API_KEY = "crsr_env";
+    expect(resolveCursorApiKey()).toBe("crsr_env");
   });
 });
 

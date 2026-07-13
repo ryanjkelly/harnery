@@ -1,6 +1,15 @@
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { type DevtoolName, readDevtools, type ToolStatus } from "../lib/devtools.ts";
+import {
+  cursorApiKeyPath,
+  type DevtoolName,
+  enrichFromApi,
+  readDevtools,
+  resolveCursorApiKey,
+  type ToolStatus,
+} from "../lib/devtools.ts";
 
 /**
  * `devtools`: report the local state of the AI coding agents harnery supports
@@ -8,10 +17,10 @@ import { type DevtoolName, readDevtools, type ToolStatus } from "../lib/devtools
  * tier, auth expiry, session counts, and (where the tool keeps them locally)
  * rate-limit / quota windows.
  *
- * Reads only files on disk. No network, no vendor API. Signals a tool keeps
- * server-side (Cursor usage + billing, Claude's live rate-limit windows) show
- * as blank with a note rather than a fabricated value. `--usage` adds an
- * opt-in windowed scan of local transcripts for approximate token totals.
+ * Reads files on disk by default (no network). When a Cursor API key is
+ * configured (`devtools cursor-key set`), it additionally verifies the key and
+ * pulls Cloud Agent activity. `--usage` adds an opt-in windowed scan of local
+ * transcripts for approximate token totals.
  */
 
 const VALID: readonly DevtoolName[] = ["claude-code", "codex", "cursor"];
@@ -21,10 +30,11 @@ interface DevtoolsOpts {
   usage?: boolean;
   windowDays: number;
   tool?: string[];
+  noApi?: boolean;
 }
 
 export function registerDevtoolsCommand(program: Command, emit: EmitContext): void {
-  program
+  const cmd = program
     .command("devtools")
     .description("Local status of the AI coding agents (Claude Code, Codex, Cursor)")
     .option(
@@ -40,8 +50,9 @@ export function registerDevtoolsCommand(program: Command, emit: EmitContext): vo
       (v) => Number.parseInt(v, 10),
       7,
     )
+    .option("--no-api", "Skip the Cursor API enrichment even when a key is configured")
     .option("--format <type>", "Output format: table, json", "table")
-    .action((opts: DevtoolsOpts) => {
+    .action(async (opts: DevtoolsOpts) => {
       const only = (opts.tool ?? []).filter((t): t is DevtoolName =>
         VALID.includes(t as DevtoolName),
       );
@@ -61,6 +72,10 @@ export function registerDevtoolsCommand(program: Command, emit: EmitContext): vo
         only: only.length ? only : undefined,
       });
 
+      // Auto-enrich when a Cursor key is configured (the user opted in by
+      // storing one); --no-api forces pure-local.
+      if (opts.noApi !== true) await enrichFromApi(report);
+
       if (opts.format === "json") {
         emit.config({ format: "json" });
         emit.data({ ok: true, ...report });
@@ -69,6 +84,73 @@ export function registerDevtoolsCommand(program: Command, emit: EmitContext): vo
 
       emit.text(renderTable(report.tools));
     });
+
+  registerCursorKeyCommand(cmd, emit);
+}
+
+/** `devtools cursor-key set|clear|status` — store the machine-local Cursor API key. */
+function registerCursorKeyCommand(parent: Command, emit: EmitContext): void {
+  const key = parent
+    .command("cursor-key")
+    .description("Manage the Cursor API key used for the Cloud Agent enrichment");
+
+  key
+    .command("set [value]")
+    .description("Store a Cursor API key (reads stdin when [value] is omitted)")
+    .action(async (value: string | undefined) => {
+      const raw = value ?? (await readStdin());
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        emit.error({ code: "empty_key", message: "no key provided (arg or stdin)" });
+        return;
+      }
+      const path = cursorApiKeyPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, trimmed, { mode: 0o600 });
+      chmodSync(path, 0o600);
+      emit.file(path, { stored: true, length: trimmed.length });
+    });
+
+  key
+    .command("clear")
+    .description("Remove the stored Cursor API key")
+    .action(() => {
+      try {
+        rmSync(cursorApiKeyPath());
+      } catch {
+        // already absent
+      }
+      emit.data({ ok: true, cleared: true });
+    });
+
+  key
+    .command("status")
+    .description("Report whether a Cursor key is configured (env or file)")
+    .action(() => {
+      const fromEnv = Boolean(process.env.CURSOR_API_KEY?.trim());
+      const resolved = resolveCursorApiKey();
+      emit.data({
+        ok: true,
+        configured: Boolean(resolved),
+        source: fromEnv ? "env" : resolved ? "file" : null,
+        path: cursorApiKeyPath(),
+      });
+    });
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = "";
+    if (process.stdin.isTTY) {
+      resolve("");
+      return;
+    }
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (c) => {
+      data += c;
+    });
+    process.stdin.on("end", () => resolve(data));
+  });
 }
 
 function collect(value: string, prev: string[]): string[] {
@@ -100,6 +182,9 @@ function renderTable(tools: ToolStatus[]): string {
     }
     if (t.tokensUsed != null) {
       lines.push(`   tokens       ${t.tokensUsed.toLocaleString()}`);
+    }
+    if (t.api?.ok && t.api.cloudAgents) {
+      lines.push(`   cloud agents ${t.api.cloudAgents.total} (${t.api.cloudAgents.active} active)`);
     }
     for (const n of t.notes) lines.push(`   · ${n}`);
     lines.push("");

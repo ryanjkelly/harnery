@@ -37,6 +37,17 @@ export interface QuotaWindow {
   resetsAt: string | null;
 }
 
+export interface ApiEnrichment {
+  /** The configured API key authenticated successfully. */
+  ok: boolean;
+  /** Human name the vendor reports for the key (e.g. Cursor's apiKeyName). */
+  keyName: string | null;
+  /** Cloud-agent activity (Cursor Cloud Agent API), when available. */
+  cloudAgents: { total: number; active: number } | null;
+  /** Error message when the key is configured but a call failed. */
+  error: string | null;
+}
+
 export interface ToolStatus {
   tool: DevtoolName;
   /** The tool's config directory exists on this machine. */
@@ -63,6 +74,11 @@ export interface ToolStatus {
    * (the scan is opt-in because transcripts can be gigabytes).
    */
   tokensUsed: number | null;
+  /**
+   * Result of the optional API enrichment (network), populated by
+   * `enrichFromApi` when a key is configured. `null` when no enrichment ran.
+   */
+  api: ApiEnrichment | null;
   /** Caveats about what is and isn't derivable locally for this tool. */
   notes: string[];
 }
@@ -87,6 +103,99 @@ export interface ReadDevtoolsOpts {
 }
 
 const ALL_TOOLS: readonly DevtoolName[] = ["claude-code", "codex", "cursor"];
+
+// ---------------------------------------------------------------------------
+// Cursor API key store + enrichment (opt-in network)
+//
+// `readDevtools` stays pure-local. When a Cursor API key is configured, the
+// caller can additionally `await enrichFromApi(report)` to verify the key and
+// pull Cloud Agent activity. Individual Cursor plans have NO usage/billing API
+// (that surface is Team-only), so this enrichment covers key validity + cloud
+// agents, not token cost.
+// ---------------------------------------------------------------------------
+
+/** Path of the machine-local Cursor API key file (honors XDG_CONFIG_HOME). */
+export function cursorApiKeyPath(): string {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+  const configHome = process.env.XDG_CONFIG_HOME?.trim() || join(home, ".config");
+  return join(configHome, "harnery", "cursor-api-key");
+}
+
+/** Resolve a Cursor API key: env `CURSOR_API_KEY` first, then the key file. */
+export function resolveCursorApiKey(): string | null {
+  const fromEnv = process.env.CURSOR_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const v = readFileSync(cursorApiKeyPath(), "utf8").trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Statuses that mean a cloud agent is still doing work (everything else is done/gone). */
+const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED", "CANCELLED"]);
+
+/**
+ * Enrich a report's Cursor entry from the Cursor Cloud Agent API when a key is
+ * configured. Verifies the key (`/v0/me`) and counts cloud agents (`/v0/agents`).
+ * Network-guarded and best-effort: a failure sets `api.ok = false` with a note,
+ * never throws. No-op when no key is configured or Cursor isn't in the report.
+ */
+export async function enrichFromApi(
+  report: DevtoolsReport,
+  opts: { cursorKey?: string | null; timeoutMs?: number } = {},
+): Promise<DevtoolsReport> {
+  const cursor = report.tools.find((t) => t.tool === "cursor");
+  if (!cursor?.installed) return report;
+  const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
+  if (!key) return report;
+  cursor.api = await fetchCursorApi(key, opts.timeoutMs ?? 12_000);
+  if (cursor.api.ok) {
+    const ca = cursor.api.cloudAgents;
+    cursor.notes.unshift(
+      `API key valid${ca ? ` · ${ca.total} cloud agents (${ca.active} active)` : ""}`,
+    );
+  } else {
+    cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
+  }
+  return report;
+}
+
+async function fetchCursorApi(key: string, timeoutMs: number): Promise<ApiEnrichment> {
+  const out: ApiEnrichment = { ok: false, keyName: null, cloudAgents: null, error: null };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const get = async (path: string): Promise<unknown> => {
+    const res = await fetch(`https://api.cursor.com${path}`, {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
+    return res.json();
+  };
+  try {
+    const me = (await get("/v0/me")) as { apiKeyName?: string; userEmail?: string };
+    out.ok = true;
+    out.keyName = strOr(me.apiKeyName);
+    try {
+      const data = (await get("/v0/agents")) as { agents?: Array<{ status?: string }> };
+      const list = Array.isArray(data.agents) ? data.agents : [];
+      out.cloudAgents = {
+        total: list.length,
+        active: list.filter((a) => a.status && !CURSOR_AGENT_INACTIVE.has(a.status)).length,
+      };
+    } catch {
+      // /v0/me worked but agents listing failed; key is still valid
+    }
+  } catch (err) {
+    out.ok = false;
+    out.error = err instanceof Error ? err.message : String(err);
+  } finally {
+    clearTimeout(timer);
+  }
+  return out;
+}
 
 export function readDevtools(opts: ReadDevtoolsOpts = {}): DevtoolsReport {
   const home = opts.home ?? homedir();
@@ -599,6 +708,7 @@ function base(tool: DevtoolName): ToolStatus {
     lastActivity: null,
     quota: null,
     tokensUsed: null,
+    api: null,
     notes: [],
   };
 }

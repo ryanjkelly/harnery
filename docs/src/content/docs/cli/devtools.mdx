@@ -48,7 +48,27 @@ three — Codex's rate-limit `resets_at` windows are the closest local proxy.
 | `--tool <name>` | Restrict to a tool (repeatable): `claude-code`, `codex`, `cursor`. Default: all three. |
 | `--usage` | Also scan local transcripts for approximate token totals. Opt-in because transcripts can be gigabytes. |
 | `--window-days <n>` | With `--usage`, only count transcripts modified within N days (default 7). |
+| `--no-api` | Skip the Cursor API enrichment even when a key is configured (stay fully local). |
 | `--format <type>` | `table` (default) or `json`. |
+
+## Cursor API enrichment
+
+`devtools` reads local files only by default. If you store a Cursor API key, it
+additionally verifies the key against Cursor's Cloud Agent API and reports cloud
+agent activity:
+
+```
+harn devtools cursor-key set          # paste the key on stdin
+harn devtools cursor-key status       # is a key configured, and from where
+harn devtools cursor-key clear        # remove it
+```
+
+The key is read from `CURSOR_API_KEY` first, then `~/.config/harnery/cursor-api-key`
+(stored `0600`). When present, the Cursor entry gains `api: { ok, keyName,
+cloudAgents }`. Two honest limits: Cursor's usage/spend API is **Team-only**
+(`/teams/*`), so an individual Pro/Pro+ key returns no token cost or billing; the
+enrichment covers key validity + Cloud Agent runs (`/v0/me`, `/v0/agents`), which
+is what an individual key can actually reach.
 
 ## Examples
 
