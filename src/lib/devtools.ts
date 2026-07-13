@@ -151,12 +151,9 @@ export async function enrichFromApi(
   const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
   if (!key) return report;
   cursor.api = await fetchCursorApi(key, opts.timeoutMs ?? 12_000);
-  if (cursor.api.ok) {
-    const ca = cursor.api.cloudAgents;
-    cursor.notes.unshift(
-      `API key valid${ca ? ` · ${ca.total} cloud agents (${ca.active} active)` : ""}`,
-    );
-  } else {
+  // On success the structured `api` fields (ok + cloudAgents) carry the signal,
+  // so no note is needed. Only surface a note when the key is broken.
+  if (!cursor.api.ok) {
     cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
   }
   return report;

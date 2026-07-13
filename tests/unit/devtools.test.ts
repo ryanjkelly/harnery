@@ -319,7 +319,8 @@ describe("enrichFromApi — cursor Cloud Agent API", () => {
     expect(cu.api?.ok).toBe(true);
     expect(cu.api?.keyName).toBe("dev-ai");
     expect(cu.api?.cloudAgents).toEqual({ total: 3, active: 1 });
-    expect(cu.notes[0]).toContain("API key valid");
+    // Success is carried by the structured `api` fields; no redundant note added.
+    expect(cu.notes.some((n) => n.includes("not usable"))).toBe(false);
   });
 
   test("invalid key sets api.ok=false with an error note, never throws", async () => {
