@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { CursorKeyConnect } from "@/components/CursorKeyConnect";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -135,6 +136,13 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
         {tool.tokensUsed != null ? (
           <Row label="Tokens" value={tool.tokensUsed.toLocaleString()} hint={src.tokens} />
         ) : null}
+        {tool.api?.ok && tool.api.cloudAgents ? (
+          <Row
+            label="Cloud agents"
+            value={`${tool.api.cloudAgents.total} · ${tool.api.cloudAgents.active} active`}
+            hint={`Cloud Agent runs from cursor.com, via the API key${tool.api.keyName ? ` "${tool.api.keyName}"` : ""}. Individual plans expose no token-cost API.`}
+          />
+        ) : null}
       </dl>
 
       {tool.quota?.length ? (
@@ -158,6 +166,8 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
           ))}
         </ul>
       ) : null}
+
+      {tool.tool === "cursor" && tool.api == null ? <CursorKeyConnect /> : null}
     </section>
   );
 }

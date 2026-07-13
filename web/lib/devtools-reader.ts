@@ -17,6 +17,13 @@ export interface QuotaWindow {
   resetsAt: string | null;
 }
 
+export interface ApiEnrichment {
+  ok: boolean;
+  keyName: string | null;
+  cloudAgents: { total: number; active: number } | null;
+  error: string | null;
+}
+
 export interface ToolStatus {
   tool: "claude-code" | "codex" | "cursor";
   installed: boolean;
@@ -29,6 +36,7 @@ export interface ToolStatus {
   lastActivity: string | null;
   quota: QuotaWindow[] | null;
   tokensUsed: number | null;
+  api: ApiEnrichment | null;
   notes: string[];
 }
 
