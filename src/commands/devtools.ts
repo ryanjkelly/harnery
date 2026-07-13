@@ -183,6 +183,25 @@ function renderTable(tools: ToolStatus[]): string {
     if (t.tokensUsed != null) {
       lines.push(`   tokens       ${t.tokensUsed.toLocaleString()}`);
     }
+    if (t.usage) {
+      const u = t.usage;
+      if (u.cycleEnd) {
+        const days = Math.round((Date.parse(u.cycleEnd) - Date.now()) / 86_400_000);
+        lines.push(`   plan resets  ${fmtDate(u.cycleEnd)} (${days}d)`);
+      }
+      const pct = (label: string, v: number | null) => (v != null ? `${label} ${v}%` : null);
+      const bars = [
+        pct("total", u.totalPercentUsed),
+        pct("api", u.apiPercentUsed),
+        pct("first-party", u.firstPartyPercentUsed),
+      ].filter((s): s is string => s != null);
+      if (bars.length) lines.push(`   usage        ${bars.join(" · ")}`);
+      if (u.spendLimitCents != null) {
+        lines.push(
+          `   on-demand    ${fmtUsd(u.spendUsedCents ?? 0)} / ${fmtUsd(u.spendLimitCents)}`,
+        );
+      }
+    }
     if (t.api?.ok && t.api.cloudAgents) {
       lines.push(`   cloud agents ${t.api.cloudAgents.total} (${t.api.cloudAgents.active} active)`);
     }
@@ -201,4 +220,9 @@ function fmtBool(v: boolean | null): string {
 function fmtDate(iso: string): string {
   // Keep the machine-readable ISO but drop milliseconds for readability.
   return iso.replace(/\.\d{3}Z$/, "Z");
+}
+
+/** Cents → "$X.XX". */
+function fmtUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
 }

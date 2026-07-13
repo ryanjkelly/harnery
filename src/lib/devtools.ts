@@ -48,6 +48,31 @@ export interface ApiEnrichment {
   error: string | null;
 }
 
+/**
+ * Cursor billing-cycle + usage snapshot, fetched from cursor.com's own dashboard
+ * API using the IDE's locally-stored session token — the same call Cursor's UI
+ * makes for the Spending page. No API key to mint; it reads what's already on
+ * disk. Percentages are 0-100; cent amounts are raw (divide by 100 for dollars).
+ */
+export interface CursorUsage {
+  /** ISO start of the current billing cycle. */
+  cycleStart: string | null;
+  /** ISO end of the current billing cycle (the "resets on …" date). */
+  cycleEnd: string | null;
+  /** Percent of included total usage consumed this cycle (Cursor's "Total"). */
+  totalPercentUsed: number | null;
+  /** Percent of included API usage consumed (named-model / "API"). */
+  apiPercentUsed: number | null;
+  /** Percent of included first-party ("Auto") model usage consumed. */
+  firstPartyPercentUsed: number | null;
+  /** Included usage allowance in cents (e.g. 7000 = $70). */
+  includedLimitCents: number | null;
+  /** On-demand spend cap in cents (e.g. 500 = $5), null when unset/unlimited. */
+  spendLimitCents: number | null;
+  /** On-demand spend consumed this cycle in cents. */
+  spendUsedCents: number | null;
+}
+
 export interface ToolStatus {
   tool: DevtoolName;
   /** The tool's config directory exists on this machine. */
@@ -79,6 +104,12 @@ export interface ToolStatus {
    * `enrichFromApi` when a key is configured. `null` when no enrichment ran.
    */
   api: ApiEnrichment | null;
+  /**
+   * Cursor billing-cycle + usage, populated by `enrichFromApi` from the IDE's
+   * own session token (no API key needed). `null` when no enrichment ran, the
+   * token is stale, or the tool isn't Cursor.
+   */
+  usage: CursorUsage | null;
   /** Caveats about what is and isn't derivable locally for this tool. */
   notes: string[];
 }
@@ -105,13 +136,19 @@ export interface ReadDevtoolsOpts {
 const ALL_TOOLS: readonly DevtoolName[] = ["claude-code", "codex", "cursor"];
 
 // ---------------------------------------------------------------------------
-// Cursor API key store + enrichment (opt-in network)
+// Cursor enrichment (opt-in network)
 //
-// `readDevtools` stays pure-local. When a Cursor API key is configured, the
-// caller can additionally `await enrichFromApi(report)` to verify the key and
-// pull Cloud Agent activity. Individual Cursor plans have NO usage/billing API
-// (that surface is Team-only), so this enrichment covers key validity + cloud
-// agents, not token cost.
+// `readDevtools` stays pure-local. `enrichFromApi` adds two Cursor signals over
+// the network:
+//
+//   1. Usage + billing (NO key needed) — reads the IDE's own session token from
+//      state.vscdb and calls cursor.com's dashboard API, the same request the
+//      Cursor UI makes for its Spending page. This yields the billing-cycle
+//      countdown and total/API/first-party percent-used. It's the user's own
+//      token reading the user's own data.
+//   2. Cloud Agent activity (needs an API key) — the public /v0 API. Individual
+//      Cursor plans expose no usage/billing there (that's Team-only), so the key
+//      path only adds Cloud Agent runs.
 // ---------------------------------------------------------------------------
 
 /** Path of the machine-local Cursor API key file (honors XDG_CONFIG_HOME). */
@@ -137,26 +174,137 @@ export function resolveCursorApiKey(): string | null {
 const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED", "CANCELLED"]);
 
 /**
- * Enrich a report's Cursor entry from the Cursor Cloud Agent API when a key is
- * configured. Verifies the key (`/v0/me`) and counts cloud agents (`/v0/agents`).
- * Network-guarded and best-effort: a failure sets `api.ok = false` with a note,
- * never throws. No-op when no key is configured or Cursor isn't in the report.
+ * Enrich a report's Cursor entry over the network: usage + billing from the
+ * IDE's own session token (no key), and Cloud Agent activity from a configured
+ * API key. Best-effort and network-guarded: every failure degrades to a note,
+ * never throws. No-op when Cursor isn't in the report.
  */
 export async function enrichFromApi(
   report: DevtoolsReport,
-  opts: { cursorKey?: string | null; timeoutMs?: number } = {},
+  opts: { cursorKey?: string | null; timeoutMs?: number; home?: string } = {},
 ): Promise<DevtoolsReport> {
   const cursor = report.tools.find((t) => t.tool === "cursor");
   if (!cursor?.installed) return report;
+  const timeoutMs = opts.timeoutMs ?? 12_000;
+
+  // 1. Usage + billing from the IDE's own session token (no API key needed).
+  const auth = readCursorSessionAuth(opts.home ?? homedir());
+  if (auth) {
+    const usage = await fetchCursorUsage(auth, timeoutMs);
+    if (usage) cursor.usage = usage;
+    else cursor.notes.push("Cursor usage unavailable (session token may be stale — reopen Cursor)");
+  }
+
+  // 2. Cloud Agent activity from a configured API key (optional, separate auth).
   const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
-  if (!key) return report;
-  cursor.api = await fetchCursorApi(key, opts.timeoutMs ?? 12_000);
-  // On success the structured `api` fields (ok + cloudAgents) carry the signal,
-  // so no note is needed. Only surface a note when the key is broken.
-  if (!cursor.api.ok) {
-    cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
+  if (key) {
+    cursor.api = await fetchCursorApi(key, timeoutMs);
+    // On success the structured `api` fields carry the signal; only note a break.
+    if (!cursor.api.ok) {
+      cursor.notes.unshift(`API key configured but not usable: ${cursor.api.error ?? "unknown"}`);
+    }
   }
   return report;
+}
+
+interface CursorSessionAuth {
+  token: string;
+  userId: string;
+}
+
+/**
+ * Read Cursor's locally-stored session token from state.vscdb and derive the
+ * WorkOS user id from its JWT `sub` claim. Returns null when the DB is
+ * unreadable, no token is present, or the token has expired (so we skip a
+ * doomed call). The token string is used only to build the request and is
+ * never stored on the report.
+ */
+function readCursorSessionAuth(home: string): CursorSessionAuth | null {
+  const vscdb = cursorGlobalVscdb(home);
+  if (!vscdb) return null;
+  const items = readVscdbItems(vscdb, ["cursorAuth/accessToken"]);
+  const token = strOr(items?.["cursorAuth/accessToken"]);
+  if (!token) return null;
+  const claims = decodeJwtClaims(token);
+  const sub = strOr(claims?.sub);
+  if (!sub) return null;
+  // Skip an obviously-expired token (exp is seconds since epoch).
+  const exp = numOr(claims?.exp);
+  if (exp != null && exp * 1000 < Date.now()) return null;
+  // sub looks like "auth0|user_01J…"; the WorkOS cookie wants the id after the "|".
+  const userId = sub.includes("|") ? (sub.split("|").pop() ?? sub) : sub;
+  return { token, userId };
+}
+
+/**
+ * Fetch the current-period usage the Cursor UI shows on its Spending page. Auth
+ * is the WorkOS session cookie (`<userId>::<token>`); cursor.com rejects the
+ * POST without a matching `Origin`, so we send one. Returns null on any failure.
+ */
+async function fetchCursorUsage(
+  auth: CursorSessionAuth,
+  timeoutMs: number,
+): Promise<CursorUsage | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${auth.userId}::${auth.token}`)}`;
+    const res = await fetch("https://cursor.com/api/dashboard/get-current-period-usage", {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/json",
+        Origin: "https://cursor.com",
+        Referer: "https://cursor.com/dashboard/spending",
+      },
+      body: "{}",
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json()) as {
+      billingCycleStart?: string | number;
+      billingCycleEnd?: string | number;
+      planUsage?: {
+        totalPercentUsed?: number;
+        apiPercentUsed?: number;
+        autoPercentUsed?: number;
+        limit?: number;
+      };
+      spendLimitUsage?: { individualLimit?: number; individualRemaining?: number };
+    };
+    const pu = raw.planUsage ?? {};
+    const sl = raw.spendLimitUsage ?? {};
+    const spendLimit = numOr(sl.individualLimit);
+    const spendRemaining = numOr(sl.individualRemaining);
+    return {
+      cycleStart: msToIso(raw.billingCycleStart),
+      cycleEnd: msToIso(raw.billingCycleEnd),
+      totalPercentUsed: roundPct(pu.totalPercentUsed),
+      apiPercentUsed: roundPct(pu.apiPercentUsed),
+      firstPartyPercentUsed: roundPct(pu.autoPercentUsed),
+      includedLimitCents: numOr(pu.limit),
+      spendLimitCents: spendLimit,
+      spendUsedCents:
+        spendLimit != null && spendRemaining != null ? spendLimit - spendRemaining : null,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Parse a ms-epoch value (string or number) to ISO, or null. */
+function msToIso(v: string | number | undefined): string | null {
+  const n = typeof v === "string" ? Number.parseInt(v, 10) : v;
+  if (n == null || !Number.isFinite(n) || n <= 0) return null;
+  return new Date(n).toISOString();
+}
+
+/** Clamp a percentage to one decimal place, or null. */
+function roundPct(v: number | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  return Math.round(v * 10) / 10;
 }
 
 async function fetchCursorApi(key: string, timeoutMs: number): Promise<ApiEnrichment> {
@@ -546,10 +694,12 @@ function readCursor(home: string): ToolStatus {
       status.lastActivity = latestMtimeIso(entries.map((d) => join(projects, d.name)));
   }
 
-  // Token cost + quota are genuinely server-side for individual Cursor plans.
+  // Usage + billing live on cursor.com, not on disk. The enrichment step fetches
+  // them with the IDE's session token; without it (--no-api / non-Bun), the card
+  // shows local signals only.
   status.quota = null;
   status.tokensUsed = null;
-  status.notes.push("token cost + quota are server-side (cursor.com); not exposed locally");
+  status.notes.push("usage + billing come from cursor.com (fetched during the enrichment step)");
 
   return status;
 }
@@ -706,6 +856,7 @@ function base(tool: DevtoolName): ToolStatus {
     quota: null,
     tokensUsed: null,
     api: null,
+    usage: null,
     notes: [],
   };
 }

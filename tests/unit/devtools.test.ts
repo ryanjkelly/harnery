@@ -266,7 +266,7 @@ describe("readDevtools — cursor", () => {
     expect(cu.lastActivity).toBe("2026-07-05T00:00:00.000Z");
     expect(cu.quota).toBeNull();
     expect(cu.notes.join(" ")).toContain("subscription active");
-    expect(cu.notes.join(" ")).toContain("server-side");
+    expect(cu.notes.join(" ")).toContain("cursor.com");
     expect(JSON.stringify(cu)).not.toContain("secret-should-not-surface");
   });
 
@@ -314,7 +314,7 @@ describe("enrichFromApi — cursor Cloud Agent API", () => {
       },
     });
     const report = readDevtools({ home, now: NOW, only: ["cursor"] });
-    await enrichFromApi(report, { cursorKey: "crsr_test" });
+    await enrichFromApi(report, { cursorKey: "crsr_test", home });
     const cu = byTool(report.tools, "cursor");
     expect(cu.api?.ok).toBe(true);
     expect(cu.api?.keyName).toBe("dev-ai");
@@ -327,7 +327,7 @@ describe("enrichFromApi — cursor Cloud Agent API", () => {
     mkdirSync(path.join(home, ".cursor"), { recursive: true });
     mockCursor({ "/v0/me": { status: 401, body: { message: "Invalid" } } });
     const report = readDevtools({ home, now: NOW, only: ["cursor"] });
-    await enrichFromApi(report, { cursorKey: "crsr_bad" });
+    await enrichFromApi(report, { cursorKey: "crsr_bad", home });
     const cu = byTool(report.tools, "cursor");
     expect(cu.api?.ok).toBe(false);
     expect(cu.api?.error).toContain("401");
@@ -341,7 +341,7 @@ describe("enrichFromApi — cursor Cloud Agent API", () => {
       return new Response("{}", { status: 200 });
     }) as unknown as typeof fetch;
     const report = readDevtools({ home, now: NOW, only: ["cursor"] });
-    await enrichFromApi(report, { cursorKey: null });
+    await enrichFromApi(report, { cursorKey: null, home });
     expect(byTool(report.tools, "cursor").api).toBeNull();
     expect(called).toBe(false);
   });
@@ -349,6 +349,97 @@ describe("enrichFromApi — cursor Cloud Agent API", () => {
   test("resolveCursorApiKey prefers the CURSOR_API_KEY env var", () => {
     process.env.CURSOR_API_KEY = "crsr_env";
     expect(resolveCursorApiKey()).toBe("crsr_env");
+  });
+});
+
+describe("enrichFromApi — cursor usage (session token)", () => {
+  const origFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  /** Build a Cursor state.vscdb carrying the given accessToken. */
+  function seedVscdb(accessToken: string) {
+    const gsDir = path.join(home, ".config", "Cursor", "User", "globalStorage");
+    mkdirSync(gsDir, { recursive: true });
+    const { Database } = require("bun:sqlite");
+    const db = new Database(path.join(gsDir, "state.vscdb"));
+    db.run("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)");
+    db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
+      "cursorAuth/accessToken",
+      accessToken,
+    );
+    db.close();
+  }
+
+  test("populates usage from get-current-period-usage; token never surfaces", async () => {
+    const token = jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW + 86_400_000) / 1000) });
+    seedVscdb(token);
+    let sentAuth = false;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith("/get-current-period-usage")) {
+        // The session cookie must carry userId::token, and an Origin is required.
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        sentAuth =
+          (headers.Cookie ?? "").includes("user_XYZ") && headers.Origin === "https://cursor.com";
+        return new Response(
+          JSON.stringify({
+            billingCycleStart: "1783627244000",
+            billingCycleEnd: "1786305644000",
+            planUsage: {
+              totalPercentUsed: 15.13,
+              apiPercentUsed: 67.58,
+              autoPercentUsed: 0.7075,
+              limit: 7000,
+            },
+            spendLimitUsage: { individualLimit: 500, individualRemaining: 500 },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const report = readDevtools({ home, now: NOW, only: ["cursor"] });
+    await enrichFromApi(report, { cursorKey: null, home });
+    const cu = byTool(report.tools, "cursor");
+    expect(sentAuth).toBe(true);
+    expect(cu.usage).toEqual({
+      cycleStart: new Date(1783627244000).toISOString(),
+      cycleEnd: new Date(1786305644000).toISOString(),
+      totalPercentUsed: 15.1,
+      apiPercentUsed: 67.6,
+      firstPartyPercentUsed: 0.7,
+      includedLimitCents: 7000,
+      spendLimitCents: 500,
+      spendUsedCents: 0,
+    });
+    // No API key configured, so the Cloud Agent path stays untouched.
+    expect(cu.api).toBeNull();
+    expect(JSON.stringify(cu)).not.toContain(token);
+  });
+
+  test("expired session token is skipped (no call, no usage)", async () => {
+    seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW - 1000) / 1000) }));
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const report = readDevtools({ home, now: NOW, only: ["cursor"] });
+    await enrichFromApi(report, { cursorKey: null, home });
+    expect(called).toBe(false);
+    expect(byTool(report.tools, "cursor").usage).toBeNull();
+  });
+
+  test("a failed usage fetch degrades to a note, never throws", async () => {
+    seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW + 86_400_000) / 1000) }));
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+    const report = readDevtools({ home, now: NOW, only: ["cursor"] });
+    await enrichFromApi(report, { cursorKey: null, home });
+    const cu = byTool(report.tools, "cursor");
+    expect(cu.usage).toBeNull();
+    expect(cu.notes.some((n) => n.includes("usage unavailable"))).toBe(true);
   });
 });
 

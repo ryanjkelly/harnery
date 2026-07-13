@@ -4,7 +4,12 @@ import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { Tooltip } from "@/components/ui/tooltip";
 import { coordRoot } from "@/lib/coord-reader";
-import { type DevtoolsReport, readDevtoolsReport, type ToolStatus } from "@/lib/devtools-reader";
+import {
+  type CursorUsage,
+  type DevtoolsReport,
+  readDevtoolsReport,
+  type ToolStatus,
+} from "@/lib/devtools-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -159,6 +164,8 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
         </div>
       ) : null}
 
+      {tool.usage ? <CursorUsageBlock usage={tool.usage} now={now} /> : null}
+
       {tool.notes.length ? (
         <ul className="mt-4 space-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
           {tool.notes.map((n) => (
@@ -239,11 +246,13 @@ function QuotaBar({
   pct,
   resetsAt,
   now,
+  hint,
 }: {
   window: string;
   pct: number | null;
   resetsAt: string | null;
   now: number;
+  hint?: string;
 }) {
   const clamped = pct != null ? Math.max(0, Math.min(100, Math.round(pct))) : null;
   // Color grammar: emerald under load, amber past two-thirds, red past 90%.
@@ -269,6 +278,7 @@ function QuotaBar({
               resets <FormattedDateTime iso={resetsAt} />
             </div>
           ) : null}
+          {hint ? <div className="opacity-80">{hint}</div> : null}
         </div>
       }
       triggerClassName="block w-full"
@@ -294,9 +304,66 @@ function QuotaBar({
   );
 }
 
+/**
+ * Cursor billing-cycle + usage, fetched from cursor.com with the IDE's own
+ * session token. The three percentages reuse the QuotaBar; the cycle countdown
+ * and on-demand spend render as rows. Each bar drops the per-bar reset label
+ * (they all reset on the same cycle date, shown once in the "Plan resets" row).
+ */
+function CursorUsageBlock({ usage, now }: { usage: CursorUsage; now: number }) {
+  const included = usage.includedLimitCents;
+  const includedHint =
+    included != null ? `Included allowance: ${fmtUsd(included)} this cycle.` : undefined;
+  const bars: Array<{ window: string; pct: number | null; hint?: string }> = [
+    { window: "Total", pct: usage.totalPercentUsed, hint: includedHint },
+    { window: "API", pct: usage.apiPercentUsed, hint: includedHint },
+    { window: "First-party", pct: usage.firstPartyPercentUsed },
+  ].filter((b) => b.pct != null);
+
+  return (
+    <div className="mt-4 space-y-3">
+      <dl className="space-y-2 text-sm">
+        {usage.cycleEnd ? (
+          <Row
+            label="Plan resets"
+            value={relLabel(usage.cycleEnd, now)}
+            hint={
+              <>
+                Billing cycle resets <FormattedDateTime iso={usage.cycleEnd} />
+                <div className="mt-1 opacity-80">
+                  Usage percentages below are for this cycle, from cursor.com.
+                </div>
+              </>
+            }
+          />
+        ) : null}
+        {usage.spendLimitCents != null ? (
+          <Row
+            label="On-demand"
+            value={`${fmtUsd(usage.spendUsedCents ?? 0)} / ${fmtUsd(usage.spendLimitCents)}`}
+            hint="On-demand spend used this cycle, against your monthly cap. Billed only after included usage runs out."
+          />
+        ) : null}
+      </dl>
+      {bars.length ? (
+        <div className="space-y-3">
+          {bars.map((b) => (
+            <QuotaBar key={b.window} window={b.window} pct={b.pct} resetsAt={null} now={now} hint={b.hint} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // formatting helpers
 // ---------------------------------------------------------------------------
+
+/** Cents → "$X.XX". */
+function fmtUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
 
 /**
  * Turn a machine token into a human label: strip a leading "default_", split on

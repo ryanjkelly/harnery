@@ -24,6 +24,17 @@ export interface ApiEnrichment {
   error: string | null;
 }
 
+export interface CursorUsage {
+  cycleStart: string | null;
+  cycleEnd: string | null;
+  totalPercentUsed: number | null;
+  apiPercentUsed: number | null;
+  firstPartyPercentUsed: number | null;
+  includedLimitCents: number | null;
+  spendLimitCents: number | null;
+  spendUsedCents: number | null;
+}
+
 export interface ToolStatus {
   tool: "claude-code" | "codex" | "cursor";
   installed: boolean;
@@ -37,6 +48,7 @@ export interface ToolStatus {
   quota: QuotaWindow[] | null;
   tokensUsed: number | null;
   api: ApiEnrichment | null;
+  usage: CursorUsage | null;
   notes: string[];
 }
 
