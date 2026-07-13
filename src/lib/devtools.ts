@@ -198,7 +198,9 @@ function readCodex(home: string, now: number, usage: boolean, windowDays: number
     return status;
   }
 
-  // Auth: ~/.codex/auth.json. Decode the id_token's non-secret claims only.
+  // Auth: ~/.codex/auth.json. Decode the id_token's non-secret claims only. The
+  // plan here can be stale (the token is minted infrequently); the live plan
+  // comes from the freshest rollout's rate_limits below and overrides it.
   const auth = readJson<Record<string, unknown>>(join(dir, "auth.json"));
   if (auth) {
     const tokens = auth.tokens as Record<string, unknown> | undefined;
@@ -215,7 +217,7 @@ function readCodex(home: string, now: number, usage: boolean, windowDays: number
       if (exp) {
         status.authExpiresAt = new Date(exp * 1000).toISOString();
         if (exp * 1000 <= now)
-          status.notes.push("id_token expired; refreshes via stored refresh token");
+          status.notes.push("token expired; refreshes via stored refresh token");
       }
     }
   } else {
@@ -223,30 +225,83 @@ function readCodex(home: string, now: number, usage: boolean, windowDays: number
     status.notes.push("no auth.json found (not logged in)");
   }
 
-  // Sessions: rollout-*.jsonl under sessions/YYYY/MM/DD/.
-  const rollouts = listFilesRecursive(join(dir, "sessions"), ".jsonl").filter((f) =>
-    f.includes("rollout-"),
-  );
-  status.sessions = rollouts.length || null;
-  status.lastActivity = latestMtimeIso(rollouts);
+  // Activity: sqlite/state_5.sqlite (the `threads` table) is Codex's authoritative
+  // live store. The JSONL rollouts under sessions/ can lag it (and on WSL the
+  // live app writes them Windows-side), so prefer the DB for counts + recency.
+  const state = readCodexState(join(dir, "sqlite", "state_5.sqlite"), usage);
+  if (state) {
+    status.sessions = state.sessions;
+    if (state.lastMs) status.lastActivity = new Date(state.lastMs).toISOString();
+    if (usage && state.tokens != null) status.tokensUsed = state.tokens;
+  }
 
-  // Quota: Codex records rate-limit windows in `token_count` events. Read the
-  // newest rollout's last such event.
-  const newest = newestFile(rollouts);
+  // Freshest rollout → current rate-limit windows + live plan_type. Prefer the
+  // newest thread's rollout_path from the DB (it points at the live sessions
+  // dir, Windows-side on WSL); otherwise glob the known sessions roots.
+  const globbed = codexRollouts(home);
+  if (!state) {
+    // No SQLite engine: fall back to the rollout files for counts + recency.
+    status.sessions = globbed.length || null;
+    status.lastActivity = latestMtimeIso(globbed);
+    if (usage) status.tokensUsed = sumCodexTokens(globbed, now, windowDays);
+  }
+  const newest =
+    (state?.newestRollout && existsSync(state.newestRollout) ? state.newestRollout : null) ??
+    newestFile(globbed);
   if (newest) {
     const rl = lastRateLimits(newest);
     if (rl) {
       status.quota = [rl.primary, rl.secondary].filter((q): q is QuotaWindow => q !== null);
-      if (!status.plan && rl.planType) status.plan = rl.planType;
+      if (rl.planType) status.plan = rl.planType; // live plan wins over the id_token
     }
   }
-  if (!status.quota) status.notes.push("no local rate-limit snapshot in latest session");
-
-  if (usage) {
-    status.tokensUsed = sumCodexTokens(rollouts, now, windowDays);
-  }
+  if (!status.quota?.length) status.notes.push("no local rate-limit snapshot in latest session");
 
   return status;
+}
+
+interface CodexState {
+  sessions: number;
+  tokens: number | null;
+  lastMs: number | null;
+  newestRollout: string | null;
+}
+
+/** Read Codex's `state_5.sqlite` threads table for session count, token sum, recency, newest rollout. */
+function readCodexState(dbPath: string, usage: boolean): CodexState | null {
+  if (!existsSync(dbPath)) return null;
+  return withSqlite(dbPath, (db) => {
+    const agg = db
+      .query("SELECT count(*) c, sum(tokens_used) tok, max(updated_at_ms) mx FROM threads")
+      .get() as { c: number; tok: number | null; mx: number | null } | undefined;
+    const newest = db
+      .query("SELECT rollout_path FROM threads ORDER BY updated_at_ms DESC LIMIT 1")
+      .get() as { rollout_path: string | null } | undefined;
+    return {
+      sessions: agg?.c ?? 0,
+      tokens: usage ? (numOr(agg?.tok) ?? 0) : null,
+      lastMs: numOr(agg?.mx),
+      newestRollout: strOr(newest?.rollout_path),
+    };
+  });
+}
+
+/** All Codex rollout files across the WSL home and (real-home only) the Windows-side home. */
+function codexRollouts(home: string): string[] {
+  const roots = [join(home, ".codex", "sessions")];
+  if (home === homedir()) {
+    try {
+      if (existsSync("/mnt/c/Users")) {
+        for (const u of readdirSync("/mnt/c/Users"))
+          roots.push(`/mnt/c/Users/${u}/.codex/sessions`);
+      }
+    } catch {
+      // not WSL
+    }
+  }
+  return roots
+    .flatMap((r) => listFilesRecursive(r, ".jsonl"))
+    .filter((f) => f.includes("rollout-"));
 }
 
 interface RateLimitsSnapshot {
@@ -419,21 +474,21 @@ function cursorGlobalVscdb(home: string): string | null {
 const VSCDB_COPY_MAX_BYTES = 256 * 1024 * 1024;
 
 /**
- * Read specific keys from a Cursor `state.vscdb` (VS Code ItemTable). Uses
- * `bun:sqlite`, lazily required so non-Bun runtimes degrade to null rather than
- * crashing at import.
+ * Open a SQLite DB read-only and run `fn` against it, returning fn's result or
+ * null. Uses `bun:sqlite`, lazily required so non-Bun runtimes degrade to null
+ * rather than crashing at import.
  *
- * The live DB is usually WAL-locked (Cursor is running), and over the WSL 9p
- * mount a plain open throws "disk I/O error". The fast path is SQLite immutable
- * mode (`file:...?immutable=1` with the URI open flag): it ignores the lock and
- * the WAL and reads only the btree pages the query touches, so a handful of
- * key lookups cost ~10ms even on a multi-GB file. The tradeoff is that it reads
- * the committed main DB and skips the newest uncommitted WAL frames, which is
- * fine for a status snapshot. Only if immutable somehow fails AND the file is
- * small do we fall back to snapshotting it (copying a 3GB DB is never worth it).
- * Returns a key→value map, or null if no engine / all reads fail.
+ * These DBs (Cursor's `state.vscdb`, Codex's `state_5.sqlite`) are usually
+ * WAL-locked because their app is running, and over the WSL 9p mount a plain
+ * open throws "disk I/O error". The fast path is SQLite immutable mode
+ * (`file:...?immutable=1` with the URI open flag): it ignores the lock and the
+ * WAL and reads only the btree pages the query touches, so lookups cost ~10ms
+ * even on a multi-GB file. The tradeoff is it reads the committed main DB and
+ * skips the newest uncommitted WAL frames, which is fine for a status snapshot.
+ * Only if immutable fails AND the file is small do we snapshot-copy it (copying
+ * a 3GB DB is never worth it).
  */
-function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> | null {
+function withSqlite<T>(dbPath: string, fn: (db: VscdbHandle) => T): T | null {
   let Database: unknown;
   let constants: { SQLITE_OPEN_READONLY: number; SQLITE_OPEN_URI: number } | undefined;
   try {
@@ -444,27 +499,15 @@ function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> 
   } catch {
     return null; // no SQLite engine (plain Node runtime)
   }
-  const query = (db: VscdbHandle): Record<string, string> => {
-    const out: Record<string, string> = {};
-    for (const k of keys) {
-      const row = db.query("SELECT value FROM ItemTable WHERE key = ?").get(k) as
-        | { value: string | Uint8Array }
-        | undefined;
-      if (row?.value != null)
-        out[k] =
-          typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
-    }
-    return out;
-  };
 
-  // Fast path: open the live file immutable + read-only, no copy. Encode the
-  // path into a file: URI (leaves "/" intact, escapes spaces in Windows paths).
+  // Fast path: open immutable + read-only, no copy. Encode the path into a file:
+  // URI (leaves "/" intact, escapes spaces in Windows paths).
   if (constants) {
     try {
       const flags = constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI;
       const uri = `file:${encodeURI(dbPath)}?immutable=1`;
       const db = new (Database as new (path: string, flags: number) => VscdbHandle)(uri, flags);
-      const out = query(db);
+      const out = fn(db);
       db.close();
       return out;
     } catch {
@@ -472,8 +515,7 @@ function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> 
     }
   }
 
-  // Fallback: snapshot the DB (+ sidecars) and read the copy — but only when the
-  // file is small enough that copying is cheap. A multi-GB DB is skipped.
+  // Fallback: snapshot the DB (+ sidecars) and read the copy, only when small.
   let size = Number.POSITIVE_INFINITY;
   try {
     size = statSync(dbPath).size;
@@ -482,14 +524,10 @@ function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> 
   }
   if (size > VSCDB_COPY_MAX_BYTES) return null;
 
-  const open = (p: string) =>
-    new (Database as new (path: string, opts: { readonly: boolean }) => VscdbHandle)(p, {
-      readonly: true,
-    });
   let tmp: string | null = null;
   try {
-    tmp = mkdtempSync(join(tmpdir(), "harn-vscdb-"));
-    const dst = join(tmp, "state.vscdb");
+    tmp = mkdtempSync(join(tmpdir(), "harn-sqlite-"));
+    const dst = join(tmp, "copy.sqlite");
     copyFileSync(dbPath, dst);
     for (const ext of ["-wal", "-shm"]) {
       if (existsSync(dbPath + ext)) {
@@ -500,8 +538,11 @@ function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> 
         }
       }
     }
-    const db = open(dst);
-    const out = query(db);
+    const db = new (Database as new (path: string, opts: { readonly: boolean }) => VscdbHandle)(
+      dst,
+      { readonly: true },
+    );
+    const out = fn(db);
     db.close();
     return out;
   } catch {
@@ -517,8 +558,24 @@ function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> 
   }
 }
 
+/** Read specific keys from a Cursor `state.vscdb` (VS Code ItemTable). */
+function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> | null {
+  return withSqlite(dbPath, (db) => {
+    const out: Record<string, string> = {};
+    for (const k of keys) {
+      const row = db.query("SELECT value FROM ItemTable WHERE key = ?").get(k) as
+        | { value: string | Uint8Array }
+        | undefined;
+      if (row?.value != null)
+        out[k] =
+          typeof row.value === "string" ? row.value : Buffer.from(row.value).toString("utf8");
+    }
+    return out;
+  });
+}
+
 interface VscdbHandle {
-  query(sql: string): { get(...params: unknown[]): unknown };
+  query(sql: string): { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[] };
   close(): void;
 }
 

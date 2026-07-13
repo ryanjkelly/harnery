@@ -25,9 +25,9 @@ a tool keeps server-side surfaces as blank with a note rather than a guess.
 | --- | --- | --- | --- |
 | Logged-in | ✅ credential + expiry | ✅ `auth.json` | ✅ `state.vscdb` |
 | Account | ✅ email | ✅ email (JWT claim) | ✅ email (`state.vscdb`) |
-| Plan / tier | ✅ seat tier | ✅ plan (JWT claim) | ✅ Stripe membership + status |
+| Plan / tier | ✅ seat tier | ✅ live plan (rate-limit snapshot) | ✅ Stripe membership + status |
 | Auth expiry | ✅ | ✅ | ❌ |
-| Session count | ✅ transcripts | ✅ rollouts | ✅ chats (`composerHeaders`) |
+| Session count | ✅ transcripts | ✅ threads (`state_5.sqlite`) | ✅ chats (`composerHeaders`) |
 | Quota / reset windows | ❌ (live via `/usage`) | ✅ 5h + weekly, from `token_count` | ❌ server-side |
 | Token totals (`--usage`) | ✅ transcript scan | ✅ best-effort | ❌ server-side |
 

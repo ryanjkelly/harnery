@@ -67,7 +67,7 @@ export function registerDevtoolsCommand(program: Command, emit: EmitContext): vo
         return;
       }
 
-      emit.text(renderTable(report.tools, report.windowDays));
+      emit.text(renderTable(report.tools));
     });
 }
 
@@ -75,7 +75,7 @@ function collect(value: string, prev: string[]): string[] {
   return [...prev, value];
 }
 
-function renderTable(tools: ToolStatus[], windowDays: number | null): string {
+function renderTable(tools: ToolStatus[]): string {
   const lines: string[] = [];
   for (const t of tools) {
     lines.push(`── ${t.tool} ${"─".repeat(Math.max(0, 40 - t.tool.length))}`);
@@ -99,8 +99,7 @@ function renderTable(tools: ToolStatus[], windowDays: number | null): string {
       }
     }
     if (t.tokensUsed != null) {
-      const w = windowDays != null ? ` (last ${windowDays}d)` : "";
-      lines.push(`   tokens${w}  ${t.tokensUsed.toLocaleString()}`);
+      lines.push(`   tokens       ${t.tokensUsed.toLocaleString()}`);
     }
     for (const n of t.notes) lines.push(`   · ${n}`);
     lines.push("");

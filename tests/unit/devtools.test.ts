@@ -115,7 +115,66 @@ describe("readDevtools — claude-code", () => {
 });
 
 describe("readDevtools — codex", () => {
-  test("decodes id_token claims + reads rate-limit windows from newest rollout", () => {
+  test("reads session count + recency from state_5.sqlite; live plan from rollout", () => {
+    const dir = path.join(home, ".codex");
+    const day = path.join(dir, "sessions", "2026", "07", "11");
+    mkdirSync(day, { recursive: true });
+    mkdirSync(path.join(dir, "sqlite"), { recursive: true });
+    writeFileSync(
+      path.join(dir, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "at-secret",
+          id_token: jwt({
+            email: "codex@example.com",
+            exp: Math.floor((NOW + 86_400_000) / 1000),
+            "https://api.openai.com/auth": { chatgpt_plan_type: "team" }, // stale
+          }),
+        },
+      }),
+    );
+    const rollout = path.join(day, "rollout-2026-07-11T00-00-00-abc.jsonl");
+    writeFileSync(
+      rollout,
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            plan_type: "plus", // live plan should win over the id_token's "team"
+            primary: { used_percent: 6, window_minutes: 300, resets_at: Math.floor(NOW / 1000) + 3600 },
+          },
+        },
+      }),
+    );
+    // state_5.sqlite: two threads, newest points at the rollout above.
+    const { Database } = require("bun:sqlite");
+    const db = new Database(path.join(dir, "sqlite", "state_5.sqlite"));
+    db.run(
+      "CREATE TABLE threads (id TEXT, rollout_path TEXT, updated_at_ms INTEGER, tokens_used INTEGER)",
+    );
+    const put = db.prepare(
+      "INSERT INTO threads (id, rollout_path, updated_at_ms, tokens_used) VALUES (?, ?, ?, ?)",
+    );
+    put.run("t1", rollout, Date.parse("2026-07-11T00:00:00Z"), 1000);
+    put.run("t2", "/nonexistent/old.jsonl", Date.parse("2026-07-01T00:00:00Z"), 500);
+    db.close();
+
+    const cx = byTool(readDevtools({ home, now: NOW, usage: true }).tools, "codex");
+    expect(cx.sessions).toBe(2); // from state_5.sqlite, not the single rollout file
+    expect(cx.plan).toBe("plus"); // live rate-limit plan overrides the stale id_token
+    expect(cx.tokensUsed).toBe(1500); // sum of tokens_used across threads
+    expect(cx.lastActivity).toBe("2026-07-11T00:00:00.000Z");
+    expect(cx.quota?.[0]).toEqual({
+      window: "5h",
+      usedPercent: 6,
+      resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString(),
+    });
+    expect(JSON.stringify(cx)).not.toContain("at-secret");
+  });
+
+  test("falls back to rollout glob + id_token plan when no state DB exists", () => {
     const dir = path.join(home, ".codex");
     const day = path.join(dir, "sessions", "2026", "07", "01");
     mkdirSync(day, { recursive: true });
