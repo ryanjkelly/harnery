@@ -95,11 +95,22 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
 
   // Ordering check: if we hold any claim with path < req.path, fine.
   // Otherwise the new claim would create a backward-edge in the dependency
-  // graph and risk deadlock. Only applies when there are OTHER fresh peers:
-  // single-agent flow can't deadlock with itself, and the rule otherwise
-  // forces release-and-reacquire cycles on every reverse-order edit pair.
-  const hasFreshPeers = otherPeers.some(
-    (p) => isFresh(p.last_heartbeat) && p.files_touched.length > 0,
+  // graph and risk deadlock. Only applies when a fresh peer genuinely CONTENDS
+  // with us — i.e. holds a path that also sits in our own footprint (held
+  // claims ∪ the path we're now requesting). A wait-for cycle is a
+  // strongly-connected set of agents linked by shared files; if no fresh peer
+  // shares any file with our footprint, we're in a disjoint component of the
+  // resource graph and cannot be part of any cycle, so sorted-order acquisition
+  // buys nothing and the block is pure false-positive friction. Sharing a file
+  // is the necessary condition for a cycle through this agent, so this narrowing
+  // leaves the deadlock-prevention invariant intact for genuine contention while
+  // removing the dominant real-world cost — a peer editing unrelated files
+  // walling off every backward-order edit. (Single-agent flow can't deadlock
+  // with itself and never arms, since there are no other peers to contend.)
+  const myFootprint = new Set<string>(myPeer?.files_touched ?? []);
+  myFootprint.add(req.path);
+  const hasContendingPeer = otherPeers.some(
+    (p) => isFresh(p.last_heartbeat) && p.files_touched.some((f) => myFootprint.has(f)),
   );
   // Re-editing a path already in our own files_touched acquires no new lock
   // edge, so it can't create a circular wait — the ordering rule must not block
@@ -109,7 +120,7 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
   // both agent-Gibson holding README.md and agent-Ophelia holding AGENTS.md were
   // blocked re-editing those held files after touching a higher path, 2026-07-03).
   const alreadyHeld = myPeer?.files_touched.includes(req.path) ?? false;
-  if (hasFreshPeers && myPeer && myPeer.files_touched.length > 0 && !alreadyHeld) {
+  if (hasContendingPeer && myPeer && myPeer.files_touched.length > 0 && !alreadyHeld) {
     // Only ACTIVE (uncommitted) edits should constrain lock ordering. A claim on
     // a committed-clean file is a finished edit, not a held lock, so it must not
     // wall off a lower-sorted acquisition. Without this, a long session

@@ -120,10 +120,13 @@ describe("evaluateClaim", () => {
 });
 
 describe("evaluateClaim: ordering self-prune", () => {
-  // A fresh OTHER peer must exist for the ordering rule to engage at all
-  // (single-agent flow is exempt).
-  function seedFreshOtherPeer(): void {
-    seedPeer("peer", { name: "Greta", files: ["zzz/unrelated.md"] });
+  // A fresh OTHER peer that CONTENDS (shares a file with self's footprint) must
+  // exist for the ordering rule to engage. The rule arms on genuine contention,
+  // not on the mere presence of an active peer, so the seeded peer holds a path
+  // that overlaps self's held-or-requested set (default: the higher path self
+  // holds in these tests).
+  function seedFreshOtherPeer(files: string[] = ["src/z-higher.ts"]): void {
+    seedPeer("peer", { name: "Greta", files });
   }
 
   function gitInit(dir: string): void {
@@ -167,7 +170,8 @@ describe("evaluateClaim: ordering self-prune", () => {
   test("mixed: committed-clean blocker pruned but dirty blocker still blocks", () => {
     gitInit(root);
     gitCommitFile(root, "src/m-clean.ts");
-    seedFreshOtherPeer();
+    // Peer contends on z-dirty (in self's footprint) so the ordering rule arms.
+    seedFreshOtherPeer(["src/z-dirty.ts"]);
     // hold one committed-clean higher claim and one dirty (untracked) higher claim
     seedPeer("self", { name: "Maya", files: ["src/m-clean.ts", "src/z-dirty.ts"] });
     const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
@@ -199,6 +203,30 @@ describe("evaluateClaim: ordering self-prune", () => {
     // the deadlock-prevention ordering rule still fires (regression guard for
     // the re-edit exemption above).
     seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
+    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
+    expect(v.allow).toBe(false);
+    expect(v.rule).toBe("claim.ordering_violation");
+  });
+
+  test("a fresh peer editing UNRELATED files does NOT arm the ordering rule", () => {
+    // The core false-positive: a peer active on files that don't overlap self's
+    // footprint (held claims ∪ requested path) cannot be part of any wait-for
+    // cycle through self, so sorted-order acquisition is unnecessary and the
+    // backward edit must be allowed. Without contention-scoped arming, this
+    // walled off every backward-order edit whenever any peer was merely active.
+    seedFreshOtherPeer(["zzz/unrelated.md"]);
+    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
+    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("claim.pass");
+  });
+
+  test("contention on a DIFFERENT held path (not the requested one) still arms ordering", () => {
+    // self holds two higher paths; peer contends on the one that isn't the
+    // requested path. Footprint overlap exists → the rule arms and the genuine
+    // backward acquisition is blocked (no self-heal: non-git tmpdir reads dirty).
+    seedFreshOtherPeer(["src/y-other.ts"]);
+    seedPeer("self", { name: "Maya", files: ["src/y-other.ts", "src/z-higher.ts"] });
     const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
     expect(v.allow).toBe(false);
     expect(v.rule).toBe("claim.ordering_violation");
