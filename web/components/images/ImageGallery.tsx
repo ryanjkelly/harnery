@@ -503,11 +503,14 @@ const ThumbCard = memo(function ThumbCard({
   const more = img.agents.length > 1 ? `+${img.agents.length - 1}` : "";
   const filename = filenameFor(img);
   return (
-    // No `transition` here: with a hover transition, a wheel scroll (fixed
-    // pointer, cards sliding under it) re-triggers a border-color animation on
-    // a new card every frame — the animation churn the DevTools trace flagged.
-    // The border still changes on hover, just instantly.
-    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card hover:border-ring/50">
+    // content-visibility:auto skips decode/layout/paint for off-screen cards
+    // (only the ~15-20 visible ones cost anything on a 71+ grid) while keeping
+    // every node in the DOM for browser Ctrl+F; contain-intrinsic-size reserves
+    // height so the scrollbar stays stable. Cheap now that thumbnails are tiny.
+    // No `transition`: with a hover transition, a wheel scroll (fixed pointer,
+    // cards sliding under it) re-triggers a border-color animation on a new
+    // card every frame. The border still changes on hover, just instantly.
+    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card hover:border-ring/50 [content-visibility:auto] [contain-intrinsic-size:auto_190px]">
       <button
         type="button"
         onClick={() => onOpen(img.hash)}

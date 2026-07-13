@@ -223,7 +223,16 @@ export async function resolveThumb(hash: string, width: number): Promise<Resolve
   const srcExt = blobExtIndex(dir).get(hash);
   if (!srcExt || srcExt === "svg" || srcExt === "gif") return null; // serve vector/animated whole
 
-  const thumbPath = path.join(dir, `${hash}.w${width}.webp`);
+  // Crop to the grid cell's 4:3 box (not width-only). Full-page screenshots
+  // here run to extreme heights — one is 1280x179095 — so a width-only resize
+  // produced a 360x50333 image that BOTH decoded to a huge bitmap AND exceeded
+  // WebP's 16383px max dimension, making sharp throw and the route fall back to
+  // serving the multi-MB source PNG (a ~470ms decode per scroll frame). Cover
+  // to a fixed w×(3/4·w) box: every thumbnail is tiny and uniform, anchored at
+  // the top (the meaningful part of a page capture). `.t` prefix, not `.w`, so
+  // any stale width-only cache from before this change is ignored + janitored.
+  const height = Math.round((width * 3) / 4);
+  const thumbPath = path.join(dir, `${hash}.t${width}.webp`);
   if (!existsSync(thumbPath)) {
     let sharp: typeof import("sharp").default;
     try {
@@ -232,8 +241,10 @@ export async function resolveThumb(hash: string, width: number): Promise<Resolve
       return null; // sharp not installed on this host → caller serves full blob
     }
     try {
-      const buf = await sharp(path.join(dir, `${hash}.${srcExt}`))
-        .resize({ width, withoutEnlargement: true })
+      // limitInputPixels:false: these are our own content-addressed blobs, and
+      // a very tall screenshot legitimately exceeds sharp's default pixel cap.
+      const buf = await sharp(path.join(dir, `${hash}.${srcExt}`), { limitInputPixels: false })
+        .resize(width, height, { fit: "cover", position: "top" })
         .webp({ quality: 72 })
         .toBuffer();
       // Atomic publish via a uniquely-named temp so concurrent generators for
