@@ -49,13 +49,24 @@ local token. Cursor's `state.vscdb` read needs a SQLite engine (Bun's
 WSL the reader opens the Windows-side DB immutable rather than copying it.
 
 Codex is read entirely from local files (`auth.json` + the JSONL session
-rollouts), no endpoint — the rollout the running client writes each turn already
-carries the current rate-limit snapshot. A machine can carry more than one Codex
-install (e.g. a WSL CLI and the Windows desktop app, each its own account); the
-reader locks onto the **active** one — whichever owns the most-recently-written
-rollout — and reads auth and rate limits from that same install so the two never
-mix. Auth expiry is reported from the access token (which outlives the shorter
-id token and is what refreshes), so a healthy login isn't shown as "expired".
+rollouts), no endpoint — and unlike Claude Code and Cursor, there is nothing to
+gain from a network call. OpenAI delivers Codex's rate-limit state as a
+`token_count` event *inside the stream of an actual model turn*, not from a cheap
+standalone usage GET, so the rollout the running client writes each turn already
+carries the authoritative server snapshot for free. "Refreshing" it from the
+server would mean spending a model turn to learn how much quota is left; the
+local file is strictly better. The snapshot's freshness therefore equals **last
+active** — an idle Codex shows an older reading, and the last-active timestamp
+says exactly how old.
+
+A machine can carry more than one Codex install (e.g. a WSL CLI and the Windows
+desktop app, each its own account); the reader locks onto the **active** one —
+whichever owns the most-recently-written rollout — and reads auth and rate limits
+from that same install so the two never mix. Auth expiry is reported from the
+access token (which outlives the shorter id token and is what refreshes), so a
+healthy login isn't shown as "expired". When the snapshot's
+`rate_limit_reached_type` is set (a limit was actually hit), that surfaces as a
+`rate limit reached (<window>)` note.
 
 ### Rate-limit discipline
 

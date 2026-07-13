@@ -1064,6 +1064,7 @@ function readCodex(home: string, now: number, usage: boolean, windowDays: number
     if (rl) {
       status.quota = [rl.primary, rl.secondary].filter((q): q is QuotaWindow => q !== null);
       if (rl.planType) status.plan = rl.planType; // live plan wins over the id_token
+      if (rl.reachedType) status.notes.push(`rate limit reached (${rl.reachedType} window)`);
     }
   }
   if (!status.quota?.length) status.notes.push("no local rate-limit snapshot in latest session");
@@ -1125,6 +1126,8 @@ interface RateLimitsSnapshot {
   primary: QuotaWindow | null;
   secondary: QuotaWindow | null;
   planType: string | null;
+  /** Non-null only when a limit was actually hit (e.g. "primary"/"secondary"). */
+  reachedType: string | null;
 }
 
 function lastRateLimits(file: string): RateLimitsSnapshot | null {
@@ -1138,6 +1141,7 @@ function lastRateLimits(file: string): RateLimitsSnapshot | null {
       primary: quotaFromWindow(rl.primary as Record<string, unknown> | undefined),
       secondary: quotaFromWindow(rl.secondary as Record<string, unknown> | undefined),
       planType: strOr(rl.plan_type),
+      reachedType: strOr(rl.rate_limit_reached_type),
     };
   }
   return found;

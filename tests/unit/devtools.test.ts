@@ -283,6 +283,49 @@ describe("readDevtools — codex", () => {
       { window: "weekly", usedPercent: 1, resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString() },
     ]);
   });
+
+  test("surfaces rate_limit_reached_type as a throttle note when non-null", () => {
+    const dir = path.join(home, ".codex");
+    const day = path.join(dir, "sessions", "2026", "07", "13");
+    mkdirSync(day, { recursive: true });
+    const rollout = path.join(day, "rollout-2026-07-13T05-00-00-throttled.jsonl");
+    writeFileSync(
+      rollout,
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            plan_type: "plus",
+            rate_limit_reached_type: "secondary",
+            primary: { used_percent: 100, window_minutes: 10080, resets_at: Math.floor(NOW / 1000) + 3600 },
+            secondary: null,
+          },
+        },
+      }),
+    );
+    const cx = byTool(readDevtools({ home, now: NOW }).tools, "codex");
+    expect(cx.notes).toContain("rate limit reached (secondary window)");
+
+    // Null reached-type (the normal case) adds no throttle note.
+    rmSync(rollout);
+    writeFileSync(
+      rollout,
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            plan_type: "plus",
+            rate_limit_reached_type: null,
+            primary: { used_percent: 1, window_minutes: 10080, resets_at: Math.floor(NOW / 1000) + 3600 },
+          },
+        },
+      }),
+    );
+    const ok = byTool(readDevtools({ home, now: NOW }).tools, "codex");
+    expect(ok.notes.some((n) => n.startsWith("rate limit reached"))).toBe(false);
+  });
 });
 
 describe("readDevtools — cursor", () => {
