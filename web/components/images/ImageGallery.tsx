@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Copy, Download, ExternalLink, Maximize2, Minimize2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
@@ -233,14 +233,18 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
         if (!(age <= WINDOW_MS[win])) return false;
       }
       if (q) {
-        const hay = img.touches
+        const hay = `${img.touches
           .map((t) => `${t.intent ?? ""} ${t.command_head ?? ""} ${t.source_path}`)
-          .join(" ");
-        if (!fuzzyMatch(q, `${hay} ${img.hash}`.toLowerCase())) return false;
+          .join(" ")} ${img.hash}`.toLowerCase();
+        if (!matchesQuery(q, hay)) return false;
       }
       return true;
     });
   }, [images, query, agent, role, win]);
+
+  // Stable per-render open handler so memoized ThumbCards don't re-render on
+  // every live SSE fold / keystroke (a fresh inline closure would defeat memo).
+  const openImage = useCallback((hash: string) => setSelected(hash), []);
 
   const selectedIndex = selected ? filtered.findIndex((i) => i.hash === selected) : -1;
   const selectedImg = selectedIndex >= 0 ? filtered[selectedIndex] : null;
@@ -294,7 +298,7 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 pb-6">
             {filtered.map((img) => (
-              <ThumbCard key={img.hash} img={img} onOpen={() => setSelected(img.hash)} />
+              <ThumbCard key={img.hash} img={img} onOpen={openImage} />
             ))}
           </div>
         )}
@@ -437,11 +441,12 @@ function FilterBar(props: {
 /* ── thumbnail ───────────────────────────────────────────────────────────── */
 
 const ROLE_BADGE: Record<"viewed" | "produced", string> = {
-  // Higher opacity + backdrop-blur + ring so chips stay readable over busy
-  // thumbnails while keeping a translucent feel.
-  produced:
-    "bg-emerald-600/45 text-emerald-50 ring-1 ring-emerald-300/40 backdrop-blur-md shadow-sm",
-  viewed: "bg-sky-600/45 text-sky-50 ring-1 ring-sky-300/40 backdrop-blur-md shadow-sm",
+  // Opaque-enough fill + ring so chips stay readable over busy thumbnails.
+  // Deliberately NO backdrop-blur: these badges are always visible on every
+  // card, and backdrop-filter re-samples the blur every scroll frame — the
+  // dominant cause of the choppy scroll on this grid.
+  produced: "bg-emerald-600/85 text-emerald-50 ring-1 ring-emerald-300/40 shadow-sm",
+  viewed: "bg-sky-600/85 text-sky-50 ring-1 ring-sky-300/40 shadow-sm",
 };
 
 function RoleBadge({ role }: { role: "viewed" | "produced" }) {
@@ -452,14 +457,27 @@ function RoleBadge({ role }: { role: "viewed" | "produced" }) {
   );
 }
 
-function ThumbCard({ img, onOpen }: { img: ImageCapture; onOpen: () => void }) {
+// Memoized: ImageCapture objects keep a stable reference across live folds
+// (flush() mutates in place and re-emits the same Map values), so reference
+// equality lets an unchanged card skip re-render on every SSE event / keystroke.
+const ThumbCard = memo(function ThumbCard({
+  img,
+  onOpen,
+}: {
+  img: ImageCapture;
+  onOpen: (hash: string) => void;
+}) {
   const more = img.agents.length > 1 ? `+${img.agents.length - 1}` : "";
   const filename = filenameFor(img);
   return (
-    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-ring/50">
+    // content-visibility:auto skips layout+paint for off-screen cards (huge
+    // scroll win) while keeping every node in the DOM so browser Ctrl+F still
+    // finds them; contain-intrinsic-size reserves height so the scrollbar
+    // stays stable. See AGENTS.md § Virtualized lists need a full Ctrl+F.
+    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-ring/50 [content-visibility:auto] [contain-intrinsic-size:auto_190px]">
       <button
         type="button"
-        onClick={onOpen}
+        onClick={() => onOpen(img.hash)}
         className="relative aspect-4/3 w-full overflow-hidden bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         aria-label={`Open ${filename}`}
       >
@@ -469,6 +487,7 @@ function ThumbCard({ img, onOpen }: { img: ImageCapture; onOpen: () => void }) {
             src={`/api/image/${img.hash}`}
             alt={filename}
             loading="lazy"
+            decoding="async"
             className="h-full w-full object-cover transition group-hover:scale-[1.02]"
           />
         ) : (
@@ -482,7 +501,7 @@ function ThumbCard({ img, onOpen }: { img: ImageCapture; onOpen: () => void }) {
           ))}
         </div>
         {img.touch_count > 1 && (
-          <span className="absolute bottom-1 right-1 rounded bg-background/80 px-1 py-0.5 text-[10px] text-muted-foreground backdrop-blur-md">
+          <span className="absolute bottom-1 right-1 rounded bg-background/90 px-1 py-0.5 text-[10px] text-muted-foreground">
             ×{img.touch_count}
           </span>
         )}
@@ -524,7 +543,7 @@ function ThumbCard({ img, onOpen }: { img: ImageCapture; onOpen: () => void }) {
       </div>
     </div>
   );
-}
+});
 
 /* ── lightbox ────────────────────────────────────────────────────────────── */
 
@@ -818,14 +837,20 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
-/** Case-insensitive subsequence match: "bphome" matches "harn browse home". */
-function fuzzyMatch(needle: string, haystack: string): boolean {
-  if (!needle) return true;
-  let i = 0;
-  for (let j = 0; j < haystack.length && i < needle.length; j++) {
-    if (haystack[j] === needle[i]) i++;
-  }
-  return i === needle.length;
+/**
+ * Term-scoped substring match: split the query on whitespace and require every
+ * term to appear as a substring (case-insensitive; both args are pre-lowered).
+ * Predictable for filename-shaped queries — "dt3.png" matches only cards whose
+ * path/intent literally contains that run — while staying loose across words:
+ * "browse home" still matches "harn browse home".
+ *
+ * Replaces a subsequence matcher that matched a dotted token like "dt3.png"
+ * against nearly every card, because its characters scatter trivially across
+ * the long concatenated intent/command/path/hash haystack.
+ */
+function matchesQuery(query: string, haystack: string): boolean {
+  const terms = query.split(/\s+/).filter(Boolean);
+  return terms.every((t) => haystack.includes(t));
 }
 
 function filenameFor(img: ImageCapture): string {
