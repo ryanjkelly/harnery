@@ -61,5 +61,6 @@ mode that writes, and the apply is all-or-nothing for the selected repository se
 - `docs index` rebuilds marker-delimited audit and issue index tables.
 - Bare `docs` reports markdown freshness from Git history.
 
-During a lifecycle-frontmatter migration, lint, sweep, and index prefer YAML
-`status:` and fall back to a legacy `**Status:**` line.
+Lint, sweep, and index read lifecycle `status:` only from leading YAML
+frontmatter. Legacy `**Status:**` lines are accepted only as input to the
+explicit `docs frontmatter-migrate` conversion command.
