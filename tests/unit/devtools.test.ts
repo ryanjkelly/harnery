@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -104,6 +104,50 @@ describe("readDevtools — claude-code", () => {
 
     const cc = byTool(readDevtools({ home, now: NOW, usage: true, windowDays: 3650 }).tools, "claude-code");
     expect(cc.tokensUsed).toBe(135);
+  });
+
+  test("token total is always-on (no --usage) and memoized per transcript", () => {
+    const dir = path.join(home, ".claude", "projects", "p");
+    mkdirSync(dir, { recursive: true });
+    const t = path.join(dir, "t.jsonl");
+    writeFileSync(t, JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 40, output_tokens: 2 } } }));
+
+    // No --usage flag: the total is computed anyway (always-on card field).
+    expect(byTool(readDevtools({ home, now: NOW }).tools, "claude-code").tokensUsed).toBe(42);
+
+    // The per-file sum is now cached. Tamper the stored count (keeping mtime/size)
+    // to prove an unchanged transcript is served from cache, not re-read.
+    const cacheFile = path.join(home, ".cache", "harnery", "devtools", "claude-tokens.json");
+    const cache = JSON.parse(readFileSync(cacheFile, "utf8")) as Record<string, { tokens: number }>;
+    cache[t].tokens = 999_999;
+    writeFileSync(cacheFile, JSON.stringify(cache));
+    expect(byTool(readDevtools({ home, now: NOW }).tools, "claude-code").tokensUsed).toBe(999_999);
+
+    // --usage forces a fresh, cache-bypassing recompute.
+    expect(byTool(readDevtools({ home, now: NOW, usage: true }).tools, "claude-code").tokensUsed).toBe(42);
+
+    // Changing the transcript (size/mtime move) invalidates the entry → real re-read.
+    writeFileSync(
+      t,
+      [
+        JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 40, output_tokens: 2 } } }),
+        JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 8 } } }),
+      ].join("\n"),
+    );
+    utimesSync(t, new Date(NOW + 5_000), new Date(NOW + 5_000));
+    expect(byTool(readDevtools({ home, now: NOW }).tools, "claude-code").tokensUsed).toBe(50);
+  });
+
+  test("token total excludes transcripts outside the window", () => {
+    const dir = path.join(home, ".claude", "projects", "p");
+    mkdirSync(dir, { recursive: true });
+    const recent = path.join(dir, "recent.jsonl");
+    const old = path.join(dir, "old.jsonl");
+    writeFileSync(recent, JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 30 } } }));
+    writeFileSync(old, JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 9999 } } }));
+    utimesSync(old, new Date(NOW - 30 * 86_400_000), new Date(NOW - 30 * 86_400_000));
+
+    expect(byTool(readDevtools({ home, now: NOW, windowDays: 7 }).tools, "claude-code").tokensUsed).toBe(30);
   });
 
   test("expired refresh token => not logged in", () => {

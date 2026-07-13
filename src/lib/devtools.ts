@@ -9,12 +9,13 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * `devtools`: read locally-stored state of the AI coding agents harnery
@@ -989,26 +990,94 @@ function readClaudeCode(home: string, now: number, usage: boolean, windowDays: n
   status.quota = null;
   status.notes.push("live quota (5h/weekly resets) is server-side via /usage");
 
-  if (usage) {
-    status.tokensUsed = sumClaudeTokens(files, now, windowDays);
-  }
+  // Windowed token total, memoized per transcript so it's card-cheap after the
+  // first scan. `--usage` (fresh=true) forces an exact, cache-bypassing recount.
+  status.tokensUsed = sumClaudeTokensCached(home, files, now, windowDays, usage);
 
   return status;
 }
 
-function sumClaudeTokens(files: string[], now: number, windowDays: number): number {
-  const cutoff = now - windowDays * 86_400_000;
+/** Sum the four token fields across every assistant message in one transcript. */
+function sumFileTokens(file: string): number {
   let total = 0;
-  for (const f of files) {
-    if (safeMtime(f) < cutoff) continue;
-    for (const line of readJsonlSync(f)) {
-      const usage = (line as { message?: { usage?: Record<string, number> } }).message?.usage;
-      if (!usage) continue;
-      total +=
-        (usage.input_tokens ?? 0) +
-        (usage.output_tokens ?? 0) +
-        (usage.cache_creation_input_tokens ?? 0) +
-        (usage.cache_read_input_tokens ?? 0);
+  for (const line of readJsonlSync(file)) {
+    const usage = (line as { message?: { usage?: Record<string, number> } }).message?.usage;
+    if (!usage) continue;
+    total +=
+      (usage.input_tokens ?? 0) +
+      (usage.output_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0);
+  }
+  return total;
+}
+
+interface TokenCacheEntry {
+  mtime: number;
+  size: number;
+  tokens: number;
+}
+
+/**
+ * Windowed Claude token total, memoized per transcript. Unlike Codex, a Claude
+ * transcript has no per-session cumulative field, so the total is the sum of
+ * every message — a full read of each in-window file (hundreds of MB in a busy
+ * week). To keep that off the hot render path, each file's sum is cached by
+ * (path, mtime, size) at `~/.cache/harnery/devtools/claude-tokens.json`: an
+ * unchanged transcript is never re-read, so after warm-up only the live session
+ * (whose size/mtime moved) is rescanned. `fresh` (from `--usage`) bypasses the
+ * cache for an exact recompute. The cache holds only in-window files, so mixing
+ * a larger `--window-days` re-reads the older span once.
+ */
+function sumClaudeTokensCached(
+  home: string,
+  files: string[],
+  now: number,
+  windowDays: number,
+  fresh: boolean,
+): number {
+  const cutoff = now - windowDays * 86_400_000;
+  const inWindow = files.filter((f) => safeMtime(f) >= cutoff);
+  const cacheFile = join(home, ".cache", "harnery", "devtools", "claude-tokens.json");
+
+  let cache: Record<string, TokenCacheEntry> = {};
+  if (!fresh) {
+    try {
+      cache = JSON.parse(readFileSync(cacheFile, "utf8")) as Record<string, TokenCacheEntry>;
+    } catch {
+      // no cache / unreadable — cold start
+    }
+  }
+
+  const next: Record<string, TokenCacheEntry> = {};
+  let total = 0;
+  let changed = false;
+  for (const f of inWindow) {
+    let mtime: number;
+    let size: number;
+    try {
+      const st = statSync(f);
+      mtime = st.mtimeMs;
+      size = st.size;
+    } catch {
+      continue; // vanished mid-scan
+    }
+    const hit = cache[f];
+    const tokens = hit && hit.mtime === mtime && hit.size === size ? hit.tokens : sumFileTokens(f);
+    if (!hit || hit.mtime !== mtime || hit.size !== size) changed = true;
+    next[f] = { mtime, size, tokens };
+    total += tokens;
+  }
+
+  // Persist when anything moved (new/changed file) or entries aged out of window.
+  if (!fresh && (changed || Object.keys(next).length !== Object.keys(cache).length)) {
+    try {
+      mkdirSync(dirname(cacheFile), { recursive: true });
+      const tmp = `${cacheFile}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(next));
+      renameSync(tmp, cacheFile); // atomic swap — no torn reads for a concurrent reader
+    } catch {
+      // cache write is best-effort
     }
   }
   return total;
