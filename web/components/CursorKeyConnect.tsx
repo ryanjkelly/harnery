@@ -1,16 +1,19 @@
 "use client";
 
+import { KeyRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 /**
- * Minimal "connect usage" control for the Cursor card: paste a Cursor API key,
- * it's stored via the cursor-key API route, then the page refreshes so the card
- * shows the enrichment. Shown only when no key is configured yet.
+ * "Add Cursor API key" control for the Cursor card. Collapsed, it's a clearly
+ * labeled call-to-action that says what the key unlocks; expanded, it's a single
+ * paste field with a direct link to where the key lives. On save it stores the
+ * key via the cursor-key API route and refreshes so the card shows the
+ * enrichment. Rendered only when no key is configured yet.
  *
- * Deliberately NOT wired to the Attention alert system: connecting the key is an
+ * Deliberately NOT wired to the Attention alert system: adding the key is an
  * optional enhancement, not a blocking wait, so a per-visit title-flash / chime
- * would be noise. It sits as a quiet inline affordance instead.
+ * would be noise. It's a quiet-but-obvious inline affordance instead.
  */
 export function CursorKeyConnect() {
   const router = useRouter();
@@ -41,26 +44,42 @@ export function CursorKeyConnect() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="mt-1 text-xs font-medium text-primary hover:underline"
+        className="mt-4 flex w-full items-center gap-2.5 rounded-md border border-dashed border-border px-3 py-2.5 text-left transition-colors hover:border-ring hover:bg-accent/40"
       >
-        Connect usage
+        <KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="leading-tight">
+          <span className="block text-sm font-medium text-foreground">Add Cursor API key</span>
+          <span className="block text-xs text-muted-foreground">
+            Verify your key and show Cloud Agent activity
+          </span>
+        </span>
       </button>
     );
   }
 
   return (
-    <div className="mt-1 space-y-2">
+    <div className="mt-4 space-y-2 rounded-md border border-border p-3">
       <p className="text-xs text-muted-foreground">
-        Paste a Cursor API key (cursor.com → Settings → API Keys) to verify it and show Cloud Agent
-        activity. Stored locally on this machine only.
+        Paste a Cursor API key from{" "}
+        <a
+          href="https://cursor.com/dashboard/api"
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium text-primary hover:underline"
+        >
+          cursor.com → API Keys
+        </a>
+        . Stored locally on this machine only.
       </p>
+      {/** biome-ignore lint/a11y/noAutofocus: focusing the single field is the point of opening the form */}
       <input
         type="password"
         value={key}
         onChange={(e) => setKey(e.target.value)}
         placeholder="crsr_…"
         autoComplete="off"
-        className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-ring"
+        autoFocus
+        className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:border-ring"
         onKeyDown={(e) => {
           if (e.key === "Enter" && key.trim()) save();
         }}
@@ -71,9 +90,9 @@ export function CursorKeyConnect() {
           type="button"
           disabled={!key.trim() || pending}
           onClick={save}
-          className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
+          className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground disabled:opacity-50"
         >
-          {pending ? "Saving…" : "Save"}
+          {pending ? "Saving…" : "Save key"}
         </button>
         <button
           type="button"
