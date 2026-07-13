@@ -246,36 +246,6 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
   // every live SSE fold / keystroke (a fresh inline closure would defeat memo).
   const openImage = useCallback((hash: string) => setSelected(hash), []);
 
-  // Kill hover work during scroll. On a wheel scroll the pointer stays fixed
-  // while cards slide under it, so a different card gets `:hover` every frame —
-  // and with any hover transition (border-color / opacity / scale) that
-  // re-triggers overlapping animations + layer commits across the grid, which
-  // is what dropped scroll to 2-3 fps (a real-pointer effect a programmatic
-  // scrollTop can't reproduce, hence how it hid). Setting pointer-events:none
-  // on the grid while scrolling stops any card from matching :hover; wheel
-  // events pass through to the scroller so scrolling itself is unaffected. Done
-  // imperatively via refs so it never re-renders the grid.
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const gridRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    let idle: ReturnType<typeof setTimeout> | null = null;
-    const onScroll = () => {
-      const grid = gridRef.current;
-      if (grid) grid.style.pointerEvents = "none";
-      if (idle) clearTimeout(idle);
-      idle = setTimeout(() => {
-        if (gridRef.current) gridRef.current.style.pointerEvents = "";
-      }, 120);
-    };
-    scroller.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      scroller.removeEventListener("scroll", onScroll);
-      if (idle) clearTimeout(idle);
-    };
-  }, []);
-
   const selectedIndex = selected ? filtered.findIndex((i) => i.hash === selected) : -1;
   const selectedImg = selectedIndex >= 0 ? filtered[selectedIndex] : null;
 
@@ -306,7 +276,7 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
         status={status}
       />
 
-      <div ref={scrollerRef} className="flex-1 min-h-0 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto">
         {images.length === 0 ? (
           <EmptyState>
             No images captured yet. Read an image file, or run something that produces one (e.g.{" "}
@@ -326,10 +296,7 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
             .
           </EmptyState>
         ) : (
-          <div
-            ref={gridRef}
-            className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 pb-6"
-          >
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 pb-6">
             {filtered.map((img) => (
               <ThumbCard key={img.hash} img={img} onOpen={openImage} />
             ))}
@@ -474,12 +441,11 @@ function FilterBar(props: {
 /* ── thumbnail ───────────────────────────────────────────────────────────── */
 
 const ROLE_BADGE: Record<"viewed" | "produced", string> = {
-  // Opaque-enough fill + ring so chips stay readable over busy thumbnails.
-  // Deliberately NO backdrop-blur: these badges are always visible on every
-  // card, and backdrop-filter re-samples the blur every scroll frame — the
-  // dominant cause of the choppy scroll on this grid.
-  produced: "bg-emerald-600/85 text-emerald-50 ring-1 ring-emerald-300/40 shadow-sm",
-  viewed: "bg-sky-600/85 text-sky-50 ring-1 ring-sky-300/40 shadow-sm",
+  // Higher opacity + backdrop-blur + ring so chips stay readable over busy
+  // thumbnails while keeping a translucent feel.
+  produced:
+    "bg-emerald-600/45 text-emerald-50 ring-1 ring-emerald-300/40 backdrop-blur-md shadow-sm",
+  viewed: "bg-sky-600/45 text-sky-50 ring-1 ring-sky-300/40 backdrop-blur-md shadow-sm",
 };
 
 function RoleBadge({ role }: { role: "viewed" | "produced" }) {
@@ -506,11 +472,8 @@ const ThumbCard = memo(function ThumbCard({
     // content-visibility:auto skips decode/layout/paint for off-screen cards
     // (only the ~15-20 visible ones cost anything on a 71+ grid) while keeping
     // every node in the DOM for browser Ctrl+F; contain-intrinsic-size reserves
-    // height so the scrollbar stays stable. Cheap now that thumbnails are tiny.
-    // No `transition`: with a hover transition, a wheel scroll (fixed pointer,
-    // cards sliding under it) re-triggers a border-color animation on a new
-    // card every frame. The border still changes on hover, just instantly.
-    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card hover:border-ring/50 [content-visibility:auto] [contain-intrinsic-size:auto_190px]">
+    // height so the scrollbar stays stable. See ADR 0011.
+    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-ring/50 [content-visibility:auto] [contain-intrinsic-size:auto_190px]">
       <button
         type="button"
         onClick={() => onOpen(img.hash)}
@@ -528,10 +491,7 @@ const ThumbCard = memo(function ThumbCard({
             alt={filename}
             loading="lazy"
             decoding="async"
-            // No hover scale/transition: a transform on hover promotes the image
-            // to its own compositor layer and re-rasterizes it, and during a
-            // wheel scroll that fires on every card the pointer crosses.
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover transition group-hover:scale-[1.02]"
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
@@ -544,7 +504,7 @@ const ThumbCard = memo(function ThumbCard({
           ))}
         </div>
         {img.touch_count > 1 && (
-          <span className="absolute bottom-1 right-1 rounded bg-background/90 px-1 py-0.5 text-[10px] text-muted-foreground">
+          <span className="absolute bottom-1 right-1 rounded bg-background/80 px-1 py-0.5 text-[10px] text-muted-foreground backdrop-blur-md">
             ×{img.touch_count}
           </span>
         )}
@@ -553,7 +513,7 @@ const ThumbCard = memo(function ThumbCard({
       {/* Hover actions: pop out / download. Outside the open-button so they
           don't trigger the lightbox. */}
       {img.blob_exists && (
-        <div className="absolute right-1 top-1 flex gap-1 opacity-0 group-hover:opacity-100">
+        <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition group-hover:opacity-100">
           <IconLink
             href={`/api/image/${img.hash}`}
             target="_blank"
@@ -839,12 +799,7 @@ function IconLink({
       className={
         bordered
           ? "inline-flex items-center justify-center rounded border border-border p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-          : // NO backdrop-blur: two of these render per thumbnail card (opacity-0
-            // until hover), and backdrop-filter allocates + blurs a compositor
-            // layer on every paint even while invisible — 142 blurred layers on
-            // a 71-card grid, the dominant cause of the ~2-3fps scroll. A solid
-            // background reads identically behind a tiny icon.
-            "inline-flex items-center justify-center rounded bg-background/90 p-1 text-foreground hover:bg-background"
+          : "inline-flex items-center justify-center rounded bg-background/80 p-1 text-foreground backdrop-blur-md hover:bg-background"
       }
     >
       {children}

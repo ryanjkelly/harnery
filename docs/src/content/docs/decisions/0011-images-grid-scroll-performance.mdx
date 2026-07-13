@@ -1,0 +1,88 @@
+---
+title: "ADR 0011: /images grid scroll performance"
+description: The choppy /images scroll had exactly one fix — cropping thumbnails to the grid cell so no image decodes to a huge bitmap. Records what fixed it, and what other perf changes were tried, kept, or reverted, so the failed hypotheses can be told apart from the load-bearing change.
+sidebar:
+  order: 11
+---
+
+**Date:** 2026-07-13
+**Status:** Accepted
+
+## Context
+
+The `/images` gallery scrolled at 2-3 fps for a real user. It took several
+rounds to fix, and most of those rounds changed the wrong thing. This ADR
+records the single change that fixed it and, deliberately, the changes that did
+**not**, so future work can tell the load-bearing fix from the speculative ones.
+
+The debugging trap: a headless browser probe (Playwright/CDP) that scrolls via
+`element.scrollTop` measured ~47 fps and never reproduced the jank. Programmatic
+`scrollTop` moves content but moves no real pointer and drives no real
+compositor frame the way a wheel or scrollbar-drag does, so every hypothesis
+tested that way looked "smooth." The bug was only cracked from a **user-exported
+DevTools Performance trace**: parse the `.json.gz`, sum `dur` over `traceEvents`
+by `name`, and read the dominant entries (`RasterTask`, `Decode Image`,
+`Decode LazyPixelRef`, `Commit`). `PaintImage` events carry `args.data.url`;
+`Decode Image` carries `args.imageType`.
+
+## The one fix that worked
+
+Thumbnails were resized **by width only**. The blob store holds full-page
+screenshots at extreme heights (one is **1280×179095**). Width-only resize:
+
+1. turned tall captures into 360×1790-ish thumbnails that decoded to multi-MB
+   bitmaps (`Decode LazyPixelRef` ≈ 1 s in the trace); and
+2. turned the 179095-tall one into 360×50333, which **exceeds WebP's 16383px max
+   dimension**, so `sharp` threw, the route fell back to serving the full
+   **14.7 MB PNG** into a 180px cell, and that decoded at ~470 ms per scroll
+   frame (`Decode Image`, `imageType: png`).
+
+The fix (`web/lib/images.ts` `resolveThumb`): resize with `fit: "cover"` to the
+grid cell's 4:3 box (`w × ¾w`, top-anchored) with `limitInputPixels: false`.
+Every thumbnail becomes tiny and uniform — 71 images went to a largest of
+14.8 KB, 528 KB total, all 360×270, zero PNG fallbacks — and no thumbnail can
+exceed WebP's limit. Cache prefix changed `.w<n>` → `.t<n>` to invalidate the
+stale width-only files. **This was the only change that moved the needle.**
+
+General lesson: when resizing arbitrary user images to WebP, bound **both**
+dimensions; a large single axis silently exceeds the 16383px limit and throws.
+
+## Decision: what was kept vs reverted
+
+Several other changes were made while chasing this. Each was re-judged against
+"would I make this on its own merits, knowing the crop is the fix?"
+
+**Kept — independent value or load-bearing:**
+
+- The thumbnail pipeline itself (`?w=<px>` → cached WebP in `resolveThumb` +
+  `/api/image/[hash]`). The crop is a property of this; it is the fix.
+- `content-visibility: auto` on cards. A pure win once thumbnails are tiny: the
+  ~55 off-screen cards on a 71-card grid skip decode/layout/paint, and every
+  node stays in the DOM for browser Ctrl+F.
+- `ThumbCard` memoization + a stable `onOpen`. Stops all cards re-rendering on
+  every live SSE fold during active image capture.
+- Suppressing the global `LiveRefresher` `router.refresh()` on self-live routes
+  (`web/components/LiveRefresher.tsx`). `/api/stream` fires on any `.harnery`
+  change, so during active production a self-live page was doing a full RSC
+  re-render (tail-scanning a 67 MB `events.ndjson`) ~4×/sec for nothing — the
+  gallery already folds new events client-side. Genuinely wasteful independent
+  of the scroll bug, so kept.
+
+**Reverted — speculative attempts that did not help and cost something:**
+
+- A `pointer-events: none`-during-scroll guard (a scroll listener toggling the
+  grid via refs). Premised on a hover-churn theory that scrollbar-drag later
+  disproved; it added per-scroll timer work for zero benefit.
+- Removing the card/image hover transitions + `group-hover:scale`. A cosmetic
+  regression with no measured payoff; the original hover polish was restored.
+- Removing `backdrop-filter` from the role badges + hover buttons. A deliberate
+  frosted-glass design element; its removal was a guess that did not help, so
+  the frosting was restored.
+
+## Result
+
+Decode/raster, which was ~2 s of a ~2.5 s trace window, collapses to near zero:
+no grid image can decode to more than a 360×270 bitmap. If `/images` scroll ever
+regresses again, get a real DevTools trace and check the image-decode totals
+first — do not trust a headless `scrollTop` probe, and do not re-add the
+reverted hover/pointer-events changes expecting them to matter.
