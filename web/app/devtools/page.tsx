@@ -34,7 +34,7 @@ const SOURCES: Record<
     dir: "~/.codex",
     sessions: "Threads recorded in ~/.codex/sqlite/state_5.sqlite.",
     tokens:
-      "Summed tokens_used across local threads. A local tally that can differ from the vendor's lifetime figure.",
+      "Each session's cumulative total_tokens (cache reads included), summed across its rollout within the window. Matches what Codex's own /status shows.",
     plan: "Live plan from the most recent session's rate-limit snapshot.",
   },
   cursor: {
@@ -73,7 +73,7 @@ export default async function DevtoolsPage() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {report.tools.map((t) => (
-              <ToolCard key={t.tool} tool={t} now={now} />
+              <ToolCard key={t.tool} tool={t} now={now} windowDays={report.windowDays} />
             ))}
           </div>
         )}
@@ -88,7 +88,15 @@ export default async function DevtoolsPage() {
   );
 }
 
-function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
+function ToolCard({
+  tool,
+  now,
+  windowDays,
+}: {
+  tool: ToolStatus;
+  now: number;
+  windowDays: number | null;
+}) {
   const src = SOURCES[tool.tool];
   if (!tool.installed) {
     return (
@@ -145,7 +153,11 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
           />
         ) : null}
         {tool.tokensUsed != null ? (
-          <Row label="Tokens" value={tool.tokensUsed.toLocaleString()} hint={src.tokens} />
+          <Row
+            label={windowDays != null ? `Tokens · ${windowDays}d` : "Tokens"}
+            value={tool.tokensUsed.toLocaleString()}
+            hint={src.tokens}
+          />
         ) : null}
         {tool.api?.ok && tool.api.cloudAgents ? (
           <Row

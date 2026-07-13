@@ -39,7 +39,7 @@ cycle + percent-used. `--no-api` turns all of it off.
 | Quota / reset windows | ✅ 5h + weekly, via oauth/usage | ✅ 5h + weekly, from `token_count` | ✅ billing cycle, via session token |
 | Percent used | ✅ session + weekly | ✅ 5h + weekly | ✅ total / API / first-party |
 | Overage spend | ✅ extra-usage credits | ❌ | ✅ on-demand |
-| Token totals (`--usage`) | ✅ transcript scan | ✅ best-effort | ❌ server-side |
+| Token totals | ✅ transcript scan (`--usage`) | ✅ windowed, always on | ❌ server-side |
 
 Login, plan, tier, auth expiry, and session counts all come from files on disk.
 The quota windows, percent-used, and overage spend for Claude Code and Cursor
@@ -67,6 +67,14 @@ access token (which outlives the shorter id token and is what refreshes), so a
 healthy login isn't shown as "expired". When the snapshot's
 `rate_limit_reached_type` is set (a limit was actually hit), that surfaces as a
 `rate limit reached (<window>)` note.
+
+Codex is also the one tool whose **token total is always on the card**, over the
+`--window-days` window (default 7). Each session's cumulative
+`total_token_usage` (cache reads included, matching Codex's own `/status`) is the
+last `token_count` event in its rollout, so the total is one bounded tail-read
+per in-window rollout rather than a full parse — cheap enough to run on every
+render. (Claude Code's token total stays behind `--usage`, since that means
+scanning potentially gigabytes of transcripts.)
 
 ### Rate-limit discipline
 

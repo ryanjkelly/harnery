@@ -147,6 +147,7 @@ describe("readDevtools — codex", () => {
         type: "event_msg",
         payload: {
           type: "token_count",
+          info: { total_token_usage: { total_tokens: 1500 } },
           rate_limits: {
             plan_type: "plus", // live plan should win over the id_token's "team"
             primary: { used_percent: 6, window_minutes: 300, resets_at: Math.floor(NOW / 1000) + 3600 },
@@ -170,7 +171,7 @@ describe("readDevtools — codex", () => {
     const cx = byTool(readDevtools({ home, now: NOW, usage: true }).tools, "codex");
     expect(cx.sessions).toBe(2); // from state_5.sqlite, not the single rollout file
     expect(cx.plan).toBe("plus"); // live rate-limit plan overrides the stale id_token
-    expect(cx.tokensUsed).toBe(1500); // sum of tokens_used across threads
+    expect(cx.tokensUsed).toBe(1500); // cumulative total from the rollout tail, not the state DB
     expect(cx.lastActivity).toBe("2026-07-11T00:00:00.000Z");
     expect(cx.quota?.[0]).toEqual({
       window: "5h",
@@ -282,6 +283,46 @@ describe("readDevtools — codex", () => {
     expect(cx.quota).toEqual([
       { window: "weekly", usedPercent: 1, resetsAt: new Date((Math.floor(NOW / 1000) + 3600) * 1000).toISOString() },
     ]);
+  });
+
+  test("windowed token total is always-on (no --usage) and sums per-session cumulative totals", () => {
+    const dir = path.join(home, ".codex");
+    const day = path.join(dir, "sessions", "2026", "07", "13");
+    mkdirSync(day, { recursive: true });
+    const tc = (total: number) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count", info: { total_token_usage: { total_tokens: total } } },
+      });
+    // Session A: two cumulative readings — the LAST (larger) is the session total.
+    writeFileSync(path.join(day, "rollout-2026-07-13T02-00-00-a.jsonl"), `${tc(1000)}\n${tc(3200)}\n`);
+    // Session B: one reading.
+    writeFileSync(path.join(day, "rollout-2026-07-13T05-00-00-b.jsonl"), `${tc(800)}\n`);
+
+    // No usage flag — the light scan runs unconditionally for Codex.
+    const cx = byTool(readDevtools({ home, now: NOW }).tools, "codex");
+    expect(cx.tokensUsed).toBe(4000); // 3200 (last in A) + 800 (B)
+  });
+
+  test("token total ignores rollouts outside the window", () => {
+    const dir = path.join(home, ".codex");
+    const recentDay = path.join(dir, "sessions", "2026", "07", "13");
+    const oldDay = path.join(dir, "sessions", "2026", "06", "01");
+    mkdirSync(recentDay, { recursive: true });
+    mkdirSync(oldDay, { recursive: true });
+    const tc = (total: number) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count", info: { total_token_usage: { total_tokens: total } } },
+      });
+    const recent = path.join(recentDay, "rollout-2026-07-13T05-00-00-r.jsonl");
+    const old = path.join(oldDay, "rollout-2026-06-01T05-00-00-o.jsonl");
+    writeFileSync(recent, `${tc(500)}\n`);
+    writeFileSync(old, `${tc(9999)}\n`);
+    utimesSync(old, new Date(NOW - 42 * 86_400_000), new Date(NOW - 42 * 86_400_000));
+
+    const cx = byTool(readDevtools({ home, now: NOW, windowDays: 7 }).tools, "codex");
+    expect(cx.tokensUsed).toBe(500); // the 42-day-old rollout is excluded
   });
 
   test("surfaces rate_limit_reached_type as a throttle note when non-null", () => {

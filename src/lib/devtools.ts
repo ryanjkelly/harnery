@@ -109,9 +109,11 @@ export interface ToolStatus {
   /** Locally-known quota/rate-limit windows, or null when the tool keeps them server-side. */
   quota: QuotaWindow[] | null;
   /**
-   * Approximate total tokens observed in local transcripts within the scan
-   * window. Only populated when `readDevtools({ usage: true })`; null otherwise
-   * (the scan is opt-in because transcripts can be gigabytes).
+   * Total tokens observed in local transcripts within the scan window
+   * (`windowDays`). Codex always reports it — its per-session cumulative total
+   * is one tail-read per rollout, cheap enough for every render. Claude Code's
+   * is `--usage`-gated (a full transcript scan, potentially gigabytes) and null
+   * otherwise. Cursor keeps token counts server-side, so it stays null.
    */
   tokensUsed: number | null;
   /**
@@ -268,6 +270,25 @@ function readHead(path: string, maxBytes: number): string {
     try {
       const buf = Buffer.alloc(maxBytes);
       const n = readSync(fd, buf, 0, maxBytes, 0);
+      return buf.toString("utf8", 0, n);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+/** Read up to the last `maxBytes` of a file (for a bounded tail scan). */
+function readTail(path: string, maxBytes: number): string {
+  try {
+    const size = statSync(path).size;
+    const start = Math.max(0, size - maxBytes);
+    const len = size - start;
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      const n = readSync(fd, buf, 0, len, start);
       return buf.toString("utf8", 0, n);
     } finally {
       closeSync(fd);
@@ -901,12 +922,14 @@ export function readDevtools(opts: ReadDevtoolsOpts = {}): DevtoolsReport {
 
   const tools: ToolStatus[] = [];
   if (only.has("claude-code")) tools.push(readClaudeCode(home, now, usage, windowDays));
-  if (only.has("codex")) tools.push(readCodex(home, now, usage, windowDays));
+  if (only.has("codex")) tools.push(readCodex(home, now, windowDays));
   if (only.has("cursor")) tools.push(readCursor(home));
 
   return {
     generatedAt: new Date(now).toISOString(),
-    windowDays: usage ? windowDays : null,
+    // The window that any shown token total is measured over. Codex always
+    // reports a windowed total; Claude's transcript scan is `--usage`-gated.
+    windowDays,
     tools,
   };
 }
@@ -995,7 +1018,7 @@ function sumClaudeTokens(files: string[], now: number, windowDays: number): numb
 // Codex (~/.codex)
 // ---------------------------------------------------------------------------
 
-function readCodex(home: string, now: number, usage: boolean, windowDays: number): ToolStatus {
+function readCodex(home: string, now: number, windowDays: number): ToolStatus {
   const dir = join(home, ".codex");
   const status: ToolStatus = base("codex");
   const globbed = codexRollouts(home);
@@ -1044,19 +1067,22 @@ function readCodex(home: string, now: number, usage: boolean, windowDays: number
   // Activity: prefer the active install's state_5.sqlite (`threads`) for exact
   // counts, but only when it's actually the active install's DB — otherwise the
   // rollouts are the cross-install-consistent source.
-  const state = readCodexState(join(activeRoot, "sqlite", "state_5.sqlite"), usage);
+  const state = readCodexState(join(activeRoot, "sqlite", "state_5.sqlite"));
   const activeRollouts = globbed.filter((f) => codexRootOf(f) === activeRoot);
   if (state) {
     status.sessions = state.sessions;
     if (state.lastMs) status.lastActivity = new Date(state.lastMs).toISOString();
-    if (usage && state.tokens != null) status.tokensUsed = state.tokens;
   } else {
     // No DB for the active install (e.g. the Windows desktop app uses a
     // different store): fall back to that install's rollout files.
     status.sessions = activeRollouts.length || null;
     status.lastActivity = latestMtimeIso(activeRollouts);
-    if (usage) status.tokensUsed = sumCodexTokens(activeRollouts, now, windowDays);
   }
+
+  // Windowed token total: always shown (the tail scan is card-cheap), summed
+  // from the rollouts since they're the fresh cross-install source — the state
+  // DB can lag the live sessions.
+  status.tokensUsed = sumCodexTokens(activeRollouts, now, windowDays);
 
   // Freshest rollout → current rate-limit windows + live plan_type.
   if (newestRollout) {
@@ -1080,24 +1106,23 @@ function codexRootOf(rolloutPath: string): string {
 
 interface CodexState {
   sessions: number;
-  tokens: number | null;
   lastMs: number | null;
   newestRollout: string | null;
 }
 
-/** Read Codex's `state_5.sqlite` threads table for session count, token sum, recency, newest rollout. */
-function readCodexState(dbPath: string, usage: boolean): CodexState | null {
+/** Read Codex's `state_5.sqlite` threads table for session count, recency, newest rollout.
+ * (Token totals come from the rollouts, not here — the DB can lag live sessions.) */
+function readCodexState(dbPath: string): CodexState | null {
   if (!existsSync(dbPath)) return null;
   return withSqlite(dbPath, (db) => {
-    const agg = db
-      .query("SELECT count(*) c, sum(tokens_used) tok, max(updated_at_ms) mx FROM threads")
-      .get() as { c: number; tok: number | null; mx: number | null } | undefined;
+    const agg = db.query("SELECT count(*) c, max(updated_at_ms) mx FROM threads").get() as
+      | { c: number; mx: number | null }
+      | undefined;
     const newest = db
       .query("SELECT rollout_path FROM threads ORDER BY updated_at_ms DESC LIMIT 1")
       .get() as { rollout_path: string | null } | undefined;
     return {
       sessions: agg?.c ?? 0,
-      tokens: usage ? (numOr(agg?.tok) ?? 0) : null,
       lastMs: numOr(agg?.mx),
       newestRollout: strOr(newest?.rollout_path),
     };
@@ -1166,25 +1191,48 @@ function windowLabel(minutes: number | null): string {
   return `${minutes}m`;
 }
 
+/** Bytes tail-read per rollout when summing tokens — enough to hold the last
+ * `token_count` event of any real session while staying cheap on a networked
+ * (WSL → /mnt/c) filesystem. */
+const CODEX_TAIL_BYTES = 131_072;
+
+/**
+ * Windowed token total across the in-window rollouts, light enough to run on
+ * every card render. Each `token_count` event carries a *cumulative*
+ * `info.total_token_usage`, so the session total is the last such event — found
+ * by scanning only the file's tail rather than every line. A session whose final
+ * `token_count` sits beyond the tail (rare: a huge trailing non-token event) is
+ * undercounted; acceptable for a card estimate.
+ */
 function sumCodexTokens(files: string[], now: number, windowDays: number): number {
   const cutoff = now - windowDays * 86_400_000;
   let total = 0;
   for (const f of files) {
     if (safeMtime(f) < cutoff) continue;
-    // token_count events carry a cumulative info.total_token_usage; take the
-    // max seen in each rollout (the last reading is the session total).
-    let sessionMax = 0;
-    for (const line of readJsonlSync(f)) {
-      const payload = (line as { payload?: Record<string, unknown> }).payload;
-      if (!payload || payload.type !== "token_count") continue;
-      const info = payload.info as Record<string, unknown> | undefined;
-      const totals = info?.total_token_usage as Record<string, unknown> | undefined;
-      const t = numOr(totals?.total_tokens);
-      if (t && t > sessionMax) sessionMax = t;
-    }
-    total += sessionMax;
+    total += lastCumulativeTokens(readTail(f, CODEX_TAIL_BYTES));
   }
   return total;
+}
+
+/** Last cumulative `total_token_usage.total_tokens` in a rollout tail, or 0. */
+function lastCumulativeTokens(tail: string): number {
+  let last = 0;
+  for (const line of tail.split("\n")) {
+    if (!line.includes('"token_count"')) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue; // a partial first line from the tail cut — skip it
+    }
+    const payload = (parsed as { payload?: Record<string, unknown> }).payload;
+    if (!payload || payload.type !== "token_count") continue;
+    const info = payload.info as Record<string, unknown> | undefined;
+    const totals = info?.total_token_usage as Record<string, unknown> | undefined;
+    const t = numOr(totals?.total_tokens);
+    if (t) last = t; // cumulative — the last reading wins
+  }
+  return last;
 }
 
 // ---------------------------------------------------------------------------
