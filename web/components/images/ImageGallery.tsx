@@ -470,11 +470,7 @@ const ThumbCard = memo(function ThumbCard({
   const more = img.agents.length > 1 ? `+${img.agents.length - 1}` : "";
   const filename = filenameFor(img);
   return (
-    // content-visibility:auto skips layout+paint for off-screen cards (huge
-    // scroll win) while keeping every node in the DOM so browser Ctrl+F still
-    // finds them; contain-intrinsic-size reserves height so the scrollbar
-    // stays stable. See AGENTS.md § Virtualized lists need a full Ctrl+F.
-    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-ring/50 [content-visibility:auto] [contain-intrinsic-size:auto_190px]">
+    <div className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-ring/50">
       <button
         type="button"
         onClick={() => onOpen(img.hash)}
@@ -484,7 +480,11 @@ const ThumbCard = memo(function ThumbCard({
         {img.blob_exists ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={`/api/image/${img.hash}`}
+            // ?w=360 serves a small cached WebP (2× the ~180px cell for
+            // retina), not the multi-MB full-res blob — decoding 300 full-page
+            // screenshots into these cells is what hung scroll. The lightbox
+            // below intentionally keeps the full-res src.
+            src={`/api/image/${img.hash}?w=360`}
             alt={filename}
             loading="lazy"
             decoding="async"

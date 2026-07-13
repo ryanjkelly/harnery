@@ -11,7 +11,7 @@
 
 import { closeSync, createReadStream } from "node:fs";
 import { Readable } from "node:stream";
-import { resolveBlob } from "@/lib/images";
+import { resolveBlob, resolveThumb } from "@/lib/images";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,6 +21,36 @@ export async function GET(
   ctx: { params: Promise<{ hash: string }> },
 ): Promise<Response> {
   const { hash } = await ctx.params;
+  const url = new URL(req.url);
+  const download = url.searchParams.get("download");
+  const wRaw = url.searchParams.get("w");
+
+  // Thumbnail fast path for the gallery grid: `?w=<px>` serves a small cached
+  // WebP instead of the multi-MB full-page-screenshot blob (the difference
+  // between smooth scroll and a hang). Skipped for `?download` (always the
+  // real file). Falls through to the full blob when the thumb can't be made —
+  // bad width, vector/animated source, or no sharp on this host.
+  if (wRaw && !download) {
+    const thumb = await resolveThumb(hash, Number(wRaw));
+    if (thumb) {
+      const headers: Record<string, string> = {
+        "content-type": thumb.contentType,
+        "content-length": String(thumb.size),
+        "cache-control": "public, max-age=31536000, immutable",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+      };
+      if (thumb.size === 0) {
+        closeSync(thumb.fd);
+        return new Response(null, { headers });
+      }
+      const stream = createReadStream("", { fd: thumb.fd, autoClose: true });
+      return new Response(Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>, {
+        headers,
+      });
+    }
+  }
+
   const blob = resolveBlob(hash);
   if (!blob) {
     return Response.json({ error: "not_found", hash }, { status: 404 });
@@ -45,7 +75,6 @@ export async function GET(
   // `?download=<name>` → force a download with the agent-facing filename
   // (the basename of the source path, not the content hash). Sanitized to a
   // bare filename so it can't smuggle CRLF / path separators into the header.
-  const download = new URL(req.url).searchParams.get("download");
   if (download) {
     const safe = download.replace(/[^\w.\- ]+/g, "_").slice(0, 200) || `image.${blob.ext}`;
     headers["content-disposition"] = `attachment; filename="${safe}"`;
