@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CursorKeyConnect } from "@/components/CursorKeyConnect";
+import { CursorKeyControl } from "@/components/CursorKeyControl";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -167,7 +167,13 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
         </ul>
       ) : null}
 
-      {tool.tool === "cursor" && tool.api == null ? <CursorKeyConnect /> : null}
+      {tool.tool === "cursor" ? (
+        <CursorKeyControl
+          configured={tool.api != null}
+          valid={tool.api?.ok ?? false}
+          keyName={tool.api?.keyName ?? null}
+        />
+      ) : null}
     </section>
   );
 }
