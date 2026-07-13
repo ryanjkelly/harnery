@@ -1,0 +1,80 @@
+---
+title: "ADR 0012: claim-ordering rule scope"
+description: The file-claim ordering rule (acquire claims in sorted-path order to prevent deadlock) has been narrowed four times because it is overwhelmingly false-positive. This records why each narrowing was safe, and the still-open question of whether the rule is needed at all given its non-blocking semantics.
+sidebar:
+  order: 12
+---
+
+**Date:** 2026-07-13
+**Status:** Accepted (rule retained, scope narrowed); one question deliberately left open
+
+## Context
+
+The PreToolUse claim guard (`src/core/agents/rules/claim-conflict.ts`) runs two
+checks on every Edit/Write: a **conflict** check (is a fresh peer already
+holding this exact path?) and an **ordering** check (if you hold a claim on
+path A and now want path B where B sorts before A, block — acquiring locks in a
+globally consistent order is the classic resource-ordering cure for circular
+wait).
+
+The ordering check is the source of nearly all of the guard's friction. It has
+been narrowed four times, each removing a class of false positive without
+weakening the deadlock-prevention invariant:
+
+1. **Committed-clean holds don't count** (`0b4ed15`). A claim on a
+   committed-clean file is a finished edit, not a held lock, so it must not wall
+   off a lower-sorted acquisition. Blockers are pruned lazily on the would-block
+   path.
+2. **Out-of-repo paths are skipped** (`1b130a9`). `canonicalize` returns null
+   for absolute paths outside the coord root, so a `/tmp` scratchpad write (whose
+   `/` sorts before every repo-relative path) can no longer sort-block a held
+   repo file.
+3. **Re-editing an already-held path is exempt** (`e41fb65`). Re-acquiring a
+   claim you already hold adds no new lock edge, so it can't create a circular
+   wait.
+4. **Arm only on genuine contention** (`d386204`). The rule previously armed
+   whenever *any* fresh peer held *any* claim, so a peer editing entirely
+   unrelated files walled off every backward-order edit. It now arms only when a
+   fresh peer's held set intersects your footprint (held claims ∪ the requested
+   path).
+
+## Decision
+
+Retain the ordering rule but scope its arming to genuine contention (narrowing
+4). The justification is a graph argument: a wait-for cycle is a
+strongly-connected set of agents linked by shared resources. If no fresh peer
+shares any file with your footprint, you sit in a disjoint component of the
+resource graph and cannot be part of any cycle, so sorted-order acquisition buys
+nothing there. Sharing a file is the *necessary* condition for a cycle through
+this agent, so arming on footprint-overlap leaves the invariant intact for real
+contention while removing the dominant false positive.
+
+## Result / measurement
+
+In one embedding host's ledger, genuine `ordering_violation` events fired only
+~2×/week — but agents routed around the *anticipated* block all session, writing
+files via subprocess/heredoc escapes to dodge the tool guard. Those escapes are
+themselves uncoordinated, so the workaround defeated the guard's purpose. The
+cost of the rule was almost entirely its shadow, not its blocks.
+
+## The open question (deliberately not resolved here)
+
+Is the ordering rule needed at all?
+
+The guard is **non-blocking**: a denied acquisition returns exit 2 immediately;
+the agent does not hold a lock while waiting. Classic deadlock (Coffman) requires
+hold-and-wait, which this design lacks — a blocked agent gets an error and its
+model decides what to do next. The one genuine stall the ordering rule prevents
+is two agents each holding one of two mutually-needed files and both refusing to
+commit until their multi-file edit finishes. But that scenario already surfaces
+as a **conflict** (same-file contention), names the holder, and self-heals the
+moment either agent commits (committed-clean pruning). So the ordering rule may
+be guarding a narrow, already-covered, self-healing case.
+
+Dropping it entirely was considered and **not** taken: it changes a
+deadlock-prevention invariant in a published package, and the four narrowings
+have made the rule cheap enough that removing it is no longer urgent. The
+trigger to revisit: if ordering friction still shows up after narrowing 4,
+re-open this as a full design decision (a council is the right venue, since it
+touches the core coordination invariant that all embedding hosts share). Until
+then the rule stays, narrowed.
