@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
+import { Tooltip } from "@/components/ui/tooltip";
 import { coordRoot } from "@/lib/coord-reader";
 import { type DevtoolsReport, readDevtoolsReport, type ToolStatus } from "@/lib/devtools-reader";
 
@@ -10,6 +11,31 @@ const TOOL_LABELS: Record<ToolStatus["tool"], string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
+};
+
+/** Per-tool explanations of where each field is read from, surfaced on hover. */
+const SOURCES: Record<
+  ToolStatus["tool"],
+  { dir: string; sessions: string; tokens?: string; plan?: string }
+> = {
+  "claude-code": {
+    dir: "~/.claude",
+    sessions: "Session transcripts under ~/.claude/projects.",
+    tokens: "Summed from assistant-message token usage in local transcripts, within the scan window.",
+    plan: "Seat tier from ~/.claude.json.",
+  },
+  codex: {
+    dir: "~/.codex",
+    sessions: "Threads recorded in ~/.codex/sqlite/state_5.sqlite.",
+    tokens:
+      "Summed tokens_used across local threads. A local tally that can differ from the vendor's lifetime figure.",
+    plan: "Live plan from the most recent session's rate-limit snapshot.",
+  },
+  cursor: {
+    dir: "~/.cursor",
+    sessions: "Chats recorded in Cursor's state.vscdb (composerHeaders).",
+    plan: "Stripe membership from Cursor's state.vscdb.",
+  },
 };
 
 export default async function DevtoolsPage() {
@@ -51,11 +77,12 @@ export default async function DevtoolsPage() {
 }
 
 function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
+  const src = SOURCES[tool.tool];
   if (!tool.installed) {
     return (
       <section className="rounded-lg border border-border bg-card p-5 opacity-60">
         <CardHeader tool={tool} />
-        <p className="mt-3 text-sm text-muted-foreground">Not installed on this machine.</p>
+        <p className="mt-3 text-sm text-muted-foreground">Not found at {src.dir} on this machine.</p>
       </section>
     );
   }
@@ -65,19 +92,48 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
 
       <dl className="mt-4 space-y-2 text-sm">
         {tool.account ? <Row label="Account" value={tool.account} /> : null}
-        {tool.plan ? <Row label="Plan" value={titleize(tool.plan)} /> : null}
-        {tool.rateLimitTier ? <Row label="Rate tier" value={titleize(tool.rateLimitTier)} /> : null}
+        {tool.plan ? (
+          <Row
+            label="Plan"
+            value={titleize(tool.plan)}
+            hint={
+              <>
+                Raw value <code>{tool.plan}</code>
+                {src.plan ? <div className="mt-1 opacity-80">{src.plan}</div> : null}
+              </>
+            }
+          />
+        ) : null}
+        {tool.rateLimitTier ? (
+          <Row
+            label="Rate tier"
+            value={titleize(tool.rateLimitTier)}
+            hint={
+              <>
+                Raw value <code>{tool.rateLimitTier}</code>
+              </>
+            }
+          />
+        ) : null}
         {tool.authExpiresAt ? (
-          <Row label="Auth expires" value={expiryLabel(tool.authExpiresAt, now)} />
+          <Row
+            label="Auth expires"
+            value={expiryLabel(tool.authExpiresAt, now)}
+            hint={<FormattedDateTime iso={tool.authExpiresAt} />}
+          />
         ) : null}
         {tool.sessions != null ? (
-          <Row label="Sessions" value={tool.sessions.toLocaleString()} />
+          <Row label="Sessions" value={tool.sessions.toLocaleString()} hint={src.sessions} />
         ) : null}
         {tool.lastActivity ? (
-          <Row label="Last active" value={relLabel(tool.lastActivity, now)} />
+          <Row
+            label="Last active"
+            value={relLabel(tool.lastActivity, now)}
+            hint={<FormattedDateTime iso={tool.lastActivity} />}
+          />
         ) : null}
         {tool.tokensUsed != null ? (
-          <Row label="Tokens" value={tool.tokensUsed.toLocaleString()} />
+          <Row label="Tokens" value={tool.tokensUsed.toLocaleString()} hint={src.tokens} />
         ) : null}
       </dl>
 
@@ -109,13 +165,16 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
 function CardHeader({ tool }: { tool: ToolStatus }) {
   return (
     <div className="flex items-center justify-between">
-      <h2 className="font-medium">{TOOL_LABELS[tool.tool]}</h2>
-      <LoginBadge loggedIn={tool.loggedIn} />
+      <Tooltip content={`Read from ${SOURCES[tool.tool].dir}`}>
+        <h2 className="cursor-help font-medium">{TOOL_LABELS[tool.tool]}</h2>
+      </Tooltip>
+      <LoginBadge tool={tool} />
     </div>
   );
 }
 
-function LoginBadge({ loggedIn }: { loggedIn: boolean | null }) {
+function LoginBadge({ tool }: { tool: ToolStatus }) {
+  const { loggedIn, account } = tool;
   const styles =
     loggedIn === true
       ? "bg-positive-soft text-positive"
@@ -123,16 +182,38 @@ function LoginBadge({ loggedIn }: { loggedIn: boolean | null }) {
         ? "bg-negative-soft text-negative"
         : "bg-muted text-muted-foreground";
   const label = loggedIn === true ? "signed in" : loggedIn === false ? "signed out" : "unknown";
+  const hint =
+    loggedIn === true
+      ? account
+        ? `Signed in as ${account}, per the local credential.`
+        : "A local credential is present."
+      : loggedIn === false
+        ? "No local credential found."
+        : "Could not determine sign-in state from local files.";
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{label}</span>
+    <Tooltip content={hint} side="top">
+      <span className={`cursor-help rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>
+        {label}
+      </span>
+    </Tooltip>
   );
 }
 
-function Row({ label, value }: { label: string; value: ReactNode }) {
+function Row({ label, value, hint }: { label: string; value: ReactNode; hint?: ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-4">
       <dt className="shrink-0 text-muted-foreground">{label}</dt>
-      <dd className="truncate text-right font-medium">{value}</dd>
+      <dd className="truncate text-right font-medium">
+        {hint ? (
+          <Tooltip content={hint} side="top" align="end">
+            <span className="cursor-help underline decoration-dotted decoration-muted-foreground/50 underline-offset-4">
+              {value}
+            </span>
+          </Tooltip>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   );
 }
@@ -158,21 +239,42 @@ function QuotaBar({
         : clamped >= 66
           ? "bg-revenue"
           : "bg-positive";
+  const remaining = clamped != null ? 100 - clamped : null;
   return (
-    <div>
-      <div className="flex items-baseline justify-between text-xs">
-        <span className="text-muted-foreground">{window} quota</span>
-        <span className="font-medium tabular-nums">
-          {clamped != null ? `${clamped}%` : "unknown"}
-        </span>
+    <Tooltip
+      side="top"
+      content={
+        <div className="space-y-0.5">
+          <div>
+            {clamped != null ? `${remaining}% of the ${window} window remaining` : "usage unknown"}
+          </div>
+          {resetsAt ? (
+            <div className="opacity-80">
+              resets <FormattedDateTime iso={resetsAt} />
+            </div>
+          ) : null}
+        </div>
+      }
+      triggerClassName="block w-full"
+    >
+      <div className="cursor-help">
+        <div className="flex items-baseline justify-between gap-2 text-xs">
+          <span className="text-muted-foreground">{window} quota</span>
+          <span className="font-medium tabular-nums">
+            {clamped != null ? `${clamped}%` : "unknown"}
+          </span>
+        </div>
+        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={`h-full rounded-full ${barColor}`}
+            style={{ width: `${clamped ?? 0}%` }}
+          />
+        </div>
+        {resetsAt ? (
+          <p className="mt-1 text-[11px] text-muted-foreground">{resetLabel(resetsAt, now)}</p>
+        ) : null}
       </div>
-      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-        <div className={`h-full rounded-full ${barColor}`} style={{ width: `${clamped ?? 0}%` }} />
-      </div>
-      {resetsAt ? (
-        <p className="mt-1 text-[11px] text-muted-foreground">{resetLabel(resetsAt, now)}</p>
-      ) : null}
-    </div>
+    </Tooltip>
   );
 }
 
