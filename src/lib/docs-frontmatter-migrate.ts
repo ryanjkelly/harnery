@@ -47,10 +47,14 @@ const FIELD_KEYS: Record<string, string> = {
   status: "status",
   date: "date",
   "last updated": "last_updated",
+  "date identified": "date",
+  "date resolved": "resolved",
+  "date fixed": "resolved",
   prerequisites: "prerequisites",
   severity: "severity",
   resolved: "resolved",
   affected: "affected",
+  impact: "affected",
   owner: "owner",
   continues: "continues",
   "what you're picking up": "synopsis",
@@ -80,7 +84,8 @@ function openingFields(body: string): ParsedBoldField[] {
   for (let index = 0; index < Math.min(lines.length, 40); index++) {
     const line = lines[index]!;
     if (/^##\s+/.test(line) || (index > 0 && /^---\s*$/.test(line))) break;
-    const match = line.match(/^\*\*([^*]+):\*\*\s*(.*)$/);
+    const match =
+      line.match(/^\*\*([^*]+):\*\*\s*(.*)$/) ?? line.match(/^\*\*([^*]+)\*\*:\s*(.*)$/);
     if (!match) continue;
     const label = normalizeLabel(match[1]!);
     if (!(label in FIELD_KEYS)) continue;
@@ -142,6 +147,32 @@ function leadingDate(raw: string): { value: string; note?: string } {
   return { value: match[1]!, ...(note ? { note } : {}) };
 }
 
+function splitSeverity(
+  raw: string,
+): { severity: "low" | "medium" | "high" | "critical"; note?: string } | { error: string } {
+  const plain = raw.replace(/\*\*/g, "").trim();
+  const leading = plain.match(/^(low|medium|high|critical)\b(.*)$/i);
+  if (leading) {
+    const note = cleanNote(leading[2]!);
+    return {
+      severity: leading[1]!.toLowerCase() as "low" | "medium" | "high" | "critical",
+      ...(note ? { note } : {}),
+    };
+  }
+
+  const severity = /\bcritical\b/i.test(plain)
+    ? "critical"
+    : /\bhigh\b/i.test(plain)
+      ? "high"
+      : /\b(?:medium|moderate)\b/i.test(plain)
+        ? "medium"
+        : /\blow\b/i.test(plain)
+          ? "low"
+          : null;
+  if (!severity) return { error: `unsupported severity '${raw}'` };
+  return { severity, note: plain };
+}
+
 function serializeFields(fields: Record<string, unknown>): string {
   return FIELD_ORDER.filter((key) => Object.hasOwn(fields, key))
     .map((key) =>
@@ -178,25 +209,25 @@ function valuesEqual(left: unknown, right: unknown): boolean {
  */
 export function convertLifecycleFrontmatter(content: string, kind: DocKind): FrontmatterConversion {
   const parsed = parseFrontmatter(content);
-  if (typeof parsed.data.status === "string" && parsed.data.status.trim()) {
-    return {
-      status: "skipped",
-      fields: [],
-      message: "already has YAML status",
-    };
-  }
-
   const boldFields = openingFields(parsed.body);
   const statusFields = boldFields.filter((field) => field.label === "status");
-  if (statusFields.length === 0) {
+  const hasYamlStatus = typeof parsed.data.status === "string" && parsed.data.status.trim();
+  if (statusFields.length === 0 && !hasYamlStatus) {
     const variant = parsed.body
       .split("\n")
       .slice(0, 40)
-      .find((line) => /^\*\*Status\*\*:/i.test(line));
+      .find((line) => /^\*\*Status/i.test(line));
     return {
       status: variant ? "error" : "skipped",
       fields: [],
       message: variant ? `unsupported bold status shape '${variant.trim()}'` : "no opening status",
+    };
+  }
+  if (statusFields.length === 0 && hasYamlStatus && boldFields.length === 0) {
+    return {
+      status: "skipped",
+      fields: [],
+      message: "already has YAML status",
     };
   }
   if (statusFields.length > 1) {
@@ -210,6 +241,7 @@ export function convertLifecycleFrontmatter(content: string, kind: DocKind): Fro
   const migrated: Record<string, unknown> = {};
   const notes: string[] = [];
   const remove = new Set<number>();
+  const hasOpeningDate = boldFields.some((field) => field.label === "date");
 
   for (const field of boldFields) {
     const key = FIELD_KEYS[field.label]!;
@@ -218,13 +250,31 @@ export function convertLifecycleFrontmatter(content: string, kind: DocKind): Fro
       const split = splitStatus(field.value, kind);
       if ("error" in split) return { status: "error", fields: [], message: split.error };
       value = split.status;
-      if (split.note) notes.push(split.note);
+      if (
+        split.note &&
+        /^\d{4}-\d{2}-\d{2}$/.test(split.note) &&
+        kind === "plan" &&
+        split.status === "proposed" &&
+        !hasOpeningDate &&
+        !Object.hasOwn(parsed.data, "date")
+      ) {
+        migrated.date = split.note;
+      } else if (split.note) {
+        notes.push(split.note);
+      }
     } else if (key === "date" || key === "last_updated" || key === "resolved") {
       const date = leadingDate(field.value);
       value = date.value;
       if (date.note) notes.push(`${key}: ${date.note}`);
     } else if (key === "prerequisites" && field.value.toLowerCase() === "none") {
       value = [];
+    } else if (key === "severity") {
+      const severity = splitSeverity(field.value);
+      if ("error" in severity) {
+        return { status: "error", fields: [], message: severity.error };
+      }
+      value = severity.severity;
+      if (severity.note) notes.push(`severity: ${severity.note}`);
     }
 
     if (Object.hasOwn(migrated, key)) {

@@ -86,6 +86,51 @@ describe("convertLifecycleFrontmatter", () => {
     expect(planData.status_note).toBe("implementation shipped");
   });
 
+  test("infers a missing date from a date-only status tail and normalizes severity", () => {
+    const result = convertLifecycleFrontmatter(
+      ["# Plan", "", "**Status:** Proposed — 2026-07-13", "", "## Next"].join("\n"),
+      "plan",
+    );
+    const planData = parseFrontmatter(result.content!).data;
+    expect(planData.status).toBe("proposed");
+    expect(planData.date).toBe("2026-07-13");
+    expect(planData.status_note).toBeUndefined();
+
+    const issue = convertLifecycleFrontmatter(
+      "# Issue\n\n**Status:** open\n**Severity:** high (customer replies were lost)\n",
+      "issue",
+    );
+    const issueData = parseFrontmatter(issue.content!).data;
+    expect(issueData.severity).toBe("high");
+    expect(issueData.status_note).toBe("severity: customer replies were lost");
+
+    const proseSeverity = convertLifecycleFrontmatter(
+      "# Issue\n\n**Status:** open\n**Severity:** data quality — low to moderate. No outage.\n",
+      "issue",
+    );
+    const proseData = parseFrontmatter(proseSeverity.content!).data;
+    expect(proseData.severity).toBe("medium");
+    expect(proseData.status_note).toBe("severity: data quality — low to moderate. No outage.");
+  });
+
+  test("does not treat completion dates as authored dates", () => {
+    const issue = convertLifecycleFrontmatter(
+      "# Issue\n\n**Status:** resolved — 2026-07-13\n",
+      "issue",
+    );
+    const issueData = parseFrontmatter(issue.content!).data;
+    expect(issueData.date).toBeUndefined();
+    expect(issueData.status_note).toBe("2026-07-13");
+
+    const plan = convertLifecycleFrontmatter(
+      "# Plan\n\n**Status:** shipped — 2026-07-13\n",
+      "plan",
+    );
+    const planData = parseFrontmatter(plan.content!).data;
+    expect(planData.date).toBeUndefined();
+    expect(planData.status_note).toBe("2026-07-13");
+  });
+
   test("merges into existing YAML without dropping extra keys", () => {
     const result = convertLifecycleFrontmatter(
       [
@@ -128,25 +173,55 @@ describe("convertLifecycleFrontmatter", () => {
   });
 
   test("skips files that already have YAML status", () => {
-    const result = convertLifecycleFrontmatter(
-      "---\nstatus: proposed\n---\n# Plan\n\n**Status:** in-progress\n",
-      "plan",
-    );
+    const result = convertLifecycleFrontmatter("---\nstatus: proposed\n---\n# Plan\n", "plan");
     expect(result.status).toBe("skipped");
     expect(result.message).toBe("already has YAML status");
   });
 
-  test("fails unsupported statuses and malformed bold shapes", () => {
+  test("repairs duplicate legacy metadata after YAML migration", () => {
+    const result = convertLifecycleFrontmatter(
+      [
+        "---",
+        "status: resolved",
+        "---",
+        "# Issue",
+        "",
+        "**Status**: Resolved",
+        "**Date Identified**: 2026-03-05",
+        "**Date Resolved**: 2026-03-06",
+        "**Impact**: Incorrect report totals",
+      ].join("\n"),
+      "issue",
+    );
+    const parsed = parseFrontmatter(result.content!);
+    expect(parsed.data).toEqual({
+      status: "resolved",
+      date: "2026-03-05",
+      resolved: "2026-03-06",
+      affected: "Incorrect report totals",
+    });
+    expect(parsed.body).not.toContain("**Status**:");
+    expect(parsed.body).not.toContain("**Impact**:");
+  });
+
+  test("fails unsupported statuses", () => {
     expect(convertLifecycleFrontmatter("# Plan\n\n**Status:** council-approved\n", "plan")).toEqual(
       expect.objectContaining({
         status: "error",
         message: "unsupported plan status 'council-approved'",
       }),
     );
-    expect(convertLifecycleFrontmatter("# Plan\n\n**Status**: proposed\n", "plan")).toEqual(
+  });
+
+  test("fails unsupported severity instead of emitting free text", () => {
+    const result = convertLifecycleFrontmatter(
+      "# Issue\n\n**Status:** open\n**Severity:** needs review\n",
+      "issue",
+    );
+    expect(result).toEqual(
       expect.objectContaining({
         status: "error",
-        message: "unsupported bold status shape '**Status**: proposed'",
+        message: "unsupported severity 'needs review'",
       }),
     );
   });
