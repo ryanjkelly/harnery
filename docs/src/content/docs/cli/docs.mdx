@@ -1,0 +1,47 @@
+---
+title: harn docs
+description: Inspect documentation freshness, metadata, lifecycle state, and repository conventions.
+sidebar:
+  order: 12
+---
+
+```bash
+harn docs
+harn docs meta <path> [key] [--json]
+harn docs lint [--fast] [--repo <name>]
+harn docs sweep [--repo <name>]
+harn docs index [--dry-run] [--repo <name>]
+```
+
+The `docs` command group gives an embedding host one documentation maintenance
+surface. The host supplies its repository root, submodule list, exclusions, and
+any project-specific root allowlist through `HarneryProgramContext`.
+
+## Read frontmatter
+
+`docs meta` reads a markdown file's leading YAML block:
+
+```bash
+harn docs meta docs/plans/cache-redesign.md
+# {"status":"in-progress","date":"2026-07-13","tags":["cache"]}
+
+harn docs meta docs/plans/cache-redesign.md status
+# in-progress
+```
+
+Relative paths resolve from the configured repository root. Absolute paths also
+work. The command exits nonzero when the file, frontmatter block, or requested
+top-level key is missing. A requested scalar prints plainly in an interactive
+terminal; piped output and `--json` use JSON.
+
+## Other subcommands
+
+- `docs lint` checks directory layout, filenames, and lifecycle status.
+  `--fast` skips content checks for pre-commit use.
+- `docs sweep` reports stalled plans, cold issues and handoffs, stale topic
+  docs, and unverified runbooks.
+- `docs index` rebuilds marker-delimited audit and issue index tables.
+- Bare `docs` reports markdown freshness from Git history.
+
+During a lifecycle-frontmatter migration, lint, sweep, and index prefer YAML
+`status:` and fall back to a legacy `**Status:**` line.

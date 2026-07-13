@@ -3,6 +3,7 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { initDocsContext as initDocs, scanDocs } from "../lib/docs.ts";
 import { initDocsContext as initDocsIndex, runIndex } from "../lib/docs-index.ts";
 import { initDocsContext as initDocsLint, runLint } from "../lib/docs-lint.ts";
+import { readDocsMetadata, readDocsMetadataKey } from "../lib/docs-meta.ts";
 import {
   countColdHandoffs,
   initDocsContext as initDocsSweep,
@@ -34,7 +35,7 @@ export function registerDocsCommand(
   emit = emitParam;
   const docs = program
     .command("docs")
-    .description("Documentation tooling: freshness report, lint, sweep, index")
+    .description("Documentation tooling: freshness report, metadata, lint, sweep, index")
     // Options on the group itself back the default (no-subcommand) behavior.
     // See handleDocs below.
     .option("--stale <days>", "Only show files not committed in N+ days", Number.parseInt)
@@ -59,6 +60,22 @@ export function registerDocsCommand(
         }
       },
     );
+
+  docs
+    .command("meta")
+    .description("Read YAML frontmatter from a documentation file")
+    .argument("<path>", "Markdown file path, relative to the project root or absolute")
+    .argument("[key]", "Optional top-level frontmatter key")
+    .option("--json", "Emit a requested key as JSON even in an interactive terminal")
+    .action(async (path: string, key: string | undefined, opts: { json?: boolean }) => {
+      try {
+        ensureContext(context);
+        handleMeta(context!.repoRoot!, path, key, opts);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        emit.error({ code: "docs_error", message: msg });
+      }
+    });
 
   docs
     .command("lint")
@@ -109,6 +126,28 @@ export function registerDocsCommand(
         emit.error({ code: "docs_error", message: msg });
       }
     });
+}
+
+// --- `harn docs meta` ---
+
+function handleMeta(
+  repoRoot: string,
+  path: string,
+  key: string | undefined,
+  opts: { json?: boolean },
+): void {
+  const metadata = readDocsMetadata(repoRoot, path).data;
+  if (!key) {
+    emit.data(metadata);
+    return;
+  }
+
+  const value = readDocsMetadataKey(metadata, key, path);
+  if (opts.json || !process.stdout.isTTY || typeof value === "object") {
+    emit.data(value);
+    return;
+  }
+  emit.text(String(value));
 }
 
 // --- Default `harn docs` (freshness report) ---
