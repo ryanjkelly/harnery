@@ -411,9 +411,8 @@ describe("enrichFromApi — cursor usage (session token)", () => {
       apiPercentUsed: 67.6,
       firstPartyPercentUsed: 0.7,
       includedLimitCents: 7000,
-      spendLimitCents: 500,
-      spendUsedCents: 0,
     });
+    expect(cu.spend).toEqual({ label: "On-demand", usedCents: 0, limitCents: 500 });
     // No API key configured, so the Cloud Agent path stays untouched.
     expect(cu.api).toBeNull();
     expect(JSON.stringify(cu)).not.toContain(token);
@@ -440,6 +439,127 @@ describe("enrichFromApi — cursor usage (session token)", () => {
     const cu = byTool(report.tools, "cursor");
     expect(cu.usage).toBeNull();
     expect(cu.notes.some((n) => n.includes("usage unavailable"))).toBe(true);
+  });
+});
+
+describe("enrichFromApi — claude-code usage (oauth token)", () => {
+  const origFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  /** Write ~/.claude/.credentials.json with the given token + expiry offsets (ms from NOW). */
+  function seedClaude(token: string, accessInMs: number, refreshInMs: number) {
+    const dir = path.join(home, ".claude");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: token,
+          expiresAt: NOW + accessInMs,
+          refreshTokenExpiresAt: NOW + refreshInMs,
+        },
+      }),
+    );
+  }
+
+  test("populates quota windows + extra-usage spend from oauth/usage; token never surfaces", async () => {
+    const token = "sk-ant-oat-TESTSECRET";
+    seedClaude(token, 3_600_000, 30 * 86_400_000);
+    let auth: string | undefined;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith("/api/oauth/usage")) {
+        auth = ((init?.headers ?? {}) as Record<string, string>).Authorization;
+        return new Response(
+          JSON.stringify({
+            limits: [
+              { kind: "session", percent: 87, resets_at: "2026-07-13T10:30:00+00:00", scope: null },
+              { kind: "weekly_all", percent: 27, resets_at: "2026-07-18T07:00:00+00:00", scope: null },
+              {
+                kind: "weekly_scoped",
+                percent: 37,
+                resets_at: "2026-07-18T07:00:00+00:00",
+                scope: { model: { display_name: "Fable" } },
+              },
+            ],
+            spend: {
+              used: { amount_minor: 97, exponent: 2 },
+              limit: { amount_minor: 500, exponent: 2 },
+              enabled: true,
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const report = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(report, { home });
+    const cc = byTool(report.tools, "claude-code");
+    expect(auth).toBe(`Bearer ${token}`);
+    expect(cc.quota).toEqual([
+      { window: "5h", usedPercent: 87, resetsAt: new Date("2026-07-13T10:30:00+00:00").toISOString() },
+      { window: "weekly", usedPercent: 27, resetsAt: new Date("2026-07-18T07:00:00+00:00").toISOString() },
+      {
+        window: "weekly · Fable",
+        usedPercent: 37,
+        resetsAt: new Date("2026-07-18T07:00:00+00:00").toISOString(),
+      },
+    ]);
+    expect(cc.spend).toEqual({ label: "Extra usage", usedCents: 97, limitCents: 500 });
+    // The pure-local "server-side" caveat is dropped once quota is filled.
+    expect(cc.notes.some((n) => n.includes("server-side via /usage"))).toBe(false);
+    expect(JSON.stringify(cc)).not.toContain(token);
+  });
+
+  test("expired token is skipped (no call, quota stays server-side)", async () => {
+    seedClaude("sk-ant-oat-DEAD", -10_000, -10_000);
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const report = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(report, { home });
+    const cc = byTool(report.tools, "claude-code");
+    expect(called).toBe(false);
+    expect(cc.quota).toBeNull();
+    expect(cc.notes.some((n) => n.includes("server-side via /usage"))).toBe(true);
+  });
+
+  test("a rate-limited (429) usage fetch degrades to a note, never throws", async () => {
+    seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
+    globalThis.fetch = (async () =>
+      new Response('{"error":{"type":"rate_limit_error"}}', { status: 429 })) as unknown as typeof fetch;
+    const report = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(report, { home });
+    const cc = byTool(report.tools, "claude-code");
+    expect(cc.quota).toBeNull();
+    expect(cc.notes.some((n) => n.includes("live usage unavailable"))).toBe(true);
+  });
+
+  test("a fresh cache short-circuits the network (protects the rate-limited endpoint)", async () => {
+    seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(
+        JSON.stringify({
+          limits: [{ kind: "session", percent: 42, resets_at: "2026-07-13T10:30:00+00:00" }],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    // First enrichment fetches and caches; the second must hit the cache, not the network.
+    const r1 = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(r1, { home });
+    const r2 = readDevtools({ home, now: NOW, only: ["claude-code"] });
+    await enrichFromApi(r2, { home });
+    expect(calls).toBe(1);
+    expect(byTool(r2.tools, "claude-code").quota?.[0]?.usedPercent).toBe(42);
   });
 });
 

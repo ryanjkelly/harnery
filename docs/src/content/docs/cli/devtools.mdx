@@ -19,13 +19,15 @@ inspected only for their non-secret claims (email, plan, expiry); the token
 strings themselves are never printed. A signal a tool keeps server-side surfaces
 as blank with a note rather than a guess.
 
-One opt-in enrichment reaches the network: for Cursor, `devtools` reads the IDE's
-own session token from `state.vscdb` and calls cursor.com's dashboard API — the
-same request Cursor's UI makes for its Spending page — to fill the billing-cycle
-countdown and total/API/first-party percent-used. It's the user's own token
-reading the user's own data, and `--no-api` turns it off.
+Opt-in enrichments reach the network, each authenticating with the credential
+the tool already stores on disk — the user's own token reading the user's own
+data. For Claude Code, `devtools` reads the OAuth token and calls the same
+`/api/oauth/usage` endpoint the `/usage` command uses, for the 5h + weekly
+windows and extra-usage spend. For Cursor, it reads the IDE session token and
+calls cursor.com's dashboard API (the Spending-page request) for the billing
+cycle + percent-used. `--no-api` turns all of it off.
 
-## What each tool exposes locally
+## What each tool exposes
 
 | Signal | Claude Code | Codex | Cursor |
 | --- | --- | --- | --- |
@@ -34,21 +36,26 @@ reading the user's own data, and `--no-api` turns it off.
 | Plan / tier | ✅ seat tier | ✅ live plan (rate-limit snapshot) | ✅ Stripe membership + status |
 | Auth expiry | ✅ | ✅ | ❌ |
 | Session count | ✅ transcripts | ✅ threads (`state_5.sqlite`) | ✅ chats (`composerHeaders`) |
-| Quota / reset windows | ❌ (live via `/usage`) | ✅ 5h + weekly, from `token_count` | ✅ billing cycle, via session token |
-| Percent used | ❌ (live via `/usage`) | ✅ 5h + weekly | ✅ total / API / first-party |
+| Quota / reset windows | ✅ 5h + weekly, via oauth/usage | ✅ 5h + weekly, from `token_count` | ✅ billing cycle, via session token |
+| Percent used | ✅ session + weekly | ✅ 5h + weekly | ✅ total / API / first-party |
+| Overage spend | ✅ extra-usage credits | ❌ | ✅ on-demand |
 | Token totals (`--usage`) | ✅ transcript scan | ✅ best-effort | ❌ server-side |
 
-Cursor's account, plan (`stripeMembershipType`), and subscription status come
-from its IDE state DB (`state.vscdb`, a SQLite file). That read needs a SQLite
-engine — under Bun (`bun:sqlite`) it works; on a plain-Node host it degrades to
-login-presence only. On WSL the DB lives on the Windows side and is usually
-WAL-locked while Cursor runs, so the reader opens it immutable rather than copying.
+Login, plan, tier, auth expiry, and session counts all come from files on disk.
+The quota windows, percent-used, and overage spend for Claude Code and Cursor
+are the enrichment's doing — they live server-side and are fetched with the
+local token. Cursor's `state.vscdb` read needs a SQLite engine (Bun's
+`bun:sqlite`); on a plain-Node host it degrades to login-presence only, and on
+WSL the reader opens the Windows-side DB immutable rather than copying it.
 
-Cursor's **usage + billing** (percent used, billing-cycle end, on-demand spend
-cap) are not on disk — they live on `cursor.com`. The enrichment step fetches
-them with the IDE's own session token, so the card still shows them without any
-key to mint. Two gaps remain: **exact token totals** aren't exposed by that
-endpoint, and Claude Code's own quota is still live-only (via `/usage`).
+The enrichment results are cached under `~/.cache/harnery/devtools/` for two
+minutes. That is not just a speed win: Anthropic's `oauth/usage` endpoint is
+sharply rate-limited and Claude Code's own Account & Usage panel hits it too, so
+an uncached, chatty dashboard would starve the user's own client. A rate-limited
+fetch degrades to a note and is never cached, so the next load retries cleanly.
+
+The remaining gap: **exact token totals** aren't exposed by either usage
+endpoint (only percentages and dollar spend).
 
 ## Options
 
@@ -57,22 +64,30 @@ endpoint, and Claude Code's own quota is still live-only (via `/usage`).
 | `--tool <name>` | Restrict to a tool (repeatable): `claude-code`, `codex`, `cursor`. Default: all three. |
 | `--usage` | Also scan local transcripts for approximate token totals. Opt-in because transcripts can be gigabytes. |
 | `--window-days <n>` | With `--usage`, only count transcripts modified within N days (default 7). |
-| `--no-api` | Skip the Cursor API enrichment even when a key is configured (stay fully local). |
+| `--no-api` | Skip every network enrichment (Claude + Cursor); stay fully local. |
 | `--format <type>` | `table` (default) or `json`. |
 
-## Cursor enrichment
+## Network enrichment
 
-Two independent network calls run during enrichment (both skipped by `--no-api`):
+All of the following are skipped by `--no-api`, cached for two minutes, and
+degrade to a note on any failure (never throw).
 
-**Usage + billing (no key needed).** `devtools` reads Cursor's own session token
-from `state.vscdb` and calls `cursor.com/api/dashboard/get-current-period-usage`
-— the same request the Spending page makes — authenticating with the WorkOS
-session cookie the IDE already holds. The Cursor entry gains `usage: { cycleStart,
-cycleEnd, totalPercentUsed, apiPercentUsed, firstPartyPercentUsed,
-includedLimitCents, spendLimitCents, spendUsedCents }`. An expired token is
-skipped rather than called.
+**Claude Code usage (no key needed).** Reads the OAuth token from
+`~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` —
+the endpoint the `/usage` command uses — with `Authorization: Bearer` plus the
+`anthropic-beta: oauth-2025-04-20` header. Fills `quota[]` (the 5h session +
+weekly + model-scoped weekly windows) and `spend` (extra-usage credits). An
+expired token is skipped. That endpoint is rate-limited and shared with Claude
+Code's own usage panel, which is exactly why the result is cached.
 
-**Cloud Agent activity (needs an API key).** If you store a Cursor API key, the
+**Cursor usage + billing (no key needed).** Reads Cursor's session token from
+`state.vscdb` and calls `cursor.com/api/dashboard/get-current-period-usage` —
+the Spending-page request — authenticating with the WorkOS session cookie the
+IDE already holds. Fills `usage: { cycleStart, cycleEnd, totalPercentUsed,
+apiPercentUsed, firstPartyPercentUsed, includedLimitCents }` and `spend`
+(on-demand). An expired token is skipped.
+
+**Cursor Cloud Agents (needs an API key).** If you store a Cursor API key, the
 entry also gains `api: { ok, keyName, cloudAgents }` from the public `/v0` API:
 
 ```
@@ -96,14 +111,17 @@ harn devtools
 ```
 
 ```
-── codex ───────────────────────────────────
+── claude-code ─────────────────────────────
    logged in    yes
    account      dev@example.com
-   plan         team
-   auth expires 2026-07-07T08:28:13Z
-   sessions     36
-   quota (5h)   21% used · resets 2026-05-09T09:24:06Z
-   quota (weekly)   43% used · resets 2026-05-12T06:01:50Z
+   plan         team_tier_1
+   rate tier    default_claude_max_5x
+   auth expires 2026-07-13T13:37:20Z
+   sessions     436
+   quota (5h)   92% used · resets 2026-07-13T10:29:59Z
+   quota (weekly)   27% used · resets 2026-07-18T06:59:59Z
+   quota (weekly · Fable)   37% used · resets 2026-07-18T06:59:59Z
+   extra usage  $0.97 / $5.00
 ```
 
 Token totals for the last day, JSON, one tool:
@@ -115,4 +133,5 @@ harn devtools --tool claude-code --usage --window-days 1 --format json
 The JSON envelope is `{ ok, generatedAt, windowDays, tools: ToolStatus[] }`,
 where each `ToolStatus` carries `installed`, `loggedIn`, `account`, `plan`,
 `rateLimitTier`, `authExpiresAt`, `sessions`, `lastActivity`, `quota[]`,
-`tokensUsed`, `api`, `usage` (Cursor billing/percent-used), and `notes[]`.
+`tokensUsed`, `api`, `usage` (Cursor billing/percent-used), `spend` (overage),
+and `notes[]`.

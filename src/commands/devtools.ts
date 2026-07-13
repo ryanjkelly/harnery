@@ -196,11 +196,10 @@ function renderTable(tools: ToolStatus[]): string {
         pct("first-party", u.firstPartyPercentUsed),
       ].filter((s): s is string => s != null);
       if (bars.length) lines.push(`   usage        ${bars.join(" · ")}`);
-      if (u.spendLimitCents != null) {
-        lines.push(
-          `   on-demand    ${fmtUsd(u.spendUsedCents ?? 0)} / ${fmtUsd(u.spendLimitCents)}`,
-        );
-      }
+    }
+    if (t.spend?.limitCents != null) {
+      const label = t.spend.label.toLowerCase().padEnd(12).slice(0, 12);
+      lines.push(`   ${label} ${fmtUsd(t.spend.usedCents ?? 0)} / ${fmtUsd(t.spend.limitCents)}`);
     }
     if (t.api?.ok && t.api.cloudAgents) {
       lines.push(`   cloud agents ${t.api.cloudAgents.total} (${t.api.cloudAgents.active} active)`);

@@ -1,11 +1,13 @@
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,10 +69,19 @@ export interface CursorUsage {
   firstPartyPercentUsed: number | null;
   /** Included usage allowance in cents (e.g. 7000 = $70). */
   includedLimitCents: number | null;
-  /** On-demand spend cap in cents (e.g. 500 = $5), null when unset/unlimited. */
-  spendLimitCents: number | null;
-  /** On-demand spend consumed this cycle in cents. */
-  spendUsedCents: number | null;
+}
+
+/**
+ * Overage / on-demand dollar spend against a cap — Cursor's on-demand usage and
+ * Claude's extra-usage credits are the same idea. Cents are raw (÷100 for USD).
+ */
+export interface SpendStatus {
+  /** Human label for what this spend covers (e.g. "On-demand", "Extra usage"). */
+  label: string;
+  /** Amount spent this cycle in cents. */
+  usedCents: number | null;
+  /** Spend cap in cents, or null when unset/unlimited. */
+  limitCents: number | null;
 }
 
 export interface ToolStatus {
@@ -110,6 +121,12 @@ export interface ToolStatus {
    * token is stale, or the tool isn't Cursor.
    */
   usage: CursorUsage | null;
+  /**
+   * Overage / on-demand dollar spend, populated by `enrichFromApi` (Cursor's
+   * on-demand, Claude's extra-usage credits). `null` when no enrichment ran or
+   * the plan has no overage concept.
+   */
+  spend: SpendStatus | null;
   /** Caveats about what is and isn't derivable locally for this tool. */
   notes: string[];
 }
@@ -136,19 +153,21 @@ export interface ReadDevtoolsOpts {
 const ALL_TOOLS: readonly DevtoolName[] = ["claude-code", "codex", "cursor"];
 
 // ---------------------------------------------------------------------------
-// Cursor enrichment (opt-in network)
+// Network enrichment (opt-in)
 //
-// `readDevtools` stays pure-local. `enrichFromApi` adds two Cursor signals over
-// the network:
+// `readDevtools` stays pure-local. `enrichFromApi` adds live signals over the
+// network, each authenticating with the credential the tool already stores on
+// disk — the user's own token reading the user's own data:
 //
-//   1. Usage + billing (NO key needed) — reads the IDE's own session token from
-//      state.vscdb and calls cursor.com's dashboard API, the same request the
-//      Cursor UI makes for its Spending page. This yields the billing-cycle
-//      countdown and total/API/first-party percent-used. It's the user's own
-//      token reading the user's own data.
-//   2. Cloud Agent activity (needs an API key) — the public /v0 API. Individual
-//      Cursor plans expose no usage/billing there (that's Team-only), so the key
-//      path only adds Cloud Agent runs.
+//   • Claude Code — reads the OAuth token from ~/.claude/.credentials.json and
+//     calls api.anthropic.com/api/oauth/usage (the endpoint `/usage` uses) for
+//     the 5h + weekly rate-limit windows and extra-usage spend.
+//   • Cursor usage + billing (NO key needed) — reads the IDE's session token
+//     from state.vscdb and calls cursor.com's dashboard API (the Spending page
+//     request) for the billing cycle + total/API/first-party percent-used.
+//   • Cursor Cloud Agents (needs an API key) — the public /v0 API. Individual
+//     Cursor plans expose no usage/billing there (Team-only), so the key path
+//     only adds Cloud Agent runs.
 // ---------------------------------------------------------------------------
 
 /** Path of the machine-local Cursor API key file (honors XDG_CONFIG_HOME). */
@@ -174,28 +193,64 @@ export function resolveCursorApiKey(): string | null {
 const CURSOR_AGENT_INACTIVE = new Set(["EXPIRED", "FINISHED", "DELETED", "FAILED", "CANCELLED"]);
 
 /**
- * Enrich a report's Cursor entry over the network: usage + billing from the
- * IDE's own session token (no key), and Cloud Agent activity from a configured
- * API key. Best-effort and network-guarded: every failure degrades to a note,
- * never throws. No-op when Cursor isn't in the report.
+ * Enrich a report's entries over the network with live usage each tool keeps
+ * server-side, authenticating with the credential already on disk. Best-effort
+ * and network-guarded: every failure degrades to a note, never throws. No-op
+ * for a tool that isn't installed / present in the report.
  */
 export async function enrichFromApi(
   report: DevtoolsReport,
-  opts: { cursorKey?: string | null; timeoutMs?: number; home?: string } = {},
+  opts: {
+    cursorKey?: string | null;
+    timeoutMs?: number;
+    home?: string;
+    /** Cache TTL for the usage endpoints (ms). 0 disables caching. Default 120s. */
+    cacheTtlMs?: number;
+  } = {},
 ): Promise<DevtoolsReport> {
-  const cursor = report.tools.find((t) => t.tool === "cursor");
-  if (!cursor?.installed) return report;
+  const home = opts.home ?? homedir();
   const timeoutMs = opts.timeoutMs ?? 12_000;
+  const cacheTtlMs = opts.cacheTtlMs ?? 120_000;
 
-  // 1. Usage + billing from the IDE's own session token (no API key needed).
-  const auth = readCursorSessionAuth(opts.home ?? homedir());
-  if (auth) {
-    const usage = await fetchCursorUsage(auth, timeoutMs);
-    if (usage) cursor.usage = usage;
-    else cursor.notes.push("Cursor usage unavailable (session token may be stale — reopen Cursor)");
+  // Claude Code — 5h + weekly windows and extra-usage spend from oauth/usage.
+  // Cached, because that endpoint is aggressively rate-limited and Claude Code's
+  // OWN "Account & Usage" panel hits it too — a chatty dashboard would starve it.
+  const claude = report.tools.find((t) => t.tool === "claude-code");
+  if (claude?.installed) {
+    const token = readClaudeOauthToken(home);
+    if (token) {
+      const live = await cachedUsage(home, "claude-usage", cacheTtlMs, () =>
+        fetchClaudeUsage(token, timeoutMs),
+      );
+      if (live) {
+        claude.quota = live.quota;
+        claude.spend = live.spend;
+        // Drop the pure-local "quota is server-side" caveat now that it's filled.
+        claude.notes = claude.notes.filter((n) => !n.includes("server-side via /usage"));
+      } else {
+        claude.notes.push("live usage unavailable (rate-limited or token stale; retries shortly)");
+      }
+    }
   }
 
-  // 2. Cloud Agent activity from a configured API key (optional, separate auth).
+  const cursor = report.tools.find((t) => t.tool === "cursor");
+  if (!cursor?.installed) return report;
+
+  // Cursor usage + billing from the IDE's own session token (no API key needed).
+  const auth = readCursorSessionAuth(home);
+  if (auth) {
+    const usage = await cachedUsage(home, "cursor-usage", cacheTtlMs, () =>
+      fetchCursorUsage(auth, timeoutMs),
+    );
+    if (usage) {
+      cursor.usage = usage.usage;
+      cursor.spend = usage.spend;
+    } else {
+      cursor.notes.push("Cursor usage unavailable (session token may be stale — reopen Cursor)");
+    }
+  }
+
+  // Cursor Cloud Agent activity from a configured API key (optional, separate auth).
   const key = opts.cursorKey !== undefined ? opts.cursorKey : resolveCursorApiKey();
   if (key) {
     cursor.api = await fetchCursorApi(key, timeoutMs);
@@ -205,6 +260,162 @@ export async function enrichFromApi(
     }
   }
   return report;
+}
+
+/**
+ * Wrap a usage fetch in a short on-disk cache under `<home>/.cache/harnery/
+ * devtools/<name>.json`. A fresh cached value short-circuits the network call;
+ * only successful (non-null) fetches are written, so a rate-limited failure
+ * neither poisons the cache nor blocks the next attempt. Cache is best-effort —
+ * any read/write error falls back to a live fetch. `ttlMs <= 0` disables it.
+ */
+async function cachedUsage<T>(
+  home: string,
+  name: string,
+  ttlMs: number,
+  fetcher: () => Promise<T | null>,
+): Promise<T | null> {
+  const now = Date.now();
+  const file = join(home, ".cache", "harnery", "devtools", `${name}.json`);
+  if (ttlMs > 0) {
+    try {
+      const entry = JSON.parse(readFileSync(file, "utf8")) as { at?: number; data?: T };
+      if (entry.at != null && now - entry.at < ttlMs && entry.data != null) return entry.data;
+    } catch {
+      // no cache / unreadable — fall through to fetch
+    }
+  }
+  const fresh = await fetcher();
+  if (fresh != null && ttlMs > 0) {
+    try {
+      mkdirSync(join(home, ".cache", "harnery", "devtools"), { recursive: true });
+      writeFileSync(file, JSON.stringify({ at: now, data: fresh }));
+    } catch {
+      // cache write is best-effort
+    }
+  }
+  return fresh;
+}
+
+/**
+ * Read Claude Code's OAuth access token from ~/.claude/.credentials.json.
+ * Returns null when absent or expired (both the access and refresh windows are
+ * past, so a call would 401). The token is used only to build the request and
+ * is never stored on the report.
+ */
+function readClaudeOauthToken(home: string): string | null {
+  const oauth = readJson<Record<string, unknown>>(join(home, ".claude", ".credentials.json"))
+    ?.claudeAiOauth as Record<string, unknown> | undefined;
+  const token = strOr(oauth?.accessToken);
+  if (!token) return null;
+  const accessExp = numOr(oauth?.expiresAt);
+  const refreshExp = numOr(oauth?.refreshTokenExpiresAt);
+  // If both windows are past, the token is dead — skip the doomed call.
+  if ((refreshExp ?? accessExp ?? Number.POSITIVE_INFINITY) < Date.now()) return null;
+  return token;
+}
+
+/** Statuses in the oauth/usage `limits[]` array, mapped to quota-window labels. */
+const CLAUDE_LIMIT_LABELS: Record<string, string> = {
+  session: "5h",
+  weekly_all: "weekly",
+  weekly_scoped: "weekly",
+};
+
+/**
+ * Fetch Claude Code's live usage from api.anthropic.com/api/oauth/usage — the
+ * same endpoint the `/usage` command hits — with the local OAuth token. Returns
+ * the 5h + weekly rate-limit windows and extra-usage spend, or null on failure.
+ */
+async function fetchClaudeUsage(
+  token: string,
+  timeoutMs: number,
+): Promise<{ quota: QuotaWindow[]; spend: SpendStatus | null } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "anthropic-version": "2023-06-01",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json()) as {
+      limits?: Array<{
+        kind?: string;
+        percent?: number;
+        resets_at?: string;
+        scope?: { model?: { display_name?: string } } | null;
+      }>;
+      five_hour?: { utilization?: number; resets_at?: string };
+      seven_day?: { utilization?: number; resets_at?: string };
+      spend?: {
+        used?: { amount_minor?: number; exponent?: number };
+        limit?: { amount_minor?: number; exponent?: number };
+        enabled?: boolean;
+      };
+    };
+
+    // Prefer the structured limits[] array (carries model-scoped windows); fall
+    // back to the flat five_hour / seven_day pair.
+    let quota: QuotaWindow[] = [];
+    if (Array.isArray(raw.limits) && raw.limits.length) {
+      quota = raw.limits.map((l) => {
+        const model = strOr(l.scope?.model?.display_name);
+        const base = l.kind ? (CLAUDE_LIMIT_LABELS[l.kind] ?? l.kind) : "quota";
+        return {
+          window: model ? `${base} · ${model}` : base,
+          usedPercent: roundPct(l.percent),
+          resetsAt: isoOrNull(l.resets_at),
+        };
+      });
+    } else {
+      const flat: Array<[string, { utilization?: number; resets_at?: string } | undefined]> = [
+        ["5h", raw.five_hour],
+        ["weekly", raw.seven_day],
+      ];
+      quota = flat
+        .filter(([, w]) => w?.utilization != null)
+        .map(([label, w]) => ({
+          window: label,
+          usedPercent: roundPct(w?.utilization),
+          resetsAt: isoOrNull(w?.resets_at),
+        }));
+    }
+
+    let spend: SpendStatus | null = null;
+    const sp = raw.spend;
+    if (sp?.enabled && (minorToCents(sp.used) != null || minorToCents(sp.limit) != null)) {
+      spend = {
+        label: "Extra usage",
+        usedCents: minorToCents(sp.used),
+        limitCents: minorToCents(sp.limit),
+      };
+    }
+    return { quota, spend };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Convert an {amount_minor, exponent} money value to cents (exponent 2 = already cents). */
+function minorToCents(m: { amount_minor?: number; exponent?: number } | undefined): number | null {
+  const minor = numOr(m?.amount_minor);
+  if (minor == null) return null;
+  const exp = numOr(m?.exponent) ?? 2;
+  return Math.round(minor * 10 ** (2 - exp));
+}
+
+/** Normalize an ISO-ish timestamp (may carry a +00:00 offset) to a Z-suffixed ISO, or null. */
+function isoOrNull(s: string | undefined): string | null {
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
 }
 
 interface CursorSessionAuth {
@@ -244,7 +455,7 @@ function readCursorSessionAuth(home: string): CursorSessionAuth | null {
 async function fetchCursorUsage(
   auth: CursorSessionAuth,
   timeoutMs: number,
-): Promise<CursorUsage | null> {
+): Promise<{ usage: CursorUsage; spend: SpendStatus | null } | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -276,17 +487,23 @@ async function fetchCursorUsage(
     const sl = raw.spendLimitUsage ?? {};
     const spendLimit = numOr(sl.individualLimit);
     const spendRemaining = numOr(sl.individualRemaining);
-    return {
+    const usage: CursorUsage = {
       cycleStart: msToIso(raw.billingCycleStart),
       cycleEnd: msToIso(raw.billingCycleEnd),
       totalPercentUsed: roundPct(pu.totalPercentUsed),
       apiPercentUsed: roundPct(pu.apiPercentUsed),
       firstPartyPercentUsed: roundPct(pu.autoPercentUsed),
       includedLimitCents: numOr(pu.limit),
-      spendLimitCents: spendLimit,
-      spendUsedCents:
-        spendLimit != null && spendRemaining != null ? spendLimit - spendRemaining : null,
     };
+    const spend: SpendStatus | null =
+      spendLimit != null
+        ? {
+            label: "On-demand",
+            usedCents: spendRemaining != null ? spendLimit - spendRemaining : null,
+            limitCents: spendLimit,
+          }
+        : null;
+    return { usage, spend };
   } catch {
     return null;
   } finally {
@@ -410,7 +627,9 @@ function readClaudeCode(home: string, now: number, usage: boolean, windowDays: n
   status.lastActivity = latestMtimeIso(files);
 
   // Claude Code does not persist its rate-limit windows locally; the live
-  // 5-hour / weekly figures come from the `/usage` server call.
+  // 5-hour / weekly figures come from the `/usage` server call, which the
+  // enrichment step fetches with the local OAuth token. Without it (--no-api),
+  // quota stays blank.
   status.quota = null;
   status.notes.push("live quota (5h/weekly resets) is server-side via /usage");
 
@@ -857,6 +1076,7 @@ function base(tool: DevtoolName): ToolStatus {
     tokensUsed: null,
     api: null,
     usage: null,
+    spend: null,
     notes: [],
   };
 }

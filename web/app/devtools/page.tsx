@@ -44,6 +44,12 @@ const SOURCES: Record<
   },
 };
 
+/** Which rate-limit windows come from each tool's live enrichment. */
+const QUOTA_SOURCE: Partial<Record<ToolStatus["tool"], string>> = {
+  "claude-code": "Live from api.anthropic.com/api/oauth/usage (what `/usage` shows).",
+  codex: "From the newest session's rate-limit snapshot in the local rollout.",
+};
+
 export default async function DevtoolsPage() {
   const report: DevtoolsReport = await readDevtoolsReport();
   const now = Date.now();
@@ -159,12 +165,23 @@ function ToolCard({ tool, now }: { tool: ToolStatus; now: number }) {
               pct={q.usedPercent}
               resetsAt={q.resetsAt}
               now={now}
+              hint={QUOTA_SOURCE[tool.tool]}
             />
           ))}
         </div>
       ) : null}
 
       {tool.usage ? <CursorUsageBlock usage={tool.usage} now={now} /> : null}
+
+      {tool.spend?.limitCents != null ? (
+        <dl className="mt-4 space-y-2 text-sm">
+          <Row
+            label={tool.spend.label}
+            value={`${fmtUsd(tool.spend.usedCents ?? 0)} / ${fmtUsd(tool.spend.limitCents)}`}
+            hint="Overage spend used this cycle, against your cap. Billed only after included usage runs out."
+          />
+        </dl>
+      ) : null}
 
       {tool.notes.length ? (
         <ul className="mt-4 space-y-1 border-t border-border pt-3 text-xs text-muted-foreground">
@@ -307,8 +324,9 @@ function QuotaBar({
 /**
  * Cursor billing-cycle + usage, fetched from cursor.com with the IDE's own
  * session token. The three percentages reuse the QuotaBar; the cycle countdown
- * and on-demand spend render as rows. Each bar drops the per-bar reset label
- * (they all reset on the same cycle date, shown once in the "Plan resets" row).
+ * renders as a row (on-demand spend renders via the shared spend row). Each bar
+ * drops the per-bar reset label — they all reset on the same cycle date, shown
+ * once in the "Plan resets" row.
  */
 function CursorUsageBlock({ usage, now }: { usage: CursorUsage; now: number }) {
   const included = usage.includedLimitCents;
@@ -322,8 +340,8 @@ function CursorUsageBlock({ usage, now }: { usage: CursorUsage; now: number }) {
 
   return (
     <div className="mt-4 space-y-3">
-      <dl className="space-y-2 text-sm">
-        {usage.cycleEnd ? (
+      {usage.cycleEnd ? (
+        <dl className="space-y-2 text-sm">
           <Row
             label="Plan resets"
             value={relLabel(usage.cycleEnd, now)}
@@ -336,15 +354,8 @@ function CursorUsageBlock({ usage, now }: { usage: CursorUsage; now: number }) {
               </>
             }
           />
-        ) : null}
-        {usage.spendLimitCents != null ? (
-          <Row
-            label="On-demand"
-            value={`${fmtUsd(usage.spendUsedCents ?? 0)} / ${fmtUsd(usage.spendLimitCents)}`}
-            hint="On-demand spend used this cycle, against your monthly cap. Billed only after included usage runs out."
-          />
-        ) : null}
-      </dl>
+        </dl>
+      ) : null}
       {bars.length ? (
         <div className="space-y-3">
           {bars.map((b) => (

@@ -4,4 +4,10 @@
 
 Add `harn devtools`: a status reader for the three AI coding agents Harnery supports — Claude Code, Codex, and Cursor. Reports logged-in status, plan / seat tier, auth expiry, session counts, and rate-limit / quota windows with reset timestamps, in one uniform `ToolStatus` shape. The default report reads files on disk only — no network; auth tokens are inspected for their non-secret claims (email, plan, expiry) and never read into the output. `--usage` adds an opt-in, mtime-windowed scan of local transcripts for approximate token totals.
 
-Two opt-in network enrichments run for Cursor (both skipped by `--no-api`). The first needs no API key: it reads the IDE's own session token from `state.vscdb` and calls cursor.com's dashboard API — the same request Cursor's Spending page makes — to fill `usage` (billing-cycle end, total/API/first-party percent used, on-demand spend cap). The second, when a Cursor API key is stored, adds Cloud Agent activity from the public `/v0` API. The session-token path is what surfaces the billing numbers; the key path only adds cloud agents (individual Cursor plans expose no usage/spend on the public API).
+Opt-in network enrichments (all skipped by `--no-api`, cached two minutes under `~/.cache/harnery/devtools/`) fill the live signals each tool keeps server-side, authenticating with the credential already on disk:
+
+- **Claude Code** reads the OAuth token from `~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` (the endpoint `/usage` uses) for the 5h + weekly rate-limit windows and extra-usage spend. That endpoint is sharply rate-limited and shared with Claude Code's own usage panel, so the result is cached and a rate-limited fetch degrades to a note without being cached.
+- **Cursor** reads the IDE session token from `state.vscdb` and calls cursor.com's dashboard API (the Spending-page request) for the billing cycle + total/API/first-party percent-used + on-demand spend. No API key needed.
+- **Cursor Cloud Agents** — when a Cursor API key is stored, adds Cloud Agent activity from the public `/v0` API (individual Cursor plans expose no usage/spend there).
+
+`ToolStatus` gains `usage` (Cursor billing) and a shared `spend` (Claude extra-usage / Cursor on-demand overage); `quota[]` is now populated live for Claude Code as well as Codex.

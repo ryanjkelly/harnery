@@ -31,8 +31,12 @@ export interface CursorUsage {
   apiPercentUsed: number | null;
   firstPartyPercentUsed: number | null;
   includedLimitCents: number | null;
-  spendLimitCents: number | null;
-  spendUsedCents: number | null;
+}
+
+export interface SpendStatus {
+  label: string;
+  usedCents: number | null;
+  limitCents: number | null;
 }
 
 export interface ToolStatus {
@@ -49,6 +53,7 @@ export interface ToolStatus {
   tokensUsed: number | null;
   api: ApiEnrichment | null;
   usage: CursorUsage | null;
+  spend: SpendStatus | null;
   notes: string[];
 }
 
