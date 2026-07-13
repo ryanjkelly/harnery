@@ -415,26 +415,35 @@ function cursorGlobalVscdb(home: string): string | null {
   return candidates.find((p) => existsSync(p)) ?? null;
 }
 
+/** vscdb copy fallback is skipped above this size (bytes). Cursor's global DB can be 3GB+. */
+const VSCDB_COPY_MAX_BYTES = 256 * 1024 * 1024;
+
 /**
  * Read specific keys from a Cursor `state.vscdb` (VS Code ItemTable). Uses
  * `bun:sqlite`, lazily required so non-Bun runtimes degrade to null rather than
- * crashing at import. The live DB is usually WAL-locked (Cursor is running),
- * and over the WSL 9p mount a direct open throws "disk I/O error" — so on any
- * open/read failure we snapshot the file (plus -wal/-shm) to a temp dir and
- * read the copy. Returns a key→value map, or null if no engine / all reads fail.
+ * crashing at import.
+ *
+ * The live DB is usually WAL-locked (Cursor is running), and over the WSL 9p
+ * mount a plain open throws "disk I/O error". The fast path is SQLite immutable
+ * mode (`file:...?immutable=1` with the URI open flag): it ignores the lock and
+ * the WAL and reads only the btree pages the query touches, so a handful of
+ * key lookups cost ~10ms even on a multi-GB file. The tradeoff is that it reads
+ * the committed main DB and skips the newest uncommitted WAL frames, which is
+ * fine for a status snapshot. Only if immutable somehow fails AND the file is
+ * small do we fall back to snapshotting it (copying a 3GB DB is never worth it).
+ * Returns a key→value map, or null if no engine / all reads fail.
  */
 function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> | null {
   let Database: unknown;
+  let constants: { SQLITE_OPEN_READONLY: number; SQLITE_OPEN_URI: number } | undefined;
   try {
     // biome-ignore lint/style/useNodejsImportProtocol: bun:sqlite is a Bun builtin, not a node: module
-    ({ Database } = require("bun:sqlite"));
+    const mod = require("bun:sqlite");
+    Database = mod.Database;
+    constants = mod.constants;
   } catch {
     return null; // no SQLite engine (plain Node runtime)
   }
-  const open = (p: string) =>
-    new (Database as new (path: string, opts: { readonly: boolean }) => VscdbHandle)(p, {
-      readonly: true,
-    });
   const query = (db: VscdbHandle): Record<string, string> => {
     const out: Record<string, string> = {};
     for (const k of keys) {
@@ -448,17 +457,35 @@ function readVscdbItems(dbPath: string, keys: string[]): Record<string, string> 
     return out;
   };
 
-  // Attempt 1: open the live file directly.
-  try {
-    const db = open(dbPath);
-    const out = query(db);
-    db.close();
-    return out;
-  } catch {
-    // locked / WAL / 9p — fall through to a snapshot copy
+  // Fast path: open the live file immutable + read-only, no copy. Encode the
+  // path into a file: URI (leaves "/" intact, escapes spaces in Windows paths).
+  if (constants) {
+    try {
+      const flags = constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI;
+      const uri = `file:${encodeURI(dbPath)}?immutable=1`;
+      const db = new (Database as new (path: string, flags: number) => VscdbHandle)(uri, flags);
+      const out = query(db);
+      db.close();
+      return out;
+    } catch {
+      // fall through to the size-guarded snapshot fallback
+    }
   }
 
-  // Attempt 2: snapshot the DB (+ sidecars) and read the copy.
+  // Fallback: snapshot the DB (+ sidecars) and read the copy — but only when the
+  // file is small enough that copying is cheap. A multi-GB DB is skipped.
+  let size = Number.POSITIVE_INFINITY;
+  try {
+    size = statSync(dbPath).size;
+  } catch {
+    // stat failed; treat as too-large and skip the copy
+  }
+  if (size > VSCDB_COPY_MAX_BYTES) return null;
+
+  const open = (p: string) =>
+    new (Database as new (path: string, opts: { readonly: boolean }) => VscdbHandle)(p, {
+      readonly: true,
+    });
   let tmp: string | null = null;
   try {
     tmp = mkdtempSync(join(tmpdir(), "harn-vscdb-"));
