@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- 0bc7b77: `harn init` now ships the agent-facing layer, not just hooks. It splices a machine-owned, hash-versioned instructions block into `AGENTS.md` and writes the generic `harn-decide` + `harn-council` skills (claude-code), so a fresh consumer's agent knows the decision docket and councils exist. `harn deinit` removes both (a hand-edited skill is left with a warning, never clobbered), and `harn init --check` reports drift without writing (exit 0 fresh / 2 drift / 1 error) for pre-commit / CI. A `CLAUDE.md` `@AGENTS.md` import shim is created when `CLAUDE.md` is absent; one that already reaches `AGENTS.md` is left alone. Suppress a shipped skill you replace with your own via `skills.exclude` in `.harnery/config.jsonc`; the injected block is exclusion-aware, so it points at `<bin> decision --help` / `<bin> council --help` instead of a skill it didn't write (also true for cursor/codex, which get the block but no skill files). Design: ADR 0008.
+- 81afb5b: Add `harn devtools`: a status reader for the three AI coding agents Harnery supports — Claude Code, Codex, and Cursor. Reports logged-in status, plan / seat tier, auth expiry, session counts, and rate-limit / quota windows with reset timestamps, in one uniform `ToolStatus` shape. The default report reads files on disk only — no network; auth tokens are inspected for their non-secret claims (email, plan, expiry) and never read into the output. `--usage` adds an opt-in, mtime-windowed scan of local transcripts for approximate token totals.
+
+  Opt-in network enrichments (all skipped by `--no-api`, cached two minutes under `~/.cache/harnery/devtools/`) fill the live signals each tool keeps server-side, authenticating with the credential already on disk:
+
+  - **Claude Code** reads the OAuth token from `~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` (the endpoint `/usage` uses) for the 5h + weekly rate-limit windows and extra-usage spend. That endpoint is sharply rate-limited and shared with Claude Code's own usage panel, so the result is cached and a rate-limited fetch degrades to a note without being cached.
+  - **Cursor** reads the IDE session token from `state.vscdb` and calls cursor.com's dashboard API (the Spending-page request) for the billing cycle + total/API/first-party percent-used + on-demand spend. No API key needed.
+  - **Cursor Cloud Agents** — when a Cursor API key is stored, adds Cloud Agent activity from the public `/v0` API (individual Cursor plans expose no usage/spend there).
+
+  `ToolStatus` gains `usage` (Cursor billing) and a shared `spend` (Claude extra-usage / Cursor on-demand overage); `quota[]` is now populated live for Claude Code as well as Codex.
+
+  The network enrichment is disciplined to protect these shared endpoints: results are cached per account (keyed by a token fingerprint) for five minutes, so the dashboard touches the network at most once per tool per five minutes no matter how often it re-renders, and switching accounts shows the new account's numbers immediately; a 429 arms a `Retry-After` cooldown that suppresses further calls (serving last-known-good) so a rate limit can't cascade; and every request carries the tool's own client identity with a live version — `claude-cli/<version> (external, cli)` + `x-app: cli` for Claude (version read from the newest session transcript), Cursor's Electron UA embedding the `state.vscdb` version — so it reads as first-party traffic. `harn devtools doctor` makes one cache-bypassing call per endpoint to detect header/schema drift (`auth_rejected` / `shape_changed`), reported distinctly from a rate limit.
+
+  Codex is read from local files only and is multi-install aware: when a machine has more than one Codex install (e.g. a WSL CLI and the Windows desktop app, each its own account), the reader locks onto the active install (whichever owns the freshest rollout) and reads auth + rate limits from it, so accounts never mix. Auth expiry is reported from the access token (which outlives the id token), so a healthy login is no longer shown as expired. There is deliberately no network enrichment for Codex: OpenAI returns its rate-limit state inside the stream of an actual model turn rather than from a standalone usage endpoint, so the rollout on disk already holds the authoritative server snapshot and refreshing it would cost a model turn — the local read is strictly better, and its freshness equals the last-active time. A `rate_limit_reached_type` in the snapshot surfaces as a throttle note. Codex's token total is shown on the card unconditionally over the `--window-days` window (default 7): each session's cumulative `total_token_usage` is the last `token_count` event in its rollout, so the total is one bounded tail-read per in-window rollout rather than a full parse, cheap enough for every render.
+
+  Claude Code's token total is likewise always on the card, over the same window. A Claude transcript has no per-session cumulative field, so the total is the sum of every message (hundreds of MB of transcripts in a busy week); to keep that off the hot render path it is memoized per transcript at `~/.cache/harnery/devtools/claude-tokens.json`, keyed by path + mtime + size, so after the first scan only changed transcripts (usually just the live session) are re-read. `--usage` forces a fresh, cache-bypassing recount. Large token counts render compactly on the card (`4.9M`, `13.8B`) with the exact value on hover; the figure includes cache-read tokens, so it runs far above the billed-token count.
+
+- 6f2fda7: Add a shared YAML-frontmatter parser for lifecycle docs (`src/lib/docs-frontmatter.ts`). `parseFrontmatter` splits a leading `---` block (tolerating BOM/CRLF, never throwing on bad YAML, using `JSON_SCHEMA` so dates stay strings). `readDocStatus`/`readDocStatusFromText` dual-read status — preferring YAML `status:` and falling back to the legacy `**Status:**` bold line — with `normalizeStatus` collapsing token variants (`in_progress`/`WIP` → `in-progress`, done-family → `shipped` for plans or `resolved` for issues/handoffs, `wont-fix` → `wontfix`) and trailing-note stripping. The docs lint, sweep, and index commands now use the shared reader, so hosts can migrate files incrementally without losing lifecycle checks. New `docs meta <path> [key]` and dry-run-first `docs frontmatter-migrate` subcommands expose the metadata contract and convert lifecycle corpora without guessing at unsupported values.
+- 7020ac5: `harn env` sections are now host-extensible, and harnery core no longer ships provider-specific checks. Core previously carried built-in `gcp` and `bq` (Google Cloud / BigQuery) connectivity sections, which is opinionated cloud coupling for a generic tool. Core now ships only the generic sections (`runtimes`, `docker`, `git`); an embedding host registers its own via the new `context.envSections` (a `Record<string, EnvSection>` on `HarneryProgramContext`, with exported `EnvSection` / `EnvCheck` types). Host sections merge in after the generic ones, so `harn env <name>` and the full report pick them up automatically. Standalone `harn env` no longer has `gcp`/`bq`; a host that wants them registers them.
+- 2ef36a0: The canonical event ledger `.harnery/events.ndjson` now rotates by size instead of growing without bound. Both append paths (agent-hooks and agent-coord) roll the active file to a dated `events-YYYY-MM-DD.ndjson` archive once it crosses a byte cap (`HARNERY_EVENTS_ROLL_BYTES`, default 256 MiB), under an `O_EXCL` roll-lock so concurrent appenders never double-rename. Archives are kept, so the immutable audit trail is preserved. Readers span the boundary transparently: `scanEventsTail` continues from the active file into archives newest-first, and the web identity index folds each archive exactly once so agent names survive a roll. This removes the failure class where a reader that whole-file-read the ledger crashed on V8's ~512MB max string length once it grew large enough. Design: ADR 0009.
+- b5368c8: `harnery/lib/http` gains `requestWithRetries()` + `backoffDelayMs()` — the retrying JSON-API primitive (per-attempt timeout, retry on 429/5xx with exponential backoff + jitter, Retry-After honored when sane, injectable retry policy / observability hook / network-error factory). Terminal non-2xx responses return `ok: false` so callers keep their own error taxonomies. Extracted from ten near-identical vendor-client copies in the first embedding host (toolkit-tier promotion per ADR 0010's demonstrated-reuse rule; a tokenCache abstraction was deliberately NOT added — no second consumer yet).
+- 5af2319: Declare the two-tier public surface (ADR 0010): product tier (`.`, `./commander`, `./core/*` — the coordination layer) vs toolkit tier (`./lib/*` — supporting utilities for embedding hosts). BREAKING (pre-1.0): the `./lib/scratch` export is now `./core/scratch` — scratchpads are a coordination feature, and the source moved to `src/core/scratch/` accordingly. A new CI layering guard (`scripts/check-layering.ts`) enforces that no `./lib/*` export imports the coordination core, directly or transitively. README, package description, and docs now lead with coordination; the toolkit is documented as batteries for embedders (see the new "Embedding + surface tiers" concepts page).
+
+  Also fixed: `init` now honors a `binName` already pinned in `.harnery/config.jsonc` instead of re-stamping the invoking CLI's name over it (`pinnedBinName()`), and the portability scanner covers the agent-facing surfaces (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `.harnery/config.jsonc`) so a host bin name can't silently land in committed files.
+
+- d23ce62: Require lifecycle status in leading YAML frontmatter across `docs lint`, `docs sweep`, and `docs index`. Legacy `**Status:**` lines are no longer read by those consumers; `docs frontmatter-migrate` remains available as the explicit one-shot conversion path. Lint now checks plans, issues, handoffs, and archived plans, and reports missing YAML status as an error.
+
+### Patch Changes
+
+- 63b575b: `harn agents show`: correct the command help. It advertised "claude-sessions history (latest title, recent prompts, recent tools, tool-usage tallies)", but standalone harnery never returns that data (the per-peer enrichment is a documented future `context.peerReport` seam that stays null). The help now describes what the command actually reports: registry state (files held, last tool, task, turn summary).
+- a3fffc5: Fix Cursor Glass agent identity resolution. `harn agents whoami/status/set-task` now recognizes `CURSOR_CONVERSATION_ID`, prefers per-chat session-env identity over Cursor's shared node pid-map row, and lazily bootstraps a missing Cursor heartbeat from the first agents CLI call.
+- 9c6054d: `harn docs sweep` no longer spawns one `git log` per markdown file. Ages come from a single `git log --name-only` per repo, which drops a large-monorepo sweep from about a minute to under a couple of seconds and stops the command looking hung when piped.
+- ad026ff: Update Codex hook wiring for its strict native schema, migrate obsolete lifecycle entries, and report invalid Codex hook configuration through `harn doctor`.
+- d386204: fix(agents): arm the claim-ordering rule only on genuine cross-agent contention
+
+  The ordering rule (acquire file claims in sorted-path order to prevent a
+  circular wait) previously armed whenever ANY fresh peer held ANY claim, so a
+  peer editing completely unrelated files across the repo walled off every
+  backward-order edit an agent tried to make. That was the dominant real-world
+  cost of the rule: it fired almost never on a genuine deadlock but forced agents
+  into awkward subprocess/heredoc write workarounds all session long — workarounds
+  that are themselves uncoordinated, defeating the guard's purpose.
+
+  A wait-for cycle is a strongly-connected set of agents linked by shared files.
+  If no fresh peer shares any file with our footprint (held claims ∪ the path
+  being requested), we sit in a disjoint component of the resource graph and
+  cannot be part of any cycle, so sorted-order acquisition buys nothing. The rule
+  now arms only when a fresh peer's held set intersects that footprint. Sharing a
+  file is the necessary condition for a cycle through this agent, so the
+  deadlock-prevention invariant is unchanged for genuine contention; only the
+  false positives (an unrelated peer arming the rule) are removed.
+
+  This is the fourth narrowing of the same rule, following committed-clean
+  exemption (0b4ed15), out-of-repo skip (1b130a9), and the re-edit exemption
+  (e41fb65).
+
+- b6c8654: Core hooks no longer hardcode a host-specific `claude-sessions sync` command. The Claude Code turn-stop / session-end effect that synced session telemetry named a command that only the embedding host provides, so a plain public install spawned a doomed (best-effort, ignored) process every turn. Core now fires an optional host extension script at `scripts/hooks/harness/claude_code/extensions/session-sync.sh` under the coord root instead (the same pattern `runTurnSummary` already uses), passing a force flag as argv. A host that wants session telemetry drops that script in; a plain install spawns nothing. Keeps `src/core/` free of host command names.
+- 966c7f4: Add Tailscale as a selectable tunnel provider. `harn tunnel up --provider tailscale` now exposes the existing Host-rewriting gate through Tailscale Serve by default, with `--visibility public` switching to Tailscale Funnel, while the existing Cloudflare quick tunnel remains the default provider.
+
+  Resolve the MagicDNS URL before starting the Tailscale share so an unresolvable name fails cleanly instead of leaving a live, stateless exposure, and warn on `tunnel down` when the `serve`/`funnel off` teardown fails so a surviving mapping can't silently keep the machine exposed.
+
 ## 0.6.0
 
 ### Minor Changes
