@@ -24,7 +24,7 @@ Exits `0` unless a required dep is missing.
 | Name           | Required | Notes |
 | -------------- | -------- | ----- |
 | `node`         | required | Must be ≥ 20 |
-| `git`          | required | Used by `harn share`, `harn wip`, `harn agents`, et al |
+| `git`          | required | Used by `harn file-history`, `harn context`, `harn agents`, et al |
 | `bun`          | optional | Daily-driver execution layer; speeds up `harn` startup |
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
 | `harness hooks`| optional | Compares wired `agent-hook` entries against the current harness spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
