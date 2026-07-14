@@ -1228,7 +1228,8 @@ function lastRateLimits(file: string): RateLimitsSnapshot | null {
   let found: RateLimitsSnapshot | null = null;
   for (const line of readJsonlSync(file)) {
     const payload = (line as { type?: string; payload?: Record<string, unknown> }).payload;
-    if (!payload || payload.type !== "token_count") continue;
+    if (!payload) continue;
+    if (payload.type !== "token_count") continue;
     const rl = payload.rate_limits as Record<string, unknown> | undefined;
     if (!rl) continue;
     found = {
@@ -1295,7 +1296,8 @@ function lastCumulativeTokens(tail: string): number {
       continue; // a partial first line from the tail cut — skip it
     }
     const payload = (parsed as { payload?: Record<string, unknown> }).payload;
-    if (!payload || payload.type !== "token_count") continue;
+    if (!payload) continue;
+    if (payload.type !== "token_count") continue;
     const info = payload.info as Record<string, unknown> | undefined;
     const totals = info?.total_token_usage as Record<string, unknown> | undefined;
     const t = numOr(totals?.total_tokens);
@@ -1435,7 +1437,6 @@ function withSqlite<T>(dbPath: string, fn: (db: VscdbHandle) => T): T | null {
   let Database: unknown;
   let constants: { SQLITE_OPEN_READONLY: number; SQLITE_OPEN_URI: number } | undefined;
   try {
-    // biome-ignore lint/style/useNodejsImportProtocol: bun:sqlite is a Bun builtin, not a node: module
     const mod = require("bun:sqlite");
     Database = mod.Database;
     constants = mod.constants;
