@@ -167,8 +167,7 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
   cmd
     .command("show <name>")
     .description(
-      "Deep-dive on one peer agent: registry state (files held, last tool, task) " +
-        "plus claude-sessions history (latest title, recent prompts, recent tools, tool-usage tallies). " +
+      "Deep-dive on one peer agent: registry state (files held, last tool, task, turn summary). " +
         "Disambiguates name → instance_id via prefix match.",
     )
     .option("--json", "JSON envelope output")
