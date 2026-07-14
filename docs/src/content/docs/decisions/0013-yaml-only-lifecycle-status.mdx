@@ -1,0 +1,31 @@
+---
+title: "ADR 0013: YAML-only lifecycle status"
+description: The docs tooling once read a plan/issue/handoff's lifecycle status from a bold Markdown line (**Status:** open). After a verified bulk migration to YAML frontmatter, the bold fallback was removed so there is one canonical metadata contract and legacy files can no longer slip into the corpus.
+sidebar:
+  order: 13
+---
+
+**Date:** 2026-07-13
+**Status:** Accepted
+
+## Context
+
+The docs tooling originally read lifecycle status from bold Markdown lines such as `**Status:** open`. That convention was hard to parse reliably: status tokens, notes, punctuation, and placement all varied across repositories. Harnery introduced a shared YAML-frontmatter parser and a bulk `docs frontmatter-migrate` command so hosts could convert without interrupting lint, sweep, or index behavior.
+
+Once the initial host corpus had been migrated, keeping the fallback would leave two competing metadata contracts indefinitely. It would also let newly created bold-only files pass lint, including archived plans and handoffs the earlier lint scope did not check.
+
+## Alternatives considered
+
+- **Keep dual-read support permanently.** Avoided a cutover but preserved ambiguous metadata and let legacy files keep entering the corpus.
+- **Dual-read, but warn on bold-only files.** Prolonged the transition and made CI enforcement depend on consumers treating warnings as failures.
+- **Require YAML after a verified bulk migration.** Creates one canonical contract and isolates legacy parsing to the migration command.
+
+## Decision
+
+`readDocStatusFromText` and `hasYamlStatus` read only a leading YAML `status:` field. `docs lint` treats missing YAML status as an error for plans, issues, handoffs, and archived plans. `docs sweep` and `docs index` use the same YAML-only reader.
+
+The legacy bold parser survives only inside `docs frontmatter-migrate`, where it is needed to convert an unmigrated host explicitly. It is not a runtime compatibility path.
+
+## Consequences
+
+The initial host migration completed with zero remaining updates or errors from `harn docs frontmatter-migrate`. Harnery's focused and full test suites pass, with fixtures proving that bold-only lifecycle files fail lint while YAML-backed files pass. Leading YAML frontmatter is now the single lifecycle-metadata contract; a host that has not migrated must run `docs frontmatter-migrate` before its plans and issues will lint clean.

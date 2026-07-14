@@ -13,17 +13,17 @@
 [![npm version](https://img.shields.io/npm/v/harnery.svg)](https://www.npmjs.com/package/harnery)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> ⚠️ **Pre-1.0.** API surface is still settling. Pin a specific minor version (`harnery@^0.6.0`) and read the [CHANGELOG](CHANGELOG.md) before each upgrade.
+> ⚠️ **Pre-1.0.** API surface is still settling. Pin a specific minor version (`harnery@^0.7.0`) and read the [CHANGELOG](CHANGELOG.md) before each upgrade.
 
 ## What it is
 
 `harnery` keeps multiple AI coding agents from stepping on each other in a shared checkout. It was extracted from years of running several Claude Code / Cursor / Codex sessions at once against the same monorepo:
 
 - **Multi-agent coordination:** per-agent heartbeats in `.harnery/active/`, claim-time and commit-time guards, the canonical event stream, councils, a decision docket, per-agent scratchpads, and harness adapters for Claude Code / Cursor / Codex.
-- **Standalone web UI:** `harn web up` boots a local Next.js dashboard for the coord layer, councils, and per-project state. Ships with the git clone, not the npm package (see [Install](#install)).
+- **Standalone web UI:** `harn web up` boots a local Next.js dashboard for the coord layer, councils, per-project state, and a local coding-agent status view (Claude Code / Codex / Cursor usage, backed by `harn devtools`). Ships with the git clone, not the npm package (see [Install](#install)).
 - **Backup + sync:** `harn backup` snapshots `.harnery/` via [restic](https://restic.net/); `harn sync` keeps a curated subset live across machines via [rclone](https://rclone.org/) (Google Drive or any rclone remote).
 
-The CLI also ships batteries: portable utility commands (`tokens`, `eml`, `env`, `grep`, `docs`, `repo`, `wip`, `share`, `browse`, `fetch`, `read`, and more) plus the library toolkit they're built from. Useful, cross-platform, dependency-light — and deliberately not the headline. Coordination is why harnery exists; the toolkit exists because the CLI needed it (see [Public surface tiers](#public-surface-tiers)).
+The CLI also ships batteries: portable utility commands (`tokens`, `eml`, `env`, `grep`, `docs`, `browse`, `fetch`, `read`, `devtools`, and more) plus the library toolkit they're built from. Useful, cross-platform, dependency-light — and deliberately not the headline. Coordination is why harnery exists; the toolkit exists because the CLI needed it (see [Public surface tiers](#public-surface-tiers)).
 
 ## Install
 
