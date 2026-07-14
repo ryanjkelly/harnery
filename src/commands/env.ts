@@ -1,11 +1,13 @@
 import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
-import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import type { EmitContext, EnvCheck, EnvSection, HarneryProgramContext } from "../commander.ts";
 import { exec, sh } from "../lib/exec.ts";
 
 /**
- * `env`: show environment status across runtimes, docker, gcp, bq, git.
+ * `env`: show environment status across the generic sections (runtimes,
+ * docker, git) plus any sections the host registers via `context.envSections`.
+ * harnery core carries no provider-specific checks (a host adds e.g. gcp/bq).
  *
  * Monorepo state (repoRoot, submodules) flows in via HarneryProgramContext.
  * When neither is provided (harn invoked outside a monorepo), the git section
@@ -16,11 +18,9 @@ import { exec, sh } from "../lib/exec.ts";
  * metadata; defaultEmit just JSON-stringifies.
  */
 
-interface Check {
-  label: string;
-  value: string;
-  status?: "ok" | "missing" | "warn" | "info";
-}
+// Internal alias for the shared row type (exported from commander.ts so hosts
+// can type their own `envSections`).
+type Check = EnvCheck;
 
 export function registerEnvCommand(
   program: Command,
@@ -29,7 +29,7 @@ export function registerEnvCommand(
 ): void {
   program
     .command("env [section]")
-    .description("Show environment status (docker, gcp, bq, node, python, git)")
+    .description("Show environment status (runtimes, docker, git; hosts can add sections)")
     .action(async (section?: string) => {
       try {
         await handleEnv(section, emit, context);
@@ -46,12 +46,12 @@ async function handleEnv(
   emit: EmitContext,
   context: HarneryProgramContext | undefined,
 ): Promise<void> {
-  const sections: Record<string, () => Promise<Check[]>> = {
+  const sections: Record<string, EnvSection> = {
     runtimes: checkRuntimes,
     docker: checkDocker,
-    gcp: checkGcp,
-    bq: checkBigQuery,
     git: () => checkGit(context),
+    // Host-registered sections (e.g. gcp/bq) merge in after the generic ones.
+    ...(context?.envSections ?? {}),
   };
 
   if (section) {
@@ -148,72 +148,6 @@ async function checkDocker(): Promise<Check[]> {
     });
   } else {
     checks.push({ label: "Containers", value: "docker ps unavailable", status: "info" });
-  }
-
-  return checks;
-}
-
-async function checkGcp(): Promise<Check[]> {
-  const checks: Check[] = [];
-
-  const account = await sh("gcloud config get-value account 2>/dev/null").catch(() => ({
-    stdout: "",
-    exitCode: 1,
-    stderr: "",
-  }));
-  const project = await sh("gcloud config get-value project 2>/dev/null").catch(() => ({
-    stdout: "",
-    exitCode: 1,
-    stderr: "",
-  }));
-
-  if (account.exitCode === 0 && account.stdout) {
-    checks.push({ label: "GCP Account", value: account.stdout, status: "ok" });
-  } else {
-    checks.push({ label: "GCP Account", value: "not authenticated", status: "missing" });
-  }
-
-  if (project.exitCode === 0 && project.stdout) {
-    checks.push({ label: "GCP Project", value: project.stdout, status: "ok" });
-  } else {
-    checks.push({ label: "GCP Project", value: "not set", status: "missing" });
-  }
-
-  return checks;
-}
-
-async function checkBigQuery(): Promise<Check[]> {
-  const checks: Check[] = [];
-
-  const result = await sh("bq ls --max_results=1 2>/dev/null").catch(() => ({
-    stdout: "",
-    exitCode: 1,
-    stderr: "",
-  }));
-
-  if (result.exitCode === 0) {
-    checks.push({ label: "BigQuery", value: "connected", status: "ok" });
-  } else {
-    checks.push({ label: "BigQuery", value: "not connected (check GCP auth)", status: "missing" });
-  }
-
-  const datasets = await sh("bq ls --format=json --max_results=20 2>/dev/null").catch(() => ({
-    stdout: "",
-    exitCode: 1,
-    stderr: "",
-  }));
-
-  if (datasets.exitCode === 0 && datasets.stdout) {
-    try {
-      const ds = JSON.parse(datasets.stdout) as { datasetReference?: { datasetId?: string } }[];
-      const names = ds
-        .map((d) => d.datasetReference?.datasetId)
-        .filter(Boolean)
-        .join(", ");
-      if (names) checks.push({ label: "Datasets", value: names, status: "info" });
-    } catch {
-      // Ignore parse failures
-    }
   }
 
   return checks;

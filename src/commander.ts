@@ -82,6 +82,20 @@ export interface HarneryContextOpts {
   skipCommands?: readonly string[];
 }
 
+/** One row in a `harn env` section report. */
+export interface EnvCheck {
+  label: string;
+  value: string;
+  status?: "ok" | "missing" | "warn" | "info";
+}
+
+/**
+ * A `harn env` section: an async probe returning its rows. Hosts register extra
+ * sections (e.g. cloud-provider connectivity) via `context.envSections`; harnery
+ * core ships only the generic sections (runtimes, docker, git).
+ */
+export type EnvSection = () => Promise<EnvCheck[]>;
+
 export interface HarneryProgramContext {
   /** Project name (e.g., "my-monorepo"). Used in user-facing log lines + telemetry tags. */
   projectName?: string;
@@ -99,6 +113,13 @@ export interface HarneryProgramContext {
    * submodule row.
    */
   submodules?: readonly string[];
+  /**
+   * Extra `harn env` sections keyed by name (e.g. `{ gcp, bq }`). Merged into
+   * the built-in generic sections (runtimes, docker, git), so a host can expose
+   * `harn env <name>` for its own environment probes without harnery core
+   * carrying provider-specific checks. harn standalone ships none.
+   */
+  envSections?: Record<string, EnvSection>;
   /**
    * Optional callback that returns extra HTTP headers to attach to outbound
    * `fetch` calls based on the target URL. Useful for consumers that need
