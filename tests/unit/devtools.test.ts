@@ -18,6 +18,15 @@ import {
 
 const NOW = Date.parse("2026-07-13T00:00:00.000Z");
 
+// Token-expiry validity is checked against the REAL wall clock — readCursorSessionAuth
+// and the codex/claude auth readers all call Date.now() (correct for a live tool), NOT
+// the fixed NOW anchor the deterministic reads use. So a "still-valid" fixture must sit
+// far in the future independent of NOW: a small `NOW + N days` offset is a time-bomb that
+// silently expires the moment wall-clock passes it (a +1d offset broke this suite on
+// 2026-07-14, a +4d one would have on 2026-07-17). Expressed as fixed absolute epochs.
+const VALID_EXP_S = Math.floor(Date.parse("2099-01-01T00:00:00.000Z") / 1000);
+const EXPIRED_EXP_S = Math.floor(Date.parse("2000-01-01T00:00:00.000Z") / 1000);
+
 /** Minimal JWT with the given claims (unsigned; only the payload is decoded). */
 function jwt(claims: Record<string, unknown>): string {
   const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -178,7 +187,7 @@ describe("readDevtools — codex", () => {
           access_token: "at-secret",
           id_token: jwt({
             email: "codex@example.com",
-            exp: Math.floor((NOW + 86_400_000) / 1000),
+            exp: VALID_EXP_S,
             "https://api.openai.com/auth": { chatgpt_plan_type: "team" }, // stale
           }),
         },
@@ -237,7 +246,7 @@ describe("readDevtools — codex", () => {
           access_token: "at-secret",
           id_token: jwt({
             email: "codex@example.com",
-            exp: Math.floor((NOW + 86_400_000) / 1000),
+            exp: VALID_EXP_S,
             "https://api.openai.com/auth": { chatgpt_plan_type: "team" },
           }),
         },
@@ -285,10 +294,10 @@ describe("readDevtools — codex", () => {
           // is what refreshes — the user is NOT logged out.
           id_token: jwt({
             email: "codex@example.com",
-            exp: Math.floor((NOW - 6 * 86_400_000) / 1000),
+            exp: EXPIRED_EXP_S,
             "https://api.openai.com/auth": { chatgpt_plan_type: "plus" },
           }),
-          access_token: jwt({ exp: Math.floor((NOW + 4 * 86_400_000) / 1000) }),
+          access_token: jwt({ exp: VALID_EXP_S }),
         },
       }),
     );
@@ -296,7 +305,7 @@ describe("readDevtools — codex", () => {
     expect(cx.loggedIn).toBe(true);
     expect(cx.account).toBe("codex@example.com");
     expect(cx.plan).toBe("plus");
-    expect(cx.authExpiresAt).toBe(new Date((Math.floor((NOW + 4 * 86_400_000) / 1000)) * 1000).toISOString());
+    expect(cx.authExpiresAt).toBe(new Date(VALID_EXP_S * 1000).toISOString());
     expect(cx.notes.some((n) => n.includes("token expired"))).toBe(false);
   });
 
@@ -556,7 +565,7 @@ describe("enrichFromApi — cursor usage (session token)", () => {
   }
 
   test("populates usage from get-current-period-usage; token never surfaces", async () => {
-    const token = jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW + 86_400_000) / 1000) });
+    const token = jwt({ sub: "auth0|user_XYZ", exp: VALID_EXP_S });
     seedVscdb(token, "3.11.13");
     let sentAuth = false;
     let userAgent: string | undefined;
@@ -607,7 +616,7 @@ describe("enrichFromApi — cursor usage (session token)", () => {
   });
 
   test("expired session token is skipped (no call, no usage)", async () => {
-    seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW - 1000) / 1000) }));
+    seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: EXPIRED_EXP_S }));
     let called = false;
     globalThis.fetch = (async () => {
       called = true;
@@ -620,7 +629,7 @@ describe("enrichFromApi — cursor usage (session token)", () => {
   });
 
   test("a failed usage fetch degrades to a note, never throws", async () => {
-    seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: Math.floor((NOW + 86_400_000) / 1000) }));
+    seedVscdb(jwt({ sub: "auth0|user_XYZ", exp: VALID_EXP_S }));
     globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
     const report = readDevtools({ home, now: NOW, only: ["cursor"] });
     await enrichFromApi(report, { cursorKey: null, home });
