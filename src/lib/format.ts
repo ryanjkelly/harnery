@@ -48,7 +48,7 @@ export function colorJson(value: unknown, indent = 0): string {
       // Class instances that define toJSON() (Big.js, Decimal.js, Date, etc.)
       // would render as their raw internal shape if we walked Object.keys
       // directly. Unwrap once so callers see the intended representation
-      // (Big.js → "1.97" instead of {s,e,c} from BigQuery NUMERIC fields).
+      // (e.g. Big.js → "1.97" instead of its internal {s,e,c} fields).
       const maybeJsonable = v as { toJSON?: () => unknown };
       if (typeof maybeJsonable.toJSON === "function") {
         return fmt(maybeJsonable.toJSON(), depth);
@@ -115,7 +115,7 @@ function stringify(val: unknown): string {
   if (val === null || val === undefined) return "NULL";
   if (typeof val === "object") {
     if (val instanceof Date) return val.toISOString();
-    // BigQuery returns { value: "..." } for some types
+    // Some data sources wrap a scalar as { value: "..." }; unwrap to the inner value.
     if ("value" in val && Object.keys(val).length === 1) {
       return String((val as { value: unknown }).value);
     }
