@@ -33,12 +33,12 @@ import {
   imageJanitor,
   playSound,
   resetSoundCounters,
+  runSessionSyncExtension,
   runTurnSummary,
   scratchArchive,
   scratchJanitor,
   scratchRecoveryCue,
   soundForEvent,
-  syncClaudeSessions,
 } from "./effects/index.ts";
 import { emit } from "./events/emit.ts";
 import type { Harness } from "./events/schema.ts";
@@ -508,7 +508,7 @@ async function main(): Promise<number> {
     // session-telemetry sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1).
     if (harness === "claude-code") {
       scratchArchive(coordRoot, owner.instance_id);
-      syncClaudeSessions(coordRoot, true);
+      runSessionSyncExtension(coordRoot, true);
     }
   }
 
@@ -603,7 +603,7 @@ async function main(): Promise<number> {
     // CC effects: rate-limited session-telemetry sync + turn-summary Haiku
     // auto-summary.
     if (harness === "claude-code") {
-      syncClaudeSessions(coordRoot, false);
+      runSessionSyncExtension(coordRoot, false);
       runTurnSummary(coordRoot, owner.instance_id, sessionId, payload?.transcript_path);
     }
 

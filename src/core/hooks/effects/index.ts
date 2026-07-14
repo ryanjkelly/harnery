@@ -17,7 +17,6 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
-import { resolveBinName } from "../../config.ts";
 
 export type { CaptureContext } from "./image-capture.ts";
 export { captureImages, imageJanitor } from "./image-capture.ts";
@@ -118,24 +117,31 @@ export function scratchArchive(repoRoot: string, owner: string): void {
 }
 
 /**
- * Sync Claude Code session JSONL → BigQuery (`harn claude-sessions sync`). Lives
- * in the host CLI (parses Claude Code's own ~/.claude/projects/**\/*.jsonl), so harnery
- * shells out to the harn binary rather than importing it. Detached + unref'd so a
- * slow BigQuery round-trip never blocks the hook. Stop-path syncs are rate-
- * limited inside `harn claude-sessions sync`; SessionEnd forces via env. Caller
- * gates to the claude-code harness.
+ * Fire the optional host session-sync extension on turn stop / session end.
+ * harnery core has no session-telemetry sink of its own; a host that wants one
+ * drops an executable at
+ * `scripts/hooks/harness/claude_code/extensions/session-sync.sh` under the coord
+ * root, and core runs it detached + unref'd so a slow sink never blocks the
+ * hook. `force` arrives as argv $1 ("1" on session end, "0" on turn stop) so the
+ * host can rate-limit the stop path and force-flush on end. No-op when the
+ * script is absent, so a plain public install spawns nothing. Mirrors
+ * `runTurnSummary`'s extension-script pattern. Caller gates to the claude-code
+ * harness.
  */
-export function syncClaudeSessions(repoRoot: string, force: boolean): void {
+export function runSessionSyncExtension(repoRoot: string, force: boolean): void {
   try {
-    const bin = join(repoRoot, "bin", resolveBinName(repoRoot));
-    if (!existsSync(bin)) return;
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      HARNERY_OUTPUT_SESSION_TEE: "0",
-    };
-    if (force) env.HARNERY_CLAUDE_SESSIONS_FORCE = "1";
-    const child = spawn("bash", [bin, "claude-sessions", "sync", "--quiet"], {
-      env,
+    const script = join(
+      repoRoot,
+      "scripts",
+      "hooks",
+      "harness",
+      "claude_code",
+      "extensions",
+      "session-sync.sh",
+    );
+    if (!existsSync(script)) return;
+    const child = spawn("bash", [script, force ? "1" : "0"], {
+      env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       detached: true,
       stdio: "ignore",
     });
