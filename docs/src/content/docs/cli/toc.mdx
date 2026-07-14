@@ -1,0 +1,50 @@
+---
+title: harn toc
+description: Print the header outline of a markdown file — level, text, and line number for every heading.
+sidebar:
+  order: 19
+---
+
+```
+harn toc [options] <file>
+```
+
+Prints the header outline of a markdown file — each heading's level, text, and
+line number — so you can navigate a long document without reading it end to end.
+It's the markdown companion to [`harn outline`](/cli/outline/) (which does the
+same for code files). To pull the body of one section, use
+[`harn section`](/cli/section/).
+
+Headers inside fenced code blocks (```` ``` ```` or `~~~`) are ignored, so a
+shell comment or a commented-out heading in an example won't pollute the outline.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `-d, --depth <n>` | Maximum header depth to include (1–6). |
+| `--with-sizes` | Include the line count of each section. |
+| `--json` | Emit a structured JSON envelope. |
+
+## Examples
+
+```bash
+# Full header outline of a document
+harn toc README.md
+
+# Top two levels only
+harn toc docs/guide.md --depth 2
+
+# Show how long each section is
+harn toc docs/guide.md --with-sizes
+
+# Structured output for tooling
+harn toc README.md --json
+```
+
+## Output
+
+Human mode prints a header line followed by one indented line per heading:
+`L<line>  ### <text>`, with a `(<n>L)` size suffix when `--with-sizes` is set.
+`--json` emits `{ file, total_lines, headers[] }`, where each header is
+`{ level, text, line, size_lines? }`.

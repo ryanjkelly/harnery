@@ -1,0 +1,61 @@
+---
+title: harn outline
+description: Print the structural skeleton of a code file — imports plus top-level declarations with line numbers.
+sidebar:
+  order: 17
+---
+
+```
+harn outline [options] <file>
+```
+
+Prints a file's structural skeleton — its imports and top-level declarations,
+each with a line number — so you can locate one symbol without reading the whole
+file. TS/JS/TSX/JSX are parsed with the TypeScript compiler AST; PHP and Python
+use a lighter regex pass. For markdown, use [`harn toc`](/cli/toc/) instead.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--exports-only` | Show only exported symbols. |
+| `--no-imports` | Skip the imports summary block. |
+| `--no-members` | Don't expand class / interface members. |
+| `--json` | Emit a structured JSON envelope. |
+
+## Examples
+
+```bash
+# Skeleton of a TypeScript file: imports, decls, line numbers
+harn outline src/server.ts
+
+# Only the exported surface of a module
+harn outline src/api.ts --exports-only
+
+# Tighten the view for a very large file
+harn outline src/big-module.ts --no-imports --no-members
+
+# A PHP class outline (regex-parsed)
+harn outline lib/Widget.php
+
+# Structured output for tooling
+harn outline src/server.ts --json
+```
+
+## Output
+
+Human mode prints a header line, an imports block (inlined when there are four
+or fewer, listed otherwise), and one line per symbol. Each symbol line shows a
+star for exported symbols, its `L<line>` position, a kind abbreviation (`fn`,
+`cl`, `if`, `ty`, `ct`, `en`, `mt`, `pr`, …), the name, and a signature; class
+and interface members are indented beneath their container.
+
+`--json` emits `{ file, language, total_lines, imports[], symbols[] }`, where
+each symbol is `{ kind, name, signature?, line, exported?, members? }`.
+
+## Notes
+
+Outlining a TS/JS file needs the `typescript` package present. It is a dev
+dependency loaded lazily, so a runtime-only install can still outline PHP and
+Python but will report a clear error on a TS/JS file until `typescript` is
+installed. Passing a `.md` or `.mdx` file returns a pointer to `harn toc`.

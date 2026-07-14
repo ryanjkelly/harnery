@@ -1,0 +1,81 @@
+---
+title: harn grep
+description: Monorepo-aware code search over grep, with default excludes, repo scoping, language presets, and a JSON envelope.
+sidebar:
+  order: 16
+---
+
+```
+harn grep [options] <pattern> [paths...]
+```
+
+A thin wrapper over GNU `grep -rn` with a curated skip list, repo scoping, and
+language presets — the everyday "find this string in the codebase" tool that
+doesn't drown you in matches from `node_modules/` or a build directory. Regex by
+default (`grep -E` semantics); pass `-F` for a literal string.
+
+Reach for this for shell use, scripting, and anything that wants the `--json`
+envelope. It searches the current working directory unless you point it at
+explicit paths or scope it with `--repo` / `--all-repos`.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--repo <name>` | Scope to one submodule; `.` (or `parent`) means the repo root. |
+| `--all-repos` | Search the parent repo plus every configured submodule, labeled per-repo. |
+| `--lang <lang>` | File-type preset: `ts`, `tsx`, `js`, `jsx`, `py`, `php`, `sql`, `md`, `sh`, `json`, `yaml`, `rb`, `go`, `rs`. |
+| `-i, --ignore-case` | Case-insensitive match. |
+| `-w, --whole-word` | Match whole words only. |
+| `-F, --literal` | Treat `<pattern>` as a literal string (no regex). |
+| `-l, --files-only` | Print only the names of files containing a match. |
+| `-c, --count` | Print a match count per file (suppresses content). |
+| `-C, --context <n>` | Print N lines of context around each match (default `0`). |
+| `--max-count <n>` | Stop after N matches per file. |
+| `--limit <n>` | Truncate output to N matches total. |
+| `--include <glob>` | Extra include glob (repeatable). |
+| `--exclude <glob>` | Extra exclude glob (repeatable). |
+| `--no-default-excludes` | Disable the default skip list. |
+| `--json` | Emit a structured JSON envelope instead of `file:line:content`. |
+
+## Default excludes
+
+Unless `--no-default-excludes` is set, these directories are skipped: `.git`,
+`.cache`, `node_modules`, `dist`, `build`, `out`, `.next`, `vendor`,
+`__pycache__`, `.venv`, `tmp`, `tmp-files`, `coverage`, `.parcel-cache`,
+`.turbo`, and the coordination directory. Binary files are always skipped.
+
+## Examples
+
+```bash
+# Find a symbol in the current directory
+harn grep "createServer"
+
+# Case-insensitive, whole-word, literal search in the repo root
+harn grep -i -w -F "TODO" --repo .
+
+# Only TypeScript files, across the parent repo and every submodule
+harn grep "useState" --lang ts --all-repos
+
+# List just the files that match, with an extra include glob
+harn grep "deprecated" -l --include "*.md"
+
+# Two lines of context, capped at 50 total matches, as JSON
+harn grep "throw new Error" -C 2 --limit 50 --json
+```
+
+## Output
+
+Human mode prints `file:line:content` per match, with a `── <repo> ──` header
+when more than one repo is searched. `--json` emits an envelope shaped
+`{ pattern, mode, repos[], total_matches, total_files, truncated, elapsed_ms }`,
+where each entry in `repos[]` carries `{ name, cwd, matches[], truncated }` and
+every match is `{ repo, file, line, text }`. `truncated` is `true` when
+`--limit` cut the results short.
+
+## Notes
+
+`--repo` and `--all-repos` need harnery to know the repo root and submodule
+list (supplied by the host CLI's program context). Without that context, use
+plain paths or run from inside the directory you want to search. `grep` exiting
+with no matches is treated as normal, not an error.

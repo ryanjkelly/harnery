@@ -1,0 +1,82 @@
+---
+title: harn presence
+description: Track whether an agent's human is at a desktop (office) or on a phone (mobile) so replies can adapt.
+sidebar:
+  order: 15
+---
+
+```
+harn presence [get|set|clear] [options]
+```
+
+Records a single bit of context an agent can adapt to: is the human at a
+desktop (`office`) or on a phone (`mobile`)? On mobile the human can't see
+files, editor state, or local paths — only the chat thread — so an agent that
+reads presence can shorten replies and hand over links instead of file paths.
+State lives in one small JSON file at `~/.claude/presence`; the default when the
+file is absent is `office`.
+
+Run bare, `harn presence` prints the full record (state, source, age). The
+subcommands read, set, and clear that record.
+
+## Subcommands
+
+```
+harn presence get             # print just the state ("mobile" / "office")
+harn presence get --json      # full record: state, updated_at, source, is_default, path
+harn presence set <state>     # set state explicitly (source=cli); <state> = mobile | office
+harn presence clear           # delete the file (next read returns the default, "office")
+harn presence detect          # internal: infer state from prompt text on stdin (hook-driven)
+```
+
+## Options
+
+| Flag | Applies to | Description |
+| --- | --- | --- |
+| `--json` | `get` | Print the full record as JSON instead of the bare state string. |
+
+## How the state gets set
+
+Two sources write the file, and the `source` field records which:
+
+- **`cli`** — an explicit `harn presence set mobile` / `office`. Deliberate and
+  authoritative for that moment, but not sticky: a later detection can still
+  overwrite it.
+- **`hook`** — `harn presence detect` reads a prompt on stdin and infers the
+  state. It's meant to be wired into a prompt-submit hook so presence tracks the
+  human automatically. Detection only writes when the signal is unambiguous;
+  a mixed or absent signal leaves the current state untouched.
+
+The inference is a small set of first-match-wins rules over the prompt text
+(fenced code blocks and quoted lines are stripped first so pasted content can't
+skew it): curly “smart” quotes alone read as `mobile` (phone keyboards produce
+them), straight quotes alone read as `office`, both together are ambiguous and
+skipped, and a short message ending in a trailing space reads as `mobile`.
+
+## Examples
+
+```bash
+# What state am I in right now?
+harn presence get
+
+# Branch on it in a script
+[ "$(harn presence get)" = "mobile" ] && echo "keep the reply short"
+
+# Force mobile for this session
+harn presence set mobile
+
+# Inspect the full record, including how stale it is
+harn presence get --json
+
+# Reset to the default (office)
+harn presence clear
+```
+
+## Notes
+
+- The file path (`~/.claude/presence`) is a Claude Code convention, but the
+  read/set/clear logic is generic — any agent harness can adopt the same file.
+- Writes are atomic (temp file + rename), so a concurrent read never sees a
+  half-written record.
+- A malformed or unreadable file falls back to the default `office` rather than
+  erroring.

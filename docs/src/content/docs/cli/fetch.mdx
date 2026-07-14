@@ -1,0 +1,54 @@
+---
+title: harn fetch
+description: Cookie-aware HTTP request to stdout, sharing the browser jar with harn browse and harn cookies.
+sidebar:
+  order: 26
+---
+
+```
+harn fetch [options] <url>
+```
+
+An HTTP request that writes the response body to stdout and speaks to the **shared cookie jar**. By default it attaches any matching cookies from `~/.cache/harnery/cookies.json` to the request and persists `Set-Cookie` responses back — the same jar [`harn browse`](/cli/browse/) and [`harn cookies`](/cli/cookies/) use. So cookies established during a `harn browse --login` session flow naturally into later `harn fetch` calls, and vice versa. Pipe it into [`harn read`](/cli/read/) for the canonical scrape-to-markdown flow: `harn fetch <url> | harn read -`.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `-X, --method <method>` | HTTP method. Default `GET`. |
+| `-H, --header <header...>` | Extra request header, format `Name: value`. Repeatable. |
+| `-d, --data <body>` | Request body. |
+| `-o, --output <file>` | Write the response body to a file instead of stdout. |
+| `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
+| `--no-cookies` | Skip cookie-jar attach and persist (clean session). |
+| `--redirect <mode>` | Redirect handling: `follow` \| `error` \| `manual`. Default `follow`. |
+| `--timeout <ms>` | Request timeout in milliseconds. Default `30000`. |
+| `--status` | Print the status line to stderr. |
+| `--headers` | Print response headers to stderr. |
+| `--json` | Output the full `FetchResult` (status, headers, body) as JSON. |
+
+## Output
+
+The body goes to stdout (or the `--output` file) by default. Because the body is routed as text, binary responses should use `--output`. `--json` instead emits the whole `FetchResult` — `{ status, statusText, url, headers, body, cookiesSaved }` — as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
+
+## Examples
+
+```bash
+# GET a page (cookies auto-attached and persisted)
+harn fetch https://example.com
+
+# The canonical scrape-to-markdown pipeline
+harn fetch https://example.com | harn read -
+
+# POST JSON with explicit headers
+harn fetch https://example.com/api -X POST -H 'Content-Type: application/json' -d '{"k":"v"}'
+
+# Capture cookies set on intermediate redirects (follow swallows them)
+harn fetch https://example.com/login --redirect manual --headers
+
+# Clean session, full result as JSON
+harn fetch https://example.com --no-cookies --json
+
+# Save a binary response to a file
+harn fetch https://example.com/image.png -o /path/to/image.png
+```

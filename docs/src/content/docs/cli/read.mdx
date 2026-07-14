@@ -1,0 +1,52 @@
+---
+title: harn read
+description: Extract clean, readable markdown from HTML via Readability + Turndown.
+sidebar:
+  order: 27
+---
+
+```
+harn read [options] [html-file]
+```
+
+Turns an HTML page into clean, readable markdown — Readability strips the chrome (nav, ads, boilerplate) and Turndown converts what's left. Reads from a file argument or from stdin when the argument is `-`, which is what makes it the tail end of a scrape pipeline. Pair it with [`harn fetch`](/cli/fetch/) or [`harn browse`](/cli/browse/):
+
+```bash
+harn fetch https://example.com | harn read -
+```
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `-o, --output <file>` | Write markdown to a file instead of stdout. |
+| `--url <url>` | Base URL, used to resolve relative links in the source HTML. |
+| `--selector <css>` | Extract from this CSS selector instead of Readability. The fallback for when automatic extraction misses the main content. |
+| `--raw` | Output cleaned HTML instead of markdown (for debugging extraction). |
+| `--max-chars <n>` | Truncate output to N characters (`0` disables). Default `100000`. |
+
+## Examples
+
+```bash
+# Convert a saved HTML file to markdown
+harn read /path/to/page.html
+
+# Canonical scrape-to-markdown pipeline (stdin via '-')
+harn fetch https://example.com | harn read -
+
+# Fetch raw HTML with a real browser, then extract
+harn browse https://example.com --html | harn read -
+
+# Supply a base URL so relative links resolve
+harn fetch https://example.com/article | harn read - --url https://example.com
+
+# Bypass Readability when it misses the main content
+harn read /path/to/page.html --selector 'main.article'
+
+# Inspect the cleaned HTML instead of markdown
+harn read /path/to/page.html --raw
+```
+
+## Notes
+
+Readability works best on article-shaped pages. When a page's real content lives outside what Readability picks (an app shell, a dashboard, a narrow content pane), pass `--selector` to target it directly, or use `--raw` to see what the cleaner kept before converting.

@@ -1,0 +1,54 @@
+---
+title: harn section
+description: Extract one section from a markdown file by matching a header substring.
+sidebar:
+  order: 20
+---
+
+```
+harn section [options] <file> <header...>
+```
+
+Extracts a single section from a markdown file — the matched heading plus
+everything under it, down to the next heading of the same or higher level — by
+matching a substring of the header text. It's the "just give me that one part"
+companion to [`harn toc`](/cli/toc/): pull the exact section you need instead of
+reading the whole document. All the words you pass are joined into one query
+string, and the match is case-insensitive by default.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--case-sensitive` | Match the header substring case-sensitively. |
+| `--json` | Emit a structured JSON envelope. |
+
+## Examples
+
+```bash
+# Extract a section by a word from its heading
+harn section README.md Installation
+
+# Multi-word query (joined into one substring)
+harn section docs/guide.md getting started
+
+# Case-sensitive match
+harn section docs/api.md --case-sensitive Config
+
+# Structured output for tooling
+harn section README.md Usage --json
+```
+
+## Output
+
+Human mode prints the section body (heading and all). `--json` emits
+`{ file, matched_header, matched_level, line_start, line_end, content }`.
+
+## Notes
+
+The query must resolve to exactly one heading. If nothing matches, the command
+points you to `harn toc` to list the available headers; if more than one matches,
+it lists the candidates so you can refine the query or use the exact text. The
+section ends at the next heading whose level is the same as or shallower than
+the matched one, so extracting an `##` section includes all its `###`
+subsections.

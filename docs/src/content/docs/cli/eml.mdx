@@ -1,0 +1,60 @@
+---
+title: harn eml
+description: Parse a Gmail .eml export into a clean, chronological markdown thread.
+sidebar:
+  order: 30
+---
+
+```
+harn eml [options] <file>
+```
+
+Turn a Gmail `.eml` export into a clean markdown thread. Gmail saves a
+conversation as a single `.eml` where older replies are nested inside quote
+blocks; this command unpacks that structure and re-orders the messages oldest to
+newest, stripping HTML, signatures, and quote cruft along the way. When HTML
+isn't present it falls back to parsing the plain-text `> ` quote markers and
+`On ... wrote:` attribution lines.
+
+The rendered markdown opens with a header (subject, participants, date range,
+message count) and then one `## N. <sender> - <date>` section per message.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `-o, --output <path>` | Write to a file instead of stdout. |
+| `--format <type>` | `markdown` (default) or `json`. |
+| `--headers` | Include full email headers per message. |
+| `--attachments` | List attachment filenames and sizes in the header block. |
+
+## Examples
+
+```bash
+# Parsed thread to stdout as markdown
+harn eml thread.eml
+
+# Write the markdown to a file
+harn eml thread.eml -o thread.md
+
+# Structured JSON instead of markdown
+harn eml thread.eml --format json
+
+# Include the attachment manifest
+harn eml thread.eml --attachments
+```
+
+## Output
+
+In `markdown` mode the output is the rendered thread described above. In `json`
+mode it's an array of message rows, each `{ index, from, date, body }` with
+`date` as an ISO string (or `null` when unparseable). With `-o`, either format
+is written to the given path and a file-written event is emitted instead of
+printing.
+
+## Notes
+
+Message timestamps in the markdown are rendered as human-readable local times.
+Signature blocks (the `--` delimiter, "Sent from my ..." footers) are trimmed
+only when they fall in the latter part of a message, so a short reply that
+happens to start with a dash isn't mistaken for a signature.

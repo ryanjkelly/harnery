@@ -1,0 +1,61 @@
+---
+title: harn callers
+description: Find references to a symbol across the codebase, classified by kind (call, import, type, decl, ref).
+sidebar:
+  order: 18
+---
+
+```
+harn callers [options] <symbol>
+```
+
+Finds every reference to a symbol across the codebase and classifies each match
+as a `call`, `import`, `type`, `decl`, or `ref` — a fast "who uses this?" sweep
+before a rename or removal. It is a heuristic, text-based search (`grep -rnw`
+with post-filtering), not full type analysis: by default it drops the
+declaration line and single-line comments so the list is just the usages that
+matter.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--repo <name>` | Scope to one submodule; `.` (or `parent`) means the repo root. |
+| `--all-repos` | Search the parent repo plus every configured submodule. |
+| `--lang <lang>` | File-type preset: `ts`, `js`, `py`, `php`, `rb`, `go`, `rs`. |
+| `--include-decl` | Include the declaration line(s) too. |
+| `--include-comments` | Include matches inside single-line comments. |
+| `--limit <n>` | Truncate output to N matches total (default `500`). |
+| `--json` | Emit a structured JSON envelope. |
+
+## Examples
+
+```bash
+# Everyone who references a symbol, from the current directory
+harn callers myHelper
+
+# Scope to one submodule, TypeScript only
+harn callers renderPage --repo web --lang ts
+
+# Sweep the whole workspace, including the declaration line
+harn callers Config --all-repos --include-decl
+
+# Widen the cap and emit JSON for tooling
+harn callers useStore --limit 1000 --json
+```
+
+## Output
+
+Human mode groups matches by repo and file, printing `L<line> [<kind>] <snippet>`
+for each. A summary line tallies the counts by kind (e.g. `call=12, import=3,
+type=1`). `--json` emits `{ symbol, repos[], callers[], by_kind, total,
+truncated, elapsed_ms }`, where each caller is `{ repo, file, line, kind, text }`.
+
+## Notes
+
+The symbol must be a valid identifier — the command rejects anything else. Being
+text-based, it can't exclude matches inside multi-line string literals or
+block-comment interiors, so treat the output as a strong lead, not a proof.
+Multi-line comment continuation lines (starting with ` * `) are always dropped.
+`--repo` / `--all-repos` need the host CLI to supply the repo root and submodule
+list.

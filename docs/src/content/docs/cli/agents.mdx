@@ -1,0 +1,182 @@
+---
+title: harn agents
+description: Query the multi-agent coordination layer — who's active, what they hold, what each one is doing, and whether the layer is healthy.
+sidebar:
+  order: 4
+---
+
+```
+harn agents <subcommand> [options]
+```
+
+The window into the coordination layer. Every agent sharing a checkout writes a
+heartbeat to `.harnery/active/<instance_id>.json` carrying its name, session
+age, the files it has claimed, its last tool call, and a self-declared task.
+`harn agents` reads that state — plus the append-only event ledger at
+`.harnery/events.ndjson` — to answer the questions that keep parallel agents out
+of each other's way: who else is here, what are they holding, what is each one
+doing, and did anything go wrong.
+
+Reach for it constantly: `whoami` and `status` to orient yourself, `list` to see
+peers, `show` / `trace` to dig into one agent, and `health` when the layer
+itself feels off.
+
+## Subcommands
+
+```
+harn agents whoami              # this agent's name + instance_id + files claimed
+harn agents list                # all active agents (folds transients by default)
+harn agents status              # end-of-turn status box (name, age, files, peers, task)
+harn agents set-task <text...>  # declare what you're working on (visible to peers)
+harn agents show <name>         # deep-dive on one peer: registry state + session history
+harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
+harn agents watch               # stream peer state changes in real time
+harn agents ping <name> <msg>   # leave a handoff note in a peer's scratchpad
+harn agents wait <name>         # block until a peer releases its files (or exits)
+harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
+harn agents health              # one-screen coord-layer health rollup
+harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fixed drift)
+```
+
+Two further subtrees live under `agents` for advanced use: `harn agents council`
+(convene a temporary group for structured multi-round deliberation) and
+`harn agents identity` (the durable per-agent persona registry). Two more are
+recovery tools — `harn agents heal` forces a specific recovery action on one
+agent, and `harn agents harness-probe` diagnoses harness wiring. Run
+`harn agents <sub> --help` for any of them.
+
+### whoami, list, status
+
+The three orientation commands.
+
+- **`whoami`** prints your own name, `instance_id`, and the files you've claimed.
+  `--json` for the full heartbeat record.
+- **`list`** shows every active agent. By default it folds `kind=transient` rows
+  (short-lived helper processes) into their parent; `--all` shows them raw.
+  `--stale` includes heartbeats older than the freshness window (agents that
+  likely exited without cleaning up). `--json` for structured output.
+- **`status`** renders the end-of-turn status box — your name, session age,
+  declared task, last turn summary, context usage, files held, and a one-line
+  peer roster. `--json` returns the same data unformatted. `--session-id <id>`
+  looks the heartbeat up by session id directly, for use from a hook whose
+  process tree doesn't lead back to the agent's session pid.
+
+### set-task
+
+Declares a short description of your current focus, stored on your heartbeat and
+shown to peers in the per-prompt snapshot and on the dashboard. Pass an empty
+string (`''`) to clear it. Like `status`, it accepts `--session-id <id>` for
+harnesses where the process walk can't resolve self.
+
+### show, trace
+
+Two ways to dig into a single agent, addressed by name (`agent-Foo` or `Foo`) or
+by `instance_id`.
+
+- **`show`** is the *current state* view: files held, last tool, declared task,
+  plus recent session history (latest title, recent prompts, tool-usage
+  tallies). A name is disambiguated to an `instance_id` by prefix match.
+- **`trace`** is the *history* view: it reconstructs one agent's lifecycle from
+  the event ledger in chronological order — session start, prompts, turns,
+  tools, heals, sweeps, file claims, exit. This is the answer to "what happened
+  to this agent / why did it vanish?" without hand-grepping the stream.
+  `--since <window>` bounds it (e.g. `1h`, `2d`), `--limit <n>` caps it (default
+  `200`), and `--all-tools` includes the per-tool noise that's hidden by default.
+
+### watch, ping, wait
+
+The coordination-in-motion commands.
+
+- **`watch`** streams peer state changes live (a file watcher on
+  `.harnery/active/`), printing one line per delta: started, ended, activity,
+  file claim, task change. `--poll-ms <n>` tunes the debounce (default `200`).
+- **`ping <name> <message...>`** appends a `handoff` entry to a peer's
+  scratchpad, prefixed `from agent-<me>:`. Use it to leave an actionable note
+  for a peer holding a file you need.
+- **`wait <name>`** blocks until a peer releases its files (its `files_touched`
+  empties) or exits. Scope it to specific paths with `--file <path>`
+  (repeatable), cap it with `--timeout <dur>` (suffix `s`/`m`/`h`/`d`; a bare
+  integer means minutes; default `60m`), and tune polling with `--poll-secs <n>`
+  (default `5`). `--quiet` suppresses progress lines; `--json` prints the
+  terminal status at exit. Pairs naturally with `ping`.
+
+### release-claim
+
+`release-claim <path>` drops a single file claim from your own heartbeat. It's
+an operator escape hatch for when an auto-release didn't fire (e.g. a session
+ended mid-edit) and a peer is now blocked on a path you no longer care about.
+
+### health, heal-events
+
+The layer's own diagnostics.
+
+- **`health`** is a one-screen rollup: heal events, schema validity,
+  commit-guard activity, council activity, and anomalies. Built for a daily
+  glance or dashboard ingestion. `--since <window>` sets the window (default
+  `24h`); `--json` for structured output.
+- **`heal-events`** surfaces PIDMAP_HEAL telemetry — how often the pid-map
+  self-heal had to correct drift. Sustained high counts point at an upstream
+  process-spawn bug. `--since <window>` (default `7d`), `--limit <n>` (default
+  `20`), plus `--json` / `--csv`.
+
+## Examples
+
+```bash
+# Orient yourself at the start of a turn
+harn agents whoami
+
+# See who else is active and what they're holding
+harn agents list
+
+# Declare your focus so peers can see it
+harn agents set-task "refactoring the ingest retry loop"
+
+# End-of-turn status box
+harn agents status
+
+# Dig into a peer's current state, then its full history
+harn agents show Foo
+harn agents trace Foo --since 2h
+
+# Leave a note for a peer holding a file you need, then wait for it
+harn agents ping Foo "can you release src/config.ts when you're done?"
+harn agents wait Foo --file src/config.ts --timeout 15m
+
+# Watch the layer live while agents work
+harn agents watch
+
+# Daily health glance
+harn agents health --since 24h
+```
+
+## The status box
+
+`harn agents status` prints a fixed-width box designed to paste straight into a
+reply so a human (and peers) can see your state at a glance:
+
+```
+┌─ agent-Foo ────────────────────────────────────────────────────────┐
+│ session    48m                                                      │
+│ task       refactoring the ingest retry loop                        │
+│ last turn  reworked the backoff, added metrics, tests green         │
+│ context    240K / 1M (24%)                                          │
+│ files      1 held                                                   │
+│ peers      Bar (CC), 3 files; Baz (CC)                              │
+│ time       Tue, Jul 14, 2026, 7:40 AM CDT                           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+`task` is what you declared with `set-task`; `last turn` is an auto-generated
+summary of your previous turn; `peers` lists the other active agents with their
+harness and file counts.
+
+## Notes
+
+- **Bash identity is process-level.** When resolving "who am I" from a shell
+  command, resolution walks the process tree to the session anchor. Inside a
+  subagent that shares the parent's process group, `whoami` reports the parent
+  group's name, not the subagent's.
+- **Name vs instance_id.** `show`, `trace`, `ping`, and `wait` all accept a
+  human name (case-insensitive, with or without the `agent-` prefix) and resolve
+  it to an `instance_id` by prefix match. Pass the `instance_id` directly if a
+  name is ambiguous.

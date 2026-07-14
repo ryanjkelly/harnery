@@ -1,0 +1,53 @@
+---
+title: harn session
+description: Run a command (or narrate) and emit canonical coordination events for follow-along.
+sidebar:
+  order: 6
+---
+
+```
+harn session <intent> -- <cmd> [args...]
+harn session log <message...>
+```
+
+Run a command through `harn session` and it does two things at once: forwards the child's stdout/stderr to your terminal verbatim, and emits canonical `command.start` / `command.output` / `command.end` events into `.harnery/events.ndjson`. That stream is what the `/live` web viewer and `harn agents watch` read, so a wrapped command shows up for anyone following along, line by line.
+
+Wrapping is optional for short commands — bare shell calls are already captured by the coordination hooks. Reach for `harn session` when you specifically want per-line output capture of a long or streaming command (a deploy, a long-running fetch, an SSH stream).
+
+## Arguments
+
+| Argument | Description |
+| --- | --- |
+| `<intent>` | One-line description of what this action is for. Lands on the emitted event's `intent` field. |
+| `<cmd...>` | The command to run. Prefix with `--` when it has its own flags, so they aren't parsed by `harn`. |
+
+## Subcommands
+
+```
+harn session log <message...>   # emit a narration event (no command run)
+```
+
+`harn session log` records a free-text `narration` event — useful for a planning or reasoning note with no command attached.
+
+## Examples
+
+```bash
+# Run a command and capture its output line-by-line
+harn session "Run the test suite" -- npm test
+
+# Commands with their own flags go after the -- separator
+harn session "Tail service logs" -- bash -c "journalctl -u my-service | grep -i error"
+
+# Leave a narration breadcrumb with no command
+harn session log "Starting the migration; expect ~10 min of downtime"
+```
+
+## Intent resolution
+
+The `<intent>` argument wins when non-empty. When it's blank, `harn session` falls back to the intent stamped by the pre-tool hook for this agent, and failing that, to the command line itself. So an event always carries something meaningful in its `intent` field rather than `(no intent)`.
+
+## Notes
+
+- Shell metacharacters (pipes, `&&`, redirects) are **not** interpreted — argv is passed straight to the child with no shell parse. Wrap them in an explicit `bash -c "…"` as shown above.
+- The child's exit code is preserved and re-raised, so `harn session` is transparent in scripts and CI.
+- The retired subcommands `trim`, `tail`, `clear`, and `path` are kept as no-op stubs for hook compatibility; live activity now flows only through `events.ndjson`.

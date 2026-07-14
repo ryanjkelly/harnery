@@ -1,0 +1,45 @@
+---
+title: harn tokens
+description: Count tokens in text or markdown files offline, using o200k_base as a Claude proxy.
+sidebar:
+  order: 29
+---
+
+```
+harn tokens [options] <files...>
+```
+
+Count the tokens in one or more text/markdown files without any network call. It uses OpenAI's `o200k_base` BPE tokenizer (the GPT-4o tokenizer) as a stand-in for Claude's — Claude doesn't publish a local tokenizer, but for English markdown the two agree to within roughly 3-5%. Handy for keeping a doc, prompt, or context file under a budget.
+
+## Arguments
+
+| Argument | Description |
+| --- | --- |
+| `<files...>` | One or more file paths. Globs are expanded by your shell, so `*.md` works. |
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--limit <n>` | Flag any file exceeding N tokens. The command exits non-zero if at least one file is over — usable as a CI/pre-commit budget check. |
+| `--format <type>` | Output format: `table` (default), `json`, or `plain`. |
+
+## Examples
+
+```bash
+# Count one file
+harn tokens README.md
+
+# Multiple files via a shell glob
+harn tokens docs/*.md
+
+# Fail (non-zero exit) if any file exceeds 10k tokens
+harn tokens --limit 10000 context.md
+
+# Machine-readable output
+harn tokens --format json docs/*.md
+```
+
+## Output
+
+The JSON envelope carries `ok`, the `tokenizer` name (`o200k_base`), the `limit`, a `count` of files, an `over_count`, and a `results[]` array. Each result has `path`, `chars`, `tokens`, `error` (null on success), and — when `--limit` is set — `over_limit` and `pct_of_limit`. A file that can't be read is reported per-row with its `error` set rather than aborting the whole run.

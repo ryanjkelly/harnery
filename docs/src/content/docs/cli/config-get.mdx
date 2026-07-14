@@ -1,0 +1,56 @@
+---
+title: harn config-get
+description: Read a single value from a JSON or YAML config file by dotted-path.
+sidebar:
+  order: 22
+---
+
+```
+harn config-get [options] <file> <key>
+```
+
+Extract one value from a JSON or YAML config file by dotted-path. It's the quick
+way to pull a single field — a version, a port, a nested flag — without reading
+the whole file or shelling out to `jq`. The file type is inferred from its
+extension (`.json`, `.yaml`, `.yml`).
+
+Bracket notation handles hyphenated keys and array indices that plain dots
+can't: `compilerOptions.paths["@/*"][0]`. Dotted and bracketed segments can be
+mixed freely.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--json` | Structured JSON envelope: `{ file, format, key, value, type, found }`. |
+| `--raw` | Print the raw string value with no JSON encoding wrapper. |
+
+By default a scalar (string, number, boolean, null) prints as-is and an
+object or array prints as pretty JSON. A missing key exits non-zero with a
+`key_not_found` error — unless `--json`, which always succeeds and reports
+`found: false`.
+
+## Examples
+
+```bash
+# Top-level scalar
+harn config-get package.json name
+
+# Nested path
+harn config-get config.yaml server.port
+
+# Object value prints as pretty JSON
+harn config-get tsconfig.json compilerOptions.paths
+
+# Bracket notation for a hyphenated / glob key and an array index
+harn config-get tsconfig.json 'compilerOptions.paths["@/*"][0]'
+
+# Full envelope, including the resolved type + found flag
+harn config-get package.json version --json
+```
+
+## Notes
+
+Both JSON and YAML are parsed into the same in-memory shape, so the same
+dotted-path syntax works against either format. A parse failure or an
+unsupported extension reports an error rather than a partial result.

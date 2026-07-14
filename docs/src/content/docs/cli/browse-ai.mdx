@@ -1,0 +1,70 @@
+---
+title: harn browse-ai
+description: agent-browser wrapper that returns accessibility-tree snapshots with element refs for LLM-driven navigation.
+sidebar:
+  order: 25
+---
+
+```
+harn browse-ai [options] <url>
+```
+
+Wraps Vercel Labs' `agent-browser` and returns an **accessibility-tree snapshot** with element refs (`@e1`, `@e2`) instead of raw DOM — a shape purpose-built for an LLM to read a page and then act on it by ref. It is the sister command of [`harn browse`](/cli/browse/) (Playwright): both share the cookie jar, but `browse-ai` returns the a11y tree while `browse` returns DOM/HTML/innerText.
+
+Two behavioral differences worth knowing. First, it runs as a **daemon**: successive calls reuse the same browser instance until something closes it, so a snapshot's `@e` refs stay valid for the `--click`/`--fill` call that follows. Second, there is no `--login` flow here — use `harn browse --login` for one-time auth, then both tools share the same persisted cookies.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--snapshot` | Print the accessibility tree. This is the default action when no other output flag is given. |
+| `-i, --interactive` | Snapshot interactive elements only (with `--snapshot`). |
+| `--screenshot <path>` | Save a screenshot to the given path. |
+| `--no-full-page` | Capture only the viewport (with `--screenshot`). |
+| `--annotate <path>` | Save an annotated screenshot with numbered labels (vision-model friendly). |
+| `--click <ref>` | Click an element ref (`@e5`) or a CSS selector after open. |
+| `--fill <ref=>value>` | Fill an input, e.g. `@e3=>hello`. The separator is `=>` so attribute selectors don't collide. |
+| `--press <key>` | Press a key after open/fill (`Enter`, `Tab`, etc.). |
+| `--wait-for <selector\|ms>` | Wait for a selector OR a number of milliseconds before output. |
+| `--evaluate <js>` | Run JS in the page context (escape hatch for power users). |
+| `--batch <commands>` | Run multiple steps in one session, semicolon-separated (see [Batch mode](#batch-mode)). |
+| `--network-har <path>` | Record a HAR file from `open()` through the end of the run. |
+| `--no-cookies` | Skip cookie-jar attach and persist. |
+| `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
+| `--json` | Emit a JSON envelope (snapshot, screenshot path, step results). |
+| `--timeout <ms>` | Per-step timeout in milliseconds. Default `60000`. |
+
+## Batch mode
+
+`--batch` runs several `agent-browser` steps in one daemon session, semicolon-separated. Because the browser instance persists, a `snapshot` step can hand `@e` refs to a later `click` in the same batch.
+
+```bash
+harn browse-ai https://example.com --batch "click @e5; wait 1000; snapshot"
+```
+
+## Output
+
+With `--json`, the envelope carries `url`, `steps[]` (each step's `{ step, ok, output }`), and `cookiesSaved`, plus `snapshot`, `screenshot`, `annotated`, and `har` when those were produced. Without `--json`, the snapshot text (if any) goes to stdout and screenshot/annotation paths are logged.
+
+## Examples
+
+```bash
+# Accessibility-tree snapshot of a page
+harn browse-ai https://example.com
+
+# Interactive elements only, as JSON
+harn browse-ai https://example.com --snapshot -i --json
+
+# Vision-model-friendly annotated screenshot with numbered labels
+harn browse-ai https://example.com --annotate /tmp/labeled.png
+
+# Fill and submit by ref (refs come from a prior snapshot in the same daemon session)
+harn browse-ai https://example.com --fill '@e3=>hello' --press Enter
+
+# Multi-step flow in one session, then a fresh snapshot
+harn browse-ai https://example.com --batch "click @e5; wait 1000; snapshot"
+```
+
+## Notes
+
+`harn browse-ai` requires the Vercel Labs `agent-browser` binary to be installed and on `PATH`. If it is missing, the command fails with an error rather than a snapshot.

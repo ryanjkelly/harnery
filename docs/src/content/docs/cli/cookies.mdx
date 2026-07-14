@@ -1,0 +1,60 @@
+---
+title: harn cookies
+description: Manage the shared browser cookie jar used by harn browse, harn browse-ai, and harn fetch.
+sidebar:
+  order: 28
+---
+
+```
+harn cookies [--store <path>] <subcommand> [options]
+```
+
+Manages the shared browser cookie store at `~/.cache/harnery/cookies.json`. The format is CDP-native, so the same jar is read and written by [`harn browse`](/cli/browse/), [`harn browse-ai`](/cli/browse-ai/), and [`harn fetch`](/cli/fetch/), and it round-trips cleanly with Playwright and agent-browser. Use it to inspect what's stored, set a cookie by hand, produce a `Cookie:` header for another tool, or move a jar between tools.
+
+Running `harn cookies` with no subcommand lists the store (same as `harn cookies list`). Use `--store <path>` for a separate jar (e.g. one per environment); it goes **before** the subcommand.
+
+## Subcommands
+
+```
+harn cookies list [--domain <d>] [--json]     # list cookies, grouped by domain
+harn cookies set <name> <value> --domain <d>  # set a cookie (creates the file if missing)
+harn cookies clear (--domain <d> | --all)     # remove matching cookies, or wipe everything
+harn cookies header <url>                      # print a Cookie: header value for the URL
+harn cookies import <file> [--replace]         # merge cookies from a JSON file
+harn cookies export <file>                     # write the store to a file
+harn cookies info [--json]                      # store path, size, counts, exporting tool
+```
+
+## Options by subcommand
+
+- **`list`** — `--domain <domain>` filters to one domain; `--json` for machine output.
+- **`set`** — `--domain <domain>` is **required** (e.g. `.example.com`). Also `--path <path>` (default `/`), `--secure`, `--httpOnly`, `--sameSite <Strict|Lax|None>`, `--expires <unix-seconds>` (omit for a session cookie).
+- **`clear`** — one of `--domain <domain>` (drop cookies for a single domain) or `--all` (wipe cookies + origins) is required.
+- **`import`** — `--replace` replaces the entire store instead of merging by `(name, domain, path)`.
+
+## Examples
+
+```bash
+# List everything in the default jar, grouped by domain
+harn cookies list
+
+# List one domain as JSON
+harn cookies list --domain .example.com --json
+
+# Set a secure session cookie
+harn cookies set session_id abc123 --domain .example.com --secure --httpOnly
+
+# Emit a Cookie: header for use with another HTTP client
+harn cookies header https://example.com/
+
+# Drop cookies for one domain, or wipe the whole jar
+harn cookies clear --domain example.com
+harn cookies clear --all
+
+# Move a jar between tools
+harn cookies export /path/to/backup.json
+harn cookies import /path/to/backup.json --replace
+
+# Operate on a separate jar (--store goes before the subcommand)
+harn cookies --store /path/to/other.json info
+```

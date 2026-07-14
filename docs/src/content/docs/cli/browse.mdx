@@ -1,0 +1,134 @@
+---
+title: harn browse
+description: Headless Chromium page navigation with a shared cookie jar, diagnostics capture, and visibility/layout/visual-regression checks.
+sidebar:
+  order: 24
+---
+
+```
+harn browse [options] <url>
+```
+
+Playwright-backed headless Chromium with a persistent profile and the shared cookie jar. Reach for it when you need a real browser — post-JavaScript DOM, a screenshot, console/network diagnostics, an interaction flow, or an assertion that a page actually renders the way it should. It is the Playwright sister of [`harn browse-ai`](/cli/browse-ai/) (which returns an accessibility tree instead of DOM/HTML).
+
+By default it writes a **trio of files** — `<prefix>.png`, `<prefix>.html`, `<prefix>.json` — for the iterate-and-inspect loop. The `.json` carries diagnostics: title, url, status, viewport, console events, console errors, page errors, and failed requests. `<prefix>` defaults to `~/.cache/harnery/browse/last`; override with `--out`. The print-mode flags (`--snapshot`, `--html`, `--json`) skip the files and write to stdout instead, which is what makes the scrape pipeline `harn browse <url> --html | harn read -` work.
+
+## Options
+
+### Output
+
+| Flag | Description |
+| --- | --- |
+| `--out <prefix>` | Output prefix for the trio (`<prefix>.png`, `.html`, `.json`). Default `~/.cache/harnery/browse/last`. |
+| `--no-screenshot` | Skip the `.png` (DOM + JSON only). |
+| `--dom-only` | Alias for `--no-screenshot`. |
+| `--no-full-page` | Capture only the viewport, not the full scrollable page. |
+| `--snapshot` | Print body `innerText` to stdout (skips file writes). |
+| `--html` | Print raw outer HTML to stdout (skips file writes; pair with `harn read -`). |
+| `--json` | Print the full JSON envelope to stdout (skips file writes). |
+| `--selector <css>` | Scope `--html` / `--snapshot` to one element. |
+| `--viewport <preset\|WxH>` | `mobile` (390×844), `tablet` (820×1180), `desktop` (1280×800), `hd` (1920×1080), or explicit `1920x1080`. Default `desktop`. |
+| `--network-har <path>` | Record network traffic to a HAR file (finalized on close). |
+
+### Interaction
+
+| Flag | Description |
+| --- | --- |
+| `--click <selector>` | Click this selector after navigation. |
+| `--fill <selector=>value>` | Fill an input, e.g. `input[name=q]=>hello`. The separator is `=>` (not `=`) so attribute selectors don't collide. |
+| `--press <key>` | Press a key after navigation/fill (e.g. `Enter`). |
+| `--wait-for <selector>` | Wait for this selector before capturing output. |
+| `--evaluate <js>` | Run JS in the page context after navigation; the result is printed to stdout and recorded in the envelope under `eval`. |
+| `--batch <steps>` | Run multiple steps in one session, semicolon-separated (see [Batch flows](#batch-flows)). |
+| `--wait-until <strategy>` | Navigation wait strategy: `load` \| `domcontentloaded` \| `networkidle` \| `commit`. Default `load`. |
+| `--timeout <ms>` | Navigation timeout in milliseconds. Default `30000`. |
+
+### Session
+
+| Flag | Description |
+| --- | --- |
+| `--login` | Headed mode for a one-time auth flow; cookies persist in the profile. |
+| `--headed` | Headed mode for a one-off (no auth-flow framing). |
+| `--no-cookies` | Skip cookie-jar attach and persist. |
+| `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
+| `--profile <dir>` | Persistent Chromium profile dir. Default `~/.cache/harnery/browser-profile`. |
+
+### Visibility + layout checks
+
+These assert on the rendered layout and surface findings in the JSON envelope; each `--*-fail` variant makes the check exit non-zero, so they slot into deploy/CI scripts. By default each check also annotates the screenshot with colored boxes.
+
+| Flag | Description |
+| --- | --- |
+| `--check-visible <selector>` | Occlusion check: samples an n×n grid inside the element's rect and reports `visibleRatio` plus the dominant occluder. Repeatable. |
+| `--check-visible-threshold <num>` | `visibleRatio` below which a target counts as occluded (0–1). Default `0.9`. |
+| `--check-visible-fail` | Exit non-zero if any target falls below threshold. |
+| `--check-visible-sample-grid <n>` | Grid size for occlusion sampling (n×n points). Default `3` (9 samples). |
+| `--no-check-visible-annotate` | Skip drawing target/occluder boxes (JSON still emitted). |
+| `--check-width <selector>` | Assert the selector's rect width is at least `--check-width-threshold` of the viewport. Reports `viewportFill` + `parentFill`. Repeatable. |
+| `--check-width-threshold <ratio>` | `viewportFill` below which a target counts as too narrow (0–1). Default `0.9`. |
+| `--check-width-fail` | Exit non-zero if any width target falls below threshold. |
+| `--no-check-width-annotate` | Skip drawing width-check boxes. |
+| `--check-overflow` | Assert no horizontal overflow (`document.scrollWidth <= window.innerWidth`); surfaces protruding elements. |
+| `--check-overflow-fail` | Exit non-zero if horizontal overflow is detected. |
+| `--no-check-overflow-annotate` | Skip drawing overflow annotations. |
+| `--check-runts [selector]` | Scan text blocks for runts (a single word alone on a block's last visual line), counting words via per-word Range rects. Optional selector scopes the sweep. |
+| `--check-runts-min-chars <n>` | Minimum block text length to scan. Default `40`. |
+| `--check-runts-fail` | Exit non-zero if any runt is detected. |
+| `--no-check-runts-annotate` | Skip drawing runt boxes. |
+
+### Visual regression
+
+| Flag | Description |
+| --- | --- |
+| `--baseline <name>` | Save the captured screenshot as a named baseline at `~/.cache/harnery/visual-baselines/<name>.png`. |
+| `--diff <name>` | Pixel-diff the capture against the named baseline; writes a diff PNG next to the screenshot and reports `mismatchedPixels` + `similarity`. |
+| `--diff-threshold <ratio>` | `mismatchRatio` below which the diff is a match (0–1). Default `0.01` (1%). |
+| `--diff-fail` | Exit non-zero if `mismatchRatio` exceeds the threshold. |
+
+### Diagnostics
+
+| Flag | Description |
+| --- | --- |
+| `--no-dev-overlay` | Skip auto-capture of Next.js dev-overlay issues (see [Dev-overlay capture](#dev-overlay-capture)). |
+
+## Batch flows
+
+`--batch` runs several steps in a single browser session, semicolon-separated. Each step is one verb: `click <selector>`, `fill <selector=>value>`, `press <key>`, `wait <selector|ms>`, `eval <js>`, `reload`, or `clipboard [<label>]`. `reload` preserves `sessionStorage` and cookies, which is how you reproduce `sessionStorage`-restored UI state. `clipboard` reads the system clipboard via `navigator.clipboard.readText()` and records each read in the envelope under `batchClipboardReads`.
+
+```bash
+harn browse https://example.com --batch "click button.load-more; wait 1500; reload; wait 3000"
+```
+
+## Dev-overlay capture
+
+On by default. When a `<nextjs-portal>` shadow root is present, `browse` reads the queued dev-overlay issues (kind/code/message/stack) and reports them under `devOverlay` in the envelope. This matters because Next.js 16 + React 19 route hydration errors and most React warnings through `onCaughtError` into next-devtools' error queue, **not** through `console.error` — so they never appear in `consoleErrors`. Pass `--no-dev-overlay` to skip the capture.
+
+## Output
+
+In print mode (`--json`) or the trio's `.json` file, the envelope carries: `url`, `title`, `status`, `viewport`, `consoleEvents`, `consoleErrors`, `pageErrors`, `failedRequests`, and — when the corresponding flag ran — `eval`, `har`, `visibility`, `width`, `overflow`, `runts`, `devOverlay`, `batchClipboardReads`, `baselineSaved`, and `diff`.
+
+## Examples
+
+```bash
+# Default trio: screenshot + DOM + diagnostics JSON at the default prefix
+harn browse https://example.com
+
+# Scrape-to-markdown pipeline
+harn browse https://example.com --html | harn read -
+
+# Mobile viewport, custom output prefix, viewport-only screenshot
+harn browse https://example.com --viewport mobile --no-full-page --out /tmp/run
+
+# Fill a search box, submit, and wait for results before capturing
+harn browse https://example.com --fill 'input[name=q]=>hello' --click 'button[type=submit]' --wait-for 'main .results'
+
+# Assert layout on mobile — break the build on overflow or narrow tables
+harn browse https://example.com --viewport 430x932 --check-width 'table' --check-overflow --check-overflow-fail
+
+# Save a visual baseline, then diff a later run against it
+harn browse https://example.com --baseline home-desktop
+harn browse https://example.com --diff home-desktop --diff-fail
+
+# One-time headed login; cookies persist to the shared profile for later runs
+harn browse --login https://example.com
+```

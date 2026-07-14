@@ -1,0 +1,43 @@
+---
+title: harn context
+description: One-shot orientation snapshot — self, time, repo, commits, submodules, and active peers.
+sidebar:
+  order: 8
+---
+
+```
+harn context [options]
+```
+
+Aggregates who you are, the current time, repo state, recent commits, submodule status, and active peers into one short summary. Reach for it at session start, after a context compaction, or before dispatching subagents — anywhere you want to re-orient quickly. Each section is gathered independently and fails open: a section that can't be read renders `(unavailable: <reason>)` and the rest still print.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--section <name>` | Limit output to specific sections (comma-list or repeated). Valid: `self`, `time`, `repo`, `commits`, `submodules`, `peers`, `services`. |
+| `--include <name>` | Add an opt-in section (e.g. `services`) on top of the defaults. |
+| `--show-clean` | List clean submodules instead of hiding them. |
+| `--json` | Emit a structured JSON envelope instead of the rendered text. |
+
+The default sections are `self`, `time`, `repo`, `commits`, `submodules`, and `peers`. `services` (docker compose state) is opt-in because it shells out and is slower.
+
+## Examples
+
+```bash
+# Full default snapshot
+harn context
+
+# Just yourself and your active peers
+harn context --section self,peers
+
+# Add the opt-in docker compose section
+harn context --include services
+
+# Show clean submodules too, as JSON
+harn context --show-clean --json
+```
+
+## Output
+
+`--json` returns an envelope with one key per requested section (`self`, `time`, `repo`, `commits`, `submodules`, `peers`, `services`) plus a `meta` block carrying the elapsed time. A section that failed to gather carries an `error` field instead of its data, so consumers can distinguish "unavailable" from "empty".

@@ -1,0 +1,68 @@
+---
+title: harn edit-batch
+description: One find/replace across many files in a single call — literal or regex, with a dry-run preview.
+sidebar:
+  order: 23
+---
+
+```
+harn edit-batch [options] <old> <new> <files...>
+```
+
+Run one find/replace across N files in a single call. It exists to collapse the
+recurring "rename `oldName` → `newName` everywhere" pattern that would otherwise
+be a long sequence of one-file-at-a-time edits.
+
+Literal-string matching is the default (regex specials in `<old>` are escaped
+for you, so you can paste anything). Pass `--regex` to treat `<old>` as a JS
+regular expression and `<new>` as its replacement template. Only the first match
+per file is replaced unless you pass `--all`.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--all` | Replace every occurrence in each file (default: first match only). |
+| `--regex` | Treat `<old>` as a JS regex and `<new>` as the replacement template. |
+| `--regex-flags <flags>` | Regex flags such as `i` for case-insensitive. Implies `--regex`. |
+| `--dry-run` | Report what would change without writing any file. |
+| `--require-match` | Exit `1` if any listed file had zero matches. |
+| `--json` | Structured JSON envelope. |
+
+## Examples
+
+```bash
+# Rename a symbol in the first occurrence of each file (literal)
+harn edit-batch oldName newName src/a.ts src/b.ts
+
+# Replace every occurrence in each file
+harn edit-batch --all oldName newName src/*.ts
+
+# Regex mode with a capture-group reference
+harn edit-batch --regex 'v(\d+)\.0' 'v$1.1' package.json README.md
+
+# Case-insensitive regex (--regex-flags implies --regex)
+harn edit-batch --regex-flags i 'todo' 'DONE' notes.md
+
+# Preview first, write nothing
+harn edit-batch --dry-run oldName newName src/*.ts
+
+# Fail the command if any file didn't match
+harn edit-batch --require-match oldName newName src/a.ts src/b.ts
+```
+
+## Output
+
+The default report lists each file with its match count, replacement count, and
+byte delta, then a totals line. The `--json` envelope carries `{ old, new, mode,
+all, dry_run, files[], total_matches, total_replacements, files_modified,
+zero_match_files[] }`, where each `files[]` entry has `path`, `matched`,
+`replaced`, `bytes_before`, `bytes_after`, `written`, and `error`.
+
+## Notes
+
+Writes are atomic per file — each file is written to a temp path and renamed
+into place — but the batch is **not** transactional across the set: if one file
+errors midway, the files already written stay written. Preview with `--dry-run`
+when that matters. A file that isn't found is reported as an error and skipped
+rather than aborting the whole run.

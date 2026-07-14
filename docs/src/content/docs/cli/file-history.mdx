@@ -1,0 +1,65 @@
+---
+title: harn file-history
+description: Concise per-file git history — summary stats plus the most-recent commits with line impact.
+sidebar:
+  order: 21
+---
+
+```
+harn file-history [options] <path>
+```
+
+A concise per-file git log for one path: total commits, distinct authors,
+first/last touched dates, cumulative line impact, and the N most-recent commits
+with their `+/-` counts. Reach for it when you want the shape of a file's
+history without scrolling `git log` or reading the whole thing.
+
+It follows renames (`git log --follow`) and is repo-aware: the log runs inside
+whichever repository the path's directory resolves to, so a file inside a nested
+checkout gets that checkout's history rather than the outer one's.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--limit <n>` | Show the N most-recent commits (default `20`). |
+| `--since <date>` | Restrict to commits since DATE — accepts git's date syntax (`'30 days ago'`, `'2026-01-01'`). |
+| `--author <pat>` | Filter to commits whose author matches PAT (substring). |
+| `--json` | Structured JSON envelope instead of the text report. |
+
+## Examples
+
+```bash
+# Default: summary stats + 20 most-recent commits
+harn file-history src/index.ts
+
+# Just the last 5 commits
+harn file-history src/index.ts --limit 5
+
+# Only what changed in the last month
+harn file-history README.md --since "30 days ago"
+
+# One author's touches on a file
+harn file-history src/config.ts --author jane
+
+# Machine-readable output
+harn file-history src/index.ts --json
+```
+
+## Output
+
+The default report leads with a summary line (`N commits by M authors,
++added/-removed lines`), the first and last commit shas with dates, a
+top-authors list, and the recent-commits table (short sha, date, line delta,
+author, subject).
+
+The `--json` envelope carries `{ file, repo, total_commits, authors[],
+first_commit, last_commit, total_added, total_removed, commits[] }`, where each
+entry in `commits[]` has `sha`, `short_sha`, `author`, `date`, `subject`,
+`added`, and `removed`.
+
+## Notes
+
+Merge commits are excluded, so the line-impact totals reflect real edits rather
+than merge churn. A path with no recorded history reports zero commits rather
+than erroring.
