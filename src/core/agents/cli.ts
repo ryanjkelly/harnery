@@ -164,6 +164,39 @@ async function handleProject(root: string, rest: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * Append a canonical `claim.release` event for a path dropped from an owner's
+ * files_touched. The path is canonicalized to repo-relative (matching the
+ * projector's normalization) so the subtraction matches on replay regardless
+ * of the form the caller passed. Soft-fails: a failed emit must never break
+ * the release/kill flow — the file mutation already happened.
+ */
+async function emitClaimRelease(
+  root: string,
+  owner: string,
+  hb: { session_id?: string; platform?: string },
+  path: string,
+  reason: "explicit" | "heal",
+): Promise<void> {
+  try {
+    const { emit } = await import("./events/emit.ts");
+    const canonical = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+    const platform = hb.platform;
+    const harness =
+      platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
+    emit(root, {
+      event_type: "claim.release",
+      instance_id: owner,
+      session_id: hb.session_id ?? owner,
+      harness,
+      source: "agent-coord",
+      data: { path: canonical, reason },
+    });
+  } catch {
+    /* soft-fail: never break the caller */
+  }
+}
+
 async function handleStateAction(root: string, action: string, rest: string[]): Promise<number> {
   const writer = await import("./state/heartbeat-writer.ts");
   const [owner, ...args] = rest;
@@ -210,15 +243,37 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         process.stderr.write("agent-coord release-claim: missing <path>\n");
         return 2;
       }
+      const before = writer.readHeartbeat(root, owner);
       const hb = writer.releaseClaim(root, owner, path);
       if (!hb) return 1;
+      // Durability: the projector rebuilds files_touched by replaying the
+      // permanent Edit/Write events, so a file-only release is silently
+      // reverted by the next full replay. Emitting claim.release puts the
+      // subtraction into the stream so every future replay honors it. Only
+      // emit when the release actually removed a held path (idempotent
+      // re-releases stay quiet).
+      const heldBefore = before?.files_touched?.length ?? 0;
+      const heldAfter = hb.files_touched?.length ?? 0;
+      if (heldBefore > heldAfter) {
+        await emitClaimRelease(root, owner, before ?? hb, path, "explicit");
+      }
       process.stdout.write(
         `${JSON.stringify({ instance_id: owner, files_touched: hb.files_touched })}\n`,
       );
       return 0;
     }
     case "kill-heartbeat": {
+      // Read held claims BEFORE the unlink so they can be released durably —
+      // killing only the file leaves the claims resurrectable from the
+      // permanent Edit/Write events on the next full replay (observed: a
+      // 6-day-dead agent's claims returning after its heartbeat was killed).
+      const before = writer.readHeartbeat(root, owner);
       const ok = writer.killHeartbeat(root, owner);
+      if (ok && before) {
+        for (const held of before.files_touched ?? []) {
+          await emitClaimRelease(root, owner, before, held, "heal");
+        }
+      }
       process.stdout.write(`${JSON.stringify({ instance_id: owner, removed: ok })}\n`);
       return ok ? 0 : 1;
     }

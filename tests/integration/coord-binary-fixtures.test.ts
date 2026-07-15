@@ -652,3 +652,77 @@ describe("harn agents harness-probe (TS-native)", () => {
     expect(data.dispatch_entry).toBe("harnery/bin/agent-hook session-start --harness claude-code");
   });
 });
+
+/**
+ * claim.release durability at the binary level: `agent-coord release-claim`
+ * and `agent-coord kill-heartbeat` must append claim.release events so the
+ * projector's replay honors the release (a file-only mutation is reverted by
+ * the next replayAll drain — the "released claims came back" bug).
+ */
+describe("agent-coord release-claim / kill-heartbeat: stream-durable releases", () => {
+  test("release-claim drops the path AND appends a claim.release event (canonical path, reason explicit)", () => {
+    const root = makeSandbox();
+    const owner = "rel-bin-1";
+    seedHeartbeat(root, owner, {
+      files: [`${root}/src/a.ts`, `${root}/src/b.ts`],
+      platform: "claude_code",
+    });
+
+    const r = run(AGENT_COORD, ["release-claim", owner, `${root}/src/a.ts`], "", root);
+    expect(r.status).toBe(0);
+
+    const hb = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${owner}.json`), "utf8"),
+    ) as { files_touched: string[] };
+    expect(hb.files_touched).toEqual([`${root}/src/b.ts`]);
+
+    const lines = events(root)
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const releases = lines.filter((e) => e.event_type === "claim.release");
+    expect(releases.length).toBe(1);
+    const data = releases[0]!.data as Record<string, unknown>;
+    expect(data.path).toBe("src/a.ts"); // canonicalized to repo-relative
+    expect(data.reason).toBe("explicit");
+    expect(releases[0]!.instance_id).toBe(owner);
+  });
+
+  test("release-claim of a path not held emits nothing (idempotent re-release stays quiet)", () => {
+    const root = makeSandbox();
+    const owner = "rel-bin-2";
+    seedHeartbeat(root, owner, { files: [`${root}/src/a.ts`] });
+
+    const r = run(AGENT_COORD, ["release-claim", owner, `${root}/src/never-held.ts`], "", root);
+    expect(r.status).toBe(0);
+    expect(events(root)).not.toContain("claim.release");
+  });
+
+  test("kill-heartbeat releases every held claim durably (reason heal) before removing the file", () => {
+    const root = makeSandbox();
+    const owner = "kill-bin-1";
+    seedHeartbeat(root, owner, {
+      files: [`${root}/src/a.ts`, "src/b.ts"],
+      platform: "codex",
+    });
+
+    const r = run(AGENT_COORD, ["kill-heartbeat", owner], "", root);
+    expect(r.status).toBe(0);
+    expect(existsSync(path.join(root, ".harnery", "active", `${owner}.json`))).toBe(false);
+
+    const lines = events(root)
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const releases = lines.filter((e) => e.event_type === "claim.release");
+    expect(releases.length).toBe(2);
+    const paths = releases.map((e) => (e.data as Record<string, unknown>).path).sort();
+    expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
+    for (const rel of releases) {
+      expect((rel.data as Record<string, unknown>).reason).toBe("heal");
+      expect(rel.harness).toBe("codex");
+    }
+  });
+});

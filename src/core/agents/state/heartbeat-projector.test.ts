@@ -445,3 +445,84 @@ describe("projectHeartbeats: last_tool_target intent-comment clipping", () => {
     expect(res.perOwner["read-owner"]!.last_tool_target).toBe("/repo/x.ts");
   });
 });
+
+/**
+ * Locks claim.release durability: the projector rebuilds files_touched from
+ * permanent Edit/Write events, so a release only survives a full replay if a
+ * claim.release event exists in the stream AND the projector's subtraction
+ * matches across path forms (Edit events report absolute-under-coordRoot;
+ * release-claim canonicalizes to repo-relative). The exact-string compare this
+ * replaces silently no-op'd on the form mismatch, resurrecting released claims
+ * on the next replayAll drain.
+ */
+describe("projectHeartbeats: claim.release durability + path-form normalization", () => {
+  const OWNER = "rel-owner";
+
+  function editEvent(file: string, ts: string, id: string) {
+    return {
+      event_id: id,
+      event_type: "tool.pre_use",
+      ts,
+      instance_id: OWNER,
+      session_id: OWNER,
+      harness: "claude-code",
+      source: "test",
+      data: { tool_name: "Edit", tool_input: JSON.stringify({ file_path: file }) },
+    };
+  }
+
+  function releaseEvent(p: string, ts: string, id: string) {
+    return {
+      event_id: id,
+      event_type: "claim.release",
+      ts,
+      instance_id: OWNER,
+      session_id: OWNER,
+      harness: "claude-code",
+      source: "agent-coord",
+      data: { path: p, reason: "explicit" },
+    };
+  }
+
+  test("absolute Edit claim is subtracted by a repo-relative release on full replay", () => {
+    const root = freshRoot();
+    const events = [
+      editEvent(`${root}/src/a.ts`, "2026-06-04T00:00:01Z", "01REL01"),
+      releaseEvent("src/a.ts", "2026-06-04T00:00:02Z", "01REL02"),
+    ] as unknown as Events;
+    const res = projectHeartbeats(root, events);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual([]);
+  });
+
+  test("repo-relative claim is subtracted by an absolute release", () => {
+    const root = freshRoot();
+    const events = [
+      editEvent("src/b.ts", "2026-06-04T00:00:01Z", "01REL03"),
+      releaseEvent(`${root}/src/b.ts`, "2026-06-04T00:00:02Z", "01REL04"),
+    ] as unknown as Events;
+    const res = projectHeartbeats(root, events);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual([]);
+  });
+
+  test("an Edit AFTER the release legitimately re-claims the path", () => {
+    const root = freshRoot();
+    const events = [
+      editEvent(`${root}/src/c.ts`, "2026-06-04T00:00:01Z", "01REL05"),
+      releaseEvent("src/c.ts", "2026-06-04T00:00:02Z", "01REL06"),
+      editEvent(`${root}/src/c.ts`, "2026-06-04T00:00:03Z", "01REL07"),
+    ] as unknown as Events;
+    const res = projectHeartbeats(root, events);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual([`${root}/src/c.ts`]);
+  });
+
+  test("release of one path leaves sibling claims intact", () => {
+    const root = freshRoot();
+    const events = [
+      editEvent(`${root}/src/keep.ts`, "2026-06-04T00:00:01Z", "01REL08"),
+      editEvent(`${root}/src/drop.ts`, "2026-06-04T00:00:02Z", "01REL09"),
+      releaseEvent("src/drop.ts", "2026-06-04T00:00:03Z", "01REL10"),
+    ] as unknown as Events;
+    const res = projectHeartbeats(root, events);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual([`${root}/src/keep.ts`]);
+  });
+});

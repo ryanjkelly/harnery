@@ -88,7 +88,7 @@ export function projectHeartbeats(
       if (!existing && TERMINAL.has(ev.event_type)) continue;
       perOwner[ev.instance_id] = existing ?? seed(ev, coordRoot);
     }
-    apply(perOwner[ev.instance_id]!, ev);
+    apply(perOwner[ev.instance_id]!, ev, coordRoot);
   }
 
   const written: string[] = [];
@@ -153,7 +153,7 @@ function seed(ev: CanonicalEvent, coordRoot: string): V2Heartbeat {
   return hb;
 }
 
-function apply(hb: V2Heartbeat, ev: CanonicalEvent): void {
+function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
   hb.last_heartbeat = ev.ts;
   hb.last_event_id = ev.event_id;
   hb.events_applied += 1;
@@ -285,7 +285,15 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent): void {
     case "claim.release": {
       const path = pickStr(d, "path");
       if (path && hb.files_touched) {
-        hb.files_touched = hb.files_touched.filter((p) => p !== path);
+        // files_touched holds a mix of absolute-under-coordRoot and canonical
+        // repo-relative entries (Edit events report absolute; release-claim
+        // canonicalizes to relative). Normalize both sides so a release
+        // subtracts regardless of form — an exact-string compare silently
+        // no-ops on the mismatch and the claim resurrects on the next replay.
+        const norm = (p: string): string =>
+          p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
+        const target = norm(path);
+        hb.files_touched = hb.files_touched.filter((p) => norm(p) !== target);
       }
       break;
     }
