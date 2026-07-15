@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -495,6 +495,36 @@ describe("boolean composition (--and / --without)", () => {
     const rows = r.repos.flatMap((repo) => repo.matches);
     expect(["all3.md", "both.md"]).toContain(rows[0]?.file.split("/").at(-1) ?? "");
   });
+
+  // Root reads through chmod 000, so the trigger can't fire under root/CI-as-root.
+  test.skipIf(typeof process.getuid === "function" && process.getuid() === 0)(
+    "partial membership scan REJECTS the command (incomplete set can't prove absence)",
+    async () => {
+      const strictDir = join(fixtureRoot, "strict");
+      mkdirSync(strictDir, { recursive: true });
+      writeFileSync(join(strictDir, "ok.md"), "zapple zbanana\n");
+      writeFileSync(join(strictDir, "locked.md"), "zbanana\n");
+      chmodSync(join(strictDir, "locked.md"), 0o000);
+      try {
+        // The --and membership scan hits the unreadable file (engine exit 2)
+        // and must reject — NOT treat the partial set as authoritative.
+        expect(runWith("grep", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
+          /exited 2/,
+        );
+        if (hasRg) {
+          expect(runWith("rg", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
+            /exited 2/,
+          );
+        }
+        // The PRIMARY scan stays lenient: same tree without --and still
+        // surfaces the readable file's matches.
+        const lenient = await bothEngines("zapple", [strictDir], {});
+        expect(lenient.total_matches).toBe(1);
+      } finally {
+        chmodSync(join(strictDir, "locked.md"), 0o644);
+      }
+    },
+  );
 
   test("--and works with -l and -c output modes", async () => {
     const l = await bothEngines("zapple", [compDir()], { and: ["zbanana"], filesOnly: true });
