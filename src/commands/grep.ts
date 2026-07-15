@@ -75,6 +75,7 @@ export interface GrepOpts {
   wholeWord?: boolean;
   literal?: boolean;
   filesOnly?: boolean;
+  files?: boolean;
   count?: boolean;
   context?: string;
   maxCount?: string;
@@ -111,6 +112,11 @@ export function registerGrepCommand(
     .option("-w, --whole-word", "Match whole words only")
     .option("-F, --literal", "Treat <pattern> as a literal string (no regex)")
     .option("-l, --files-only", "Only print file names containing a match")
+    .option(
+      "--files",
+      "Filename search: treat <pattern> as a filename glob and list matching files " +
+        "(rg --files when available, POSIX find fallback)",
+    )
     .option("-c, --count", "Print match count per file (suppresses content)")
     .option("-C, --context <n>", "Print N lines of context around each match", "0")
     .option("--max-count <n>", "Stop after N matches per file")
@@ -141,7 +147,7 @@ function collect(value: string, prev: string[]): string[] {
 
 export interface GrepResult {
   pattern: string;
-  mode: "regex" | "literal";
+  mode: "regex" | "literal" | "files";
   engine: GrepEngine;
   repos: { name: string; cwd: string; matches: Match[]; truncated: boolean }[];
   total_matches: number;
@@ -180,6 +186,22 @@ export async function runGrep(
   context: HarneryProgramContext | undefined,
 ): Promise<GrepResult> {
   if (!pattern) throw new Error("pattern required");
+  if (opts.files) {
+    // Filename mode lists files by name glob; content-search flags make no
+    // sense here — reject loudly rather than silently ignoring them.
+    const incompatible: [unknown, string][] = [
+      [opts.lang, "--lang"],
+      [opts.count, "-c/--count"],
+      [opts.wholeWord, "-w/--whole-word"],
+      [opts.literal, "-F/--literal"],
+      [opts.maxCount, "--max-count"],
+      [opts.include?.length, "--include"],
+      [Number.parseInt(opts.context ?? "0", 10) > 0 ? true : undefined, "-C/--context"],
+    ];
+    for (const [set, flag] of incompatible) {
+      if (set) throw new Error(`${flag} does not apply to --files (filename glob) mode`);
+    }
+  }
   const started = Date.now();
 
   const engine = await resolveEngine();
@@ -236,7 +258,7 @@ export async function runGrep(
 
   return {
     pattern,
-    mode: opts.literal ? "literal" : "regex",
+    mode: opts.files ? "files" : opts.literal ? "literal" : "regex",
     engine,
     repos: allRepoResults,
     total_matches: totalMatches,
@@ -291,12 +313,17 @@ async function runGrepInRepo(
   engine: GrepEngine,
   extraExcludeDirs: readonly string[],
 ): Promise<Match[]> {
-  const args =
-    engine === "rg"
-      ? buildRgArgs(pattern, paths, opts, extraExcludeDirs)
-      : buildGrepArgs(pattern, paths, opts, extraExcludeDirs);
+  // Filename mode: `rg --files` when available; POSIX `find` otherwise (GNU
+  // grep has no list-by-name mode). Content mode: rg / grep as selected.
+  const [bin, args] = opts.files
+    ? engine === "rg"
+      ? (["rg", buildRgFilesArgs(pattern, paths, opts, extraExcludeDirs)] as const)
+      : (["find", buildFindArgs(pattern, paths, opts, extraExcludeDirs)] as const)
+    : engine === "rg"
+      ? (["rg", buildRgArgs(pattern, paths, opts, extraExcludeDirs)] as const)
+      : (["grep", buildGrepArgs(pattern, paths, opts, extraExcludeDirs)] as const);
 
-  let matches = await execSearch(engine, args, cwd, limit);
+  let matches = await execSearch(bin, args, cwd, limit);
   // -c mode: GNU grep prints a `path:0` row for every searched file; ripgrep
   // omits zero-count rows. Filter zeros on both engines so output matches.
   if (opts.count) matches = matches.filter((m) => m.line > 0);
@@ -381,7 +408,15 @@ function buildRgArgs(
   }
 
   // Gitignore-style globs: a bare name matches (and prunes) at any depth,
-  // mirroring grep's --exclude-dir / --exclude basename semantics.
+  // mirroring grep's --exclude-dir / --exclude basename semantics. ORDER
+  // MATTERS: rg globs are last-match-wins, so positives (includes/lang) go
+  // first and negatives (excludes) last — otherwise `--include '*.md'` would
+  // re-include a .md file inside an excluded node_modules/. grep's
+  // --exclude-dir always beats --include, so this keeps the engines aligned.
+  const langGlobs = resolveLangGlobs(opts);
+  if (langGlobs) for (const g of langGlobs) args.push(`--glob=${g}`);
+  for (const g of opts.include ?? []) args.push(`--glob=${g}`);
+
   if (!opts.noDefaultExcludes) {
     for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--glob=!${d}`);
     for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--glob=!${f}`);
@@ -389,18 +424,70 @@ function buildRgArgs(
   for (const d of extraExcludeDirs) args.push(`--glob=!${d}`);
   for (const e of opts.exclude ?? []) args.push(`--glob=!${e}`);
 
-  const langGlobs = resolveLangGlobs(opts);
-  if (langGlobs) for (const g of langGlobs) args.push(`--glob=${g}`);
-  for (const g of opts.include ?? []) args.push(`--glob=${g}`);
-
   args.push("--", pattern);
   if (paths.length > 0) args.push(...paths);
   else args.push(".");
   return args;
 }
 
+/**
+ * Filename mode via ripgrep: `--files` lists files; a single positive glob
+ * acts as a whitelist, negative globs prune. `--iglob` gives -i semantics.
+ */
+function buildRgFilesArgs(
+  pattern: string,
+  paths: string[],
+  opts: GrepOpts,
+  extraExcludeDirs: readonly string[],
+): string[] {
+  const args: string[] = ["--files", "--hidden", "--no-ignore", "--no-config", "--color=never"];
+  // Positive pattern FIRST, negatives last (rg globs are last-match-wins;
+  // excludes must beat the pattern — see the ordering note in buildRgArgs).
+  args.push(`${opts.ignoreCase ? "--iglob" : "--glob"}=${pattern}`);
+  if (!opts.noDefaultExcludes) {
+    for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--glob=!${d}`);
+    for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--glob=!${f}`);
+  }
+  for (const d of extraExcludeDirs) args.push(`--glob=!${d}`);
+  for (const e of opts.exclude ?? []) args.push(`--glob=!${e}`);
+  if (paths.length > 0) args.push(...paths);
+  else args.push(".");
+  return args;
+}
+
+/**
+ * Filename mode via POSIX find (the no-ripgrep fallback):
+ *   find <paths> ( -name d1 -o -name d2 ... ) -prune -o -type f -name <glob> [! -name <ex>]... -print
+ * Sticks to POSIX operators (`(`, `-o`, `!`) so BSD/macOS find behaves the same.
+ */
+function buildFindArgs(
+  pattern: string,
+  paths: string[],
+  opts: GrepOpts,
+  extraExcludeDirs: readonly string[],
+): string[] {
+  const args: string[] = paths.length > 0 ? [...paths] : ["."];
+  const pruneDirs = [...(opts.noDefaultExcludes ? [] : DEFAULT_EXCLUDE_DIRS), ...extraExcludeDirs];
+  if (pruneDirs.length > 0) {
+    args.push("(");
+    pruneDirs.forEach((d, i) => {
+      if (i > 0) args.push("-o");
+      args.push("-name", d);
+    });
+    args.push(")", "-prune", "-o");
+  }
+  args.push("-type", "f", opts.ignoreCase ? "-iname" : "-name", pattern);
+  const fileExcludes = [
+    ...(opts.noDefaultExcludes ? [] : DEFAULT_EXCLUDE_FILES),
+    ...(opts.exclude ?? []),
+  ];
+  for (const e of fileExcludes) args.push("!", "-name", e);
+  args.push("-print");
+  return args;
+}
+
 function execSearch(
-  bin: GrepEngine,
+  bin: string,
   args: string[],
   cwd: string,
   limit: number,
@@ -501,7 +588,7 @@ function renderResult(r: GrepResult, opts: GrepOpts): string {
       );
     }
     for (const m of repo.matches) {
-      if (opts.filesOnly) {
+      if (opts.filesOnly || opts.files) {
         lines.push(m.file);
       } else if (opts.count) {
         lines.push(`${m.file}:${m.line}`);
@@ -514,7 +601,8 @@ function renderResult(r: GrepResult, opts: GrepOpts): string {
     }
   }
   if (r.total_matches === 0) {
-    lines.push(`(no matches for /${r.pattern}/${r.mode === "literal" ? " (literal)" : ""})`);
+    const modeTag = r.mode === "literal" ? " (literal)" : r.mode === "files" ? " (files)" : "";
+    lines.push(`(no matches for /${r.pattern}/${modeTag})`);
   } else if (r.repos.length > 1 || r.truncated) {
     lines.push("");
     const summary = `${r.total_matches} match${r.total_matches === 1 ? "" : "es"} across ${r.total_files} file${r.total_files === 1 ? "" : "s"}`;

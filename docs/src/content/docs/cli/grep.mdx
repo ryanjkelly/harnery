@@ -55,6 +55,7 @@ config in dotdirs (`.agents/`, `.claude/`, …) stays findable.
 | `-w, --whole-word` | Match whole words only. |
 | `-F, --literal` | Treat `<pattern>` as a literal string (no regex). |
 | `-l, --files-only` | Print only the names of files containing a match. |
+| `--files` | Filename search: treat `<pattern>` as a filename glob and list matching files (no content search). |
 | `-c, --count` | Print a match count per file (suppresses content). |
 | `-C, --context <n>` | Print N lines of context around each match (default `0`). |
 | `--max-count <n>` | Stop after N matches per file. |
@@ -98,7 +99,22 @@ harn grep "deprecated" -l --include "*.md"
 
 # Two lines of context, capped at 50 total matches, as JSON
 harn grep "throw new Error" -C 2 --limit 50 --json
+
+# Filename search: find files by name glob across every repo
+harn grep '*.env.example' --files --all-repos
+harn grep 'Dockerfile*' --files -i
 ```
+
+## Filename mode (`--files`)
+
+`--files` switches from content search to filename search: `<pattern>` becomes
+a filename glob (basename semantics — `'*.md'` matches at any depth) and the
+output is the matching file paths. Backed by `rg --files` when ripgrep is
+available, POSIX `find` otherwise — results are identical (same parity suite).
+The exclude lists, `--repo` / `--all-repos` scoping, `-i`, `--exclude`, and
+`--limit` all apply; content-search flags (`--lang`, `-c`, `-C`, `-w`, `-F`,
+`--max-count`, `--include`) are rejected with a clear error. Quote the glob so
+your shell doesn't expand it.
 
 ## Output
 

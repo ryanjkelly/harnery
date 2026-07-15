@@ -70,6 +70,9 @@ beforeAll(() => {
   write(".dotconf/hidden.ts", "hidden needle\n");
   // Default-excluded dir: never searched.
   write("node_modules/dep/index.js", "needle inside node_modules\n");
+  // Same extension as a positive include glob — must STAY excluded (rg globs
+  // are last-match-wins; regression guard for positive-glob ordering).
+  write("node_modules/dep/readme.md", "needle inside node_modules markdown\n");
   // Host-injected exclude (mirror dir).
   write(".mirror-data/copy.md", "needle inside mirror\n");
   // A "submodule" checkout with its own hit, to exercise parent pruning.
@@ -141,6 +144,9 @@ describe("grep engine parity", () => {
     const files = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
     expect(files.length).toBeGreaterThan(0);
     expect(files.every((f) => f.endsWith(".md"))).toBe(true);
+    // A .md file inside node_modules must stay excluded even though it
+    // matches the positive include glob (rg last-match-wins ordering).
+    expect(files.some((f) => f.includes("node_modules"))).toBe(false);
   });
 
   test("--limit truncates and flags the envelope", async () => {
@@ -204,5 +210,63 @@ describe("grep engine parity", () => {
     const a = await runWith("rg", "needle", [fixtureRoot], {});
     const b = await runWith("rg", "needle", [fixtureRoot], {});
     expect(comparable(a)).toEqual(comparable(b));
+  });
+});
+
+describe("grep --files filename mode (rg --files vs find fallback)", () => {
+  test("basename glob matches at any depth, hidden included, node_modules pruned", async () => {
+    const r = await bothEngines("*.ts", [fixtureRoot], { files: true });
+    expect(r.mode).toBe("files");
+    const names = r.repos
+      .flatMap((repo) => repo.matches.map((m) => m.file.replace(`${fixtureRoot}/`, "")))
+      .sort();
+    expect(names).toContain("alpha.ts");
+    expect(names).toContain(".dotconf/hidden.ts");
+    expect(names).toContain("subrepo/inner.ts");
+    expect(names.some((f) => f.includes("node_modules"))).toBe(false);
+    for (const repo of r.repos) {
+      for (const m of repo.matches) {
+        expect(m.line).toBe(0);
+        expect(m.text).toBe("");
+      }
+    }
+  });
+
+  test("case-insensitive filename glob (-i)", async () => {
+    const r = await bothEngines("ALPHA.TS", [fixtureRoot], { files: true, ignoreCase: true });
+    const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
+    expect(names.some((f) => f.endsWith("alpha.ts"))).toBe(true);
+  });
+
+  test("host grepExcludeDirs prunes mirrors in files mode too", async () => {
+    const context = { grepExcludeDirs: [".mirror-data"] };
+    const r = await bothEngines("*.md", [fixtureRoot], { files: true }, context);
+    const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
+    expect(names.some((f) => f.endsWith("beta.md"))).toBe(true);
+    expect(names.some((f) => f.includes(".mirror-data"))).toBe(false);
+  });
+
+  test("--exclude file glob applies", async () => {
+    const r = await bothEngines("*.ts", [fixtureRoot], { files: true, exclude: ["hidden.ts"] });
+    const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file));
+    expect(names.some((f) => f.endsWith("hidden.ts"))).toBe(false);
+    expect(names.some((f) => f.endsWith("alpha.ts"))).toBe(true);
+  });
+
+  test("--limit truncates file lists", async () => {
+    const viaFind = await runWith("grep", "*.ts", [fixtureRoot], { files: true, limit: "1" });
+    expect(viaFind.total_matches).toBe(1);
+    expect(viaFind.truncated).toBe(true);
+  });
+
+  test("content-search flags are rejected in files mode", async () => {
+    for (const opts of [
+      { files: true, lang: "ts" },
+      { files: true, count: true },
+      { files: true, literal: true },
+      { files: true, context: "2" },
+    ] satisfies GrepOpts[]) {
+      expect(runWith("grep", "*.ts", [fixtureRoot], opts)).rejects.toThrow(/--files/);
+    }
   });
 });

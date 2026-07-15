@@ -27,3 +27,11 @@ Correctness and output changes that ride along:
 - New `HarneryProgramContext.grepExcludeDirs` lets a host CLI add its
   generated-mirror directories to the default skip list.
 - The JSON envelope gains an `engine` field.
+- New `--files` mode: treat `<pattern>` as a filename glob and list matching
+  files (`rg --files` when available, POSIX `find` fallback; same excludes,
+  scoping, `-i`, `--exclude`, and `--limit`; content-search flags are
+  rejected).
+- Fixed rg glob ordering: positive globs (`--include`, `--lang`, the `--files`
+  pattern) are now emitted before negative excludes, so an exclude always wins
+  (rg globs are last-match-wins; previously `--include '*.md'` could
+  re-include files inside an excluded directory).
