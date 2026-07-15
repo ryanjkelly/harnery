@@ -1,6 +1,6 @@
 {
   "name": "harnery",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Multi-agent coordination for AI coding agents - Claude Code, Cursor, and Codex.",
   "license": "MIT",
   "author": "Ryan Kelly",
