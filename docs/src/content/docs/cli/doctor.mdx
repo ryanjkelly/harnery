@@ -6,10 +6,16 @@ sidebar:
 ---
 
 ```
-harn doctor [--json]
+harn doctor [--json] [--fix]
 ```
 
 Walks through every dep Harnery touches and reports presence + version + install hints.
+
+`--fix` installs missing managed tools before running the checks. Currently
+that means ripgrep: a version-pinned, sha256-verified download into
+Harnery's own tools directory (`~/.local/share/harnery/tools`), which
+`harn grep` probes directly — see the
+[managed-install section on the grep page](/cli/grep/#managed-install-harnery-can-provision-rg-itself).
 
 ## Severity model
 
@@ -26,6 +32,7 @@ Exits `0` unless a required dep is missing.
 | `node`         | required | Must be ≥ 20 |
 | `git`          | required | Used by `harn file-history`, `harn context`, `harn agents`, et al |
 | `bun`          | optional | Daily-driver execution layer; speeds up `harn` startup |
+| `ripgrep`      | optional | Fast engine for `harn grep` (grep fallback works, just slower). `--fix` installs it; or opt in to auto-install via `.harnery/config.jsonc` |
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
 | `harness hooks`| optional | Compares wired `agent-hook` entries against the current harness spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
 | `restic`       | optional | Required for `harn backup` |

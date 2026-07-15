@@ -17,8 +17,9 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { resolveBinName } from "../core/config.ts";
+import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
 import { loadHarnessWiring } from "../core/hooks/harness/wiring.ts";
+import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
 type Severity = "ok" | "warn" | "fail";
 
@@ -31,6 +32,7 @@ interface Check {
 
 interface CheckOpts {
   json?: boolean;
+  fix?: boolean;
 }
 
 export function registerDoctorCommand(program: Command, emit: EmitContext): void {
@@ -41,7 +43,18 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
         "unless a required dep (Node, git) is missing.",
     )
     .option("--json", "Machine-readable JSON output")
-    .action((opts: CheckOpts) => {
+    .option(
+      "--fix",
+      "Install missing managed tools (currently: ripgrep, pinned + checksum-verified)",
+    )
+    .action(async (opts: CheckOpts) => {
+      if (opts.fix && !findRg() && rgInstallSupported()) {
+        try {
+          await installRg((line) => emit.text(`${line}\n`));
+        } catch (err) {
+          emit.text(`ripgrep install failed: ${(err as Error).message}\n`);
+        }
+      }
       const checks = runChecks();
       const requiredFailed = checks.some((c) => c.severity === "fail");
 
@@ -80,6 +93,7 @@ export function runChecks(): Check[] {
     checkNode(),
     checkGit(),
     checkBun(),
+    checkRipgrep(),
     checkHarneryDir(),
     checkHarnessHooks(),
     checkRestic(),
@@ -87,6 +101,40 @@ export function runChecks(): Check[] {
     checkPlaywright(),
     checkPython(),
   ];
+}
+
+function checkRipgrep(): Check {
+  const found = findRg();
+  if (found) {
+    const r = whichVersion(found);
+    const managed = found === managedRgPath() ? ", managed" : "";
+    return {
+      name: "ripgrep",
+      severity: "ok",
+      detail: `${r.out.replace(/^ripgrep\s*/, "")} (${found === "rg" ? "PATH" : found}${managed})`,
+    };
+  }
+  if (!rgInstallSupported()) {
+    return {
+      name: "ripgrep",
+      severity: "warn",
+      detail: "missing (grep fallback; no pinned artifact for this OS/arch)",
+      hint: "https://github.com/BurntSushi/ripgrep#installation",
+    };
+  }
+  if (ripgrepAutoInstall()) {
+    return {
+      name: "ripgrep",
+      severity: "warn",
+      detail: "missing (autoInstall on: will self-provision on first grep)",
+    };
+  }
+  return {
+    name: "ripgrep",
+    severity: "warn",
+    detail: "missing (grep fallback works, just slower)",
+    hint: `${resolveBinName()} doctor --fix  (pinned + checksum-verified, installs to the harnery tools dir)`,
+  };
 }
 
 function whichVersion(bin: string, args: string[] = ["--version"]): { ok: boolean; out: string } {

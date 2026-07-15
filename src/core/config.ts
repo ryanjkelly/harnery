@@ -33,6 +33,13 @@ interface HarneryConfig {
    * declares it here (e.g. "scripts/setup-hooks.sh"). Unset → a generic hint.
    */
   hooksSetupHint?: string;
+  /**
+   * Managed-tool provisioning consent. `{ ripgrep: { autoInstall: true } }`
+   * lets `grep` download the pinned, checksum-verified ripgrep into the
+   * harnery tools dir on first miss. Committed by a host repo once; absent →
+   * a missing rg only produces a rate-limited install hint.
+   */
+  tools?: { ripgrep?: { autoInstall?: boolean } };
   [k: string]: unknown;
 }
 
@@ -143,4 +150,21 @@ export function resolveHooksSetupHint(coordRoot?: string | null): string | null 
   if (!root) return null;
   const hint = readConfig(root).hooksSetupHint;
   return typeof hint === "string" && hint.trim() ? hint.trim() : null;
+}
+
+/**
+ * Whether the host project consented to automatic ripgrep provisioning:
+ * `.harnery/config.jsonc` `{ "tools": { "ripgrep": { "autoInstall": true } } }`.
+ * A repo commits that once and every clone self-heals on first `grep`; without
+ * it, a missing rg only produces a rate-limited hint (`doctor --fix` installs
+ * explicitly). `HARNERY_TOOLS_AUTOINSTALL=1|0` overrides per process.
+ * `coordRoot` is resolved via `findCoordRoot()` when not passed.
+ */
+export function ripgrepAutoInstall(coordRoot?: string | null): boolean {
+  const env = coordEnv("TOOLS_AUTOINSTALL");
+  if (env === "1") return true;
+  if (env === "0") return false;
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return false;
+  return readConfig(root).tools?.ripgrep?.autoInstall === true;
 }

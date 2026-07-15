@@ -35,3 +35,12 @@ Correctness and output changes that ride along:
   pattern) are now emitted before negative excludes, so an exclude always wins
   (rg globs are last-match-wins; previously `--include '*.md'` could
   re-include files inside an excluded directory).
+- harnery can now provision ripgrep itself: a version-pinned, sha256-verified
+  download into `~/.local/share/harnery/tools`, probed by `grep` directly (no
+  PATH edit). `doctor --fix` installs on demand; committing
+  `{ "tools": { "ripgrep": { "autoInstall": true } } }` in
+  `.harnery/config.jsonc` makes the first `grep` on an rg-less machine
+  self-provision. Without consent, a once-per-day stderr hint names the fix;
+  every failure path (offline, checksum mismatch, unsupported OS/arch) falls
+  back to GNU grep. `doctor` gains a `ripgrep` check row; `HARNERY_RG_PATH`
+  overrides the binary, `HARNERY_TOOLS_AUTOINSTALL=1|0` overrides consent.

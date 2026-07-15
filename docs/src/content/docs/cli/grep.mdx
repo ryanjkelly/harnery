@@ -44,6 +44,28 @@ are searched and `.gitignore` files are **not** honored, exactly like the
 grep path — the explicit exclude lists below are the only filters, so agent
 config in dotdirs (`.agents/`, `.claude/`, …) stays findable.
 
+### Managed install (harnery can provision rg itself)
+
+When no rg is found (probe order: `HARNERY_RG_PATH` → the managed install →
+PATH), harnery can install one: a **version-pinned, sha256-verified** ripgrep
+download into its own tools directory (`$XDG_DATA_HOME/harnery/tools`,
+default `~/.local/share/harnery/tools` — never system dirs), which `grep`
+probes directly so PATH doesn't need updating. Two ways to trigger it:
+
+- **Explicit:** `harn doctor --fix` installs it on demand.
+- **Opt-in automatic:** commit
+  `{ "tools": { "ripgrep": { "autoInstall": true } } }` in
+  `.harnery/config.jsonc` and the first `grep` on a machine without rg
+  self-provisions. One committed consent covers every clone of the repo.
+
+Without the opt-in, a missing rg emits a rate-limited (once per day) stderr
+hint naming `doctor --fix` and falls back to GNU grep. Every failure path
+(no network, checksum mismatch, unsupported OS/arch) also falls back to grep
+— provisioning can never break a search. The checksums are pinned in
+`src/lib/tools/ripgrep.ts`, cross-checked against the official release
+`.sha256` assets; `HARNERY_TOOLS_AUTOINSTALL=1|0` overrides the config per
+process. Windows has no pinned artifact yet (hint only).
+
 ## Options
 
 | Flag | Description |

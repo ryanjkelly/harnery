@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
 import { coordEnv } from "../lib/env.ts";
+import { findRg, hintOncePerDay, installRg, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
 /**
  * `grep`: monorepo-aware code search. Prefers ripgrep (`rg`) when it is on
@@ -12,7 +14,7 @@ import { coordEnv } from "../lib/env.ts";
  * scoping (`--repo <name>` or `--all-repos`), and language presets.
  *
  * Engine selection: `HARNERY_GREP_ENGINE=rg|grep` forces one; otherwise `rg`
- * is probed once per process and used when available. Repos are searched in
+ * is resolved (managed install, PATH, or opt-in auto-provision; see resolveEngine) and used when available. Repos are searched in
  * parallel, and in `--all-repos` mode the parent scan prunes submodule
  * directories so each match is attributed to exactly one repo (previously the
  * parent scan descended into submodules, double-scanning and double-reporting
@@ -156,26 +158,44 @@ export interface GrepResult {
   elapsed_ms: number;
 }
 
-/** Probe `rg` availability once per process (spawn respects PATH like execution will). */
-let rgProbe: Promise<boolean> | null = null;
-function rgAvailable(): Promise<boolean> {
-  rgProbe ??= new Promise((resolveP) => {
-    try {
-      const proc = spawn("rg", ["--version"], { stdio: ["ignore", "ignore", "ignore"] });
-      proc.on("error", () => resolveP(false));
-      proc.on("close", (code) => resolveP(code === 0));
-    } catch {
-      resolveP(false);
-    }
-  });
-  return rgProbe;
-}
-
-/** HARNERY_GREP_ENGINE=rg|grep forces an engine; otherwise auto-detect. */
-async function resolveEngine(): Promise<GrepEngine> {
+/**
+ * Pick the engine + the spawnable rg path. HARNERY_GREP_ENGINE=rg|grep forces
+ * one; otherwise findRg() probes HARNERY_RG_PATH → the managed tools-dir
+ * install → PATH. On a miss, the host's `.harnery/config.jsonc`
+ * `tools.ripgrep.autoInstall` consent triggers a pinned, checksum-verified
+ * install into the harnery tools dir (any failure falls back to grep with a
+ * stderr note); without consent, a rate-limited stderr hint names the
+ * explicit install command instead.
+ */
+async function resolveEngine(): Promise<{ engine: GrepEngine; rgBin: string }> {
   const forced = coordEnv("GREP_ENGINE");
-  if (forced === "rg" || forced === "grep") return forced;
-  return (await rgAvailable()) ? "rg" : "grep";
+  if (forced === "grep") return { engine: "grep", rgBin: "rg" };
+  const found = findRg();
+  if (found) return { engine: "rg", rgBin: found };
+  if (forced === "rg") {
+    // Forced rg with none findable: let the spawn error surface loudly.
+    return { engine: "rg", rgBin: "rg" };
+  }
+  if (rgInstallSupported()) {
+    if (ripgrepAutoInstall()) {
+      try {
+        const installed = await installRg((line) => process.stderr.write(`harnery: ${line}\n`));
+        return { engine: "rg", rgBin: installed };
+      } catch (err) {
+        process.stderr.write(
+          `harnery: ripgrep auto-install failed (${(err as Error).message}); using grep fallback\n`,
+        );
+        return { engine: "grep", rgBin: "rg" };
+      }
+    }
+    const bin = resolveBinName();
+    hintOncePerDay(
+      `${bin} grep: ripgrep not found; using the slower GNU grep fallback. ` +
+        `Run \`${bin} doctor --fix\` to install it (pinned + checksum-verified), ` +
+        `or set { "tools": { "ripgrep": { "autoInstall": true } } } in .harnery/config.jsonc.`,
+    );
+  }
+  return { engine: "grep", rgBin: "rg" };
 }
 
 /** Exported for tests (not part of the package exports map). */
@@ -204,7 +224,7 @@ export async function runGrep(
   }
   const started = Date.now();
 
-  const engine = await resolveEngine();
+  const { engine, rgBin } = await resolveEngine();
   const repos = resolveRepos(opts, context);
   const limit = opts.limit ? Number.parseInt(opts.limit, 10) : Number.POSITIVE_INFINITY;
   const contextN = Number.parseInt(opts.context ?? "0", 10);
@@ -226,7 +246,17 @@ export async function runGrep(
       // even when --no-default-excludes is set.
       const dedupeDirs = opts.allRepos && repo.name === "parent" ? (context?.submodules ?? []) : [];
       const extraDirs = [...hostExcludeDirs, ...dedupeDirs];
-      return runGrepInRepo(pattern, paths, opts, repo.cwd, repo.name, limit, engine, extraDirs);
+      return runGrepInRepo(
+        pattern,
+        paths,
+        opts,
+        repo.cwd,
+        repo.name,
+        limit,
+        engine,
+        rgBin,
+        extraDirs,
+      );
     }),
   );
 
@@ -311,16 +341,17 @@ async function runGrepInRepo(
   repoName: string,
   limit: number,
   engine: GrepEngine,
+  rgBin: string,
   extraExcludeDirs: readonly string[],
 ): Promise<Match[]> {
   // Filename mode: `rg --files` when available; POSIX `find` otherwise (GNU
   // grep has no list-by-name mode). Content mode: rg / grep as selected.
   const [bin, args] = opts.files
     ? engine === "rg"
-      ? (["rg", buildRgFilesArgs(pattern, paths, opts, extraExcludeDirs)] as const)
+      ? ([rgBin, buildRgFilesArgs(pattern, paths, opts, extraExcludeDirs)] as const)
       : (["find", buildFindArgs(pattern, paths, opts, extraExcludeDirs)] as const)
     : engine === "rg"
-      ? (["rg", buildRgArgs(pattern, paths, opts, extraExcludeDirs)] as const)
+      ? ([rgBin, buildRgArgs(pattern, paths, opts, extraExcludeDirs)] as const)
       : (["grep", buildGrepArgs(pattern, paths, opts, extraExcludeDirs)] as const);
 
   let matches = await execSearch(bin, args, cwd, limit);
