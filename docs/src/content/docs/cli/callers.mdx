@@ -11,10 +11,15 @@ harn callers [options] <symbol>
 
 Finds every reference to a symbol across the codebase and classifies each match
 as a `call`, `import`, `type`, `decl`, or `ref` — a fast "who uses this?" sweep
-before a rename or removal. It is a heuristic, text-based search (`grep -rnw`
-with post-filtering), not full type analysis: by default it drops the
+before a rename or removal. It is a heuristic, text-based whole-word search
+with post-filtering, not full type analysis: by default it drops the
 declaration line and single-line comments so the list is just the usages that
 matter.
+
+Like [`grep`](/cli/grep/), it uses **ripgrep when available and falls back to
+GNU grep** (same engine resolution, provisioning, and `HARNERY_GREP_ENGINE`
+override), searches repos in parallel, and in `--all-repos` mode attributes
+each match to exactly one repo (the parent scan prunes submodule dirs).
 
 ## Options
 

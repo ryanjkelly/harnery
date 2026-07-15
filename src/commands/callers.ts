@@ -1,14 +1,17 @@
 import { spawn } from "node:child_process";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts";
 
 /**
  * `harn callers <symbol>`: find references to a symbol across the monorepo with
- * kind classification (call / import / type / decl / ref). Thin wrapper over
- * grep -rnw with post-filtering: declarations + single-line comments are
- * filtered out by default, and lines starting with " * " (multi-line comment
- * continuation) are dropped. Inherent text-based-search limitations: multi-line
- * string literals and block-comment interiors aren't excluded.
+ * kind classification (call / import / type / decl / ref). Whole-word search
+ * (ripgrep when available, GNU grep fallback — same engine + provisioning path
+ * as `harn grep`, honoring HARNERY_GREP_ENGINE) with post-filtering:
+ * declarations + single-line comments are filtered out by default, and lines
+ * starting with " * " (multi-line comment continuation) are dropped. Inherent
+ * text-based-search limitations: multi-line string literals and block-comment
+ * interiors aren't excluded. Repos are searched in parallel.
  */
 
 interface CallersOpts {
@@ -116,21 +119,31 @@ async function runCallers(
   }
 
   const started = Date.now();
+  const { engine, rgBin } = await resolveSearchEngine("callers");
   const repos = resolveRepos(opts, context);
   const limit = opts.limit ? Number.parseInt(opts.limit, 10) : 500;
 
+  // Search every repo concurrently, each capped at the global limit, then
+  // apply the global budget in repo order so truncation stays deterministic.
+  // In --all-repos mode the parent scan prunes submodule dirs (each submodule
+  // is scanned on its own), so a match is attributed to exactly one repo.
+  const perRepo = await Promise.all(
+    repos.map((repo) => {
+      const pruneDirs = opts.allRepos && repo.name === "parent" ? (context?.submodules ?? []) : [];
+      return searchInRepo(symbol, opts, repo, limit, engine, rgBin, pruneDirs);
+    }),
+  );
+
   const allCallers: Caller[] = [];
   let truncated = false;
-
-  for (const repo of repos) {
-    if (allCallers.length >= limit) {
-      truncated = true;
-      break;
-    }
-    const remaining = limit - allCallers.length;
-    const found = await grepInRepo(symbol, opts, repo, remaining);
+  let budget = limit;
+  for (let i = 0; i < repos.length; i++) {
+    const found = perRepo[i] ?? { callers: [], truncated: false };
     if (found.truncated) truncated = true;
-    allCallers.push(...found.callers);
+    const take = Math.min(found.callers.length, Math.max(0, budget));
+    if (found.callers.length > take) truncated = true;
+    allCallers.push(...found.callers.slice(0, take));
+    budget -= take;
   }
 
   const by_kind: Record<string, number> = {};
@@ -184,24 +197,72 @@ function resolveRepos(
   return [{ name: "cwd", cwd: process.cwd() }];
 }
 
-function grepInRepo(
-  symbol: string,
-  opts: CallersOpts,
-  repo: { name: string; cwd: string },
-  limit: number,
-): Promise<{ callers: Caller[]; truncated: boolean }> {
-  const args: string[] = ["-rnw", "--color=never", "-I", "-E"];
-  for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--exclude-dir=${d}`);
-  for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--exclude=${f}`);
+function resolveLangGlobs(opts: CallersOpts): string[] | undefined {
   const langGlobs = opts.lang ? LANG_GLOBS[opts.lang] : undefined;
   if (opts.lang && !langGlobs) {
     throw new Error(`unknown --lang "${opts.lang}". Valid: ${Object.keys(LANG_GLOBS).join(", ")}`);
   }
+  return langGlobs;
+}
+
+function buildCallersGrepArgs(
+  symbol: string,
+  opts: CallersOpts,
+  extraExcludeDirs: readonly string[],
+): string[] {
+  const args: string[] = ["-rnw", "-H", "--color=never", "-I", "-E"];
+  for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--exclude-dir=${d}`);
+  for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--exclude=${f}`);
+  for (const d of extraExcludeDirs) args.push(`--exclude-dir=${d}`);
+  const langGlobs = resolveLangGlobs(opts);
   if (langGlobs) for (const g of langGlobs) args.push(`--include=${g}`);
   args.push("--", symbol, ".");
+  return args;
+}
+
+function buildCallersRgArgs(
+  symbol: string,
+  opts: CallersOpts,
+  extraExcludeDirs: readonly string[],
+): string[] {
+  // --hidden --no-ignore --no-config: match grep semantics (dotdirs searched,
+  // .gitignore ignored, user rg config can't skew results). -w = whole word.
+  // Lang globs (positives) go before dir excludes (negatives) since rg globs
+  // are last-match-wins.
+  const args: string[] = [
+    "-nw",
+    "--no-heading",
+    "--with-filename",
+    "--color=never",
+    "--no-config",
+    "--hidden",
+    "--no-ignore",
+  ];
+  const langGlobs = resolveLangGlobs(opts);
+  if (langGlobs) for (const g of langGlobs) args.push(`--glob=${g}`);
+  for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--glob=!${d}`);
+  for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--glob=!${f}`);
+  for (const d of extraExcludeDirs) args.push(`--glob=!${d}`);
+  args.push("--", symbol, ".");
+  return args;
+}
+
+function searchInRepo(
+  symbol: string,
+  opts: CallersOpts,
+  repo: { name: string; cwd: string },
+  limit: number,
+  engine: SearchEngine,
+  rgBin: string,
+  extraExcludeDirs: readonly string[],
+): Promise<{ callers: Caller[]; truncated: boolean }> {
+  const [bin, args] =
+    engine === "rg"
+      ? ([rgBin, buildCallersRgArgs(symbol, opts, extraExcludeDirs)] as const)
+      : (["grep", buildCallersGrepArgs(symbol, opts, extraExcludeDirs)] as const);
 
   return new Promise((resolveP, reject) => {
-    const proc = spawn("grep", args, { cwd: repo.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(bin, args, { cwd: repo.cwd, stdio: ["ignore", "pipe", "pipe"] });
     const callers: Caller[] = [];
     let buffer = "";
     let stderr = "";
@@ -237,8 +298,11 @@ function grepInRepo(
         const parsed = parseCallerLine(buffer, symbol, opts, repo.name);
         if (parsed) callers.push(parsed);
       }
-      if (code !== null && code !== 0 && code !== 1 && !truncated) {
-        reject(new Error(`grep exited ${code}: ${stderr.trim() || "(no stderr)"}`));
+      // Exit 1 = no matches (both engines): normal. Exit 2 with nothing
+      // collected = a real failure; with matches, a partial walk error we
+      // tolerate (surface what was found).
+      if (code !== null && code !== 0 && code !== 1 && !truncated && callers.length === 0) {
+        reject(new Error(`${bin} exited ${code}: ${stderr.trim() || "(no stderr)"}`));
         return;
       }
       resolveP({ callers, truncated });

@@ -12,6 +12,7 @@ import {
 import { readFile, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveBinName, ripgrepAutoInstall } from "../../core/config.ts";
 import { coordEnv } from "../env.ts";
 
 /**
@@ -176,6 +177,52 @@ function extractTar(tarball: string, cwd: string): Promise<void> {
       else reject(new Error(`tar exited ${code}: ${stderr.trim()}`));
     });
   });
+}
+
+export type SearchEngine = "rg" | "grep";
+
+/**
+ * Shared engine resolver for the ripgrep-backed search commands (`grep`,
+ * `callers`). Returns the engine plus the spawnable rg path.
+ *
+ * `HARNERY_GREP_ENGINE=rg|grep` forces one; otherwise findRg() probes
+ * HARNERY_RG_PATH → the managed tools-dir install → PATH. On a miss, the
+ * host's `.harnery/config.jsonc` `tools.ripgrep.autoInstall` consent triggers
+ * a pinned, checksum-verified install into the harnery tools dir (any failure
+ * falls back to grep with a stderr note); without consent, a rate-limited
+ * stderr hint (keyed per `hintKey`) names the explicit install command.
+ */
+export async function resolveSearchEngine(
+  hintKey = "grep",
+): Promise<{ engine: SearchEngine; rgBin: string }> {
+  const forced = coordEnv("GREP_ENGINE");
+  if (forced === "grep") return { engine: "grep", rgBin: "rg" };
+  const found = findRg();
+  if (found) return { engine: "rg", rgBin: found };
+  if (forced === "rg") {
+    // Forced rg with none findable: let the spawn error surface loudly.
+    return { engine: "rg", rgBin: "rg" };
+  }
+  if (rgInstallSupported()) {
+    if (ripgrepAutoInstall()) {
+      try {
+        const installed = await installRg((line) => process.stderr.write(`harnery: ${line}\n`));
+        return { engine: "rg", rgBin: installed };
+      } catch (err) {
+        process.stderr.write(
+          `harnery: ripgrep auto-install failed (${(err as Error).message}); using grep fallback\n`,
+        );
+        return { engine: "grep", rgBin: "rg" };
+      }
+    }
+    const bin = resolveBinName();
+    hintOncePerDay(
+      `${bin} ${hintKey}: ripgrep not found; using the slower GNU grep fallback. ` +
+        `Run \`${bin} doctor --fix\` to install it (pinned + checksum-verified), ` +
+        `or set { "tools": { "ripgrep": { "autoInstall": true } } } in .harnery/config.jsonc.`,
+    );
+  }
+  return { engine: "grep", rgBin: "rg" };
 }
 
 /**

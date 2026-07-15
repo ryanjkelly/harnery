@@ -1,9 +1,7 @@
 import { spawn } from "node:child_process";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
-import { coordEnv } from "../lib/env.ts";
-import { findRg, hintOncePerDay, installRg, rgInstallSupported } from "../lib/tools/ripgrep.ts";
+import { resolveSearchEngine, type SearchEngine } from "../lib/tools/ripgrep.ts";
 
 /**
  * `grep`: monorepo-aware code search. Prefers ripgrep (`rg`) when it is on
@@ -67,7 +65,7 @@ const LANG_GLOBS: Record<string, string[]> = {
   rs: ["*.rs"],
 };
 
-export type GrepEngine = "rg" | "grep";
+export type GrepEngine = SearchEngine;
 
 export interface GrepOpts {
   repo?: string;
@@ -158,46 +156,6 @@ export interface GrepResult {
   elapsed_ms: number;
 }
 
-/**
- * Pick the engine + the spawnable rg path. HARNERY_GREP_ENGINE=rg|grep forces
- * one; otherwise findRg() probes HARNERY_RG_PATH → the managed tools-dir
- * install → PATH. On a miss, the host's `.harnery/config.jsonc`
- * `tools.ripgrep.autoInstall` consent triggers a pinned, checksum-verified
- * install into the harnery tools dir (any failure falls back to grep with a
- * stderr note); without consent, a rate-limited stderr hint names the
- * explicit install command instead.
- */
-async function resolveEngine(): Promise<{ engine: GrepEngine; rgBin: string }> {
-  const forced = coordEnv("GREP_ENGINE");
-  if (forced === "grep") return { engine: "grep", rgBin: "rg" };
-  const found = findRg();
-  if (found) return { engine: "rg", rgBin: found };
-  if (forced === "rg") {
-    // Forced rg with none findable: let the spawn error surface loudly.
-    return { engine: "rg", rgBin: "rg" };
-  }
-  if (rgInstallSupported()) {
-    if (ripgrepAutoInstall()) {
-      try {
-        const installed = await installRg((line) => process.stderr.write(`harnery: ${line}\n`));
-        return { engine: "rg", rgBin: installed };
-      } catch (err) {
-        process.stderr.write(
-          `harnery: ripgrep auto-install failed (${(err as Error).message}); using grep fallback\n`,
-        );
-        return { engine: "grep", rgBin: "rg" };
-      }
-    }
-    const bin = resolveBinName();
-    hintOncePerDay(
-      `${bin} grep: ripgrep not found; using the slower GNU grep fallback. ` +
-        `Run \`${bin} doctor --fix\` to install it (pinned + checksum-verified), ` +
-        `or set { "tools": { "ripgrep": { "autoInstall": true } } } in .harnery/config.jsonc.`,
-    );
-  }
-  return { engine: "grep", rgBin: "rg" };
-}
-
 /** Exported for tests (not part of the package exports map). */
 export async function runGrep(
   pattern: string,
@@ -224,7 +182,7 @@ export async function runGrep(
   }
   const started = Date.now();
 
-  const { engine, rgBin } = await resolveEngine();
+  const { engine, rgBin } = await resolveSearchEngine("grep");
   const repos = resolveRepos(opts, context);
   const limit = opts.limit ? Number.parseInt(opts.limit, 10) : Number.POSITIVE_INFINITY;
   const contextN = Number.parseInt(opts.context ?? "0", 10);
