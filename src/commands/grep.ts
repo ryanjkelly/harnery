@@ -1,15 +1,29 @@
 import { spawn } from "node:child_process";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { coordEnv } from "../lib/env.ts";
 
 /**
- * `grep`: monorepo-aware code search. Thin wrapper over grep -rn with
- * smart default excludes (skip dist/.next/node_modules/.git/...), repo
+ * `grep`: monorepo-aware code search. Prefers ripgrep (`rg`) when it is on
+ * PATH and falls back to GNU `grep -rn` transparently — both engines are
+ * driven with equivalent flags and their output is parsed into the same
+ * envelope, so results are identical (pinned by tests/unit/grep-engine.test.ts).
+ * Smart default excludes (skip dist/.next/node_modules/.git/...), repo
  * scoping (`--repo <name>` or `--all-repos`), and language presets.
  *
- * Default behavior matches grep's "regex" semantics (`-E` extended). Use
- * `-F` / `--literal` to pin to literal-string mode. Output is line-oriented
- * `file:line:content` in TTY mode, `{rows, total, truncated}` in --json mode.
+ * Engine selection: `HARNERY_GREP_ENGINE=rg|grep` forces one; otherwise `rg`
+ * is probed once per process and used when available. Repos are searched in
+ * parallel, and in `--all-repos` mode the parent scan prunes submodule
+ * directories so each match is attributed to exactly one repo (previously the
+ * parent scan descended into submodules, double-scanning and double-reporting
+ * every submodule match).
+ *
+ * Default behavior matches extended-regex semantics (`grep -E` / ripgrep's
+ * default). Use `-F` / `--literal` to pin to literal-string mode. Output is
+ * line-oriented `file:line:content` in TTY mode, `{rows, total, truncated}`
+ * in --json mode. Matches are sorted (file, then line) for stable output
+ * across runs and engines; with `-C <n>` context, engine order is kept so
+ * context groups stay adjacent.
  */
 
 const DEFAULT_EXCLUDE_DIRS = [
@@ -51,7 +65,9 @@ const LANG_GLOBS: Record<string, string[]> = {
   rs: ["*.rs"],
 };
 
-interface GrepOpts {
+export type GrepEngine = "rg" | "grep";
+
+export interface GrepOpts {
   repo?: string;
   allRepos?: boolean;
   lang?: string;
@@ -84,7 +100,8 @@ export function registerGrepCommand(
   program
     .command("grep <pattern> [paths...]")
     .description(
-      "Monorepo-aware code search. Skips dist/.next/node_modules/.git/... by default. " +
+      "Monorepo-aware code search (ripgrep when available, GNU grep fallback). " +
+        "Skips dist/.next/node_modules/.git/... by default. " +
         "Use --repo, --all-repos, --lang for scoping. Regex by default; -F for literal.",
     )
     .option("--repo <name>", "Scope to one submodule (`.` = parent repo root)")
@@ -122,9 +139,10 @@ function collect(value: string, prev: string[]): string[] {
   return [...prev, value];
 }
 
-interface GrepResult {
+export interface GrepResult {
   pattern: string;
   mode: "regex" | "literal";
+  engine: GrepEngine;
   repos: { name: string; cwd: string; matches: Match[]; truncated: boolean }[];
   total_matches: number;
   total_files: number;
@@ -132,7 +150,30 @@ interface GrepResult {
   elapsed_ms: number;
 }
 
-async function runGrep(
+/** Probe `rg` availability once per process (spawn respects PATH like execution will). */
+let rgProbe: Promise<boolean> | null = null;
+function rgAvailable(): Promise<boolean> {
+  rgProbe ??= new Promise((resolveP) => {
+    try {
+      const proc = spawn("rg", ["--version"], { stdio: ["ignore", "ignore", "ignore"] });
+      proc.on("error", () => resolveP(false));
+      proc.on("close", (code) => resolveP(code === 0));
+    } catch {
+      resolveP(false);
+    }
+  });
+  return rgProbe;
+}
+
+/** HARNERY_GREP_ENGINE=rg|grep forces an engine; otherwise auto-detect. */
+async function resolveEngine(): Promise<GrepEngine> {
+  const forced = coordEnv("GREP_ENGINE");
+  if (forced === "rg" || forced === "grep") return forced;
+  return (await rgAvailable()) ? "rg" : "grep";
+}
+
+/** Exported for tests (not part of the package exports map). */
+export async function runGrep(
   pattern: string,
   paths: string[],
   opts: GrepOpts,
@@ -141,30 +182,53 @@ async function runGrep(
   if (!pattern) throw new Error("pattern required");
   const started = Date.now();
 
+  const engine = await resolveEngine();
   const repos = resolveRepos(opts, context);
   const limit = opts.limit ? Number.parseInt(opts.limit, 10) : Number.POSITIVE_INFINITY;
+  const contextN = Number.parseInt(opts.context ?? "0", 10);
+  const sortable = !(Number.isFinite(contextN) && contextN > 0);
+
+  // Host-injected default excludes (generated mirrors, vendored trees, ...)
+  // ride the same --no-default-excludes gate as the built-in list.
+  const hostExcludeDirs = opts.noDefaultExcludes ? [] : (context?.grepExcludeDirs ?? []);
+
+  // All repos are searched concurrently; each is capped at the global limit
+  // (a single repo can never contribute more), then the global budget is
+  // applied in repo order below so `--limit` semantics stay deterministic.
+  const perRepo = await Promise.all(
+    repos.map((repo) => {
+      // In --all-repos mode the parent scan prunes submodule dirs — each
+      // submodule gets its own scoped scan, so descending from the parent
+      // would double-scan and double-report every submodule match. This
+      // pruning is correctness (one repo owns each match), so it applies
+      // even when --no-default-excludes is set.
+      const dedupeDirs = opts.allRepos && repo.name === "parent" ? (context?.submodules ?? []) : [];
+      const extraDirs = [...hostExcludeDirs, ...dedupeDirs];
+      return runGrepInRepo(pattern, paths, opts, repo.cwd, repo.name, limit, engine, extraDirs);
+    }),
+  );
 
   const allRepoResults: GrepResult["repos"] = [];
   let totalMatches = 0;
   const filesSeen = new Set<string>();
   let truncated = false;
+  let budget = limit;
 
-  for (const repo of repos) {
-    if (truncated) break;
-    const repoLimit = Number.isFinite(limit)
-      ? Math.max(0, limit - totalMatches)
-      : Number.POSITIVE_INFINITY;
-    if (repoLimit === 0) {
-      truncated = true;
-      allRepoResults.push({ name: repo.name, cwd: repo.cwd, matches: [], truncated: true });
-      break;
+  for (let i = 0; i < repos.length; i++) {
+    const repo = repos[i];
+    if (!repo) continue;
+    const collected = perRepo[i] ?? [];
+    if (sortable) {
+      collected.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line));
     }
-    const matches = await runGrepInRepo(pattern, paths, opts, repo.cwd, repo.name, repoLimit);
-    let repoTruncated = false;
-    if (Number.isFinite(repoLimit) && matches.length >= repoLimit) {
-      repoTruncated = true;
-      truncated = true;
-    }
+    const engineCapped = Number.isFinite(limit) && collected.length >= limit;
+    const take = Number.isFinite(budget)
+      ? Math.min(collected.length, Math.max(0, budget))
+      : collected.length;
+    const matches = collected.slice(0, take);
+    const repoTruncated = engineCapped || collected.length > take;
+    if (repoTruncated) truncated = true;
+    if (Number.isFinite(budget)) budget -= take;
     totalMatches += matches.length;
     for (const m of matches) filesSeen.add(`${repo.name}/${m.file}`);
     allRepoResults.push({ name: repo.name, cwd: repo.cwd, matches, truncated: repoTruncated });
@@ -173,6 +237,7 @@ async function runGrep(
   return {
     pattern,
     mode: opts.literal ? "literal" : "regex",
+    engine,
     repos: allRepoResults,
     total_matches: totalMatches,
     total_files: filesSeen.size,
@@ -223,8 +288,36 @@ async function runGrepInRepo(
   cwd: string,
   repoName: string,
   limit: number,
+  engine: GrepEngine,
+  extraExcludeDirs: readonly string[],
 ): Promise<Match[]> {
-  const args: string[] = ["-rn", "--color=never", "-I"]; // -I: skip binary files
+  const args =
+    engine === "rg"
+      ? buildRgArgs(pattern, paths, opts, extraExcludeDirs)
+      : buildGrepArgs(pattern, paths, opts, extraExcludeDirs);
+
+  let matches = await execSearch(engine, args, cwd, limit);
+  // -c mode: GNU grep prints a `path:0` row for every searched file; ripgrep
+  // omits zero-count rows. Filter zeros on both engines so output matches.
+  if (opts.count) matches = matches.filter((m) => m.line > 0);
+  return matches.map((m) => ({ ...m, repo: repoName }));
+}
+
+function resolveLangGlobs(opts: GrepOpts): string[] | undefined {
+  const langGlobs = opts.lang ? LANG_GLOBS[opts.lang] : undefined;
+  if (opts.lang && !langGlobs) {
+    throw new Error(`unknown --lang "${opts.lang}". Valid: ${Object.keys(LANG_GLOBS).join(", ")}`);
+  }
+  return langGlobs;
+}
+
+function buildGrepArgs(
+  pattern: string,
+  paths: string[],
+  opts: GrepOpts,
+  extraExcludeDirs: readonly string[],
+): string[] {
+  const args: string[] = ["-rn", "-H", "--color=never", "-I"]; // -I: skip binary files
   if (opts.ignoreCase) args.push("-i");
   if (opts.wholeWord) args.push("-w");
   if (opts.literal) args.push("-F");
@@ -242,26 +335,78 @@ async function runGrepInRepo(
     for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--exclude-dir=${d}`);
     for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--exclude=${f}`);
   }
+  for (const d of extraExcludeDirs) args.push(`--exclude-dir=${d}`);
   for (const e of opts.exclude ?? []) args.push(`--exclude=${e}`);
 
-  const langGlobs = opts.lang ? LANG_GLOBS[opts.lang] : undefined;
-  if (opts.lang && !langGlobs) {
-    throw new Error(`unknown --lang "${opts.lang}". Valid: ${Object.keys(LANG_GLOBS).join(", ")}`);
-  }
+  const langGlobs = resolveLangGlobs(opts);
   if (langGlobs) for (const g of langGlobs) args.push(`--include=${g}`);
   for (const g of opts.include ?? []) args.push(`--include=${g}`);
 
   args.push("--", pattern);
   if (paths.length > 0) args.push(...paths);
   else args.push(".");
-
-  const matches = await execGrep(args, cwd, limit);
-  return matches.map((m) => ({ ...m, repo: repoName }));
+  return args;
 }
 
-function execGrep(args: string[], cwd: string, limit: number): Promise<Omit<Match, "repo">[]> {
+function buildRgArgs(
+  pattern: string,
+  paths: string[],
+  opts: GrepOpts,
+  extraExcludeDirs: readonly string[],
+): string[] {
+  // --hidden --no-ignore: match GNU grep's semantics (search dotdirs, ignore
+  // .gitignore) so the only filters are the explicit exclude lists.
+  // --no-config: a user's ripgrep config file must not skew results.
+  // --with-filename: rg drops the file prefix for a single explicit file arg,
+  // which would break the shared parser.
+  const args: string[] = [
+    "-n",
+    "--no-heading",
+    "--with-filename",
+    "--color=never",
+    "--no-config",
+    "--hidden",
+    "--no-ignore",
+  ];
+  if (opts.ignoreCase) args.push("-i");
+  if (opts.wholeWord) args.push("-w");
+  if (opts.literal) args.push("-F");
+  if (opts.filesOnly) args.push("-l");
+  if (opts.count) args.push("-c");
+  const contextN = Number.parseInt(opts.context ?? "0", 10);
+  if (Number.isFinite(contextN) && contextN > 0) args.push(`-C${contextN}`);
+  if (opts.maxCount) {
+    const n = Number.parseInt(opts.maxCount, 10);
+    if (Number.isFinite(n) && n > 0) args.push(`-m${n}`);
+  }
+
+  // Gitignore-style globs: a bare name matches (and prunes) at any depth,
+  // mirroring grep's --exclude-dir / --exclude basename semantics.
+  if (!opts.noDefaultExcludes) {
+    for (const d of DEFAULT_EXCLUDE_DIRS) args.push(`--glob=!${d}`);
+    for (const f of DEFAULT_EXCLUDE_FILES) args.push(`--glob=!${f}`);
+  }
+  for (const d of extraExcludeDirs) args.push(`--glob=!${d}`);
+  for (const e of opts.exclude ?? []) args.push(`--glob=!${e}`);
+
+  const langGlobs = resolveLangGlobs(opts);
+  if (langGlobs) for (const g of langGlobs) args.push(`--glob=${g}`);
+  for (const g of opts.include ?? []) args.push(`--glob=${g}`);
+
+  args.push("--", pattern);
+  if (paths.length > 0) args.push(...paths);
+  else args.push(".");
+  return args;
+}
+
+function execSearch(
+  bin: GrepEngine,
+  args: string[],
+  cwd: string,
+  limit: number,
+): Promise<Omit<Match, "repo">[]> {
   return new Promise((resolveP, reject) => {
-    const proc = spawn("grep", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     const matches: Omit<Match, "repo">[] = [];
     let buffer = "";
     let stderr = "";
@@ -297,9 +442,11 @@ function execGrep(args: string[], cwd: string, limit: number): Promise<Omit<Matc
         const parsed = parseGrepLine(buffer);
         if (parsed) matches.push(parsed);
       }
-      // grep exits 1 on "no matches": normal, not an error.
-      if (code !== null && code !== 0 && code !== 1 && !truncated) {
-        reject(new Error(`grep exited ${code}: ${stderr.trim() || "(no stderr)"}`));
+      // Exit 1 is "no matches" on both engines: normal, not an error. Exit 2
+      // with matches collected means a partial failure (an unreadable file
+      // mid-walk); surface the results rather than throwing them away.
+      if (code !== null && code !== 0 && code !== 1 && !truncated && matches.length === 0) {
+        reject(new Error(`${bin} exited ${code}: ${stderr.trim() || "(no stderr)"}`));
         return;
       }
       resolveP(matches);
@@ -307,21 +454,23 @@ function execGrep(args: string[], cwd: string, limit: number): Promise<Omit<Matc
   });
 }
 
-/** Parse `path:line:content` from grep -n output. Returns null for ambiguous (no line number) lines. */
+/** Parse `path:line:content` from grep/rg -n output. Returns null for ambiguous (no line number) lines. */
 function parseGrepLine(line: string): Omit<Match, "repo"> | null {
   // First colon ends path; second colon ends line number (if numeric).
   const firstColon = line.indexOf(":");
   if (firstColon < 0) {
     // -l mode: just a path. Encode as line=0, text="".
-    return { file: line, line: 0, text: "" };
+    return { file: normalizeFile(line), line: 0, text: "" };
   }
   const after = line.slice(firstColon + 1);
   const secondColon = after.indexOf(":");
   if (secondColon < 0) {
     // -c mode: `path:count`.
     const count = Number.parseInt(after, 10);
-    if (Number.isFinite(count)) return { file: line.slice(0, firstColon), line: count, text: "" };
-    return { file: line.slice(0, firstColon), line: 0, text: after };
+    if (Number.isFinite(count)) {
+      return { file: normalizeFile(line.slice(0, firstColon)), line: count, text: "" };
+    }
+    return { file: normalizeFile(line.slice(0, firstColon)), line: 0, text: after };
   }
   const lineNum = Number.parseInt(after.slice(0, secondColon), 10);
   if (!Number.isFinite(lineNum)) {
@@ -329,10 +478,15 @@ function parseGrepLine(line: string): Omit<Match, "repo"> | null {
     return null;
   }
   return {
-    file: line.slice(0, firstColon),
+    file: normalizeFile(line.slice(0, firstColon)),
     line: lineNum,
     text: after.slice(secondColon + 1),
   };
+}
+
+/** Both engines may emit a leading `./` for the default path; strip it so output is engine-identical. */
+function normalizeFile(file: string): string {
+  return file.startsWith("./") ? file.slice(2) : file;
 }
 
 function renderResult(r: GrepResult, opts: GrepOpts): string {
@@ -365,7 +519,7 @@ function renderResult(r: GrepResult, opts: GrepOpts): string {
     lines.push("");
     const summary = `${r.total_matches} match${r.total_matches === 1 ? "" : "es"} across ${r.total_files} file${r.total_files === 1 ? "" : "s"}`;
     const tail = r.truncated ? " (truncated; use --limit)" : "";
-    lines.push(`${summary}${tail}  (${r.elapsed_ms}ms)`);
+    lines.push(`${summary}${tail}  (${r.elapsed_ms}ms, ${r.engine})`);
   }
   return lines.join("\n");
 }

@@ -121,6 +121,15 @@ export interface HarneryProgramContext {
    */
   envSections?: Record<string, EnvSection>;
   /**
+   * Extra directory names for `grep` to exclude by default — host-generated
+   * mirrors, vendored trees, and similar directories that only ever produce
+   * duplicate or noisy matches. Names match at any depth (same semantics as
+   * grep's `--exclude-dir`). Applied alongside the built-in skip list and
+   * disabled together with it by `--no-default-excludes`. harn standalone
+   * ships none.
+   */
+  grepExcludeDirs?: readonly string[];
+  /**
    * Optional callback that returns extra HTTP headers to attach to outbound
    * `fetch` calls based on the target URL. Useful for consumers that need
    * to inject auth or bypass headers on certain hostnames (e.g. private

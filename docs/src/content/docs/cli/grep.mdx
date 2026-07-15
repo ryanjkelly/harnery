@@ -1,6 +1,6 @@
 ---
 title: harn grep
-description: Monorepo-aware code search over grep, with default excludes, repo scoping, language presets, and a JSON envelope.
+description: Fast monorepo-aware code search (ripgrep-backed with a GNU grep fallback), with default excludes, repo scoping, language presets, and a JSON envelope.
 sidebar:
   order: 16
 ---
@@ -9,14 +9,40 @@ sidebar:
 harn grep [options] <pattern> [paths...]
 ```
 
-A thin wrapper over GNU `grep -rn` with a curated skip list, repo scoping, and
+Monorepo-aware code search with a curated skip list, repo scoping, and
 language presets — the everyday "find this string in the codebase" tool that
-doesn't drown you in matches from `node_modules/` or a build directory. Regex by
-default (`grep -E` semantics); pass `-F` for a literal string.
+doesn't drown you in matches from `node_modules/` or a build directory. Regex
+by default (extended-regex semantics); pass `-F` for a literal string.
 
 Reach for this for shell use, scripting, and anything that wants the `--json`
 envelope. It searches the current working directory unless you point it at
 explicit paths or scope it with `--repo` / `--all-repos`.
+
+## Engine: ripgrep when available
+
+`harn grep` prefers [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`)
+when it is on PATH and falls back to GNU `grep` transparently. Both engines
+are driven with equivalent flags and parsed into the same envelope, so
+**results are identical either way** (pinned by an engine-parity test suite);
+the envelope's `engine` field reports which one ran. Force a specific engine
+with `HARNERY_GREP_ENGINE=rg|grep` — the escape hatch if an exotic regex
+behaves differently across engines (e.g. backreferences, which GNU grep
+accepts and ripgrep rejects).
+
+Installing ripgrep is worth it on any non-trivial tree. Measured on a real
+24-repo monorepo (warm cache), the search phase of an `--all-repos` sweep
+dropped from 863ms (GNU grep) to 147ms with ripgrep — and the same release's
+parallel repo fan-out plus parent-scan pruning took the end-to-end sweep from
+6.8s to about 1.1s while eliminating double-reported submodule matches
+(90 rows shrank to 56 unique ones). Ripgrep's parallel directory walker pulls
+further ahead on cold caches and larger trees; on small warm trees the
+engines are equivalent. `scripts/bench-grep.ts` reproduces the comparison on
+a synthetic tree or any directory you point it at.
+
+Ripgrep is run with `--hidden --no-ignore --no-config`: hidden directories
+are searched and `.gitignore` files are **not** honored, exactly like the
+grep path — the explicit exclude lists below are the only filters, so agent
+config in dotdirs (`.agents/`, `.claude/`, …) stays findable.
 
 ## Options
 
@@ -45,6 +71,16 @@ Unless `--no-default-excludes` is set, these directories are skipped: `.git`,
 `__pycache__`, `.venv`, `tmp`, `tmp-files`, `coverage`, `.parcel-cache`,
 `.turbo`, and the coordination directory. Binary files are always skipped.
 
+A host CLI can extend the skip list via the program context's
+`grepExcludeDirs` — meant for host-generated mirror directories whose matches
+only ever duplicate the source files they were generated from. Host excludes
+ride the same `--no-default-excludes` gate as the built-in list.
+
+In `--all-repos` mode the parent scan additionally prunes every submodule
+directory, since each submodule gets its own scoped scan — every match is
+attributed to exactly one repo. This pruning is about correct attribution,
+not noise, so it stays on even with `--no-default-excludes`.
+
 ## Examples
 
 ```bash
@@ -68,14 +104,22 @@ harn grep "throw new Error" -C 2 --limit 50 --json
 
 Human mode prints `file:line:content` per match, with a `── <repo> ──` header
 when more than one repo is searched. `--json` emits an envelope shaped
-`{ pattern, mode, repos[], total_matches, total_files, truncated, elapsed_ms }`,
+`{ pattern, mode, engine, repos[], total_matches, total_files, truncated, elapsed_ms }`,
 where each entry in `repos[]` carries `{ name, cwd, matches[], truncated }` and
 every match is `{ repo, file, line, text }`. `truncated` is `true` when
 `--limit` cut the results short.
+
+Matches are sorted by file then line, so output is stable across runs and
+identical between engines (with `-C <n>` context, engine order is kept so
+context groups stay adjacent). In `-c` count mode, zero-count rows are
+filtered on both engines. Under `--limit`, *which* matches survive truncation
+depends on engine walk order — counts and flags are stable, the selection may
+not be.
 
 ## Notes
 
 `--repo` and `--all-repos` need harnery to know the repo root and submodule
 list (supplied by the host CLI's program context). Without that context, use
-plain paths or run from inside the directory you want to search. `grep` exiting
-with no matches is treated as normal, not an error.
+plain paths or run from inside the directory you want to search. The engine
+exiting with no matches is treated as normal, not an error; a partial failure
+(an unreadable file mid-walk) still returns the matches that were found.
