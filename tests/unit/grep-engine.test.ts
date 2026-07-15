@@ -3,7 +3,13 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type GrepOpts, type GrepResult, runGrep } from "../../src/commands/grep.ts";
+import {
+  type GrepOpts,
+  type GrepResult,
+  type Match,
+  NulDecoder,
+  runGrep,
+} from "../../src/commands/grep.ts";
 
 /**
  * Engine-parity suite: the same search run through GNU grep and ripgrep must
@@ -77,6 +83,28 @@ beforeAll(() => {
   write(".mirror-data/copy.md", "needle inside mirror\n");
   // A "submodule" checkout with its own hit, to exercise parent pruning.
   write("subrepo/inner.ts", "submodule needle\n");
+
+  // NUL-framing fixtures: paths that break punctuation-based parsers.
+  write("framing/note-2-draft.md", "quark here\n");
+  write("framing/odd:colon.txt", "quark line\n");
+  write("framing/with space.txt", "quark spaced\n");
+
+  // Context fixtures. ctx/main.txt: matches on lines 1 and 5 of 8.
+  write("ctx/main.txt", "one cmark\nline2\nline3\nline4\nfive cmark\nline6\nline7\nline8\n");
+  write("ctx/tricky.txt", "pre:fix-line\na:b-c cmark d:e\npost-line:9\n");
+  write("ctx/crlf.txt", "l1 crmark\r\nl2\r\nl3\r\n");
+  write("ctx/exact.txt", "hit xmark\nhit xmark\nhit xmark\n");
+
+  // Boolean-composition fixtures.
+  write("comp/a-first.md", "zapple only\n");
+  write("comp/both.md", "zapple\nzbanana\n");
+  write("comp/onlyb.md", "zbanana\n");
+  write("comp/all3.md", "zapple zbanana zcherry\n");
+
+  // Multi-lang fixtures.
+  write("lang/x.ts", "quarklang ts\n");
+  write("lang/y.tsx", "quarklang tsx\n");
+  write("lang/z.js", "quarklang js\n");
 });
 
 afterAll(() => {
@@ -265,8 +293,328 @@ describe("grep --files filename mode (rg --files vs find fallback)", () => {
       { files: true, count: true },
       { files: true, literal: true },
       { files: true, context: "2" },
+      { files: true, and: ["x"] },
+      { files: true, without: ["x"] },
     ] satisfies GrepOpts[]) {
       expect(runWith("grep", "*.ts", [fixtureRoot], opts)).rejects.toThrow(/--files/);
     }
+  });
+});
+
+describe("NUL framing", () => {
+  test("hyphenated, colon-bearing, and spaced paths decode correctly", async () => {
+    const r = await bothEngines("quark", [join(fixtureRoot, "framing")], {});
+    const rows = r.repos.flatMap((repo) => repo.matches);
+    const byFile = new Map(rows.map((m) => [m.file.split("/").at(-1), m]));
+    expect(byFile.get("note-2-draft.md")).toMatchObject({ line: 1, text: "quark here" });
+    expect(byFile.get("odd:colon.txt")).toMatchObject({ line: 1, text: "quark line" });
+    expect(byFile.get("with space.txt")).toMatchObject({ line: 1, text: "quark spaced" });
+    expect(r.total_matches).toBe(3);
+    expect(r.total_files).toBe(3);
+  });
+
+  test("decoder survives a chunk boundary at every byte offset (incl. inside UTF-8)", () => {
+    // Path carries a multi-byte char AND a dash-digit-dash; text carries a colon.
+    const record = Buffer.from("pä-3-th\u000012:tex:t\n", "utf8");
+    for (let split = 0; split <= record.length; split++) {
+      const dec = new NulDecoder("content");
+      const rows = [
+        ...dec.push(record.subarray(0, split)),
+        ...dec.push(record.subarray(split)),
+        ...dec.flush(),
+      ];
+      expect(rows).toEqual([{ file: "pä-3-th", line: 12, text: "tex:t" }]);
+    }
+  });
+
+  test("filesOnly decoder: NUL-terminated records; partial trailing record dropped", () => {
+    const dec = new NulDecoder("filesOnly");
+    const rows = [
+      ...dec.push(Buffer.from("a.ts\u0000b/c.md\u0000partial-pa", "utf8")),
+      ...dec.flush(),
+    ];
+    expect(rows).toEqual([
+      { file: "a.ts", line: 0, text: "" },
+      { file: "b/c.md", line: 0, text: "" },
+    ]);
+  });
+
+  test("count decoder parses path\\0count records", () => {
+    const dec = new NulDecoder("count");
+    const rows = [...dec.push(Buffer.from("x-1-y.md\u000042\n", "utf8")), ...dec.flush()];
+    expect(rows).toEqual([{ file: "x-1-y.md", line: 42, text: "" }]);
+  });
+});
+
+describe("context materialization (-C/-A/-B)", () => {
+  const ctxDir = () => join(fixtureRoot, "ctx");
+
+  function shape(r: GrepResult): { line: number; kind: Match["kind"] }[] {
+    return r.repos.flatMap((repo) => repo.matches.map((m) => ({ line: m.line, kind: m.kind })));
+  }
+
+  test("-C 1: disjoint windows, correct kinds, context excluded from totals", async () => {
+    const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "1" });
+    expect(shape(r)).toEqual([
+      { line: 1, kind: "match" },
+      { line: 2, kind: "context" },
+      { line: 4, kind: "context" },
+      { line: 5, kind: "match" },
+      { line: 6, kind: "context" },
+    ]);
+    expect(r.total_matches).toBe(2);
+    expect(r.total_files).toBe(1);
+  });
+
+  test("-C 2: overlapping windows merge into one contiguous block", async () => {
+    const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "2" });
+    expect(shape(r).map((s) => s.line)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(shape(r).filter((s) => s.kind === "match").map((s) => s.line)).toEqual([1, 5]);
+    expect(r.total_matches).toBe(2);
+  });
+
+  test("-A/-B override -C per side, independent of order", async () => {
+    const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], {
+      context: "2",
+      afterContext: "0",
+    });
+    // before=2 after=0: windows [1,1] (clamped) and [3,5].
+    expect(shape(r)).toEqual([
+      { line: 1, kind: "match" },
+      { line: 3, kind: "context" },
+      { line: 4, kind: "context" },
+      { line: 5, kind: "match" },
+    ]);
+  });
+
+  test("windows clamp at file start and end", async () => {
+    const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "10" });
+    expect(shape(r).map((s) => s.line)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  test("context text with colons and dashes stays intact", async () => {
+    const r = await bothEngines("cmark", [join(ctxDir(), "tricky.txt")], { context: "1" });
+    const rows = r.repos.flatMap((repo) => repo.matches);
+    expect(rows.map((m) => m.text)).toEqual(["pre:fix-line", "a:b-c cmark d:e", "post-line:9"]);
+    expect(rows.map((m) => m.kind)).toEqual(["context", "match", "context"]);
+  });
+
+  test("CRLF file: engines and materializer agree", async () => {
+    const r = await bothEngines("crmark", [join(ctxDir(), "crlf.txt")], { context: "1" });
+    const rows = r.repos.flatMap((repo) => repo.matches);
+    expect(rows.map((m) => ({ line: m.line, kind: m.kind }))).toEqual([
+      { line: 1, kind: "match" },
+      { line: 2, kind: "context" },
+    ]);
+  });
+
+  test("context rejected with -l, -c, and -q", async () => {
+    for (const opts of [
+      { context: "1", filesOnly: true },
+      { context: "1", count: true },
+      { context: "1", quiet: true },
+      { afterContext: "1", filesOnly: true },
+    ] satisfies GrepOpts[]) {
+      expect(runWith("grep", "cmark", [ctxDir()], opts)).rejects.toThrow(/context/);
+    }
+  });
+});
+
+describe("truncation exactness", () => {
+  test("exactly N results with --limit N is NOT truncated", async () => {
+    const r = await bothEngines("xmark", [join(fixtureRoot, "ctx", "exact.txt")], { limit: "3" });
+    expect(r.total_matches).toBe(3);
+    expect(r.truncated).toBe(false);
+  });
+
+  test("N+1 results with --limit N IS truncated", async () => {
+    const r = await bothEngines("xmark", [join(fixtureRoot, "ctx", "exact.txt")], { limit: "2" });
+    expect(r.total_matches).toBe(2);
+    expect(r.truncated).toBe(true);
+  });
+
+  test("--limit counts match rows only; selected rows keep full trailing context", async () => {
+    const r = await bothEngines("cmark", [join(fixtureRoot, "ctx", "main.txt")], {
+      context: "1",
+      limit: "1",
+    });
+    expect(r.total_matches).toBe(1);
+    expect(r.truncated).toBe(true);
+    const rows = r.repos.flatMap((repo) => repo.matches);
+    // Selected match is line 1 (sorted); its full window [1,2] survives.
+    expect(rows.map((m) => ({ line: m.line, kind: m.kind }))).toEqual([
+      { line: 1, kind: "match" },
+      { line: 2, kind: "context" },
+    ]);
+  });
+});
+
+describe("boolean composition (--and / --without)", () => {
+  const compDir = () => join(fixtureRoot, "comp");
+
+  function fileNames(r: GrepResult): string[] {
+    return [
+      ...new Set(r.repos.flatMap((repo) => repo.matches.map((m) => m.file.split("/").at(-1)))),
+    ].sort() as string[];
+  }
+
+  test("--and keeps only files containing every pattern; rows stay primary-pattern rows", async () => {
+    const r = await bothEngines("zapple", [compDir()], { and: ["zbanana"] });
+    expect(fileNames(r)).toEqual(["all3.md", "both.md"]);
+    for (const m of r.repos.flatMap((repo) => repo.matches)) {
+      expect(m.text).toContain("zapple");
+    }
+    expect(r.and_patterns).toEqual(["zbanana"]);
+  });
+
+  test("repeated --and intersects all patterns", async () => {
+    const r = await bothEngines("zapple", [compDir()], { and: ["zbanana", "zcherry"] });
+    expect(fileNames(r)).toEqual(["all3.md"]);
+  });
+
+  test("--without drops files containing any listed pattern", async () => {
+    const r = await bothEngines("zapple", [compDir()], {
+      and: ["zbanana"],
+      without: ["zcherry"],
+    });
+    expect(fileNames(r)).toEqual(["both.md"]);
+    expect(r.without_patterns).toEqual(["zcherry"]);
+  });
+
+  test("no qualifying files yields empty, not truncated", async () => {
+    const r = await bothEngines("zapple", [compDir()], { and: ["zzz-not-present"] });
+    expect(r.total_matches).toBe(0);
+    expect(r.truncated).toBe(false);
+  });
+
+  test("REGRESSION: --limit cannot be consumed by non-qualifying files", async () => {
+    // comp/a-first.md matches the primary pattern but NOT --and; with the old
+    // filter-after-limit design, limit 1 could select it and then filter to 0.
+    const r = await bothEngines("zapple", [compDir()], { and: ["zbanana"], limit: "1" });
+    expect(r.total_matches).toBe(1);
+    const rows = r.repos.flatMap((repo) => repo.matches);
+    expect(["all3.md", "both.md"]).toContain(rows[0]?.file.split("/").at(-1) ?? "");
+  });
+
+  test("--and works with -l and -c output modes", async () => {
+    const l = await bothEngines("zapple", [compDir()], { and: ["zbanana"], filesOnly: true });
+    expect(fileNames(l)).toEqual(["all3.md", "both.md"]);
+    const c = await bothEngines("zapple", [compDir()], { and: ["zbanana"], count: true });
+    expect(fileNames(c)).toEqual(["all3.md", "both.md"]);
+    for (const m of c.repos.flatMap((repo) => repo.matches)) expect(m.line).toBe(1);
+  });
+});
+
+describe("multi-value --lang", () => {
+  test("comma-separated and repeated forms produce identical unions", async () => {
+    const comma = await bothEngines("quarklang", [join(fixtureRoot, "lang")], {
+      lang: ["ts,tsx"],
+    });
+    const repeated = await bothEngines("quarklang", [join(fixtureRoot, "lang")], {
+      lang: ["ts", "tsx"],
+    });
+    expect(comparable(comma)).toEqual(comparable(repeated));
+    const names = comma.repos.flatMap((repo) => repo.matches.map((m) => m.file.split("/").at(-1)));
+    expect(names.sort()).toEqual(["x.ts", "y.tsx"]);
+  });
+
+  test("single --lang keeps its existing narrow meaning", async () => {
+    const r = await bothEngines("quarklang", [join(fixtureRoot, "lang")], { lang: "ts" });
+    const names = r.repos.flatMap((repo) => repo.matches.map((m) => m.file.split("/").at(-1)));
+    expect(names).toEqual(["x.ts"]);
+  });
+
+  test("unknown lang in a comma list is rejected", async () => {
+    expect(runWith("grep", "quarklang", [fixtureRoot], { lang: ["ts,bogus"] })).rejects.toThrow(
+      /unknown --lang "bogus"/,
+    );
+  });
+});
+
+describe("numeric validation and flag compatibility", () => {
+  test("invalid numeric values fail before any engine spawns", async () => {
+    const bad: [GrepOpts, RegExp][] = [
+      [{ limit: "nope" }, /--limit/],
+      [{ limit: "0" }, /--limit/],
+      [{ limit: "-1" }, /--limit/],
+      [{ limit: "1.5" }, /--limit/],
+      [{ limit: "2x" }, /--limit/],
+      [{ maxCount: "0" }, /--max-count/],
+      [{ context: "-1" }, /--context/],
+      [{ afterContext: "junk" }, /--after-context/],
+    ];
+    for (const [opts, re] of bad) {
+      expect(runWith("grep", "x", [fixtureRoot], opts)).rejects.toThrow(re);
+    }
+  });
+
+  test("--quiet rejects --json, -l, -c, and --limit", async () => {
+    for (const opts of [
+      { quiet: true, json: true },
+      { quiet: true, filesOnly: true },
+      { quiet: true, count: true },
+      { quiet: true, limit: "5" },
+    ] satisfies GrepOpts[]) {
+      expect(runWith("grep", "x", [fixtureRoot], opts)).rejects.toThrow(/--quiet/);
+    }
+  });
+});
+
+describe("quiet mode exit codes (spawned CLI)", () => {
+  const harneryRoot = join(import.meta.dir, "..", "..");
+  const harn = join(harneryRoot, "bin", "harn");
+
+  test("exit 0 on hit, exit 1 on miss, no stdout either way", () => {
+    const hit = spawnSync(harn, ["grep", "-q", "needle", "alpha.ts"], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    expect(hit.status).toBe(0);
+    expect(hit.stdout).toBe("");
+
+    const miss = spawnSync(harn, ["grep", "-q", "zz-definitely-absent-zz", "alpha.ts"], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    expect(miss.status).toBe(1);
+    expect(miss.stdout).toBe("");
+  });
+
+  test("quiet respects --and qualification", () => {
+    const miss = spawnSync(harn, ["grep", "-q", "zapple", "--and", "zz-absent", "comp"], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    expect(miss.status).toBe(1);
+
+    const hit = spawnSync(harn, ["grep", "-q", "zapple", "--and", "zbanana", "comp"], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    expect(hit.status).toBe(0);
+  });
+});
+
+describe("envelope contract", () => {
+  test("top-level, repo, and row keys are pinned exactly", async () => {
+    const r = await runWith("grep", "cmark", [join(fixtureRoot, "ctx", "main.txt")], {
+      context: "1",
+    });
+    expect(Object.keys(r).sort()).toEqual([
+      "and_patterns",
+      "elapsed_ms",
+      "engine",
+      "mode",
+      "pattern",
+      "repos",
+      "total_files",
+      "total_matches",
+      "truncated",
+      "without_patterns",
+    ]);
+    const repo = r.repos[0];
+    expect(Object.keys(repo ?? {}).sort()).toEqual(["cwd", "matches", "name", "truncated"]);
+    const row = repo?.matches[0];
+    expect(Object.keys(row ?? {}).sort()).toEqual(["file", "kind", "line", "repo", "text"]);
   });
 });

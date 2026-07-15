@@ -1,0 +1,84 @@
+---
+title: "ADR 0014: grep NUL framing, materialized context, and file-level composition"
+description: The grep command's colon/dash output parser corrupted -C context rows and inflated counts. It was replaced with NUL filename framing (--null on both engines), post-selection context materialized from file reads, exact truncation via one row of lookahead, and file-level --and/--without predicates whose membership scans complete before the primary limit applies.
+sidebar:
+  order: 14
+---
+
+**Date:** 2026-07-15
+**Status:** Accepted
+
+## Context
+
+`grep`'s output parser inferred structure from punctuation: the first colon
+ended the path, the second ended the line number. Three defects followed. With
+`-C`, both engines emit context rows as `path-line-text` and bare `--`
+separators between groups; both fell into the colonless branch meant for `-l`
+paths and became fake `line=0` matches — garbling TTY output, inflating
+`total_matches`/`total_files` (context rows counted as distinct files), and
+poisoning the JSON envelope. Second, a colon-bearing path broke even normal
+match rows. Third, `--limit` killed the subprocess at `N` collected rows, so
+"exactly N results" was indistinguishable from "more than N" and exact-limit
+searches falsely reported `truncated: true`.
+
+Separately, the command had no way to express "files containing X and Y" —
+the most common composed search an agent runs — and a naive filter-after-limit
+implementation would let non-qualifying early hits consume the budget and hide
+valid later results.
+
+## Decision
+
+Four contracts, shipped together because they interlock:
+
+1. **NUL filename framing.** Content searches pass `--null` to both engines
+   (the long spelling — BSD grep repurposes `-Z` for decompression), and a
+   mode-aware streaming decoder (`NulDecoder`) frames records on raw bytes
+   before any string decoding, so chunk boundaries can fall anywhere,
+   including inside a UTF-8 sequence. Filename boundaries are never inferred
+   from punctuation. Record shapes: `path\0line:text\n` (content),
+   `path\0count\n` (count), `path\0` (files-only).
+
+2. **Post-selection context materialization.** `-C`/`-A`/`-B` are never
+   passed to the engines. The primary search selects (and budgets) match rows
+   first; context windows are then materialized from one file read per
+   selected file — intervals clamped, merged, and deduplicated, with rows
+   carrying `kind: "match" | "context"`. Context rows are free: they never
+   consume `--limit`, never count toward totals, and a selected match always
+   keeps its full trailing window. The TOCTOU window between scan and read is
+   accepted for a developer search command; an unreadable file degrades to
+   its match rows without context.
+
+3. **Exact truncation.** Each repo collects `limit + 1` accepted rows (one
+   row of lookahead), so `truncated` is set only when an accepted result
+   beyond the limit actually exists.
+
+4. **File-level composition.** `--and`/`--without` build complete membership
+   sets per repo (files-only scans, sequential within each repo worker to
+   bound process fan-out, strict failure on partial reads — an incomplete set
+   cannot prove absence) before the primary scan runs with an in-stream file
+   predicate. Only qualified rows consume the budget. The envelope gains
+   always-present `and_patterns`/`without_patterns` arrays.
+
+## Alternatives considered
+
+- **Parse the dash-separated context form** — rejected: a filename containing
+  `-<digits>-` is indistinguishable from a context row; punctuation parsing is
+  the root defect, not the instance.
+- **ripgrep `--json` plus a separate GNU grep parser** — rejected: two output
+  implementations where the engines already share a NUL delimiter; doubles
+  the parity-drift surface.
+- **Keep engine context output and tag rows** — rejected: leaves limit
+  lookahead, trailing-context cutoff, overlapping groups, and match `N+1`
+  leakage unresolved.
+- **Filter after the limited primary scan** (for `--and`) — rejected: early
+  non-qualifying rows consume the budget and cause false negatives.
+
+## Result
+
+Both engines produce byte-identical envelopes across the full new matrix
+(46 parity tests, including chunk-boundary decoder sweeps at every byte
+offset). The envelope change is additive (`kind` on rows, two pattern-echo
+arrays); `repos[].matches` keeps its name even though it can now carry
+context rows, because renaming it would be a breaking change. One behavior
+correction ships with this: exact-`N` searches under `--limit N` no longer
+report `truncated: true`.

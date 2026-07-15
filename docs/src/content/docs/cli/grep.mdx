@@ -72,7 +72,7 @@ process. Windows has no pinned artifact yet (hint only).
 | --- | --- |
 | `--repo <name>` | Scope to one submodule; `.` (or `parent`) means the repo root. |
 | `--all-repos` | Search the parent repo plus every configured submodule, labeled per-repo. |
-| `--lang <lang>` | File-type preset: `ts`, `tsx`, `js`, `jsx`, `py`, `php`, `sql`, `md`, `sh`, `json`, `yaml`, `rb`, `go`, `rs`. |
+| `--lang <lang>` | File-type preset: `ts`, `tsx`, `js`, `jsx`, `py`, `php`, `sql`, `md`, `sh`, `json`, `yaml`, `rb`, `go`, `rs`. Repeatable and/or comma-separated (`--lang ts,tsx`) — values union. |
 | `-i, --ignore-case` | Case-insensitive match. |
 | `-w, --whole-word` | Match whole words only. |
 | `-F, --literal` | Treat `<pattern>` as a literal string (no regex). |
@@ -80,12 +80,52 @@ process. Windows has no pinned artifact yet (hint only).
 | `--files` | Filename search: treat `<pattern>` as a filename glob and list matching files (no content search). |
 | `-c, --count` | Print a match count per file (suppresses content). |
 | `-C, --context <n>` | Print N lines of context around each match (default `0`). |
+| `-A, --after-context <n>` | Lines after each match; overrides `-C`'s after side. |
+| `-B, --before-context <n>` | Lines before each match; overrides `-C`'s before side. |
+| `--and <pattern>` | Only show files that ALSO contain this pattern (file-level, repeatable). |
+| `--without <pattern>` | Drop files that contain this pattern (file-level, repeatable). |
+| `-q, --quiet` | No output; exit `0` if any qualified match exists, `1` if none. |
 | `--max-count <n>` | Stop after N matches per file. |
 | `--limit <n>` | Truncate output to N matches total. |
 | `--include <glob>` | Extra include glob (repeatable). |
 | `--exclude <glob>` | Extra exclude glob (repeatable). |
 | `--no-default-excludes` | Disable the default skip list. |
 | `--json` | Emit a structured JSON envelope instead of `file:line:content`. |
+
+Numeric flags are validated strictly (`--limit nope`, negative, or fractional
+values fail before any engine spawns). Meaningless flag combinations are
+rejected with explicit errors rather than silently ignored: context with
+`-l`/`-c`/`--files`/`-q`; `--and`/`--without` with `--files`; `-q` with
+`--json`/`-l`/`-c`/`--limit`.
+
+## Boolean composition (`--and` / `--without`)
+
+Patterns compose at the **file** level: a file qualifies when it contains the
+primary pattern, contains every `--and` pattern somewhere, and contains no
+`--without` pattern anywhere. The displayed rows are always the primary
+pattern's matches. Match-shaping flags (`-i`, `-w`, `-F`) and every
+scope/file-selection flag apply to all patterns; output flags apply only to
+the primary search.
+
+```bash
+# Markdown files that mention BOTH terms, showing the freshdesk lines
+harn grep -l -i 'freshdesk' --and 'filter' --lang md --all-repos
+```
+
+Membership scans are complete before the primary search is budgeted, so
+`--limit` can never be consumed by a non-qualifying file, and a membership
+scan that fails part-way rejects the whole command instead of silently
+returning false negatives.
+
+## Context (`-C` / `-A` / `-B`)
+
+`-C N` sets both sides; `-A` / `-B` override one side regardless of flag
+order (`-C 2 -A 0` = two before, zero after). Context is materialized from
+one file read per selected file — not from engine context output — so both
+engines produce byte-identical rows, overlapping windows merge, and
+`--limit` counts only match rows (a selected match always keeps its full
+context window). Human output separates disjoint windows with `--`; JSON
+rows carry `kind: "match" | "context"` instead of separator rows.
 
 ## Default excludes
 
@@ -122,6 +162,16 @@ harn grep "deprecated" -l --include "*.md"
 # Two lines of context, capped at 50 total matches, as JSON
 harn grep "throw new Error" -C 2 --limit 50 --json
 
+# Union two language presets (either form)
+harn grep "useState" --lang ts,tsx --all-repos
+harn grep "useState" --lang ts --lang tsx --all-repos
+
+# File-level intersection: files with BOTH terms, minus a third
+harn grep "freshdesk" --and "filter" --without "deprecated" --lang md
+
+# Scripting: does any file match? (exit 0 = yes, 1 = no; no output)
+harn grep -q "TODO" --repo . && echo "still has TODOs"
+
 # Filename search: find files by name glob across every repo
 harn grep '*.env.example' --files --all-repos
 harn grep 'Dockerfile*' --files -i
@@ -140,19 +190,25 @@ your shell doesn't expand it.
 
 ## Output
 
-Human mode prints `file:line:content` per match, with a `── <repo> ──` header
-when more than one repo is searched. `--json` emits an envelope shaped
-`{ pattern, mode, engine, repos[], total_matches, total_files, truncated, elapsed_ms }`,
+Human mode prints `file:line:content` per match (context rows render
+grep-style as `file-line-content`), with a `── <repo> ──` header when more
+than one repo is searched. `--json` emits an envelope shaped
+`{ pattern, mode, engine, and_patterns[], without_patterns[], repos[], total_matches, total_files, truncated, elapsed_ms }`,
 where each entry in `repos[]` carries `{ name, cwd, matches[], truncated }` and
-every match is `{ repo, file, line, text }`. `truncated` is `true` when
-`--limit` cut the results short.
+every row is `{ repo, file, line, text, kind }` with
+`kind: "match" | "context"`.
+
+Filenames are framed with the NUL delimiter (`--null` on both engines), so
+paths containing colons, dashes, or spaces can never be mis-split.
+`total_matches` / `total_files` count **match rows only** — context rows are
+free and never consume `--limit`. `truncated` is `true` only when a result
+beyond `--limit` actually exists: a search with exactly `N` results under
+`--limit N` is *not* truncated (one row of lookahead distinguishes the two).
 
 Matches are sorted by file then line, so output is stable across runs and
-identical between engines (with `-C <n>` context, engine order is kept so
-context groups stay adjacent). In `-c` count mode, zero-count rows are
-filtered on both engines. Under `--limit`, *which* matches survive truncation
-depends on engine walk order — counts and flags are stable, the selection may
-not be.
+identical between engines. In `-c` count mode, zero-count rows are filtered
+on both engines. Under `--limit`, *which* matches survive truncation depends
+on engine walk order — counts and flags are stable, the selection may not be.
 
 ## Notes
 
