@@ -632,6 +632,7 @@ async function main(): Promise<number> {
       session_id: sessionId,
       harness,
       bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
+      workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
     if (!verdict.allow) {
       // Harness-aware enforcement channel: Claude Code / Codex honor exit-2 +

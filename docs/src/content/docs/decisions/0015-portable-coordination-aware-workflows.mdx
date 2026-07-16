@@ -1,0 +1,41 @@
+---
+title: "0015: Portable coordination-aware workflows"
+description: "ADR: why harnery grew a workflow engine — bounded, schema-gated, conditionally-routed subagent orchestration that spawns headless harness CLIs and registers children in the coordination layer."
+---
+
+**Status:** accepted (2026-07-16) · **Scope:** product tier (`harn workflow`, `src/core/workflow/`)
+
+## Context
+
+Harness-native subagent orchestration is fragmented. Claude Code ships an excellent workflow primitive (bounded stages, schema-gated outputs, code-decides routing) — but it is Claude Code-only. Codex's subagent modes spawn recursively with no terminus and are widely reported as a token furnace. Cursor has no orchestration at all. And none of them is coordination-aware: a harness-native workflow's subagents cannot see peers *outside their own run*, so in a shared checkout a workflow child and an unrelated agent (or human) can silently clobber each other's files.
+
+harnery already owns the layer that solves the second problem — heartbeats, file claims, the commit guard, the canonical event stream, the web dashboard. The question was whether to expand from coordination (keeping independent agents from colliding) into orchestration (one process driving many agents toward a goal).
+
+## Decision
+
+Build `harn workflow`: a deterministic engine that runs a small throwaway JS script (`export default async ({agent, parallel, stage, log}) => …`) whose stages fan out to subagents spawned as **headless harness-CLI subprocesses** (`claude -p --output-format json` first; codex/cursor behind the same `Spawner` signature later). The engine guarantees:
+
+- **Bounded** — hard total-agent ceiling (default 50) + a shared concurrency pool (default 4). Subagents are leaf processes; there is no recursive self-spawning path.
+- **Terminating** — the run ends when the script returns.
+- **Schema-gated** — with `schema`, a stage's reply must strict-parse and validate (tiny built-in subset validator; no ajv dependency); failures re-prompt with the validation errors appended, bounded by `maxAttempts`. Deterministic script code, not a model, routes between stages.
+- **Journaled** — every stage/agent start+end lands in `.harnery/workflows/<run-id>/journal.jsonl` with cost, duration, and child session id.
+- **Coordination-registered** — children run with the host's hooks ON, so they emit the full session lifecycle into the canonical event stream and stay visible to peers.
+
+Two empirical findings from the spike are load-bearing in the spawn adapter:
+
+1. **Inherited `CLAUDE*` env must be deleted, not blanked** — a nested CLI under a live session otherwise exits 1 with empty output; an empty-string var still reads as set.
+2. **The end-of-turn ritual must exempt workflow children, not lose them.** With hooks on, the coordination Stop hook blocked headless children for skipping the status-box ritual, burning their turn budget on re-prompts (`error_max_turns`). Disabling all hooks fixes the block but destroys coord capture. Children therefore run with `HARNERY_WORKFLOW_CHILD=1` and the stop-hook rule returns `stop-hook.workflow_child` allow — ritual skipped, heartbeats + events kept. Verified live: child sessions show `session.start → user_prompt.submit → turn.stop → session.end` with zero rule blocks.
+
+## Alternatives considered
+
+- **Defer to Claude Code's built-in workflows.** Rejected: CC-only, and blind to cross-session peers — the collision risk harnery exists to prevent.
+- **Enhance `harn council` with conditional round-routing instead.** Rejected as the primary move: councils solve structured *decisions*, not general work fan-out, and don't spawn headless children. (Still open as a follow-on.)
+- **Orchestrate only human-launched, coord-registered peers (no spawning).** Rejected: loses the one-command fan-out that makes workflows useful; kept as a degraded mode idea if headless CLIs prove unstable.
+- **Full JSON Schema validation via ajv.** Rejected: a dependency for validation depth stage gates don't need; the subset (type/properties/required/items/enum) covers routing discriminants.
+
+## Consequences
+
+- harnery's public identity grows from "coordination" to "coordination + a portable orchestration surface." Coordination remains the pitch; the engine is sold as *coordination-aware orchestration*, which no harness-native implementation offers.
+- Orchestration is inherently token-hungry. The engine's job is to make the burn bounded and visible (caps, per-agent cost in the journal and RunReport), not to hide it. Headless children in a repo with a large instructions file additionally pay that file's cache-write per child (~72K tokens in the reference host) — surfacing projected per-stage cost is Phase 3+ work.
+- Per-harness headless contracts (`codex exec`, `cursor-agent`) drift; adapters isolate that maintenance to one file each.
+- Phases remaining (tracked in the host plan): web-dashboard live view for runs, codex/cursor adapters, resume-from-journal.

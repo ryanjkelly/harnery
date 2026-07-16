@@ -1,0 +1,84 @@
+---
+title: harn workflow
+description: Run bounded, schema-gated, conditionally-routed multi-subagent workflow scripts. Subagents spawn as headless harness-CLI subprocesses, registered in the coordination layer.
+sidebar:
+  order: 30
+---
+
+```
+harn workflow run <script> [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
+```
+
+A workflow is a small throwaway JS script with staged fan-out: the **script**
+(deterministic code), not any model, decides what runs next, and the run always
+terminates when the script returns. Subagents spawn as headless harness-CLI
+subprocesses (`claude -p` today; codex/cursor planned) and are **born
+coordination-registered** — they heartbeat, emit canonical events, and stay
+visible to peers, so a workflow child editing a file is subject to the same
+claim/guard protections as any other agent. Design record: decision 0015.
+
+## Script shape
+
+```js
+export const meta = { name: "review-prs", description: "triage + deep-dive open PRs" };
+
+const TRIAGE = {
+  type: "object",
+  required: ["route", "reason"],
+  properties: {
+    route: { enum: ["close", "analyze", "keep"] },
+    reason: { type: "string" },
+  },
+};
+
+export default async function run({ agent, parallel, stage, log }) {
+  stage("triage");
+  const verdicts = await parallel(
+    prs.map((pr) => () =>
+      agent(`Classify this PR… Return ONLY JSON {route, reason}.`, {
+        schema: TRIAGE,
+        model: "claude-haiku-4-5",
+        maxTurns: 1,
+      })),
+  );
+
+  stage("deep-dive");
+  for (const [i, v] of verdicts.entries()) {
+    if (v?.route !== "analyze") continue; // conditional routing: code decides
+    await agent(`Risk-assess: ${prs[i]}`, { label: `deep: ${prs[i]}` });
+  }
+}
+```
+
+## The ctx API
+
+| Function | Contract |
+| --- | --- |
+| `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must strict-parse as JSON and validate against the schema subset (`type`, `properties`, `required`, `items`, `enum`); failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `model`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
+| `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch — filter and route. |
+| `stage(title)` | Declare the current stage: journal marker + progress grouping. |
+| `log(message)` | Narrate progress (stderr + journal). |
+
+## Bounds
+
+- `--max-agents` (default 50): total-agent ceiling for the run. The cap failing
+  loud is the runaway backstop — there is no recursive spawning path, because
+  subagents are leaf processes.
+- `--concurrency` (default 4): one shared slot pool for every spawn in the run,
+  so nesting `parallel()` inside loops can't exceed it.
+
+## Output
+
+Human mode prints a run summary (agents, cost, duration, journal path, result).
+`--json` emits the full `RunReport`. Every run journals to
+`.harnery/workflows/<run-id>/journal.jsonl`: `run.start`, `stage.start`,
+`agent.start/end` (cost, duration, child session id), `agent.schema_retry`,
+`run.end`.
+
+## Workflow children and the end-of-turn ritual
+
+Children run with the host's hooks **on** (that's what makes them
+coordination-visible) but with `HARNERY_WORKFLOW_CHILD=1`, which the stop-hook
+rule honors as an exemption (`stop-hook.workflow_child`): the human-facing
+end-of-turn ritual doesn't apply to a headless child reporting to a journal.
+Everything else — heartbeats, canonical events, claims — behaves normally.
