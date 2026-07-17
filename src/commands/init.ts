@@ -139,23 +139,23 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       } else {
         settings = {};
       }
-      const { wired, already, removed } = wireHooks(settings, spec, agentHook, harness);
+      const { wired, already, removed, upgraded } = wireHooks(settings, spec, agentHook, harness);
 
-      if (wired === 0 && removed === 0) {
+      if (wired === 0 && removed === 0 && upgraded === 0) {
         actions.push(
           `· all ${spec.events.length} ${harness} hooks already wired in ${rel(projectRoot, settingsPath)}`,
         );
       } else if (dryRun) {
         actions.push(
-          `+ would wire ${wired} hook(s) and remove ${removed} legacy hook(s) in ` +
-            `${rel(projectRoot, settingsPath)} (${already} already present)`,
+          `+ would wire ${wired} hook(s), upgrade ${upgraded} stale command(s), and remove ` +
+            `${removed} legacy hook(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       } else {
         mkdirSync(dirname(settingsPath), { recursive: true });
         writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
         actions.push(
-          `+ wired ${wired} hook(s) and removed ${removed} legacy hook(s) in ` +
-            `${rel(projectRoot, settingsPath)} (${already} already present)`,
+          `+ wired ${wired} hook(s), upgraded ${upgraded} stale command(s), and removed ` +
+            `${removed} legacy hook(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       }
 
@@ -169,11 +169,12 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
 /**
  * Merge agent-hook entries into a harness settings object in place, idempotently.
- * Preserves every existing hook; skips events already wired to
- * `agent-hook <subcommand>`. Honors the harness's entry shape (Claude/Codex nest
- * under an inner `hooks` array; Cursor uses a flat `{ command }`) and ensures the
- * root `version` key when the harness requires one. Pure (no fs/git) so it's
- * unit-testable.
+ * Preserves every existing hook; rewrites events already wired to
+ * `agent-hook <subcommand>` when their command string is stale (e.g. an older
+ * harnery wired a bare relative path). Honors the harness's entry shape
+ * (Claude/Codex nest under an inner `hooks` array; Cursor uses a flat
+ * `{ command }`) and ensures the root `version` key when the harness requires
+ * one. Pure (no fs/git) so it's unit-testable.
  *
  * The trailing space in the match (`agent-hook ${subcommand} `) is load-bearing:
  * it keeps `stop` from matching `stop-failure`.
@@ -183,7 +184,7 @@ export function wireHooks(
   spec: HarnessSpec,
   agentHookPath: string,
   harness: HarnessId,
-): { wired: number; already: number; removed: number } {
+): { wired: number; already: number; removed: number; upgraded: number } {
   if (spec.rootVersion !== undefined && settings.version === undefined) {
     settings.version = spec.rootVersion;
   }
@@ -191,6 +192,7 @@ export function wireHooks(
   let wired = 0;
   let already = 0;
   let removed = 0;
+  let upgraded = 0;
   for (const { settingsKey, subcommand } of spec.legacyEvents ?? []) {
     const groups = settings.hooks[settingsKey] ?? [];
     const kept = groups.filter(
@@ -202,11 +204,14 @@ export function wireHooks(
     else settings.hooks[settingsKey] = kept;
   }
   for (const { settingsKey, subcommand } of spec.events) {
-    const command = `bash ${agentHookPath} ${subcommand} --harness ${harness}`;
+    const command = hookCommand(spec, agentHookPath, subcommand, harness);
     const groups = settings.hooks[settingsKey] ?? [];
-    const present = groups.some((g) =>
-      groupCommands(g).some((c) => commandWiresSubcommand(c, subcommand)),
-    );
+    let present = false;
+    for (const group of groups) {
+      upgraded += rewriteStaleCommands(group, subcommand, command, () => {
+        present = true;
+      });
+    }
     if (present) {
       already++;
       continue;
@@ -215,7 +220,62 @@ export function wireHooks(
     settings.hooks[settingsKey] = groups;
     wired++;
   }
-  return { wired, already, removed };
+  return { wired, already, removed, upgraded };
+}
+
+/**
+ * The canonical hook command for one event. When the harness exports a
+ * project-dir env var to hook processes (Claude Code's CLAUDE_PROJECT_DIR),
+ * anchor the agent-hook path on it: hook processes inherit the session
+ * shell's cwd, which follows `cd` away from the project root — a bare
+ * relative path silently fails to spawn from there (no events, no image
+ * capture, no guards). `:-.` keeps the command working on harness versions
+ * that don't set the var. Only the env expansion is quoted so the
+ * `agent-hook <subcommand> ` wiring match stays byte-identical.
+ */
+function hookCommand(
+  spec: HarnessSpec,
+  agentHookPath: string,
+  subcommand: string,
+  harness: HarnessId,
+): string {
+  const anchor = spec.projectDirEnv ? `"\${${spec.projectDirEnv}:-.}"/` : "";
+  return `bash ${anchor}${agentHookPath} ${subcommand} --harness ${harness}`;
+}
+
+/**
+ * Rewrite any harnery-owned command for `subcommand` inside one hook group to
+ * the canonical form, in place. Returns the number of commands rewritten and
+ * calls `onPresent` when the subcommand is wired in this group at all.
+ */
+function rewriteStaleCommands(
+  group: HookGroup,
+  subcommand: string,
+  canonical: string,
+  onPresent: () => void,
+): number {
+  let rewritten = 0;
+  if ("command" in group && typeof group.command === "string") {
+    if (commandWiresSubcommand(group.command, subcommand)) {
+      onPresent();
+      if (group.command !== canonical) {
+        group.command = canonical;
+        rewritten++;
+      }
+    }
+  }
+  if ("hooks" in group && Array.isArray(group.hooks)) {
+    for (const hook of group.hooks) {
+      if (typeof hook.command !== "string") continue;
+      if (!commandWiresSubcommand(hook.command, subcommand)) continue;
+      onPresent();
+      if (hook.command !== canonical) {
+        hook.command = canonical;
+        rewritten++;
+      }
+    }
+  }
+  return rewritten;
 }
 
 /**

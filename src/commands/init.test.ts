@@ -7,6 +7,9 @@ import { HARNESS_SPECS } from "../core/hooks/harness/events.ts";
 import { stampBinName, wireHooks } from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
+// Claude Code exports CLAUDE_PROJECT_DIR to hook processes; init anchors the
+// path on it so hooks survive the session shell `cd`ing away from the root.
+const CLAUDE_HOOK = `"\${CLAUDE_PROJECT_DIR:-.}"/${HOOK}`;
 const CLAUDE = HARNESS_SPECS["claude-code"];
 const CURSOR = HARNESS_SPECS.cursor;
 const CODEX = HARNESS_SPECS.codex;
@@ -20,7 +23,7 @@ describe("wireHooks: Claude Code", () => {
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(Object.keys(hooks).length).toBe(CLAUDE.events.length);
     expect(hooks.Stop[0]).toEqual({
-      hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }],
+      hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --harness claude-code` }],
     });
   });
 
@@ -29,6 +32,7 @@ describe("wireHooks: Claude Code", () => {
     wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
     const second = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
     expect(second.wired).toBe(0);
+    expect(second.upgraded).toBe(0);
     expect(second.already).toBe(CLAUDE.events.length);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(hooks.Stop.length).toBe(1); // no duplicate groups appended
@@ -38,23 +42,45 @@ describe("wireHooks: Claude Code", () => {
     const settings = {
       hooks: {
         Stop: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }] },
+          {
+            hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --harness claude-code` }],
+          },
         ],
         Notification: [{ hooks: [{ type: "command", command: "echo keep-me" }] }],
       },
     };
-    const { wired, already } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    const { wired, already, upgraded } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
     expect(already).toBe(1); // Stop
+    expect(upgraded).toBe(0); // already canonical
     expect(wired).toBe(CLAUDE.events.length - 1);
     expect(settings.hooks.Stop.length).toBe(1); // not duplicated
     expect(settings.hooks.Notification[0].hooks[0].command).toBe("echo keep-me");
+  });
+
+  test("upgrades a stale bare-relative command in place (no duplicate entry)", () => {
+    const settings = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }] },
+        ],
+      },
+    };
+    const { already, upgraded } = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    expect(already).toBe(1);
+    expect(upgraded).toBe(1);
+    expect(settings.hooks.Stop.length).toBe(1);
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe(
+      `bash ${CLAUDE_HOOK} stop --harness claude-code`,
+    );
   });
 
   test("`stop` does not match `stop-failure` (trailing-space disambiguation)", () => {
     const settings = {
       hooks: {
         Stop: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }] },
+          {
+            hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --harness claude-code` }],
+          },
         ],
       },
     };

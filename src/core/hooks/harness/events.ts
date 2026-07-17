@@ -40,6 +40,13 @@ export interface HarnessSpec {
   allowedTopLevelKeys?: string[];
   /** Strict hook event keys accepted by this harness, including events harnery does not wire. */
   allowedEventKeys?: string[];
+  /**
+   * Env var the harness exports to hook processes carrying the project root
+   * (e.g. Claude Code's CLAUDE_PROJECT_DIR). When set, `init` anchors the
+   * agent-hook path on it so the hook still spawns when the process cwd has
+   * wandered (the session shell `cd`ing into a subdirectory or off-repo).
+   */
+  projectDirEnv?: string;
 }
 
 /** Claude Code: `.claude/settings.json`. */
@@ -111,6 +118,7 @@ export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
     settingsFile: ".claude/settings.json",
     events: CLAUDE_CODE_EVENTS,
     entryShape: "claude",
+    projectDirEnv: "CLAUDE_PROJECT_DIR",
   },
   cursor: {
     settingsFile: ".cursor/hooks.json",

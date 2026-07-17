@@ -94,6 +94,17 @@ async function readStdin(): Promise<string> {
   }
 }
 
+/**
+ * Env for child agent-coord spawns, with the coord root pinned. The hook
+ * process may be running with the session shell's cwd (inside a submodule or
+ * scratch dir), and agent-coord resolves its root from cwd unless overridden —
+ * without the pin a child could write state to a different .harnery than the
+ * one this hook resolved.
+ */
+function childEnv(coordRoot: string): NodeJS.ProcessEnv {
+  return { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: coordRoot };
+}
+
 function appendDebug(coordRoot: string, entry: Record<string, unknown>): void {
   const path = join(coordRoot, ".harnery", "debug", "agent-hook.ndjson");
   try {
@@ -143,6 +154,7 @@ function assignNameViaAgentCoord(
     const result = spawnSync(binary, ["assign-name", instanceId, kind], {
       encoding: "utf8",
       timeout: 2000,
+      env: childEnv(coordRoot),
     });
     if (result.status !== 0 || !result.stdout) return null;
     const parsed = JSON.parse(result.stdout.trim()) as {
@@ -519,7 +531,11 @@ async function main(): Promise<number> {
     try {
       const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
       if (existsSync(agentCoordBin)) {
-        spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
+        spawnSync(agentCoordBin, ["project"], {
+          encoding: "utf8",
+          timeout: 3000,
+          env: childEnv(coordRoot),
+        });
         spawnSync(
           agentCoordBin,
           [
@@ -528,7 +544,7 @@ async function main(): Promise<number> {
             "--instance",
             owner.instance_id,
           ],
-          { encoding: "utf8", timeout: 2000 },
+          { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
         );
       }
       emitSubagentStartContext(coordRoot, owner.instance_id, sessionId, data, harness);
@@ -551,7 +567,7 @@ async function main(): Promise<number> {
             "--instance",
             owner.instance_id,
           ],
-          { encoding: "utf8", timeout: 2000 },
+          { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
         );
       }
     } catch (err) {
@@ -797,6 +813,7 @@ async function runPreToolUseGuard(
       input: verdictReq,
       encoding: "utf8",
       timeout: 3000,
+      env: childEnv(coordRoot),
     });
     if (result.status !== 0 || !result.stdout) continue;
     let parsed: { allow?: boolean; reason?: string } = {};
@@ -894,6 +911,7 @@ function healHeartbeatViaCli(
   spawnSync(agentCoordBin, ["heal-heartbeat", instanceId, sessionId, `--harness=${harness}`], {
     encoding: "utf8",
     timeout: 2000,
+    env: childEnv(coordRoot),
   });
 }
 
@@ -1001,6 +1019,7 @@ function stampToolActivity(
   spawnSync(agentCoordBin, ["stamp-tool-activity", instanceId, toolName, target], {
     encoding: "utf8",
     timeout: 2000,
+    env: childEnv(coordRoot),
   });
 }
 
@@ -1052,6 +1071,7 @@ function releaseClaimOnFailure(
   spawnSync(agentCoordBin, ["release-claim", instanceId, canonical], {
     encoding: "utf8",
     timeout: 2000,
+    env: childEnv(coordRoot),
   });
 }
 

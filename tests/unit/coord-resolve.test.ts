@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { findCoordRoot } from "../../src/core/hooks/resolve/coord-root.ts";
 import { detectHarness } from "../../src/core/hooks/harness/detect.ts";
 import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
@@ -25,6 +26,67 @@ const SESSION_ID_ENV_KEYS = [
   "CURSOR_CONVERSATION_ID",
   "CODEX_SESSION_ID",
 ] as const;
+
+describe("findCoordRoot (hooks-side)", () => {
+  let root: string;
+  let nested: string;
+  const savedProjectDir = process.env.CLAUDE_PROJECT_DIR;
+  const savedOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-coord-root-"));
+    mkdirSync(path.join(root, ".harnery"), { recursive: true });
+    // A nested "submodule" carrying its own .harnery (the accidental-root trap).
+    nested = path.join(root, "sub-repo");
+    mkdirSync(path.join(nested, ".harnery"), { recursive: true });
+    delete process.env.CLAUDE_PROJECT_DIR;
+    delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    if (savedProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = savedProjectDir;
+    if (savedOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    else process.env.HARNERY_COORD_ROOT_OVERRIDE = savedOverride;
+  });
+
+  test("walks up from start when no env is set (nested root wins from inside it)", () => {
+    expect(findCoordRoot(nested)).toBe(nested);
+    expect(findCoordRoot(path.join(root, "some", "plain", "dir"))).toBe(root);
+  });
+
+  test("CLAUDE_PROJECT_DIR beats the cwd walk (hook cwd wandered into a nested root)", () => {
+    process.env.CLAUDE_PROJECT_DIR = root;
+    expect(findCoordRoot(nested)).toBe(root);
+  });
+
+  test("CLAUDE_PROJECT_DIR beats an off-root cwd with no .harnery anywhere", () => {
+    process.env.CLAUDE_PROJECT_DIR = root;
+    const scratch = mkdtempSync(path.join(os.tmpdir(), "harn-scratch-"));
+    try {
+      expect(findCoordRoot(scratch)).toBe(root);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to the cwd walk when CLAUDE_PROJECT_DIR has no coord root above it", () => {
+    const bare = mkdtempSync(path.join(os.tmpdir(), "harn-bare-"));
+    try {
+      process.env.CLAUDE_PROJECT_DIR = bare;
+      expect(findCoordRoot(nested)).toBe(nested);
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
+  });
+
+  test("HARNERY_COORD_ROOT_OVERRIDE beats CLAUDE_PROJECT_DIR", () => {
+    process.env.CLAUDE_PROJECT_DIR = root;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = nested;
+    expect(findCoordRoot(root)).toBe(nested);
+  });
+});
 
 describe("detectHarness", () => {
   const saved = process.env.HARNERY_AGENT_COORD_HARNESS;

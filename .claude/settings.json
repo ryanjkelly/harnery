@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook session-start --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook session-start --harness claude-code"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook user-prompt-submit --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook user-prompt-submit --harness claude-code"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook stop --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook stop --harness claude-code"
           }
         ]
       }
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook stop-failure --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook stop-failure --harness claude-code"
           }
         ]
       }
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook session-end --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook session-end --harness claude-code"
           }
         ]
       }
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook sub-agent-start --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook sub-agent-start --harness claude-code"
           }
         ]
       }
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook sub-agent-stop --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook sub-agent-stop --harness claude-code"
           }
         ]
       }
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook pre-tool-use --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook pre-tool-use --harness claude-code"
           }
         ]
       }
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook post-tool-use --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook post-tool-use --harness claude-code"
           }
         ]
       }
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash bin/agent-hook post-tool-use-failure --harness claude-code"
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook post-tool-use-failure --harness claude-code"
           }
         ]
       }
