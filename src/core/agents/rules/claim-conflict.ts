@@ -17,6 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { emit } from "../events/emit.ts";
 
 const FRESHNESS_SECS = 600;
 
@@ -306,12 +307,36 @@ function pruneClaimFromPeer(coordRoot: string, instanceId: string, relPath: stri
   try {
     const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     const files = (body.files_touched as string[] | undefined) ?? [];
-    const next = files.filter((p) => p !== relPath);
+    // Normalize both sides: files_touched can hold absolute-under-coordRoot
+    // entries (legacy projections) as well as canonical relative ones — an
+    // exact-string filter silently no-ops on the mixed-form case and the
+    // stale claim never heals.
+    const norm = (p: string): string =>
+      p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
+    const target = norm(relPath);
+    const next = files.filter((p) => norm(p) !== target);
     if (next.length === files.length) return;
     body.files_touched = next;
     const tmp = `${path}.tmp.${process.pid}`;
     writeFileSync(tmp, JSON.stringify(body, null, 2), "utf8");
     renameSync(tmp, path);
+    // Durable subtraction: the projector rebuilds files_touched from the
+    // permanent Edit/Write events, so a file-only prune resurrects on the
+    // next replay. Soft-fail — the heartbeat write already landed.
+    try {
+      const platform = body.platform as string | undefined;
+      emit(coordRoot, {
+        event_type: "claim.release",
+        instance_id: instanceId,
+        session_id: (body.session_id as string | undefined) ?? instanceId,
+        harness: platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code",
+        source: "agent-coord",
+        data: { path: target, reason: "heal" },
+        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+      } as Parameters<typeof emit>[1]);
+    } catch {
+      /* soft-fail */
+    }
   } catch {
     /* silent */
   }

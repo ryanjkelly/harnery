@@ -184,20 +184,39 @@ export function releaseClaim(
   }));
 }
 
+/** A heartbeat that actually dropped a path during a group unclaim. */
+export interface GroupUnclaimHit {
+  instance_id: string;
+  session_id?: string;
+  platform?: string;
+}
+
 /**
  * Session-group-wide unclaim. Walks every heartbeat sharing `groupId`
  * (parent's session_id == group_id;
  * subagents inherit it) and removes the path from each one's files_touched.
- * Idempotent: heartbeats that don't hold the path are untouched.
+ * Idempotent: heartbeats that don't hold the path are untouched. Returns the
+ * heartbeats that actually dropped the path so the caller can emit the
+ * durable `claim.release` events — a file-only prune is silently reverted by
+ * the next projector replay.
+ *
+ * files_touched can hold either absolute-under-coordRoot or canonical
+ * repo-relative entries (legacy projections stored the raw tool_input path),
+ * so both sides are normalized before comparing — an exact-string match
+ * silently no-ops on the mixed-form case and the claim never releases.
  *
  * This is the Option B fix for post-commit's pid-map attribution hole: a
  * subagent-held claim that doesn't live on the parent's heartbeat still gets
  * pruned because the walk covers the whole group.
  */
-export function groupUnclaim(coordRoot: string, groupId: string, path: string): void {
-  if (!groupId || !path) return;
+export function groupUnclaim(coordRoot: string, groupId: string, path: string): GroupUnclaimHit[] {
+  const hits: GroupUnclaimHit[] = [];
+  if (!groupId || !path) return hits;
   const activeDir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(activeDir)) return;
+  if (!existsSync(activeDir)) return hits;
+  const norm = (p: string): string =>
+    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
+  const target = norm(path);
   for (const f of readdirSync(activeDir)) {
     if (!f.endsWith(".json")) continue;
     const hbPath = join(activeDir, f);
@@ -211,17 +230,23 @@ export function groupUnclaim(coordRoot: string, groupId: string, path: string): 
       (body.session_id as string | undefined) ?? (body.instance_id as string | undefined);
     if (peerSession !== groupId) continue;
     const files = (body.files_touched as string[] | undefined) ?? [];
-    const next = files.filter((p) => p !== path);
+    const next = files.filter((p) => norm(p) !== target);
     if (next.length === files.length) continue;
     body.files_touched = next;
     try {
       const tmp = `${hbPath}.tmp.${process.pid}`;
       writeFileSync(tmp, JSON.stringify(body, null, 2), "utf8");
       renameSync(tmp, hbPath);
+      hits.push({
+        instance_id: (body.instance_id as string | undefined) ?? f.replace(/\.json$/, ""),
+        session_id: body.session_id as string | undefined,
+        platform: body.platform as string | undefined,
+      });
     } catch {
       /* silent */
     }
   }
+  return hits;
 }
 
 export function killHeartbeat(coordRoot: string, instanceId: string): boolean {

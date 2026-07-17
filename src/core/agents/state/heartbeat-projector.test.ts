@@ -504,7 +504,7 @@ describe("projectHeartbeats: claim.release durability + path-form normalization"
     expect(res.perOwner[OWNER]!.files_touched).toEqual([]);
   });
 
-  test("an Edit AFTER the release legitimately re-claims the path", () => {
+  test("an Edit AFTER the release legitimately re-claims the path (stored canonical)", () => {
     const root = freshRoot();
     const events = [
       editEvent(`${root}/src/c.ts`, "2026-06-04T00:00:01Z", "01REL05"),
@@ -512,10 +512,10 @@ describe("projectHeartbeats: claim.release durability + path-form normalization"
       editEvent(`${root}/src/c.ts`, "2026-06-04T00:00:03Z", "01REL07"),
     ] as unknown as Events;
     const res = projectHeartbeats(root, events);
-    expect(res.perOwner[OWNER]!.files_touched).toEqual([`${root}/src/c.ts`]);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual(["src/c.ts"]);
   });
 
-  test("release of one path leaves sibling claims intact", () => {
+  test("release of one path leaves sibling claims intact (stored canonical)", () => {
     const root = freshRoot();
     const events = [
       editEvent(`${root}/src/keep.ts`, "2026-06-04T00:00:01Z", "01REL08"),
@@ -523,6 +523,16 @@ describe("projectHeartbeats: claim.release durability + path-form normalization"
       releaseEvent("src/drop.ts", "2026-06-04T00:00:03Z", "01REL10"),
     ] as unknown as Events;
     const res = projectHeartbeats(root, events);
-    expect(res.perOwner[OWNER]!.files_touched).toEqual([`${root}/src/keep.ts`]);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual(["src/keep.ts"]);
+  });
+
+  test("absolute + relative Edits of the same file project to ONE canonical claim", () => {
+    const root = freshRoot();
+    const events = [
+      editEvent(`${root}/src/d.ts`, "2026-06-04T00:00:01Z", "01REL11"),
+      editEvent("src/d.ts", "2026-06-04T00:00:02Z", "01REL12"),
+    ] as unknown as Events;
+    const res = projectHeartbeats(root, events);
+    expect(res.perOwner[OWNER]!.files_touched).toEqual(["src/d.ts"]);
   });
 });

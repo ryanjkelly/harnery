@@ -248,8 +248,15 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       if (toolName === "Edit" || toolName === "Write" || toolName === "NotebookEdit") {
         const target = extractFilePath(d);
         if (target) {
+          // Canonicalize to repo-relative before storing: the claim guard
+          // writes canonical paths directly, so an absolute entry here would
+          // double-count the same file (inflated "N files" display) and
+          // defeat exact-match pruning on commit.
+          const canonical = target.startsWith(`${coordRoot}/`)
+            ? target.slice(coordRoot.length + 1)
+            : target;
           if (!hb.files_touched) hb.files_touched = [];
-          if (!hb.files_touched.includes(target)) hb.files_touched.push(target);
+          if (!hb.files_touched.includes(canonical)) hb.files_touched.push(canonical);
         }
       }
       break;

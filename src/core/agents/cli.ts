@@ -176,7 +176,7 @@ async function emitClaimRelease(
   owner: string,
   hb: { session_id?: string; platform?: string },
   path: string,
-  reason: "explicit" | "heal",
+  reason: "explicit" | "heal" | "commit" | "checkout",
 ): Promise<void> {
   try {
     const { emit } = await import("./events/emit.ts");
@@ -475,11 +475,16 @@ async function handlePostCommit(root: string): Promise<number> {
   const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
 
   // Session-group-wide unclaim. `owner` is the parent's session_id which is
-  // also the group key (parent + subagents share session_id).
+  // also the group key (parent + subagents share session_id). Each actual
+  // removal also emits a durable claim.release event — the projector rebuilds
+  // files_touched from the permanent Edit/Write events, so a file-only prune
+  // would resurrect on the next replay.
   if (req.owner && Array.isArray(req.prune)) {
     for (const path of req.prune) {
       try {
-        groupUnclaim(root, req.owner, path);
+        for (const hit of groupUnclaim(root, req.owner, path)) {
+          await emitClaimRelease(root, hit.instance_id, hit, path, "commit");
+        }
       } catch {
         /* best-effort */
       }
@@ -500,7 +505,9 @@ async function handlePostCheckout(root: string, _rest: string[]): Promise<number
   if (req.owner && Array.isArray(req.removed)) {
     for (const path of req.removed) {
       try {
-        groupUnclaim(root, req.owner, path);
+        for (const hit of groupUnclaim(root, req.owner, path)) {
+          await emitClaimRelease(root, hit.instance_id, hit, path, "checkout");
+        }
       } catch {
         /* best-effort */
       }
