@@ -1,13 +1,19 @@
 ---
 title: harn presence
-description: Track whether an agent's human is at a desktop (office) or on a phone (mobile) so replies can adapt.
+description: Mobile/office state for agents, plus cross-machine session presence over git refs (publish / fetch / peers).
 sidebar:
   order: 15
 ---
 
 ```
-harn presence [get|set|clear] [options]
+harn presence [get|set|clear|publish|fetch|peers] [options]
 ```
+
+Two related surfaces share this command: **mobile/office state** (is the human
+at a desktop or on a phone?) and **cross-machine session presence** (which
+sessions are live on the *other* machines that share this repo?). The first
+half of this page covers mobile/office; cross-machine presence is
+[below](#cross-machine-session-presence).
 
 Records a single bit of context an agent can adapt to: is the human at a
 desktop (`office`) or on a phone (`mobile`)? On mobile the human can't see
@@ -80,3 +86,43 @@ harn presence clear
   half-written record.
 - A malformed or unreadable file falls back to the default `office` rather than
   erroring.
+
+## Cross-machine session presence
+
+When more than one machine works the same repo (two people, or one person on
+two computers), each clone's coordination layer is otherwise blind to the
+others. The presence transport closes that gap with **zero configuration**:
+each machine publishes a small JSON blob describing its live sessions (agent
+names, tasks, files held) as a parentless commit force-pushed to
+`refs/harnery/presence/<machine>` on the repo's own `origin`, and fetches the
+other machines' refs on a throttled hook cadence. Remote sessions then appear
+in `agents list`, the `agents status` peers line, and the per-prompt peer
+table, labeled `@<machine>` — advisory only (they don't block local file
+claims). Repo push/fetch access is the only credential; there is no service.
+
+The hooks drive everything automatically (publish on session start/end and
+turn stop, change-batched with a ~5-minute keepalive; fetch on prompt submit,
+throttled to ~60s). The subcommands exist for inspection and force-runs:
+
+```
+harn presence publish [--force]   # publish this machine's sessions now (synchronous, errors report)
+harn presence fetch [--force]     # pull peer machines' refs now
+harn presence peers [--json]      # show sessions on other machines from the locally-known refs
+```
+
+Machine identity comes from the standard label resolution (`HARNERY_MACHINE`
+env → `~/.config/harnery/machine` file → hostname). A blob older than ~15
+minutes renders as offline and disappears.
+
+Opt out per repo with `.harnery/config.jsonc`:
+
+```jsonc
+{ "presence": { "enabled": false } }
+```
+
+or per process with `HARNERY_PRESENCE=0`. Everything is fail-silent: no origin
+remote, no network, or a host that rejects custom refs simply means no remote
+peers — never a broken hook.
+
+Design + rationale (including the planned optional live relay): decision
+record 0016.

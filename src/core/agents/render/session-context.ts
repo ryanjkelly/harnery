@@ -12,6 +12,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadHarnessWiring } from "../../hooks/harness/wiring.ts";
+import { readRemoteMachines } from "../../presence/index.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -48,7 +49,9 @@ export function renderSessionContext(opts: RenderOpts): string {
 
   // 1. Self-name line + peer table (folded if peers present)
   const peers = readActivePeers(coordRoot, instanceId);
-  const peerTable = formatPeerTable(peers, sessionId);
+  const localTable = formatPeerTable(peers, sessionId);
+  // Cross-machine presence (ADR 0016): sessions on other machines (advisory).
+  const peerTable = [localTable, formatRemoteMachines(coordRoot)].filter(Boolean).join("\n\n");
   if (agentName) {
     const suffix = platformLabel ? ` (${platformLabel})` : "";
     const selfLine = `You are agent-${agentName}${suffix}.`;
@@ -105,6 +108,29 @@ export function renderSessionContext(opts: RenderOpts): string {
   }
 
   return messages.join("\n\n");
+}
+
+/** One-line-per-agent view of sessions on other machines (presence refs). */
+function formatRemoteMachines(coordRoot: string): string {
+  try {
+    const remote = readRemoteMachines(coordRoot);
+    if (remote.length === 0) return "";
+    const lines: string[] = [];
+    for (const m of remote) {
+      for (const a of m.agents.slice(0, 10)) {
+        const task = a.task ? ` "${a.task.slice(0, 60)}"` : "";
+        const files = a.files_touched?.length
+          ? `holds: ${a.files_touched.slice(0, 3).join(", ")}${a.files_touched.length > 3 ? `, +${a.files_touched.length - 3} more` : ""}`
+          : "nothing held";
+        lines.push(
+          `  - agent-${a.name ?? a.instance_id.slice(0, 8)} @${m.machine}${task} (${files})`,
+        );
+      }
+    }
+    return `Sessions on other machines (advisory, via presence refs):\n${lines.join("\n")}`;
+  } catch {
+    return "";
+  }
 }
 
 /** Read all peer heartbeats from .harnery/active/, excluding self. */

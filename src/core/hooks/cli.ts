@@ -27,6 +27,7 @@ import { consumeSince, writeCursor } from "../agents/events/consume.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
+import { fetchPresence, publishPresence } from "../presence/index.ts";
 import {
   captureImages,
   detectPresence,
@@ -512,6 +513,14 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-systemMessage" });
     }
+    // Cross-machine presence (ADR 0016): announce this machine's sessions and
+    // pull peers'. Both are throttled + fail-silent; network runs detached.
+    try {
+      publishPresence(coordRoot);
+      fetchPresence(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "session-start-presence" });
+    }
   }
 
   // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Harness-
@@ -527,6 +536,13 @@ async function main(): Promise<number> {
     if (harness === "claude-code") {
       scratchArchive(coordRoot, owner.instance_id);
       runSessionSyncExtension(coordRoot, true);
+    }
+    // Presence: publish the post-cleanup state so peers see this session gone
+    // promptly rather than waiting out the remote-stale window.
+    try {
+      publishPresence(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "session-end-presence" });
     }
   }
 
@@ -591,6 +607,13 @@ async function main(): Promise<number> {
       const prompt = (payload?.raw?.prompt as string | undefined) ?? "";
       if (prompt) detectPresence(prompt);
     }
+    // Presence: throttled pull of peer machines' presence refs (default 60s
+    // interval; the systemMessage below reads whatever is locally known).
+    try {
+      fetchPresence(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "user-prompt-submit-presence" });
+    }
     try {
       await emitUserPromptSubmitSystemMessage(coordRoot, owner.instance_id, sessionId, harness);
     } catch (err) {
@@ -643,6 +666,15 @@ async function main(): Promise<number> {
       if (result.lastEventId) writeCursor(coordRoot, result.lastEventId);
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-projection" });
+    }
+
+    // Presence: publish AFTER the projection above so the blob carries this
+    // turn's fresh task/turn_summary/files. Change-batched + keepalive'd;
+    // the push itself runs detached.
+    try {
+      publishPresence(coordRoot);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "stop-presence" });
     }
 
     // Stop verdict (status-box + set-task gate). Direct in-process call: the

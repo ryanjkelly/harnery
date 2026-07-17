@@ -40,6 +40,7 @@ import {
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
+import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 
 /** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
  * under V8's ~512MB max string length so a `readFileSync` of the whole file can
@@ -116,7 +117,7 @@ interface Row {
   instance_id: string;
   session_id: string;
   kind: string;
-  relation: "self" | "group" | "blocks" | "unknown";
+  relation: "self" | "group" | "blocks" | "remote" | "unknown";
   started_at: string;
   last_heartbeat: string;
   files_touched: string[];
@@ -126,6 +127,9 @@ interface Row {
   turn_summary?: string | null;
   turn_summary_updated_at?: string | null;
   platform?: string | null;
+  /** Set on relation=remote rows: the machine label the row arrived from
+   * via the cross-machine presence transport (ADR 0016). */
+  machine?: string | null;
 }
 
 let emit: EmitContext;
@@ -873,6 +877,31 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
   // what made `harn agents list --all --stale` crash.
   rows.sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? ""));
 
+  // Cross-machine presence (ADR 0016): append sessions on OTHER machines from
+  // the locally-fetched presence refs. Advisory rows (relation=remote) — they
+  // don't participate in local claim blocking in v1.
+  for (const rm of readRemoteMachines(root)) {
+    for (const a of rm.agents) {
+      rows.push({
+        name: a.name || "unknown",
+        instance_id: a.instance_id,
+        session_id: a.session_id ?? a.instance_id,
+        kind: normalizeKind(a.kind),
+        relation: "remote",
+        started_at: a.started_at ?? "",
+        last_heartbeat: a.last_heartbeat ?? "",
+        files_touched: [...(a.files_touched ?? [])].sort(),
+        last_tool: a.last_tool ?? null,
+        last_tool_target: null,
+        task: a.task ?? null,
+        turn_summary: a.turn_summary ?? null,
+        turn_summary_updated_at: null,
+        platform: a.platform ?? "claude_code",
+        machine: rm.machine,
+      });
+    }
+  }
+
   // Emit. JSON format gets {rows, note}; TTY gets the rows with note as a footnote.
   emit.data({ rows, note: SUBAGENT_NOTE });
   if (process.stdout.isTTY && !opts.json) {
@@ -1425,7 +1454,9 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
     4,
     "0 held",
   );
-  const peersStr = formatPeers(livePeers, 4, peersStale);
+  // Cross-machine presence (ADR 0016): sessions on other machines, advisory.
+  const remoteMachines = readRemoteMachines(root);
+  const peersStr = formatPeers(livePeers, 4, peersStale, remoteMachines);
 
   const ctxUsage = readContextUsage(hb.session_id, hb.platform);
   let ctxStr: string;
@@ -1466,6 +1497,15 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
     peers: livePeers.map((p) => ({
       name: p.name || "unnamed",
       files: p.files_touched?.length ?? 0,
+    })),
+    remote_machines: remoteMachines.map((m) => ({
+      machine: m.machine,
+      age_secs: m.age_secs,
+      agents: m.agents.map((a) => ({
+        name: a.name || "unnamed",
+        task: a.task ?? null,
+        files: a.files_touched?.length ?? 0,
+      })),
     })),
     pending_councils: pendingCouncils,
     context_used: ctxUsage?.used ?? null,
@@ -1517,8 +1557,13 @@ function formatList(items: string[], cap: number, emptyLabel: string): string {
   return `${shown}, +${items.length - cap} more`;
 }
 
-function formatPeers(peers: Heartbeat[], cap: number, staleCount: number): string {
-  if (peers.length === 0 && staleCount === 0) return "none";
+function formatPeers(
+  peers: Heartbeat[],
+  cap: number,
+  staleCount: number,
+  remoteMachines: RemoteMachine[] = [],
+): string {
+  if (peers.length === 0 && staleCount === 0 && remoteMachines.length === 0) return "none";
   const labels = peers.map((p) => {
     const name = p.name || "unnamed";
     const plat = formatPlatformLabel(p.platform);
@@ -1534,7 +1579,16 @@ function formatPeers(peers: Heartbeat[], cap: number, staleCount: number): strin
   } else {
     main = `${labels.slice(0, cap).join(", ")}, +${labels.length - cap} more`;
   }
-  return staleCount > 0 ? `${main}; ${staleCount} stale` : main;
+  if (staleCount > 0) main = `${main}; ${staleCount} stale`;
+  // Remote machines (presence transport): `Name @machine` labels, capped.
+  if (remoteMachines.length > 0) {
+    const remote = remoteMachines
+      .flatMap((m) => m.agents.map((a) => `${a.name || "unnamed"} @${m.machine}`))
+      .slice(0, cap);
+    const extra = remoteMachines.reduce((n, m) => n + m.agents.length, 0) - remote.length;
+    main = `${main}; ${remote.join(", ")}${extra > 0 ? `, +${extra} more` : ""}`;
+  }
+  return main;
 }
 
 function fmtTokens(n: number): string {

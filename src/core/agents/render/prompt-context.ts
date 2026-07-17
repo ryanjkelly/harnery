@@ -36,6 +36,7 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
+import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { formatPendingCouncils } from "./session-context.ts";
 
 interface HeartbeatRow {
@@ -170,7 +171,10 @@ function computePeerTableIfChanged(
     if (!hb?.instance_id || hb.instance_id === selfInstanceId) continue;
     peers.push(hb);
   }
-  if (peers.length === 0) return "";
+  // Cross-machine presence (ADR 0016): sessions on other machines, from the
+  // locally-fetched presence refs. Advisory (no claim blocking in v1).
+  const remote = readRemoteMachinesSafe(coordRoot);
+  if (peers.length === 0 && remote.length === 0) return "";
 
   // Build hash basis: sorted-by-instance_id projection of semantically-relevant fields.
   const basis = peers
@@ -184,19 +188,60 @@ function computePeerTableIfChanged(
       platform: p.platform ?? null,
     }))
     .sort((a, b) => (a.instance_id ?? "").localeCompare(b.instance_id ?? ""));
-  const newHash = sha256Hex16(JSON.stringify(basis));
+  // Remote basis: machine + per-agent identity/task/files (published_at is
+  // excluded — a keepalive re-publish alone shouldn't re-emit the table).
+  const remoteBasis = remote.map((m) => ({
+    machine: m.machine,
+    agents: m.agents.map((a) => ({
+      instance_id: a.instance_id,
+      name: a.name ?? null,
+      task: a.task ?? null,
+      files_touched: Array.from(a.files_touched ?? []).sort(),
+    })),
+  }));
+  const newHash = sha256Hex16(JSON.stringify({ local: basis, remote: remoteBasis }));
 
   const hashFile = join(coordRoot, ".harnery", `.last-peer-hash.${selfInstanceId}`);
   const oldHash = safeRead(hashFile);
   if (oldHash && oldHash === newHash) return "";
 
   // Render peer table via the same formatter used at SessionStart.
-  const table = formatPeerTable(peers, mySessionId);
+  const local = formatPeerTable(peers, mySessionId);
+  const remoteTable = formatRemoteTable(remote);
+  const table = [local, remoteTable].filter(Boolean).join("\n\n");
   if (!table) return "";
 
   // Persist hash atomically (temp + rename, same convention as other coord writes).
   writeHashFile(hashFile, newHash);
   return table;
+}
+
+/** readRemoteMachines with a local failure guard (rendering must never throw). */
+function readRemoteMachinesSafe(coordRoot: string): RemoteMachine[] {
+  try {
+    return readRemoteMachines(coordRoot);
+  } catch {
+    return [];
+  }
+}
+
+/** Render sessions on other machines (presence transport) as a subtable. */
+function formatRemoteTable(remote: RemoteMachine[]): string {
+  if (remote.length === 0) return "";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const lines: string[] = [];
+  for (const m of remote) {
+    for (const a of m.agents.slice(0, 10)) {
+      lines.push(
+        formatRow(
+          { ...a, display_files: Array.from(a.files_touched ?? []).sort() },
+          nowSec,
+        ).replace(/^ {2}- (agent-[^ ]+)/, `  - $1 @${m.machine}`),
+      );
+    }
+  }
+  if (lines.length === 0) return "";
+  return `Sessions on other machines (advisory, via presence refs):\n${lines.join("\n")}`;
 }
 
 function computeCouncilPendingIfChanged(

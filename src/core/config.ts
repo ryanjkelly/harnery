@@ -46,6 +46,13 @@ interface HarneryConfig {
    * scrubbed from child envs) without anyone having to remember the flag.
    */
   workflow?: { subscriptionOnly?: boolean };
+  /**
+   * Cross-machine presence (ADR 0016). `{ enabled: false }` opts a repo out of
+   * the git-refs transport (publishing `refs/harnery/presence/<machine>` to
+   * origin + fetching peers'). Default is ON when an origin remote exists —
+   * the zero-config story — and every operation is fail-silent.
+   */
+  presence?: { enabled?: boolean };
   [k: string]: unknown;
 }
 
@@ -190,4 +197,20 @@ export function workflowSubscriptionOnly(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).workflow?.subscriptionOnly === true;
+}
+
+/**
+ * Whether cross-machine presence (ADR 0016) is enabled for this repo.
+ * Default ON — the transport itself additionally gates on an origin remote
+ * existing and fails silent everywhere. Opt out via
+ * `.harnery/config.jsonc` `{ "presence": { "enabled": false } }`;
+ * `HARNERY_PRESENCE=1|0` overrides per process.
+ */
+export function presenceEnabled(coordRoot?: string | null): boolean {
+  const env = coordEnv("PRESENCE");
+  if (env === "1") return true;
+  if (env === "0") return false;
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return false;
+  return readConfig(root).presence?.enabled !== false;
 }
