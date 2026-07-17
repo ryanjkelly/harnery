@@ -266,6 +266,12 @@ function buildEventData(
         name: assigned?.name,
         kind: "session",
         agent_id: ctx.instanceId,
+        // Workflow-child linkage: `workflow run` children carry the run id in
+        // env (spawn adapters set it via buildChildEnv), so their sessions and
+        // heartbeats join back to the run journal + /workflows web view.
+        ...(coordEnv("WORKFLOW_CHILD") === "1" && coordEnv("WORKFLOW_RUN_ID")
+          ? { workflow_run_id: coordEnv("WORKFLOW_RUN_ID") }
+          : {}),
       };
     }
 

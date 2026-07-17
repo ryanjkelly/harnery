@@ -47,6 +47,10 @@ export type SessionStart = EventEnvelope<
     cwd: string;
     model?: string;
     pid: number;
+    /** Present iff this session is a `workflow run` child: the run id whose
+     * journal owns it (child env HARNERY_WORKFLOW_RUN_ID). Optional-field
+     * addition per the schema evolution rules (minor bump). */
+    workflow_run_id?: string;
   }
 >;
 

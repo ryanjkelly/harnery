@@ -99,6 +99,28 @@ describe("projectHeartbeats: coercion of writer-produced heartbeats", () => {
     expect(res.perOwner["fresh-y"]!.events_applied).toBe(1);
     expect(res.perOwner["fresh-y"]!.v2_meta).toBeDefined();
   });
+
+  test("session.start with workflow_run_id stamps the heartbeat (workflow-child linkage)", () => {
+    const root = freshRoot();
+    const events = [
+      {
+        event_id: "01WF",
+        event_type: "session.start",
+        ts: "2026-06-04T00:00:00Z",
+        instance_id: "wf-child-1",
+        session_id: "wf-child-1",
+        harness: "claude-code",
+        source: "test",
+        data: { workflow_run_id: "wf-2026-06-04T00-00-00-000Z-abc123" },
+      },
+    ] as unknown as Events;
+
+    projectHeartbeats(root, events);
+    const onDisk = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "wf-child-1.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(onDisk.workflow_run_id).toBe("wf-2026-06-04T00-00-00-000Z-abc123");
+  });
 });
 
 describe("projectHeartbeats: does not resurrect dead agents from terminal events", () => {

@@ -56,6 +56,31 @@ interface JournalLine {
  * (orchestrator likely killed) rather than "running". */
 const STALE_MS = 10 * 60 * 1000;
 
+/** Live workflow children for a run: heartbeats in `.harnery/active/` whose
+ * `workflow_run_id` matches. Session-id keyed so the detail page can badge
+ * journal rows whose child session is still alive. */
+export function readLiveChildSessions(root: string, runId: string): Set<string> {
+  const dir = join(root, ".harnery", "active");
+  const live = new Set<string>();
+  if (!existsSync(dir)) return live;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as {
+        workflow_run_id?: string;
+        session_id?: string;
+        ended_at?: string;
+      };
+      if (hb.workflow_run_id === runId && hb.session_id && !hb.ended_at) {
+        live.add(hb.session_id);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return live;
+}
+
 export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
   const dir = join(root, ".harnery", "workflows");
   if (!existsSync(dir)) return [];

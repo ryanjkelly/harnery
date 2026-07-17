@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
 import { coordRoot } from "@/lib/coord-reader";
-import { readWorkflowRun } from "@/lib/workflow-reader";
+import { readLiveChildSessions, readWorkflowRun } from "@/lib/workflow-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -20,6 +20,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   const { runId } = await params;
   const run = readWorkflowRun(coordRoot(), decodeURIComponent(runId));
   if (!run) notFound();
+  const liveChildren = readLiveChildSessions(coordRoot(), run.runId);
 
   const byStage = new Map<string, typeof run.agents>();
   for (const a of run.agents) {
@@ -66,7 +67,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                       key={a.id}
                       className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm"
                     >
-                      <WorkflowStatusBadge status={a.status} />
+                      <WorkflowStatusBadge
+                        status={
+                          a.sessionId && liveChildren.has(a.sessionId) ? "running" : a.status
+                        }
+                      />
                       <span className="font-mono text-xs text-muted-foreground">{a.id}</span>
                       {a.harness ? (
                         <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
