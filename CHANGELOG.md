@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.9.0
+
+### Minor Changes
+
+- 8a13894: grep: NUL filename framing, materialized context, exact truncation, and file-level composition.
+
+  New flags: `--and <pattern>` / `--without <pattern>` (file-level boolean composition, repeatable), `-A`/`-B` (per-side context overriding `-C`), `-q/--quiet` (exit 0/1 status, no output), and multi-value `--lang` (`--lang ts,tsx` or repeated). JSON envelope additions (additive): rows carry `kind: "match" | "context"`; the top level gains always-present `and_patterns`/`without_patterns` arrays.
+
+  Corrections: `-C` context rows previously parsed as fake matches (garbled output, inflated `total_matches`/`total_files`, context consuming `--limit`) — context is now materialized from file reads after selection, with correct kinds, merged windows, and free context rows. Filenames are NUL-framed (`--null` on both engines), so colon/dash/space-bearing paths parse correctly. `truncated` is now exact: a search with exactly N results under `--limit N` no longer reports true. Invalid numeric flag values and meaningless flag combinations (context with `-l`/`-c`/`--files`/`-q`, composition with `--files`, quiet with `--json`/`-l`/`-c`/`--limit`) fail loudly before an engine spawns.
+
+- 8967d2f: Hooks now survive the session shell `cd`-ing away from the project root.
+
+  Harnesses spawn hook processes with the session shell's current working
+  directory, which follows `cd` into subdirectories, submodules, or off-repo
+  scratch dirs. Two failure modes stemmed from that:
+
+  1. **Silent spawn failure.** `harn init` wired hook commands with a
+     project-root-relative agent-hook path (`bash harnery/bin/agent-hook …`),
+     so once the shell left the root the hook binary wasn't found and every
+     hook died silently — no events, no image capture, no claim guards, until
+     the shell happened to `cd` back. Claude Code commands are now anchored on
+     the harness-provided project dir
+     (`bash "${CLAUDE_PROJECT_DIR:-.}"/…/agent-hook …`); re-running `harn init`
+     upgrades previously-wired stale commands in place (new `upgraded` counter).
+  2. **Wrong coord root.** When the hook did spawn, `findCoordRoot` walked up
+     from the drifted cwd and could land on a nested `.harnery/` (a submodule
+     initialized with `harn init`) or none at all. The hooks-side resolver now
+     prefers the harness project dir (`CLAUDE_PROJECT_DIR`) over the cwd walk;
+     `HARNERY_COORD_ROOT_OVERRIDE` still wins over both. Child `agent-coord`
+     spawns from the hook layer are pinned to the resolved root via
+     `HARNERY_COORD_ROOT_OVERRIDE` so they can't re-resolve differently.
+
+- 566ca6e: New `harn workflow run <script>`: bounded, schema-gated, conditionally-routed multi-subagent workflows. Scripts are plain JS (`export default async ({agent, parallel, stage, log}) => …`); subagents spawn as headless harness-CLI subprocesses and are coordination-registered — hooks stay on, with a new `stop-hook.workflow_child` exemption (`HARNERY_WORKFLOW_CHILD=1`) so headless children skip the human-facing end-of-turn ritual without losing heartbeat/event capture. Three spawn adapters, all live-verified end-to-end (codex against codex-cli 0.144.5; cursor against cursor-agent 2026.07.16, which requires the `--trust` flag headless), selectable via `--harness` or per-agent `opts.harness`. `--resume-from <run-id>` replays completed agent results from a prior run's journal (same call identity → cached, $0). The engine surfaces per-child context overhead up front (`contextTokensPerChildEstimate` + a run-start log line), and the web dashboard gains a journal-driven `/workflows` list + per-run stages→agents detail view. Runs journal to `.harnery/workflows/<run-id>/journal.jsonl`. Billing safeguards: children ride the logged-in (subscription) harness auth by default; a per-harness billing probe on first spawn refuses the silent-override state (an exported API key shadowing a stored login) unless `--allow-api-billing`, and `--subscription-only` (or the `workflow.subscriptionOnly` config pin / `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY` env) scrubs every API-key var from child envs and fails loud on a provably-absent login. Fix: `CURSOR_API_KEY` is carved out of the `CURSOR*` session scrub (it's a credential; key-only cursor hosts previously lost it). `harn init` now pins `workflow.subscriptionOnly: true` into `.harnery/config.jsonc` for any project without a committed `workflow` key, so new setups are subscription-only out of the box (comment-preserving, idempotent, never touches a deliberate `workflow` config). `harn doctor` gains `workflow:claude-code|codex|cursor` checks (installed? authenticated? billing mode?), and a missing harness CLI now fails with the vendor's install one-liner + login command instead of a bare not-found. Design record: decision 0015.
+
+### Patch Changes
+
+- 5b05083: Claims actually release on commit now. The post-commit prune chain was broken
+  in three compounding ways, so agents appeared to hold files long after
+  shipping them:
+
+  1. `groupUnclaim` (the post-commit / post-checkout prune) compared paths with
+     an exact-string filter, but `files_touched` holds a mix of canonical
+     repo-relative entries (written by the claim guard) and absolute paths
+     (projected from raw Edit/Write tool_input) — the mixed-form case silently
+     no-op'd. It now normalizes both sides, releases every form of the path in
+     one pass, and reports which heartbeats actually dropped it.
+  2. The prune was file-only: no `claim.release` event was emitted, so even a
+     successful prune resurrected on the next projector replay.
+     `agent-coord post-commit` / `post-checkout` now emit the durable event per
+     actual removal (reasons `commit` / `checkout`), and the conflict-time
+     stale-claim self-heal (`pruneClaimFromPeer`) got the same normalization +
+     event treatment.
+  3. The heartbeat projector stored the raw absolute tool_input path, so every
+     guarded edit double-counted as two claims (relative + absolute). It now
+     canonicalizes to repo-relative before storing.
+
 ## 0.8.0
 
 ### Minor Changes
