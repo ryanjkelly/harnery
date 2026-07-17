@@ -1,0 +1,28 @@
+# harnery presence relay — Cloudflare Workers deployment.
+#
+# Deploy (needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in env):
+#   cd relay/worker && bunx wrangler deploy
+#
+# The DO class uses SQLite-backed storage (new_sqlite_classes), which is the
+# variant available on the Workers FREE plan. The custom domain route attaches
+# relay.harnery.com; remove/replace it to host on your own zone, or delete the
+# route entirely to use the *.workers.dev URL wrangler prints.
+
+name = "harnery-relay"
+main = "src/worker.ts"
+compatibility_date = "2026-07-01"
+
+routes = [
+  { pattern = "relay.harnery.com", custom_domain = true },
+]
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "PresenceRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PresenceRoom"]
+
+[observability]
+enabled = true
