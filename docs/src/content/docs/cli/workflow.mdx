@@ -18,13 +18,14 @@ canonical events, and stay visible to peers, so a workflow child editing a file
 is subject to the same claim/guard protections as any other agent. Design
 record: decision 0015.
 
-Spawn adapters: `claude-code` (default; verified end-to-end), `codex`
-(`codex exec --output-last-message`), and `cursor` (`cursor-agent -p
---output-format json`). Select the run default with `--harness`, or per agent
-via `opts.harness` — mixed-harness workflows are legal (triage on one CLI,
-deep work on another). The codex/cursor adapters follow the upstream headless
-contracts but have not yet been verified against live binaries; they fail loud
-(`… CLI not found on PATH`) when the binary is absent. Codex and cursor expose
+Spawn adapters: `claude-code` (default), `codex` (`codex exec
+--output-last-message`), and `cursor` (`cursor-agent -p --output-format
+json`). claude-code and codex are live-verified end-to-end (codex against
+codex-cli 0.144.5); cursor follows the upstream headless contract but awaits
+verification on a machine with an authed `cursor-agent`, and fails loud
+(`… CLI not found on PATH`) when the binary is absent. Select the run default
+with `--harness`, or per agent via `opts.harness` — mixed-harness workflows
+are legal (triage on one CLI, deep work on another). Codex and cursor expose
 no per-run cost or max-turns controls, so `costUsd` is unreported and
 `maxTurns` is ignored on those harnesses.
 

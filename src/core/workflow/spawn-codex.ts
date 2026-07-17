@@ -2,8 +2,8 @@
  * codex spawn adapter: runs one subagent as a headless `codex exec`
  * subprocess.
  *
- * Contract notes (per upstream docs; NOT yet verified against a live binary —
- * no codex install on the authoring machine; re-verify flags on first use):
+ * Contract notes (LIVE-VERIFIED 2026-07-16 against codex-cli 0.144.5: flags
+ * present, schema-gated triage + text stages round-trip via `--harness codex`):
  * - `codex exec "<prompt>"` is the non-interactive mode.
  * - The final assistant message is captured via `--output-last-message <file>`
  *   (a temp file), which is far more drift-tolerant than parsing the
