@@ -29,6 +29,30 @@ are legal (triage on one CLI, deep work on another). Codex and cursor expose
 no per-run cost or max-turns controls, so `costUsd` is unreported and
 `maxTurns` is ignored on those harnesses.
 
+## Auth: children ride the logged-in harness session
+
+The engine never handles credentials. Each child is the plain harness CLI, so
+it authenticates exactly the way that CLI already does on the machine:
+`claude` uses the OAuth login in `~/.claude` (a subscription seat), `codex`
+uses its ChatGPT login, `cursor-agent` uses `cursor-agent login`. **A
+subscription login is the default and preferred path** — no per-token API
+billing is required or implied by running workflows.
+
+The child-env scrub deletes *session* variables (`CLAUDE*`, `CODEX*`,
+`CURSOR*`), not auth: credential files and keychains are untouched. The one
+way to end up on API billing is to have an API-key variable exported in the
+parent shell (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) — harness CLIs prefer a
+key over a stored login when both are present, and the scrub deliberately
+passes non-session env through so key-only hosts (CI boxes with no login)
+still work. If you want to guarantee subscription billing, keep those
+variables unset where you launch workflows.
+
+Two accounting consequences: the `costUsd` the claude adapter journals is the
+CLI's *notional* cost figure — under subscription auth it is not an invoice,
+just a burn gauge — and a large fan-out consumes the subscription's usage
+allowance the same way interactive sessions do, so the agent cap and
+concurrency pool are still your throttles.
+
 ## Script shape
 
 ```js
