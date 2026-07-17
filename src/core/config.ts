@@ -51,8 +51,15 @@ interface HarneryConfig {
    * the git-refs transport (publishing `refs/harnery/presence/<machine>` to
    * origin + fetching peers'). Default is ON when an origin remote exists —
    * the zero-config story — and every operation is fail-silent.
+   *
+   * `relay` (optional) is the live upgrade: a wss:// URL of a presence relay
+   * (the reference public one is wss://relay.harnery.com; self-hosters run
+   * `harn relay serve` or deploy relay/worker/ to their own Cloudflare
+   * account). When set, hooks keep a per-machine daemon connected to the
+   * relay for seconds-latency presence; the git-refs transport stays on as
+   * the floor. Unset → git-refs only.
    */
-  presence?: { enabled?: boolean };
+  presence?: { enabled?: boolean; relay?: string };
   [k: string]: unknown;
 }
 
@@ -213,4 +220,23 @@ export function presenceEnabled(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).presence?.enabled !== false;
+}
+
+/**
+ * The presence relay URL for this repo, or null when the relay transport is
+ * not configured (git-refs only). `HARNERY_PRESENCE_RELAY` overrides per
+ * process (empty string or "0" disables). Requires `presenceEnabled()` to be
+ * true — a disabled presence section disables the relay too.
+ */
+export function presenceRelayUrl(coordRoot?: string | null): string | null {
+  const root = coordRoot ?? findCoordRoot();
+  if (!presenceEnabled(root)) return null;
+  const env = coordEnv("PRESENCE_RELAY");
+  if (env !== undefined && env !== null) {
+    const t = env.trim();
+    return t && t !== "0" ? t : null;
+  }
+  if (!root) return null;
+  const relay = readConfig(root).presence?.relay;
+  return typeof relay === "string" && relay.trim() ? relay.trim() : null;
 }

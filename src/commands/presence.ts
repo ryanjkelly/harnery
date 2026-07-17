@@ -7,7 +7,13 @@ import {
   readHeartbeat,
   resolveOwner,
 } from "../core/agents/index.ts";
-import { fetchPresence, publishPresence, readRemoteMachines } from "../core/presence/index.ts";
+import {
+  fetchPresence,
+  publishPresence,
+  readRemoteMachines,
+  relayDaemonStatus,
+  runRelayDaemon,
+} from "../core/presence/index.ts";
 import {
   ageSeconds,
   applyDetection,
@@ -128,18 +134,38 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
     });
 
   cmd
+    .command("relay-daemon")
+    .description(
+      "Run the relay client daemon in the foreground (normally spawned detached by the hooks " +
+        "when presence.relay is configured; holds the WebSocket, publishes on heartbeat change, " +
+        "caches peers' blobs for the renderers, exits when the machine goes idle).",
+    )
+    .action(async () => {
+      const root = requireRoot(emit);
+      process.exit(await runRelayDaemon(root));
+    });
+
+  cmd
     .command("peers")
-    .description("Show sessions on other machines from the locally-known presence refs")
+    .description(
+      "Show sessions on other machines (merged from presence refs + the relay daemon's cache)",
+    )
     .option("--json", "JSON output")
     .option("--stale", "Include machines past the stale window")
     .action((opts: { json?: boolean; stale?: boolean }) => {
       const root = requireRoot(emit);
       const machines = readRemoteMachines(root, { includeStale: opts.stale });
+      const daemon = relayDaemonStatus(root);
       if (opts.json) emit.config({ format: "json" });
       if (opts.json || !process.stdout.isTTY) {
-        emit.data({ machines });
+        emit.data({ machines, relay_daemon: daemon });
         return;
       }
+      emit.text(
+        daemon.running
+          ? `relay daemon: running (pid ${daemon.pid}, ${daemon.url})\n`
+          : "relay daemon: not running (git-refs transport only)\n",
+      );
       if (machines.length === 0) {
         emit.text("no remote sessions known (try `presence fetch --force`)\n");
         return;

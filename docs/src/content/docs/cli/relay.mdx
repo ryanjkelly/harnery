@@ -1,0 +1,32 @@
+---
+title: harn relay
+description: Self-host the cross-machine presence relay (same wire protocol as the Cloudflare Workers host).
+sidebar:
+  order: 16
+---
+
+```
+harn relay serve [--port 8787]
+```
+
+Runs the presence relay on this machine — the self-host counterpart to the
+Cloudflare Durable Objects worker in `relay/worker/` (the reference public
+deployment is `wss://relay.harnery.com`). Same wire protocol: one in-memory
+room per opaque 32-hex room id, a warm-join cache replaying the last frame per
+sender, fan-out to every other socket in the room, and per-socket rate limits.
+
+Point clients at it via the host repo's `.harnery/config.jsonc`:
+
+```jsonc
+{ "presence": { "relay": "ws://your-host:8787" } }
+```
+
+The relay is blind by design: room ids and sender ids are opaque derivations
+and every payload is AES-GCM ciphertext end-to-end (see
+[`harn presence`](/cli/presence/#cross-machine-session-presence) and decision
+record 0016), so hosting one requires no trust from its users beyond
+availability.
+
+Bun-only (`Bun.serve` WebSockets) — like `harn tunnel`, it fails fast with a
+clear message on a Bun-free host. Limits: 16KB per frame, 64 sockets per room,
+10-frame burst / 1 frame per 2s per socket, 15-minute warm-join cache TTL.

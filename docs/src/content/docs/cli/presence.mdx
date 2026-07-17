@@ -107,8 +107,30 @@ throttled to ~60s). The subcommands exist for inspection and force-runs:
 ```
 harn presence publish [--force]   # publish this machine's sessions now (synchronous, errors report)
 harn presence fetch [--force]     # pull peer machines' refs now
-harn presence peers [--json]      # show sessions on other machines from the locally-known refs
+harn presence peers [--json]      # sessions on other machines (refs + relay cache merged) + daemon status
+harn presence relay-daemon        # run the relay client daemon in the foreground (hooks spawn it detached)
 ```
+
+### The live upgrade: a relay
+
+Git refs give minute-scale latency. For seconds-scale, configure a relay in
+`.harnery/config.jsonc`:
+
+```jsonc
+{ "presence": { "relay": "wss://relay.harnery.com" } }
+```
+
+With a relay set, the hooks keep a small per-machine daemon alive that holds a
+WebSocket to the relay, publishes on every heartbeat change, and caches
+received peer blobs locally — `presence peers` and all the render surfaces
+merge both transports, freshest per machine. The relay sees only opaque room
+ids and end-to-end-encrypted payloads (room id and key derive from the repo
+identity — root-commit SHA + origin URL + optional committed
+`.harnery/presence-salt`), so the public relay learns nothing about your
+sessions. The daemon exits when the machine goes idle and reconnects with
+backoff; if the relay is unreachable, presence silently rides the git-refs
+floor. Self-hosting: [`harn relay serve`](/cli/relay/) or deploy
+`relay/worker/` to your own Cloudflare account.
 
 Machine identity comes from the standard label resolution (`HARNERY_MACHINE`
 env → `~/.config/harnery/machine` file → hostname). A blob older than ~15

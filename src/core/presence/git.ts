@@ -62,6 +62,29 @@ export function hasOrigin(root: string): boolean {
   return runGit(root, ["remote", "get-url", "origin"]).ok;
 }
 
+/** The origin remote URL, or null. Input to relay room derivation. */
+export function originUrl(root: string): string | null {
+  const r = runGit(root, ["remote", "get-url", "origin"]);
+  const url = r.stdout.trim();
+  return r.ok && url ? url : null;
+}
+
+/**
+ * The repo's root-commit SHA — the stable repo-identity input to relay room
+ * derivation. Repos can have multiple roots (merged histories); the list is
+ * sorted so every clone picks the same one. Null when the repo has no commits.
+ */
+export function rootCommitSha(root: string): string | null {
+  const r = runGit(root, ["rev-list", "--max-parents=0", "HEAD"]);
+  if (!r.ok) return null;
+  const shas = r.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .sort();
+  return shas[0] ?? null;
+}
+
 /**
  * Sanitize a machine label into a valid single ref component: lowercase,
  * [a-z0-9._-] only, no leading dot, no `.lock` suffix, never empty.

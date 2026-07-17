@@ -18,6 +18,7 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -41,6 +42,7 @@ import {
 export type { PresenceAgent, PresenceBlob } from "./blob.ts";
 export { buildPresenceBlob } from "./blob.ts";
 export { PRESENCE_REF_PREFIX, parseForEachRefOutput, sanitizeRefComponent } from "./git.ts";
+export { ensureRelayDaemon, relayDaemonStatus, runRelayDaemon } from "./relay-client.ts";
 
 /** Re-push at least this often while sessions are live, so peers can treat a
  * blob older than ~3x this as "machine offline" rather than "no change". */
@@ -205,9 +207,11 @@ export interface RemoteMachine {
 }
 
 /**
- * Render-ready view of every OTHER machine's presence, from the locally-known
- * refs (run fetchPresence to refresh them). Self machine excluded; blobs older
- * than the stale window or with zero agents dropped.
+ * Render-ready view of every OTHER machine's presence, merged from BOTH
+ * transports: the locally-fetched git refs (the floor) and the relay
+ * daemon's cache files at `.harnery/presence/remote/` (the live upgrade).
+ * Freshest source per machine wins. Self machine excluded; blobs older than
+ * the stale window or with zero agents dropped.
  */
 export function readRemoteMachines(
   coordRoot: string,
@@ -216,19 +220,43 @@ export function readRemoteMachines(
   try {
     if (!presenceEnabled(coordRoot)) return [];
     const selfMachine = sanitizeRefComponent(resolveMachineLabel());
-    const out: RemoteMachine[] = [];
-    for (const { machine, message } of readPresenceRefs(coordRoot)) {
-      if (!opts.includeSelf && machine === selfMachine) continue;
-      let blob: PresenceBlob;
-      try {
-        blob = JSON.parse(message) as PresenceBlob;
-      } catch {
-        continue;
-      }
-      if (blob?.v !== 1 || !Array.isArray(blob.agents)) continue;
+
+    // Collect candidate blobs from both transports, freshest per machine.
+    const byMachine = new Map<string, PresenceBlob>();
+    const consider = (machine: string, blob: PresenceBlob | null): void => {
+      if (blob?.v !== 1 || !Array.isArray(blob.agents)) return;
       const publishedMs = Date.parse(blob.published_at ?? "");
-      if (!Number.isFinite(publishedMs)) continue;
-      const ageSecs = Math.max(0, Math.floor((Date.now() - publishedMs) / 1000));
+      if (!Number.isFinite(publishedMs)) return;
+      const prev = byMachine.get(machine);
+      if (prev && Date.parse(prev.published_at) >= publishedMs) return;
+      byMachine.set(machine, blob);
+    };
+    for (const { machine, message } of readPresenceRefs(coordRoot)) {
+      try {
+        consider(machine, JSON.parse(message) as PresenceBlob);
+      } catch {
+        /* skip malformed */
+      }
+    }
+    const relayDir = join(coordRoot, ".harnery", "presence", "remote");
+    if (existsSync(relayDir)) {
+      for (const f of readdirSync(relayDir)) {
+        if (!f.endsWith(".json")) continue;
+        try {
+          consider(
+            f.replace(/\.json$/, ""),
+            JSON.parse(readFileSync(join(relayDir, f), "utf8")) as PresenceBlob,
+          );
+        } catch {
+          /* skip malformed */
+        }
+      }
+    }
+
+    const out: RemoteMachine[] = [];
+    for (const [machine, blob] of byMachine) {
+      if (!opts.includeSelf && machine === selfMachine) continue;
+      const ageSecs = Math.max(0, Math.floor((Date.now() - Date.parse(blob.published_at)) / 1000));
       if (!opts.includeStale && ageSecs > REMOTE_STALE_SECS) continue;
       if (blob.agents.length === 0) continue;
       out.push({

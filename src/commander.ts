@@ -42,6 +42,7 @@ import { registerInitCommand } from "./commands/init.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
 import { registerPresenceCommand } from "./commands/presence.ts";
 import { registerReadCommand } from "./commands/read.ts";
+import { registerRelayCommand } from "./commands/relay.ts";
 import { registerScratchCommand } from "./commands/scratch.ts";
 import { registerSessionCommand } from "./commands/session.ts";
 import { registerSyncCommand } from "./commands/sync.ts";
@@ -251,6 +252,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerEmlCommand(program, emit);
   registerEnvCommand(program, emit, opts.context);
   registerPresenceCommand(program, emit);
+  registerRelayCommand(program, emit);
   registerConfigGetCommand(program, emit);
   registerFileHistoryCommand(program, emit);
   registerOutlineCommand(program, emit);

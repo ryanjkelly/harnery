@@ -27,7 +27,7 @@ import { consumeSince, writeCursor } from "../agents/events/consume.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
-import { fetchPresence, publishPresence } from "../presence/index.ts";
+import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import {
   captureImages,
   detectPresence,
@@ -515,9 +515,11 @@ async function main(): Promise<number> {
     }
     // Cross-machine presence (ADR 0016): announce this machine's sessions and
     // pull peers'. Both are throttled + fail-silent; network runs detached.
+    // When a relay is configured, also make sure the live-socket daemon runs.
     try {
       publishPresence(coordRoot);
       fetchPresence(coordRoot);
+      ensureRelayDaemon(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-presence" });
     }
@@ -670,9 +672,11 @@ async function main(): Promise<number> {
 
     // Presence: publish AFTER the projection above so the blob carries this
     // turn's fresh task/turn_summary/files. Change-batched + keepalive'd;
-    // the push itself runs detached.
+    // the push itself runs detached. The relay daemon (when configured) is
+    // re-ensured here too — it self-exits on idle, and the next turn revives it.
     try {
       publishPresence(coordRoot);
+      ensureRelayDaemon(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-presence" });
     }
