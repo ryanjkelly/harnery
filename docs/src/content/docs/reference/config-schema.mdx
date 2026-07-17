@@ -31,6 +31,7 @@ Harnery reads settings in this order. Later values win.
 | `project_name` | string  | repo basename    | Display name surfaced in log lines and to peers |
 | `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
 | `coord`        | object  | see below        | Coord-layer settings |
+| `workflow`     | object  | see below        | Workflow-engine defaults |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
 | `backup`       | object  | see below        | restic-backed snapshots |
 | `sync`         | object  | see below        | rclone-backed cross-machine sync |
@@ -48,6 +49,14 @@ The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) 
 | `auto_release_on_failure` | bool | `true` | Drop a file claim if PostToolUseFailure fires |
 
 Also configurable via env: `HARNERY_AGENT_COORD_FRESHNESS`.
+
+## `workflow`
+
+| Field              | Type | Default | Description |
+| ------------------ | ---- | ------- | ----------- |
+| `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the harness CLI's stored login |
+
+`harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [workflow → billing safeguards](/cli/workflow/#billing-safeguards).
 
 ## `web`
 

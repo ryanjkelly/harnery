@@ -120,6 +120,17 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         if (stamp) actions.push(stamp);
       }
 
+      // ── 1c. workflow billing default ───────────────────────────────────────
+      // Every init'd project gets `workflow.subscriptionOnly: true`: workflow
+      // children ride the logged-in (subscription) harness auth, and the pin
+      // makes per-token API billing structurally impossible unless the project
+      // deliberately flips it. A committed `workflow` key of any shape is a
+      // deliberate choice and is never touched.
+      {
+        const stamp = stampWorkflowDefaults(resolve(coordDir, "config.jsonc"), dryRun);
+        if (stamp) actions.push(stamp);
+      }
+
       // ── 2. harness hooks ───────────────────────────────────────────────────
       const settingsPath = resolve(projectRoot, spec.settingsFile);
       const agentHook = relative(projectRoot, resolve(HARNERY_ROOT, "bin", "agent-hook"));
@@ -369,6 +380,56 @@ export function stampBinName(configPath: string, binName: string, dryRun: boolea
   if (dryRun) return `+ would add binName "${binName}" to ${rel(configPath)}`;
   writeFileSync(configPath, next);
   return `+ added binName "${binName}" to ${rel(configPath)}`;
+}
+
+/** The commented workflow-billing default block init stamps into config.jsonc. */
+const WORKFLOW_DEFAULT_BLOCK =
+  `  // Workflow children ride the logged-in (subscription) harness auth; this pin\n` +
+  `  // scrubs API-key vars from child envs so runs can never bill per-token rates.\n` +
+  `  // Key-only hosts (CI): set false, or HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0.\n` +
+  `  "workflow": { "subscriptionOnly": true }`;
+
+/**
+ * Idempotently pin `workflow.subscriptionOnly: true` in `.harnery/config.jsonc`
+ * (see `workflowSubscriptionOnly()` in core/config.ts and the `workflow run`
+ * billing safeguards). Same comment-preserving discipline as `stampBinName`.
+ * A `workflow` key of ANY shape (including `subscriptionOnly: false`) is a
+ * deliberate project choice and is left alone.
+ */
+export function stampWorkflowDefaults(configPath: string, dryRun: boolean): string | null {
+  const rel = (p: string) => relative(dirname(dirname(configPath)), p) || p;
+
+  if (!existsSync(configPath)) {
+    if (dryRun) return `+ would pin workflow.subscriptionOnly in ${rel(configPath)}`;
+    writeFileSync(configPath, `{\n${WORKFLOW_DEFAULT_BLOCK}\n}\n`);
+    return `+ pinned workflow.subscriptionOnly: true in ${rel(configPath)}`;
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: { workflow?: unknown } & Record<string, unknown>;
+  try {
+    parsed = (JSON.parse(stripJsonComments(raw)) as typeof parsed) ?? {};
+  } catch {
+    return `· ${rel(configPath)} isn't valid JSONC; skipped workflow.subscriptionOnly pin`;
+  }
+
+  if ("workflow" in parsed) return null; // deliberate config; never touch
+
+  const at = firstBraceIndex(raw);
+  if (at < 0) return `· ${rel(configPath)} has no object literal; skipped workflow pin`;
+  const keys = Object.keys(parsed);
+  const next =
+    keys.length === 0
+      ? `{\n${WORKFLOW_DEFAULT_BLOCK}\n}\n`
+      : `${raw.slice(0, at + 1)}\n${WORKFLOW_DEFAULT_BLOCK},${raw.slice(at + 1)}`;
+  if (dryRun) return `+ would pin workflow.subscriptionOnly in ${rel(configPath)}`;
+  writeFileSync(configPath, next);
+  return `+ pinned workflow.subscriptionOnly: true in ${rel(configPath)}`;
 }
 
 /** Index of the first structural `{`, skipping leading whitespace + comments. */

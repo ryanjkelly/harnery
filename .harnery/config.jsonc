@@ -2,5 +2,9 @@
   // This repo IS harnery — agents working on it use the repo-local `bin/harn`.
   // Pinned so a host-embedded checkout can't re-stamp a host bin name into the
   // committed AGENTS.md block or skills (they're public, generic surfaces).
-  "binName": "harn"
+  "binName": "harn",
+  // Workflow children ride the logged-in (subscription) harness auth; this pin
+  // scrubs API-key vars from child envs so runs can never bill per-token rates.
+  // Key-only hosts (CI): set false, or HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0.
+  "workflow": { "subscriptionOnly": true }
 }

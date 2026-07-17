@@ -20,6 +20,8 @@ One command to make a project harnery-ready. It does the setup steps that are ot
 
 When you run `init` through a host CLI that composes Harnery under its own bin name (e.g. `mycli init`), it also **stamps `binName` into `.harnery/config.jsonc`** so Harnery's coord binaries and web UI tell agents to run *your* command (`mycli agents status`, …) rather than the `harn` default. The stamp is comment-preserving and idempotent. Standalone `harn` needs no stamp; it's the resolver's default. See [the config reference](/reference/config-schema/#binname).
 
+`init` also **pins `workflow.subscriptionOnly: true` into `.harnery/config.jsonc`** so [workflow](/cli/workflow/) children can only authenticate via the harness CLI's logged-in (subscription) auth — API-key vars are scrubbed from child envs, making accidental per-token billing structurally impossible in the repo. The pin is written only when no `workflow` key exists; a committed `workflow` key of any shape (including `subscriptionOnly: false` for key-only CI hosts) is a deliberate choice and is never touched. Per-process escape hatch: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0`.
+
 ```bash
 harn init            # wire the current project for Claude Code
 harn init --dry-run  # preview every change without writing

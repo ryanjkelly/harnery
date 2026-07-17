@@ -63,7 +63,9 @@ per harness in the RunReport and web view):
 `--subscription-only` goes further: every API-key var is deleted from every
 child env, so children *can only* authenticate via their stored login, and a
 harness whose login is provably absent fails loud before spawning. Pin it
-repo-wide with `.harnery/config.jsonc`:
+repo-wide with `.harnery/config.jsonc` — **`harn init` stamps this pin by
+default** into any project without a committed `workflow` key, so new setups
+are subscription-only out of the box:
 
 ```jsonc
 { "workflow": { "subscriptionOnly": true } }

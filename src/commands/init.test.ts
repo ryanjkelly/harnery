@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripJsonComments } from "../core/config.ts";
 import { HARNESS_SPECS } from "../core/hooks/harness/events.ts";
-import { stampBinName, wireHooks } from "./init.ts";
+import { stampBinName, stampWorkflowDefaults, wireHooks } from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 // Claude Code exports CLAUDE_PROJECT_DIR to hook processes; init anchors the
@@ -199,6 +199,60 @@ describe("stampBinName", () => {
   test("dry-run reports without writing", () => {
     const p = cfgPath();
     const action = stampBinName(p, "acme", true);
+    expect(action).toContain("would");
+    expect(existsSync(p)).toBe(false);
+  });
+});
+
+describe("stampWorkflowDefaults", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const cfgPath = () => {
+    const d = mkdtempSync(join(tmpdir(), "harnery-wfstamp-"));
+    dirs.push(d);
+    return join(d, "config.jsonc");
+  };
+  const parse = (p: string) => JSON.parse(stripJsonComments(readFileSync(p, "utf8")));
+
+  test("creates a commented stub when config is absent", () => {
+    const p = cfgPath();
+    const action = stampWorkflowDefaults(p, false);
+    expect(action).toContain("pinned");
+    expect(parse(p)).toEqual({ workflow: { subscriptionOnly: true } });
+    expect(readFileSync(p, "utf8")).toContain("HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0");
+  });
+
+  test("splices the pin as first key, preserving binName + comments", () => {
+    const p = cfgPath();
+    writeFileSync(p, `{\n  // host\n  "binName": "acme"\n}\n`);
+    const action = stampWorkflowDefaults(p, false);
+    expect(action).toContain("pinned");
+    expect(parse(p)).toEqual({ workflow: { subscriptionOnly: true }, binName: "acme" });
+    expect(readFileSync(p, "utf8")).toContain("// host");
+  });
+
+  test("a workflow key of ANY shape is a deliberate choice: never touched", () => {
+    const p = cfgPath();
+    writeFileSync(p, `{ "workflow": { "subscriptionOnly": false } }`);
+    expect(stampWorkflowDefaults(p, false)).toBeNull();
+    expect(parse(p)).toEqual({ workflow: { subscriptionOnly: false } });
+    writeFileSync(p, `{ "workflow": {} }`);
+    expect(stampWorkflowDefaults(p, false)).toBeNull();
+  });
+
+  test("unparseable config is skipped, not clobbered", () => {
+    const p = cfgPath();
+    writeFileSync(p, `{ not json`);
+    const action = stampWorkflowDefaults(p, false);
+    expect(action).toContain("skipped");
+    expect(readFileSync(p, "utf8")).toBe(`{ not json`);
+  });
+
+  test("dry-run reports without writing", () => {
+    const p = cfgPath();
+    const action = stampWorkflowDefaults(p, true);
     expect(action).toContain("would");
     expect(existsSync(p)).toBe(false);
   });
