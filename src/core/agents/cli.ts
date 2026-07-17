@@ -210,8 +210,10 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       const task = args.join(" ");
       const hb = writer.setTask(root, owner, task);
       if (!hb) {
+        // Name the RESOLVED root: when a nested .harnery/ shadows the real
+        // coordination home, the full path is what makes that diagnosable.
         process.stderr.write(
-          `agent-coord set-task: no heartbeat at .harnery/active/${owner}.json\n`,
+          `agent-coord set-task: no heartbeat at ${root}/.harnery/active/${owner}.json\n`,
         );
         return 1;
       }

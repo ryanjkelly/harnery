@@ -90,6 +90,21 @@ const SUBAGENT_NOTE =
   "this resolves to the parent group's name, not the subagent's. A subagent-aware " +
   "bridge (per-shell marker file at .harnery/shells/<pid>) is out of scope.";
 
+/**
+ * Spawn options for agent-coord child processes: pin the coord root the
+ * command already resolved (git-superproject-aware via `monorepoRoot()`), so
+ * the helper can't re-resolve a DIFFERENT root by walking up from a drifted
+ * shell cwd. The concrete failure this prevents: a shell cd'd into an
+ * embedded harnery checkout (which carries its own committed `.harnery/`)
+ * made agent-coord resolve that nested root and miss the session's real
+ * heartbeat — `set-task: no heartbeat at .harnery/active/<id>.json` while
+ * `status` (which resolves in-process) worked fine. Mirrors the hooks side's
+ * `childEnv()`; every agent-coord spawn must carry this.
+ */
+export function coordHelperOpts(root: string): { cwd: string; env: NodeJS.ProcessEnv } {
+  return { cwd: root, env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root } };
+}
+
 function formatPlatformLabel(platform?: string | null): string {
   if (platform === "cursor") return "Cursor";
   if (platform === "codex") return "Codex";
@@ -1242,6 +1257,7 @@ function runReleaseClaim(path: string): void {
   const helper = resolve(root, "harnery", "bin", "agent-coord");
   const result = spawnSync(helper, ["release-claim", myOwner, canonical], {
     encoding: "utf8",
+    ...coordHelperOpts(root),
   });
   if (result.status !== 0) {
     emit.error({
@@ -1280,6 +1296,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   const helper = resolve(root, "harnery", "bin", "agent-coord");
   const result = spawnSync(helper, ["set-task", myOwner, task], {
     encoding: "utf8",
+    ...coordHelperOpts(root),
   });
   if (result.status !== 0) {
     emit.error({
@@ -1347,6 +1364,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
     spawnSync(helper, ["stamp-status-call", myOwner], {
       encoding: "utf8",
       timeout: 2000,
+      ...coordHelperOpts(root),
     });
   } catch {
     /* non-fatal */
@@ -3317,8 +3335,8 @@ function runHeal(opts: {
   // agent-coord binary at harnery/bin/agent-coord.
   const helper = `${root}/harnery/bin/agent-coord`;
   const proc = spawnSync(helper, helperArgs, {
-    cwd: root,
     encoding: "utf8",
+    ...coordHelperOpts(root),
   });
 
   if (proc.status !== 0) {
