@@ -52,6 +52,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           {run.endedAt ? ` · ended ${new Date(run.endedAt).toLocaleString()}` : ""}
           {` · $${run.costUsd.toFixed(4)}`}
           {run.agentsCached > 0 ? ` · ${run.agentsCached} cached` : ""}
+          {run.billing.length > 0 ? ` · billing: ${run.billing.join(", ")}` : ""}
         </p>
 
         {orderedStages.length === 0 ? (

@@ -30,6 +30,8 @@ export interface WorkflowRunSummary {
   agents: WorkflowAgentRow[];
   agentsCached: number;
   costUsd: number;
+  /** "harness=mode" per harness used (from billing.probe journal events). */
+  billing: string[];
   /** Journal mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
 }
@@ -44,6 +46,7 @@ interface JournalLine {
   name?: string;
   harness?: string;
   model?: string | null;
+  mode?: string;
   attempts?: number;
   cost_usd?: number;
   duration_ms?: number;
@@ -113,6 +116,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
   let runOk: boolean | undefined;
   let agentsCached = 0;
   let costUsd = 0;
+  const billing: string[] = [];
 
   for (const line of readFileSync(journalPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
@@ -129,6 +133,9 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
         break;
       case "stage.start":
         if (e.title && !stages.includes(e.title)) stages.push(e.title);
+        break;
+      case "billing.probe":
+        if (e.harness && e.mode) billing.push(`${e.harness}=${e.mode}`);
         break;
       case "agent.start":
         if (e.id) {
@@ -199,6 +206,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
     agents: Array.from(agents.values()),
     agentsCached,
     costUsd: Math.round(costUsd * 10_000) / 10_000,
+    billing,
     lastActivityAt: mtimeIso,
   };
 }

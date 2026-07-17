@@ -7,6 +7,7 @@ sidebar:
 
 ```
 harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
+                           [--subscription-only] [--allow-api-billing]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
 ```
 
@@ -39,13 +40,46 @@ subscription login is the default and preferred path** — no per-token API
 billing is required or implied by running workflows.
 
 The child-env scrub deletes *session* variables (`CLAUDE*`, `CODEX*`,
-`CURSOR*`), not auth: credential files and keychains are untouched. The one
-way to end up on API billing is to have an API-key variable exported in the
-parent shell (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) — harness CLIs prefer a
-key over a stored login when both are present, and the scrub deliberately
-passes non-session env through so key-only hosts (CI boxes with no login)
-still work. If you want to guarantee subscription billing, keep those
-variables unset where you launch workflows.
+`CURSOR*`), not auth: credential files and keychains are untouched
+(`CURSOR_API_KEY` is carved out of the `CURSOR*` scrub — it's a credential,
+not session state). The one way to end up on API billing is an API-key
+variable in the parent shell (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`CURSOR_API_KEY`): harness CLIs prefer a key over a stored login when both
+are present.
+
+### Billing safeguards
+
+The engine probes each harness's billing state on its **first spawn** of the
+run (journaled as `billing.probe`, echoed as a `[billing]` line, and reported
+per harness in the RunReport and web view):
+
+- **`subscription`** — no key exported; children ride the stored login.
+- **`api-key`** — key present, no stored login detected: a deliberate
+  key-only host (e.g. CI). Proceeds with a printed notice.
+- **`api-key-override`** — key present AND a stored login exists: the key is
+  silently shadowing subsidized auth, almost always by accident. The engine
+  **refuses to spawn** unless you pass `--allow-api-billing`.
+
+`--subscription-only` goes further: every API-key var is deleted from every
+child env, so children *can only* authenticate via their stored login, and a
+harness whose login is provably absent fails loud before spawning. Pin it
+repo-wide with `.harnery/config.jsonc`:
+
+```jsonc
+{ "workflow": { "subscriptionOnly": true } }
+```
+
+`HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0` overrides per process (the `0`
+escape hatch exists for a key-only CI job inside a pinned repo).
+`--allow-api-billing` and subscription-only mode contradict each other and
+are rejected as a pair.
+
+Login detection is a heuristic over well-known credential locations (Claude
+Code's `~/.claude/.credentials.json`, codex's `$CODEX_HOME/auth.json` — a
+`codex login --api-key` stored key is classified as API-key billing, not a
+login). Where presence can't be proven either way (macOS keychain storage,
+cursor), the state is `unknown` and never hard-fails — the harness CLI itself
+is the final authority.
 
 Two accounting consequences: the `costUsd` the claude adapter journals is the
 CLI's *notional* cost figure — under subscription auth it is not an invoice,

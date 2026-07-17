@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { workflowSubscriptionOnly } from "../core/config.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 
 /**
@@ -18,6 +19,8 @@ interface WorkflowRunOpts {
   cwd?: string;
   harness?: string;
   resumeFrom?: string;
+  subscriptionOnly?: boolean;
+  allowApiBilling?: boolean;
   json?: boolean;
 }
 
@@ -45,6 +48,16 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       "--resume-from <run-id>",
       "Reuse completed agent results from a prior run's journal; only changed/failed calls re-run",
     )
+    .option(
+      "--subscription-only",
+      "Guarantee subscription billing: scrub API-key vars from child envs; fail loud when a " +
+        "harness has no stored login (repo default via config.jsonc workflow.subscriptionOnly)",
+    )
+    .option(
+      "--allow-api-billing",
+      "Permit an exported API key to override a stored subscription login (per-token billing); " +
+        "without this the engine refuses that silent-override state",
+    )
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
       const coordRoot = findCoordRoot();
@@ -59,6 +72,17 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         emit.error({
           code: "bad_harness",
           message: `unknown harness "${opts.harness}" (expected: ${HARNESSES.join(" | ")})`,
+        });
+        process.exit(1);
+      }
+      // Flag beats config; the two flags contradict each other by design.
+      const subscriptionOnly = opts.subscriptionOnly || workflowSubscriptionOnly(coordRoot);
+      if (subscriptionOnly && opts.allowApiBilling) {
+        emit.error({
+          code: "billing_flags_conflict",
+          message:
+            "--allow-api-billing contradicts subscription-only mode " +
+            "(flag or config.jsonc workflow.subscriptionOnly); pick one",
         });
         process.exit(1);
       }
@@ -79,6 +103,8 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           },
           defaultHarness: opts.harness as "claude-code" | "codex" | "cursor" | undefined,
           resumeFrom: opts.resumeFrom,
+          subscriptionOnly,
+          allowApiBilling: opts.allowApiBilling,
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
           cwd: opts.cwd,
@@ -89,9 +115,12 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           return;
         }
         const cachedPart = report.agentsCached > 0 ? ` (+${report.agentsCached} cached)` : "";
+        const billingPart = report.billing.length
+          ? `billing: ${report.billing.map((b) => `${b.harness}=${b.mode}`).join(", ")}\n`
+          : "";
         emit.text(
           `run ${report.runId} (${report.name}) finished: ${report.agentsSpawned} agent(s)${cachedPart}, ` +
-            `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n` +
+            `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n${billingPart}` +
             `journal: ${report.journalPath}\n` +
             `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
         );

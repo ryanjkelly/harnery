@@ -21,6 +21,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { type BillingProbe, probeBilling } from "./billing.ts";
 import type {
   AgentOpts,
   EngineOpts,
@@ -78,6 +79,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   let costUsd = 0;
   let currentStage = "";
   let agentSeq = 0;
+  const billingProbed = new Map<HarnessName, BillingProbe>();
 
   const journal = (event: string, data: Record<string, unknown>): void => {
     const line = JSON.stringify({
@@ -132,6 +134,50 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       return cached.value;
     }
 
+    // Billing safeguard: on a harness's FIRST spawn this run, classify which
+    // auth its children will use and refuse the silent-override state (an
+    // exported API key shadowing a stored subscription login) unless the
+    // caller explicitly opted into API billing. Cached agents never reach
+    // this — no spawn, no billing.
+    if (!billingProbed.has(harness)) {
+      const probe = (opts.probeBilling ?? probeBilling)(harness);
+      billingProbed.set(harness, probe);
+      journal("billing.probe", {
+        harness,
+        mode: opts.subscriptionOnly ? "subscription" : probe.mode,
+        api_key_source: probe.apiKeySource,
+        login: probe.login,
+        subscription_only: Boolean(opts.subscriptionOnly),
+      });
+      if (opts.subscriptionOnly) {
+        if (probe.login === "absent") {
+          throw new Error(
+            `subscription-only: no stored login detected for ${harness}; ` +
+              `log the harness CLI in (or drop --subscription-only for a key-only host)`,
+          );
+        }
+        log(`[billing] ${harness}: subscription-only (API-key vars scrubbed from child env)`);
+      } else if (probe.mode === "api-key-override" && !opts.allowApiBilling) {
+        throw new Error(
+          `${probe.apiKeySource} is set AND a stored ${harness} login exists — the key silently ` +
+            `overrides your subscription auth, so children would bill per-token API rates. ` +
+            `Either unset ${probe.apiKeySource}, run with --subscription-only to scrub it from ` +
+            `child envs, or pass --allow-api-billing if API billing is intended`,
+        );
+      } else if (probe.mode === "api-key") {
+        log(
+          `[billing] ${harness}: API-key billing (${probe.apiKeySource}; no stored login detected) — ` +
+            `children bill per-token rates`,
+        );
+      } else if (probe.mode === "api-key-override") {
+        log(
+          `[billing] ${harness}: API-key billing (--allow-api-billing; key overrides stored login)`,
+        );
+      } else {
+        log(`[billing] ${harness}: subscription login`);
+      }
+    }
+
     if (agentsSpawned >= maxAgents) {
       throw new Error(
         `workflow agent cap reached (${maxAgents}); raise --max-agents deliberately if the fan-out is intended`,
@@ -154,6 +200,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
           maxTurns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
           cwd,
           runId,
+          subscriptionOnly: opts.subscriptionOnly,
         });
         costUsd += last.costUsd ?? 0;
 
@@ -249,6 +296,10 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       durationMs: Date.now() - t0,
       journalPath,
       contextTokensPerChildEstimate,
+      billing: Array.from(billingProbed.values()).map((p) => ({
+        harness: p.harness,
+        mode: opts.subscriptionOnly ? "subscription" : p.mode,
+      })),
     };
     journal("run.end", {
       ok: true,

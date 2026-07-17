@@ -37,7 +37,18 @@ function okSpawn(text: string, extra: Partial<SpawnResult> = {}): SpawnResult {
   return { ok: true, text, durationMs: 5, costUsd: 0.01, sessionId: "child-s", ...extra };
 }
 
-const quiet = { onLog: () => {} };
+// Hermetic defaults: silence progress AND stub the billing probe so tests
+// never depend on the machine's real credential files / exported keys.
+const quiet = {
+  onLog: () => {},
+  probeBilling: (harness: "claude-code" | "codex" | "cursor") => ({
+    harness,
+    apiKeySource: null,
+    apiKeyPresent: false,
+    login: "present" as const,
+    mode: "subscription" as const,
+  }),
+};
 
 describe("runWorkflow", () => {
   test("schema-gated agent returns validated JSON; report totals populated", async () => {
@@ -373,5 +384,103 @@ describe("stop-hook workflow-child exemption", () => {
     });
     expect(verdict.allow).toBe(true);
     expect(verdict.rule).toBe("stop-hook.workflow_child");
+  });
+});
+
+describe("billing safeguards", () => {
+  const overrideProbe = (harness: "claude-code" | "codex" | "cursor") => ({
+    harness,
+    apiKeySource: "ANTHROPIC_API_KEY",
+    apiKeyPresent: true,
+    login: "present" as const,
+    mode: "api-key-override" as const,
+  });
+
+  test("api-key-override is refused with actionable guidance", async () => {
+    const spawner: Spawner = async () => okSpawn("hi");
+    const script = writeScript(`export default async ({ agent }) => agent("go");`);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        ...quiet,
+        probeBilling: overrideProbe,
+      }),
+    ).rejects.toThrow(/silently\s+overrides.*--subscription-only.*--allow-api-billing/s);
+  });
+
+  test("--allow-api-billing permits the override state", async () => {
+    const spawner: Spawner = async () => okSpawn("hi");
+    const script = writeScript(`export default async ({ agent }) => agent("go");`);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+      probeBilling: overrideProbe,
+      allowApiBilling: true,
+    });
+    expect(report.result).toBe("hi");
+    expect(report.billing).toEqual([{ harness: "claude-code", mode: "api-key-override" }]);
+  });
+
+  test("subscription-only fails loud when the stored login is provably absent", async () => {
+    const spawner: Spawner = async () => okSpawn("hi");
+    const script = writeScript(`export default async ({ agent }) => agent("go");`);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        ...quiet,
+        probeBilling: (h) => ({
+          harness: h,
+          apiKeySource: null,
+          apiKeyPresent: false,
+          login: "absent" as const,
+          mode: "subscription" as const,
+        }),
+        subscriptionOnly: true,
+      }),
+    ).rejects.toThrow(/subscription-only: no stored login/);
+  });
+
+  test("subscription-only neutralizes an override: run proceeds, spawner told to scrub, mode reports subscription", async () => {
+    const requests: SpawnRequest[] = [];
+    const spawner: Spawner = async (req) => {
+      requests.push(req);
+      return okSpawn("hi");
+    };
+    const script = writeScript(`export default async ({ agent }) => agent("go");`);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+      probeBilling: overrideProbe,
+      subscriptionOnly: true,
+    });
+    expect(report.result).toBe("hi");
+    expect(requests[0]?.subscriptionOnly).toBe(true);
+    expect(report.billing).toEqual([{ harness: "claude-code", mode: "subscription" }]);
+  });
+
+  test("probe runs once per harness and lands one billing.probe journal event", async () => {
+    let probes = 0;
+    const spawner: Spawner = async () => okSpawn("hi");
+    const script = writeScript(
+      `export default async ({ agent }) => { await agent("one"); return agent("two"); };`,
+    );
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+      probeBilling: (h) => {
+        probes++;
+        return quiet.probeBilling(h);
+      },
+    });
+    expect(probes).toBe(1);
+    const journal = readFileSync(report.journalPath, "utf8");
+    const billingEvents = journal.split("\n").filter((l) => l.includes('"billing.probe"'));
+    expect(billingEvents.length).toBe(1);
+    expect(billingEvents[0]).toContain('"mode":"subscription"');
   });
 });

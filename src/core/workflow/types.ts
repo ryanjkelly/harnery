@@ -7,6 +7,8 @@
  * Design record: decision 0015 (portable coordination-aware workflows).
  */
 
+import type { BillingMode, BillingProber } from "./billing.ts";
+
 /** JSON-schema *subset* accepted by stage gates (see validate.ts). */
 export interface StageSchema {
   type: "object" | "array" | "string" | "number" | "boolean";
@@ -65,6 +67,9 @@ export interface SpawnRequest {
   /** Run id, stamped into the child env (HARNERY_WORKFLOW_RUN_ID) so the
    * coord layer can associate child sessions with their workflow run. */
   runId?: string;
+  /** Scrub all API-key vars from the child env so it can only authenticate
+   * via its stored (subscription) login. See billing.ts. */
+  subscriptionOnly?: boolean;
 }
 
 /** One headless-subagent runner. The engine is adapter-agnostic; claude-code
@@ -115,6 +120,17 @@ export interface EngineOpts {
   cwd?: string;
   /** Progress sink (default: process.stderr). */
   onLog?: (line: string) => void;
+  /** Guarantee subscription billing: API-key vars are scrubbed from every
+   * child env, and a harness whose stored login is provably absent fails
+   * loud before spawning. */
+  subscriptionOnly?: boolean;
+  /** Permit the api-key-override billing state (an exported API key silently
+   * shadowing a stored subscription login), which the engine otherwise
+   * refuses. Deliberate key-only hosts don't need this — only the
+   * both-present case does. */
+  allowApiBilling?: boolean;
+  /** Billing-probe override for tests (default: the real probeBilling). */
+  probeBilling?: BillingProber;
 }
 
 export interface RunReport {
@@ -132,4 +148,6 @@ export interface RunReport {
    * cwd) that EVERY child cache-writes on spawn — the fixed per-child context
    * overhead a fan-out multiplies. bytes/4 heuristic; 0 when no such file. */
   contextTokensPerChildEstimate: number;
+  /** Billing mode per harness actually used this run (probed on first use). */
+  billing: Array<{ harness: HarnessName; mode: BillingMode }>;
 }

@@ -40,6 +40,12 @@ interface HarneryConfig {
    * a missing rg only produces a rate-limited install hint.
    */
   tools?: { ripgrep?: { autoInstall?: boolean } };
+  /**
+   * Workflow-engine defaults. `{ subscriptionOnly: true }` pins every
+   * `workflow run` in this repo to subscription billing (API-key vars are
+   * scrubbed from child envs) without anyone having to remember the flag.
+   */
+  workflow?: { subscriptionOnly?: boolean };
   [k: string]: unknown;
 }
 
@@ -167,4 +173,21 @@ export function ripgrepAutoInstall(coordRoot?: string | null): boolean {
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).tools?.ripgrep?.autoInstall === true;
+}
+
+/**
+ * Whether this repo pins workflow runs to subscription billing:
+ * `.harnery/config.jsonc` `{ "workflow": { "subscriptionOnly": true } }`.
+ * The `workflow run --subscription-only` flag turns it on per invocation;
+ * `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0` overrides per process (the `0`
+ * escape hatch exists for a key-only CI job inside a pinned repo).
+ * `coordRoot` is resolved via `findCoordRoot()` when not passed.
+ */
+export function workflowSubscriptionOnly(coordRoot?: string | null): boolean {
+  const env = coordEnv("WORKFLOW_SUBSCRIPTION_ONLY");
+  if (env === "1") return true;
+  if (env === "0") return false;
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return false;
+  return readConfig(root).workflow?.subscriptionOnly === true;
 }

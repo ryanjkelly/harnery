@@ -48,7 +48,7 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
 
   const r = await exec(argv, {
     cwd: req.cwd,
-    env: buildChildEnv(req.runId),
+    env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
     timeout: req.timeoutMs,
   });
   const durationMs = Date.now() - t0;
