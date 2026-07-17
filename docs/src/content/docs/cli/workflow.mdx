@@ -20,10 +20,10 @@ is subject to the same claim/guard protections as any other agent. Design
 record: decision 0015.
 
 Spawn adapters: `claude-code` (default), `codex` (`codex exec
---output-last-message`), and `cursor` (`cursor-agent -p --output-format
-json`). claude-code and codex are live-verified end-to-end (codex against
-codex-cli 0.144.5); cursor follows the upstream headless contract but awaits
-verification on a machine with an authed `cursor-agent`. A missing harness
+--output-last-message`), and `cursor` (`cursor-agent -p --output-format json
+--trust` — headless cursor refuses untrusted workspaces without the flag).
+All three are live-verified end-to-end (codex against codex-cli 0.144.5,
+cursor against cursor-agent 2026.07.16). A missing harness
 CLI fails loud with the vendor's install one-liner and login command in the
 error, and `harn doctor` reports all three spawn targets up front
 (installed? authenticated? how will children bill?). Select the run default

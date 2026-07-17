@@ -2,11 +2,14 @@
  * cursor spawn adapter: runs one subagent as a headless `cursor-agent -p`
  * subprocess with `--output-format json`.
  *
- * Contract notes (per upstream docs; NOT yet verified against a live binary —
- * no cursor-agent install on the authoring machine; re-verify on first use):
+ * Contract notes (LIVE-VERIFIED 2026-07-17 against cursor-agent
+ * 2026.07.16-899851b: schema-gated triage + text stages round-trip via
+ * `--harness cursor`, session_id parses from the envelope):
  * - `cursor-agent -p "<prompt>" --output-format json` prints a single result
  *   envelope modeled on Claude Code's (`{type: "result", is_error, result,
  *   session_id, …}`).
+ * - `--trust` is required: headless runs refuse untrusted workspaces (exit 1,
+ *   "Workspace Trust Required") — see the argv comment below.
  * - Envelope drift guard: when stdout doesn't parse as JSON but the process
  *   exited 0, the raw stdout is returned as the reply text.
  * - No per-run cost surface → undefined. No max-turns equivalent → `maxTurns`
@@ -46,7 +49,11 @@ export function parseCursorOutput(stdout: string): {
 export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
   const t0 = Date.now();
 
-  const argv = ["cursor-agent", "-p", req.prompt, "--output-format", "json"];
+  // --trust: headless cursor-agent refuses untrusted workspaces (exit 1,
+  // "Workspace Trust Required"). Workflow children run in the engine's cwd
+  // deliberately and may edit files — the same posture as the codex adapter's
+  // `--sandbox workspace-write` — so trusting that directory is implied.
+  const argv = ["cursor-agent", "-p", req.prompt, "--output-format", "json", "--trust"];
   if (req.model) argv.push("--model", req.model);
 
   const r = await exec(argv, {
