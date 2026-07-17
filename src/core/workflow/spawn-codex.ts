@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exec } from "../../lib/exec.ts";
 import { buildChildEnv } from "./child-env.ts";
+import { notFoundError } from "./harnesses.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 export const codexSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
@@ -51,7 +52,7 @@ export const codexSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRes
     const durationMs = Date.now() - t0;
 
     if (r.exitCode === 127) {
-      return { ok: false, text: "", durationMs, error: "codex CLI not found on PATH" };
+      return { ok: false, text: "", durationMs, error: notFoundError("codex") };
     }
     if (r.exitCode !== 0) {
       return {

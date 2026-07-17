@@ -35,6 +35,7 @@ Exits `0` unless a required dep is missing.
 | `ripgrep`      | optional | Fast engine for `harn grep` (grep fallback works, just slower). `--fix` installs it; or opt in to auto-install via `.harnery/config.jsonc` |
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
 | `harness hooks`| optional | Compares wired `agent-hook` entries against the current harness spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
+| `workflow:claude-code` / `workflow:codex` / `workflow:cursor` | optional | Spawn targets for [`harn workflow`](/cli/workflow/): is the harness CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
 | `rclone`       | optional | Required for `harn sync` |
 | `playwright`   | optional | Required for `harn browse` (module + browsers installed) |

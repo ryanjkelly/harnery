@@ -19,6 +19,13 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
 import { loadHarnessWiring } from "../core/hooks/harness/wiring.ts";
+import { probeBilling } from "../core/workflow/billing.ts";
+import {
+  HARNESS_BINARIES,
+  HARNESS_INSTALL_HINTS,
+  HARNESS_LOGIN_HINTS,
+} from "../core/workflow/harnesses.ts";
+import type { HarnessName } from "../core/workflow/types.ts";
 import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
 type Severity = "ok" | "warn" | "fail";
@@ -96,6 +103,9 @@ export function runChecks(): Check[] {
     checkRipgrep(),
     checkHarneryDir(),
     checkHarnessHooks(),
+    checkWorkflowHarness("claude-code"),
+    checkWorkflowHarness("codex"),
+    checkWorkflowHarness("cursor"),
     checkRestic(),
     checkRclone(),
     checkPlaywright(),
@@ -142,6 +152,41 @@ function whichVersion(bin: string, args: string[] = ["--version"]): { ok: boolea
   if (r.status !== 0) return { ok: false, out: "" };
   const out = (r.stdout || r.stderr).trim().split("\n")[0];
   return { ok: true, out };
+}
+
+/**
+ * One workflow spawn target: is the harness CLI installed, and how will its
+ * headless children bill (subscription login vs API key — see billing.ts)?
+ * Missing is a warn, not a fail: workflows degrade to the harnesses you have.
+ */
+function checkWorkflowHarness(harness: HarnessName): Check {
+  const bin = HARNESS_BINARIES[harness];
+  const name = `workflow:${harness}`;
+  const r = whichVersion(bin);
+  if (!r.ok) {
+    return {
+      name,
+      severity: "warn",
+      detail: `${bin} missing (workflow --harness ${harness} unavailable)`,
+      hint: `${HARNESS_INSTALL_HINTS[harness]}  then: ${HARNESS_LOGIN_HINTS[harness]}`,
+    };
+  }
+  const probe = probeBilling(harness);
+  if (probe.login === "absent" && !probe.apiKeyPresent) {
+    return {
+      name,
+      severity: "warn",
+      detail: `${r.out} — installed, but no stored login or API key detected`,
+      hint: HARNESS_LOGIN_HINTS[harness],
+    };
+  }
+  const billing =
+    probe.mode === "subscription"
+      ? probe.login === "present"
+        ? "billing: subscription"
+        : "billing: subscription (login unverifiable, CLI is the authority)"
+      : `billing: ${probe.mode} (${probe.apiKeySource})`;
+  return { name, severity: "ok", detail: `${r.out} — ${billing}` };
 }
 
 function checkNode(): Check {

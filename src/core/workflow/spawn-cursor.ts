@@ -15,6 +15,7 @@
 
 import { exec } from "../../lib/exec.ts";
 import { buildChildEnv } from "./child-env.ts";
+import { notFoundError } from "./harnesses.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 interface CursorEnvelope {
@@ -56,7 +57,7 @@ export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRe
   const durationMs = Date.now() - t0;
 
   if (r.exitCode === 127) {
-    return { ok: false, text: "", durationMs, error: "cursor-agent CLI not found on PATH" };
+    return { ok: false, text: "", durationMs, error: notFoundError("cursor") };
   }
   if (r.exitCode !== 0) {
     return {
