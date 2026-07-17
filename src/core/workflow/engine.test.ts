@@ -52,7 +52,11 @@ describe("runWorkflow", () => {
         }});
       };
     `);
-    const report = await runWorkflow(script, { coordRoot: root, spawner, ...quiet });
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
     expect(report.result).toEqual({ route: "keep", reason: "fine" });
     expect(report.agentsSpawned).toBe(1);
     expect(report.costUsd).toBeCloseTo(0.01, 5);
@@ -73,7 +77,11 @@ describe("runWorkflow", () => {
         properties: { route: { enum: ["close", "analyze", "keep"] }, reason: { type: "string" } },
       }});
     `);
-    const report = await runWorkflow(script, { coordRoot: root, spawner, ...quiet });
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
     expect(report.result).toEqual({ route: "close", reason: "stale" });
     expect(prompts.length).toBe(2);
     // Retry prompt carries the validation problems verbatim.
@@ -89,9 +97,9 @@ describe("runWorkflow", () => {
         maxAttempts: 2,
       });
     `);
-    await expect(runWorkflow(script, { coordRoot: root, spawner, ...quiet })).rejects.toThrow(
-      /schema validation failed after 2 attempt/,
-    );
+    await expect(
+      runWorkflow(script, { coordRoot: root, spawners: { "claude-code": spawner }, ...quiet }),
+    ).rejects.toThrow(/schema validation failed after 2 attempt/);
     const journal = readJournal();
     expect(journal.some((e) => e.event === "agent.failed")).toBe(true);
     const end = journal.find((e) => e.event === "run.end");
@@ -106,7 +114,12 @@ describe("runWorkflow", () => {
         return results.filter((r) => r !== null).length;
       };
     `);
-    const report = await runWorkflow(script, { coordRoot: root, spawner, maxAgents: 2, ...quiet });
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      maxAgents: 2,
+      ...quiet,
+    });
     expect(report.result).toBe(2); // third item hit the cap -> null
     expect(report.agentsSpawned).toBe(2);
   });
@@ -125,7 +138,12 @@ describe("runWorkflow", () => {
       export default async ({ agent, parallel }) =>
         parallel(Array.from({ length: 6 }, (_, i) => () => agent("job " + i)));
     `);
-    await runWorkflow(script, { coordRoot: root, spawner, concurrency: 2, ...quiet });
+    await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      concurrency: 2,
+      ...quiet,
+    });
     expect(maxInFlight).toBe(2);
   });
 
@@ -137,7 +155,11 @@ describe("runWorkflow", () => {
         return agent("look around");
       };
     `);
-    const report = await runWorkflow(script, { coordRoot: root, spawner, ...quiet });
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
     expect(report.result).toBe("plain reply");
     const journal = readJournal();
     expect(journal.find((e) => e.event === "stage.start")?.title).toBe("explore");
@@ -153,18 +175,146 @@ describe("runWorkflow", () => {
       return { ok: false, text: "", durationMs: 1, error: "claude exited 1: boom" };
     };
     const script = writeScript(`export default async ({ agent }) => agent("x");`);
-    await expect(runWorkflow(script, { coordRoot: root, spawner, ...quiet })).rejects.toThrow(
-      /claude exited 1: boom/,
-    );
+    await expect(
+      runWorkflow(script, { coordRoot: root, spawners: { "claude-code": spawner }, ...quiet }),
+    ).rejects.toThrow(/claude exited 1: boom/);
     expect(calls).toBe(2); // DEFAULT_MAX_ATTEMPTS
   });
 
   test("script without default export fails loud", async () => {
     const script = writeScript(`export const meta = { name: "no-fn" };`);
     const spawner: Spawner = async () => okSpawn("x");
-    await expect(runWorkflow(script, { coordRoot: root, spawner, ...quiet })).rejects.toThrow(
-      /export default/,
+    await expect(
+      runWorkflow(script, { coordRoot: root, spawners: { "claude-code": spawner }, ...quiet }),
+    ).rejects.toThrow(/export default/);
+  });
+
+  test("per-agent harness routes to the matching spawner; unknown harness fails loud", async () => {
+    const seen: string[] = [];
+    const mk =
+      (tag: string): Spawner =>
+      async () => {
+        seen.push(tag);
+        return okSpawn(`${tag} reply`);
+      };
+    const script = writeScript(`
+      export default async ({ agent }) => {
+        const a = await agent("one");                          // default harness
+        const b = await agent("two", { harness: "codex" });    // explicit route
+        return [a, b];
+      };
+    `);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": mk("cc"), codex: mk("cx") },
+      ...quiet,
+    });
+    expect(report.result).toEqual(["cc reply", "cx reply"]);
+    expect(seen).toEqual(["cc", "cx"]);
+
+    const script2 = writeScript(
+      `export default async ({ agent }) => agent("x", { harness: "cursor" });`,
     );
+    await expect(
+      runWorkflow(script2, { coordRoot: root, spawners: { "claude-code": mk("cc") }, ...quiet }),
+    ).rejects.toThrow(/no spawner registered for harness "cursor"/);
+  });
+
+  test("resume-from reuses journaled results; only new calls spawn", async () => {
+    let calls = 0;
+    const spawner: Spawner = async (req: SpawnRequest) => {
+      calls++;
+      return req.prompt.startsWith("classify")
+        ? okSpawn('{"route": "keep", "reason": "r"}')
+        : okSpawn("fresh text");
+    };
+    const body = `
+      export default async ({ agent, stage }) => {
+        stage("triage");
+        const v = await agent("classify item-1", { schema: {
+          type: "object", required: ["route", "reason"],
+          properties: { route: { enum: ["close", "analyze", "keep"] }, reason: { type: "string" } },
+        }});
+        const t = await agent("summarize item-1");
+        return [v, t];
+      };
+    `;
+    const script = writeScript(body);
+    const first = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
+    expect(calls).toBe(2);
+    expect(first.agentsCached).toBe(0);
+
+    // Same script re-run with --resume-from: zero live spawns, same results.
+    const script2 = writeScript(body);
+    const second = await runWorkflow(script2, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      resumeFrom: first.runId,
+      ...quiet,
+    });
+    expect(calls).toBe(2); // unchanged — nothing spawned
+    expect(second.agentsSpawned).toBe(0);
+    expect(second.agentsCached).toBe(2);
+    expect(second.result).toEqual(first.result);
+  });
+
+  test("resume-from with a changed prompt re-runs only the changed call", async () => {
+    let calls = 0;
+    const spawner: Spawner = async () => {
+      calls++;
+      return okSpawn("t");
+    };
+    const first = await runWorkflow(
+      writeScript(
+        `export default async ({ agent }) => [await agent("stable"), await agent("v1")];`,
+      ),
+      { coordRoot: root, spawners: { "claude-code": spawner }, ...quiet },
+    );
+    expect(calls).toBe(2);
+    const second = await runWorkflow(
+      writeScript(
+        `export default async ({ agent }) => [await agent("stable"), await agent("v2")];`,
+      ),
+      { coordRoot: root, spawners: { "claude-code": spawner }, resumeFrom: first.runId, ...quiet },
+    );
+    expect(calls).toBe(3); // only "v2" spawned live
+    expect(second.agentsCached).toBe(1);
+    expect(second.agentsSpawned).toBe(1);
+  });
+
+  test("resume-from a nonexistent run id fails loud", async () => {
+    const spawner: Spawner = async () => okSpawn("x");
+    const script = writeScript(`export default async ({ agent }) => agent("x");`);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: { "claude-code": spawner },
+        resumeFrom: "wf-typo",
+        ...quiet,
+      }),
+    ).rejects.toThrow(/no journal at/);
+  });
+
+  test("context-cost estimate: reads instructions file size, lands in report + runId reaches spawner", async () => {
+    // 40KB CLAUDE.md at the child cwd → ~10K tokens estimated.
+    writeFileSync(join(root, "CLAUDE.md"), "x".repeat(40_000), "utf8");
+    let seenRunId: string | undefined;
+    const spawner: Spawner = async (req: SpawnRequest) => {
+      seenRunId = req.runId;
+      return okSpawn("y");
+    };
+    const script = writeScript(`export default async ({ agent }) => agent("x");`);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
+    expect(report.contextTokensPerChildEstimate).toBe(10_000);
+    expect(seenRunId).toBe(report.runId);
   });
 
   function readJournal(): Array<Record<string, unknown> & { event: string }> {
@@ -176,6 +326,19 @@ describe("runWorkflow", () => {
       .split("\n")
       .map((l) => JSON.parse(l));
   }
+});
+
+describe("parseCursorOutput", () => {
+  test("json envelope, error envelope, and non-json fallback", async () => {
+    const { parseCursorOutput } = await import("./spawn-cursor.ts");
+    expect(parseCursorOutput('{"type":"result","result":"hi","session_id":"s1"}')).toEqual({
+      text: "hi",
+      sessionId: "s1",
+      isError: false,
+    });
+    expect(parseCursorOutput('{"is_error":true,"result":"boom"}').isError).toBe(true);
+    expect(parseCursorOutput("plain text").text).toBe("plain text");
+  });
 });
 
 describe("validate", () => {

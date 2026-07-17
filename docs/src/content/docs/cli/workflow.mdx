@@ -6,16 +6,27 @@ sidebar:
 ---
 
 ```
-harn workflow run <script> [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
+harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
+                           [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
 ```
 
 A workflow is a small throwaway JS script with staged fan-out: the **script**
 (deterministic code), not any model, decides what runs next, and the run always
 terminates when the script returns. Subagents spawn as headless harness-CLI
-subprocesses (`claude -p` today; codex/cursor planned) and are **born
-coordination-registered** — they heartbeat, emit canonical events, and stay
-visible to peers, so a workflow child editing a file is subject to the same
-claim/guard protections as any other agent. Design record: decision 0015.
+subprocesses and are **born coordination-registered** — they heartbeat, emit
+canonical events, and stay visible to peers, so a workflow child editing a file
+is subject to the same claim/guard protections as any other agent. Design
+record: decision 0015.
+
+Spawn adapters: `claude-code` (default; verified end-to-end), `codex`
+(`codex exec --output-last-message`), and `cursor` (`cursor-agent -p
+--output-format json`). Select the run default with `--harness`, or per agent
+via `opts.harness` — mixed-harness workflows are legal (triage on one CLI,
+deep work on another). The codex/cursor adapters follow the upstream headless
+contracts but have not yet been verified against live binaries; they fail loud
+(`… CLI not found on PATH`) when the binary is absent. Codex and cursor expose
+no per-run cost or max-turns controls, so `costUsd` is unreported and
+`maxTurns` is ignored on those harnesses.
 
 ## Script shape
 
@@ -67,13 +78,41 @@ export default async function run({ agent, parallel, stage, log }) {
 - `--concurrency` (default 4): one shared slot pool for every spawn in the run,
   so nesting `parallel()` inside loops can't exceed it.
 
+## Resume
+
+`--resume-from <run-id>` reuses completed agent results from a prior run's
+journal: an `agent()` call whose identity — stage, harness, model, maxTurns,
+schema, and the ORIGINAL prompt — matches a journaled `agent.end` returns the
+recorded result instantly without spawning (journaled as `agent.cached`).
+Changed or previously-failed calls re-run live. Same script + same inputs →
+100% cache, $0. A typo'd run id fails loud rather than silently re-running
+everything.
+
+## Context-cost heads-up
+
+Children spawn in `--cwd` (default: the coord root) and load that directory's
+repo-instructions file (`CLAUDE.md` / `AGENTS.md`) into their system prompt —
+a per-child cache-write a fan-out multiplies. The engine prints the estimate
+up front (`[context] each child cache-writes ~51K tokens …`, bytes/4
+heuristic) and reports it as `contextTokensPerChildEstimate` in the
+`RunReport`. For mechanical stages that don't need repo instructions, point
+`--cwd` at a directory without one.
+
 ## Output
 
-Human mode prints a run summary (agents, cost, duration, journal path, result).
-`--json` emits the full `RunReport`. Every run journals to
+Human mode prints a run summary (agents, cached count, cost, duration, journal
+path, result). `--json` emits the full `RunReport`. Every run journals to
 `.harnery/workflows/<run-id>/journal.jsonl`: `run.start`, `stage.start`,
-`agent.start/end` (cost, duration, child session id), `agent.schema_retry`,
-`run.end`.
+`agent.start/end` (cost, duration, child session id, result), `agent.cached`,
+`agent.schema_retry`, `run.end`.
+
+## Web view
+
+The dashboard (`harn web up`) ships a **/workflows** page: journal-driven list
+of runs (status, agents, cached count, cost, stage chain) and a per-run detail
+view rendering the stages → agents tree with per-agent harness, attempts,
+duration, and cost. Journal-driven means a run stays inspectable while live
+and after the orchestrator exits, with no terminal paging limits.
 
 ## Workflow children and the end-of-turn ritual
 

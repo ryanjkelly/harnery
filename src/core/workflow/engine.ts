@@ -17,13 +17,14 @@
  *     cost, duration, and child session id (the resume + web-UI substrate).
  */
 
-import { randomBytes } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentOpts,
   EngineOpts,
+  HarnessName,
   RunReport,
   SpawnResult,
   WorkflowContext,
@@ -54,8 +55,26 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
   const cwd = opts.cwd ?? opts.coordRoot;
   const log = opts.onLog ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const defaultHarness: HarnessName = opts.defaultHarness ?? "claude-code";
+
+  // Per-child fixed context overhead: children spawn in `cwd` and load its
+  // repo-instructions file into their system prompt, cache-writing it once
+  // per child. A fan-out multiplies this, so surface it BEFORE the burn.
+  const contextTokensPerChildEstimate = estimateInstructionTokens(cwd);
+  if (contextTokensPerChildEstimate > 0) {
+    log(
+      `[context] each child cache-writes ~${Math.round(contextTokensPerChildEstimate / 1000)}K tokens of repo ` +
+        `instructions from ${cwd}; a fan-out multiplies this per agent`,
+    );
+  }
+
+  // Resume: journaled results of a prior run, keyed by agent-call identity.
+  const resumeCache = opts.resumeFrom
+    ? loadResumeCache(opts.coordRoot, opts.resumeFrom)
+    : new Map<string, { kind: "json" | "text"; value: unknown }>();
 
   let agentsSpawned = 0;
+  let agentsCached = 0;
   let costUsd = 0;
   let currentStage = "";
   let agentSeq = 0;
@@ -89,30 +108,52 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   };
 
   const agent = async (prompt: string, agentOpts: AgentOpts = {}): Promise<unknown> => {
+    const harness = agentOpts.harness ?? defaultHarness;
+    const spawner = opts.spawners[harness];
+    if (!spawner) {
+      throw new Error(
+        `no spawner registered for harness "${harness}" (registered: ${Object.keys(opts.spawners).join(", ") || "none"})`,
+      );
+    }
+    const id = `a${++agentSeq}`;
+    const label = agentOpts.label ?? `${prompt.slice(0, 60).replace(/\s+/g, " ")}…`;
+    const maxAttempts = agentOpts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+
+    // Call identity for resume: same stage + harness + model + turns + schema
+    // + ORIGINAL prompt → same key. Retry-mutated prompts never enter the key.
+    const key = agentCallKey(currentStage, harness, agentOpts, prompt);
+    const cached = resumeCache.get(key);
+    if (cached) {
+      agentsCached++;
+      journal("agent.cached", { id, label, key, kind: cached.kind });
+      log(
+        `[${name}] ${currentStage || "(no stage)"} → ${id} ${label} (cached from ${opts.resumeFrom})`,
+      );
+      return cached.value;
+    }
+
     if (agentsSpawned >= maxAgents) {
       throw new Error(
         `workflow agent cap reached (${maxAgents}); raise --max-agents deliberately if the fan-out is intended`,
       );
     }
     agentsSpawned++;
-    const id = `a${++agentSeq}`;
-    const label = agentOpts.label ?? `${prompt.slice(0, 60).replace(/\s+/g, " ")}…`;
-    const maxAttempts = agentOpts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
     await acquire();
     try {
-      journal("agent.start", { id, label, model: agentOpts.model ?? null });
-      log(`[${name}] ${currentStage || "(no stage)"} → ${id} ${label}`);
+      journal("agent.start", { id, label, key, harness, model: agentOpts.model ?? null });
+      log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${harness}] ${label}`);
 
       let attemptPrompt = prompt;
       let last: SpawnResult | null = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        last = await opts.spawner({
+        last = await spawner({
           prompt: attemptPrompt,
           model: agentOpts.model,
           timeoutMs: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxTurns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
           cwd,
+          runId,
         });
         costUsd += last.costUsd ?? 0;
 
@@ -123,10 +164,13 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         if (!agentOpts.schema) {
           journal("agent.end", {
             id,
+            key,
             attempts: attempt,
             cost_usd: last.costUsd,
             duration_ms: last.durationMs,
             session_id: last.sessionId,
+            result_kind: "text",
+            result: last.text,
           });
           return last.text;
         }
@@ -139,10 +183,13 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         if (problems.length === 0) {
           journal("agent.end", {
             id,
+            key,
             attempts: attempt,
             cost_usd: last.costUsd,
             duration_ms: last.durationMs,
             session_id: last.sessionId,
+            result_kind: "json",
+            result: parsed.value,
           });
           return parsed.value;
         }
@@ -197,13 +244,16 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       name,
       result,
       agentsSpawned,
+      agentsCached,
       costUsd: round4(costUsd),
       durationMs: Date.now() - t0,
       journalPath,
+      contextTokensPerChildEstimate,
     };
     journal("run.end", {
       ok: true,
       agents: agentsSpawned,
+      cached: agentsCached,
       cost_usd: report.costUsd,
       duration_ms: report.durationMs,
     });
@@ -213,10 +263,79 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       ok: false,
       error: (err as Error).message,
       agents: agentsSpawned,
+      cached: agentsCached,
       cost_usd: round4(costUsd),
     });
     throw err;
   }
+}
+
+/** Stable identity for one agent() call, for the resume cache. The ORIGINAL
+ * prompt (never a retry-mutated one) plus everything that changes behavior. */
+function agentCallKey(
+  stage: string,
+  harness: string,
+  agentOpts: AgentOpts,
+  prompt: string,
+): string {
+  const basis = JSON.stringify([
+    stage,
+    harness,
+    agentOpts.model ?? null,
+    agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
+    agentOpts.schema ?? null,
+    prompt,
+  ]);
+  return createHash("sha256").update(basis).digest("hex").slice(0, 16);
+}
+
+/** Per-child fixed context overhead: the repo-instructions file at the child
+ * cwd (CLAUDE.md preferred, AGENTS.md fallback) is loaded into every child's
+ * system prompt. bytes/4 token heuristic; 0 when neither file exists. */
+function estimateInstructionTokens(cwd: string): number {
+  for (const f of ["CLAUDE.md", "AGENTS.md"]) {
+    const p = join(cwd, f);
+    if (existsSync(p)) {
+      try {
+        return Math.round(statSync(p).size / 4);
+      } catch {
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
+
+/** Load a prior run's journal into a key → result map. Only `agent.end`
+ * entries (completed, validated) are resumable; failed or retried-out agents
+ * re-run live. Unreadable journal → error (a typo'd run id should fail loud,
+ * not silently run everything fresh). */
+function loadResumeCache(
+  coordRoot: string,
+  resumeFrom: string,
+): Map<string, { kind: "json" | "text"; value: unknown }> {
+  const path = join(coordRoot, ".harnery", "workflows", resumeFrom, "journal.jsonl");
+  if (!existsSync(path)) {
+    throw new Error(`--resume-from ${resumeFrom}: no journal at ${path}`);
+  }
+  const cache = new Map<string, { kind: "json" | "text"; value: unknown }>();
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as {
+        event?: string;
+        key?: string;
+        result_kind?: "json" | "text";
+        result?: unknown;
+      };
+      if (e.event === "agent.end" && e.key && e.result_kind !== undefined) {
+        cache.set(e.key, { kind: e.result_kind, value: e.result });
+      }
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return cache;
 }
 
 function round4(n: number): number {

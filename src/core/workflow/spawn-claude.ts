@@ -19,6 +19,7 @@
  */
 
 import { exec } from "../../lib/exec.ts";
+import { buildChildEnv } from "./child-env.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 interface ClaudeEnvelope {
@@ -34,15 +35,6 @@ interface ClaudeEnvelope {
 export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
   const t0 = Date.now();
 
-  // Child env: inherit, scrub Claude session vars, mark as workflow child.
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined) continue;
-    if (k.startsWith("CLAUDE")) continue; // spike finding #2a: delete, never blank
-    env[k] = v;
-  }
-  env.HARNERY_WORKFLOW_CHILD = "1"; // stop-rule exemption; coord capture stays on
-
   const argv = [
     "claude",
     "-p",
@@ -54,7 +46,11 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
   ];
   if (req.model) argv.push("--model", req.model);
 
-  const r = await exec(argv, { cwd: req.cwd, env, timeout: req.timeoutMs });
+  const r = await exec(argv, {
+    cwd: req.cwd,
+    env: buildChildEnv(req.runId),
+    timeout: req.timeoutMs,
+  });
   const durationMs = Date.now() - t0;
 
   if (r.exitCode !== 0) {

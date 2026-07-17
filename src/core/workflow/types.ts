@@ -35,7 +35,13 @@ export interface AgentOpts {
   maxTurns?: number;
   /** Display label in the journal (default: prompt head). */
   label?: string;
+  /** Which harness runs this agent (default: the run's default harness).
+   * Mixed-harness workflows are legal: triage on one CLI, deep work on
+   * another. */
+  harness?: HarnessName;
 }
+
+export type HarnessName = "claude-code" | "codex" | "cursor";
 
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
@@ -56,6 +62,9 @@ export interface SpawnRequest {
   timeoutMs: number;
   maxTurns: number;
   cwd: string;
+  /** Run id, stamped into the child env (HARNERY_WORKFLOW_RUN_ID) so the
+   * coord layer can associate child sessions with their workflow run. */
+  runId?: string;
 }
 
 /** One headless-subagent runner. The engine is adapter-agnostic; claude-code
@@ -89,7 +98,15 @@ export interface WorkflowModule {
 export interface EngineOpts {
   /** Repo root whose .harnery/ receives the run journal. */
   coordRoot: string;
-  spawner: Spawner;
+  /** Spawner registry keyed by harness. A single-harness caller registers one
+   * entry and names it in `defaultHarness`. */
+  spawners: Partial<Record<HarnessName, Spawner>>;
+  /** Harness used when an agent() call doesn't name one (default "claude-code"). */
+  defaultHarness?: HarnessName;
+  /** Resume: run id of a prior run whose journal supplies cached results.
+   * agent() calls whose (stage, prompt, model, maxTurns, schema) key matches a
+   * completed prior agent return the journaled result without spawning. */
+  resumeFrom?: string;
   /** Total-agent ceiling for the run (default 50): the runaway backstop. */
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */
@@ -106,7 +123,13 @@ export interface RunReport {
   /** What the script's default export returned. */
   result: unknown;
   agentsSpawned: number;
+  /** agent() calls satisfied from the resumeFrom journal without spawning. */
+  agentsCached: number;
   costUsd: number;
   durationMs: number;
   journalPath: string;
+  /** Estimated tokens of repo instructions (CLAUDE.md/AGENTS.md at the child
+   * cwd) that EVERY child cache-writes on spawn — the fixed per-child context
+   * overhead a fan-out multiplies. bytes/4 heuristic; 0 when no such file. */
+  contextTokensPerChildEstimate: number;
 }

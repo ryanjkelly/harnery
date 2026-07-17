@@ -16,8 +16,12 @@ interface WorkflowRunOpts {
   maxAgents?: string;
   concurrency?: string;
   cwd?: string;
+  harness?: string;
+  resumeFrom?: string;
   json?: boolean;
 }
+
+const HARNESSES = ["claude-code", "codex", "cursor"] as const;
 
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
   const workflow = program
@@ -33,6 +37,14 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--max-agents <n>", "Total-agent ceiling for the run (default 50)")
     .option("--concurrency <n>", "Concurrent-subagent cap (default 4)")
     .option("--cwd <dir>", "Working directory children spawn in (default: coord root)")
+    .option(
+      "--harness <name>",
+      `Default harness for agent() calls: ${HARNESSES.join(" | ")} (default claude-code); scripts can override per agent via opts.harness`,
+    )
+    .option(
+      "--resume-from <run-id>",
+      "Reuse completed agent results from a prior run's journal; only changed/failed calls re-run",
+    )
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
       const coordRoot = findCoordRoot();
@@ -43,14 +55,30 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
+      if (opts.harness && !HARNESSES.includes(opts.harness as (typeof HARNESSES)[number])) {
+        emit.error({
+          code: "bad_harness",
+          message: `unknown harness "${opts.harness}" (expected: ${HARNESSES.join(" | ")})`,
+        });
+        process.exit(1);
+      }
       try {
-        const [{ runWorkflow }, { claudeCodeSpawner }] = await Promise.all([
-          import("../core/workflow/engine.ts"),
-          import("../core/workflow/spawn-claude.ts"),
-        ]);
+        const [{ runWorkflow }, { claudeCodeSpawner }, { codexSpawner }, { cursorSpawner }] =
+          await Promise.all([
+            import("../core/workflow/engine.ts"),
+            import("../core/workflow/spawn-claude.ts"),
+            import("../core/workflow/spawn-codex.ts"),
+            import("../core/workflow/spawn-cursor.ts"),
+          ]);
         const report = await runWorkflow(script, {
           coordRoot,
-          spawner: claudeCodeSpawner,
+          spawners: {
+            "claude-code": claudeCodeSpawner,
+            codex: codexSpawner,
+            cursor: cursorSpawner,
+          },
+          defaultHarness: opts.harness as "claude-code" | "codex" | "cursor" | undefined,
+          resumeFrom: opts.resumeFrom,
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
           cwd: opts.cwd,
@@ -60,8 +88,9 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           emit.data(report);
           return;
         }
+        const cachedPart = report.agentsCached > 0 ? ` (+${report.agentsCached} cached)` : "";
         emit.text(
-          `run ${report.runId} (${report.name}) finished: ${report.agentsSpawned} agent(s), ` +
+          `run ${report.runId} (${report.name}) finished: ${report.agentsSpawned} agent(s)${cachedPart}, ` +
             `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n` +
             `journal: ${report.journalPath}\n` +
             `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
