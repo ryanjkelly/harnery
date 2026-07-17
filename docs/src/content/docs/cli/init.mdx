@@ -27,7 +27,7 @@ harn init --dry-run  # preview every change without writing
 
 ## Idempotent + non-destructive
 
-Safe to re-run. `init` merges into an existing settings file: it preserves every hook you already have, skips any agent-hook entry that's already wired, and removes Harnery-owned entries retired from that harness's native lifecycle. If the settings file exists but isn't valid JSON, `init` refuses rather than overwrite.
+Safe to re-run. `init` merges into an existing settings file: it preserves every hook you already have, skips any agent-hook entry that's already wired (rewriting its command in place when a Harnery upgrade changed the canonical form), and removes Harnery-owned entries retired from that harness's native lifecycle. If the settings file exists but isn't valid JSON, `init` refuses rather than overwrite.
 
 ```text
 harn init
@@ -38,7 +38,7 @@ harn init
 
 ## Re-run after a Harnery upgrade that changes hooks
 
-Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds, renames, or retires a hook event**: re-run `harn init` to migrate the Harnery-owned entries. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the drift.
+Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds, renames, or retires a hook event, or changes the wired command form**: re-run `harn init` to migrate the Harnery-owned entries. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the drift.
 
 The same is true of the instructions block and skills: they're committed by you, and the source of truth is the installed Harnery version's templates, so a package upgrade shows up as drift until you re-run `init`.
 
