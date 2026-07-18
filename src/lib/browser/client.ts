@@ -106,6 +106,14 @@ export interface FailedRequest {
   method: string;
   failure: string;
   resourceType: string;
+  /** HTTP status for kind "http" entries; null for network-level failures. */
+  status: number | null;
+  /** "http" = request completed with a >=400 response; "network" = never completed (DNS, TLS, aborts, tunnel). */
+  kind: "http" | "network";
+  /** True when the entry is the main frame's document response — lets consumers
+   *  distinguish an expected error-page status (a 404 route under test) from a
+   *  broken subresource. */
+  document?: boolean;
 }
 
 export interface Diagnostics {
@@ -203,6 +211,24 @@ export class Browser {
         method: req.method(),
         failure: req.failure()?.errorText ?? "unknown",
         resourceType: req.resourceType(),
+        status: null,
+        kind: "network",
+      });
+    });
+    // HTTP-level failures: `requestfailed` only fires for requests that never
+    // complete (DNS, TLS, aborts), so a script/stylesheet answered with a
+    // 4xx/5xx would otherwise be invisible to failedRequests-based gates.
+    page.on("response", (res) => {
+      if (res.status() < 400) return;
+      const req = res.request();
+      this.failedRequests.push({
+        url: res.url(),
+        method: req.method(),
+        failure: `HTTP ${res.status()}`,
+        resourceType: req.resourceType(),
+        status: res.status(),
+        kind: "http",
+        document: req.resourceType() === "document" && res.frame() === page.mainFrame(),
       });
     });
   }
