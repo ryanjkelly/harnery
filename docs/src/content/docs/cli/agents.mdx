@@ -68,6 +68,25 @@ shown to peers in the per-prompt snapshot and on the dashboard. Pass an empty
 string (`''`) to clear it. Like `status`, it accepts `--session-id <id>` for
 harnesses where the process walk can't resolve self.
 
+### suggest-name
+
+Renders a copy-pasteable session name — `Agent <you> - <description>` — for the
+operator to set as their harness's session/tab title. The description is a short
+(2-5 word) summary of the session that you supply; the agent half comes from your
+coord identity. Meant to be run on your **first turn** of a new session, so the
+operator can name the tab from a suggestion instead of typing one:
+
+```
+┌─ agent-Hollis · new session ───────────────┐
+│ name  Agent Hollis - Auth Refactor         │
+│ hint  copy this as the session / tab title │
+└────────────────────────────────────────────┘
+```
+
+`--json` returns `{ suggested_session_name, agent_name, description }` unformatted.
+Like `status`, it accepts `--session-id <id>` for harnesses where the process walk
+can't resolve self. Read-only — it mutates no coord state.
+
 ### show, trace
 
 Two ways to dig into a single agent, addressed by name (`agent-Foo` or `Foo`) or

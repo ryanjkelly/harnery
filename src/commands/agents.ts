@@ -173,6 +173,21 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
     });
 
   cmd
+    .command("suggest-name <description...>")
+    .description(
+      'Render a copy-pasteable session name ("Agent <you> - <description>") for the ' +
+        "operator to set as their harness session/tab title. Run on your first turn of a new session.",
+    )
+    .option("--json", "JSON output instead of the box")
+    .option(
+      "--session-id <id>",
+      "Lookup heartbeat by session_id directly, bypassing the ppid walk.",
+    )
+    .action((description: string[], opts: { json?: boolean; sessionId?: string }) => {
+      runSuggestName(description, opts);
+    });
+
+  cmd
     .command("watch")
     .description(
       "Stream peer state changes in real time (file watcher on .harnery/active/). " +
@@ -1350,6 +1365,86 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     task: hb?.task ?? null,
     cleared: !task || task.length === 0,
   });
+}
+
+/**
+ * Build the copy-pasteable session name from the coord identity + the agent's
+ * description parts. Pure (no coord-state reads) so it's unit-testable; collapses
+ * internal whitespace and trims. Returns null when the description is empty.
+ */
+export function buildSuggestedName(
+  agentName: string,
+  descriptionParts: string[],
+): { suggestedName: string; description: string } | null {
+  const description = descriptionParts.join(" ").replace(/\s+/g, " ").trim();
+  if (!description) return null;
+  const name = agentName?.trim() || "unknown";
+  return { suggestedName: `Agent ${name} - ${description}`, description };
+}
+
+function runSuggestName(
+  descriptionParts: string[],
+  opts: { json?: boolean; sessionId?: string },
+): void {
+  const root = monorepoRoot();
+  if (!root) {
+    emit.error({
+      code: "not_in_repo",
+      message: "not in an agent session; coord_root() returned null",
+    });
+    process.exit(1);
+  }
+
+  if (!buildSuggestedName("probe", descriptionParts)) {
+    emit.error({
+      code: "no_description",
+      message: 'pass a 2-5 word description, e.g. suggest-name "Auth Refactor"',
+    });
+    process.exit(1);
+  }
+
+  // Identity: prefer explicit --session-id (ppid-walk-free escape hatch, mirrors
+  // `status`/`set-task`), fall back to the ppid walk for interactive shell use.
+  if (!opts.sessionId) ensureCursorSession(root);
+  const myOwner = opts.sessionId ?? resolveOwner();
+  if (!myOwner) {
+    emit.error({
+      code: "no_pidmap_entry",
+      message:
+        "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
+    });
+    process.exit(1);
+  }
+
+  const hb = readHeartbeat(myOwner);
+  const agentName = hb?.name || "unknown";
+  // Suggested human-readable session name for the operator to paste into their
+  // harness UI's session/tab title. Read-only: this reflects the coord identity
+  // + the agent's own summary of the session, it mutates no coord state.
+  const built = buildSuggestedName(agentName, descriptionParts);
+  // Already validated non-null above; narrow for the type checker.
+  if (!built) return;
+  const { suggestedName, description } = built;
+  const displayName = `agent-${agentName}`;
+
+  if (opts.json) {
+    emit.config({ format: "json" });
+    emit.data({
+      name: displayName,
+      suggested_session_name: suggestedName,
+      agent_name: agentName,
+      description,
+    });
+    return;
+  }
+
+  const rows: Array<[string, string]> = [
+    ["name", suggestedName],
+    ["hint", "copy this as the session / tab title"],
+  ];
+  // Direct write (not emit.text): the agent runs this via Bash with no TTY and
+  // pastes the captured stdout into chat, same contract as runStatus's box.
+  process.stdout.write(`${formatBox(`${displayName} · new session`, rows)}\n`); // lint-ok-emission: chat-paste path
 }
 
 function runStatus(opts: { json?: boolean; sessionId?: string }): void {
