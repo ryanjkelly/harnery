@@ -61,8 +61,10 @@ export interface LintOpts {
 /** Files allowed at a submodule root level. Includes:
  *  - In-repo conventions: README.md, CLAUDE.md, LLM-BRIEFING.md, AGENTS.md
  *  - GitHub OSS conventions: CHANGELOG.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md,
- *    SECURITY.md, SUPPORT.md, AUTHORS.md, MAINTAINERS.md, PULL_REQUEST_TEMPLATE.md
- *    (these are recognized by the GitHub UI, and renaming them breaks the integration)
+ *    LICENSE.md, SECURITY.md, SUPPORT.md, AUTHORS.md, MAINTAINERS.md,
+ *    PULL_REQUEST_TEMPLATE.md (these are recognized by the GitHub UI, and
+ *    renaming them breaks the integration; LICENSE.md also appears inside
+ *    vendored upstream trees, where renaming would damage provenance)
  */
 const ROOT_FILE_ALLOWLIST = new Set([
   "README.md",
@@ -73,6 +75,7 @@ const ROOT_FILE_ALLOWLIST = new Set([
   "CHANGELOG.md",
   "CONTRIBUTING.md",
   "CODE_OF_CONDUCT.md",
+  "LICENSE.md",
   "SECURITY.md",
   "SUPPORT.md",
   "AUTHORS.md",
