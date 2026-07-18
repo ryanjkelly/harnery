@@ -70,18 +70,20 @@ harnesses where the process walk can't resolve self.
 
 ### suggest-name
 
-Renders a copy-pasteable session name — `Agent <you> - <description>` — for the
-operator to set as their harness's session/tab title. The description is a short
-(2-5 word) summary of the session that you supply; the agent half comes from your
-coord identity. Meant to be run on your **first turn** of a new session, so the
-operator can name the tab from a suggestion instead of typing one:
+Prints a session name — `Agent <you> - <description>` — for the operator to set
+as their harness's session/tab title. The description is a short (2-5 word)
+summary of the session that you supply; the agent half comes from your coord
+identity. It prints the bare name on stdout:
 
 ```
-┌─ agent-Hollis · new session ───────────────┐
-│ name  Agent Hollis - Auth Refactor         │
-│ hint  copy this as the session / tab title │
-└────────────────────────────────────────────┘
+Agent Hollis - Auth Refactor
 ```
+
+The intended flow: run it as the **first thing** you do on a new session, then
+reproduce that line inside a fenced code block in your reply. Chat UIs decorate
+code blocks with a one-click Copy button, so the operator grabs the exact name
+without hand-selecting — which is why the command prints the bare string rather
+than a drawn box (a box would copy its borders and labels too).
 
 `--json` returns `{ suggested_session_name, agent_name, description }` unformatted.
 Like `status`, it accepts `--session-id <id>` for harnesses where the process walk

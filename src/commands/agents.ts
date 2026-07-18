@@ -175,10 +175,11 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
   cmd
     .command("suggest-name <description...>")
     .description(
-      'Render a copy-pasteable session name ("Agent <you> - <description>") for the ' +
-        "operator to set as their harness session/tab title. Run on your first turn of a new session.",
+      'Print a session name ("Agent <you> - <description>") for the operator to set as their ' +
+        "harness session/tab title. Reproduce it in a fenced code block (for the UI Copy button) " +
+        "as the FIRST thing you do on a new session.",
     )
-    .option("--json", "JSON output instead of the box")
+    .option("--json", "JSON output instead of the bare name")
     .option(
       "--session-id <id>",
       "Lookup heartbeat by session_id directly, bypassing the ppid walk.",
@@ -1438,13 +1439,12 @@ function runSuggestName(
     return;
   }
 
-  const rows: Array<[string, string]> = [
-    ["name", suggestedName],
-    ["hint", "copy this as the session / tab title"],
-  ];
-  // Direct write (not emit.text): the agent runs this via Bash with no TTY and
-  // pastes the captured stdout into chat, same contract as runStatus's box.
-  process.stdout.write(`${formatBox(`${displayName} · new session`, rows)}\n`); // lint-ok-emission: chat-paste path
+  // Emit the bare name only — no box. The agent reproduces this exact string in
+  // a fenced code block in its reply, which every chat UI decorates with a
+  // one-click Copy button so the operator can grab it without hand-selecting.
+  // (A drawn box would copy its borders + labels too.) Direct write, not
+  // emit.text: runs via Bash with no TTY, same chat-paste contract as runStatus.
+  process.stdout.write(`${suggestedName}\n`); // lint-ok-emission: chat-paste path
 }
 
 function runStatus(opts: { json?: boolean; sessionId?: string }): void {
