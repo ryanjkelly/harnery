@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { SCRATCH_CATEGORIES } from "../../core/scratch/index.ts";
 import { checkOwnedSkill, isOwnedFile } from "./splice.ts";
 import { INSTRUCTIONS_REGION, renderInstructionsBlock, SKILLS } from "./templates.ts";
 
@@ -33,6 +34,13 @@ describe("renderInstructionsBlock", () => {
     const block = renderInstructionsBlock("harn").toLowerCase();
     for (const surface of ["identity", "intent", "scratch", "decision docket", "council"]) {
       expect(block).toContain(surface);
+    }
+  });
+
+  test("lists every scratch category (locks the block to the canonical enum)", () => {
+    const block = renderInstructionsBlock("harn");
+    for (const cat of SCRATCH_CATEGORIES) {
+      expect(block).toContain(cat);
     }
   });
 

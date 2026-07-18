@@ -11,6 +11,7 @@
  * Node — no `files`-field copy or package-path guesswork.
  */
 
+import { SCRATCH_CATEGORIES } from "../../core/scratch/index.ts";
 import { buildOwnedSkill } from "./splice.ts";
 
 /** Managed-region name for the AGENTS.md orientation block. */
@@ -57,6 +58,13 @@ export function renderInstructionsBlock(
   const councilPointer = skills.council
     ? "The `harn-council` skill has the steward and member flow."
     : `See \`${b} council --help\` for the steward and member flow.`;
+  // Render the scratch categories from the canonical enum so this prose can
+  // never drift from what `scratch add` actually accepts (the "note, plan…" list
+  // silently lagged the tool by two categories before this).
+  const scratchCats =
+    SCRATCH_CATEGORIES.length > 1
+      ? `${SCRATCH_CATEGORIES.slice(0, -1).join(", ")}, or ${SCRATCH_CATEGORIES.at(-1)}`
+      : SCRATCH_CATEGORIES[0];
 
   return `## harnery coordination
 
@@ -76,8 +84,8 @@ coordination ledger. Lead a shell command with a \`# intent: <why>\` comment (or
 the tool's description) so the recorded event carries a reason instead of
 \`(no intent)\`.
 
-**Scratch journal.** \`${b} scratch add <category> "<text>"\` (category = note, plan,
-decision, blocker, or handoff) leaves breadcrumbs that survive context compaction;
+**Scratch journal.** \`${b} scratch add <category> "<text>"\` (category = ${scratchCats})
+leaves breadcrumbs that survive context compaction;
 \`${b} scratch read\` reads yours, \`${b} scratch read --name <peer>\` reads a peer's.
 Use it for anything future-you or a peer will need to pick up your thread.
 
