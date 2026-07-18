@@ -9,10 +9,10 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 // Kept dependency-light: vendored verbatim into a downstream consumer, so no coordEnv import.
-import { normalizeHarness } from "./canonical-emit.ts";
+import { normalizeHarness, resolveEmitRoot } from "./canonical-emit.ts";
 import { emit } from "./events/emit.ts";
 
 /** Event types accepted by `writeSessionEvent`. Only the command stream +
@@ -38,25 +38,14 @@ export function sessionEventsPath(): string {
   // Explicit override (tests + non-monorepo invocations).
   const explicit = process.env.HARNERY_OUTPUT_SESSION_EVENTS;
   if (explicit) return explicit;
-  // Walk up looking for an EXISTING .harnery/ directory; only match dirs
-  // (submodule .git is a file/gitlink, and CLAUDE.md / AGENTS.md can
-  // proliferate per-subdirectory in many monorepos, so neither is a safe
-  // anchor). Don't reintroduce CLAUDE.md / .git as anchors, which creates
+  // Superproject-aware root resolution (git first, cwd walk fallback) via
+  // resolveEmitRoot. A plain cwd walk here mis-anchored to a NESTED
+  // `.harnery/` when the shell sat inside a submodule carrying its own
+  // (e.g. an embedded harnery checkout), silently splitting the event
+  // stream. Don't reintroduce CLAUDE.md / .git as anchors, which creates
   // stray .harnery/ dirs under submodule subtrees.
-  let dir = process.cwd();
-  for (let i = 0; i < 10; i++) {
-    const candidate = resolve(dir, ".harnery");
-    try {
-      if (existsSync(candidate) && statSync(candidate).isDirectory()) {
-        return resolve(candidate, "session-events.ndjson");
-      }
-    } catch {
-      /* keep walking */
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
+  const root = resolveEmitRoot();
+  if (root) return resolve(root, ".harnery", "session-events.ndjson");
   return resolve(process.env.HOME || "/tmp", ".harnery", "session-events.ndjson");
 }
 
@@ -75,25 +64,12 @@ export function newCmdId(): string {
  */
 export function readLastIntent(instanceId?: string): string | null {
   if (!instanceId) return null;
-  // Walk up from cwd looking for .harnery/, same resolution as
-  // sessionEventsPath() (only match existing directories).
-  let dir = process.cwd();
-  let agentsDir: string | null = null;
-  for (let i = 0; i < 10; i++) {
-    const candidate = resolve(dir, ".harnery");
-    try {
-      if (existsSync(candidate) && statSync(candidate).isDirectory()) {
-        agentsDir = candidate;
-        break;
-      }
-    } catch {
-      /* keep walking */
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (!agentsDir) return null;
+  // Same superproject-aware root resolution as sessionEventsPath(): the
+  // intent stamp is written by the PreToolUse hook into the SUPERPROJECT's
+  // .harnery/, so a nested-`.harnery/` cwd must not redirect the read.
+  const root = resolveEmitRoot();
+  if (!root) return null;
+  const agentsDir = resolve(root, ".harnery");
   const intentPath = resolve(agentsDir, `.last-intent.${instanceId}`);
   if (!existsSync(intentPath)) return null;
   try {

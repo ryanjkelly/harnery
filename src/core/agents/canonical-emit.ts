@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { monorepoRoot } from "./coord-client.ts";
 
 export interface CanonicalEmitInput {
   type: string;
@@ -24,8 +25,38 @@ export interface CanonicalEmitInput {
   parentTurnId?: string;
 }
 
+/**
+ * Resolve the coord root for a canonical emit.
+ *
+ * Order: explicit `HARNERY_COORD_ROOT_OVERRIDE` → git-superproject-aware
+ * `monorepoRoot()` (must actually carry `.harnery/`) → cwd walk (non-git
+ * hosts). The git-aware step is load-bearing: a shell cd'd into a nested
+ * directory that carries its own `.harnery/` (e.g. an embedded harnery
+ * checkout) made the old cwd-walk resolve the NESTED root, from which
+ * `<root>/harnery/bin/agent-coord` doesn't exist — so `agents status` /
+ * `set-task` emits silently vanished and the Stop-hook's rule 1/3
+ * (`state.status_checked` in-turn) blocked turns that had done the ritual.
+ * Same bug class as the coordHelperOpts root-pin fix; this closes the
+ * emitCanonical instance of it.
+ */
+export function resolveEmitRoot(start: string = process.cwd()): string | null {
+  const override = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+  if (override) return override;
+  // Memoized per start-dir: the session-tee middleware resolves once per
+  // emitted event, and monorepoRoot() spawns git — cache so a streaming
+  // command doesn't pay 1-3 subprocess spawns per output line.
+  if (cachedRoot && cachedRoot.start === start) return cachedRoot.root;
+  const gitRoot = monorepoRoot();
+  const root =
+    gitRoot && existsSync(join(gitRoot, ".harnery")) ? gitRoot : findRepoRoot(start);
+  cachedRoot = { start, root };
+  return root;
+}
+
+let cachedRoot: { start: string; root: string | null } | undefined;
+
 export function emitCanonical(input: CanonicalEmitInput): void {
-  const root = findRepoRoot();
+  const root = resolveEmitRoot();
   if (!root) return;
   const binary = resolve(root, "harnery", "bin", "agent-coord");
   if (!existsSync(binary)) return;
@@ -46,11 +77,19 @@ export function emitCanonical(input: CanonicalEmitInput): void {
     if (input.turnId) args.push("--turn-id", input.turnId);
     if (input.parentSessionId) args.push("--parent-session-id", input.parentSessionId);
     if (input.parentTurnId) args.push("--parent-turn-id", input.parentTurnId);
-    spawnSync(binary, args, {
+    // Pin cwd + HARNERY_COORD_ROOT_OVERRIDE so the child writes to the SAME
+    // stream we resolved, regardless of where the caller's shell is cd'd.
+    const result = spawnSync(binary, args, {
       encoding: "utf8",
       stdio: "ignore",
       timeout: 3000,
+      cwd: root,
+      env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
     });
+    if (result.error || result.status !== 0) {
+      const why = result.error ? result.error.message : `exit ${result.status}`;
+      process.stderr.write(`emitCanonical: ${input.type} emit failed (${why})\n`);
+    }
   } catch {
     /* never break the caller */
   }
@@ -66,7 +105,7 @@ export function normalizeHarness(platform: string | undefined): "claude-code" | 
   return "claude-code";
 }
 
-function findRepoRoot(start: string = process.cwd()): string | null {
+function findRepoRoot(start: string): string | null {
   let dir = resolve(start);
   while (true) {
     if (existsSync(join(dir, ".harnery"))) return dir;

@@ -76,3 +76,52 @@ describe("agent-coord root pinning (coordHelperOpts)", () => {
     expect(JSON.parse(r.stdout).task).toBe("pinned works");
   });
 });
+
+describe("resolveEmitRoot (canonical-emit root resolution)", () => {
+  // The emitCanonical instance of the same bug: a cwd inside a nested
+  // directory carrying its own `.harnery/` (e.g. the embedded harnery
+  // checkout) made the old cwd-walk resolve the NESTED root, from which
+  // `<root>/harnery/bin/agent-coord` doesn't exist — so `agents status` /
+  // `set-task` canonical emits silently vanished and the Stop-hook's
+  // rule 1/3 blocked turns that had done the ritual.
+
+  test("override env wins unconditionally", async () => {
+    const { resolveEmitRoot } = await import("../../src/core/agents/canonical-emit.ts");
+    const prev = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = "/pinned/root";
+    try {
+      expect(resolveEmitRoot("/anywhere")).toBe("/pinned/root");
+    } finally {
+      if (prev === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+      else process.env.HARNERY_COORD_ROOT_OVERRIDE = prev;
+    }
+  });
+
+  test("resolves the git superproject root, not a nested .harnery on the cwd walk", async () => {
+    const { resolveEmitRoot } = await import("../../src/core/agents/canonical-emit.ts");
+    const prev = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    try {
+      // This test runs from inside the harnery checkout, which carries its
+      // own .harnery/ — the buggy cwd-walk would resolve the harnery dir.
+      // The git-aware path must resolve the SUPERPROJECT root instead
+      // (standalone checkout: toplevel == this repo, which is also correct).
+      const repo = resolve(import.meta.dir, "..", "..");
+      const got = resolveEmitRoot(repo);
+      const sup = spawnSync("git", ["rev-parse", "--show-superproject-working-tree"], {
+        cwd: repo,
+        encoding: "utf8",
+      });
+      const expected =
+        sup.status === 0 && sup.stdout.trim() !== ""
+          ? sup.stdout.trim()
+          : spawnSync("git", ["rev-parse", "--show-toplevel"], {
+              cwd: repo,
+              encoding: "utf8",
+            }).stdout.trim();
+      expect(got).toBe(expected);
+    } finally {
+      if (prev !== undefined) process.env.HARNERY_COORD_ROOT_OVERRIDE = prev;
+    }
+  });
+});
