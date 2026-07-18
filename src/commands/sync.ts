@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { syncJsoncConfig } from "../core/config.ts";
 
 // What we sync. Anything matching one of these (relative to .harnery/) is
 // considered part of the sync set. Everything else stays local-only.
@@ -40,9 +41,12 @@ function configPath(): string {
 }
 
 function loadConfig(): SyncConfig | null {
+  // Precedence: env → .harnery/config.jsonc `sync` → ~/.config/harnery/sync.json.
   const envRemote = process.env.HARNERY_SYNC_REMOTE;
   const envPrefix = process.env.HARNERY_SYNC_PREFIX ?? "harnery";
   if (envRemote) return { remote: envRemote, prefix: envPrefix };
+  const jsonc = syncJsoncConfig();
+  if (jsonc) return jsonc;
   const p = configPath();
   if (!existsSync(p)) return null;
   try {

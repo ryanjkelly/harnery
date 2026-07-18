@@ -23,9 +23,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { coordEnv } from "../../../lib/env.ts";
-
-const DEFAULT_FRESHNESS_SECS = 600;
+import { coordFreshnessSeconds } from "../../config.ts";
 
 interface PeerHeartbeat {
   instance_id: string;
@@ -86,7 +84,7 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
   }
 
   const peers = readActivePeers(coordRoot);
-  const cutoffMs = Date.now() - freshnessSecs() * 1000;
+  const cutoffMs = Date.now() - coordFreshnessSeconds(coordRoot) * 1000;
   const stagedSet = new Set(req.staged_paths);
   const gitlinkSet = new Set(req.staged_gitlinks ?? []);
 
@@ -288,13 +286,6 @@ function readActivePeers(coordRoot: string): PeerHeartbeat[] {
     }
   }
   return out;
-}
-
-function freshnessSecs(): number {
-  const raw = coordEnv("AGENT_FRESHNESS");
-  if (!raw) return DEFAULT_FRESHNESS_SECS;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_FRESHNESS_SECS;
 }
 
 function shortName(peer: PeerHeartbeat): string {

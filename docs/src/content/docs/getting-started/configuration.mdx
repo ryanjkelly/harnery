@@ -11,9 +11,12 @@ Settings live in [JSONC](https://github.com/microsoft/node-jsonc-parser): JSON w
 
 ## Locations
 
-The project settings file is `<project-root>/.harnery/config.jsonc`, and it is authoritative. CLI flags and `HARNERY_*` env vars override it per invocation (each field's env override is noted in the [schema reference](/reference/config-schema/)).
+Two files, merged **project-over-user** (project values win field by field):
 
-> A user-global `~/.config/harnery/config.jsonc` is planned but **not yet read** by the config reader — only the project file is consulted today.
+1. `~/.config/harnery/config.jsonc` — user-global base for every project on the machine (honors `XDG_CONFIG_HOME`, falling back to `~/.config`)
+2. `<project-root>/.harnery/config.jsonc` — the project file, authoritative
+
+CLI flags and `HARNERY_*` env vars override both per invocation (each field's env override is noted in the [schema reference](/reference/config-schema/)). A project that sets only `web.port` keeps a user-global `web.bind` — the merge is field-by-field, not whole-object.
 
 ## Schema
 
@@ -40,8 +43,7 @@ VS Code (and most modern editors) read the `$schema` URL and provide autocomplet
 
   // Coord layer
   "coord": {
-    "freshness_seconds": 600,  // how stale a peer heartbeat can get before sweep
-    "name_pool": "default"     // "default" | "hurricane" | "custom-pool-id"
+    "freshness_seconds": 600  // how stale a peer heartbeat can get before sweep
   },
 
   // Web UI
@@ -50,10 +52,12 @@ VS Code (and most modern editors) read the `$schema` URL and provide autocomplet
     "bind": "127.0.0.1"
   },
 
-  // Backup
+  // Backup (restic)
   "backup": {
     "repo": "rclone:gdrive:harnery-backup/my-project",
-    "schedule": "daily"
+    "keep_daily": 7,
+    "keep_weekly": 4,
+    "keep_monthly": 6
   }
 }
 ```

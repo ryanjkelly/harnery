@@ -19,10 +19,11 @@ Reference it in your config file's `$schema` field to get editor autocomplete an
 
 Settings resolve from these sources, lowest precedence first (later wins):
 
-1. `<project>/.harnery/config.jsonc`: the project settings file — **authoritative** for every field the config reader owns (`binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `files`)
-2. CLI flags + environment variables: per-invocation overrides (see each field's env note)
+1. `~/.config/harnery/config.jsonc`: the user-global file — a base for every project on the machine (honors `XDG_CONFIG_HOME`; falls back to `~/.config`)
+2. `<project>/.harnery/config.jsonc`: the project settings file — overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
+3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-> A user-global `~/.config/harnery/config.jsonc` layer is planned but **not yet consulted** by the primary reader (`src/core/config.ts`) — today only the project file is read. See [Where each section is read from](#where-each-section-is-read-from).
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only — a user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -49,10 +50,9 @@ The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) 
 
 | Field                 | Type    | Default | Description |
 | --------------------- | ------- | ------- | ----------- |
-| `freshness_seconds`   | number  | `600`   | Heartbeat age above which an agent is considered stale (10 min) |
-| `name_pool`           | string  | `default` | Name pool to draw from for new agents |
+| `freshness_seconds`   | number  | `600`   | Heartbeat age (seconds) above which the sweeper prunes an agent (10 min) |
 
-The freshness window is currently read from the env var `HARNERY_AGENT_COORD_FRESHNESS` (falling back to the `600` default), not yet from this `config.jsonc` key — see the note at the end of this page.
+Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env (canonical; `HARNERY_AGENT_FRESHNESS` is a legacy alias) → this `config.jsonc` key → `600`.
 
 ## `workflow`
 
@@ -126,9 +126,18 @@ Web file-viewer path-serving policy (the universal file viewer in `harn web`). T
 | `deny_globs`      | string[]  | `[]`    | Extra `**/`-anchored deny patterns on top of the shipped floor (treated as hard-tier: never overridable) |
 | `allow_overrides` | string[]  | `[]`    | Rescue globs consulted only when a deny came from a soft-tier floor pattern; naming a hard secret family is dropped at load |
 
-## Where each section is read from
+## How each section is resolved
 
-Not every section above is read from `config.jsonc` yet. The fields Harnery's config reader (`src/core/config.ts`) consults from `config.jsonc` today are `project_name`, `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, and `presence` (plus `files`, read by the web layer). The `coord`, `backup`, and `sync` sections are declared in the schema but are currently driven by **environment variables** (`HARNERY_AGENT_COORD_FRESHNESS`, `HARNERY_RESTIC_*`, `HARNERY_SYNC_*`) or a **separate file** (`sync` persists its remote/prefix in `~/.config/harnery/sync.json`), not by `config.jsonc`. Wiring those three to read from `config.jsonc` (or trimming them from the schema) is tracked separately; until then, set them via env/flags. The user-global `~/.config/harnery/config.jsonc` layer is likewise not yet consulted by the primary reader — project-level `.harnery/config.jsonc` is authoritative.
+Every section above is read from `config.jsonc` (both the user-global and project files, merged project-over-user). Env vars and CLI flags override the config value per invocation:
+
+| Section | Config keys | Env override | Other |
+| --- | --- | --- | --- |
+| `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` (alias `HARNERY_AGENT_FRESHNESS`) | — |
+| `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
+| `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
+| `files` | `deny_globs`, `allow_overrides` | — | read by the web layer, not the core reader |
+
+Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env → project `sync.remote` → user-global `sync.remote` → `~/.config/harnery/sync.json`.
 
 ## Example config
 
@@ -137,6 +146,10 @@ Not every section above is read from `config.jsonc` yet. The fields Harnery's co
   "$schema": "https://harnery.com/schemas/config.schema.json",
   "project_name": "my-monorepo",
   "binName": "mycli",
+
+  "coord": {
+    "freshness_seconds": 900
+  },
 
   "web": {
     "port": 9000
@@ -152,6 +165,11 @@ Not every section above is read from `config.jsonc` yet. The fields Harnery's co
 
   "presence": {
     "relay": "wss://relay.harnery.com"
+  },
+
+  "sync": {
+    "remote": "gdrive",
+    "prefix": "harnery/my-monorepo"
   }
 }
 ```

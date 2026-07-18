@@ -5,16 +5,15 @@
  * Fires at session.start to clean up crashed-peer detritus before the new
  * session's UX layer reads peer state.
  *
- * Freshness threshold defaults to 600s; configurable via
- * HARNERY_AGENT_COORD_FRESHNESS env var.
+ * Freshness threshold defaults to 600s; configurable via the
+ * HARNERY_AGENT_COORD_FRESHNESS env var or `.harnery/config.jsonc`
+ * `coord.freshness_seconds` (see `coordFreshnessSeconds`).
  */
 
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { coordEnv } from "../../../lib/env.ts";
+import { coordFreshnessSeconds } from "../../config.ts";
 import { emit } from "../events/emit.ts";
-
-const DEFAULT_FRESHNESS_SECS = 600;
 
 /** platform → harness, for the swept-event envelope (mirrors heartbeat-writer's harnessOf). */
 function harnessFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
@@ -65,13 +64,9 @@ export function staleSweep(coordRoot: string): {
   let pidmapsRemoved = 0;
   let peerHashesRemoved = 0;
 
-  const freshness = Number.parseInt(
-    coordEnv("AGENT_COORD_FRESHNESS") ?? String(DEFAULT_FRESHNESS_SECS),
-    10,
-  );
+  const freshness = coordFreshnessSeconds(coordRoot);
   const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff =
-    nowSec - (Number.isFinite(freshness) && freshness > 0 ? freshness : DEFAULT_FRESHNESS_SECS);
+  const cutoff = nowSec - freshness;
 
   // 1. Prune stale heartbeats from the canonical `.harnery/active/` dir.
   //

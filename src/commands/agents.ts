@@ -39,7 +39,7 @@ import {
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
-import { resolveBinName } from "../core/config.ts";
+import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 
 /** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
@@ -84,7 +84,15 @@ import {
   lookupByName as lookupIdentityByName,
 } from "../lib/identities/index.ts";
 
-const FRESHNESS_SECS = 600; // 10-minute heartbeat-freshness window.
+/**
+ * Heartbeat-freshness window (seconds). Reads `coord.freshness_seconds` /
+ * `HARNERY_AGENT_COORD_FRESHNESS` via the shared accessor (defaults to 600 =
+ * 10 min). A function, not a const, so a config edit takes effect without a
+ * process restart (mtime-cached).
+ */
+function freshnessCutoffSecs(): number {
+  return coordFreshnessSeconds();
+}
 
 const SUBAGENT_NOTE =
   "Bash identity is process-level in v1; if you're running inside a subagent, " +
@@ -815,7 +823,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
 
   // Apply staleness filter unless --stale.
   const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff = nowSec - FRESHNESS_SECS;
+  const cutoff = nowSec - freshnessCutoffSecs();
   const live = opts.stale
     ? heartbeats
     : heartbeats.filter((h) => {
@@ -1037,7 +1045,7 @@ async function runWatch(pollMs: number): Promise<void> {
 function listActiveHeartbeats(activeDir: string): Heartbeat[] {
   const out: Heartbeat[] = [];
   const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff = nowSec - FRESHNESS_SECS;
+  const cutoff = nowSec - freshnessCutoffSecs();
   for (const file of readdirSync(activeDir)) {
     if (!file.endsWith(".json")) continue;
     try {
@@ -1081,7 +1089,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
   // Read all heartbeats; match by name (case-insensitive). Apply freshness filter.
   const matches: Heartbeat[] = [];
   const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff = nowSec - FRESHNESS_SECS;
+  const cutoff = nowSec - freshnessCutoffSecs();
   for (const file of readdirSync(activeDir)) {
     if (!file.endsWith(".json")) continue;
     try {
@@ -1532,7 +1540,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
 
   const activeDir = resolve(root, ".harnery", "active");
   const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff = nowSec - FRESHNESS_SECS;
+  const cutoff = nowSec - freshnessCutoffSecs();
   const livePeers: Heartbeat[] = [];
   let peersStale = 0;
   if (existsSync(activeDir)) {
@@ -2680,7 +2688,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       activeBySchema[schemaKey] = (activeBySchema[schemaKey] ?? 0) + 1;
       const lastHbMs = hb.last_heartbeat ? Date.parse(hb.last_heartbeat) : Number.NaN;
       const ageMs = Number.isFinite(lastHbMs) ? nowMs - lastHbMs : Number.POSITIVE_INFINITY;
-      if (ageMs > FRESHNESS_SECS * 1000) staleHeartbeats++;
+      if (ageMs > freshnessCutoffSecs() * 1000) staleHeartbeats++;
       // Zombie heuristics on a parseable heartbeat: no name, or an age so large
       // it can only be a broken/epoch timestamp (a real agent would have healed).
       if (!hb.name || hb.name === "unknown" || ageMs > ABSURD_AGE_MS) {
@@ -2720,7 +2728,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   }
   if (staleHeartbeats > 0) {
     anomalies.push(
-      `${staleHeartbeats} active heartbeat(s) older than ${Math.floor(FRESHNESS_SECS / 60)}min; heal mechanism may not be firing`,
+      `${staleHeartbeats} active heartbeat(s) older than ${Math.floor(freshnessCutoffSecs() / 60)}min; heal mechanism may not be firing`,
     );
   }
   const unexpectedSchemas = Object.keys(activeBySchema).filter((k) => k !== "v1");

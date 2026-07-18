@@ -11,31 +11,27 @@
  *   restore   restic restore <id>
  *   prune     restic forget --keep-daily 7 --keep-weekly 4 --prune
  *
- * Power users override via env vars (HARNERY_RESTIC_REPO, HARNERY_RESTIC_PASSWORD_FILE)
- * or by passing through any restic args after `--`. The wrapper deliberately
- * doesn't try to abstract restic; it surfaces it, with opinionated defaults plus
- * passthrough.
+ * Defaults (repo path, password file, and the keep-daily/weekly/monthly prune
+ * policy) come from `.harnery/config.jsonc` `backup.*`, overridable per field by
+ * env vars (HARNERY_RESTIC_REPO, HARNERY_RESTIC_PASSWORD_FILE) and CLI flags —
+ * see `backupConfig()`. The wrapper deliberately doesn't try to abstract restic;
+ * it surfaces it, with opinionated defaults plus passthrough after `--`.
  */
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { backupConfig } from "../core/config.ts";
 
 function defaultRepo(): string {
-  const home = os.homedir();
-  return process.env.HARNERY_RESTIC_REPO ?? path.join(home, ".cache", "harnery", "restic-repo");
+  return backupConfig().repo;
 }
 
 function defaultPasswordFile(): string {
-  const home = os.homedir();
-  return (
-    process.env.HARNERY_RESTIC_PASSWORD_FILE ??
-    path.join(home, ".config", "harnery", "restic-password")
-  );
+  return backupConfig().passwordFile;
 }
 
 function findHarneryDir(): string | null {
@@ -237,12 +233,17 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
     });
 
   // -- prune --
+  // Prune-policy defaults come from backup.keep_* in config.jsonc (falling back
+  // to 7/4/6); an explicit --keep-* flag still overrides per invocation.
+  const prunePolicy = backupConfig();
   backup
     .command("prune")
-    .description("Forget + prune snapshots (default policy: keep 7 daily / 4 weekly / 6 monthly).")
-    .option("--keep-daily <n>", "Daily snapshots to keep", "7")
-    .option("--keep-weekly <n>", "Weekly snapshots to keep", "4")
-    .option("--keep-monthly <n>", "Monthly snapshots to keep", "6")
+    .description(
+      `Forget + prune snapshots (default policy: keep ${prunePolicy.keepDaily} daily / ${prunePolicy.keepWeekly} weekly / ${prunePolicy.keepMonthly} monthly).`,
+    )
+    .option("--keep-daily <n>", "Daily snapshots to keep", String(prunePolicy.keepDaily))
+    .option("--keep-weekly <n>", "Weekly snapshots to keep", String(prunePolicy.keepWeekly))
+    .option("--keep-monthly <n>", "Monthly snapshots to keep", String(prunePolicy.keepMonthly))
     .option("--dry-run", "Show what would be pruned without actually pruning")
     .option("--repo <path>", "Repository path")
     .option("--password-file <path>", "Password file")
