@@ -88,6 +88,7 @@ export function emitCanonical(input: CanonicalEmitInput): void {
     });
     if (result.error || result.status !== 0) {
       const why = result.error ? result.error.message : `exit ${result.status}`;
+      // lint-ok-emission: soft-fail diagnostic promised by the module doc; a silent drop here cost blocked turns
       process.stderr.write(`emitCanonical: ${input.type} emit failed (${why})\n`);
     }
   } catch {
