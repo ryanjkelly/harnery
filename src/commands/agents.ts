@@ -173,11 +173,12 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
     });
 
   cmd
-    .command("suggest-name <description...>")
+    .command("suggest-name [description...]")
     .description(
-      'Print a session name ("Agent <you> - <description>") for the operator to set as their ' +
-        "harness session/tab title. Reproduce it in a fenced code block (for the UI Copy button) " +
-        "as the FIRST thing you do on a new session.",
+      'Reprint a session name ("Agent <you> - <description>") for the operator to set as their ' +
+        "harness tab title. With no arg, derives it from your current task. The primary naming path " +
+        "is set-task (it suggests a name on the first focus declaration); reach for this to reprint " +
+        "or re-suggest after a topic pivot. Read-only.",
     )
     .option("--json", "JSON output instead of the bare name")
     .option(
@@ -1337,6 +1338,16 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     process.exit(1);
   }
 
+  // Snapshot BEFORE the mutation: a heartbeat that has never carried a task
+  // has no `task_updated_at` stamp (setTask always stamps it, even on a clear),
+  // so its absence is the "focus never declared this session" signal — i.e. the
+  // first set-task of the session. That's the natural moment to also hand the
+  // operator a session name built from the same declaration (one source of
+  // truth: the focus you declare names the session). Distinct from task===""
+  // (a deliberate clear), which carries a stamp and does NOT re-trigger.
+  const priorHb = readHeartbeat(myOwner);
+  const firstOfSession = !priorHb?.task_updated_at;
+
   // Heartbeat mutation goes through agent-coord (atomic temp+rename).
   const helper = resolve(root, "harnery", "bin", "agent-coord");
   const result = spawnSync(helper, ["set-task", myOwner, task], {
@@ -1360,11 +1371,20 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     data: { task, cleared: !task || task.length === 0 },
   });
 
+  // On the first focus declaration of a session, surface a suggested session
+  // name for the operator to set as their harness tab title. Read the result
+  // (`suggested_session_name`) and reproduce it in a fenced code block so the
+  // UI's Copy button hands over the exact string. null on every later call.
+  const built =
+    firstOfSession && !opts?.sessionId ? buildSuggestedName(hb?.name ?? "unknown", [task]) : null;
+
   emit.data({
     instance_id: myOwner,
     name: hb?.name ?? null,
     task: hb?.task ?? null,
     cleared: !task || task.length === 0,
+    first_of_session: firstOfSession,
+    suggested_session_name: built?.suggestedName ?? null,
   });
 }
 
@@ -1396,14 +1416,6 @@ function runSuggestName(
     process.exit(1);
   }
 
-  if (!buildSuggestedName("probe", descriptionParts)) {
-    emit.error({
-      code: "no_description",
-      message: 'pass a 2-5 word description, e.g. suggest-name "Auth Refactor"',
-    });
-    process.exit(1);
-  }
-
   // Identity: prefer explicit --session-id (ppid-walk-free escape hatch, mirrors
   // `status`/`set-task`), fall back to the ppid walk for interactive shell use.
   if (!opts.sessionId) ensureCursorSession(root);
@@ -1419,12 +1431,20 @@ function runSuggestName(
 
   const hb = readHeartbeat(myOwner);
   const agentName = hb?.name || "unknown";
-  // Suggested human-readable session name for the operator to paste into their
-  // harness UI's session/tab title. Read-only: this reflects the coord identity
-  // + the agent's own summary of the session, it mutates no coord state.
-  const built = buildSuggestedName(agentName, descriptionParts);
-  // Already validated non-null above; narrow for the type checker.
-  if (!built) return;
+  // Description resolution: an explicit arg wins; with no arg, fall back to the
+  // agent's current declared task, so a bare `suggest-name` reprints the running
+  // session's name (handy after a topic pivot). Read-only — mutates no state;
+  // the primary naming path is set-task's first-of-session suggestion.
+  const parts = descriptionParts.length > 0 ? descriptionParts : hb?.task ? [hb.task] : [];
+  const built = buildSuggestedName(agentName, parts);
+  if (!built) {
+    emit.error({
+      code: "no_description",
+      message:
+        'pass a 2-5 word topic (e.g. suggest-name "Auth Refactor"), or declare one first with set-task',
+    });
+    process.exit(1);
+  }
   const { suggestedName, description } = built;
   const displayName = `agent-${agentName}`;
 

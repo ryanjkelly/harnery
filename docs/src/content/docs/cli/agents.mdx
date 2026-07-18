@@ -68,26 +68,41 @@ shown to peers in the per-prompt snapshot and on the dashboard. Pass an empty
 string (`''`) to clear it. Like `status`, it accepts `--session-id <id>` for
 harnesses where the process walk can't resolve self.
 
+**First-of-session session name.** The first time you declare a focus in a
+session (detected by the absence of a prior `task_updated_at` stamp), the JSON
+result additionally carries `first_of_session: true` and a
+`suggested_session_name` — `Agent <you> - <your task>` — for the operator to set
+as their harness's session/tab title:
+
+```json
+{ "task": "Auth Refactor", "first_of_session": true,
+  "suggested_session_name": "Agent Hollis - Auth Refactor", ... }
+```
+
+The single focus declaration feeds both the peer-visible task and the tab name,
+so there's one source of truth. Reproduce `suggested_session_name` inside a fenced
+code block in your reply — chat UIs add a one-click Copy button to code blocks, so
+the operator grabs the exact string without hand-selecting. Every later `set-task`
+returns `first_of_session: false` and a null name.
+
 ### suggest-name
 
-Prints a session name — `Agent <you> - <description>` — for the operator to set
-as their harness's session/tab title. The description is a short (2-5 word)
-summary of the session that you supply; the agent half comes from your coord
-identity. It prints the bare name on stdout:
+Reprints a session name — `Agent <you> - <description>` — for the operator's tab
+title, **read-only**. This is the secondary path: `set-task` already suggests a
+name on the first focus declaration (above). Reach for `suggest-name` to reprint
+the current session's name or re-suggest one after a topic pivot. With an explicit
+arg it uses that; with no arg it derives the name from your current task:
 
 ```
+$ harn agents suggest-name "Auth Refactor"
+Agent Hollis - Auth Refactor
+$ harn agents suggest-name            # no arg → from current task
 Agent Hollis - Auth Refactor
 ```
 
-The intended flow: run it as the **first thing** you do on a new session, then
-reproduce that line inside a fenced code block in your reply. Chat UIs decorate
-code blocks with a one-click Copy button, so the operator grabs the exact name
-without hand-selecting — which is why the command prints the bare string rather
-than a drawn box (a box would copy its borders and labels too).
-
-`--json` returns `{ suggested_session_name, agent_name, description }` unformatted.
-Like `status`, it accepts `--session-id <id>` for harnesses where the process walk
-can't resolve self. Read-only — it mutates no coord state.
+It prints the bare name on stdout (not a drawn box — a box would copy its borders
+and labels too). `--json` returns `{ suggested_session_name, agent_name,
+description }`. Like `status`, it accepts `--session-id <id>`. Mutates no state.
 
 ### show, trace
 
