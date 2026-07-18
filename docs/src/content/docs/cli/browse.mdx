@@ -49,9 +49,14 @@ By default it writes a **trio of files** — `<prefix>.png`, `<prefix>.html`, `<
 | --- | --- |
 | `--login` | Headed mode for a one-time auth flow; cookies persist in the profile. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
+| `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
 | `--no-cookies` | Skip cookie-jar attach and persist. |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
 | `--profile <dir>` | Persistent Chromium profile dir. Default `~/.cache/harnery/browser-profile`. |
+
+:::note[Headed windows under WSLg]
+On WSL, a headed Chromium window composites its GPU-backed surface over an RDP stream to Windows; on many Windows/GPU/WSLg combinations that surface never presents, so the window shows in the taskbar but paints blank (the page still runs — JS, navigation, and DOM all work). `browse` therefore auto-adds `--disable-gpu` to headed launches under WSL, which forces the software compositor and restores on-screen paint. Opt out with `HARNERY_BROWSER_NO_WSL_DEFAULTS=1`; add alternative flags with `--browser-arg` or `HARNERY_BROWSER_ARGS`.
+:::
 
 ### Visibility + layout checks
 

@@ -12,6 +12,7 @@ export {
   type DevOverlayError,
   type DevOverlayResult,
 } from "./dev-overlay.js";
+export { isWSL, wslHeadedLaunchArgs } from "./launch-args.js";
 export type {
   OverflowElement,
   OverflowResult,

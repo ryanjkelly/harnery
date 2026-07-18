@@ -74,6 +74,14 @@ export interface BrowserOptions {
    * via this callback (e.g., a Cloudflare-bypass header for specific zones).
    */
   extraHeaders?: (url: string) => Record<string, string>;
+  /**
+   * Extra Chromium command-line flags, passed through to Playwright's
+   * `launchPersistentContext` `args`. Used for environment-specific
+   * workarounds — most notably `--disable-gpu` for headed windows under
+   * WSLg (see `./launch-args.ts`). Empty/undefined means Playwright's
+   * defaults only.
+   */
+  launchArgs?: string[];
 }
 
 export interface NavigateResult {
@@ -137,6 +145,9 @@ export class Browser {
     this.context = await chromium.launchPersistentContext(this.profileDir, {
       headless: !this.opts.headed,
       viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+      ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
+        ? { args: this.opts.launchArgs }
+        : {}),
       ...(this.opts.recordHarPath
         ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
         : {}),

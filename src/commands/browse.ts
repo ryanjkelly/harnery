@@ -13,6 +13,7 @@ import {
   type RuntsResult,
   type VisibilityResult,
   type WidthResult,
+  wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
 import {
   type DiffResult,
@@ -66,6 +67,7 @@ interface BrowseOpts {
   networkHar?: string;
   login?: boolean;
   headed?: boolean;
+  browserArg?: string[];
   cookies?: boolean;
   store?: string;
   profile?: string;
@@ -162,6 +164,16 @@ export function registerBrowseCommand(
     )
     .option("--login", "Headed mode for one-time auth flow (cookies persist in profile)")
     .option("--headed", "Headed mode for one-off (no auth-flow framing)")
+    .option(
+      "--browser-arg <flag>",
+      "Extra Chromium launch flag, passed straight to the browser (repeatable). " +
+        "e.g. --browser-arg --disable-gpu. Also settable machine-wide via the " +
+        "HARNERY_BROWSER_ARGS env var (whitespace-separated). Under WSL, headed " +
+        "launches auto-add --disable-gpu to fix blank-window paint; opt out with " +
+        "HARNERY_BROWSER_NO_WSL_DEFAULTS=1.",
+      (value: string, prev: string[] = []) => [...prev, value],
+      [] as string[],
+    )
     .option("--no-cookies", "Skip cookie-jar attach and persist")
     .option("--store <path>", `Cookie store path (default ${DEFAULT_STORE})`)
     .option("--profile <dir>", `Persistent Chromium profile dir (default ${DEFAULT_PROFILE})`)
@@ -313,6 +325,7 @@ async function runBrowse(
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
     recordHarPath: opts.networkHar ? resolve(opts.networkHar) : undefined,
     extraHeaders: context?.extraHeaders,
+    launchArgs: resolveLaunchArgs(opts, Boolean(headed)),
   });
 
   // Print mode: --snapshot / --html / --json all suppress file writes.
@@ -876,6 +889,25 @@ function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
     pageErrors: diag.pageErrors,
     failedRequests: diag.failedRequests,
   };
+}
+
+/**
+ * Merge Chromium launch flags from three sources, in order, de-duped:
+ *   1. WSLg headed default (`--disable-gpu`) — auto-applied for headed launches
+ *      under WSL so the window actually paints. Opt out with
+ *      HARNERY_BROWSER_NO_WSL_DEFAULTS=1.
+ *   2. HARNERY_BROWSER_ARGS env (whitespace-separated) — a machine-wide default.
+ *   3. --browser-arg flags on this invocation (repeatable).
+ */
+function resolveLaunchArgs(opts: BrowseOpts, headed: boolean): string[] {
+  const args: string[] = [];
+  if (headed && !process.env.HARNERY_BROWSER_NO_WSL_DEFAULTS) {
+    args.push(...wslHeadedLaunchArgs());
+  }
+  const envArgs = process.env.HARNERY_BROWSER_ARGS?.trim();
+  if (envArgs) args.push(...envArgs.split(/\s+/));
+  if (opts.browserArg && opts.browserArg.length > 0) args.push(...opts.browserArg);
+  return [...new Set(args)];
 }
 
 function parseViewport(spec: string): { width: number; height: number } {
