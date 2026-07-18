@@ -17,11 +17,12 @@ Reference it in your config file's `$schema` field to get editor autocomplete an
 
 ## Locations
 
-Harnery reads settings in this order. Later values win.
+Settings resolve from these sources, lowest precedence first (later wins):
 
-1. `~/.config/harnery/config.jsonc`: user-global defaults
-2. `<project>/.harnery/config.jsonc`: project-specific overrides
-3. CLI flags + environment variables: per-invocation
+1. `<project>/.harnery/config.jsonc`: the project settings file — **authoritative** for every field the config reader owns (`binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `files`)
+2. CLI flags + environment variables: per-invocation overrides (see each field's env note)
+
+> A user-global `~/.config/harnery/config.jsonc` layer is planned but **not yet consulted** by the primary reader (`src/core/config.ts`) — today only the project file is read. See [Where each section is read from](#where-each-section-is-read-from).
 
 ## Top-level fields
 
@@ -31,8 +32,11 @@ Harnery reads settings in this order. Later values win.
 | `project_name` | string  | repo basename    | Display name surfaced in log lines and to peers |
 | `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
 | `coord`        | object  | see below        | Coord-layer settings |
+| `tools`        | object  | see below        | Managed-tool provisioning consent (`tools.ripgrep.autoInstall`) |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
+| `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
 | `presence`     | object  | see below        | Cross-machine presence transports |
+| `files`        | object  | see below        | Web file-viewer path policy (additive deny/allow globs) |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
 | `backup`       | object  | see below        | restic-backed snapshots |
 | `sync`         | object  | see below        | rclone-backed cross-machine sync |
@@ -45,11 +49,10 @@ The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) 
 
 | Field                 | Type    | Default | Description |
 | --------------------- | ------- | ------- | ----------- |
-| `freshness_seconds`   | number  | `300`   | Heartbeat age above which an agent is considered stale (5 min) |
+| `freshness_seconds`   | number  | `600`   | Heartbeat age above which an agent is considered stale (10 min) |
 | `name_pool`           | string  | `default` | Name pool to draw from for new agents |
-| `auto_release_on_failure` | bool | `true` | Drop a file claim if PostToolUseFailure fires |
 
-Also configurable via env: `HARNERY_AGENT_COORD_FRESHNESS`.
+The freshness window is currently read from the env var `HARNERY_AGENT_COORD_FRESHNESS` (falling back to the `600` default), not yet from this `config.jsonc` key — see the note at the end of this page.
 
 ## `workflow`
 
@@ -58,6 +61,20 @@ Also configurable via env: `HARNERY_AGENT_COORD_FRESHNESS`.
 | `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the harness CLI's stored login |
 
 `harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [workflow → billing safeguards](/cli/workflow/#billing-safeguards).
+
+## `tools`
+
+| Field                  | Type | Default | Description |
+| ---------------------- | ---- | ------- | ----------- |
+| `ripgrep.autoInstall`  | bool | `false` | Let `harn grep` download the pinned, checksum-verified ripgrep into the harnery tools dir on first miss (falls back to GNU grep on any failure). A repo commits this once and every clone self-heals |
+
+Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
+
+## `skills`
+
+| Field     | Type       | Default | Description |
+| --------- | ---------- | ------- | ----------- |
+| `exclude` | string[]   | `[]`    | Shipped harnery skills this repo suppresses — e.g. `["harn-decide", "harn-council"]` when the host keeps its own richer versions. The injected AGENTS.md block points at `--help` instead of an excluded skill |
 
 ## `presence`
 
@@ -100,6 +117,19 @@ Env overrides: `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX`.
 
 Sync subset is fixed: `identities/`, `scratch/archived/`, `councils/`. Heartbeats and event logs are intentionally machine-local and won't sync.
 
+## `files`
+
+Web file-viewer path-serving policy (the universal file viewer in `harn web`). The shipped secret denylist is a non-removable floor baked into code; these knobs are **additive only** — they extend the floor, never shrink it.
+
+| Field             | Type      | Default | Description |
+| ----------------- | --------- | ------- | ----------- |
+| `deny_globs`      | string[]  | `[]`    | Extra `**/`-anchored deny patterns on top of the shipped floor (treated as hard-tier: never overridable) |
+| `allow_overrides` | string[]  | `[]`    | Rescue globs consulted only when a deny came from a soft-tier floor pattern; naming a hard secret family is dropped at load |
+
+## Where each section is read from
+
+Not every section above is read from `config.jsonc` yet. The fields Harnery's config reader (`src/core/config.ts`) consults from `config.jsonc` today are `project_name`, `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, and `presence` (plus `files`, read by the web layer). The `coord`, `backup`, and `sync` sections are declared in the schema but are currently driven by **environment variables** (`HARNERY_AGENT_COORD_FRESHNESS`, `HARNERY_RESTIC_*`, `HARNERY_SYNC_*`) or a **separate file** (`sync` persists its remote/prefix in `~/.config/harnery/sync.json`), not by `config.jsonc`. Wiring those three to read from `config.jsonc` (or trimming them from the schema) is tracked separately; until then, set them via env/flags. The user-global `~/.config/harnery/config.jsonc` layer is likewise not yet consulted by the primary reader — project-level `.harnery/config.jsonc` is authoritative.
+
 ## Example config
 
 ```jsonc
@@ -108,22 +138,20 @@ Sync subset is fixed: `identities/`, `scratch/archived/`, `councils/`. Heartbeat
   "project_name": "my-monorepo",
   "binName": "mycli",
 
-  "coord": {
-    "freshness_seconds": 600
-  },
-
   "web": {
     "port": 9000
   },
 
-  "backup": {
-    "keep_daily": 14,
-    "keep_weekly": 8
+  "tools": {
+    "ripgrep": { "autoInstall": true }
   },
 
-  "sync": {
-    "remote": "gdrive",
-    "prefix": "harnery/my-monorepo"
+  "workflow": {
+    "subscriptionOnly": true
+  },
+
+  "presence": {
+    "relay": "wss://relay.harnery.com"
   }
 }
 ```

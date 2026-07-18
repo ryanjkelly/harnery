@@ -11,12 +11,9 @@ Settings live in [JSONC](https://github.com/microsoft/node-jsonc-parser): JSON w
 
 ## Locations
 
-Harnery looks for settings in two places, in precedence order:
+The project settings file is `<project-root>/.harnery/config.jsonc`, and it is authoritative. CLI flags and `HARNERY_*` env vars override it per invocation (each field's env override is noted in the [schema reference](/reference/config-schema/)).
 
-1. **Project**: `<project-root>/.harnery/config.jsonc`
-2. **User**: `~/.config/harnery/config.jsonc`
-
-Values from the project file override user-global values. CLI flags override both. Env vars (`HARNERY_*`) override CLI flags only when explicitly documented per command.
+> A user-global `~/.config/harnery/config.jsonc` is planned but **not yet read** by the config reader — only the project file is consulted today.
 
 ## Schema
 
@@ -49,7 +46,7 @@ VS Code (and most modern editors) read the `$schema` URL and provide autocomplet
 
   // Web UI
   "web": {
-    "port": 7777,
+    "port": 9000,
     "bind": "127.0.0.1"
   },
 

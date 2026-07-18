@@ -48,7 +48,7 @@
           "type": "integer",
           "minimum": 1024,
           "maximum": 65535,
-          "default": 7777,
+          "default": 9000,
           "description": "Port that `harn web up` binds to."
         },
         "bind": {
