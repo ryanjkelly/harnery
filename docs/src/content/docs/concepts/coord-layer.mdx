@@ -21,3 +21,16 @@ Three primitives on disk, plus hook scripts wired into Claude Code / Cursor / Co
 The hooks fire **before** an edit lands (claim time) and **before** a commit lands (commit time), block conflicts, and emit structured events.
 
 The agent sees **nothing** when nothing's going wrong. Single-agent runs are indistinguishable from no coord layer at all.
+
+## Cross-machine presence
+
+The primitives above are machine-local. When more than one machine shares a
+repo (two people, or one person on a desktop and a laptop), presence closes
+the gap: each machine publishes its live sessions to
+`refs/harnery/presence/<machine>` on the repo's own origin (zero config —
+repo access is the credential), and peers render them in the agents list,
+status box, and peer tables, labeled `@<machine>`. An optional
+end-to-end-encrypted relay upgrades latency from minutes to seconds. Remote
+peers are advisory in v1 — they inform, they don't block claims. Details:
+[`harn presence`](/cli/presence/#cross-machine-session-presence) and
+[decision record 0016](/decisions/0016-cross-machine-presence/).

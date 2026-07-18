@@ -32,6 +32,7 @@ Harnery reads settings in this order. Later values win.
 | `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
 | `coord`        | object  | see below        | Coord-layer settings |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
+| `presence`     | object  | see below        | Cross-machine presence transports |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
 | `backup`       | object  | see below        | restic-backed snapshots |
 | `sync`         | object  | see below        | rclone-backed cross-machine sync |
@@ -57,6 +58,15 @@ Also configurable via env: `HARNERY_AGENT_COORD_FRESHNESS`.
 | `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the harness CLI's stored login |
 
 `harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [workflow → billing safeguards](/cli/workflow/#billing-safeguards).
+
+## `presence`
+
+| Field     | Type   | Default | Description |
+| --------- | ------ | ------- | ----------- |
+| `enabled` | bool   | `true`  | Cross-machine presence over git refs (`refs/harnery/presence/<machine>` on origin). On by default when an origin remote exists; every operation is fail-silent |
+| `relay`   | string | unset   | Optional live upgrade: a `wss://` relay URL (public reference: `wss://relay.harnery.com`; self-host via [`harn relay serve`](/cli/relay/) or `relay/worker/`). When set, hooks keep a per-machine daemon connected for seconds-latency presence; git refs stay on as the floor |
+
+Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRESENCE_RELAY=<url|0>` (relay only), `HARNERY_PRESENCE_FETCH_INTERVAL=<secs>` (git-refs fetch throttle). A committed `.harnery/presence-salt` file rotates the relay room (it is NOT a secret — see [decision record 0016](/decisions/0016-cross-machine-presence/)). Full behavior: [`harn presence`](/cli/presence/#cross-machine-session-presence).
 
 ## `web`
 

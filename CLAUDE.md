@@ -29,6 +29,7 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 - `src/core/`: coord layer (agents state, session events, hooks, scratch).
 - `src/lib/`: shared libs — a mix of exported toolkit modules and unexported internals (see Surface tiers above). Notables: `lib/council/` (council state machine: `writePrompt` auto-prepends the `<!-- council-route -->` header and auto-appends the `<!-- council-submit-footer -->` block, both idempotent; never hand-write those markers) and `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
 - `bin/`: `harn`, `agent-coord`, `agent-hook` entrypoints.
+- `relay/`: the presence relay's Cloudflare Workers host (`relay/worker/`, deployed with wrangler; ADR 0016). The Bun self-host lives in `src/commands/relay.ts`; the shared wire protocol in `src/core/presence/relay-protocol.ts`.
 - `web/`: standalone Next.js dashboard (private, not published). Booted by `harn web up`; port via `HARNERY_WEB_PORT` (default 9000).
 - `docs/`: Astro Starlight site (harnery.com). Every new CLI command gets a `docs/src/content/docs/cli/<name>.mdx` page; ADRs live in `docs/src/content/docs/decisions/` (not a `docs/decisions.md`).
 - `tests/`: `unit/`, `integration/` (`tests/integration/run.sh`), plus `*.test.ts` alongside source.

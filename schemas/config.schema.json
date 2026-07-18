@@ -77,6 +77,63 @@
         }
       }
     },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Managed-tool provisioning consent.",
+      "properties": {
+        "ripgrep": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "autoInstall": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow `grep` to download the pinned, checksum-verified ripgrep into the harnery tools dir on first miss. Env override: HARNERY_TOOLS_AUTOINSTALL=1|0."
+            }
+          }
+        }
+      }
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subscriptionOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env. Stamped true by `harn init` when the key is absent. Env override: HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0."
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Shipped harnery skills this repo suppresses (e.g. because it maintains richer host-specific versions)."
+        }
+      }
+    },
+    "presence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Cross-machine session presence (decision record 0016).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Presence over git refs (refs/harnery/presence/<machine> on origin). On by default when an origin remote exists; fail-silent everywhere. Env override: HARNERY_PRESENCE=1|0."
+        },
+        "relay": {
+          "type": "string",
+          "description": "Optional live-socket upgrade: a wss:// relay URL (public reference: wss://relay.harnery.com; self-host via `harn relay serve` or relay/worker/). Hooks keep a per-machine daemon connected; git refs stay on as the floor. Env override: HARNERY_PRESENCE_RELAY=<url|0>."
+        }
+      }
+    },
     "backup": {
       "type": "object",
       "additionalProperties": false,
