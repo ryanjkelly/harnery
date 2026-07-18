@@ -27,7 +27,7 @@ export function registerEmlCommand(program: Command, emit: EmitContext): void {
     .argument("<file>", "Path to the .eml file")
     .option("-o, --output <path>", "Write output to a file instead of stdout")
     .option("--format <type>", "Output format: markdown, json", "markdown")
-    .option("--headers", "Include full email headers per message")
+    .option("--headers", "Include the source message's full email headers")
     .option("--attachments", "List attachment filenames and sizes")
     .action(async (file: string, opts: EmlOpts) => {
       try {
@@ -40,7 +40,7 @@ export function registerEmlCommand(program: Command, emit: EmitContext): void {
     });
 }
 
-interface EmlOpts {
+export interface EmlOpts {
   output?: string;
   format: string;
   headers?: boolean;
@@ -88,7 +88,7 @@ async function handleEml(file: string, opts: EmlOpts, emit: EmitContext): Promis
  * Extract individual messages from the parsed email.
  * Strategy: use HTML body (Gmail quote structure) first, fall back to plain text.
  */
-function extractThread(parsed: ParsedMail): ThreadMessage[] {
+export function extractThread(parsed: ParsedMail): ThreadMessage[] {
   if (parsed.html && typeof parsed.html === "string") {
     const messages = extractFromHtml(parsed.html, parsed);
     if (messages.length > 0) return messages;
@@ -451,7 +451,11 @@ function formatAddress(addr: ParsedMail["from"]): string {
 /**
  * Render the thread as markdown.
  */
-function renderMarkdown(parsed: ParsedMail, messages: ThreadMessage[], opts: EmlOpts): string {
+export function renderMarkdown(
+  parsed: ParsedMail,
+  messages: ThreadMessage[],
+  opts: EmlOpts,
+): string {
   const subject = parsed.subject ?? "Untitled Thread";
   const participants = new Map<string, boolean>();
   for (const m of messages) {
@@ -470,6 +474,20 @@ function renderMarkdown(parsed: ParsedMail, messages: ThreadMessage[], opts: Eml
   lines.push(`**Participants:** ${[...participants.keys()].join(", ")}`);
   lines.push(`**Date range:** ${minDate} to ${maxDate}`);
   lines.push(`**Messages:** ${messages.length}`);
+
+  if (opts.headers && parsed.headerLines?.length) {
+    // A Gmail thread export is a SINGLE .eml (older messages are quoted HTML,
+    // not separate MIME parts), so there is one real header set — the source
+    // message's. Render it verbatim.
+    lines.push("");
+    lines.push("**Source headers:**");
+    lines.push("");
+    lines.push("```");
+    for (const h of parsed.headerLines) {
+      lines.push(h.line);
+    }
+    lines.push("```");
+  }
 
   if (opts.attachments && parsed.attachments?.length) {
     lines.push("");
