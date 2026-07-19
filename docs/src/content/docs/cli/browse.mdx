@@ -55,7 +55,9 @@ By default it writes a **trio of files** — `<prefix>.png`, `<prefix>.html`, `<
 | `--profile <dir>` | Persistent Chromium profile dir. Default `~/.cache/harnery/browser-profile`. |
 
 :::note[Headed windows under WSLg]
-On WSL, a headed Chromium window composites its GPU-backed surface over an RDP stream to Windows; on many Windows/GPU/WSLg combinations that surface never presents, so the window shows in the taskbar but paints blank (the page still runs — JS, navigation, and DOM all work). `browse` therefore auto-adds `--disable-gpu` to headed launches under WSL, which forces the software compositor and restores on-screen paint. Opt out with `HARNERY_BROWSER_NO_WSL_DEFAULTS=1`; add alternative flags with `--browser-arg` or `HARNERY_BROWSER_ARGS`.
+On WSL, a headed Chromium window composites its GPU-backed surface over an RDP stream to Windows; on some Windows/GPU/WSLg combinations that surface never presents, so the window shows in the taskbar but paints blank (the page still runs — JS, navigation, and DOM all work). `browse` auto-adds `--disable-gpu` to headed launches under WSL to mitigate that mode. Opt out with `HARNERY_BROWSER_NO_WSL_DEFAULTS=1`; add alternative flags with `--browser-arg` or `HARNERY_BROWSER_ARGS`.
+
+If headed windows stay blank regardless of flags, the failure is likely below Chromium: check `/mnt/wslg/weston.log` for `rdp_allocate_shared_memory … Input/output error`. That means WSLg's shared-memory pixel channel is dead (window metadata still flows, pixels don't — taskbar entries appear, frames never paint) and no browser flag will help; restart the WSL VM with `wsl --shutdown` from Windows.
 :::
 
 ### Visibility + layout checks
