@@ -47,8 +47,7 @@ export function resolveEmitRoot(start: string = process.cwd()): string | null {
   // command doesn't pay 1-3 subprocess spawns per output line.
   if (cachedRoot && cachedRoot.start === start) return cachedRoot.root;
   const gitRoot = monorepoRoot();
-  const root =
-    gitRoot && existsSync(join(gitRoot, ".harnery")) ? gitRoot : findRepoRoot(start);
+  const root = gitRoot && existsSync(join(gitRoot, ".harnery")) ? gitRoot : findRepoRoot(start);
   cachedRoot = { start, root };
   return root;
 }
