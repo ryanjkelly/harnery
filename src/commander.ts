@@ -23,6 +23,7 @@ import { registerBackupCommand } from "./commands/backup.ts";
 import { registerBrowseCommand } from "./commands/browse.ts";
 import { registerBrowseAiCommand } from "./commands/browse-ai.ts";
 import { registerCallersCommand } from "./commands/callers.ts";
+import { registerClaudeDesktopCommand } from "./commands/claude-desktop.ts";
 import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigGetCommand } from "./commands/config-get.ts";
 import { registerContextCommand } from "./commands/context.ts";
@@ -279,6 +280,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerInitCommand(program, emit, opts.binName);
   registerDeinitCommand(program, emit, opts.binName);
   registerBackupCommand(program, emit);
+  registerClaudeDesktopCommand(program, emit);
   registerSyncCommand(program, emit);
   registerWorkflowCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);
