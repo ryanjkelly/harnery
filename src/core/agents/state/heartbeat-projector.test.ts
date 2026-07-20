@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import os from "node:os";
 import path from "node:path";
 import { projectHeartbeats } from "./heartbeat-projector.ts";
-import { assignName } from "./names.ts";
+import { assignName, recordNameAssumption } from "./names.ts";
 
 type Events = Parameters<typeof projectHeartbeats>[1];
 
@@ -377,6 +377,20 @@ describe("projectHeartbeats: seeds identity from .name-history (no agent-unknown
     const hb = res.perOwner["sess-known"]!;
     expect(hb.name).toBe(name);
     expect(hb.kind).toBe("session");
+  });
+
+  test("a non-start seed restores an assumed session persona UUID", () => {
+    const root = freshRoot();
+    assignName(root, "sess-assumed", "session");
+    recordNameAssumption(root, "sess-assumed", "Beatrice", "22222222-2222-4222-8222-222222222222");
+    const res = projectHeartbeats(root, [
+      toolEvent("sess-assumed", "sess-assumed"),
+    ] as unknown as Events);
+    expect(res.perOwner["sess-assumed"]).toMatchObject({
+      name: "Beatrice",
+      kind: "session",
+      agent_id: "22222222-2222-4222-8222-222222222222",
+    });
   });
 
   test("a non-start subagent seed recovers name + kind + stamps agent_id", () => {

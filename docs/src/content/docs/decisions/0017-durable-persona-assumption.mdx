@@ -1,0 +1,54 @@
+---
+title: "0017: Live sessions assume durable personas through one logged transition"
+description: "ADR: replace manual coordination-state edits with an atomic, collision-checked identity.assumed transition that survives heartbeat healing and event replay."
+---
+
+**Status:** accepted (2026-07-19) · **Scope:** product tier (`agents identity`, name history, heartbeat projection, web identity index)
+
+## Context
+
+Long-running agent roles often outlive one harness session. A replacement session may need to continue as `agent-Yann` or `agent-Beatrice` so handoff instructions, peer pings, review ownership, and operator vocabulary remain stable.
+
+The only available procedure required editing three files:
+
+1. replace the new session's first row in `.harnery/.name-history`;
+2. change `.harnery/active/<instance_id>.json`;
+3. change `.harnery/.identity-index.json`.
+
+That procedure crosses Harnery's state boundaries. `.identity-index.json` is a disposable web cache rebuilt from `events.ndjson`, so a manual edit is eventually overwritten. Rewriting the first history row erases the original assignment and depends on a first-match implementation detail. Editing the heartbeat alone is also temporary: a stale sweep followed by heartbeat healing restores the old name from history, while a full event replay restores the old start event.
+
+The coordination model already has the right durable concept, `.harnery/identities/<agent_id>.json`, but no operation binds a new live `instance_id` to an existing persona UUID.
+
+## Decision
+
+Add `harn agents identity assume <name-or-id>` as the single supported role-continuity operation.
+
+The command:
+
+- resolves the calling main session through the normal owner resolver, with `--session-id` as the ppid-walk escape hatch;
+- resolves an existing durable persona by name, alias, or UUID, minting one by name when absent;
+- serializes assumption under `.harnery/identity-assume.lock` and refuses a fresh local namesake or a namesake in cached cross-machine presence;
+- appends a new `.name-history` row with `source: "identity.assume"` and `agent_id`; history resolution becomes latest-row-wins, preserving the original pool assignment for audit;
+- emits `identity.assumed` with the new and previous name/persona IDs, then synchronously projects it into the heartbeat;
+- remains idempotent: once history and heartbeat already carry the persona, a retry writes no row and emits no event.
+
+`.name-history` and `events.ndjson` serve different recovery paths. Name history lets a missing heartbeat heal without scanning the unbounded ledger. The event makes full replay and derived readers converge. The web identity index learns `identity.assumed`, bumps its parser version, and rebuilds itself from the ledger. The command never writes `.identity-index.json`.
+
+The operation is limited to `kind=session`. Subagents retain their dispatch identity and cannot silently become a durable operator-facing role.
+
+## Alternatives considered
+
+- **Keep the documented three-file edit.** Rejected because one target is derived state, the heartbeat edit is replay-unstable, and partial edits create contradictory identities.
+- **Expose only `identity rename`.** Rejected because renaming changes the persona itself and retires its prior name. A replacement session needs to adopt the same persona, not rename it for every restart.
+- **Rewrite the original `.name-history` row in place.** Rejected because it destroys the audit trail and makes a crash during the rewrite capable of corrupting the whole file. Append plus latest-row-wins is retryable and backward-compatible with one-row histories.
+- **Update only the persona registry and heartbeat.** Rejected because heartbeat healing does not consult the persona registry by `instance_id`; it needs the explicit binding in name history. Full replay also needs a canonical event.
+- **Infer the role automatically from a handoff document or session title.** Rejected because prose and UI titles are not authorization boundaries. Role adoption must be an explicit command with collision checks.
+- **Make cross-machine presence a hard prerequisite.** Rejected because presence is optional and may be offline. Local uniqueness is enforced; cached remote presence adds a fail-safe check when available without a network dependency.
+
+## Consequences
+
+- Display names can now change within one instance lifecycle. Readers of `.name-history` must use the latest row for an `instance_id`; readers that already assign into a map line by line naturally do so.
+- The persona UUID, rather than a session UUID, becomes the stable identifier after assumption. A healed heartbeat recovers it from name history.
+- A replacement may be blocked for the configured freshness window if its predecessor crashed without an end hook. That is deliberate collision safety. Stale sweep or the existing heartbeat recovery tools clear the abandoned session.
+- Cross-machine collision detection is best-effort because presence itself is advisory. Two machines that are both offline from one another can still assume the same role; the next presence exchange will expose the duplicate.
+- The command creates a minor-version behavior addition and ships with a changeset.

@@ -8,6 +8,7 @@ describe("renderInstructionsBlock", () => {
   test("substitutes the host bin into every command string", () => {
     const block = renderInstructionsBlock("acme");
     expect(block).toContain("acme agents whoami");
+    expect(block).toContain("acme agents identity assume <name>");
     expect(block).toContain("acme decision file");
     expect(block).toContain("acme council create");
     // no un-substituted `harn <verb>` command leaked through
@@ -17,6 +18,12 @@ describe("renderInstructionsBlock", () => {
   test("defaults cleanly to `harn` when that's the bin", () => {
     const block = renderInstructionsBlock("harn");
     expect(block).toContain("harn agents whoami");
+  });
+
+  test("routes durable role handoffs through the native identity command", () => {
+    const block = renderInstructionsBlock("harn");
+    expect(block).toContain("harn agents identity assume <name>");
+    expect(block).toContain("never\nhand-edit Harnery's history");
   });
 
   test("keeps skill names literal (harn-*) regardless of bin", () => {

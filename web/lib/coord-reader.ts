@@ -592,6 +592,8 @@ export function readEvents(
 export interface InstanceIdentity {
   instance_id: string;
   name: string;
+  /** Durable persona UUID after `agents identity assume`; otherwise null. */
+  agent_id?: string | null;
   /** "session" for a main agent (from `session.start`) or "subagent" (from
    * `subagent.start`). */
   kind: "session" | "subagent";
@@ -638,8 +640,9 @@ export interface IdentityIndex {
 }
 
 /** v2: turn.stop model harvesting (2026-06-10). v3: fold rolled archives so
- * identities survive events.ndjson rotation (2026-07-07). */
-const IDENTITY_INDEX_VERSION = 3;
+ * identities survive events.ndjson rotation (2026-07-07). v4: fold
+ * identity.assumed role changes (2026-07-20). */
+const IDENTITY_INDEX_VERSION = 4;
 
 /** Line-aligned window for folding a file range into the identity index without
  * ever materializing a >512MB string (V8's max string length). A just-rolled
@@ -648,11 +651,10 @@ const IDENTITY_FOLD_WINDOW_BYTES = 64 * 1024 * 1024;
 
 let identityIndexCache: IdentityIndex | null = null;
 
-/** Parse `session.start` / `subagent.start` / `turn.stop` rows out of an
- *  ndjson chunk and merge them into `into` (latest start wins per instance_id;
- *  a turn.stop's `data.model` folds onto the existing identity, "what model
- *  did this agent last use"). Pure; exported for tests. The substring
- *  pre-filter skips JSON.parse for lines that aren't one of these events. */
+/** Parse identity-bearing rows out of an ndjson chunk and merge them into
+ * `into`. Starts establish the instance, identity.assumed changes its durable
+ * persona/name, and turn.stop carries the most recently used model. Pure;
+ * exported for tests. The substring pre-filter avoids JSON.parse on noise. */
 export function mergeIdentitiesFromChunk(
   chunk: string,
   into: Record<string, InstanceIdentity>,
@@ -660,8 +662,9 @@ export function mergeIdentitiesFromChunk(
   for (const line of chunk.split("\n")) {
     const isSession = line.includes('"session.start"');
     const isSubagent = !isSession && line.includes('"subagent.start"');
-    const isTurnStop = !isSession && !isSubagent && line.includes('"turn.stop"');
-    if (!isSession && !isSubagent && !isTurnStop) continue;
+    const isAssume = !isSession && !isSubagent && line.includes('"identity.assumed"');
+    const isTurnStop = !isSession && !isSubagent && !isAssume && line.includes('"turn.stop"');
+    if (!isSession && !isSubagent && !isAssume && !isTurnStop) continue;
     try {
       if (isTurnStop) {
         const row = JSON.parse(line) as {
@@ -677,6 +680,30 @@ export function mergeIdentitiesFromChunk(
         }
         continue;
       }
+      if (isAssume) {
+        const row = JSON.parse(line) as {
+          instance_id?: string;
+          session_id?: string;
+          ts?: string;
+          data?: { name?: string; agent_id?: string };
+        };
+        const name = row.data?.name;
+        if (!row.instance_id || !name) continue;
+        const previous = into[row.instance_id];
+        into[row.instance_id] = {
+          instance_id: row.instance_id,
+          name,
+          agent_id: row.data?.agent_id ?? previous?.agent_id ?? null,
+          kind: previous?.kind ?? "session",
+          agent_type: previous?.agent_type ?? null,
+          session_id: previous?.session_id ?? row.session_id ?? null,
+          platform: previous?.platform ?? null,
+          model: previous?.model ?? null,
+          started_at: previous?.started_at ?? null,
+          last_ts: row.ts ?? previous?.last_ts ?? null,
+        };
+        continue;
+      }
       const row = JSON.parse(line) as {
         instance_id?: string;
         session_id?: string;
@@ -688,6 +715,7 @@ export function mergeIdentitiesFromChunk(
       into[row.instance_id] = {
         instance_id: row.instance_id,
         name,
+        agent_id: into[row.instance_id]?.agent_id ?? null,
         kind: isSession ? "session" : "subagent",
         agent_type: isSubagent ? (row.data?.agent_type ?? null) : null,
         session_id: row.session_id ?? null,

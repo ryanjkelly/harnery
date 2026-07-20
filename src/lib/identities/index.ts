@@ -47,21 +47,21 @@ export interface AgentIdentity {
   created_at: string;
 }
 
-function identitiesDir(): string | null {
-  const root = monorepoRoot();
+function identitiesDir(coordRoot?: string): string | null {
+  const root = coordRoot ?? monorepoRoot();
   if (!root) return null;
   return resolve(root, ".harnery", "identities");
 }
 
-function ensureDir(): string {
-  const dir = identitiesDir();
+function ensureDir(coordRoot?: string): string {
+  const dir = identitiesDir(coordRoot);
   if (!dir) throw new Error("not in an agent session; no monorepo root");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-function identityPath(agentId: string): string {
-  return resolve(ensureDir(), `${agentId}.json`);
+function identityPath(agentId: string, coordRoot?: string): string {
+  return resolve(ensureDir(coordRoot), `${agentId}.json`);
 }
 
 function nowIso(): string {
@@ -94,8 +94,8 @@ export function displayName(name: string): string {
 }
 
 /** Read one identity by id. Null if missing. */
-export function lookupById(agentId: string): AgentIdentity | null {
-  const dir = identitiesDir();
+export function lookupById(agentId: string, coordRoot?: string): AgentIdentity | null {
+  const dir = identitiesDir(coordRoot);
   if (!dir) return null;
   const fp = resolve(dir, `${agentId}.json`);
   if (!existsSync(fp)) return null;
@@ -104,8 +104,8 @@ export function lookupById(agentId: string): AgentIdentity | null {
 
 /** Read one identity by display name (case-insensitive on bare name).
  * Scans the directory; O(N) on identity count. */
-export function lookupByName(name: string): AgentIdentity | null {
-  const dir = identitiesDir();
+export function lookupByName(name: string, coordRoot?: string): AgentIdentity | null {
+  const dir = identitiesDir(coordRoot);
   if (!dir || !existsSync(dir)) return null;
   const wanted = bareName(name).toLowerCase();
   for (const f of readdirSync(dir)) {
@@ -121,8 +121,8 @@ export function lookupByName(name: string): AgentIdentity | null {
 }
 
 /** All known identities, sorted by created_at ascending. */
-export function listIdentities(): AgentIdentity[] {
-  const dir = identitiesDir();
+export function listIdentities(coordRoot?: string): AgentIdentity[] {
+  const dir = identitiesDir(coordRoot);
   if (!dir || !existsSync(dir)) return [];
   const out: AgentIdentity[] = [];
   for (const f of readdirSync(dir)) {
@@ -144,8 +144,8 @@ export function listIdentities(): AgentIdentity[] {
  * surface whichever happened to be read first; the second is orphaned.
  * For agent personas (added at human cadence) this race is theoretical.
  */
-export function ensureIdentity(name: string): AgentIdentity {
-  const existing = lookupByName(name);
+export function ensureIdentity(name: string, coordRoot?: string): AgentIdentity {
+  const existing = lookupByName(name, coordRoot);
   if (existing) return existing;
   const id: AgentIdentity = {
     schema_version: IDENTITY_SCHEMA_VERSION,
@@ -154,14 +154,14 @@ export function ensureIdentity(name: string): AgentIdentity {
     aliases: [],
     created_at: nowIso(),
   };
-  writeIdentity(id);
+  writeIdentity(id, coordRoot);
   return id;
 }
 
 /** Persist an identity (tmp + rename). Creates the dir if missing. */
-export function writeIdentity(id: AgentIdentity): void {
-  ensureDir();
-  const fp = identityPath(id.agent_id);
+export function writeIdentity(id: AgentIdentity, coordRoot?: string): void {
+  ensureDir(coordRoot);
+  const fp = identityPath(id.agent_id, coordRoot);
   const tmp = `${fp}.tmp.${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(id, null, 2)}\n`, "utf8");
   renameSync(tmp, fp);
@@ -172,8 +172,12 @@ export function writeIdentity(id: AgentIdentity): void {
  * lookup still resolves correctly. The agent_id is stable across renames,
  * which is the whole point of the registry.
  */
-export function renameIdentity(agentId: string, newName: string): AgentIdentity {
-  const existing = lookupById(agentId);
+export function renameIdentity(
+  agentId: string,
+  newName: string,
+  coordRoot?: string,
+): AgentIdentity {
+  const existing = lookupById(agentId, coordRoot);
   if (!existing) {
     throw new Error(`renameIdentity: no identity matching '${agentId}'`);
   }
@@ -184,7 +188,7 @@ export function renameIdentity(agentId: string, newName: string): AgentIdentity 
     name: bare,
     aliases: [...existing.aliases, { name: existing.name, retired_at: nowIso() }],
   };
-  writeIdentity(next);
+  writeIdentity(next, coordRoot);
   return next;
 }
 
@@ -197,14 +201,14 @@ export function renameIdentity(agentId: string, newName: string): AgentIdentity 
  * Does NOT mint. Callers that want mint-on-miss should call ensureIdentity()
  * with a name, then use the returned agent_id.
  */
-export function resolveAgentId(input: string): string | null {
+export function resolveAgentId(input: string, coordRoot?: string): string | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
   // UUID shape check, relaxed; we only need the lookupById to confirm.
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
-    const byId = lookupById(trimmed);
+    const byId = lookupById(trimmed, coordRoot);
     if (byId) return byId.agent_id;
   }
-  const byName = lookupByName(trimmed);
+  const byName = lookupByName(trimmed, coordRoot);
   return byName ? byName.agent_id : null;
 }

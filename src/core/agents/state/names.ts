@@ -8,9 +8,14 @@
  * Durable persistence: `.harnery/.name-history` (JSONL, one row per assignment)
  * + `.harnery/.name-counter` (current counter, atomic temp+rename).
  *
- * Recreation rule (mirrors v1):
- *   1. Own instance_id in name-history → (original name, original kind)
- *   2. session_id in name-history (owner != session) → (parent's name, "transient")
+ * Recreation rule:
+ *   1. Own instance_id in name-history → latest (name, kind, agent_id)
+ *   2. session_id in name-history (owner != session) → latest parent's
+ *      (name, agent_id) with kind="transient"
+ *
+ * Multiple rows for one instance are intentional. `identity assume` appends a
+ * new binding instead of rewriting history; readers therefore resolve from the
+ * end of the file. Older one-row histories retain their original behavior.
  *   3. Else: new assignment, consume a counter slot.
  */
 
@@ -297,11 +302,16 @@ if (COORD_NAMES.length !== 260) {
 
 export type NameKind = "session" | "subagent" | "transient";
 
-interface NameHistoryRow {
+export interface NameHistoryRow {
   instance_id: string;
   name: string;
   kind: NameKind;
   ts: string;
+  /** Durable persona UUID. Present after `agents identity assume`. */
+  agent_id?: string;
+  /** Audit marker distinguishing an explicit role adoption from pool assignment. */
+  source?: "pool" | "identity.assume";
+  previous_name?: string;
 }
 
 function atomicWrite(path: string, content: string): void {
@@ -351,24 +361,72 @@ export function resolveName(
   coordRoot: string,
   instanceId: string,
   sessionId?: string,
-): { name: string; kind: NameKind } | null {
+): { name: string; kind: NameKind; agent_id?: string } | null {
   const history = readHistory(coordRoot);
 
-  for (const row of history) {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const row = history[i]!;
     if (row.instance_id === instanceId) {
-      return { name: row.name, kind: row.kind };
+      return {
+        name: row.name,
+        kind: row.kind,
+        ...(row.agent_id ? { agent_id: row.agent_id } : {}),
+      };
     }
   }
 
   if (sessionId && sessionId !== instanceId) {
-    for (const row of history) {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const row = history[i]!;
       if (row.instance_id === sessionId) {
-        return { name: row.name, kind: "transient" };
+        return {
+          name: row.name,
+          kind: "transient",
+          ...(row.agent_id ? { agent_id: row.agent_id } : {}),
+        };
       }
     }
   }
 
   return null;
+}
+
+export interface NameAssumptionResult {
+  changed: boolean;
+  previous: { name: string; kind: NameKind; agent_id?: string } | null;
+  current: { name: string; kind: NameKind; agent_id: string };
+}
+
+/**
+ * Append an explicit instance → durable-persona binding. Latest-row-wins makes
+ * this auditable and retry-safe without mutating prior assignment history.
+ */
+export function recordNameAssumption(
+  coordRoot: string,
+  instanceId: string,
+  name: string,
+  agentId: string,
+  kind: NameKind = "session",
+): NameAssumptionResult {
+  const previous = resolveName(coordRoot, instanceId);
+  const current = { name, kind, agent_id: agentId };
+  if (
+    previous?.name === current.name &&
+    previous.kind === current.kind &&
+    previous.agent_id === current.agent_id
+  ) {
+    return { changed: false, previous, current };
+  }
+  appendHistory(coordRoot, {
+    instance_id: instanceId,
+    name,
+    kind,
+    agent_id: agentId,
+    source: "identity.assume",
+    previous_name: previous?.name,
+    ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+  });
+  return { changed: true, previous, current };
 }
 
 /**
@@ -393,6 +451,7 @@ export function assignName(coordRoot: string, instanceId: string, kind: NameKind
     instance_id: instanceId,
     name,
     kind,
+    source: "pool",
     ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   });
   return name;

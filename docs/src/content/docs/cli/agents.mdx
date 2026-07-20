@@ -28,6 +28,7 @@ harn agents whoami              # this agent's name + instance_id + files claime
 harn agents list                # all active agents (folds transients by default)
 harn agents status              # end-of-turn status box (name, age, files, peers, task)
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
+harn agents identity assume <name-or-id> # continue a durable role in this session
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
 harn agents watch               # stream peer state changes in real time
@@ -44,6 +45,32 @@ Two further subtrees live under `agents` for advanced use: `harn agents council`
 recovery tools — `harn agents heal` forces a specific recovery action on one
 agent, and `harn agents harness-probe` diagnoses harness wiring. Run
 `harn agents <sub> --help` for any of them.
+
+### identity assume
+
+Use `identity assume` when a new harness session is continuing a durable role
+from a predecessor:
+
+```bash
+harn agents identity assume Yann
+# or, when the shell process cannot resolve its own session anchor:
+harn agents identity assume Yann --session-id <instance-id>
+```
+
+The target may be a persona name, an `agent-Name` display name, or a persona
+UUID. Harnery reuses the durable persona UUID when it exists and creates it when
+a new name is first adopted. It refuses the transition when another fresh local
+session or known remote session already has that name.
+
+One command updates every authoritative layer: it appends the binding to name
+history, emits `identity.assumed` to the canonical ledger, and projects the new
+name and persona UUID into the heartbeat. `agents whoami --json` then exposes
+that UUID as `agent_id`. The web identity index is derived from the ledger and
+heals automatically. Repeating the same successful command is a no-op.
+
+This is role adoption, not persona renaming. The old session keeps its historical
+record, while the replacement becomes the current live owner of the role. It is
+limited to main sessions; subagents cannot assume operator-facing identities.
 
 ### whoami, list, status
 

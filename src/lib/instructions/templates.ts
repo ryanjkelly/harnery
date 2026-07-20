@@ -79,6 +79,11 @@ active peers and the files they've claimed; \`${b} agents set-task "<focus>"\`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
 
+**Durable role handoff.** When you are replacing a prior session in the same
+named role, run \`${b} agents identity assume <name>\` before declaring your task.
+It refuses a live namesake and updates the authoritative identity state; never
+hand-edit Harnery's history, heartbeat, or derived identity cache.
+
 **Declare intent on shell commands.** Every command you run is captured to the
 coordination ledger. Lead a shell command with a \`# intent: <why>\` comment (or set
 the tool's description) so the recorded event carries a reason instead of

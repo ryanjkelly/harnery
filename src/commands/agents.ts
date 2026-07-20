@@ -76,6 +76,7 @@ import {
   writeManifest,
   writePrompt,
 } from "../lib/council/index.ts";
+import { assumeIdentity, IdentityAssumeError } from "../lib/identities/assume.ts";
 import {
   displayName as displayAgentName,
   ensureIdentity,
@@ -122,6 +123,8 @@ function formatPlatformLabel(platform?: string | null): string {
 
 interface Row {
   name: string;
+  /** Durable persona UUID after an explicit identity assumption. */
+  agent_id?: string | null;
   instance_id: string;
   session_id: string;
   kind: string;
@@ -489,6 +492,61 @@ function registerIdentityCommands(parent: Command): void {
         meta: { action: "identity-ensure" },
       });
     });
+
+  identity
+    .command("assume <name-or-id>")
+    .description(
+      "Bind this live session to a durable persona. Refuses when the name is " +
+        "already live; updates name history, the event ledger, and the heartbeat.",
+    )
+    .option("--json", "JSON envelope output")
+    .option(
+      "--session-id <id>",
+      "Bind the heartbeat with this session_id directly, bypassing the ppid walk.",
+    )
+    .action((target: string, opts: { json?: boolean; sessionId?: string }) => {
+      runIdentityAssume(target, opts);
+    });
+}
+
+function runIdentityAssume(target: string, opts: { json?: boolean; sessionId?: string }): void {
+  if (opts.json) emit.config({ format: "json" });
+  const root = monorepoRoot();
+  if (!root) {
+    emit.error({
+      code: "not_in_repo",
+      message: "not in an agent session; coord_root() returned null",
+    });
+    process.exit(1);
+  }
+  if (!opts.sessionId) ensureCursorSession(root);
+  const owner = opts.sessionId ?? resolveOwner();
+  if (!owner) {
+    emit.error({
+      code: "no_pidmap_entry",
+      message:
+        "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
+    });
+    process.exit(1);
+  }
+  try {
+    const result = assumeIdentity(root, owner, target);
+    emit.data({
+      ...result,
+      display_name: displayAgentName(result.name),
+      action: "identity-assume",
+    });
+  } catch (error) {
+    if (error instanceof IdentityAssumeError) {
+      emit.error({ code: error.code, message: error.message });
+    } else {
+      emit.error({
+        code: "identity_assume_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    process.exit(1);
+  }
 }
 
 function registerCouncilCommands(parent: Command): void {
@@ -760,6 +818,7 @@ function runWhoami(opts: { json?: boolean }): void {
 
   const row: Row = {
     name: hb.name || "unknown",
+    agent_id: hb.agent_id || null,
     instance_id: hb.instance_id,
     session_id: hb.session_id,
     kind: normalizeKind(hb.kind),
@@ -857,6 +916,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       // Orphan transient case
       rows.push({
         name: h.name || "unknown",
+        agent_id: h.agent_id || null,
         instance_id: h.instance_id,
         session_id: h.session_id,
         kind: "transient",
@@ -881,6 +941,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
     }
     rows.push({
       name: h.name || "unknown",
+      agent_id: h.agent_id || null,
       instance_id: h.instance_id,
       session_id: h.session_id,
       kind: normalizeKind(h.kind),
@@ -2407,6 +2468,9 @@ function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
       break;
     case "state.status_checked":
       detail = "status box rendered";
+      break;
+    case "identity.assumed":
+      detail = `${s("previous_name") || "unknown"} → ${s("name") || "unknown"}${s("agent_id") ? ` · persona=${s("agent_id").slice(0, 8)}…` : ""}`;
       break;
     case "claim.acquire":
     case "claim.release":

@@ -718,7 +718,7 @@ async function handleResolveName(root: string, rest: string[]): Promise<number> 
     return 0;
   }
   process.stdout.write(
-    `${JSON.stringify({ instance_id: owner, name: resolved.name, kind: resolved.kind })}\n`,
+    `${JSON.stringify({ instance_id: owner, name: resolved.name, kind: resolved.kind, agent_id: resolved.agent_id ?? null })}\n`,
   );
   return 0;
 }

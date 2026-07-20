@@ -257,6 +257,18 @@ export type StatePresenceChange = EventEnvelope<
 
 export type StateHeartbeat = EventEnvelope<"state.heartbeat", Record<string, never>>;
 
+/** A live session adopted a durable persona/role. The event is authoritative
+ * for replay; `.name-history` carries the same binding for heartbeat healing. */
+export type IdentityAssumed = EventEnvelope<
+  "identity.assumed",
+  {
+    name: string;
+    agent_id: string;
+    previous_name?: string;
+    previous_agent_id?: string;
+  }
+>;
+
 // Council
 export type CouncilOpen = EventEnvelope<
   "council.open",
@@ -406,6 +418,7 @@ export type Event =
   | StateScratchAppend
   | StatePresenceChange
   | StateHeartbeat
+  | IdentityAssumed
   | CouncilOpen
   | CouncilRoundOpen
   | CouncilContribution

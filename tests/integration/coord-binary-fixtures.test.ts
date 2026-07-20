@@ -298,16 +298,10 @@ describe("agent-hook session-start", () => {
 // ── harn agents cursor lazy bootstrap ──────────────────────────────────────
 describe("harn agents cursor lazy bootstrap", () => {
   function runWhoami(root: string, conversationId: string): Record<string, unknown> {
-    const result = run(
-      HARN,
-      ["agents", "whoami", "--json"],
-      "",
-      root,
-      {
-        CURSOR_AGENT: "1",
-        CURSOR_CONVERSATION_ID: conversationId,
-      },
-    );
+    const result = run(HARN, ["agents", "whoami", "--json"], "", root, {
+      CURSOR_AGENT: "1",
+      CURSOR_CONVERSATION_ID: conversationId,
+    });
     expect(result.status).toBe(0);
     return JSON.parse(result.stdout) as Record<string, unknown>;
   }
@@ -323,6 +317,59 @@ describe("harn agents cursor lazy bootstrap", () => {
     expect(first.name).not.toBe(second.name);
     expect(existsSync(path.join(root, ".harnery", "active", "glass-one.json"))).toBe(true);
     expect(existsSync(path.join(root, ".harnery", "active", "glass-two.json"))).toBe(true);
+  });
+});
+
+// ── durable persona assumption ────────────────────────────────────────────
+describe("harn agents identity assume", () => {
+  test("binds a live session through the public CLI and refuses a live namesake", () => {
+    const root = makeSandbox();
+    const owner = "assume-cli-new";
+    seedHeartbeat(root, owner, { name: "Anna", platform: "codex" });
+
+    const assumed = run(
+      HARN,
+      ["agents", "identity", "assume", "Yann", "--session-id", owner, "--json"],
+      "",
+      root,
+    );
+    expect(assumed.status).toBe(0);
+    const data = JSON.parse(assumed.stdout) as Record<string, unknown>;
+    expect(data).toMatchObject({
+      changed: true,
+      instance_id: owner,
+      previous_name: "Anna",
+      name: "Yann",
+      display_name: "agent-Yann",
+      action: "identity-assume",
+    });
+
+    const heartbeat = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${owner}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    expect(heartbeat.name).toBe("Yann");
+    expect(heartbeat.agent_id).toBe(data.agent_id);
+    expect(events(root)).toContain('"event_type":"identity.assumed"');
+
+    const whoami = run(HARN, ["agents", "whoami", "--json"], "", root, {
+      HARNERY_AGENT_COORD_OWNER: owner,
+    });
+    expect(whoami.status).toBe(0);
+    expect(JSON.parse(whoami.stdout)).toMatchObject({
+      name: "Yann",
+      agent_id: data.agent_id,
+      instance_id: owner,
+    });
+
+    seedHeartbeat(root, "assume-cli-other", { name: "Beatrice", platform: "codex" });
+    const blocked = run(
+      HARN,
+      ["agents", "identity", "assume", "Beatrice", "--session-id", owner, "--json"],
+      "",
+      root,
+    );
+    expect(blocked.status).toBe(1);
+    expect(`${blocked.stdout}\n${blocked.stderr}`).toContain("identity_in_use");
   });
 });
 
@@ -344,7 +391,12 @@ describe("agent-hook user-prompt-submit", () => {
       workspace_roots: [root],
       prompt: "continue work",
     });
-    const { stdout } = run(AGENT_HOOK, ["user-prompt-submit", "--harness", "cursor"], payload, root);
+    const { stdout } = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--harness", "cursor"],
+      payload,
+      root,
+    );
     expect(stdout).toContain('"additional_context"');
     expect(stdout).toContain("agent-Adelaide");
   });
@@ -360,7 +412,12 @@ describe("agent-hook user-prompt-submit", () => {
       workspace_roots: [root],
       prompt: "do something",
     });
-    const { stdout } = run(AGENT_HOOK, ["user-prompt-submit", "--harness", "cursor"], payload, root);
+    const { stdout } = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--harness", "cursor"],
+      payload,
+      root,
+    );
     expect(stdout).toContain("task` field is unset");
   });
 
@@ -475,7 +532,11 @@ describe("codex stop + shell-warn via agent-hook", () => {
 
   test("codex stop FAILS (exit 2, rule 3/3) when set-task missing from JSONL", () => {
     const root = makeSandbox();
-    const tp = codexTranscript(root, [META, USER, fn("2026-05-24T00:00:10Z", "harn agents status")]);
+    const tp = codexTranscript(root, [
+      META,
+      USER,
+      fn("2026-05-24T00:00:10Z", "harn agents status"),
+    ]);
     const payload = JSON.stringify({
       session_id: "codex-full-miss-settask",
       cwd: root,
@@ -533,7 +594,10 @@ describe("cursor before-shell-execution shell-warn", () => {
     const root = makeSandbox();
     seedHeartbeat(root, "shell-me", { name: "Shell", platform: "cursor" });
     // beforeShellExecution resolves the owner via pid-map walk.
-    writeFileSync(path.join(root, ".harnery", "pid-map", String(process.pid)), "shell-me\tcursor\n");
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", String(process.pid)),
+      "shell-me\tcursor\n",
+    );
     const payload = JSON.stringify({
       conversation_id: "shell-me",
       session_id: "shell-me",
@@ -569,7 +633,9 @@ describe("agent-coord subcommands", () => {
     const owner = "11111111-2222-3333-4444-555555555555";
     seedHeartbeat(root, owner, { ts: "2026-05-24T00:00:00Z" });
     run(AGENT_COORD, ["stamp-status-call", owner], "", root);
-    const hb = JSON.parse(readFileSync(path.join(root, ".harnery", "active", `${owner}.json`), "utf8"));
+    const hb = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${owner}.json`), "utf8"),
+    );
     expect(String(hb.last_status_at ?? "")).toContain("T");
   });
 });
@@ -617,7 +683,11 @@ describe("claude-code pre-tool-use deny + session-start", () => {
     const sid = "cc-fixture-sess";
     // The production SessionStart entry is `agent-hook session-start
     // --harness claude-code` directly.
-    const payload = JSON.stringify({ session_id: sid, model: "claude-sonnet-4-6", source: "startup" });
+    const payload = JSON.stringify({
+      session_id: sid,
+      model: "claude-sonnet-4-6",
+      source: "startup",
+    });
     run(AGENT_HOOK, ["session-start", "--harness", "claude-code"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
   });

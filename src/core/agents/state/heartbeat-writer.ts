@@ -311,8 +311,9 @@ export function healHeartbeat(
     if (resolved) {
       name = resolved.name;
       kind = resolved.kind;
-      // subagent kind: agent_id == instance_id. Else (session/transient): no id stamp.
-      if (resolved.kind === "subagent") agentId = instanceId;
+      // An explicitly assumed session carries its durable persona UUID in
+      // name-history. Native subagents continue to use instance_id.
+      agentId = resolved.agent_id ?? (resolved.kind === "subagent" ? instanceId : "");
     }
   } catch {
     /* names module unavailable, fall back to empty */

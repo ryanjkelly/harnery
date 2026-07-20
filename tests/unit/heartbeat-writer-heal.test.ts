@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { healHeartbeat, healPidmap } from "../../src/core/agents/state/heartbeat-writer.ts";
+import { assignName, recordNameAssumption } from "../../src/core/agents/state/names.ts";
 
 function readHealthEvents(root: string, type: string): Array<Record<string, unknown>> {
   const p = path.join(root, ".harnery", "events.ndjson");
@@ -61,6 +62,19 @@ describe("heartbeat-writer canonical health.* emission", () => {
     // harness="codex" → platform codex.
     const cdx = healHeartbeat(root, "owner-cdx", "owner-cdx", "", "codex");
     expect(cdx?.platform).toBe("codex");
+  });
+
+  test("healHeartbeat restores an assumed durable persona from append-only name history", () => {
+    const root = freshRoot();
+    assignName(root, "owner-role", "session");
+    recordNameAssumption(root, "owner-role", "Yann", "11111111-1111-4111-8111-111111111111");
+
+    const hb = healHeartbeat(root, "owner-role", "owner-role", "", "codex");
+    expect(hb).toMatchObject({
+      name: "Yann",
+      kind: "session",
+      agent_id: "11111111-1111-4111-8111-111111111111",
+    });
   });
 
   test("healPidmap emits health.pidmap_heal on drift only (missing + stale), silent when correct", () => {

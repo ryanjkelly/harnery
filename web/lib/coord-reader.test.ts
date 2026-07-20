@@ -83,6 +83,20 @@ function turnStopLine(instanceId: string, model: string): string {
   });
 }
 
+function identityAssumedLine(instanceId: string, name: string, agentId: string): string {
+  return JSON.stringify({
+    schema_version: 1,
+    event_id: `01ia-${instanceId}`,
+    event_type: "identity.assumed",
+    ts: "2026-06-04T00:02:00Z",
+    instance_id: instanceId,
+    session_id: instanceId,
+    harness: "codex",
+    source: "agent-coord",
+    data: { name, agent_id: agentId },
+  });
+}
+
 describe("mergeIdentitiesFromChunk", () => {
   test("harvests session + subagent starts, skips non-start and nameless rows", () => {
     const chunk = [
@@ -105,6 +119,35 @@ describe("mergeIdentitiesFromChunk", () => {
     const into = mergeIdentitiesFromChunk(startLine("session.start", "x", "First"), {});
     mergeIdentitiesFromChunk(startLine("session.start", "x", "Second"), into);
     expect(into["x"]!.name).toBe("Second");
+  });
+
+  test("identity.assumed replaces the session name and binds its durable persona id", () => {
+    const into = mergeIdentitiesFromChunk(
+      [
+        startLine("session.start", "sess-1", "Anna", { platform: "codex" }),
+        identityAssumedLine("sess-1", "Yann", "persona-yann"),
+      ].join("\n"),
+      {},
+    );
+    expect(into["sess-1"]).toMatchObject({
+      name: "Yann",
+      agent_id: "persona-yann",
+      kind: "session",
+      platform: "codex",
+      last_ts: "2026-06-04T00:02:00Z",
+    });
+  });
+
+  test("identity.assumed can heal an index whose start event is unavailable", () => {
+    const into = mergeIdentitiesFromChunk(
+      identityAssumedLine("sess-1", "Beatrice", "persona-beatrice"),
+      {},
+    );
+    expect(into["sess-1"]).toMatchObject({
+      name: "Beatrice",
+      agent_id: "persona-beatrice",
+      kind: "session",
+    });
   });
 
   test("turn.stop folds data.model onto the existing identity; latest wins", () => {

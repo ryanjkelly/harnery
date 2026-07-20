@@ -5,11 +5,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assignName, COORD_NAMES, resolveName } from "../../src/core/agents/state/names.ts";
+import {
+  assignName,
+  COORD_NAMES,
+  recordNameAssumption,
+  resolveName,
+} from "../../src/core/agents/state/names.ts";
 
 describe("COORD_NAMES layout invariants", () => {
   test("exactly 260 entries", () => {
@@ -115,5 +119,47 @@ describe("assignName / resolveName", () => {
     });
     // path 3: unknown owner, no session match → null
     expect(resolveName(root, "ghost-id")).toBeNull();
+  });
+
+  test("explicit identity assumption appends history and latest binding wins", () => {
+    expect(assignName(root, "sess-role", "session")).toBe("Anna");
+    const first = recordNameAssumption(
+      root,
+      "sess-role",
+      "Yann",
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(first.changed).toBe(true);
+    expect(first.previous?.name).toBe("Anna");
+    expect(resolveName(root, "sess-role")).toEqual({
+      name: "Yann",
+      kind: "session",
+      agent_id: "11111111-1111-4111-8111-111111111111",
+    });
+
+    const historyPath = path.join(root, ".harnery", ".name-history");
+    const rowsAfterFirst = readFileSync(historyPath, "utf8").trim().split("\n");
+    expect(rowsAfterFirst).toHaveLength(2);
+    expect(JSON.parse(rowsAfterFirst[0]!).name).toBe("Anna");
+    expect(JSON.parse(rowsAfterFirst[1]!).source).toBe("identity.assume");
+
+    const retry = recordNameAssumption(
+      root,
+      "sess-role",
+      "Yann",
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(retry.changed).toBe(false);
+    expect(readFileSync(historyPath, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  test("transient resolution inherits the parent's assumed persona id", () => {
+    assignName(root, "parent-role", "session");
+    recordNameAssumption(root, "parent-role", "Beatrice", "22222222-2222-4222-8222-222222222222");
+    expect(resolveName(root, "transient", "parent-role")).toEqual({
+      name: "Beatrice",
+      kind: "transient",
+      agent_id: "22222222-2222-4222-8222-222222222222",
+    });
   });
 });

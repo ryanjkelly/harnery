@@ -146,7 +146,8 @@ function seed(ev: CanonicalEvent, coordRoot: string): V2Heartbeat {
     if (resolved) {
       hb.name = resolved.name;
       hb.kind = resolved.kind;
-      if (resolved.kind === "subagent") hb.agent_id = ev.instance_id;
+      hb.agent_id =
+        resolved.agent_id ?? (resolved.kind === "subagent" ? ev.instance_id : undefined);
     }
   } catch {
     /* name-history unavailable: seed stays nameless; sweep + render guards cope */
@@ -286,6 +287,14 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
     case "state.status_checked":
       hb.last_status_at = ev.ts;
       break;
+
+    case "identity.assumed": {
+      const name = pickStr(d, "name");
+      const agentId = pickStr(d, "agent_id");
+      if (name) hb.name = name;
+      if (agentId) hb.agent_id = agentId;
+      break;
+    }
 
     case "state.presence_change": {
       const to = pickStr(d, "to");
