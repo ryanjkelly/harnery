@@ -1,0 +1,106 @@
+---
+title: "0021: Workflow runs produce bounded proof records"
+description: "ADR: pair the detailed workflow journal with a terminal, source-aware proof packet that reports acceptance evidence and unknowns without retaining another raw transcript."
+---
+
+**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/workflow`, workflow CLI, dashboard)
+
+## Context
+
+Harnery workflow runs already wrote an append-only JSONL journal. It was useful
+for diagnosis, resume, and the live dashboard, but it was not a compact answer
+to the questions that matter after a run: What was the objective? Which
+acceptance criteria were met? What inspectable evidence supports that status?
+What changed around the run? Which facts did the harness expose, and which
+remain unknown?
+
+A successful process exit is too weak to answer those questions. The opposite
+approach, treating the full journal or transcript as a proof artifact, is too
+large, difficult to review, and likely to repeat sensitive prompts and model
+output. Harness differences also make a uniform claim impossible. A final-result
+adapter cannot produce tool-level evidence it never received.
+
+## Decision
+
+Keep `journal.jsonl` as the detailed event stream and add a separate terminal
+`proof.json` in each workflow run directory. Both successful and failed runs
+write a packet. The packet is schema-versioned, bounded to 512 KiB, atomically
+renamed into place, and mode `0600`.
+
+Workflow metadata may declare one objective and up to 50 acceptance criteria
+with stable IDs. The injected context gains `evidence()`, which accepts up to
+200 typed records: tests, commands, artifacts, changes, reviews, and
+observations. Each record carries a status, bounded label and optional detail,
+acceptance references, stage, timestamp, and source.
+
+Evidence submitted by workflow code is always labeled `workflow`. Harnery is
+recording the workflow's declaration, not claiming it independently observed
+the underlying command. Engine-captured repository snapshots and integrity
+digests are marked `engine` and kept outside the declared evidence list.
+
+Acceptance rolls up deterministically:
+
+- any attached failure makes the criterion `unsatisfied`;
+- at least one attached pass, with no failure, makes it `satisfied`;
+- observations, unknown evidence, or no decisive evidence leave it `unknown`.
+
+The packet includes terminal agent records but not raw agent or workflow
+results. Results are represented by their kind, SHA-256 digest, and byte count.
+The final journal receives the same integrity treatment. Repository evidence
+stores before and after Git snapshots and calls out when retained dirty paths
+or truncated status lists prevent a complete change claim.
+
+Harness evidence coverage comes from the registered adapter profile. Missing
+claims remain unknown; partial and unsupported tool evidence are stated
+explicitly. Missing per-run cost and session identifiers also become explicit
+unknowns rather than zeroes or inferred values.
+
+Add `harn workflow proof <run-id> [--json]`, include the proof path and
+acceptance summary in `RunReport`, export the workflow API from
+`harnery/core/workflow`, and render terminal proof on the workflow dashboard.
+Every new journal line also carries `schema_version` and `run_id`; the resume
+reader remains backward-compatible with earlier lines.
+
+## Alternatives considered
+
+- **Use the journal as the proof record.** Rejected because it is optimized for
+  replay and diagnosis, retains full agent results, and requires each consumer
+  to reconstruct terminal meaning.
+- **Replace the journal with one terminal document.** Rejected because live
+  progress, failure diagnosis, and resume require an append-only event stream.
+- **Treat workflow success as acceptance.** Rejected because process completion
+  says nothing about the intended work product.
+- **Have Harnery execute every evidence command itself.** Deferred. It would
+  require a command policy, sandbox boundary, output redaction, timeout model,
+  and cross-platform execution contract. Source-aware declarations provide a
+  truthful first version without quietly adding a second task runner.
+- **Store raw prompts, results, and transcripts in the packet.** Rejected. The
+  journal already serves resume and diagnosis; the packet should be safer and
+  faster to review.
+- **Infer tool evidence from final prose.** Rejected because a model's final
+  claim is not an independently observed tool event.
+- **Add a full goal, issue, assignment, and reviewer workflow.** Rejected for
+  this layer. Objective and acceptance criteria are the minimum proof contract;
+  work management can consume the packet without being embedded in it.
+
+## Result and gotchas
+
+- Reviewers and automation get a stable terminal artifact without parsing the
+  full journal.
+- A failed workflow leaves behind its evidence, repository state, error, and
+  proof path before the error returns to the caller.
+- The packet is not a secret-redaction boundary. Workflow-authored objective,
+  summary, and reference strings are stored as supplied, so callers must not
+  put credentials in them. The detailed journal still retains full agent
+  results for resume compatibility.
+- Repository drift is intentionally conservative. A path dirty both before and
+  after the run may have changed, but two snapshots cannot prove that; the
+  packet marks the drift incomplete instead of guessing.
+- A `satisfied` criterion currently reflects workflow-declared pass evidence.
+  The evidence source remains visible so a consumer can require stronger proof
+  where needed.
+- Focused verification covers schema validation and bounds, acceptance
+  precedence, atomic private writes, successful and failed terminal packets,
+  raw-result omission, result and journal digests, normalized journal
+  envelopes, repository drift, capability unknowns, CLI rendering, and
+  dashboard ingestion.

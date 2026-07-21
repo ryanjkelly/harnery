@@ -9,6 +9,7 @@ sidebar:
 harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
+harn workflow proof <run-id> [--json]
 ```
 
 A workflow is a small throwaway JS script with staged fan-out: the **script**
@@ -94,7 +95,15 @@ concurrency pool are still your throttles.
 ## Script shape
 
 ```js
-export const meta = { name: "review-prs", description: "triage + deep-dive open PRs" };
+export const meta = {
+  name: "review-prs",
+  description: "triage + deep-dive open PRs",
+  objective: "Produce an inspectable risk assessment for every routed PR",
+  acceptance: [
+    { id: "tests", statement: "The focused test suite passes" },
+    { id: "review", statement: "The routed changes receive a final review" },
+  ],
+};
 
 const TRIAGE = {
   type: "object",
@@ -105,7 +114,7 @@ const TRIAGE = {
   },
 };
 
-export default async function run({ agent, parallel, stage, log }) {
+export default async function run({ agent, parallel, stage, log, evidence }) {
   stage("triage");
   const verdicts = await parallel(
     prs.map((pr) => () =>
@@ -121,6 +130,14 @@ export default async function run({ agent, parallel, stage, log }) {
     if (v?.route !== "analyze") continue; // conditional routing: code decides
     await agent(`Risk-assess: ${prs[i]}`, { label: `deep: ${prs[i]}` });
   }
+
+  evidence({
+    kind: "test",
+    status: "passed",
+    label: "Focused workflow tests",
+    ref: "bun test src/workflows/review-prs.test.ts",
+    acceptanceIds: ["tests"],
+  });
 }
 ```
 
@@ -132,6 +149,7 @@ export default async function run({ agent, parallel, stage, log }) {
 | `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch — filter and route. |
 | `stage(title)` | Declare the current stage: journal marker + progress grouping. |
 | `log(message)` | Narrate progress (stderr + journal). |
+| `evidence(input)` | Attach a bounded receipt to the run and optional acceptance IDs. Returns a stable ID such as `e1`. Kinds: `test`, `command`, `artifact`, `change`, `review`, `observation`. Statuses: `passed`, `failed`, `observed`, `unknown`. |
 
 `effort` is validated and mapped per registered adapter: Claude Code accepts
 `low | medium | high | xhigh | max`; Codex accepts
@@ -171,17 +189,62 @@ heuristic) and reports it as `contextTokensPerChildEstimate` in the
 ## Output
 
 Human mode prints a run summary (agents, cached count, cost, duration, journal
-path, result). `--json` emits the full `RunReport`. Every run journals to
+path, proof path, acceptance summary, result). `--json` emits the full
+`RunReport`. Every run journals to
 `.harnery/workflows/<run-id>/journal.jsonl`: `run.start`, `stage.start`,
 `agent.start/end` (cost, duration, child session id, result), `agent.cached`,
-`agent.schema_retry`, `run.end`.
+`agent.schema_retry`, `evidence.recorded`, `run.end`. New journal lines carry
+`schema_version` and `run_id`; older journals remain resumable.
+
+## Proof packets
+
+Every terminal run, including a failed one, writes
+`.harnery/workflows/<run-id>/proof.json`. The packet is written atomically with
+mode `0600` and contains:
+
+- the objective, terminal status, timestamps, and acceptance rollup;
+- typed evidence declared through `ctx.evidence()`;
+- agent outcomes, attempts, duration, cost, and session ID when reported;
+- SHA-256 digests and byte counts for agent and workflow results, not their raw
+  text;
+- engine-observed repository snapshots before and after the run;
+- adapter tool-evidence coverage from the harness capability registry;
+- explicit unknowns for missing capability claims, cost, session IDs, and
+  incomplete repository drift;
+- a SHA-256 digest of the final journal.
+
+Acceptance is deliberately simple. Any attached `failed` evidence makes a
+criterion unsatisfied. At least one `passed` item and no failure makes it
+satisfied. `observed`, `unknown`, or no attached evidence leaves it unknown.
+An item recorded through `ctx.evidence()` has source `workflow`: Harnery stores
+the declaration but does not claim it independently ran the command or test.
+Repository snapshots and packet integrity are marked separately as
+engine-observed.
+
+Inspect a packet with `harn workflow proof <run-id>`. Human mode renders the
+status, criteria, evidence count, repository drift, unknowns, and journal
+digest. `--json` emits the stored schema unchanged. Failed `workflow run`
+commands include the proof path in their error output.
+
+Proof packets are bounded to 50 criteria, 200 evidence records, and 512 KiB.
+Labels, summaries, and references have field-level limits. Unknown acceptance
+IDs and duplicate criterion IDs fail loud. The packet does not run a secret
+redactor; do not put credentials into objectives, evidence summaries, or
+references. The detailed journal continues to retain full agent results for
+resume compatibility.
+
+The programmatic surface is exported from `harnery/core/workflow`, including
+the engine, proof reader and renderer, schema types, and
+`WORKFLOW_PROOF_SCHEMA_VERSION`.
 
 ## Web view
 
 The dashboard (`harn web up`) ships a **/workflows** page: journal-driven list
 of runs (status, agents, cached count, cost, stage chain) and a per-run detail
 view rendering the stages → agents tree with per-agent harness, attempts,
-duration, and cost. Journal-driven means a run stays inspectable while live
+duration, and cost. When a terminal proof packet exists, the detail page also
+shows the objective, acceptance criteria, declared evidence, repository drift,
+and explicit unknowns. Journal-driven means a run stays inspectable while live
 and after the orchestrator exits, with no terminal paging limits.
 
 ## Workflow children and the end-of-turn ritual

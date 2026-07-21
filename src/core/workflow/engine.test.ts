@@ -1,10 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { runWorkflow } from "./engine.ts";
-import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
+import type { Spawner, SpawnRequest, SpawnResult, WorkflowProof } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 
 let root: string;
@@ -12,8 +21,9 @@ let scriptDir: string;
 let seq = 0;
 
 beforeEach(() => {
+  const tempRoot = process.platform === "linux" ? "/tmp" : tmpdir();
   root = join(
-    tmpdir(),
+    tempRoot,
     `workflow-engine-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   );
   scriptDir = join(root, "scripts");
@@ -355,6 +365,102 @@ describe("runWorkflow", () => {
     });
     expect(report.contextTokensPerChildEstimate).toBe(10_000);
     expect(seenRunId).toBe(report.runId);
+  });
+
+  test("writes a private proof packet with acceptance receipts, digests, repository drift, and normalized journals", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "workflow-test@example.invalid"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "Workflow Test"], { cwd: root });
+    writeFileSync(join(root, "base.txt"), "base\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+
+    const artifactPath = join(root, "proof-artifact.txt");
+    const script = writeScript(`
+      import { writeFileSync } from "node:fs";
+      export const meta = {
+        name: "proof-run",
+        objective: "Produce an inspectable artifact",
+        acceptance: [{ id: "artifact", statement: "The artifact exists" }],
+      };
+      export default async ({ agent, evidence }) => {
+        const result = await agent("produce the private value");
+        writeFileSync(${JSON.stringify(artifactPath)}, "artifact\\n", "utf8");
+        evidence({
+          kind: "artifact",
+          status: "passed",
+          label: "Artifact written",
+          ref: ${JSON.stringify(artifactPath)},
+          acceptanceIds: ["artifact"],
+        });
+        return { complete: true, result };
+      };
+    `);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      cwd: root,
+      spawners: { codex: async () => okSpawn("TOP_SECRET_REPLY") },
+      defaultHarness: "codex",
+      harnessEvidence: {
+        codex: {
+          toolEvidence: {
+            support: "unsupported",
+            note: "The final-result adapter does not retain tool events.",
+          },
+        },
+      },
+      ...quiet,
+    });
+
+    expect(report.proofPath).toEndWith("proof.json");
+    expect(report.acceptance).toEqual({ satisfied: 1, unsatisfied: 0, unknown: 0, total: 1 });
+    expect(statSync(report.proofPath).mode & 0o777).toBe(0o600);
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(proof.schema_version).toBe(1);
+    expect(proof.run.status).toBe("succeeded");
+    expect(proof.acceptance.criteria[0]?.status).toBe("satisfied");
+    expect(proof.evidence[0]?.source).toBe("workflow");
+    expect(proof.repository.source).toBe("engine");
+    expect(proof.repository.drift.dirty_paths_added).toContain("proof-artifact.txt");
+    expect(proof.agents[0]?.result?.sha256).toHaveLength(64);
+    expect(JSON.stringify(proof)).not.toContain("TOP_SECRET_REPLY");
+    expect(JSON.stringify(proof)).not.toContain("produce the private value");
+    expect(proof.unknowns.some((item) => item.code === "tool_evidence_unavailable")).toBe(true);
+
+    const journal = readJournal();
+    expect(journal.every((event) => event.schema_version === 1)).toBe(true);
+    expect(journal.every((event) => event.run_id === report.runId)).toBe(true);
+    expect(proof.integrity.journal.bytes).toBe(statSync(report.journalPath).size);
+  });
+
+  test("a failed workflow still writes a terminal proof packet and exposes its path", async () => {
+    const script = writeScript(`
+      export const meta = {
+        name: "failed-proof",
+        acceptance: [{ id: "check", statement: "The check passes" }],
+      };
+      export default async ({ evidence }) => {
+        evidence({ kind: "test", status: "failed", label: "Focused test", acceptanceIds: ["check"] });
+        throw new Error("deliberate workflow failure");
+      };
+    `);
+    try {
+      await runWorkflow(script, {
+        coordRoot: root,
+        spawners: { "claude-code": async () => okSpawn("unused") },
+        ...quiet,
+      });
+      throw new Error("expected workflow failure");
+    } catch (error) {
+      expect((error as Error).message).toContain("deliberate workflow failure");
+      const proofPath = (error as Error & { proofPath?: string }).proofPath;
+      expect(proofPath).toBeString();
+      expect(existsSync(proofPath as string)).toBe(true);
+      const proof = JSON.parse(readFileSync(proofPath as string, "utf8")) as WorkflowProof;
+      expect(proof.run.status).toBe("failed");
+      expect(proof.run.error).toBe("deliberate workflow failure");
+      expect(proof.acceptance.criteria[0]?.status).toBe("unsatisfied");
+    }
   });
 
   function readJournal(): Array<Record<string, unknown> & { event: string }> {

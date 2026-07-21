@@ -9,6 +9,164 @@
 
 import type { BillingMode, BillingProber } from "./billing.ts";
 
+export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
+
+export type EvidenceKind = "test" | "command" | "artifact" | "change" | "review" | "observation";
+export type EvidenceStatus = "passed" | "failed" | "observed" | "unknown";
+export type EvidenceSource = "workflow" | "engine";
+export type AcceptanceStatus = "satisfied" | "unsatisfied" | "unknown";
+export type WorkflowRunStatus = "succeeded" | "failed";
+
+export interface AcceptanceCriterion {
+  /** Stable identifier referenced by evidence, for example `tests-pass`. */
+  id: string;
+  statement: string;
+}
+
+export interface WorkflowEvidenceInput {
+  kind: EvidenceKind;
+  status: EvidenceStatus;
+  label: string;
+  summary?: string;
+  /** Inspectable local path, URL, command name, or other bounded reference. */
+  ref?: string;
+  /** Declared acceptance criteria this evidence bears on. */
+  acceptanceIds?: string[];
+}
+
+export interface WorkflowEvidenceRecord {
+  id: string;
+  source: EvidenceSource;
+  recorded_at: string;
+  kind: EvidenceKind;
+  status: EvidenceStatus;
+  label: string;
+  summary?: string;
+  ref?: string;
+  stage?: string;
+  acceptance_ids: string[];
+}
+
+export interface AcceptanceResult extends AcceptanceCriterion {
+  status: AcceptanceStatus;
+  evidence_ids: string[];
+  /** Sources behind the decisive evidence. Empty when status is unknown. */
+  sources: EvidenceSource[];
+}
+
+export interface AcceptanceSummary {
+  satisfied: number;
+  unsatisfied: number;
+  unknown: number;
+  total: number;
+}
+
+export interface ResultDigest {
+  kind: "text" | "json";
+  sha256: string;
+  bytes: number;
+}
+
+export interface WorkflowAgentProof {
+  id: string;
+  label: string;
+  stage?: string;
+  harness: HarnessName;
+  model?: string;
+  status: "succeeded" | "failed" | "cached";
+  attempts: number;
+  duration_ms: number;
+  cost_usd?: number;
+  session_id?: string;
+  result?: ResultDigest;
+  error?: string;
+}
+
+export interface WorkflowRepoSnapshot {
+  cwd: string;
+  root?: string;
+  branch?: string;
+  head?: string;
+  dirty_paths: string[];
+  dirty_paths_truncated?: boolean;
+}
+
+export interface WorkflowRepoEvidence {
+  source: "engine";
+  before: WorkflowRepoSnapshot;
+  after: WorkflowRepoSnapshot;
+  drift: {
+    branch_changed: boolean;
+    head_changed: boolean;
+    dirty_paths_added: string[];
+    dirty_paths_cleared: string[];
+    dirty_paths_retained: string[];
+    /** True when snapshots cannot prove whether every retained dirty path changed. */
+    incomplete: boolean;
+    note?: string;
+  };
+}
+
+export interface HarnessEvidenceCoverage {
+  harness: HarnessName;
+  tool_evidence: {
+    support: "supported" | "partial" | "unsupported" | "unknown";
+    note?: string;
+  };
+  observed: {
+    final_results: number;
+    session_ids: number;
+    costs: number;
+  };
+}
+
+export interface WorkflowProofUnknown {
+  code:
+    | "tool_evidence_unavailable"
+    | "harness_capability_unregistered"
+    | "agent_cost_unreported"
+    | "agent_session_unreported"
+    | "repository_drift_incomplete";
+  message: string;
+  harness?: HarnessName;
+  agent_id?: string;
+}
+
+export interface WorkflowProof {
+  schema_version: typeof WORKFLOW_PROOF_SCHEMA_VERSION;
+  run: {
+    id: string;
+    name: string;
+    status: WorkflowRunStatus;
+    started_at: string;
+    ended_at: string;
+    duration_ms: number;
+    objective?: string;
+    error?: string;
+    result?: ResultDigest;
+  };
+  acceptance: {
+    criteria: AcceptanceResult[];
+    summary: AcceptanceSummary;
+  };
+  agents: WorkflowAgentProof[];
+  evidence: WorkflowEvidenceRecord[];
+  repository: WorkflowRepoEvidence;
+  harnesses: HarnessEvidenceCoverage[];
+  unknowns: WorkflowProofUnknown[];
+  integrity: {
+    journal: {
+      path: "journal.jsonl";
+      sha256: string;
+      bytes: number;
+    };
+  };
+}
+
+export interface HarnessEvidenceCapability {
+  toolEvidence: HarnessEvidenceCoverage["tool_evidence"];
+}
+
 /** JSON-schema *subset* accepted by stage gates (see validate.ts). */
 export interface StageSchema {
   type: "object" | "array" | "string" | "number" | "boolean";
@@ -94,11 +252,15 @@ export interface WorkflowContext {
   stage: (title: string) => void;
   /** Narrate progress (stderr + journal). */
   log: (message: string) => void;
+  /** Attach a bounded, sourced receipt to the run and optional acceptance criteria. */
+  evidence: (input: WorkflowEvidenceInput) => string;
 }
 
 export interface WorkflowMeta {
   name: string;
   description?: string;
+  objective?: string;
+  acceptance?: AcceptanceCriterion[];
 }
 
 /** Loaded script shape: `export const meta` + `export default async (ctx) => …`. */
@@ -138,6 +300,9 @@ export interface EngineOpts {
   allowApiBilling?: boolean;
   /** Billing-probe override for tests (default: the real probeBilling). */
   probeBilling?: BillingProber;
+  /** Capability claims used to state whether adapter-native tool evidence was
+   * available. Missing claims remain unknown. */
+  harnessEvidence?: Readonly<Record<HarnessName, HarnessEvidenceCapability | undefined>>;
 }
 
 export interface RunReport {
@@ -151,6 +316,8 @@ export interface RunReport {
   costUsd: number;
   durationMs: number;
   journalPath: string;
+  proofPath: string;
+  acceptance: AcceptanceSummary;
   /** Estimated tokens of repo instructions (CLAUDE.md/AGENTS.md at the child
    * cwd) that EVERY child cache-writes on spawn — the fixed per-child context
    * overhead a fan-out multiplies. bytes/4 heuristic; 0 when no such file. */

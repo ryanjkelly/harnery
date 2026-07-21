@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { WorkflowProof } from "harnery/core/workflow";
 
 /**
  * Journal-driven reader for workflow runs (`.harnery/workflows/<run-id>/
@@ -32,6 +33,8 @@ export interface WorkflowRunSummary {
   costUsd: number;
   /** "harness=mode" per harness used (from billing.probe journal events). */
   billing: string[];
+  /** Terminal proof packet, absent for live and pre-proof runs. */
+  proof?: WorkflowProof;
   /** Journal mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
 }
@@ -117,6 +120,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
   let agentsCached = 0;
   let costUsd = 0;
   const billing: string[] = [];
+  const proof = readProof(root, runId);
 
   for (const line of readFileSync(journalPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
@@ -207,6 +211,18 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
     agentsCached,
     costUsd: Math.round(costUsd * 10_000) / 10_000,
     billing,
+    proof,
     lastActivityAt: mtimeIso,
   };
+}
+
+function readProof(root: string, runId: string): WorkflowProof | undefined {
+  const path = join(root, ".harnery", "workflows", runId, "proof.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const proof = JSON.parse(readFileSync(path, "utf8")) as WorkflowProof;
+    return proof.schema_version === 1 && proof.run?.id === runId ? proof : undefined;
+  } catch {
+    return undefined;
+  }
 }

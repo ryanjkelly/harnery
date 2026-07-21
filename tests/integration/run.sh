@@ -77,20 +77,25 @@ check "harn harness list includes all built-ins" \
 check "harn harness bench makes no model calls" \
   "$HARN harness bench" "offline (no model calls)"
 
-# 5. harn web --help mentions all subcommands
+# 5. harn workflow --help exposes proof inspection
+check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"
+check "harn workflow proof --help mentions JSON output" \
+  "$HARN workflow proof --help" "--json"
+
+# 6. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
 check "harn web --help mentions build" "$HARN web --help" "build"
 check "harn web --help mentions start" "$HARN web --help" "start"
 
-# 6. harn backup --help mentions subcommands
+# 7. harn backup --help mentions subcommands
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 7. harn sync --help mentions subcommands
+# 8. harn sync --help mentions subcommands
 check "harn sync --help mentions push" "$HARN sync --help" "push"
 check "harn sync --help mentions pull" "$HARN sync --help" "pull"
 
-# 8. Error path: harn backup init without restic surfaces a structured error
+# 9. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1

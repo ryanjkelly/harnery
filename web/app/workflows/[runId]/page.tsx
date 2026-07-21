@@ -55,6 +55,102 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           {run.billing.length > 0 ? ` · billing: ${run.billing.join(", ")}` : ""}
         </p>
 
+        {run.proof ? (
+          <section className="mb-8 rounded-lg border border-border bg-card p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Run proof</h2>
+              <span className="text-xs text-muted-foreground">
+                {run.proof.acceptance.summary.satisfied} satisfied ·{" "}
+                {run.proof.acceptance.summary.unsatisfied} unsatisfied ·{" "}
+                {run.proof.acceptance.summary.unknown} unknown
+              </span>
+            </div>
+            {run.proof.run.objective ? (
+              <p className="mb-4 text-sm">{run.proof.run.objective}</p>
+            ) : null}
+            {run.proof.acceptance.criteria.length > 0 ? (
+              <ul className="mb-4 space-y-1">
+                {run.proof.acceptance.criteria.map((criterion) => (
+                  <li
+                    key={criterion.id}
+                    className="flex flex-wrap items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"
+                  >
+                    <WorkflowStatusBadge
+                      status={
+                        criterion.status === "satisfied"
+                          ? "done"
+                          : criterion.status === "unsatisfied"
+                            ? "failed"
+                            : "stale"
+                      }
+                    />
+                    <span className="font-mono text-xs text-muted-foreground">{criterion.id}</span>
+                    <span className="min-w-0 flex-1">{criterion.statement}</span>
+                    {criterion.evidence_ids.length > 0 ? (
+                      <span className="text-xs text-muted-foreground">
+                        {criterion.evidence_ids.join(", ")}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {run.proof.evidence.length > 0 ? (
+              <div className="mb-4">
+                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Evidence
+                </h3>
+                <ul className="space-y-1">
+                  {run.proof.evidence.map((evidence) => (
+                    <li
+                      key={evidence.id}
+                      className="rounded-md border border-border px-3 py-2 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {evidence.id}
+                        </span>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                          {evidence.kind} · {evidence.status} · {evidence.source}
+                        </span>
+                        <span>{evidence.label}</span>
+                      </div>
+                      {evidence.summary ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{evidence.summary}</p>
+                      ) : null}
+                      {evidence.ref ? (
+                        <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                          {evidence.ref}
+                        </p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              Repository: {run.proof.repository.before.branch ?? "unknown"} →{" "}
+              {run.proof.repository.after.branch ?? "unknown"} · HEAD{" "}
+              {run.proof.repository.before.head?.slice(0, 8) ?? "unknown"} →{" "}
+              {run.proof.repository.after.head?.slice(0, 8) ?? "unknown"} ·{" "}
+              {run.proof.repository.drift.dirty_paths_added.length} dirty added ·{" "}
+              {run.proof.repository.drift.dirty_paths_cleared.length} cleared
+            </p>
+            {run.proof.unknowns.length > 0 ? (
+              <details className="mt-3 text-xs text-muted-foreground">
+                <summary className="cursor-pointer">{run.proof.unknowns.length} unknowns</summary>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {run.proof.unknowns.map((unknown, index) => (
+                    <li key={`${unknown.code}-${unknown.agent_id ?? unknown.harness ?? index}`}>
+                      {unknown.message}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </section>
+        ) : null}
+
         {orderedStages.length === 0 ? (
           <p className="text-sm text-muted-foreground">No agents journaled yet.</p>
         ) : (
@@ -69,9 +165,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                       className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm"
                     >
                       <WorkflowStatusBadge
-                        status={
-                          a.sessionId && liveChildren.has(a.sessionId) ? "running" : a.status
-                        }
+                        status={a.sessionId && liveChildren.has(a.sessionId) ? "running" : a.status}
                       />
                       <span className="font-mono text-xs text-muted-foreground">{a.id}</span>
                       {a.harness ? (

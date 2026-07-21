@@ -21,16 +21,28 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { snapshotRepo } from "../context/index.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
+import {
+  buildWorkflowProof,
+  createEvidenceRecord,
+  digestResult,
+  normalizeWorkflowMeta,
+  writeWorkflowProof,
+} from "./proof.ts";
 import type {
   AgentOpts,
   EngineOpts,
   HarnessName,
   RunReport,
   SpawnResult,
+  WorkflowAgentProof,
   WorkflowContext,
+  WorkflowEvidenceRecord,
   WorkflowModule,
+  WorkflowProof,
 } from "./types.ts";
+import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 
 const DEFAULT_MAX_AGENTS = 50;
@@ -39,24 +51,40 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_TURNS = 25;
 
+export class WorkflowRunError extends Error {
+  readonly runId: string;
+  readonly proofPath: string;
+
+  constructor(message: string, runId: string, proofPath: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "WorkflowRunError";
+    this.runId = runId;
+    this.proofPath = proofPath;
+  }
+}
+
 export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise<RunReport> {
   const absScript = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
   const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
   if (typeof mod.default !== "function") {
     throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
   }
-  const name = mod.meta?.name ?? scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
+  const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
+  const meta = normalizeWorkflowMeta(mod.meta, fallbackName);
+  const name = meta.name;
 
   const runId = `wf-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const runDir = join(opts.coordRoot, ".harnery", "workflows", runId);
   mkdirSync(runDir, { recursive: true });
   const journalPath = join(runDir, "journal.jsonl");
+  const proofPath = join(runDir, "proof.json");
 
   const maxAgents = opts.maxAgents ?? DEFAULT_MAX_AGENTS;
   const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
   const cwd = opts.cwd ?? opts.coordRoot;
   const log = opts.onLog ?? ((line: string) => process.stderr.write(`${line}\n`));
   const defaultHarness: HarnessName = opts.defaultHarness ?? "claude-code";
+  const repoBefore = snapshotRepo(cwd);
 
   // Per-child fixed context overhead: children spawn in `cwd` and load its
   // repo-instructions file into their system prompt, cache-writing it once
@@ -79,10 +107,16 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   let costUsd = 0;
   let currentStage = "";
   let agentSeq = 0;
+  let evidenceSeq = 0;
   const billingProbed = new Map<HarnessName, BillingProbe>();
+  const agentProofs = new Map<string, WorkflowAgentProof>();
+  const evidenceRecords: WorkflowEvidenceRecord[] = [];
+  const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
 
   const journal = (event: string, data: Record<string, unknown>): void => {
     const line = JSON.stringify({
+      schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
+      run_id: runId,
       ts: new Date().toISOString(),
       event,
       stage: currentStage,
@@ -119,7 +153,19 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     }
     const id = `a${++agentSeq}`;
     const label = agentOpts.label ?? `${prompt.slice(0, 60).replace(/\s+/g, " ")}…`;
+    const proofLabel = agentOpts.label ?? id;
     const maxAttempts = agentOpts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    const agentProof: WorkflowAgentProof = {
+      id,
+      label: proofLabel,
+      stage: currentStage || undefined,
+      harness,
+      model: agentOpts.model,
+      status: "failed",
+      attempts: 0,
+      duration_ms: 0,
+    };
+    agentProofs.set(id, agentProof);
 
     // Call identity for resume: same stage + harness + model + effort + turns + schema
     // + ORIGINAL prompt → same key. Retry-mutated prompts never enter the key.
@@ -127,7 +173,16 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     const cached = resumeCache.get(key);
     if (cached) {
       agentsCached++;
-      journal("agent.cached", { id, label, key, kind: cached.kind });
+      agentProof.status = "cached";
+      agentProof.result = digestResult(cached.value, cached.kind);
+      journal("agent.cached", {
+        id,
+        label,
+        key,
+        harness,
+        model: agentOpts.model ?? null,
+        kind: cached.kind,
+      });
       log(
         `[${name}] ${currentStage || "(no stage)"} → ${id} ${label} (cached from ${opts.resumeFrom})`,
       );
@@ -179,6 +234,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     }
 
     if (agentsSpawned >= maxAgents) {
+      agentProof.error = `workflow agent cap reached (${maxAgents})`;
       throw new Error(
         `workflow agent cap reached (${maxAgents}); raise --max-agents deliberately if the fan-out is intended`,
       );
@@ -199,6 +255,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
 
       let attemptPrompt = prompt;
       let last: SpawnResult | null = null;
+      let agentCostUsd = 0;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         last = await spawner({
           prompt: attemptPrompt,
@@ -210,6 +267,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
           runId,
           subscriptionOnly: opts.subscriptionOnly,
         });
+        agentProof.attempts = attempt;
+        agentProof.duration_ms += last.durationMs;
+        agentCostUsd += last.costUsd ?? 0;
         costUsd += last.costUsd ?? 0;
 
         if (!last.ok) {
@@ -217,6 +277,11 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
           continue; // spawn-level failure: retry with the original prompt
         }
         if (!agentOpts.schema) {
+          agentProof.status = "succeeded";
+          agentProof.cost_usd =
+            agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
+          agentProof.session_id = last.sessionId;
+          agentProof.result = digestResult(last.text, "text");
           journal("agent.end", {
             id,
             key,
@@ -236,6 +301,11 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
             ? [parsed.error]
             : validateAgainstSchema(parsed.value, agentOpts.schema);
         if (problems.length === 0) {
+          agentProof.status = "succeeded";
+          agentProof.cost_usd =
+            agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
+          agentProof.session_id = last.sessionId;
+          agentProof.result = digestResult(parsed.value, "json");
           journal("agent.end", {
             id,
             key,
@@ -261,8 +331,15 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       const reason = last?.ok
         ? `schema validation failed after ${maxAttempts} attempt(s)`
         : (last?.error ?? "spawn failed");
+      agentProof.cost_usd =
+        agentCostUsd > 0 || last?.costUsd !== undefined ? agentCostUsd : undefined;
+      agentProof.session_id = last?.sessionId;
+      agentProof.error = reason;
       journal("agent.failed", { id, error: reason });
-      throw new Error(`agent ${id} (${label}): ${reason}`);
+      throw new Error(`agent ${proofLabel}: ${reason}`);
+    } catch (error) {
+      agentProof.error ??= (error as Error).message;
+      throw error;
     } finally {
       release();
     }
@@ -288,12 +365,68 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     log(`[${name}] ── stage: ${title}`);
   };
 
-  const ctx: WorkflowContext = { agent, parallel, stage, log };
+  const evidence = (input: Parameters<WorkflowContext["evidence"]>[0]): string => {
+    const record = createEvidenceRecord({
+      value: input,
+      sequence: evidenceSeq + 1,
+      acceptanceIds,
+      stage: currentStage || undefined,
+    });
+    evidenceSeq++;
+    evidenceRecords.push(record);
+    journal("evidence.recorded", { ...record });
+    return record.id;
+  };
+
+  const ctx: WorkflowContext = { agent, parallel, stage, log, evidence };
 
   const t0 = Date.now();
-  journal("run.start", { name, script: absScript, max_agents: maxAgents, concurrency });
+  const startedAt = new Date(t0).toISOString();
+  journal("run.start", {
+    name,
+    script: absScript,
+    objective: meta.objective ?? null,
+    acceptance: meta.acceptance,
+    max_agents: maxAgents,
+    concurrency,
+  });
   try {
     const result = await mod.default(ctx);
+    const endedAt = new Date().toISOString();
+    const durationMs = Date.now() - t0;
+    journal("run.end", {
+      ok: true,
+      agents: agentsSpawned,
+      cached: agentsCached,
+      cost_usd: round4(costUsd),
+      duration_ms: durationMs,
+    });
+    let proof: WorkflowProof;
+    try {
+      proof = buildWorkflowProof({
+        runId,
+        meta,
+        status: "succeeded",
+        startedAt,
+        endedAt,
+        durationMs,
+        journalPath,
+        before: repoBefore,
+        after: snapshotRepo(cwd),
+        agents: Array.from(agentProofs.values()),
+        evidence: evidenceRecords,
+        harnessEvidence: opts.harnessEvidence,
+        result,
+      });
+      writeWorkflowProof(proofPath, proof);
+    } catch (error) {
+      throw new WorkflowRunError(
+        `workflow completed but its proof packet could not be written: ${(error as Error).message}`,
+        runId,
+        proofPath,
+        error,
+      );
+    }
     const report: RunReport = {
       runId,
       name,
@@ -301,31 +434,55 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       agentsSpawned,
       agentsCached,
       costUsd: round4(costUsd),
-      durationMs: Date.now() - t0,
+      durationMs,
       journalPath,
+      proofPath,
+      acceptance: proof.acceptance.summary,
       contextTokensPerChildEstimate,
       billing: Array.from(billingProbed.values()).map((p) => ({
         harness: p.harness,
         mode: opts.subscriptionOnly ? "subscription" : p.mode,
       })),
     };
-    journal("run.end", {
-      ok: true,
-      agents: agentsSpawned,
-      cached: agentsCached,
-      cost_usd: report.costUsd,
-      duration_ms: report.durationMs,
-    });
     return report;
   } catch (err) {
+    if (err instanceof WorkflowRunError) throw err;
+    const endedAt = new Date().toISOString();
+    const durationMs = Date.now() - t0;
     journal("run.end", {
       ok: false,
       error: (err as Error).message,
       agents: agentsSpawned,
       cached: agentsCached,
       cost_usd: round4(costUsd),
+      duration_ms: durationMs,
     });
-    throw err;
+    try {
+      const proof = buildWorkflowProof({
+        runId,
+        meta,
+        status: "failed",
+        startedAt,
+        endedAt,
+        durationMs,
+        journalPath,
+        before: repoBefore,
+        after: snapshotRepo(cwd),
+        agents: Array.from(agentProofs.values()),
+        evidence: evidenceRecords,
+        harnessEvidence: opts.harnessEvidence,
+        error: (err as Error).message,
+      });
+      writeWorkflowProof(proofPath, proof);
+    } catch (proofError) {
+      throw new WorkflowRunError(
+        `${(err as Error).message}; proof packet write also failed: ${(proofError as Error).message}`,
+        runId,
+        proofPath,
+        err,
+      );
+    }
+    throw new WorkflowRunError((err as Error).message, runId, proofPath, err);
   }
 }
 

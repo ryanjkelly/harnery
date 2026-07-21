@@ -62,6 +62,11 @@
       "types": "./dist/core/context/index.d.ts",
       "import": "./dist/core/context/index.js"
     },
+    "./core/workflow": {
+      "bun": "./src/core/workflow/index.ts",
+      "types": "./dist/core/workflow/index.d.ts",
+      "import": "./dist/core/workflow/index.js"
+    },
     "./lib/agent-browser": {
       "bun": "./src/lib/agent-browser/index.ts",
       "types": "./dist/lib/agent-browser/index.d.ts",

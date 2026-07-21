@@ -25,6 +25,10 @@ interface WorkflowRunOpts {
   json?: boolean;
 }
 
+interface WorkflowProofOpts {
+  json?: boolean;
+}
+
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
   const registry = createBuiltinHarnessRegistry();
   const harnesses = registry.ids();
@@ -35,7 +39,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
   workflow
     .command("run <script>")
     .description(
-      "Execute a workflow script (plain JS: `export default async ({agent, parallel, stage, log}) => …`). " +
+      "Execute a workflow script (plain JS: `export default async ({agent, parallel, stage, log, evidence}) => …`). " +
         "Subagents spawn as headless harness-CLI subprocesses, coordination-registered.",
     )
     .option("--max-agents <n>", "Total-agent ceiling for the run (default 50)")
@@ -99,6 +103,14 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
           cwd: opts.cwd,
+          harnessEvidence: Object.fromEntries(
+            registry
+              .list()
+              .map((adapter) => [
+                adapter.profile.id,
+                { toolEvidence: adapter.profile.capabilities.toolEvidence },
+              ]),
+          ),
         });
         if (opts.json) {
           emit.config({ format: "json" });
@@ -112,11 +124,51 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         emit.text(
           `run ${report.runId} (${report.name}) finished: ${report.agentsSpawned} agent(s)${cachedPart}, ` +
             `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n${billingPart}` +
+            `acceptance: ${report.acceptance.satisfied} satisfied, ${report.acceptance.unsatisfied} unsatisfied, ` +
+            `${report.acceptance.unknown} unknown\n` +
             `journal: ${report.journalPath}\n` +
+            `proof: ${report.proofPath}\n` +
             `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
         );
       } catch (err) {
-        emit.error({ code: "workflow_failed", message: (err as Error).message });
+        const proofPath =
+          typeof err === "object" && err !== null && "proofPath" in err
+            ? String(err.proofPath)
+            : undefined;
+        emit.error({
+          code: "workflow_failed",
+          message: `${(err as Error).message}${proofPath ? `\nproof: ${proofPath}` : ""}`,
+        });
+        process.exit(1);
+      }
+    });
+
+  workflow
+    .command("proof <run-id>")
+    .description("Show the bounded proof packet for a completed workflow run.")
+    .option("--json", "Emit the stored proof packet as JSON")
+    .action(async (runId: string, opts: WorkflowProofOpts) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      try {
+        const { readWorkflowProof, renderWorkflowProof } = await import(
+          "../core/workflow/proof.ts"
+        );
+        const proof = readWorkflowProof(coordRoot, runId);
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(proof);
+          return;
+        }
+        emit.text(renderWorkflowProof(proof));
+      } catch (err) {
+        emit.error({ code: "workflow_proof_failed", message: (err as Error).message });
         process.exit(1);
       }
     });
