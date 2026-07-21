@@ -121,7 +121,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     const label = agentOpts.label ?? `${prompt.slice(0, 60).replace(/\s+/g, " ")}…`;
     const maxAttempts = agentOpts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
-    // Call identity for resume: same stage + harness + model + turns + schema
+    // Call identity for resume: same stage + harness + model + effort + turns + schema
     // + ORIGINAL prompt → same key. Retry-mutated prompts never enter the key.
     const key = agentCallKey(currentStage, harness, agentOpts, prompt);
     const cached = resumeCache.get(key);
@@ -187,7 +187,14 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
 
     await acquire();
     try {
-      journal("agent.start", { id, label, key, harness, model: agentOpts.model ?? null });
+      journal("agent.start", {
+        id,
+        label,
+        key,
+        harness,
+        model: agentOpts.model ?? null,
+        effort: agentOpts.effort ?? null,
+      });
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${harness}] ${label}`);
 
       let attemptPrompt = prompt;
@@ -196,6 +203,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         last = await spawner({
           prompt: attemptPrompt,
           model: agentOpts.model,
+          effort: agentOpts.effort,
           timeoutMs: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxTurns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
           cwd,
@@ -333,6 +341,7 @@ function agentCallKey(
     stage,
     harness,
     agentOpts.model ?? null,
+    agentOpts.effort ?? null,
     agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
     agentOpts.schema ?? null,
     prompt,

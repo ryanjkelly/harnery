@@ -1,0 +1,97 @@
+---
+title: "0018: Harness support is a registered, executable claim"
+description: "ADR: replace duplicated harness lists with three registered adapters and an offline conformance bench that reports unknowns, skips, and drift honestly."
+---
+
+**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/harnesses`, `harness` CLI, workflow dispatch)
+
+## Context
+
+Harnery supported Claude Code, Codex, and Cursor in workflows, hooks, doctor
+checks, and documentation, but the support claim was spread across a closed
+TypeScript union, several command-local arrays, metadata maps, spawn modules,
+and prose. Adding a harness or changing a capability required finding every
+copy. More importantly, the package had no executable answer to questions such
+as “does this adapter expose cost?” or “did a vendor CLI change the result
+contract?”
+
+Internal adapter evaluations exposed a recurring failure: support claims were
+broader than executable behavior. The strongest reusable mechanism was a typed
+capability matrix paired with a conformance bench. Durable run evidence and
+verified effort mappings reinforced the need for one authoritative adapter
+contract.
+
+The package must stay useful without credentials, paid model turns, or a
+resident service. It must also distinguish vendor-product capability from the
+narrower behavior Harnery's adapter actually exposes.
+
+## Decision
+
+Add a product-tier `HarnessRegistry` whose registered adapter owns:
+
+- one `HarnessProfile` with executable metadata and explicit capability
+  claims;
+- the production workflow `spawn` function;
+- the production invocation planner;
+- the production result normalizer;
+- one deterministic result fixture for offline reconciliation.
+
+The built-in catalog remains deliberately limited to `claude-code`, `codex`,
+and `cursor`. Workflow command choices and spawner dispatch now derive from
+the registry. The public `harnery/core/harnesses` export lets an embedding host
+construct a separate registry and register another adapter without first
+widening a package-owned harness union.
+
+Capability claims use `supported`, `partial`, `unsupported`, and `unknown`.
+Unknown is not coerced to false. Partial claims require a qualification. The
+profile describes Harnery's adapter boundary rather than the vendor's complete
+feature set.
+
+Add `harn harness list|show|bench`. The bench is offline by default and makes
+no model calls. It runs the production planner and normalizer against a
+standard request and deterministic vendor-result fixture, probes vendor CLI
+availability with `--version`, and reconciles observations against claims.
+Its verdicts are `supported`, `partial`, `unsupported`, `not_applicable`,
+`unknown`, `skipped`, and `drift`. Drift exits non-zero. A missing vendor
+binary is a neutral skip unless `--require-installed` is set.
+
+Model effort becomes a first-class workflow option and part of the resume
+cache key. Claude maps `effort` to `--effort`; Codex maps it to
+`-c model_reasoning_effort="<level>"`. Each adapter validates its own effort
+domain before launch. Cursor reports separate effort selection as unsupported
+because rewriting parameterized model ids would be an unverified heuristic.
+
+## Alternatives considered
+
+- **Keep the union and add a capability object beside it.** Rejected because
+  duplicated enumeration would remain the source of drift, and workflow
+  dispatch would still bypass the claimed adapter contract.
+- **Adopt a much broader capability model and live bench wholesale.** Rejected
+  because Harnery has a smaller CLI-subprocess boundary and no common live
+  event transport. Claiming dimensions Harnery cannot observe would create
+  impressive-looking but false parity.
+- **Make live model turns the default bench.** Rejected because authentication,
+  spend, model availability, and mutable vendor behavior would make ordinary
+  CI nondeterministic. Live probes can be added later as explicit, opt-in
+  drivers.
+- **Treat missing binaries as failures.** Rejected because developers and CI
+  hosts legitimately install only a subset. `--require-installed` provides the
+  stricter host-certification mode.
+- **Infer Cursor effort by editing the model slug.** Rejected because only some
+  Cursor model ids accept bracket parameters and existing bracket expressions
+  require a real parser. An explicit unsupported claim is safer than an
+  unverified rewrite.
+
+## Consequences
+
+- Adding a built-in harness now begins with one profile and one adapter
+  registration. The workflow command, doctor metadata, public catalog, and
+  bench derive from that source.
+- Offline conformance catches planner/normalizer drift but cannot prove policy,
+  active interruption, streaming, steering, resume, image, or compaction
+  behavior. Those dimensions remain visibly unknown until live drivers exist.
+- The first bench run on 2026-07-21 reported zero drift. Codex
+  `0.145.0-alpha.18` and Cursor `2026.07.16-899851b` were detected; Claude was
+  a neutral skip because its binary was absent from the test shell.
+- The new command, workflow effort option, and public export are a minor
+  pre-1.0 feature and ship with a changeset.

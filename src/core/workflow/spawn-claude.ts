@@ -19,6 +19,8 @@
  */
 
 import { exec } from "../../lib/exec.ts";
+import { validateHarnessEffort } from "../harnesses/profiles.ts";
+import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -33,9 +35,8 @@ interface ClaudeEnvelope {
   errors?: string[];
 }
 
-export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
-  const t0 = Date.now();
-
+export function buildClaudeInvocation(req: SpawnRequest): HarnessInvocation {
+  validateHarnessEffort("claude-code", req.effort);
   const argv = [
     "claude",
     "-p",
@@ -46,35 +47,37 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
     String(req.maxTurns),
   ];
   if (req.model) argv.push("--model", req.model);
+  if (req.effort) argv.push("--effort", req.effort);
+  return { argv };
+}
 
-  const r = await exec(argv, {
-    cwd: req.cwd,
-    env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
-    timeout: req.timeoutMs,
-  });
-  const durationMs = Date.now() - t0;
-
-  if (r.exitCode === 127) {
-    return { ok: false, text: "", durationMs, error: notFoundError("claude-code") };
-  }
-  if (r.exitCode !== 0) {
+export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
+  if (raw.exitCode === 127) {
     return {
       ok: false,
       text: "",
-      durationMs,
-      error: `claude exited ${r.exitCode}: ${(r.stderr || r.stdout).slice(0, 500)}`,
+      durationMs: raw.durationMs,
+      error: notFoundError("claude-code"),
+    };
+  }
+  if (raw.exitCode !== 0) {
+    return {
+      ok: false,
+      text: "",
+      durationMs: raw.durationMs,
+      error: `claude exited ${raw.exitCode}: ${(raw.stderr || raw.stdout).slice(0, 500)}`,
     };
   }
 
   let envelope: ClaudeEnvelope;
   try {
-    envelope = JSON.parse(r.stdout) as ClaudeEnvelope;
+    envelope = JSON.parse(raw.stdout) as ClaudeEnvelope;
   } catch {
     return {
       ok: false,
       text: "",
-      durationMs,
-      error: `result envelope was not JSON: ${r.stdout.slice(0, 300)}`,
+      durationMs: raw.durationMs,
+      error: `result envelope was not JSON: ${raw.stdout.slice(0, 300)}`,
     };
   }
 
@@ -84,7 +87,7 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
       text: String(envelope.result ?? ""),
       sessionId: envelope.session_id,
       costUsd: envelope.total_cost_usd,
-      durationMs,
+      durationMs: raw.durationMs,
       error: `harness error (${envelope.subtype ?? "unknown"}): ${(envelope.errors ?? []).join("; ") || "see envelope"}`,
     };
   }
@@ -94,6 +97,22 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
     text: String(envelope.result ?? ""),
     sessionId: envelope.session_id,
     costUsd: envelope.total_cost_usd,
-    durationMs,
+    durationMs: raw.durationMs,
   };
+}
+
+export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
+  const t0 = Date.now();
+  let invocation: HarnessInvocation;
+  try {
+    invocation = buildClaudeInvocation(req);
+  } catch (error) {
+    return { ok: false, text: "", durationMs: 0, error: (error as Error).message };
+  }
+  const r = await exec(invocation.argv, {
+    cwd: req.cwd,
+    env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
+    timeout: req.timeoutMs,
+  });
+  return normalizeClaudeResult({ ...r, durationMs: Date.now() - t0 });
 };

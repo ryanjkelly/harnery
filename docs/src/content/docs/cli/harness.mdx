@@ -1,0 +1,85 @@
+---
+title: harn harness
+description: Inspect the registered Claude, Codex, and Cursor adapter capabilities and run the offline conformance bench.
+sidebar:
+  order: 29
+---
+
+```
+harn harness list [--json]
+harn harness show <id> [--json]
+harn harness bench [harnesses...] [--require-installed] [--json]
+```
+
+`harn harness` is the executable source of truth for Harnery's workflow
+adapters. The built-in registry intentionally contains three harnesses:
+`claude-code`, `codex`, and `cursor`.
+
+The registry describes the Harnery adapter boundary, not every feature in the
+vendor product. For example, Cursor Agent can stream JSON, but Harnery's
+workflow adapter currently returns only a normalized final result, so
+`streaming` is declared unsupported for that adapter.
+
+## Capability catalog
+
+`harn harness list` prints the high-signal claims. `harn harness show <id>`
+prints every dimension, its support level, and its qualification.
+
+Claims use four states:
+
+| State | Meaning |
+| --- | --- |
+| `supported` | The adapter implements the capability. |
+| `partial` | A narrower form works; read the qualification. |
+| `unsupported` | The adapter does not expose the capability. |
+| `unknown` | Harnery does not have enough evidence to claim either way. |
+
+The current dimensions cover invocation, model and effort selection, turn
+ceilings, final results, session ids, cost, tool evidence, policy mapping,
+interruption, streaming, steering, resume, images, and compaction.
+
+## Conformance bench
+
+`harn harness bench` runs without credentials and makes no model calls. It
+uses the same invocation planners and result normalizers as production
+workflow runs, then reconciles their observed behavior with the registry
+claims. A disagreement is `drift` and exits non-zero.
+
+The full verdict vocabulary is:
+
+| Verdict | Meaning |
+| --- | --- |
+| `supported` / `unsupported` / `partial` | Observation agrees with the declaration. |
+| `unknown` | No offline probe exists for that behavior yet. |
+| `skipped` | The vendor binary is unavailable in this environment. |
+| `not_applicable` | The dimension does not apply to the adapter. |
+| `drift` | Executable behavior disagrees with the declared profile. |
+
+A missing binary is a neutral skip by default because the registry can be
+tested on machines that do not install every vendor CLI. Pass
+`--require-installed` when the current machine is expected to host every
+registered harness. `--json` emits the complete report for CI or dashboards.
+
+The offline bench currently proves registration, binary availability,
+invocation planning, model and effort mapping, turn-ceiling mapping, final
+result normalization, session-id extraction, cost extraction, and the absence
+of normalized tool evidence. Policy, active interruption, streaming,
+steering, resume, image input, and compaction remain `unknown` until a safe
+behavioral probe exists.
+
+## Workflow effort selection
+
+Workflow `agent()` calls accept `effort` alongside `model`:
+
+```js
+await agent("Review this patch", {
+  harness: "codex",
+  model: "gpt-5.6-sol",
+  effort: "high",
+});
+```
+
+Claude Code maps effort to `--effort`. Codex maps it to
+`-c model_reasoning_effort="…"`. Cursor's parameterized model ids can carry
+effort for some models, but Harnery deliberately does not rewrite model ids;
+separate Cursor effort requests fail before launch.

@@ -7,32 +7,27 @@
  * but they do drift — keep this module the single place they live.
  */
 
+import { BUILTIN_HARNESS_PROFILES } from "../harnesses/profiles.ts";
 import type { HarnessName } from "./types.ts";
 
-export const HARNESS_BINARIES: Record<HarnessName, string> = {
-  "claude-code": "claude",
-  codex: "codex",
-  cursor: "cursor-agent",
-};
+export const HARNESS_BINARIES: Record<string, string> = Object.fromEntries(
+  Object.values(BUILTIN_HARNESS_PROFILES).map((profile) => [profile.id, profile.binary]),
+);
 
-export const HARNESS_INSTALL_HINTS: Record<HarnessName, string> = {
-  "claude-code": "npm install -g @anthropic-ai/claude-code",
-  codex: "npm install -g @openai/codex",
-  cursor: "curl https://cursor.com/install -fsS | bash",
-};
+export const HARNESS_INSTALL_HINTS: Record<string, string> = Object.fromEntries(
+  Object.values(BUILTIN_HARNESS_PROFILES).map((profile) => [profile.id, profile.installHint]),
+);
 
 /** How to authenticate each CLI with a subscription login (the billing
  * default — see billing.ts). */
-export const HARNESS_LOGIN_HINTS: Record<HarnessName, string> = {
-  "claude-code": "run `claude` and use /login",
-  codex: "codex login",
-  cursor: "cursor-agent login",
-};
+export const HARNESS_LOGIN_HINTS: Record<string, string> = Object.fromEntries(
+  Object.values(BUILTIN_HARNESS_PROFILES).map((profile) => [profile.id, profile.loginHint]),
+);
 
 /** One-line "it's missing, here's the fix" string for spawn adapters. */
 export function notFoundError(harness: HarnessName): string {
-  return (
-    `${HARNESS_BINARIES[harness]} CLI not found on PATH; ` +
-    `install: ${HARNESS_INSTALL_HINTS[harness]}  then authenticate: ${HARNESS_LOGIN_HINTS[harness]}`
-  );
+  const binary = HARNESS_BINARIES[harness] ?? harness;
+  const install = HARNESS_INSTALL_HINTS[harness] ?? "install the harness CLI";
+  const login = HARNESS_LOGIN_HINTS[harness] ?? "authenticate the harness CLI";
+  return `${binary} CLI not found on PATH; ` + `install: ${install}  then authenticate: ${login}`;
 }

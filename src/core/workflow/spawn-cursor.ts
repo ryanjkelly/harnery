@@ -17,6 +17,8 @@
  */
 
 import { exec } from "../../lib/exec.ts";
+import { validateHarnessEffort } from "../harnesses/profiles.ts";
+import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -46,44 +48,61 @@ export function parseCursorOutput(stdout: string): {
   }
 }
 
-export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
-  const t0 = Date.now();
-
+export function buildCursorInvocation(req: SpawnRequest): HarnessInvocation {
+  validateHarnessEffort("cursor", req.effort);
   // --trust: headless cursor-agent refuses untrusted workspaces (exit 1,
   // "Workspace Trust Required"). Workflow children run in the engine's cwd
   // deliberately and may edit files — the same posture as the codex adapter's
   // `--sandbox workspace-write` — so trusting that directory is implied.
   const argv = ["cursor-agent", "-p", req.prompt, "--output-format", "json", "--trust"];
   if (req.model) argv.push("--model", req.model);
+  return { argv };
+}
 
-  const r = await exec(argv, {
-    cwd: req.cwd,
-    env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
-    timeout: req.timeoutMs,
-  });
-  const durationMs = Date.now() - t0;
-
-  if (r.exitCode === 127) {
-    return { ok: false, text: "", durationMs, error: notFoundError("cursor") };
+export function normalizeCursorResult(raw: HarnessRawResult): SpawnResult {
+  if (raw.exitCode === 127) {
+    return { ok: false, text: "", durationMs: raw.durationMs, error: notFoundError("cursor") };
   }
-  if (r.exitCode !== 0) {
+  if (raw.exitCode !== 0) {
     return {
       ok: false,
       text: "",
-      durationMs,
-      error: `cursor-agent exited ${r.exitCode}: ${(r.stderr || r.stdout).slice(0, 500)}`,
+      durationMs: raw.durationMs,
+      error: `cursor-agent exited ${raw.exitCode}: ${(raw.stderr || raw.stdout).slice(0, 500)}`,
     };
   }
 
-  const parsed = parseCursorOutput(r.stdout);
+  const parsed = parseCursorOutput(raw.stdout);
   if (parsed.isError) {
     return {
       ok: false,
       text: parsed.text,
       sessionId: parsed.sessionId,
-      durationMs,
+      durationMs: raw.durationMs,
       error: `cursor-agent reported is_error: ${parsed.text.slice(0, 300)}`,
     };
   }
-  return { ok: true, text: parsed.text, sessionId: parsed.sessionId, durationMs };
+  return {
+    ok: true,
+    text: parsed.text,
+    sessionId: parsed.sessionId,
+    durationMs: raw.durationMs,
+  };
+}
+
+export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
+  const t0 = Date.now();
+  let invocation: HarnessInvocation;
+  try {
+    invocation = buildCursorInvocation(req);
+  } catch (error) {
+    return { ok: false, text: "", durationMs: 0, error: (error as Error).message };
+  }
+
+  const r = await exec(invocation.argv, {
+    cwd: req.cwd,
+    env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
+    timeout: req.timeoutMs,
+  });
+  return normalizeCursorResult({ ...r, durationMs: Date.now() - t0 });
 };

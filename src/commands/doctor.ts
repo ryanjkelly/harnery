@@ -18,6 +18,7 @@ import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
+import { BUILTIN_HARNESS_IDS } from "../core/harnesses/index.ts";
 import { loadHarnessWiring } from "../core/hooks/harness/wiring.ts";
 import { probeBilling } from "../core/workflow/billing.ts";
 import {
@@ -103,9 +104,7 @@ export function runChecks(): Check[] {
     checkRipgrep(),
     checkHarneryDir(),
     checkHarnessHooks(),
-    checkWorkflowHarness("claude-code"),
-    checkWorkflowHarness("codex"),
-    checkWorkflowHarness("cursor"),
+    ...BUILTIN_HARNESS_IDS.map(checkWorkflowHarness),
     checkRestic(),
     checkRclone(),
     checkPlaywright(),

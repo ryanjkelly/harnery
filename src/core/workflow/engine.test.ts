@@ -41,7 +41,7 @@ function okSpawn(text: string, extra: Partial<SpawnResult> = {}): SpawnResult {
 // never depend on the machine's real credential files / exported keys.
 const quiet = {
   onLog: () => {},
-  probeBilling: (harness: "claude-code" | "codex" | "cursor") => ({
+  probeBilling: (harness: string) => ({
     harness,
     apiKeySource: null,
     apiKeyPresent: false,
@@ -177,6 +177,35 @@ describe("runWorkflow", () => {
     const end = journal.find((e) => e.event === "agent.end");
     expect(end?.stage).toBe("explore");
     expect(end?.session_id).toBe("child-s");
+  });
+
+  test("effort reaches the adapter and participates in resume identity", async () => {
+    const requests: SpawnRequest[] = [];
+    const spawner: Spawner = async (req) => {
+      requests.push(req);
+      return okSpawn(`reply-${req.effort}`);
+    };
+    const firstScript = writeScript(`
+      export default async ({ agent }) => agent("inspect", { effort: "high" });
+    `);
+    const first = await runWorkflow(firstScript, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
+    expect(requests[0]?.effort).toBe("high");
+
+    const changedEffortScript = writeScript(`
+      export default async ({ agent }) => agent("inspect", { effort: "low" });
+    `);
+    const second = await runWorkflow(changedEffortScript, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      resumeFrom: first.runId,
+      ...quiet,
+    });
+    expect(second.agentsCached).toBe(0);
+    expect(requests[1]?.effort).toBe("low");
   });
 
   test("spawn-level failure retries, then surfaces the spawn error", async () => {
@@ -388,7 +417,7 @@ describe("stop-hook workflow-child exemption", () => {
 });
 
 describe("billing safeguards", () => {
-  const overrideProbe = (harness: "claude-code" | "codex" | "cursor") => ({
+  const overrideProbe = (harness: string) => ({
     harness,
     apiKeySource: "ANTHROPIC_API_KEY",
     apiKeyPresent: true,

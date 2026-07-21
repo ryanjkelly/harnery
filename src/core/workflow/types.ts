@@ -28,6 +28,9 @@ export interface AgentOpts {
   schema?: StageSchema;
   /** Model slug passed through to the harness CLI (default: the CLI's default). */
   model?: string;
+  /** Reasoning effort mapped through the selected harness profile. Unsupported
+   * values fail before the vendor process starts. */
+  effort?: string;
   /** Attempt ceiling for the schema-retry loop (default 2). */
   maxAttempts?: number;
   /** Subprocess timeout ms (default 300_000). */
@@ -43,7 +46,10 @@ export interface AgentOpts {
   harness?: HarnessName;
 }
 
-export type HarnessName = "claude-code" | "codex" | "cursor";
+/** Open registry key. The built-in catalog currently contains Claude Code,
+ * Codex, and Cursor; consumers may register another adapter without widening
+ * a package-owned union first. */
+export type HarnessName = string;
 
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
@@ -61,6 +67,7 @@ export interface SpawnResult {
 export interface SpawnRequest {
   prompt: string;
   model?: string;
+  effort?: string;
   timeoutMs: number;
   maxTurns: number;
   cwd: string;
@@ -105,7 +112,7 @@ export interface EngineOpts {
   coordRoot: string;
   /** Spawner registry keyed by harness. A single-harness caller registers one
    * entry and names it in `defaultHarness`. */
-  spawners: Partial<Record<HarnessName, Spawner>>;
+  spawners: Readonly<Record<HarnessName, Spawner | undefined>>;
   /** Harness used when an agent() call doesn't name one (default "claude-code"). */
   defaultHarness?: HarnessName;
   /** Resume: run id of a prior run whose journal supplies cached results.

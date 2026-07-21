@@ -57,6 +57,7 @@ check "harn --help mentions backup" "$HARN --help" "backup"
 check "harn --help mentions sync" "$HARN --help" "sync"
 check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
+check "harn --help mentions harness" "$HARN --help" "harness"
 
 # 2. harn doctor
 check "harn doctor reports node check" "$HARN doctor" "node"
@@ -70,20 +71,26 @@ printf "hello world\n" > "$TOKENS_TMP"
 check "harn tokens counts a small file" "$HARN tokens '$TOKENS_TMP'" "tokens"
 rm -f "$TOKENS_TMP"
 
-# 4. harn web --help mentions all subcommands
+# 4. harn harness catalog + offline bench
+check "harn harness list includes all built-ins" \
+  "$HARN harness list" "cursor-agent"
+check "harn harness bench makes no model calls" \
+  "$HARN harness bench" "offline (no model calls)"
+
+# 5. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
 check "harn web --help mentions build" "$HARN web --help" "build"
 check "harn web --help mentions start" "$HARN web --help" "start"
 
-# 5. harn backup --help mentions subcommands
+# 6. harn backup --help mentions subcommands
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 6. harn sync --help mentions subcommands
+# 7. harn sync --help mentions subcommands
 check "harn sync --help mentions push" "$HARN sync --help" "push"
 check "harn sync --help mentions pull" "$HARN sync --help" "pull"
 
-# 7. Error path: harn backup init without restic surfaces a structured error
+# 8. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1

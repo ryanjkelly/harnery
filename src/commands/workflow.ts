@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
+import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 
 /**
@@ -24,9 +25,9 @@ interface WorkflowRunOpts {
   json?: boolean;
 }
 
-const HARNESSES = ["claude-code", "codex", "cursor"] as const;
-
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
+  const registry = createBuiltinHarnessRegistry();
+  const harnesses = registry.ids();
   const workflow = program
     .command("workflow")
     .description("Run bounded, schema-gated multi-subagent workflow scripts.");
@@ -42,7 +43,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option("--cwd <dir>", "Working directory children spawn in (default: coord root)")
     .option(
       "--harness <name>",
-      `Default harness for agent() calls: ${HARNESSES.join(" | ")} (default claude-code); scripts can override per agent via opts.harness`,
+      `Default harness for agent() calls: ${harnesses.join(" | ")} (default claude-code); scripts can override per agent via opts.harness`,
     )
     .option(
       "--resume-from <run-id>",
@@ -68,10 +69,10 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      if (opts.harness && !HARNESSES.includes(opts.harness as (typeof HARNESSES)[number])) {
+      if (opts.harness && !registry.get(opts.harness)) {
         emit.error({
           code: "bad_harness",
-          message: `unknown harness "${opts.harness}" (expected: ${HARNESSES.join(" | ")})`,
+          message: `unknown harness "${opts.harness}" (expected: ${harnesses.join(" | ")})`,
         });
         process.exit(1);
       }
@@ -87,21 +88,11 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       try {
-        const [{ runWorkflow }, { claudeCodeSpawner }, { codexSpawner }, { cursorSpawner }] =
-          await Promise.all([
-            import("../core/workflow/engine.ts"),
-            import("../core/workflow/spawn-claude.ts"),
-            import("../core/workflow/spawn-codex.ts"),
-            import("../core/workflow/spawn-cursor.ts"),
-          ]);
+        const { runWorkflow } = await import("../core/workflow/engine.ts");
         const report = await runWorkflow(script, {
           coordRoot,
-          spawners: {
-            "claude-code": claudeCodeSpawner,
-            codex: codexSpawner,
-            cursor: cursorSpawner,
-          },
-          defaultHarness: opts.harness as "claude-code" | "codex" | "cursor" | undefined,
+          spawners: registry.spawners(),
+          defaultHarness: opts.harness,
           resumeFrom: opts.resumeFrom,
           subscriptionOnly,
           allowApiBilling: opts.allowApiBilling,

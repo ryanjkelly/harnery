@@ -52,6 +52,11 @@
       "types": "./dist/core/hooks/index.d.ts",
       "import": "./dist/core/hooks/index.js"
     },
+    "./core/harnesses": {
+      "bun": "./src/core/harnesses/index.ts",
+      "types": "./dist/core/harnesses/index.d.ts",
+      "import": "./dist/core/harnesses/index.js"
+    },
     "./lib/agent-browser": {
       "bun": "./src/lib/agent-browser/index.ts",
       "types": "./dist/lib/agent-browser/index.d.ts",

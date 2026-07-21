@@ -25,7 +25,7 @@ import type { HarnessName } from "./types.ts";
 /** The env var each harness CLI reads as an API key (preferred over a stored
  * login when set). Shared with the child-env builder's subscription-only
  * scrub. */
-export const API_KEY_VARS: Record<HarnessName, string> = {
+export const API_KEY_VARS: Record<string, string> = {
   "claude-code": "ANTHROPIC_API_KEY",
   codex: "OPENAI_API_KEY",
   cursor: "CURSOR_API_KEY",
@@ -63,7 +63,7 @@ export function probeBilling(harness: HarnessName, io: ProbeIo = {}): BillingPro
   const env = io.env ?? process.env;
   const home = io.home ?? homedir();
   const keyVar = API_KEY_VARS[harness];
-  const envKey = Boolean(env[keyVar]?.trim());
+  const envKey = keyVar ? Boolean(env[keyVar]?.trim()) : false;
 
   let login: LoginState;
   let apiKeyPresent = envKey;
@@ -88,6 +88,12 @@ export function probeBilling(harness: HarnessName, io: ProbeIo = {}): BillingPro
       // cursor-agent's stored-login location is not yet verified against a
       // live install (adapter itself is pending verification); never claim
       // presence or absence we can't prove.
+      login = "unknown";
+      break;
+    default:
+      // External adapters own their authentication. The generic engine must
+      // not guess credential locations or fail a plugin on a built-in-only
+      // heuristic.
       login = "unknown";
       break;
   }
