@@ -98,7 +98,7 @@ for inspection and manual recovery preparation. Keep the existing bare
 - **Add Cursor hooks by analogy.** Rejected because capability claims must be
   based on verified native events, not assumed symmetry with another harness.
 
-## Consequences
+## Result and gotchas
 
 - Native compaction no longer depends on the model remembering to write a
   handoff at exactly the right moment.
@@ -112,4 +112,12 @@ for inspection and manual recovery preparation. Keep the existing bare
 - Automatic pressure thresholds and compaction triggering remain shelved. They
   can be added without changing the capsule format when a harness exposes a
   real control surface.
-
+- Verification on 2026-07-21 passed typecheck, lint, build, portability,
+  layering, documentation build, 24 focused unit/wiring assertions, and both
+  real-binary Claude/Codex lifecycle cases. The offline harness bench reported
+  zero drift.
+- The full repository suite passed 786 of 787 tests. Its one failure was the
+  existing unreadable-file grep fixture: the test uses mode `000` to provoke a
+  read error, but this verification process runs with privileges that can still
+  read that file. The isolated failure reproduces without the continuity
+  changes.
