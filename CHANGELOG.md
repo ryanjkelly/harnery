@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0
+
+### Minor Changes
+
+- 03922e9: Add proof-bearing workflow runs with objectives, acceptance criteria, typed
+  evidence receipts, terminal proof packets, a proof inspection command, and the
+  public `harnery/core/workflow` API.
+
+### Patch Changes
+
+- 8edc237: Align the declared Node runtime with production dependencies, retain Node 20
+  support, refresh patched email parsing dependencies, and smoke-test the public
+  workflow export from the packed package.
+
 ## 0.10.0
 
 ### Minor Changes
