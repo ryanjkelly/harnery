@@ -27,7 +27,7 @@ The command:
 
 - resolves the calling main session through the normal owner resolver, with `--session-id` as the ppid-walk escape hatch;
 - resolves an existing durable persona by name, alias, or UUID, minting one by name when absent;
-- serializes assumption under `.harnery/identity-assume.lock` and refuses a fresh local namesake or a namesake in cached cross-machine presence;
+- serializes assumption under `.harnery/identity-assume.lock` and refuses a local namesake whose harness process is still alive, or a namesake in cached cross-machine presence; abandoned local heartbeats (fresh timestamp, dead/missing pid-map process) are reclaimed in-line so replacement sessions do not need a separate kill/sweep step;
 - appends a new `.name-history` row with `source: "identity.assume"` and `agent_id`; history resolution becomes latest-row-wins, preserving the original pool assignment for audit;
 - emits `identity.assumed` with the new and previous name/persona IDs, then synchronously projects it into the heartbeat;
 - remains idempotent: once history and heartbeat already carry the persona, a retry writes no row and emits no event.
@@ -49,6 +49,6 @@ The operation is limited to `kind=session`. Subagents retain their dispatch iden
 
 - Display names can now change within one instance lifecycle. Readers of `.name-history` must use the latest row for an `instance_id`; readers that already assign into a map line by line naturally do so.
 - The persona UUID, rather than a session UUID, becomes the stable identifier after assumption. A healed heartbeat recovers it from name history.
-- A replacement may be blocked for the configured freshness window if its predecessor crashed without an end hook. That is deliberate collision safety. Stale sweep or the existing heartbeat recovery tools clear the abandoned session.
+- A replacement is blocked only while another live process still holds the role (or cached remote presence reports it). Abandoned local heartbeats — including those still inside the freshness window after a crash — are reclaimed by `identity assume` itself via a pid-map liveness probe, so operators do not need a separate stale-sweep or `agents heal --kind kill` step.
 - Cross-machine collision detection is best-effort because presence itself is advisory. Two machines that are both offline from one another can still assume the same role; the next presence exchange will expose the duplicate.
 - The command creates a minor-version behavior addition and ships with a changeset.

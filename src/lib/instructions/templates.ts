@@ -81,8 +81,9 @@ widely-shared files.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run \`${b} agents identity assume <name>\` before declaring your task.
-It refuses a live namesake and updates the authoritative identity state; never
-hand-edit Harnery's history, heartbeat, or derived identity cache.
+It reclaims an abandoned namesake (no live process) and refuses only when another
+live process still holds the name; never hand-edit Harnery's history, heartbeat,
+or derived identity cache.
 
 **Declare intent on shell commands.** Every command you run is captured to the
 coordination ledger. Lead a shell command with a \`# intent: <why>\` comment (or set

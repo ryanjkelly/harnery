@@ -23,7 +23,8 @@ describe("renderInstructionsBlock", () => {
   test("routes durable role handoffs through the native identity command", () => {
     const block = renderInstructionsBlock("harn");
     expect(block).toContain("harn agents identity assume <name>");
-    expect(block).toContain("never\nhand-edit Harnery's history");
+    expect(block).toContain("reclaims an abandoned namesake");
+    expect(block).toContain("never hand-edit Harnery's history");
   });
 
   test("keeps skill names literal (harn-*) regardless of bin", () => {

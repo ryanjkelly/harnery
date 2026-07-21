@@ -5,6 +5,12 @@
  * must be one critical section. Authoritative state is written twice on
  * purpose: `.name-history` heals a missing heartbeat, while the canonical
  * `identity.assumed` event makes replay and derived readers converge.
+ *
+ * Local collision policy: a fresh heartbeat alone is not enough to block.
+ * If the namesake has no live pid-map process (crashed session, healed
+ * zombie, or abandoned harness), reclaim that heartbeat and continue.
+ * Refuse only when another process is still alive, or when cached remote
+ * presence reports the name.
  */
 
 import { randomUUID } from "node:crypto";
@@ -20,8 +26,10 @@ import {
 import { join } from "node:path";
 
 import { emitAndProject } from "../../core/agents/cli-emit.ts";
+import { emit } from "../../core/agents/events/emit.ts";
 import { type Heartbeat, readHeartbeat } from "../../core/agents/state/heartbeat-writer.ts";
 import { recordNameAssumption } from "../../core/agents/state/names.ts";
+import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
 import { coordFreshnessSeconds } from "../../core/config.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
 import { type AgentIdentity, bareName, ensureIdentity, lookupById, lookupByName } from "./index.ts";
@@ -66,6 +74,8 @@ export interface IdentityAssumeResult {
   agent_id: string;
   identity_created: boolean;
   event_id: string | null;
+  /** Prior local holder swept because it had no live process. */
+  reclaimed_instance_id: string | null;
 }
 
 function heartbeatIsFresh(hb: Heartbeat, cutoffMs: number): boolean {
@@ -113,6 +123,60 @@ export function findIdentityConflict(
     }
   }
   return null;
+}
+
+/**
+ * Drop a local namesake whose harness process is gone. Fresh heartbeats can
+ * linger after a crash (or after heartbeat heal without a live pid-map), and
+ * `identity assume` is the supported takeover path — operators should not
+ * need a separate kill/sweep step.
+ */
+export function reclaimAbandonedLocalConflict(
+  coordRoot: string,
+  conflict: IdentityConflict,
+): boolean {
+  if (conflict.scope !== "local") return false;
+  if (instanceHasLivePid(coordRoot, conflict.instance_id)) return false;
+
+  const hbPath = join(coordRoot, ".harnery", "active", `${conflict.instance_id}.json`);
+  let harness: "claude-code" | "cursor" | "codex" = "claude-code";
+  let sessionId = conflict.instance_id;
+  let ageSecs: number | undefined;
+  if (existsSync(hbPath)) {
+    try {
+      const hb = JSON.parse(readFileSync(hbPath, "utf8")) as Heartbeat;
+      harness = harnessOf(hb.platform);
+      sessionId = hb.session_id || conflict.instance_id;
+      const ts = Date.parse(hb.last_heartbeat);
+      if (Number.isFinite(ts)) ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    } catch {
+      /* content unreadable — still reclaim the file */
+    }
+    try {
+      unlinkSync(hbPath);
+    } catch {
+      return false;
+    }
+  }
+  removePidmapRowsForInstance(coordRoot, conflict.instance_id);
+  try {
+    emit(coordRoot, {
+      event_type: "health.heartbeat_swept",
+      instance_id: conflict.instance_id,
+      session_id: sessionId,
+      harness,
+      source: "agent-coord",
+      data: {
+        reason: "stale",
+        ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}),
+        reclaimed_by: "identity.assume",
+      },
+      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+    } as Parameters<typeof emit>[1]);
+  } catch {
+    /* telemetry only */
+  }
+  return true;
 }
 
 function resolveTarget(
@@ -209,7 +273,12 @@ export function assumeIdentity(
     }
 
     const targetIdentity = resolveTarget(coordRoot, target);
-    const conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
+    let reclaimedInstanceId: string | null = null;
+    let conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
+    if (conflict && reclaimAbandonedLocalConflict(coordRoot, conflict)) {
+      reclaimedInstanceId = conflict.instance_id;
+      conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
+    }
     if (conflict) {
       const where = conflict.scope === "remote" ? ` on ${conflict.machine}` : "";
       throw new IdentityAssumeError(
@@ -242,6 +311,7 @@ export function assumeIdentity(
         agent_id: identity.agent_id,
         identity_created: false,
         event_id: null,
+        reclaimed_instance_id: reclaimedInstanceId,
       };
     }
 
@@ -256,6 +326,7 @@ export function assumeIdentity(
           agent_id: identity.agent_id,
           ...(previousName ? { previous_name: previousName } : {}),
           ...(previousAgentId ? { previous_agent_id: previousAgentId } : {}),
+          ...(reclaimedInstanceId ? { reclaimed_instance_id: reclaimedInstanceId } : {}),
         },
       },
       { coordRoot },
@@ -284,6 +355,7 @@ export function assumeIdentity(
       agent_id: identity.agent_id,
       identity_created: created,
       event_id: emitted.envelope.event_id,
+      reclaimed_instance_id: reclaimedInstanceId,
     };
   } finally {
     release();

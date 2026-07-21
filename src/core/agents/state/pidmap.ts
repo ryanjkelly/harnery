@@ -1,5 +1,5 @@
 /**
- * Pid-map writer.
+ * Pid-map writer + liveness helpers.
  *
  * Per-harness pid-map at `.harnery/pid-map/<pid>` containing
  * `<instance_id>\t<platform>`. `harn agents whoami` walks ppid up 20 hops looking
@@ -8,7 +8,15 @@
  * Atomic temp+rename. Idempotent: re-writing the same row is a no-op.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 function atomicWrite(path: string, content: string): void {
@@ -35,4 +43,53 @@ export function writePidmapRow(
     }
   }
   atomicWrite(path, row);
+}
+
+/** True when any pid-map row for `instanceId` still belongs to a live process. */
+export function instanceHasLivePid(coordRoot: string, instanceId: string): boolean {
+  const dir = join(coordRoot, ".harnery", "pid-map");
+  if (!existsSync(dir)) return false;
+  for (const f of readdirSync(dir)) {
+    let row = "";
+    try {
+      row = readFileSync(join(dir, f), "utf8").trim();
+    } catch {
+      continue;
+    }
+    const owner = row.split("\t")[0]?.trim() ?? "";
+    if (owner !== instanceId) continue;
+    const pid = Number.parseInt(f, 10);
+    if (!Number.isFinite(pid)) continue;
+    try {
+      process.kill(pid, 0); // signal 0 = liveness probe
+      return true;
+    } catch {
+      // ESRCH (no such process): pid-map entry is stale, keep scanning
+    }
+  }
+  return false;
+}
+
+/** Drop every pid-map row owned by `instanceId`. Returns how many files were removed. */
+export function removePidmapRowsForInstance(coordRoot: string, instanceId: string): number {
+  const dir = join(coordRoot, ".harnery", "pid-map");
+  if (!existsSync(dir)) return 0;
+  let removed = 0;
+  for (const f of readdirSync(dir)) {
+    let row = "";
+    try {
+      row = readFileSync(join(dir, f), "utf8").trim();
+    } catch {
+      continue;
+    }
+    const owner = row.split("\t")[0]?.trim() ?? "";
+    if (owner !== instanceId) continue;
+    try {
+      unlinkSync(join(dir, f));
+      removed += 1;
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+  return removed;
 }

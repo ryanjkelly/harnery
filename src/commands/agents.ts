@@ -496,8 +496,10 @@ function registerIdentityCommands(parent: Command): void {
   identity
     .command("assume <name-or-id>")
     .description(
-      "Bind this live session to a durable persona. Refuses when the name is " +
-        "already live; updates name history, the event ledger, and the heartbeat.",
+      "Bind this live session to a durable persona. Reclaims an abandoned " +
+        "local namesake (no live process); refuses when another live process " +
+        "or known remote session still holds the name. Updates name history, " +
+        "the event ledger, and the heartbeat.",
     )
     .option("--json", "JSON envelope output")
     .option(
@@ -1315,6 +1317,11 @@ function shouldBootstrapCursorSession(): boolean {
 
 function ensureCursorSession(root: string): void {
   if (!shouldBootstrapCursorSession()) return;
+  // Explicit owner override means the caller already knows who they are.
+  // Bootstrapping sessionStart inherits that env into the child hook, which
+  // re-projects a fresh heartbeat onto the override owner and can wipe an
+  // assumed persona agent_id (seen under Cursor integration fixtures).
+  if (process.env.HARNERY_AGENT_COORD_OWNER?.trim()) return;
   if (resolveOwnerBySessionEnv(root)) return;
 
   const sessionId = cursorEnvSessionId();

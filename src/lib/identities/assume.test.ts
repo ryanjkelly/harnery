@@ -20,6 +20,7 @@ describe("assumeIdentity", () => {
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-assume-"));
     mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
     seedHeartbeat(root, "session-new", "Anna");
     writeFileSync(
       path.join(root, ".harnery", ".name-history"),
@@ -44,6 +45,7 @@ describe("assumeIdentity", () => {
     expect(result.name).toBe("Yann");
     expect(result.identity_created).toBe(true);
     expect(result.event_id).toBeTruthy();
+    expect(result.reclaimed_instance_id).toBeNull();
 
     const hb = JSON.parse(
       readFileSync(path.join(root, ".harnery", "active", "session-new.json"), "utf8"),
@@ -77,8 +79,14 @@ describe("assumeIdentity", () => {
     expect(readFileSync(historyPath, "utf8")).toBe(historyBefore);
   });
 
-  test("refuses a fresh namesake before minting or mutating anything", () => {
+  test("refuses a namesake whose harness process is still alive", () => {
     seedHeartbeat(root, "session-old", "Yann");
+    // Anchor the old session to THIS live test process so the reclaim probe
+    // treats it as genuinely occupied.
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", String(process.pid)),
+      "session-old\tcodex",
+    );
     let caught: unknown;
     try {
       assumeIdentity(root, "session-new", "Yann");
@@ -89,6 +97,31 @@ describe("assumeIdentity", () => {
     expect((caught as IdentityAssumeError).code).toBe("identity_in_use");
     expect(existsSync(path.join(root, ".harnery", "identities"))).toBe(false);
     expect(resolveName(root, "session-new")?.name).toBe("Anna");
+    expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(true);
+  });
+
+  test("reclaims a fresh namesake whose pid-map process is dead", () => {
+    seedHeartbeat(root, "session-old", "Yann");
+    writeFileSync(path.join(root, ".harnery", "pid-map", "999999999"), "session-old\tcodex");
+
+    const result = assumeIdentity(root, "session-new", "Yann");
+    expect(result.name).toBe("Yann");
+    expect(result.reclaimed_instance_id).toBe("session-old");
+    expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(false);
+    expect(existsSync(path.join(root, ".harnery", "pid-map", "999999999"))).toBe(false);
+
+    const events = readFileSync(path.join(root, ".harnery", "events.ndjson"), "utf8");
+    expect(events).toContain('"event_type":"health.heartbeat_swept"');
+    expect(events).toContain('"reclaimed_by":"identity.assume"');
+    expect(events).toContain('"reclaimed_instance_id":"session-old"');
+  });
+
+  test("reclaims a fresh namesake with no pid-map rows at all", () => {
+    seedHeartbeat(root, "session-old", "Renee");
+    const result = assumeIdentity(root, "session-new", "Renee");
+    expect(result.name).toBe("Renee");
+    expect(result.reclaimed_instance_id).toBe("session-old");
+    expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(false);
   });
 
   test("ignores a stale namesake under the configured freshness contract", () => {

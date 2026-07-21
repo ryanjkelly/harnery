@@ -59,8 +59,11 @@ harn agents identity assume Yann --session-id <instance-id>
 
 The target may be a persona name, an `agent-Name` display name, or a persona
 UUID. Harnery reuses the durable persona UUID when it exists and creates it when
-a new name is first adopted. It refuses the transition when another fresh local
-session or known remote session already has that name.
+a new name is first adopted. If another local session still has a fresh
+heartbeat for that name but its harness process is gone (crash, abandoned
+tab, healed zombie), assume reclaims that heartbeat and continues. It refuses
+only when another live local process still holds the name, or when cached
+remote presence reports it.
 
 One command updates every authoritative layer: it appends the binding to name
 history, emits `identity.assumed` to the canonical ledger, and projects the new

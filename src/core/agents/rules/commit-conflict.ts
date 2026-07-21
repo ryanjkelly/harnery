@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
+import { instanceHasLivePid } from "../state/pidmap.ts";
 
 interface PeerHeartbeat {
   instance_id: string;
@@ -231,28 +232,7 @@ function isHolderSelfAttributed(
 }
 
 function holderHasLiveForeignPid(coordRoot: string, holderId: string): boolean {
-  const dir = join(coordRoot, ".harnery", "pid-map");
-  if (!existsSync(dir)) return false;
-  for (const f of readdirSync(dir)) {
-    let row = "";
-    try {
-      row = readFileSync(join(dir, f), "utf8").trim();
-    } catch {
-      continue;
-    }
-    const owner = row.split("\t")[0]?.trim() ?? "";
-    if (owner !== holderId) continue;
-    // Process still alive?
-    const pid = Number.parseInt(f, 10);
-    if (!Number.isFinite(pid)) continue;
-    try {
-      process.kill(pid, 0); // signal 0 = liveness probe
-      return true; // live foreign pid found
-    } catch {
-      // ESRCH (no such process): pid-map entry is stale, skip
-    }
-  }
-  return false;
+  return instanceHasLivePid(coordRoot, holderId);
 }
 
 function isPathCleanInHead(coordRoot: string, relPath: string): boolean {

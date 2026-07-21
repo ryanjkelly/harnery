@@ -32,6 +32,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -487,6 +488,12 @@ describe("harn agents identity assume", () => {
     });
 
     seedHeartbeat(root, "assume-cli-other", { name: "Beatrice", platform: "codex" });
+    // Live pid-map row anchors the other session so assume must refuse.
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", String(process.pid)),
+      "assume-cli-other\tcodex",
+    );
     const blocked = run(
       HARN,
       ["agents", "identity", "assume", "Beatrice", "--session-id", owner, "--json"],
@@ -495,6 +502,29 @@ describe("harn agents identity assume", () => {
     );
     expect(blocked.status).toBe(1);
     expect(`${blocked.stdout}\n${blocked.stderr}`).toContain("identity_in_use");
+
+    // Dead pid-map row: assume reclaims and continues.
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", "999999999"),
+      "assume-cli-other\tcodex",
+    );
+    unlinkSync(path.join(root, ".harnery", "pid-map", String(process.pid)));
+    const reclaimed = run(
+      HARN,
+      ["agents", "identity", "assume", "Beatrice", "--session-id", owner, "--json"],
+      "",
+      root,
+    );
+    expect(reclaimed.status).toBe(0);
+    expect(JSON.parse(reclaimed.stdout)).toMatchObject({
+      changed: true,
+      name: "Beatrice",
+      reclaimed_instance_id: "assume-cli-other",
+      action: "identity-assume",
+    });
+    expect(existsSync(path.join(root, ".harnery", "active", "assume-cli-other.json"))).toBe(
+      false,
+    );
   });
 });
 
