@@ -2,7 +2,7 @@
 
 # harnery: agent instructions
 
-Multi-agent coordination for AI coding agents — Claude Code, Cursor, and Codex. Pre-1.0, MIT, published to npm as `harnery` (binaries: `harn`, `agent-coord`, `agent-hook`). Bun-first for dev (zero-build TS execution); the published package targets Node ≥ 20. A host CLI composes the command tree via `createHarneryProgram({ binName, context })` from `harnery/commander` and adds its own commands on top. Pattern: [examples/extending-with-commander.ts](examples/extending-with-commander.ts).
+Multi-agent coordination for AI coding agents — Claude Code, Cursor, and Codex. Pre-1.0, MIT, published to npm as `harnery` (binaries: `harn`, `agent-coord`, `agent-hook`). Bun-first for dev (zero-build TS execution); the published package targets Node ≥ 20.19. A host CLI composes the command tree via `createHarneryProgram({ binName, context })` from `harnery/commander` and adds its own commands on top. Pattern: [examples/extending-with-commander.ts](examples/extending-with-commander.ts).
 
 ## Portability is the prime constraint
 

@@ -130,7 +130,7 @@
     "!src/**/*.test.tsx"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "publishConfig": {
     "access": "public",
@@ -152,17 +152,17 @@
     "test:web": "cd web && bun install && bun test",
     "test:integration": "bash tests/integration/run.sh",
     "smoke": "node scripts/smoke-test.mjs",
-    "docs:dev": "bun --cwd docs run dev",
-    "docs:build": "bun --cwd docs run build",
+    "docs:dev": "bun run --bun --cwd docs dev",
+    "docs:build": "bun run --bun --cwd docs build",
     "brand:showcase": "node scripts/build-brand-showcase.mjs"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
-    "commander": "^15.0.0",
+    "commander": "^14.0.3",
     "gpt-tokenizer": "^3.4.0",
     "js-yaml": "^4.1.1",
     "linkedom": "^0.18.0",
-    "mailparser": "^3.9.8",
+    "mailparser": "^3.9.14",
     "pixelmatch": "^7.2.0",
     "playwright": "^1.59.1",
     "pngjs": "^7.0.0",

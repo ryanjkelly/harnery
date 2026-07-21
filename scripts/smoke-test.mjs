@@ -114,6 +114,27 @@ try {
   }
   log("read OK");
 
+  // Public subpaths must resolve from the packed artifact, not just from the
+  // source checkout. Keep this focused on the newest product-tier export so a
+  // missing dist file or exports-map mismatch fails before publish.
+  log("checking public `harnery/core/workflow` import ...");
+  const workflowProbe = join(workdir, "workflow-import.mjs");
+  writeFileSync(
+    workflowProbe,
+    [
+      'import { WORKFLOW_PROOF_SCHEMA_VERSION, readWorkflowProof, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
+      'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow proof schema version");',
+      'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
+      'if (typeof WorkflowRunError !== "function") throw new Error("WorkflowRunError missing");',
+    ].join("\n"),
+  );
+  execFileSync(nodePath, [workflowProbe], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
+  log("harnery/core/workflow import OK");
+
   log("ALL CHECKS PASSED");
 } finally {
   if (workdir) rmSync(workdir, { recursive: true, force: true });

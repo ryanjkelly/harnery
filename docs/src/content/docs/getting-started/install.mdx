@@ -9,7 +9,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Requirements
 
-- **Node 20+** *or* [**Bun**](https://bun.sh) **1.3+**: either runtime works
+- **Node 20.19+** *or* [**Bun**](https://bun.sh) **1.3+**: either runtime works
 - A POSIX shell (Linux, macOS, or WSL)
 
 The published npm package ships a prebuilt `dist/`, so it runs on plain Node out of the box, no Bun required. Installing Bun is optional but recommended for *developing* Harnery: Bun runs the TypeScript source directly (zero build step), so edits are live. The package's `exports` resolve to TS source under Bun and to the built `dist/` everywhere else, so the two stay in lockstep.
