@@ -99,6 +99,16 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}\"/bin/agent-hook pre-compact --harness claude-code"
+          }
+        ]
+      }
     ]
   }
 }

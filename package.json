@@ -139,6 +139,7 @@
     "typecheck": "bun x tsc --noEmit",
     "lint": "bun x @biomejs/biome check src",
     "check:portability": "bun run scripts/check-portability.ts",
+    "check:public-surface": "bun run scripts/check-public-surface.ts",
     "check:layering": "bun run scripts/check-layering.ts",
     "lint:fix": "bun x @biomejs/biome check --write src",
     "format": "bun x @biomejs/biome format --write src",

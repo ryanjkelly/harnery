@@ -1,0 +1,72 @@
+---
+title: "0020: Public artifacts preserve decisions, not private provenance"
+description: "ADR: keep internal evaluation provenance private while enforcing source-neutral public content and Git history with opaque fingerprints."
+---
+
+**Status:** accepted (2026-07-21) · **Scope:** repository, package, documentation, and release gates
+
+## Context
+
+Harnery is developed inside a private host workspace but published as a public
+repository, npm package, documentation site, and Git history. Internal
+evaluation sources were named in public ADRs on the integration branch. A later
+cleanup of the final tree would not be sufficient because pushed commits remain
+readable and searchable.
+
+The public record should make Harnery's engineering legible without exposing
+the private inputs used to evaluate the design. That means preserving the
+problem, alternatives, decision, tradeoffs, and verification while keeping
+source identities, links, quotations, and feature-transfer narratives in the
+private workspace.
+
+A plain denylist in the public repository would defeat the boundary by
+publishing the inventory it was meant to protect. A final-tree-only check would
+also miss a restricted reference added and removed in separate commits before
+push.
+
+## Decision
+
+Treat source-neutral publication as a repository invariant:
+
+- Public code, tests, comments, docs, ADRs, changesets, commit messages, pull
+  requests, release notes, and website copy describe Harnery on its own terms.
+- Internal evaluation identities and provenance stay in the private host
+  workspace. The public repository stores only SHA-256 fingerprints of
+  restricted identifiers, never the identifier-to-fingerprint mapping.
+- `scripts/check-public-surface.ts` scans the full committable tree, an
+  individual commit-message file, or every commit and changed-file snapshot in
+  a Git range. It reports locations and violation classes without echoing the
+  restricted text into logs.
+- The private host invokes the full-tree scan before commit, the message scan
+  from its commit-message hook, and the outgoing-range scan before push. Public
+  CI repeats the full-tree scan for independent verification.
+- Generic attribution wording may be waived only with an inline reason when it
+  refers to a legitimate public standard or dependency. Restricted identifiers
+  cannot be waived. Reclassification happens by changing the private inventory
+  and regenerating the opaque public fingerprints.
+
+## Alternatives considered
+
+- **Rely on agent instructions and review.** Rejected because prose guidance
+  cannot catch accidental references in every public surface or intermediate
+  commit.
+- **Commit a plaintext denylist.** Rejected because it would publish the exact
+  inventory the boundary protects.
+- **Scan only the working tree or final range diff.** Rejected because an
+  add-then-remove sequence would still survive in public Git history.
+- **Clean only the documentation website.** Rejected because source files,
+  package artifacts, commit messages, pull requests, and release notes are also
+  public records.
+
+## Result and gotchas
+
+- Public ADRs retain the architectural reasoning and verification evidence but
+  no longer identify private evaluation sources.
+- The integration branch is rewritten once to remove the already-published
+  references from reachable history. Future outgoing history is scanned before
+  it can be pushed through the host's normal workflow.
+- Opaque fingerprints intentionally make a violation diagnosable by location,
+  not by identity. The private host inventory is the only place to resolve or
+  reclassify a match.
+- The guard reduces accidental disclosure; it does not replace judgment about
+  secrets, licenses, copied code, or other publication risks.

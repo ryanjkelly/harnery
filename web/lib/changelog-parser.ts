@@ -1,6 +1,5 @@
 /**
- * Parser for plan-doc-style council changelogs. Ported from
- * the upstream app's lib/agents-coord/changelog-parser.ts.
+ * Parser for plan-doc-style council changelogs.
  *
  * The council protocol places a "Plan changelog" section at the bottom of
  * the target doc with entries shaped like:

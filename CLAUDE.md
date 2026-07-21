@@ -12,6 +12,12 @@ This package serves arbitrary host projects. Nothing host-specific may land in `
 
 **Bin name in agent-facing strings.** Any user-facing string that tells an agent to run a command (council prompts, end-of-turn nudges, command help/errors) must use `resolveBinName()` from [src/core/config.ts](src/core/config.ts), never a literal bin name. Commands can see the live program name, but the coord binaries (`agent-hook`/`agent-coord`) and the web UI run *as harnery* and can't, so the bin name is read back from `.harnery/config.jsonc` (`binName`). Resolution precedence: `HARNERY_BIN` env → config `binName` → `"harn"`. `harn init` stamps `binName` for a consumer (any bin ≠ `harn`); a host CLI commits its own `.harnery/config.jsonc` carrying its bin name.
 
+## Public artifacts are source-neutral
+
+Everything committed to Harnery is public, including its Git history. Keep internal evaluation sources, links, and quotations in the private host workspace. Public writing should state Harnery's problem, alternatives, decision, and evidence in Harnery's own terms. Do not say that a feature came from or was modeled after an evaluation source. This rule covers code comments, tests, docs, ADRs, changesets, commit messages, pull requests, release notes, and website copy.
+
+**Enforced across content and history.** [scripts/check-public-surface.ts](scripts/check-public-surface.ts) scans the full public tree, commit messages, and every changed-file snapshot in an outgoing Git range. Harnery stores only opaque fingerprints, so the guard does not reveal the private source inventory. A `public-surface-allow: <reason>` waiver covers generic attribution language for a legitimate public standard or dependency. It cannot waive a restricted identifier. If a restricted identifier becomes a real public dependency, change its classification in the private host and regenerate the fingerprints. Do not bypass the guard.
+
 ## Surface tiers (ADR 0010)
 
 The `package.json` exports map is the public-API tier boundary. **Product tier** — `.`, `./commander`, `./core/*`: the coordination layer, the reason the package exists, full semver care. **Toolkit tier** — every `./lib/*` subpath: supporting utilities for embedding hosts (http, cookies, format, readability, browser, machine, …), supported but secondary, allowed to evolve faster, never the pitch. Anything unexported is internal regardless of directory — `src/lib/` legitimately hosts unexported coordination libs (council, decision, identities); the directory is NOT the boundary, the exports map is.
@@ -83,7 +89,7 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=e613f940 -->
+<!-- harnery:begin instructions v=019fd432 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
@@ -97,13 +103,19 @@ active peers and the files they've claimed; `harn agents set-task "<focus>"`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
 
+**Durable role handoff.** When you are replacing a prior session in the same
+named role, run `harn agents identity assume <name>` before declaring your task.
+It reclaims an abandoned namesake (no live process) and refuses only when another
+live process still holds the name; never hand-edit Harnery's history, heartbeat,
+or derived identity cache.
+
 **Declare intent on shell commands.** Every command you run is captured to the
 coordination ledger. Lead a shell command with a `# intent: <why>` comment (or set
 the tool's description) so the recorded event carries a reason instead of
 `(no intent)`.
 
-**Scratch journal.** `harn scratch add <category> "<text>"` (category = note, plan,
-decision, blocker, or handoff) leaves breadcrumbs that survive context compaction;
+**Scratch journal.** `harn scratch add <category> "<text>"` (category = note, plan, decision, blocker, question, done, or handoff)
+leaves breadcrumbs that survive context compaction;
 `harn scratch read` reads yours, `harn scratch read --name <peer>` reads a peer's.
 Use it for anything future-you or a peer will need to pick up your thread.
 

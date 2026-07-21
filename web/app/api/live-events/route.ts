@@ -21,7 +21,7 @@
  *
  * Cleanup on `request.signal.aborted` (browser navigates away, HMR cycle).
  *
- * Ported from the upstream app's app/api/v1/internal/session-tail/events/route.ts.
+ * This route owns the dashboard's append-only event-stream transport.
  */
 
 import fs from "node:fs";

@@ -1,6 +1,5 @@
 /**
- * FinancialTable: canonical dense-table primitive ported from the upstream app's
- * components/data-viz/financial-table.tsx. Bakes in zebra striping
+ * FinancialTable is the canonical dense-table primitive. It includes zebra striping
  * (odd:bg-muted/40), hover transition (hover:bg-muted/60), and the
  * border-separate setup that lets cell borders compose with the row
  * highlights without collapse-mode artifacts.
