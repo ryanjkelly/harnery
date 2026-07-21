@@ -135,6 +135,25 @@ try {
   });
   log("harnery/core/workflow import OK");
 
+  log("checking public `harnery/core/policy` import ...");
+  const policyProbe = join(workdir, "policy-import.mjs");
+  writeFileSync(
+    policyProbe,
+    [
+      'import { POLICY_SCHEMA_VERSION, evaluatePolicy, normalizePolicy, policyDigest } from "harnery/core/policy";',
+      'if (POLICY_SCHEMA_VERSION !== 1) throw new Error("unexpected policy schema version");',
+      'const policy = normalizePolicy({ network: "allow" });',
+      'const decision = evaluatePolicy(policy, { phase: "dispatch", action: "smoke", isolation: "shared", network_access: "disabled" });',
+      'if (decision.verdict !== "allow" || policyDigest(policy).length !== 64) throw new Error("policy functions invalid");',
+    ].join("\n"),
+  );
+  execFileSync(nodePath, [policyProbe], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
+  log("harnery/core/policy import OK");
+
   log("ALL CHECKS PASSED");
 } finally {
   if (workdir) rmSync(workdir, { recursive: true, force: true });

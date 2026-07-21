@@ -3,6 +3,8 @@ import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
 import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
+import type { PolicyIsolation } from "../core/policy/index.ts";
+import { loadPolicyFile } from "../core/policy/index.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
@@ -22,6 +24,8 @@ interface WorkflowRunOpts {
   resumeFrom?: string;
   subscriptionOnly?: boolean;
   allowApiBilling?: boolean;
+  policy?: string;
+  isolation?: PolicyIsolation;
   json?: boolean;
 }
 
@@ -39,7 +43,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
   workflow
     .command("run <script>")
     .description(
-      "Execute a workflow script (plain JS: `export default async ({agent, parallel, stage, log, evidence}) => …`). " +
+      "Execute a workflow script (plain JS: `export default async ({agent, parallel, stage, log, evidence, authorize}) => …`). " +
         "Subagents spawn as headless harness-CLI subprocesses, coordination-registered.",
     )
     .option("--max-agents <n>", "Total-agent ceiling for the run (default 50)")
@@ -63,6 +67,14 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       "Permit an exported API key to override a stored subscription login (per-token billing); " +
         "without this the engine refuses that silent-override state",
     )
+    .option(
+      "--policy <file>",
+      "Host policy JSON/JSONC applied before dispatch and external mutation",
+    )
+    .option(
+      "--isolation <mode>",
+      "Host-created execution boundary: shared | worktree | sandbox | remote (default shared)",
+    )
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
       const coordRoot = findCoordRoot();
@@ -77,6 +89,16 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         emit.error({
           code: "bad_harness",
           message: `unknown harness "${opts.harness}" (expected: ${harnesses.join(" | ")})`,
+        });
+        process.exit(1);
+      }
+      if (
+        opts.isolation &&
+        !(["shared", "worktree", "sandbox", "remote"] as const).includes(opts.isolation)
+      ) {
+        emit.error({
+          code: "bad_isolation",
+          message: `unknown isolation ${JSON.stringify(opts.isolation)} (expected: shared | worktree | sandbox | remote)`,
         });
         process.exit(1);
       }
@@ -111,6 +133,12 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
                 { toolEvidence: adapter.profile.capabilities.toolEvidence },
               ]),
           ),
+          policy: opts.policy ? loadPolicyFile(opts.policy) : undefined,
+          isolation: opts.isolation,
+          // CLI harness subprocesses inherit the host network. A policy that
+          // forbids network must therefore deny dispatch unless a future host
+          // adapter creates and declares a network-disabled boundary.
+          networkAccess: "enabled",
         });
         if (opts.json) {
           emit.config({ format: "json" });

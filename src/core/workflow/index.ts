@@ -34,6 +34,7 @@ export type {
   WorkflowEvidenceRecord,
   WorkflowMeta,
   WorkflowModule,
+  WorkflowPolicyProof,
   WorkflowProof,
   WorkflowProofUnknown,
   WorkflowRepoEvidence,

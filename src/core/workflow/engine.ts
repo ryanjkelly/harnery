@@ -22,6 +22,14 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "n
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { snapshotRepo } from "../context/index.ts";
+import type { ExternalMutationRequest, PolicyDecision, PolicyRequest } from "../policy/index.ts";
+import {
+  evaluatePolicy,
+  normalizePolicy,
+  PolicyDeniedError,
+  policyDigest,
+  summarizePolicyRequest,
+} from "../policy/index.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import {
   buildWorkflowProof,
@@ -50,6 +58,8 @@ const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_TURNS = 25;
+const DEFAULT_POLICY_ASK_TIMEOUT_MS = 60_000;
+const MAX_POLICY_DECISIONS = 50;
 
 export class WorkflowRunError extends Error {
   readonly runId: string;
@@ -84,6 +94,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   const cwd = opts.cwd ?? opts.coordRoot;
   const log = opts.onLog ?? ((line: string) => process.stderr.write(`${line}\n`));
   const defaultHarness: HarnessName = opts.defaultHarness ?? "claude-code";
+  const isolation = opts.isolation ?? "shared";
+  const networkAccess = opts.networkAccess ?? "unknown";
+  const policy = opts.policy ? normalizePolicy(opts.policy, { baseDir: cwd }) : undefined;
   const repoBefore = snapshotRepo(cwd);
 
   // Per-child fixed context overhead: children spawn in `cwd` and load its
@@ -105,12 +118,15 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   let agentsSpawned = 0;
   let agentsCached = 0;
   let costUsd = 0;
+  let reservedCostUsd = 0;
   let currentStage = "";
   let agentSeq = 0;
   let evidenceSeq = 0;
+  let policySeq = 0;
   const billingProbed = new Map<HarnessName, BillingProbe>();
   const agentProofs = new Map<string, WorkflowAgentProof>();
   const evidenceRecords: WorkflowEvidenceRecord[] = [];
+  const policyDecisions: PolicyDecision[] = [];
   const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
 
   const journal = (event: string, data: Record<string, unknown>): void => {
@@ -143,7 +159,98 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     waiters.shift()?.();
   };
 
+  // Policy checks that affect the shared cost reservation ledger serialize.
+  // Spawns still run concurrently after authorization; only the last-moment
+  // check-and-reserve section is exclusive.
+  let policyGate = Promise.resolve();
+  const withDispatchPolicyGate = async <T>(work: () => Promise<T>): Promise<T> => {
+    const previous = policyGate;
+    let open!: () => void;
+    policyGate = new Promise<void>((resolveGate) => {
+      open = resolveGate;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      open();
+    }
+  };
+
+  const authorizePolicyRequest = async (rawRequest: PolicyRequest): Promise<PolicyDecision> => {
+    if (!policy) {
+      throw new Error("external mutation authorization requires a host policy");
+    }
+    if (policyDecisions.length >= MAX_POLICY_DECISIONS) {
+      throw new Error(
+        `workflow policy decision cap reached (${MAX_POLICY_DECISIONS}); split the workflow or reduce protected actions`,
+      );
+    }
+    const request = summarizePolicyRequest(rawRequest);
+    const evaluation = evaluatePolicy(policy, request);
+    const id = `p${++policySeq}`;
+    const checkedAt = new Date().toISOString();
+    journal("policy.check", {
+      id,
+      policy: policy.name,
+      policy_sha256: policyDigest(policy),
+      request,
+      verdict: evaluation.verdict,
+      rules: evaluation.rules,
+    });
+
+    let verdict: "allow" | "deny" = evaluation.verdict === "allow" ? "allow" : "deny";
+    let resolvedBy: PolicyDecision["resolved_by"] = "policy";
+    let reason = evaluation.reason;
+    if (evaluation.verdict === "ask") {
+      resolvedBy = "fail_closed";
+      if (!opts.resolvePolicyAsk) {
+        reason = `${evaluation.reason}; no host approval resolver is configured`;
+      } else {
+        try {
+          const resolution = await withTimeout(
+            Promise.resolve(opts.resolvePolicyAsk(request, evaluation)),
+            opts.policyAskTimeoutMs ?? DEFAULT_POLICY_ASK_TIMEOUT_MS,
+          );
+          if (!resolution || (resolution.verdict !== "allow" && resolution.verdict !== "deny")) {
+            reason = `${evaluation.reason}; host returned an invalid approval resolution`;
+          } else {
+            verdict = resolution.verdict;
+            resolvedBy = "host";
+            reason = boundedPolicyReason(resolution.reason ?? evaluation.reason);
+          }
+        } catch (error) {
+          reason = `${evaluation.reason}; approval failed closed: ${(error as Error).message}`;
+        }
+      }
+    }
+
+    const decision: PolicyDecision = {
+      id,
+      checked_at: checkedAt,
+      policy: policy.name,
+      phase: request.phase,
+      initial_verdict: evaluation.verdict,
+      verdict,
+      resolved_by: resolvedBy,
+      reason: boundedPolicyReason(reason),
+      rule_codes: evaluation.rules.map((rule) => rule.code),
+      request,
+    };
+    policyDecisions.push(decision);
+    journal("policy.resolve", { ...decision });
+    if (decision.verdict === "deny") {
+      throw new PolicyDeniedError(
+        `policy ${JSON.stringify(policy.name)} denied ${request.phase} ${JSON.stringify(request.action)}: ${decision.reason}`,
+        decision.id,
+      );
+    }
+    return decision;
+  };
+
   const agent = async (prompt: string, agentOpts: AgentOpts = {}): Promise<unknown> => {
+    let reservedForDispatch = 0;
+    let spawnCountClaimed = false;
     const harness = agentOpts.harness ?? defaultHarness;
     const spawner = opts.spawners[harness];
     if (!spawner) {
@@ -189,57 +296,125 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       return cached.value;
     }
 
+    if (policy) {
+      const estimateRequest = summarizePolicyRequest({
+        phase: "dispatch",
+        action: "spawn agent",
+        path: cwd,
+        harness,
+        model: agentOpts.model,
+        effort: agentOpts.effort,
+        max_attempts: maxAttempts,
+        max_turns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
+        timeout_ms: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        prompt_bytes: Buffer.byteLength(prompt),
+        isolation,
+        network_access: networkAccess,
+        current_cost_usd: round4(costUsd + reservedCostUsd),
+        projected_cost_usd: null,
+      });
+      let projectedCost: number | null = null;
+      if (policy.max_cost_usd !== undefined && opts.estimateDispatchCost) {
+        try {
+          const candidate = await opts.estimateDispatchCost(estimateRequest);
+          if (candidate !== null && (!Number.isFinite(candidate) || candidate < 0)) {
+            throw new Error("cost estimator returned a non-finite or negative value");
+          }
+          projectedCost = candidate;
+        } catch (error) {
+          journal("policy.cost_estimate_failed", {
+            harness,
+            model: agentOpts.model ?? null,
+            error: boundedPolicyReason((error as Error).message),
+          });
+        }
+      }
+      try {
+        await withDispatchPolicyGate(async () => {
+          assertAgentCapacity(agentsSpawned, maxAgents);
+          const dispatchRequest = {
+            ...estimateRequest,
+            current_cost_usd: round4(costUsd + reservedCostUsd),
+            projected_cost_usd: projectedCost,
+          };
+          await authorizePolicyRequest(dispatchRequest);
+          if (policy.max_cost_usd !== undefined) {
+            reservedForDispatch =
+              projectedCost ?? Math.max(0, policy.max_cost_usd - dispatchRequest.current_cost_usd);
+            reservedCostUsd += reservedForDispatch;
+          }
+          agentsSpawned++;
+          spawnCountClaimed = true;
+        });
+      } catch (error) {
+        agentProof.error = (error as Error).message;
+        throw error;
+      }
+    } else {
+      try {
+        assertAgentCapacity(agentsSpawned, maxAgents);
+      } catch (error) {
+        agentProof.error = (error as Error).message;
+        throw error;
+      }
+    }
+
     // Billing safeguard: on a harness's FIRST spawn this run, classify which
     // auth its children will use and refuse the silent-override state (an
     // exported API key shadowing a stored subscription login) unless the
     // caller explicitly opted into API billing. Cached agents never reach
     // this — no spawn, no billing.
-    if (!billingProbed.has(harness)) {
-      const probe = (opts.probeBilling ?? probeBilling)(harness);
-      billingProbed.set(harness, probe);
-      journal("billing.probe", {
-        harness,
-        mode: opts.subscriptionOnly ? "subscription" : probe.mode,
-        api_key_source: probe.apiKeySource,
-        login: probe.login,
-        subscription_only: Boolean(opts.subscriptionOnly),
-      });
-      if (opts.subscriptionOnly) {
-        if (probe.login === "absent") {
+    try {
+      if (!billingProbed.has(harness)) {
+        const probe = (opts.probeBilling ?? probeBilling)(harness);
+        billingProbed.set(harness, probe);
+        journal("billing.probe", {
+          harness,
+          mode: opts.subscriptionOnly ? "subscription" : probe.mode,
+          api_key_source: probe.apiKeySource,
+          login: probe.login,
+          subscription_only: Boolean(opts.subscriptionOnly),
+        });
+        if (opts.subscriptionOnly) {
+          if (probe.login === "absent") {
+            throw new Error(
+              `subscription-only: no stored login detected for ${harness}; ` +
+                `log the harness CLI in (or drop --subscription-only for a key-only host)`,
+            );
+          }
+          log(`[billing] ${harness}: subscription-only (API-key vars scrubbed from child env)`);
+        } else if (probe.mode === "api-key-override" && !opts.allowApiBilling) {
           throw new Error(
-            `subscription-only: no stored login detected for ${harness}; ` +
-              `log the harness CLI in (or drop --subscription-only for a key-only host)`,
+            `${probe.apiKeySource} is set AND a stored ${harness} login exists — the key silently ` +
+              `overrides your subscription auth, so children would bill per-token API rates. ` +
+              `Either unset ${probe.apiKeySource}, run with --subscription-only to scrub it from ` +
+              `child envs, or pass --allow-api-billing if API billing is intended`,
           );
+        } else if (probe.mode === "api-key") {
+          log(
+            `[billing] ${harness}: API-key billing (${probe.apiKeySource}; no stored login detected) — ` +
+              `children bill per-token rates`,
+          );
+        } else if (probe.mode === "api-key-override") {
+          log(
+            `[billing] ${harness}: API-key billing (--allow-api-billing; key overrides stored login)`,
+          );
+        } else {
+          log(`[billing] ${harness}: subscription login`);
         }
-        log(`[billing] ${harness}: subscription-only (API-key vars scrubbed from child env)`);
-      } else if (probe.mode === "api-key-override" && !opts.allowApiBilling) {
-        throw new Error(
-          `${probe.apiKeySource} is set AND a stored ${harness} login exists — the key silently ` +
-            `overrides your subscription auth, so children would bill per-token API rates. ` +
-            `Either unset ${probe.apiKeySource}, run with --subscription-only to scrub it from ` +
-            `child envs, or pass --allow-api-billing if API billing is intended`,
-        );
-      } else if (probe.mode === "api-key") {
-        log(
-          `[billing] ${harness}: API-key billing (${probe.apiKeySource}; no stored login detected) — ` +
-            `children bill per-token rates`,
-        );
-      } else if (probe.mode === "api-key-override") {
-        log(
-          `[billing] ${harness}: API-key billing (--allow-api-billing; key overrides stored login)`,
-        );
-      } else {
-        log(`[billing] ${harness}: subscription login`);
       }
+    } catch (error) {
+      reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
+      reservedForDispatch = 0;
+      if (spawnCountClaimed) {
+        agentsSpawned--;
+        spawnCountClaimed = false;
+      }
+      agentProof.error = (error as Error).message;
+      throw error;
     }
 
-    if (agentsSpawned >= maxAgents) {
-      agentProof.error = `workflow agent cap reached (${maxAgents})`;
-      throw new Error(
-        `workflow agent cap reached (${maxAgents}); raise --max-agents deliberately if the fan-out is intended`,
-      );
-    }
-    agentsSpawned++;
+    if (!spawnCountClaimed) agentsSpawned++;
 
     await acquire();
     try {
@@ -341,6 +516,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       agentProof.error ??= (error as Error).message;
       throw error;
     } finally {
+      reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
       release();
     }
   };
@@ -378,7 +554,24 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     return record.id;
   };
 
-  const ctx: WorkflowContext = { agent, parallel, stage, log, evidence };
+  const authorize = async (input: ExternalMutationRequest): Promise<PolicyDecision> => {
+    const network =
+      input.network === true || input.service !== undefined || input.target !== undefined
+        ? "enabled"
+        : "disabled";
+    return authorizePolicyRequest({
+      phase: "external_mutation",
+      action: input.action,
+      path: input.path ? resolve(cwd, input.path) : undefined,
+      isolation,
+      network_access: network,
+      service: input.service,
+      target: input.target,
+      current_cost_usd: round4(costUsd),
+    });
+  };
+
+  const ctx: WorkflowContext = { agent, parallel, stage, log, evidence, authorize };
 
   const t0 = Date.now();
   const startedAt = new Date(t0).toISOString();
@@ -389,6 +582,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     acceptance: meta.acceptance,
     max_agents: maxAgents,
     concurrency,
+    policy: policy ? { name: policy.name, sha256: policyDigest(policy) } : null,
+    isolation,
+    network_access: networkAccess,
   });
   try {
     const result = await mod.default(ctx);
@@ -416,6 +612,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
+        policy: policy
+          ? { config: policy, decisions: policyDecisions, isolation, networkAccess }
+          : undefined,
         result,
       });
       writeWorkflowProof(proofPath, proof);
@@ -443,6 +642,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         harness: p.harness,
         mode: opts.subscriptionOnly ? "subscription" : p.mode,
       })),
+      policy: proof.policy?.summary,
     };
     return report;
   } catch (err) {
@@ -471,6 +671,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
+        policy: policy
+          ? { config: policy, decisions: policyDecisions, isolation, networkAccess }
+          : undefined,
         error: (err as Error).message,
       });
       writeWorkflowProof(proofPath, proof);
@@ -557,4 +760,43 @@ function loadResumeCache(
 
 function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
+}
+
+function assertAgentCapacity(agentsSpawned: number, maxAgents: number): void {
+  if (agentsSpawned >= maxAgents) {
+    throw new Error(
+      `workflow agent cap reached (${maxAgents}); raise --max-agents deliberately if the fan-out is intended`,
+    );
+  }
+}
+
+function boundedPolicyReason(value: string): string {
+  const normalized = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127 ? " " : character;
+  })
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length > 2_000 ? `${normalized.slice(0, 1_999)}…` : normalized;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("policyAskTimeoutMs must be a positive finite number");
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`approval timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

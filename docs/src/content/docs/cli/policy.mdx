@@ -1,0 +1,72 @@
+---
+title: harn policy
+description: Validate and inspect the host policy applied to workflow dispatch and declared external mutations.
+sidebar:
+  order: 29
+---
+
+```
+harn policy check <file> [--json]
+```
+
+`harn policy check` parses JSON or JSONC, validates every rule, resolves relative
+paths against the policy file, normalizes unordered lists, and prints the
+SHA-256 digest of the effective policy. It does not run a workflow or request an
+approval. Unknown fields fail validation so a misspelled security rule cannot be
+silently ignored.
+
+```jsonc
+{
+  "schema_version": 1,
+  "name": "release workflow",
+  "max_cost_usd": 2.5,
+  "unknown_cost": "ask",
+  "allowed_harnesses": ["codex", "claude-code"],
+  "allowed_models": ["gpt-5.4", "claude-sonnet-4-6"],
+  "allowed_paths": ["../project"],
+  "network": "ask",
+  "external_actions": "ask",
+  "allowed_isolation": ["worktree", "sandbox"]
+}
+```
+
+Pass the file to a run with `harn workflow run script.mjs --policy policy.jsonc`.
+The standalone CLI has no implicit interactive approval channel, so an `ask`
+verdict denies the protected action. Embedding hosts can provide an approval
+callback through the programmatic workflow API.
+
+The standalone CLI also has no cross-vendor pricing catalog. When
+`max_cost_usd` is present, its dispatch projection is unknown and follows
+`unknown_cost`. An embedding host can provide `EngineOpts.estimateDispatchCost`
+to make the ceiling predictive. Actual adapter-reported cost still accumulates
+in every run.
+
+## Rule behavior
+
+| Field | Behavior |
+| --- | --- |
+| `max_cost_usd` | Compares accumulated run cost plus the host's projected dispatch cost. |
+| `unknown_cost` | `ask` or `deny`; used when a ceiling exists but pricing is unavailable. Defaults to `deny`. |
+| `allowed_harnesses` | Denies an unlisted dispatch harness. Omit for any registered harness. |
+| `allowed_models` | Denies an unlisted or unknown model. Omit to allow the harness default. |
+| `allowed_paths` | Requires the dispatch working directory or mutation path to be contained by one listed root. |
+| `network` | Verdict applied when network is enabled or unknown. Defaults to `deny`. |
+| `external_actions` | Verdict applied to every `ctx.authorize()` external mutation. Defaults to `deny`. |
+| `allowed_isolation` | Acceptable host-created boundaries. Omit to accept any declared mode. |
+
+Independent rules compose fail-closed: `deny` beats `ask`, and `ask` beats
+`allow`. A missing field generally means no restriction, except network,
+external actions, unknown cost, and the schema defaults shown above.
+
+## Enforcement boundary
+
+The workflow engine owns dispatch, so dispatch policy is authoritative. External
+mutation policy is authoritative when host code calls `ctx.authorize()` before
+the operation. It does not intercept arbitrary tools inside a subprocess
+harness. Use [`harn harness`](./harness/) to inspect each adapter's separate
+`policyMapping` capability claim.
+
+Every final decision is included in the workflow proof packet. Receipts contain
+the action descriptor, rule codes, verdicts, cost facts, and bounded destination
+metadata. They omit prompts, credentials, arbitrary payloads, URL query strings,
+and response bodies.

@@ -7,6 +7,16 @@
  * Design record: decision 0015 (portable coordination-aware workflows).
  */
 
+import type {
+  DispatchCostEstimator,
+  ExternalMutationRequest,
+  NormalizedPolicy,
+  PolicyAskResolver,
+  PolicyDecision,
+  PolicyIsolation,
+  PolicyNetworkAccess,
+  PolicySpec,
+} from "../policy/index.ts";
 import type { BillingMode, BillingProber } from "./billing.ts";
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
@@ -151,6 +161,7 @@ export interface WorkflowProof {
   };
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
+  policy?: WorkflowPolicyProof;
   repository: WorkflowRepoEvidence;
   harnesses: HarnessEvidenceCoverage[];
   unknowns: WorkflowProofUnknown[];
@@ -160,6 +171,22 @@ export interface WorkflowProof {
       sha256: string;
       bytes: number;
     };
+  };
+}
+
+export interface WorkflowPolicyProof {
+  schema_version: 1;
+  name: string;
+  sha256: string;
+  isolation: PolicyIsolation;
+  network_access: PolicyNetworkAccess;
+  config: NormalizedPolicy;
+  decisions: PolicyDecision[];
+  summary: {
+    allowed: number;
+    denied: number;
+    asked: number;
+    total: number;
   };
 }
 
@@ -254,6 +281,8 @@ export interface WorkflowContext {
   log: (message: string) => void;
   /** Attach a bounded, sourced receipt to the run and optional acceptance criteria. */
   evidence: (input: WorkflowEvidenceInput) => string;
+  /** Authorize one host-mediated external mutation before performing it. */
+  authorize: (input: ExternalMutationRequest) => Promise<PolicyDecision>;
 }
 
 export interface WorkflowMeta {
@@ -303,6 +332,18 @@ export interface EngineOpts {
   /** Capability claims used to state whether adapter-native tool evidence was
    * available. Missing claims remain unknown. */
   harnessEvidence?: Readonly<Record<HarnessName, HarnessEvidenceCapability | undefined>>;
+  /** Immutable host policy. Workflow scripts and model prompts cannot replace it. */
+  policy?: PolicySpec | NormalizedPolicy;
+  /** Host callback for ASK. Missing, invalid, throwing, or timed-out resolution denies. */
+  resolvePolicyAsk?: PolicyAskResolver;
+  /** Host-owned cost projection. Required to allow budgeted dispatches with known pricing. */
+  estimateDispatchCost?: DispatchCostEstimator;
+  /** Maximum wait for an ASK resolver (default 60 seconds). */
+  policyAskTimeoutMs?: number;
+  /** Execution boundary created by the host (default shared). */
+  isolation?: PolicyIsolation;
+  /** Network state of spawned harness subprocesses (default unknown). */
+  networkAccess?: PolicyNetworkAccess;
 }
 
 export interface RunReport {
@@ -324,4 +365,6 @@ export interface RunReport {
   contextTokensPerChildEstimate: number;
   /** Billing mode per harness actually used this run (probed on first use). */
   billing: Array<{ harness: HarnessName; mode: BillingMode }>;
+  /** Policy verdict totals when the host supplied a policy. */
+  policy?: WorkflowPolicyProof["summary"];
 }

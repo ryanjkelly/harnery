@@ -1,0 +1,115 @@
+---
+title: "0022: Workflow policy is owned and enforced by the host"
+description: "ADR: add a fail-closed ALLOW, ASK, and DENY boundary before agent dispatch and declared external mutation without trusting workflow prompts or overstating subprocess control."
+---
+
+**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/policy`, `core/workflow`, policy CLI)
+
+## Context
+
+The workflow engine already owned the only path to a real child-agent spawn,
+tracked run cost, and wrote a terminal proof packet. It did not have a portable
+way for an embedding host to say which harnesses, models, paths, network
+conditions, isolation boundaries, or costs were acceptable before work began.
+
+Putting those rules into the workflow script or the agent prompt would be too
+weak. The code requesting an action must not also be the authority that can
+weaken its constraints. The opposite extreme, claiming that Harnery can
+intercept every tool call made inside every harness subprocess, would also be
+false. Some harnesses expose policy hooks and tool events; others provide only
+a final result.
+
+## Decision
+
+Add `harnery/core/policy`, a dependency-light, host-owned policy contract with
+three verdicts: `allow`, `ask`, and `deny`. `EngineOpts.policy` is normalized,
+deep-frozen, and digested at run start. Workflow metadata and model prompts
+cannot supply or replace it.
+
+Policy schema version 1 supports:
+
+- a run-cost ceiling and `ask | deny` behavior when dispatch pricing is
+  unknown;
+- harness and model allowlists;
+- filesystem roots with containment checks;
+- network and external-action verdicts;
+- a set of acceptable host-declared isolation modes: `shared`, `worktree`,
+  `sandbox`, or `remote`.
+
+Rules evaluate independently and compose by severity: any `deny` wins, then
+`ask`, then `allow`. There are no policy payload transforms or state mutations.
+This keeps evaluation deterministic and makes a decision safe to repeat.
+
+The engine evaluates policy immediately before each uncached dispatch, before
+billing probing, spawn accounting, or adapter invocation. The request uses
+engine and host facts: current cost, a host-supplied cost projection, child
+working directory, harness, model, isolation, and network state. A cached
+result does not dispatch and therefore does not produce a new dispatch
+decision.
+
+An `ask` verdict is delivered to `EngineOpts.resolvePolicyAsk`. Only an explicit
+valid `allow` proceeds. An explicit denial, missing callback, invalid response,
+callback exception, or timeout resolves to denial. The standalone CLI does not
+invent an interactive approval mechanism, so `ASK` fails closed there. An
+embedding host may connect the callback to its own operator or approval system.
+
+Workflow context gains `authorize(input)` for host-mediated external mutations.
+The workflow calls it before performing the operation. A denial throws before
+control returns to the caller. Calling `authorize()` without a host policy also
+throws, avoiding an API whose name implies protection while silently doing
+nothing.
+
+Every check writes `policy.check` and `policy.resolve` journal events. The
+terminal proof packet includes the normalized policy and digest, host-declared
+isolation and network state, bounded decision receipts, initial and final
+verdicts, resolver ownership, rule codes, and summary counts. Prompts, payloads,
+credentials, URL queries, and response bodies are omitted.
+
+Add `harn policy check <file> [--json]` for validation and normalization, plus
+`harn workflow run --policy <file> --isolation <mode>`. Policy paths in a file
+resolve relative to that file. The CLI truthfully declares its ordinary
+harness subprocesses network-enabled.
+
+## Alternatives considered
+
+- **Put policy in `WorkflowMeta`.** Rejected because the requesting workflow
+  could weaken its own constraints. The host must own policy through
+  `EngineOpts` or the CLI invocation.
+- **Encode permissions in the model prompt.** Rejected because instructions
+  influence behavior but do not prevent a process from starting or an external
+  mutation from occurring.
+- **Treat unknown model pricing as zero.** Rejected because a cost ceiling would
+  appear enforced precisely when the engine lacks the fact needed to enforce
+  it. Unknown pricing can only ask or deny.
+- **Automatically downgrade to a cheaper model.** Rejected for the first
+  contract. Substitution changes work semantics and belongs in an explicit
+  routing policy, not a hidden budget side effect.
+- **Rank isolation modes from weak to strong.** Rejected because worktrees,
+  sandboxes, and remote runtimes protect different boundaries. Policy lists
+  acceptable modes; the host declares which boundary it actually created.
+- **Intercept arbitrary child-harness tool calls.** Rejected as a portable
+  guarantee. The existing harness capability registry remains the truth source
+  for adapter-native policy mapping.
+- **Build a durable approval inbox now.** Deferred. The callback is the stable
+  seam; durable addressed messages, parking, and crash-safe resumption are a
+  separate coordination capability.
+
+## Result and gotchas
+
+- A denied dispatch reaches neither the billing probe nor the spawner and still
+  produces a failed run proof with the decision receipt.
+- A cost estimator failure becomes unknown pricing and follows the configured
+  fail-closed rule instead of bypassing policy.
+- `network: deny` on the standalone CLI denies ordinary agent dispatch because
+  those subprocesses inherit host networking. Harnery does not claim it disabled
+  a boundary it did not create.
+- `allowed_paths` checks lexical containment after absolute normalization. A
+  prefix lookalike such as `/repo-copy` does not pass for `/repo`.
+- A policy proves authorization, not completion. The journal records the final
+  allow decision before the protected operation; later run evidence proves what
+  actually happened.
+- `authorize()` is an enforcement seam for cooperative host code. It cannot
+  stop workflow code from performing an undeclared operation or see hidden
+  tool calls inside an opaque child process. Sandboxing and harness-native tool
+  policy remain separate, explicitly declared capabilities.
+
