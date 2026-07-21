@@ -163,6 +163,10 @@ export function normalizeEventName(
       return { event_type: "tool.post_use", intra_turn: true };
     case "post-tool-use-failure":
       return { event_type: "tool.post_use_failure", intra_turn: true };
+    case "pre-compact":
+      return { event_type: "context.compaction.started", intra_turn: false };
+    case "post-compact":
+      return { event_type: "context.compaction.completed", intra_turn: false };
     default:
       return null;
   }
@@ -177,4 +181,6 @@ export type NormalizedEventType =
   | "subagent.stop"
   | "tool.pre_use"
   | "tool.post_use"
-  | "tool.post_use_failure";
+  | "tool.post_use_failure"
+  | "context.compaction.started"
+  | "context.compaction.completed";

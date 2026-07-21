@@ -131,6 +131,16 @@ function activeCount(root: string): number {
   return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).length : 0;
 }
 
+function continuityState(root: string): Record<string, unknown> {
+  const base = path.join(root, ".harnery", "context");
+  const sessionDir = readdirSync(base)[0];
+  if (!sessionDir) throw new Error("continuity session directory was not created");
+  return JSON.parse(readFileSync(path.join(base, sessionDir, "state.json"), "utf8")) as Record<
+    string,
+    unknown
+  >;
+}
+
 afterEach(() => {
   while (sandboxes.length) {
     const s = sandboxes.pop();
@@ -292,6 +302,121 @@ describe("agent-hook session-start", () => {
     });
     run(AGENT_HOOK, ["session-start", "--harness", "codex"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
+  });
+});
+
+// ── native compaction continuity ──────────────────────────────────────────
+describe("agent-hook context continuity", () => {
+  test("Claude PreCompact checkpoints and compact SessionStart injects verified recovery", () => {
+    const root = makeSandbox();
+    const owner = "claude-compact-fixture";
+    seedHeartbeat(root, owner, {
+      name: "Ada",
+      platform: "claude_code",
+      files: ["src/adapter.ts"],
+      extra: { task: "Port context continuity", turn_summary: "Checkpoint core is passing" },
+    });
+    const env = { HARNERY_AGENT_COORD_OWNER: owner };
+    const pre = JSON.stringify({
+      session_id: owner,
+      cwd: root,
+      hook_event_name: "PreCompact",
+      model: "claude-opus-4-1",
+      trigger: "auto",
+      context_window: {
+        context_window_size: 200_000,
+        current_usage: { input_tokens: 120_000, cache_read_input_tokens: 20_000 },
+      },
+    });
+    expect(
+      run(AGENT_HOOK, ["pre-compact", "--harness", "claude-code"], pre, root, env).status,
+    ).toBe(0);
+    expect(continuityState(root)).toMatchObject({
+      session_id: owner,
+      phase: "checkpointed",
+      generation: 1,
+      latest_context: { used_tokens: 140_000, window_tokens: 200_000, used_percent: 70 },
+    });
+
+    const resumed = run(
+      AGENT_HOOK,
+      ["session-start", "--harness", "claude-code"],
+      JSON.stringify({
+        session_id: owner,
+        cwd: root,
+        hook_event_name: "SessionStart",
+        source: "compact",
+        model: "claude-opus-4-1",
+      }),
+      root,
+      env,
+    );
+    expect(resumed.status).toBe(0);
+    expect(resumed.stdout).toContain("[harnery context continuity]");
+    expect(resumed.stdout).toContain("Port context continuity");
+    expect(continuityState(root).phase).toBe("recovered");
+    expect(events(root)).toContain('"event_type":"context.checkpoint.created"');
+    expect(events(root)).toContain('"event_type":"context.recovery.injected"');
+  });
+
+  test("Codex recovers at the next prompt after PostCompact", () => {
+    const root = makeSandbox();
+    const owner = "codex-compact-fixture";
+    seedHeartbeat(root, owner, {
+      name: "Lin",
+      platform: "codex",
+      extra: { task: "Continue Codex adapter work" },
+    });
+    const env = { HARNERY_AGENT_COORD_OWNER: owner };
+    const base = { session_id: owner, cwd: root, model: "gpt-5.6-sol" };
+    run(
+      AGENT_HOOK,
+      ["pre-compact", "--harness", "codex"],
+      JSON.stringify({ ...base, hook_event_name: "PreCompact" }),
+      root,
+      env,
+    );
+    const beforeCompletion = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--harness", "codex"],
+      JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "not compacted" }),
+      root,
+      env,
+    );
+    expect(beforeCompletion.stdout).not.toContain("[harnery context continuity]");
+    expect(continuityState(root).phase).toBe("checkpointed");
+    run(
+      AGENT_HOOK,
+      ["post-compact", "--harness", "codex"],
+      JSON.stringify({ ...base, hook_event_name: "PostCompact" }),
+      root,
+      env,
+    );
+    expect(continuityState(root).phase).toBe("checkpointed");
+
+    const prompt = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--harness", "codex"],
+      JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "continue" }),
+      root,
+      env,
+    );
+    expect(prompt.status).toBe(0);
+    expect(prompt.stdout).toContain("[harnery context continuity]");
+    expect(prompt.stdout).toContain("Continue Codex adapter work");
+    expect(continuityState(root).phase).toBe("recovered");
+
+    const status = run(
+      HARN,
+      ["context", "status", "--session", owner, "--instance", owner, "--json"],
+      "",
+      root,
+      env,
+    );
+    expect(status.status).toBe(0);
+    expect(JSON.parse(status.stdout)).toMatchObject({
+      state: { session_id: owner, phase: "recovered", generation: 1 },
+    });
   });
 });
 

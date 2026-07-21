@@ -37,6 +37,9 @@ Claims use four states:
 The current dimensions cover invocation, model and effort selection, turn
 ceilings, final results, session ids, cost, tool evidence, policy mapping,
 interruption, streaming, steering, resume, images, and compaction.
+Context continuity is split into four claims: context telemetry, a
+pre-compaction signal, a post-compaction signal, and the ability to initiate
+native compaction.
 
 ## Conformance bench
 
@@ -63,9 +66,12 @@ registered harness. `--json` emits the complete report for CI or dashboards.
 The offline bench currently proves registration, binary availability,
 invocation planning, model and effort mapping, turn-ceiling mapping, final
 result normalization, session-id extraction, cost extraction, and the absence
-of normalized tool evidence. Policy, active interruption, streaming,
-steering, resume, image input, and compaction remain `unknown` until a safe
-behavioral probe exists.
+of normalized tool evidence. It also checks pre/post-compaction claims against
+the hook wiring that `harn init` installs. Context telemetry stays `unknown` in
+the offline bench because no static probe can prove a runtime measurement.
+Policy, active interruption, streaming, steering, resume, image input, and
+native compaction control remain `unknown` until a safe behavioral probe
+exists.
 
 ## Workflow effort selection
 

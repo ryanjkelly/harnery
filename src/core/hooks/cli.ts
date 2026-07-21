@@ -27,6 +27,16 @@ import { consumeSince, writeCursor } from "../agents/events/consume.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
+import {
+  checkpointContext,
+  completeContextRecovery,
+  extractContextSample,
+  markContextCompactionCompleted,
+  type PreparedContextRecovery,
+  prepareContextRecovery,
+  readContextState,
+  recordContextSample,
+} from "../context/index.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import {
   captureImages,
@@ -387,7 +397,47 @@ function buildEventData(
         ...(summary.truncated ? { truncated: true } : {}),
       };
     }
+
+    case "context.compaction.started": {
+      const metadata = objectRecord(p?.raw.compact_metadata);
+      return {
+        trigger: stringField(p?.raw.trigger) ?? stringField(metadata?.trigger),
+        pre_tokens:
+          numberField(p?.raw.pre_tokens) ??
+          numberField(metadata?.pre_tokens) ??
+          numberField(metadata?.pre_compact_tokens),
+      };
+    }
+
+    case "context.compaction.completed": {
+      const metadata = objectRecord(p?.raw.compact_metadata);
+      return {
+        trigger: stringField(p?.raw.trigger) ?? stringField(metadata?.trigger),
+        pre_tokens:
+          numberField(p?.raw.pre_tokens) ??
+          numberField(metadata?.pre_tokens) ??
+          numberField(metadata?.pre_compact_tokens),
+        post_tokens:
+          numberField(p?.raw.post_tokens) ??
+          numberField(metadata?.post_tokens) ??
+          numberField(metadata?.post_compact_tokens),
+      };
+    }
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 async function main(): Promise<number> {
@@ -490,6 +540,84 @@ async function main(): Promise<number> {
     event_id: envelope.event_id,
   });
 
+  // Context telemetry is opportunistic and truthful: only persist a sample
+  // when the harness payload actually exposes usage/window data. Identical
+  // measurements are de-duplicated before they reach the canonical stream.
+  if (payload?.raw) {
+    try {
+      const sample = extractContextSample(payload.raw, {
+        sessionId,
+        harness,
+        model: payload.model,
+        source: "hook",
+        confidence: "reported",
+      });
+      if (sample) {
+        const recorded = recordContextSample(coordRoot, owner.instance_id, sample);
+        if (recorded.changed) {
+          emit(coordRoot, {
+            event_type: "context.sampled",
+            instance_id: owner.instance_id,
+            session_id: sessionId,
+            harness,
+            data: {
+              model: sample.model,
+              used_tokens: sample.used_tokens,
+              window_tokens: sample.window_tokens,
+              used_percent: sample.used_percent,
+              telemetry_source: sample.source,
+              confidence: sample.confidence,
+            },
+          });
+        }
+      }
+    } catch (err) {
+      logError(coordRoot, err, { phase: "context-sample" });
+    }
+  }
+
+  // A native pre-compaction signal is the safest available point to capture
+  // external work state. The operation is idempotent until recovery, so a
+  // harness retry cannot create a storm of near-identical capsules.
+  if (norm.event_type === "context.compaction.started") {
+    try {
+      const checkpoint = checkpointContext(coordRoot, {
+        sessionId,
+        instanceId: owner.instance_id,
+        harness,
+        cwd: payload?.cwd ?? process.cwd(),
+        reason: "pre_compact",
+        model: payload?.model,
+      });
+      emit(coordRoot, {
+        event_type: "context.checkpoint.created",
+        instance_id: owner.instance_id,
+        session_id: sessionId,
+        harness,
+        data: {
+          capsule_id: checkpoint.capsule.capsule_id,
+          generation: checkpoint.capsule.generation,
+          path: checkpoint.state.latest_capsule ?? "",
+          reason: checkpoint.capsule.reason,
+          reused: checkpoint.reused,
+        },
+      });
+    } catch (err) {
+      logError(coordRoot, err, { phase: "context-checkpoint" });
+    }
+  }
+
+  if (norm.event_type === "context.compaction.completed") {
+    try {
+      markContextCompactionCompleted(coordRoot, {
+        sessionId,
+        instanceId: owner.instance_id,
+      });
+    } catch (err) {
+      logError(coordRoot, err, { phase: "context-compaction-completed" });
+    }
+  }
+
   // Phase 8: SessionStart post-emit: project the event so the heartbeat
   // lands synchronously, run stale-sweep, and emit the harness-shaped
   // systemMessage JSON (peer table + wiring check + council invites).
@@ -508,8 +636,48 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-image-janitor" });
     }
+    let recovery: PreparedContextRecovery | null = null;
+    if (payload?.source === "compact") {
+      try {
+        emit(coordRoot, {
+          event_type: "context.compaction.completed",
+          instance_id: owner.instance_id,
+          session_id: sessionId,
+          harness,
+          data: { trigger: "auto" },
+        });
+        markContextCompactionCompleted(coordRoot, {
+          sessionId,
+          instanceId: owner.instance_id,
+        });
+        recovery = prepareContextRecovery(coordRoot, {
+          instanceId: owner.instance_id,
+          sessionId,
+          cwd: payload?.cwd ?? process.cwd(),
+        });
+      } catch (err) {
+        logError(coordRoot, err, { phase: "context-recovery-session-start" });
+      }
+    }
     try {
-      await emitSessionStartSystemMessage(coordRoot, owner.instance_id, sessionId, data, harness);
+      const injected = await emitSessionStartSystemMessage(
+        coordRoot,
+        owner.instance_id,
+        sessionId,
+        data,
+        harness,
+        recovery?.briefing ?? "",
+      );
+      if (injected && recovery) {
+        completeRecoveryInjection(
+          coordRoot,
+          owner.instance_id,
+          sessionId,
+          harness,
+          recovery,
+          "SessionStart",
+        );
+      }
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-systemMessage" });
     }
@@ -616,8 +784,40 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "user-prompt-submit-presence" });
     }
+    let recovery: PreparedContextRecovery | null = null;
+    const continuityState = readContextState(coordRoot, sessionId);
+    if (
+      continuityState?.phase === "checkpointed" &&
+      continuityState.compaction_completed_at !== undefined
+    ) {
+      try {
+        recovery = prepareContextRecovery(coordRoot, {
+          instanceId: owner.instance_id,
+          sessionId,
+          cwd: payload?.cwd ?? process.cwd(),
+        });
+      } catch (err) {
+        logError(coordRoot, err, { phase: "context-recovery-user-prompt" });
+      }
+    }
     try {
-      await emitUserPromptSubmitSystemMessage(coordRoot, owner.instance_id, sessionId, harness);
+      const injected = await emitUserPromptSubmitSystemMessage(
+        coordRoot,
+        owner.instance_id,
+        sessionId,
+        harness,
+        recovery?.briefing ?? "",
+      );
+      if (injected && recovery) {
+        completeRecoveryInjection(
+          coordRoot,
+          owner.instance_id,
+          sessionId,
+          harness,
+          recovery,
+          "UserPromptSubmit",
+        );
+      }
     } catch (err) {
       logError(coordRoot, err, { phase: "user-prompt-submit-systemMessage" });
     }
@@ -1164,36 +1364,42 @@ async function emitUserPromptSubmitSystemMessage(
   instanceId: string,
   sessionId: string,
   harness: Harness,
-): Promise<void> {
+  recoveryBriefing = "",
+): Promise<boolean> {
   const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
-  if (!existsSync(agentCoordBin)) return;
+  let additionalContext = "";
 
-  // Look up the agent's name from its heartbeat (for council pending rendering).
-  let agentName = "";
-  try {
-    const fs = require("node:fs") as typeof import("node:fs");
-    const hbPath = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-    if (fs.existsSync(hbPath)) {
-      const hb = JSON.parse(fs.readFileSync(hbPath, "utf8")) as { name?: string };
-      agentName = hb.name ?? "";
+  if (existsSync(agentCoordBin)) {
+    // Look up the agent's name from its heartbeat (for council pending rendering).
+    let agentName = "";
+    try {
+      const fs = require("node:fs") as typeof import("node:fs");
+      const hbPath = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
+      if (fs.existsSync(hbPath)) {
+        const hb = JSON.parse(fs.readFileSync(hbPath, "utf8")) as { name?: string };
+        agentName = hb.name ?? "";
+      }
+    } catch {
+      /* fall through with empty name; peer table still renders */
     }
-  } catch {
-    /* fall through with empty name; peer table still renders */
-  }
 
-  const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
-  if (agentName) args.push("--name", agentName);
-  // Cursor + Codex sessions get the set-task staleness nudge. CC enforces it
-  // via the Stop-hook transcript scan; the nudge replaces that for harnesses
-  // that don't reliably expose a transcript_path during stop.
-  if (harness === "cursor" || harness === "codex") args.push("--task-nudge");
-  const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
-  if (result.status !== 0 || !result.stdout) return;
-  const additionalContext = result.stdout.trim();
-  if (!additionalContext) return;
+    const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
+    if (agentName) args.push("--name", agentName);
+    // Cursor + Codex sessions get the set-task staleness nudge. CC enforces it
+    // via the Stop-hook transcript scan; the nudge replaces that for harnesses
+    // that don't reliably expose a transcript_path during stop.
+    if (harness === "cursor" || harness === "codex") args.push("--task-nudge");
+    const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
+    if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
+  }
+  if (recoveryBriefing) {
+    additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
+  }
+  if (!additionalContext) return false;
 
   const { emitContext } = await import("./harness/output.ts");
   emitContext(harness, "UserPromptSubmit", additionalContext);
+  return true;
 }
 
 function emitSubagentStartContext(
@@ -1246,45 +1452,45 @@ async function emitSessionStartSystemMessage(
   sessionId: string,
   emittedData: Record<string, unknown>,
   harness: Harness,
-): Promise<void> {
+  recoveryBriefing = "",
+): Promise<boolean> {
   const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
-  if (!existsSync(agentCoordBin)) return;
+  let additionalContext = "";
+  if (existsSync(agentCoordBin)) {
+    // Sync-project so the heartbeat exists for downstream readers (peer table,
+    // wiring check, council invites).
+    spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
+    // Stale-sweep dead peers before rendering peer table.
+    spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
 
-  // Sync-project so the heartbeat exists for downstream readers (peer table,
-  // wiring check, council invites).
-  spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
-  // Stale-sweep dead peers before rendering peer table.
-  spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
+    // SESSION_START activity log line, fired across all harnesses.
+    const model = (emittedData.model as string | undefined) ?? "unknown";
+    const source = (emittedData.source as string | undefined) ?? "startup";
+    const platform = harnessPlatform(harness);
+    spawnSync(
+      agentCoordBin,
+      [
+        "log",
+        `SESSION_START   model=${model} source=${source} platform=${platform}`,
+        "--instance",
+        instanceId,
+      ],
+      { encoding: "utf8", timeout: 2000 },
+    );
 
-  // SESSION_START activity log line, fired across all harnesses.
-  const model = (emittedData.model as string | undefined) ?? "unknown";
-  const source = (emittedData.source as string | undefined) ?? "startup";
-  const platform = harnessPlatform(harness);
-  spawnSync(
-    agentCoordBin,
-    [
-      "log",
-      `SESSION_START   model=${model} source=${source} platform=${platform}`,
-      "--instance",
-      instanceId,
-    ],
-    { encoding: "utf8", timeout: 2000 },
-  );
-
-  // Render the systemMessage via agent-coord.
-  const agentName = (emittedData.name as string | undefined) ?? "";
-  const args = ["session-context", "--instance", instanceId, "--session", sessionId];
-  if (agentName) args.push("--name", agentName);
-  // The "You are agent-X." prefix in session-context renders unqualified by
-  // default (claude-code-style). For cursor/codex the bash dispatchers add
-  // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
-  if (harness !== "claude-code") {
-    args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
+    // Render the systemMessage via agent-coord.
+    const agentName = (emittedData.name as string | undefined) ?? "";
+    const args = ["session-context", "--instance", instanceId, "--session", sessionId];
+    if (agentName) args.push("--name", agentName);
+    // The "You are agent-X." prefix in session-context renders unqualified by
+    // default (claude-code-style). For cursor/codex the bash dispatchers add
+    // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
+    if (harness !== "claude-code") {
+      args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
+    }
+    const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
+    if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }
-  const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
-  if (result.status !== 0 || !result.stdout) return;
-  let additionalContext = result.stdout.trim();
-  if (!additionalContext) return;
 
   // Effect (claude-code): merge the scratch recovery cue into the session-start
   // context. Was a standalone additionalContext emission from the previous
@@ -1292,11 +1498,38 @@ async function emitSessionStartSystemMessage(
   // entry, it folds in here.
   if (harness === "claude-code") {
     const cue = scratchRecoveryCue(coordRoot);
-    if (cue) additionalContext = `${additionalContext}\n\n${cue}`;
+    if (cue) additionalContext = [additionalContext, cue].filter(Boolean).join("\n\n");
   }
+  if (recoveryBriefing) {
+    additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
+  }
+  if (!additionalContext) return false;
 
   const { emitContext } = await import("./harness/output.ts");
   emitContext(harness, "SessionStart", additionalContext);
+  return true;
+}
+
+function completeRecoveryInjection(
+  coordRoot: string,
+  instanceId: string,
+  sessionId: string,
+  harness: Harness,
+  recovery: PreparedContextRecovery,
+  injectionEvent: "SessionStart" | "UserPromptSubmit",
+): void {
+  completeContextRecovery(coordRoot, { sessionId, instanceId });
+  emit(coordRoot, {
+    event_type: "context.recovery.injected",
+    instance_id: instanceId,
+    session_id: sessionId,
+    harness,
+    data: {
+      capsule_id: recovery.capsule.capsule_id,
+      generation: recovery.capsule.generation,
+      injection_event: injectionEvent,
+    },
+  });
 }
 
 main()

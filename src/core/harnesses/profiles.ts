@@ -21,7 +21,10 @@ function capabilities(overrides: Partial<HarnessCapabilities>): HarnessCapabilit
     steering: unsupported("One prompt is fixed at subprocess launch."),
     resume: unsupported("Workflow children always start a new vendor session."),
     images: unsupported("SpawnRequest currently carries text only."),
-    compaction: unknown("The workflow adapter neither controls nor observes compaction."),
+    contextTelemetry: unknown("The workflow adapter does not expose live context usage."),
+    preCompactionSignal: unknown("No compaction lifecycle probe has certified this adapter."),
+    postCompactionSignal: unknown("No compaction lifecycle probe has certified this adapter."),
+    compaction: unsupported("Harnery does not initiate native harness compaction."),
     ...overrides,
   };
 }
@@ -46,6 +49,13 @@ export const BUILTIN_HARNESS_PROFILES = {
       maxTurns: supported("Mapped to `--max-turns <n>`."),
       sessionId: supported("Read from the JSON result envelope."),
       cost: supported("Read from total_cost_usd in the JSON result envelope."),
+      contextTelemetry: partial(
+        "Normalized when a hook payload reports context_window; no dedicated statusline bridge.",
+      ),
+      preCompactionSignal: supported("Claude Code PreCompact is wired to a durable checkpoint."),
+      postCompactionSignal: supported(
+        "SessionStart source=compact completes recovery and injects a verified briefing.",
+      ),
     }),
   },
   codex: {
@@ -65,6 +75,13 @@ export const BUILTIN_HARNESS_PROFILES = {
       maxTurns: unsupported("codex exec exposes no turn-ceiling flag."),
       sessionId: unsupported("--output-last-message carries no session id."),
       cost: unsupported("The final-message path carries no usage or cost."),
+      contextTelemetry: partial(
+        "Normalized when native hook payloads report context_window; unavailable otherwise.",
+      ),
+      preCompactionSignal: supported("Codex PreCompact is wired to a durable checkpoint."),
+      postCompactionSignal: supported(
+        "Codex PostCompact is observed; recovery is injected on the next submitted prompt.",
+      ),
     }),
   },
   cursor: {
@@ -86,6 +103,13 @@ export const BUILTIN_HARNESS_PROFILES = {
       maxTurns: unsupported("cursor-agent exposes no turn-ceiling flag."),
       sessionId: supported("Read from the JSON result envelope."),
       cost: unsupported("The JSON result envelope carries no cost."),
+      contextTelemetry: unknown("No stable Cursor context-usage payload has been certified."),
+      preCompactionSignal: unsupported(
+        "Harnery does not wire an unverified Cursor preCompact hook.",
+      ),
+      postCompactionSignal: unsupported(
+        "Harnery does not wire an unverified Cursor postCompact hook.",
+      ),
     }),
   },
 } as const satisfies Record<string, HarnessProfile>;

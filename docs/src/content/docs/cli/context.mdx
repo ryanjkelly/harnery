@@ -1,6 +1,6 @@
 ---
 title: harn context
-description: One-shot orientation snapshot — self, time, repo, commits, submodules, and active peers.
+description: Orientation snapshots plus durable checkpoint and recovery state around native context compaction.
 sidebar:
   order: 8
 ---
@@ -41,3 +41,60 @@ harn context --show-clean --json
 ## Output
 
 `--json` returns an envelope with one key per requested section (`self`, `time`, `repo`, `commits`, `submodules`, `peers`, `services`) plus a `meta` block carrying the elapsed time. A section that failed to gather carries an `error` field instead of its data, so consumers can distinguish "unavailable" from "empty".
+
+## Context continuity
+
+Harnery also keeps a bounded, structured record of work state around native
+context compaction. When a supported harness fires its pre-compaction event,
+Harnery automatically records the current task, turn summary, touched files,
+last tool, reported context usage, and Git state. After compaction it compares
+that snapshot with the live checkout and injects a recovery briefing through
+the harness's context channel.
+
+This preserves external work state; it does not initiate the harness's native
+compaction command.
+
+### Status
+
+```bash
+harn context status
+harn context status --json
+harn context status --session <session-id> --instance <instance-id>
+```
+
+Shows the session's continuity phase (`observing`, `checkpointed`, `recovered`,
+or `degraded`), capsule generation, latest reported usage, and capsule path.
+The current agent and session are inferred from Harnery's heartbeat when the
+flags are omitted.
+
+### Manual checkpoint
+
+```bash
+harn context checkpoint
+harn context checkpoint --note "Resume the adapter test failure investigation"
+harn context checkpoint --reason pressure --json
+harn context checkpoint --session <id> --instance <id> --harness codex
+```
+
+Creates a capsule immediately. `--reason` accepts `manual`, `pressure`,
+`pre_compact`, or `session_end`; ordinary operator-created checkpoints should
+use the default `manual` reason. The optional note is included in the recovery
+briefing.
+When there is no current heartbeat to identify the runtime, pass
+`--harness claude-code|codex|cursor` explicitly.
+
+### Show the latest capsule
+
+```bash
+harn context show
+harn context show --json
+```
+
+Prints the latest structured capsule. Capsule files live under
+`.harnery/context/<session-hash>/capsules/`, are written atomically with mode
+`0600`, and are capped at 32 KiB.
+
+Claude Code currently checkpoints on `PreCompact` and recovers on compact
+`SessionStart`. Codex checkpoints on `PreCompact`, observes `PostCompact`, and
+injects recovery at the next prompt boundary. Cursor compaction hooks remain
+disabled until a native lifecycle is verified.

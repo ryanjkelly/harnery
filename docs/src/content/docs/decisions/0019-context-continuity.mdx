@@ -1,0 +1,115 @@
+---
+title: "0019: Context continuity wraps native compaction with durable state"
+description: "ADR: preserve verified work state before native harness compaction and inject a reconciled recovery briefing afterward without claiming control of compaction itself."
+---
+
+**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/context`, canonical hooks, `context` CLI)
+
+## Context
+
+Long agent sessions eventually lose detail through a harness's context
+compaction. Harnery already kept useful pieces outside the model context:
+heartbeats, task summaries, touched files, scratch notes, Git state, and an
+append-only event stream. Those pieces were not assembled into one bounded,
+session-specific recovery record, and post-compaction orientation still
+depended on the model remembering what to retrieve.
+
+Internal runtime evaluations exposed useful partial mechanisms: normalized
+native context and compaction events, transcript-derived usage, status-line
+bridges that warn near thresholds, and managed compaction for sessions owned
+through a terminal host. None provided the whole portable contract Harnery
+needs. Tools that only observe `PreCompact` generally rely on the harness's
+ordinary summary and whatever files the agent happened to update.
+
+The hard platform boundary matters. A hook process cannot honestly invoke a
+native slash command in the interactive session that launched it. Harnery can
+observe and preserve state around compaction for ordinary sessions; triggering
+compaction is a separate capability that requires an owned PTY, tmux pane, SDK,
+or future vendor API.
+
+## Decision
+
+Add a product-tier context-continuity state machine with four phases:
+`observing`, `checkpointed`, `recovered`, and `degraded`.
+
+When a harness reports context-window data, normalize it into
+`ContextSample`, persist only changed measurements, and emit
+`context.sampled`. Missing telemetry remains missing. Harnery does not invent a
+model window or label an estimate as exact.
+
+On a native pre-compaction signal, create a `ContinuityCapsule` under
+`.harnery/context/<session-hash>/capsules/`. The capsule records:
+
+- stable session, instance, harness, model, and generation identity;
+- the latest reported context measurement;
+- task, turn summary, continuation note, touched files, and last tool from the
+  heartbeat;
+- Git root, branch, HEAD, and dirty paths at checkpoint time.
+
+Capsules and state records use atomic rename, mode `0600`, a 32 KiB size cap,
+and a hashed session directory. Repeated `PreCompact` deliveries reuse the
+current checkpoint until recovery completes. Manual checkpoints always create
+a new generation.
+
+After compaction, read the latest capsule, compare its Git snapshot with the
+live checkout, and inject a short recovery briefing through the harness-native
+additional-context channel. The briefing states any branch, HEAD, or dirty-path
+drift and tells the recovered agent to re-check before editing. Recovery is
+recorded as `context.recovery.injected`; a post-compaction signal without a
+checkpoint becomes explicit `degraded` state.
+
+The lifecycle wiring is capability-specific:
+
+- Claude Code checkpoints on `PreCompact` and recovers on `SessionStart` with
+  `source=compact`.
+- Codex checkpoints on `PreCompact`, records `PostCompact`, and injects the
+  recovery at the next `UserPromptSubmit` boundary.
+- Cursor makes no compaction-signal claim until its native lifecycle is
+  verified. Its profile reports the dimensions as unsupported.
+
+Add canonical events for sampling, checkpoint creation, compaction start and
+completion, and recovery injection. Extend the harness registry and offline
+bench with separate telemetry, pre-signal, post-signal, and trigger dimensions.
+The trigger dimension remains unsupported because this feature does not cause
+native compaction.
+
+Add `harn context status`, `harn context checkpoint`, and `harn context show`
+for inspection and manual recovery preparation. Keep the existing bare
+`harn context` orientation report unchanged.
+
+## Alternatives considered
+
+- **Inject `/compact` from a hook.** Rejected because hook output is context or
+  a verdict, not an interactive command channel. Pretending otherwise would
+  create a feature that appears armed but never executes.
+- **Own every session through tmux or a PTY.** Rejected as the default because
+  it would turn Harnery from a daemonless coordination layer into a session
+  host. An owned-session adapter can add truthful trigger support later.
+- **Rely on the harness-generated summary alone.** Rejected because the summary
+  cannot reliably know live Git drift, peer claims, heartbeat state, or which
+  external files changed during compaction.
+- **Store a transcript excerpt as the capsule.** Rejected because transcript
+  formats differ by harness, excerpts can contain secrets, and more prose is
+  less dependable than bounded structured work state.
+- **Use one global context-pressure percentage.** Deferred. Observed model
+  windows and compaction behavior differ. A future pressure policy
+  needs a verified model registry, absolute token thresholds, and truthful
+  telemetry confidence before it may warn or checkpoint proactively.
+- **Add Cursor hooks by analogy.** Rejected because capability claims must be
+  based on verified native events, not assumed symmetry with another harness.
+
+## Consequences
+
+- Native compaction no longer depends on the model remembering to write a
+  handoff at exactly the right moment.
+- Recovery state is local, bounded, inspectable, and reconstructable from
+  canonical events without adding a database or resident service.
+- Harnery improves continuity but does not prevent information loss inside the
+  harness summary. The capsule deliberately preserves external operational
+  truth, not the entire conversation.
+- Context telemetry coverage remains partial until each harness supplies a
+  stable native measurement or a separately verified bridge.
+- Automatic pressure thresholds and compaction triggering remain shelved. They
+  can be added without changing the capsule format when a harness exposes a
+  real control surface.
+

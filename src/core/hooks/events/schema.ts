@@ -194,6 +194,56 @@ export type ImageCaptured = EventEnvelope<
   }
 >;
 
+// Context continuity
+export type ContextSampled = EventEnvelope<
+  "context.sampled",
+  {
+    model?: string;
+    used_tokens?: number;
+    window_tokens?: number;
+    used_percent?: number;
+    telemetry_source: "hook" | "native_event" | "result" | "transcript" | "estimate";
+    confidence: "exact" | "reported" | "estimated";
+  }
+>;
+
+export type ContextCheckpointCreated = EventEnvelope<
+  "context.checkpoint.created",
+  {
+    capsule_id: string;
+    generation: number;
+    path: string;
+    reason: "manual" | "pressure" | "pre_compact" | "session_end";
+    reused: boolean;
+  }
+>;
+
+export type ContextCompactionStarted = EventEnvelope<
+  "context.compaction.started",
+  {
+    trigger?: string;
+    pre_tokens?: number;
+  }
+>;
+
+export type ContextCompactionCompleted = EventEnvelope<
+  "context.compaction.completed",
+  {
+    trigger?: string;
+    pre_tokens?: number;
+    post_tokens?: number;
+  }
+>;
+
+export type ContextRecoveryInjected = EventEnvelope<
+  "context.recovery.injected",
+  {
+    capsule_id: string;
+    generation: number;
+    injection_event: "SessionStart" | "UserPromptSubmit";
+  }
+>;
+
 // File claims
 export type ClaimAcquire = EventEnvelope<
   "claim.acquire",
@@ -410,6 +460,11 @@ export type Event =
   | ToolPostUseFailure
   | ToolOutputChunk
   | ImageCaptured
+  | ContextSampled
+  | ContextCheckpointCreated
+  | ContextCompactionStarted
+  | ContextCompactionCompleted
+  | ContextRecoveryInjected
   | ClaimAcquire
   | ClaimRelease
   | ClaimConflict

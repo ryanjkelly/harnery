@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { HARNESS_SPECS } from "../hooks/harness/events.ts";
 import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
 import type { HarnessRegistry } from "./registry.ts";
 import type {
@@ -146,6 +147,11 @@ function observeAdapter(adapter: HarnessAdapter): Record<HarnessCapabilityDimens
   const finalMatches = normalized?.ok === fixture.ok && normalized?.text === fixture.text;
   const sessionObserved = normalized?.sessionId !== undefined ? "supported" : "unsupported";
   const costObserved = normalized?.costUsd !== undefined ? "supported" : "unsupported";
+  const hookSpec =
+    adapter.profile.id in HARNESS_SPECS
+      ? HARNESS_SPECS[adapter.profile.id as keyof typeof HARNESS_SPECS]
+      : undefined;
+  const hookSubcommands = new Set(hookSpec?.events.map((event) => event.subcommand) ?? []);
 
   return {
     invocation:
@@ -178,6 +184,18 @@ function observeAdapter(adapter: HarnessAdapter): Record<HarnessCapabilityDimens
     steering: "unknown",
     resume: "unknown",
     images: "unknown",
+    contextTelemetry: "unknown",
+    preCompactionSignal: hookSpec
+      ? hookSubcommands.has("pre-compact")
+        ? "supported"
+        : "unsupported"
+      : "unknown",
+    postCompactionSignal: hookSpec
+      ? hookSubcommands.has("post-compact") ||
+        (adapter.profile.id === "claude-code" && hookSubcommands.has("session-start"))
+        ? "supported"
+        : "unsupported"
+      : "unknown",
     compaction: "unknown",
   };
 }

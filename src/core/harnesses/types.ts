@@ -21,6 +21,9 @@ export const HARNESS_CAPABILITY_DIMENSIONS = [
   "steering",
   "resume",
   "images",
+  "contextTelemetry",
+  "preCompactionSignal",
+  "postCompactionSignal",
   "compaction",
 ] as const;
 

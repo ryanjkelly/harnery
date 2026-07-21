@@ -61,6 +61,7 @@ export const CLAUDE_CODE_EVENTS: HookEvent[] = [
   { settingsKey: "PreToolUse", subcommand: "pre-tool-use" },
   { settingsKey: "PostToolUse", subcommand: "post-tool-use" },
   { settingsKey: "PostToolUseFailure", subcommand: "post-tool-use-failure" },
+  { settingsKey: "PreCompact", subcommand: "pre-compact" },
 ];
 
 /**
@@ -88,6 +89,8 @@ export const CODEX_EVENTS: HookEvent[] = [
   { settingsKey: "UserPromptSubmit", subcommand: "user-prompt-submit" },
   { settingsKey: "SubagentStart", subcommand: "sub-agent-start" },
   { settingsKey: "SubagentStop", subcommand: "sub-agent-stop" },
+  { settingsKey: "PreCompact", subcommand: "pre-compact" },
+  { settingsKey: "PostCompact", subcommand: "post-compact" },
   { settingsKey: "Stop", subcommand: "stop" },
 ];
 
