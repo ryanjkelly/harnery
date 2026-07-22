@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import type { Command } from "commander";
+import { parseHTML } from "linkedom";
 import { type ParsedMail, simpleParser } from "mailparser";
 import type { EmitContext } from "../commander.ts";
 
@@ -322,12 +323,12 @@ function parseAttribution(text: string): { name: string; date: Date | null } {
   const nameMatch = cleaned.match(/(?:AM|PM)\s+(.+?)(?:\s*<[^>]+>)?\s+wrote:/i);
   let name = "Unknown";
   if (nameMatch) {
-    name = nameMatch[1].replace(/<[^>]+>/g, "").trim();
+    name = nameMatch[1].trim();
   } else {
     // Try simpler pattern without AM/PM
     const simpleMatch = cleaned.match(/at\s+[\d:]+\s+(.+?)(?:\s*<[^>]+>)?\s+wrote:/i);
     if (simpleMatch) {
-      name = simpleMatch[1].replace(/<[^>]+>/g, "").trim();
+      name = simpleMatch[1].trim();
     }
   }
 
@@ -338,23 +339,11 @@ function parseAttribution(text: string): { name: string; date: Date | null } {
  * Strip HTML tags, decode entities, and normalize whitespace.
  */
 function stripHtml(html: string): string {
-  let text = html;
-
-  // Replace <br>, <br/>, <br /> with newlines
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-
-  // Replace block-level elements with newlines
-  text = text.replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n");
-  text = text.replace(/<(p|div|tr|li|h[1-6])\b[^>]*>/gi, "\n");
-
-  // Replace <td> with tab
-  text = text.replace(/<\/td>/gi, "\t");
-
-  // Remove all remaining HTML tags
-  text = text.replace(/<[^>]+>/g, "");
-
-  // Decode HTML entities
-  text = decodeEntities(text);
+  const { document } = parseHTML(`<html><body>${html}</body></html>`);
+  for (const unsafe of document.querySelectorAll("script, style, template, noscript")) {
+    unsafe.remove();
+  }
+  let text = document.body?.innerText ?? "";
 
   // Normalize whitespace (but preserve newlines)
   text = text
@@ -363,44 +352,6 @@ function stripHtml(html: string): string {
     .join("\n");
 
   return text;
-}
-
-/**
- * Decode common HTML entities.
- */
-function decodeEntities(text: string): string {
-  const entities: Record<string, string> = {
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&quot;": '"',
-    "&#39;": "'",
-    "&apos;": "'",
-    "&nbsp;": " ",
-    "&#160;": " ",
-    "&ndash;": "-",
-    "&mdash;": "-",
-    "&laquo;": "<<",
-    "&raquo;": ">>",
-    "&bull;": "*",
-    "&hellip;": "...",
-    "&copy;": "(c)",
-    "&reg;": "(R)",
-    "&trade;": "(TM)",
-  };
-
-  let result = text;
-  for (const [entity, char] of Object.entries(entities)) {
-    result = result.replaceAll(entity, char);
-  }
-
-  // Decode numeric entities (&#NNN; and &#xHHH;)
-  result = result.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number.parseInt(code, 10)));
-  result = result.replace(/&#x([0-9a-fA-F]+);/g, (_, code) =>
-    String.fromCharCode(Number.parseInt(code, 16)),
-  );
-
-  return result;
 }
 
 /**
@@ -426,11 +377,9 @@ function cleanBody(text: string): string {
     }
   }
 
-  // Remove stray partial HTML tags at the end of the body
-  body = body.replace(/<\w+\s*$/, "");
-
-  // Remove any remaining HTML tags that slipped through
-  body = body.replace(/<[^>]+>/g, "");
+  // The renderer emits Markdown. Neutralize raw HTML in both DOM-derived and
+  // plain-text messages so decoded entities cannot become executable markup.
+  body = body.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
   // Collapse 3+ consecutive newlines into 2
   body = body.replace(/\n{3,}/g, "\n\n");

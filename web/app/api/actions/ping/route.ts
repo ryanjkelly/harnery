@@ -1,4 +1,4 @@
-import { pingAgent } from "@/lib/coord-writer";
+import { pingAgent, safeOwnerId } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +14,15 @@ export async function POST(req: Request): Promise<Response> {
     message?: string;
   };
   if (!instance_id || !message) {
-    return Response.json({ error: "missing_fields", required: ["instance_id", "message"] }, {
-      status: 400,
-    });
+    return Response.json(
+      { error: "missing_fields", required: ["instance_id", "message"] },
+      {
+        status: 400,
+      },
+    );
+  }
+  if (!safeOwnerId(instance_id)) {
+    return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
   return Response.json(pingAgent(instance_id, message));
 }
