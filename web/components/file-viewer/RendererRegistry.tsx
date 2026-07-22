@@ -89,11 +89,14 @@ function TextFamily({ meta, path }: { meta: FileMeta; path: string }) {
   }
 
   const file = res.data;
-  // text + csv self-virtualize: they own an inner overflow-auto whose height the
-  // virtualizer measures, so they need a flex-BOUNDED (non-scrolling) parent (an
-  // overflow-auto wrapper would leave their flex-1 unbounded and the virtualizer
-  // would render every row). Prose renderers want the scrolling block instead.
-  const selfScrolls = meta.category === "text" || meta.category === "csv";
+  // text + csv self-virtualize, and html renders into an iframe: all three own
+  // their own inner scroll and need a flex-BOUNDED (non-scrolling) parent so their
+  // height resolves. An overflow-auto wrapper leaves the child's flex-1 unbounded —
+  // the text/csv virtualizer would render every row, and the html iframe collapses
+  // to its ~150px intrinsic height (the sliver + black-void bug). Prose renderers
+  // (markdown/json/yaml) want the scrolling block instead.
+  const selfScrolls =
+    meta.category === "text" || meta.category === "csv" || meta.category === "html";
   const Renderer =
     meta.category === "markdown"
       ? MarkdownRenderer
