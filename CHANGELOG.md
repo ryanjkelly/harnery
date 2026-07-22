@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+### Patch Changes
+
+- 939a90b: Prove that coordination and scratch filenames resolve directly beneath their trusted roots before any filesystem access.
+
 ## 0.12.1
 
 ### Patch Changes
