@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.0
+
+### Minor Changes
+
+- ad7a561: Add bounded dynamic replanning with frozen workflow templates, schema-gated planner proposals, explicit review by default, append-only graph generations, restartable plan approval, and goal-wide budgets that include superseded work.
+
 ## 0.16.0
 
 ### Minor Changes
