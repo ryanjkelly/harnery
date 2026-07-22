@@ -1,10 +1,6 @@
 # Changelog
 
-## 0.13.0
-
-### Minor Changes
-
-- 6b4ca9c: Add a host-enforced workflow policy seam with fail-closed dispatch and external-mutation decisions, cost and capability constraints, approval callbacks, CLI inspection, and proof-packet receipts.
+## 0.12.1
 
 ### Patch Changes
 
