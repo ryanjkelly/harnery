@@ -14,6 +14,7 @@ import {
   assertSafeInstanceId,
   monorepoRoot,
   readHeartbeat,
+  resolveContainedFile,
   resolveOwner,
 } from "../agents/index.ts";
 
@@ -94,7 +95,7 @@ export function archiveDir(): string {
 
 export function scratchPath(instanceId: string): string {
   assertSafeInstanceId(instanceId);
-  return resolve(scratchDir(), `${instanceId}.md`);
+  return resolveContainedFile(scratchDir(), `${instanceId}.md`);
 }
 
 // ─── Chicago time formatting ──────────────────────────────────────────────
@@ -385,7 +386,7 @@ export function archiveScratch(instanceId: string): string | null {
   const src = scratchPath(instanceId);
   if (!existsSync(src)) return null;
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const dest = resolve(archiveDir(), `${instanceId}-${ts}.md`);
+  const dest = resolveContainedFile(archiveDir(), `${instanceId}-${ts}.md`);
   renameSync(src, dest);
   return dest;
 }

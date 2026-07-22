@@ -9,7 +9,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 
 // NOTE: kept dependency-free (node builtins only); this file is vendored verbatim into
 // a downstream consumer, so it cannot import the coordEnv helper.
@@ -38,6 +38,22 @@ export function assertSafeInstanceId(value: unknown): asserts value is string {
   if (!isSafeInstanceId(value)) {
     throw new Error("instance_id must be 1-128 ASCII letters, digits, hyphens, or underscores");
   }
+}
+
+/**
+ * Resolve one direct-child filename beneath a trusted coordination directory.
+ *
+ * This is a second boundary behind the instance-ID allowlist. Normalizing the
+ * candidate and proving its directory prefix prevents traversal even if a new
+ * caller constructs a filename from a different untrusted source.
+ */
+export function resolveContainedFile(directory: string, fileName: string): string {
+  const root = resolve(directory);
+  const candidate = resolve(root, fileName);
+  if (!candidate.startsWith(`${root}${sep}`) || dirname(candidate) !== root) {
+    throw new Error("coordination filename must resolve directly beneath its root");
+  }
+  return candidate;
 }
 
 export interface Heartbeat {
@@ -369,7 +385,8 @@ export function readHeartbeat(instanceId: string): Heartbeat | null {
   if (!isSafeInstanceId(instanceId)) return null;
   const root = monorepoRoot();
   if (!root) return null;
-  return readJsonHeartbeatFile(resolve(root, ".harnery", "active", `${instanceId}.json`));
+  const path = resolveContainedFile(resolve(root, ".harnery", "active"), `${instanceId}.json`);
+  return readJsonHeartbeatFile(path);
 }
 
 function readJsonHeartbeatFile(path: string): Heartbeat | null {

@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isSafeInstanceId } from "harnery/core/agents";
+import { isSafeInstanceId, resolveContainedFile } from "harnery/core/agents";
 import {
   appendEntry,
   archiveScratch,
@@ -262,7 +262,7 @@ export interface HeartbeatFile {
 
 function heartbeatPath(instanceId: string): string {
   if (!safeOwnerId(instanceId)) throw new Error("invalid instance_id");
-  return path.join(activeDir(), `${instanceId}.json`);
+  return resolveContainedFile(activeDir(), `${instanceId}.json`);
 }
 
 function readHeartbeatFile(instanceId: string): HeartbeatFile | null {

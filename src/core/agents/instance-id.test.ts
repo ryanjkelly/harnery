@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { assertSafeInstanceId, isSafeInstanceId, readHeartbeat } from "./index.ts";
+import { resolve } from "node:path";
+import {
+  assertSafeInstanceId,
+  isSafeInstanceId,
+  readHeartbeat,
+  resolveContainedFile,
+} from "./index.ts";
 
 describe("coordination instance IDs", () => {
   test("accepts portable coordination basenames", () => {
@@ -16,5 +22,12 @@ describe("coordination instance IDs", () => {
 
   test("heartbeat lookup rejects a traversal ID before filesystem access", () => {
     expect(readHeartbeat("../../outside")).toBeNull();
+  });
+
+  test("resolves only direct children beneath a coordination root", () => {
+    const root = resolve("fixture-coordination-root");
+    expect(resolveContainedFile(root, "agent-1.json")).toBe(resolve(root, "agent-1.json"));
+    expect(() => resolveContainedFile(root, "../outside.json")).toThrow(/directly beneath/);
+    expect(() => resolveContainedFile(root, "nested/agent.json")).toThrow(/directly beneath/);
   });
 });
