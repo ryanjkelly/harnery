@@ -145,6 +145,10 @@ try {
   if (!/goal-smoke/.test(supervisorListOut) || !/Package smoke/.test(supervisorListOut)) {
     fail("supervisor list did not read the packed durable goal");
   }
+  const supervisorServiceOut = run(["supervisor", "service", "status"]);
+  if (!/unconfigured/.test(supervisorServiceOut)) {
+    fail("supervisor service status did not render its empty packed state");
+  }
   log("durable supervisor CLI OK");
 
   // outline on PHP: works without the `typescript` dep.
@@ -222,13 +226,17 @@ try {
   writeFileSync(
     supervisorProbe,
     [
-      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, createSupervisor, readSupervisor, runSupervisor } from "harnery/core/supervisor";',
+      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION, configureSupervisorService, createSupervisor, readSupervisor, runSupervisor, runSupervisorServiceSweep } from "harnery/core/supervisor";',
       'if (SUPERVISOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor schema version");',
-      'for (const fn of [createSupervisor, readSupervisor, runSupervisor]) {',
+      'if (SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor service schema version");',
+      'for (const fn of [configureSupervisorService, createSupervisor, readSupervisor, runSupervisor, runSupervisorServiceSweep]) {',
       '  if (typeof fn !== "function") throw new Error("supervisor function missing");',
       "}",
       'const readonly = await import("harnery/core/supervisor/state");',
-      'if (typeof readonly.readSupervisor !== "function" || "runSupervisor" in readonly) throw new Error("read-only supervisor state export invalid");',
+      'if (typeof readonly.readSupervisor !== "function" || typeof readonly.readSupervisorServiceStatus !== "function") throw new Error("read-only supervisor state export missing");',
+      'for (const forbidden of ["runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
+      '  if (forbidden in readonly) throw new Error("read-only supervisor state export gained execution: " + forbidden);',
+      "}",
     ].join("\n"),
   );
   execFileSync(nodePath, [supervisorProbe], {

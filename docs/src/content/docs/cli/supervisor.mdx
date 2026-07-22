@@ -17,16 +17,22 @@ harn supervisor list [--json]
 harn supervisor show <goal-id> [--json]
 harn supervisor tick <goal-id> [workflow host options] [--json]
 harn supervisor run <goal-id> [workflow host options] [--json]
+harn supervisor service start [goal-id...] [service options] [--json]
+harn supervisor service run [goal-id...] [service options] [--json]
+harn supervisor service status [--json]
+harn supervisor service stop [--json]
+harn supervisor service logs [--lines <n>]
 ```
 
-A supervisor is an explicitly invoked foreground host above
+A supervisor is a bounded host above
 [`harn work`](./work/). It reconstructs a root work item's immutable dependency
 closure, selects legal progress actions, dispatches bounded workflow attempts,
 and reconstructs the graph from journals and proof before every new cycle.
 
-It is not a background daemon and does not change reconciliation. Running
-`harn work reconcile` remains observational. Only `supervisor tick` or
-`supervisor run` can execute the automation policy frozen at goal creation.
+It does not change reconciliation. Running `harn work reconcile` remains
+observational. Foreground `supervisor tick` / `supervisor run` and the optional
+explicitly enrolled service are the only hosts that can execute the automation
+policy frozen at goal creation.
 
 ## Define a specialist team
 
@@ -138,6 +144,54 @@ Standard workflow host options remain available: `--harness`, `--cwd`,
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
 `--approval-to`.
 
+## Background service
+
+Enroll one or more existing goals in the repository's optional detached
+service:
+
+```bash
+harn supervisor service start goal-release goal-docs \
+  --subscription-only --policy ./policy.jsonc
+harn supervisor service status
+harn supervisor service logs --lines 100
+harn supervisor service stop
+```
+
+The service is one process per coordination root. It runs one supervisor tick
+for each ready goal, then polls compact durable state without making model calls
+while goals are unchanged. A review, unresolved approval, terminal state, or
+blocked goal becomes `awaiting_change`. Resolving the approval or otherwise
+changing the goal fingerprint wakes it on the next poll.
+
+Service configuration is private and frozen at start under
+`.harnery/supervisor-service/config.json`. It includes the exact enrolled goal
+IDs, runtime options, and normalized host-policy content. The policy file may be
+moved or edited without changing a running or restarted service. Stop the
+service before changing its enrollment or authority.
+
+| Service bound | Default | Meaning |
+| --- | ---: | --- |
+| `--wake-interval-ms` | 5,000 | Poll interval for durable goal changes |
+| `--heartbeat-interval-ms` | 2,000 | Independent liveness update, including during long ticks |
+| `--error-backoff-base-ms` | 2,000 | First delay after a service-level error |
+| `--error-backoff-max-ms` | 300,000 | Maximum exponential service-error delay |
+
+Backoff applies only to service failures, such as a temporarily unavailable
+harness. It does not authorize a failed work retry or consume a work attempt.
+Any durable goal change bypasses stale backoff.
+
+The service writes private status, recoverable per-goal wake state, an audit
+ledger, and a bounded-summary log beneath `.harnery/supervisor-service/`. The
+dashboard's Goals page shows heartbeat, enrollment, active goal, last tick
+result, and backoff state through a read-only package boundary.
+
+`service stop` is graceful: an active bounded tick finishes before the daemon
+exits, avoiding orphaned child processes. After a process or host restart, run
+`harn supervisor service start` with no goal IDs to reuse the existing frozen
+configuration and wake state. For automatic operating-system restart, use
+`harn supervisor service run` as the foreground command owned by the host's
+process manager.
+
 ## Automation policy
 
 Automation fails closed by default:
@@ -154,8 +208,9 @@ a new supervisor when the automation authority must change.
 
 ## Initial boundary
 
-The first schema supervises a static local dependency closure. It does not yet
+The current schema supervises a static local dependency closure. It does not yet
 let a planner append new work, maintain a mutable kanban board, or create
 worktrees and sandboxes. `--isolation` declares a boundary the host already
 created. Dynamic planning and host-created isolation can be added above this
-restartable scheduling contract without weakening its stop conditions.
+restartable scheduling contract without weakening its stop conditions. The
+background service adds durable time and wakeups, not dynamic replanning.

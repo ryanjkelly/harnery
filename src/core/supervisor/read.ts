@@ -1,3 +1,18 @@
+export type {
+  SupervisorServiceConfig,
+  SupervisorServiceGoalRuntime,
+  SupervisorServiceGoalState,
+  SupervisorServiceProcessState,
+  SupervisorServiceRuntime,
+  SupervisorServiceStatus,
+  SupervisorServiceStatusRecord,
+} from "./service.ts";
+export {
+  readSupervisorServiceConfig,
+  readSupervisorServiceRuntime,
+  readSupervisorServiceStatus,
+  supervisorServiceLogPath,
+} from "./service-read.ts";
 export {
   assertSupervisorId,
   collectSupervisorWork,

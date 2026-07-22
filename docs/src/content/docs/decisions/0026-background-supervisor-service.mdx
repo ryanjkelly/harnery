@@ -1,0 +1,110 @@
+---
+title: "0026: Background supervision is an optional durable service"
+description: "ADR: keep goal correctness ledger-derived while adding explicit enrollment, heartbeat, wakeup, quiescence, and service-error backoff."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor service CLI, dashboard)
+
+## Context
+
+ADR 0025 made goal supervision an explicitly invoked bounded host. That
+foreground contract proves restartable scheduling, but it still requires a
+human or external scheduler to invoke another tick. A team intended to work
+for hours needs a process that stays available between ticks, wakes when
+durable state changes, and exposes enough liveness state to distinguish active,
+stopped, and crashed execution.
+
+The service must not become a second source of truth. Goal state still belongs
+to immutable supervisor intent, work events, workflow journals, approvals, and
+proof. The service also must not turn a blocked attempt into an unbounded retry
+loop or silently broaden host policy after a restart.
+
+## Decision
+
+Add an optional per-repository service under `harn supervisor service`. An
+operator explicitly enrolls one or more existing goal IDs with `service start`
+or runs the same loop in the foreground with `service run`. Configuration is
+written privately to `.harnery/supervisor-service/config.json` and freezes:
+
+- the exact enrolled goal IDs;
+- wake and heartbeat intervals;
+- initial and maximum exponential backoff for service-level errors;
+- fallback harness, working directory, billing mode, isolation declaration,
+  approval addressee, and normalized host-policy content.
+
+Policy content is copied into service configuration rather than retaining a
+path to a mutable file. A restart therefore preserves the dispatch authority
+that was explicitly configured. Reconfiguration is refused while a live
+service owns the repository.
+
+The detached service owns a private exclusive lease and writes an independent
+heartbeat to `status.json`. The heartbeat timer continues while a goal tick is
+waiting on child agents. `runtime.json` records only recoverable scheduling
+hints per goal: idle, service-error backoff, or awaiting durable change. An
+append-only `events.jsonl` records service starts, stops, goal ticks, and
+errors. Goal and work state are never projected from these service files.
+
+Each sweep reads every enrolled goal through the existing state-only boundary:
+
+1. a `ready` goal receives one `runSupervisor({ mode: "tick" })` call;
+2. a goal needing review, approval, retry authority, or another external
+   change becomes `awaiting_change` and is only reread on later polls;
+3. an unchanged `awaiting_change` goal causes no workflow or model call;
+4. a service-level exception receives persisted exponential backoff, capped at
+   the configured maximum;
+5. any change to the durable goal fingerprint bypasses stale backoff or
+   quiescence and is reconsidered immediately.
+
+Work failures remain governed by the immutable goal automation policy and both
+work-level and graph-wide attempt ceilings. Service backoff does not create a
+work retry and does not consume an attempt.
+
+`service stop` writes a durable stop request and signals the local daemon. The
+daemon stops between sweeps; an active bounded goal tick is allowed to finish
+so it does not orphan workflow children. After a crash or host restart,
+`service start` with no goal arguments reuses the frozen configuration and
+persisted wake state. `service run` supports an external process manager when
+automatic operating-system restart is required.
+
+The dashboard imports a dedicated service-state reader. That reader contains
+no runner imports, so rendering liveness and wake state cannot acquire workflow
+execution capability.
+
+## Alternatives considered
+
+- **Make the daemon mandatory for supervisor correctness.** Rejected. The
+  foreground tick/run contract remains complete, and all goal state remains
+  reconstructable when no service exists.
+- **Ship systemd, launchd, or Windows-service installation in the first
+  slice.** Rejected as non-portable. Detached start covers local use;
+  foreground run composes with the host's process manager.
+- **Use only filesystem watchers.** Rejected because watches can coalesce or
+  miss changes across replacement and restart. Bounded polling over a compact
+  state projection is portable and deterministic.
+- **Poll by repeatedly executing the supervisor.** Rejected because attention
+  states would create needless reconciliation, logs, and potential usage.
+  Persisted fingerprints let unchanged goals remain quiescent.
+- **Apply exponential backoff to failed work attempts.** Rejected. That would
+  invent retry authority. Backoff applies only when the service itself cannot
+  perform a legal tick.
+- **Store the host-policy filename.** Rejected because file edits between
+  restarts could silently change automation authority.
+- **Add planner-authored work during wakeup.** Deferred. Dynamic graph expansion
+  needs append-only provenance, cycle checks, and its own authorization model.
+
+## Result and gotchas
+
+- A detached dogfood service completed a real proof-bearing goal in two ticks,
+  maintained a heartbeat, entered quiescence after success, and stopped
+  gracefully.
+- The daemon is one service per coordination root and executes enrolled goals
+  sequentially. Each goal retains its own frozen parallel-work and child-agent
+  concurrency limits.
+- A process crash does not lose configuration or per-goal backoff. Portable
+  automatic reboot startup is deliberately delegated to a process manager;
+  `service run` is the stable foreground entrypoint for that use.
+- Stop is graceful, not an unsafe process-tree kill. A long active tick may
+  leave status at `stopping` until its bounded workflow returns.
+- The service graph remains static. Long-running execution is now available,
+  but planner-driven decomposition and work creation are still separate future
+  work.

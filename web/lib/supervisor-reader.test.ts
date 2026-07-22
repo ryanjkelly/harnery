@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createSupervisor } from "harnery/core/supervisor";
 import { createWorkItem } from "harnery/core/work";
-import { readSupervisorGoal, readSupervisors } from "./supervisor-reader";
+import {
+  readSupervisorBackgroundService,
+  readSupervisorGoal,
+  readSupervisors,
+} from "./supervisor-reader";
 
 const roots: string[] = [];
 
@@ -34,5 +38,6 @@ describe("supervisor dashboard reader", () => {
     expect(readSupervisors(root).map((record) => record.intent.id)).toEqual(["dashboard-goal"]);
     expect(readSupervisorGoal(root, "dashboard-goal")?.projection.state).toBe("ready");
     expect(readSupervisorGoal(root, "../escape")).toBeNull();
+    expect(readSupervisorBackgroundService(root)).toEqual({ running: false, stale: false });
   });
 });
