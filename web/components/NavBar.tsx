@@ -38,6 +38,9 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
             <Link href="/events" className="hover:text-foreground">
               Events
             </Link>
+            <Link href="/work" className="hover:text-foreground">
+              Work
+            </Link>
             <Link href="/workflows" className="hover:text-foreground">
               Workflows
             </Link>

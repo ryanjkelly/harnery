@@ -58,6 +58,7 @@ check "harn --help mentions sync" "$HARN --help" "sync"
 check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
 check "harn --help mentions harness" "$HARN --help" "harness"
+check "harn --help mentions durable work" "$HARN --help" "work"
 
 # 2. harn doctor
 check "harn doctor reports node check" "$HARN doctor" "node"
@@ -88,20 +89,25 @@ check "harn workflow approvals --help exposes resolution" \
 check "harn workflow approvals list starts with an empty inbox" \
   "$HARN workflow approvals list" "no workflow approvals"
 
-# 6. harn web --help mentions all subcommands
+# 6. harn work exposes the complete daemonless lifecycle
+check "harn work --help mentions reconcile" "$HARN work --help" "reconcile"
+check "harn work --help mentions explicit retry" "$HARN work --help" "retry"
+check "harn work list starts empty" "$HARN work list" "no durable work"
+
+# 7. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
 check "harn web --help mentions build" "$HARN web --help" "build"
 check "harn web --help mentions start" "$HARN web --help" "start"
 
-# 7. harn backup --help mentions subcommands
+# 8. harn backup --help mentions subcommands
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 8. harn sync --help mentions subcommands
+# 9. harn sync --help mentions subcommands
 check "harn sync --help mentions push" "$HARN sync --help" "push"
 check "harn sync --help mentions pull" "$HARN sync --help" "pull"
 
-# 9. Error path: harn backup init without restic surfaces a structured error
+# 10. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1

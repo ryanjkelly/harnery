@@ -99,6 +99,29 @@ try {
   }
   log("workflow approvals CLI OK");
 
+  // Durable work must boot through the packed Node CLI and preserve a record.
+  log("checking durable work CLI boots ...");
+  const workWorkflow = join(workdir, "work-smoke.mjs");
+  writeFileSync(workWorkflow, "export default async () => 'ok';\n");
+  const workCreateOut = run([
+    "work",
+    "create",
+    "Package smoke",
+    workWorkflow,
+    "--objective",
+    "Verify the packed durable-work surface",
+    "--id",
+    "work-smoke",
+  ]);
+  if (!/work-smoke/.test(workCreateOut) || !/ready/.test(workCreateOut)) {
+    fail("work create did not produce a ready durable record");
+  }
+  const workListOut = run(["work", "list"]);
+  if (!/work-smoke/.test(workListOut) || !/Package smoke/.test(workListOut)) {
+    fail("work list did not read the packed durable record");
+  }
+  log("durable work CLI OK");
+
   // outline on PHP: works without the `typescript` dep.
   log("checking `outline` on a PHP file ...");
   const phpFile = join(workdir, "sample.php");
@@ -147,6 +170,27 @@ try {
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
   log("harnery/core/workflow import OK");
+
+  log("checking public `harnery/core/work` import ...");
+  const workProbe = join(workdir, "work-import.mjs");
+  writeFileSync(
+    workProbe,
+    [
+      'import { WORK_INTENT_SCHEMA_VERSION, createWorkItem, readWorkItem, reconcileWorkItem } from "harnery/core/work";',
+      'if (WORK_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected work schema version");',
+      'for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem]) {',
+      '  if (typeof fn !== "function") throw new Error("work function missing");',
+      "}",
+      'const readonly = await import("harnery/core/work/state");',
+      'if (typeof readonly.readWorkItem !== "function" || "runWorkItem" in readonly) throw new Error("read-only work state export invalid");',
+    ].join("\n"),
+  );
+  execFileSync(nodePath, [workProbe], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
+  log("harnery/core/work import OK");
 
   log("checking public `harnery/core/policy` import ...");
   const policyProbe = join(workdir, "policy-import.mjs");

@@ -1,0 +1,86 @@
+---
+title: harn work
+description: Preserve durable objectives across bounded workflow attempts and reconcile their state from local evidence.
+sidebar:
+  order: 29
+---
+
+```
+harn work create <title> <workflow> --objective <text>
+                 [--accept <text> ...] [--depends-on <ids>]
+                 [--max-attempts <n>] [--source-kind <kind>] [--source-ref <ref>]
+                 [--id <work-id>] [--actor <name>] [--json]
+harn work list [--state <state>] [--json]
+harn work show <work-id> [--json]
+harn work run <work-id> [workflow options] [--json]
+harn work retry <work-id> [workflow options] [--json]
+harn work reconcile [work-id] [--actor <name>] [--json]
+harn work accept|cancel|reopen <work-id> [--actor <name>] [--reason <text>] [--json]
+```
+
+A work item is a durable objective. A workflow run is one bounded attempt to
+advance it. The distinction lets a failed attempt remain inspectable, a parked
+attempt resume without being counted twice, and a passing attempt wait for
+explicit review rather than claiming the objective is complete.
+
+## Create and inspect
+
+```bash
+harn work create "Release the package" ./workflows/release.mjs \
+  --objective "Publish a verified package release" \
+  --accept "The full suite passes" \
+  --accept "The installed package smoke test passes" \
+  --max-attempts 3
+
+harn work list
+harn work show work-2026-07-22T12-00-00-000Z-a1b2c3
+```
+
+Creation freezes the workflow's absolute path and SHA-256. Changing the script
+later is refused; create a new work item for a changed execution contract.
+Intent lives in a private `intent.json`, while transitions append to a private
+`events.jsonl`. Reads rebuild current state and validate the complete bounded
+history.
+
+`--depends-on` accepts comma-separated work IDs. Dependencies must already
+exist, and every one must reach explicitly accepted `succeeded` before the new
+item becomes ready. Dependencies are immutable in the first schema.
+
+## Run, park, and retry
+
+```bash
+harn work run <work-id> --harness codex --subscription-only
+harn work retry <work-id>
+```
+
+`run` starts ready work. It records an attempt and stable workflow run ID
+before loading the workflow script. Standard workflow options are available:
+`--harness`, `--max-agents`, `--concurrency`, `--cwd`,
+`--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
+`--approval-to`.
+
+When host policy parks the workflow, the work item derives
+`awaiting_approval`. Resolve the request with `harn workflow approvals`, then
+run the work item again. Harnery resumes the same workflow run and does not
+charge another attempt. A failed or lost run derives `blocked`; only the
+explicit `retry` command creates a new attempt, and the immutable attempt
+ceiling still applies.
+
+## Reconcile and close
+
+```bash
+harn work reconcile <work-id>
+harn work accept <work-id> --actor reviewer --reason "proof and artifacts reviewed"
+```
+
+Reconciliation compares the ledger with dependency state, workflow journals,
+approval records, leases, and proof. It records a changed state and next action
+but never executes that action. Running it repeatedly over unchanged evidence
+does not append duplicate events.
+
+A passing workflow proof derives `in_review`. It does not derive `succeeded`.
+`accept` is the explicit completion decision. `cancel` is also explicit, and
+`reopen` retains every event and attempt while making a future attempt possible.
+
+The local dashboard exposes the same projection at `/work`, with links to each
+attempt's workflow journal and current approval or proof.

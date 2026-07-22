@@ -67,6 +67,16 @@
       "types": "./dist/core/workflow/index.d.ts",
       "import": "./dist/core/workflow/index.js"
     },
+    "./core/work": {
+      "bun": "./src/core/work/index.ts",
+      "types": "./dist/core/work/index.d.ts",
+      "import": "./dist/core/work/index.js"
+    },
+    "./core/work/state": {
+      "bun": "./src/core/work/read.ts",
+      "types": "./dist/core/work/read.d.ts",
+      "import": "./dist/core/work/read.js"
+    },
     "./core/policy": {
       "bun": "./src/core/policy/index.ts",
       "types": "./dist/core/policy/index.d.ts",

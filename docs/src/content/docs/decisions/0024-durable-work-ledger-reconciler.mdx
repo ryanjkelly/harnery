@@ -1,0 +1,128 @@
+---
+title: "0024: Durable objectives are distinct from workflow attempts"
+description: "ADR: preserve objective intent across attempts, derive its state from durable evidence, and reconcile without silently starting or accepting work."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/work`, work CLI, workflow backlinks, dashboard)
+
+## Context
+
+Harnery workflow runs are bounded execution attempts. They have frozen script
+identity, append-only journals, durable approval parking, resume leases, and
+terminal proof. Those records answer what one attempt did. They do not answer
+whether the larger objective remains pending after a failed run, whether its
+prerequisites are ready, how many attempts have been spent, or whether passing
+proof has been explicitly accepted.
+
+Treating a workflow run as the durable objective would erase that distinction.
+A retry would either overwrite the earlier result or look like unrelated work.
+Automatically completing an objective when a script exits successfully would
+also turn execution evidence into a governance decision. Automatically retrying
+a stale run would invent operator intent and could duplicate side effects.
+
+The missing layer is smaller than a task-management product. Harnery needs a
+local, reconstructable work record and a deterministic reconciliation command,
+not a database, kanban board, scheduler, organization model, or mandatory
+daemon.
+
+## Decision
+
+Add the product-tier `harnery/core/work` module. A work item is an immutable
+objective stored under `.harnery/work/<work-id>/intent.json`. It records bounded
+title and objective text, acceptance statements, same-root dependency IDs, a
+workflow script path and SHA-256, an attempt ceiling, optional source identity,
+and creation time. The directory and files are private by default.
+
+State-changing facts append to `events.jsonl`. Each bounded event has a strict
+schema, monotonic sequence, timestamp, actor, and only the fields required by
+its event family. Reads validate every line and fail closed on truncation,
+oversize records, or schema drift. Current state is recomputed from immutable
+intent, append-only events, dependency projections, workflow journals, approval
+records, run leases, and proof packets. There is no mutable state file that can
+drift from the evidence.
+
+Use these derived states:
+
+- `waiting`: at least one dependency has not been explicitly accepted;
+- `ready`: dependencies are satisfied and no current attempt exists;
+- `running`: the work or workflow resume lease proves an active attempt;
+- `awaiting_approval`: the current attempt is parked, with either a pending
+  decision or a resolved decision waiting for explicit resume;
+- `in_review`: the current attempt produced successful proof with no unknown or
+  unsatisfied acceptance result;
+- `blocked`: the attempt failed, lost durable execution evidence, or produced
+  incomplete/negative acceptance proof;
+- `succeeded`: an actor explicitly accepted reviewed work;
+- `cancelled`: an actor explicitly cancelled it.
+
+A workflow run is one attempt. `harn work run` holds a private work lease,
+allocates a run ID, and appends `attempt.started` before invoking the workflow
+engine. The engine accepts an optional run ID and work item ID, then stores the
+backlink in its manifest, start event, report, and proof packet. If a linked
+run parks, the work item derives `awaiting_approval`. After resolution,
+`harn work run` resumes that same run and attempt. A failed or lost attempt
+requires the explicit `harn work retry` command and consumes another bounded
+attempt.
+
+`harn work reconcile [work-id]` is one-shot and daemonless. It derives state
+and a next-action label, compares those values with the latest reconciliation
+receipt, and appends only when they changed. Repeated reconciliation over the
+same evidence is a no-op. Reconciliation never spawns, resumes, retries,
+accepts, cancels, or reassigns work.
+
+Completion is deliberately separate from execution. Passing proof derives
+`in_review`; `harn work accept` records the explicit decision that derives
+sticky `succeeded`. Cancellation is also explicit and sticky. `reopen` retains
+all history and attempt accounting while allowing a future attempt. Dependency
+references are immutable, bounded, must already exist, and are checked for
+cycles at creation.
+
+Expose compact list/detail views in the CLI and local dashboard. They show the
+derived state, reason, next action, dependencies, attempts, approval, and proof
+links. They do not expose prompts, agent response bodies, credentials,
+environment values, or workflow results.
+
+## Alternatives considered
+
+- **Use workflow runs as tasks.** Rejected because attempts and objectives have
+  different identity, retry, review, and completion semantics.
+- **Add a mutable `status` field to the intent.** Rejected because a worker can
+  leave it inconsistent with proof, approvals, or crash evidence. A projection
+  over durable facts is reconstructable.
+- **Mark a successful run complete automatically.** Rejected because process
+  success is evidence, not acceptance. Proof may also contain unknown or
+  unsatisfied criteria.
+- **Automatically retry stale or failed work.** Rejected because a local
+  reconciler cannot safely infer intent, side-effect idempotency, cost
+  authorization, or ownership. It reports `retry`; a caller invokes it.
+- **Run an always-on reconciliation daemon.** Rejected as a required runtime.
+  Embedding hosts may schedule the idempotent command, but correctness does not
+  depend on a service remaining alive.
+- **Adopt a full task graph or kanban system.** Rejected because dynamic graph
+  editing, assignment queues, organization hierarchy, and database-backed UI
+  are outside Harnery's utility-and-coordination boundary.
+- **Store a mutable projection for fast reads.** Deferred. The bounded local
+  record is cheap to rebuild, and avoiding a cache removes an entire class of
+  crash-consistency problems.
+
+## Result and gotchas
+
+- The objective now survives process death and multiple workflow attempts
+  without conflating their proof or cost.
+- A work lease serializes mutation and launch. A runner appends the attempt link
+  before workflow module import, so a crash becomes visible as blocked work
+  instead of an untracked execution.
+- Live reconciliation may report the current projection without appending while
+  the runner owns the lease. The runner appends the changed projection before
+  releasing it.
+- A missing, malformed, or terminal-without-proof run fails closed as blocked.
+  Harnery does not infer success from an exit code or a recently modified file.
+- A parked run does not consume another attempt when resumed. A retry always
+  receives a distinct workflow run ID.
+- Script SHA-256 is frozen at work creation. Changed behavior requires a new
+  work item instead of silently changing the objective's execution contract.
+- Dependency support is intentionally local and immutable. There is no dynamic
+  cascade, cross-host identity, automatic cancellation, or distributed lock.
+- Work-item acceptance statements describe the human objective. Workflow proof
+  criteria remain the machine-readable execution evidence; explicit work
+  acceptance bridges the two without pretending they are identical.

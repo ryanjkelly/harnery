@@ -1,0 +1,15 @@
+export {
+  assertWorkId,
+  listWorkItems,
+  readWorkItem,
+  WORK_EVENT_SCHEMA_VERSION,
+  WORK_INTENT_SCHEMA_VERSION,
+  type WorkAttempt,
+  type WorkEvent,
+  type WorkEventType,
+  type WorkIntent,
+  type WorkNextAction,
+  type WorkProjection,
+  type WorkRecord,
+  type WorkState,
+} from "./state.ts";
