@@ -406,6 +406,7 @@ export async function runSupervisorServiceSweep(
         cycles: report.cycles,
         dispatches: report.dispatches,
         acceptances: report.acceptances,
+        replans: report.replans,
       });
       persistRuntime(coordRoot, runtime, completedAt);
     } catch (error) {
@@ -614,6 +615,12 @@ function projectionFingerprint(projection: SupervisorRecord["projection"]): stri
     projection.next_action,
     projection.attempts_used,
     projection.attempts_remaining,
+    projection.root_work_id,
+    projection.plan_generation,
+    projection.replans_used,
+    projection.replans_remaining,
+    projection.pending_plan_id,
+    projection.latest_plan_status,
     projection.ready_work,
     projection.resumable_work,
     projection.retryable_work,

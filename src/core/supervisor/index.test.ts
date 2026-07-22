@@ -3,7 +3,14 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createWorkItem, readWorkItem } from "../work/index.ts";
 import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
-import { createSupervisor, readSupervisor, runSupervisor } from "./index.ts";
+import {
+  approveSupervisorPlan,
+  createSupervisor,
+  readSupervisor,
+  readSupervisorPlan,
+  rejectSupervisorPlan,
+  runSupervisor,
+} from "./index.ts";
 
 const roots: string[] = [];
 
@@ -290,6 +297,47 @@ describe("durable goal supervisor", () => {
     expect(readWorkItem(root, "budget-root").projection.state).toBe("ready");
   });
 
+  test("does not use replanning to bypass an exhausted goal-wide attempt budget", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "replan-budget-root",
+      title: "Replan budget root",
+      objective: "Keep the goal-wide attempt ceiling authoritative",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-replan-budget",
+      rootWorkId: "replan-budget-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      limits: { max_total_attempts: 1 },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-budget",
+      engine: {
+        spawners: {
+          codex: async () => {
+            plannerCalls++;
+            return { ok: true, text: replacementProposal(), durationMs: 1 };
+          },
+        },
+        probeBilling,
+      },
+    });
+    expect(report.stop_reason).toBe("budget_exhausted");
+    expect(report.projection.attempts_remaining).toBe(0);
+    expect(report.projection.replans_used).toBe(0);
+    expect(plannerCalls).toBe(0);
+  });
+
   test("tick performs one cycle and leaves subsequent governance for another invocation", async () => {
     const { root, passing } = fixture();
     createWorkItem({
@@ -325,4 +373,388 @@ describe("durable goal supervisor", () => {
     expect(second.stop_reason).toBe("succeeded");
     expect(second.acceptances).toBe(1);
   });
+
+  test("proposes a bounded replacement graph and waits for explicit approval by default", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "blocked-root",
+      title: "Blocked root",
+      objective: "Complete the goal despite a terminal approach",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-replan-review",
+      rootWorkId: "blocked-root",
+      specialists: {
+        planner: { instructions: "Design a minimal recovery graph", harness: "codex" },
+        implementer: { instructions: "Implement the approved recovery", harness: "codex" },
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        plannerCalls++;
+        return { ok: true, text: replacementProposal(), durationMs: 1 };
+      }
+      return { ok: true, text: "implemented", durationMs: 1 };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-review",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(first.stop_reason).toBe("awaiting_attention");
+    expect(first.replans).toBe(1);
+    expect(first.projection.next_action).toBe("review_plan");
+    expect(plannerCalls).toBe(1);
+    const planId = first.projection.pending_plan_id!;
+    expect(readSupervisorPlan(root, "goal-replan-review", planId).status).toBe("proposed");
+    expect(
+      statSync(
+        join(
+          root,
+          ".harnery",
+          "supervisors",
+          "goal-replan-review",
+          "plans",
+          planId,
+          "proposal.json",
+        ),
+      ).mode & 0o777,
+    ).toBe(0o600);
+
+    // Simulate a process loss after the first deterministic work intent was
+    // materialized but before plan.applied reached the audit log.
+    createWorkItem({
+      coordRoot: root,
+      id: `${planId}-repair`,
+      title: "Repair the goal",
+      objective: "Complete the original goal through the approved recovery workflow",
+      acceptance: ["The original goal is complete"],
+      dependencies: [],
+      workflowPath: passing,
+      maxAttempts: 1,
+      source: { kind: "workflow", ref: `supervisor:goal-replan-review/plan:${planId}` },
+      actor: "recovery-fixture",
+    });
+
+    const applied = approveSupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-replan-review",
+      planId,
+      actor: "reviewer",
+      reason: "replacement graph is scoped and auditable",
+    });
+    expect(applied.status).toBe("applied");
+    const replaced = readSupervisor(root, "goal-replan-review");
+    expect(replaced.projection.root_work_id).toBe(`${planId}-repair`);
+    expect(replaced.projection.plan_generation).toBe(1);
+    expect(replaced.projection.attempts_used).toBe(1);
+    expect(replaced.projection.governed_work_ids).toContain("blocked-root");
+
+    const completed = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-review",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(completed.stop_reason).toBe("succeeded");
+    expect(completed.projection.attempts_used).toBe(2);
+    expect(readWorkItem(root, "blocked-root").projection.state).toBe("blocked");
+  });
+
+  test("auto-applies a planner proposal only when frozen policy opts in", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "auto-blocked",
+      title: "Auto blocked",
+      objective: "Recover under frozen authority",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-replan-auto",
+      rootWorkId: "auto-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        implementer: { instructions: "Implement", harness: "codex" },
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        autoApply: true,
+        maxReplans: 1,
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("bounded replacement plan")
+        ? replacementProposal()
+        : "implemented",
+      durationMs: 1,
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-auto",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(report.stop_reason).toBe("succeeded");
+    expect(report.replans).toBe(1);
+    expect(report.plan_outcomes[0]?.status).toBe("applied");
+    expect(report.projection.plan_generation).toBe(1);
+    expect(report.projection.replans_remaining).toBe(0);
+  });
+
+  test("an attention decision stays quiescent until durable graph state changes", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "needs-judgment",
+      title: "Needs judgment",
+      objective: "Stop when safe decomposition is unclear",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-replan-attention",
+      rootWorkId: "needs-judgment",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    let calls = 0;
+    const spawner: Spawner = async () => {
+      calls++;
+      return {
+        ok: true,
+        text: JSON.stringify({
+          decision: "attention",
+          rationale: "The goal needs an operator decision",
+          root: "",
+          work: [],
+        }),
+        durationMs: 1,
+      };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-attention",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(first.stop_reason).toBe("awaiting_attention");
+    expect(first.projection.latest_plan_status).toBe("attention");
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-attention",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(second.stop_reason).toBe("awaiting_attention");
+    expect(calls).toBe(1);
+  });
+
+  test("feeds an explicit rejection reason into the next bounded planner attempt", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "rejected-plan-root",
+      title: "Rejected plan root",
+      objective: "Revise a rejected recovery plan",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-replan-rejected",
+      rootWorkId: "rejected-plan-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 2,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const prompts: string[] = [];
+    const spawner: Spawner = async (request) => {
+      prompts.push(request.prompt);
+      return {
+        ok: true,
+        text:
+          prompts.length === 1
+            ? replacementProposal()
+            : JSON.stringify({
+                decision: "attention",
+                rationale: "Operator feedback requires a scope decision",
+                root: "",
+                work: [],
+              }),
+        durationMs: 1,
+      };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-rejected",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    rejectSupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-replan-rejected",
+      planId: first.projection.pending_plan_id!,
+      actor: "reviewer",
+      reason: "Use a narrower recovery scope",
+    });
+    expect(readSupervisor(root, "goal-replan-rejected").projection.next_action).toBe("replan");
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-replan-rejected",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(second.projection.latest_plan_status).toBe("attention");
+    expect(second.projection.replans_used).toBe(2);
+    expect(prompts[1]).toContain("Use a narrower recovery scope");
+  });
+
+  test("resumes the same planner workflow after a durable dispatch approval", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "planner-approval-root",
+      title: "Planner approval root",
+      objective: "Resume replanning after host approval",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-planner-approval",
+      rootWorkId: "planner-approval-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    let spawns = 0;
+    const engine = {
+      spawners: {
+        codex: async () => {
+          spawns++;
+          return { ok: true, text: replacementProposal(), durationMs: 1 };
+        },
+      },
+      probeBilling,
+      policy: { name: "planner-approval", network: "ask" as const },
+      networkAccess: "enabled" as const,
+      approvalMode: "park" as const,
+    };
+    const parked = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-planner-approval",
+      engine,
+    });
+    expect(parked.stop_reason).toBe("awaiting_attention");
+    expect(parked.projection.next_action).toBe("resolve_approval");
+    expect(spawns).toBe(0);
+    const planBefore = readSupervisor(root, "goal-planner-approval").plans[0]!;
+    expect(planBefore.status).toBe("awaiting_approval");
+    resolveWorkflowApproval({
+      coordRoot: root,
+      approvalId: planBefore.approval_id!,
+      verdict: "allow",
+      actor: "operator",
+    });
+    expect(readSupervisor(root, "goal-planner-approval").projection.next_action).toBe("replan");
+    const resumed = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-planner-approval",
+      engine,
+    });
+    expect(resumed.stop_reason).toBe("awaiting_attention");
+    expect(resumed.projection.next_action).toBe("review_plan");
+    expect(resumed.projection.replans_used).toBe(1);
+    expect(resumed.plan_outcomes[0]?.workflow_run_id).toBe(planBefore.request.workflow_run_id);
+    expect(spawns).toBe(1);
+  });
+
+  test("rejects a proposal that escapes the active graph or frozen template catalog", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "invalid-plan-root",
+      title: "Invalid plan root",
+      objective: "Reject unsafe planner output",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-replan-invalid",
+      rootWorkId: "invalid-plan-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const spawner: Spawner = async () => ({
+      ok: true,
+      text: JSON.stringify({
+        decision: "apply",
+        rationale: "Unsafe dependency",
+        root: "repair",
+        work: [
+          {
+            key: "repair",
+            title: "Repair",
+            objective: "Escape the graph",
+            acceptance: [],
+            dependencies: ["foreign-work"],
+            template: "repair",
+          },
+        ],
+      }),
+      durationMs: 1,
+    });
+    await expect(
+      runSupervisor({
+        coordRoot: root,
+        goalId: "goal-replan-invalid",
+        engine: { spawners: { codex: spawner }, probeBilling },
+      }),
+    ).rejects.toThrow("is not active or earlier in the plan");
+    const invalid = readSupervisor(root, "goal-replan-invalid");
+    expect(invalid.plans[0]?.status).toBe("failed");
+    expect(invalid.projection.state).toBe("budget_exhausted");
+  });
 });
+
+function replacementProposal(): string {
+  return JSON.stringify({
+    decision: "apply",
+    rationale: "Replace the terminal approach with one focused recovery item",
+    root: "repair",
+    work: [
+      {
+        key: "repair",
+        title: "Repair the goal",
+        objective: "Complete the original goal through the approved recovery workflow",
+        acceptance: ["The original goal is complete"],
+        dependencies: [],
+        template: "repair",
+      },
+    ],
+  });
+}

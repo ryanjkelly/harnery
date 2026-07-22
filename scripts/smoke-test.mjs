@@ -127,7 +127,20 @@ try {
   const teamFile = join(workdir, "team.json");
   writeFileSync(
     teamFile,
-    JSON.stringify({ reviewer: { instructions: "Review the assignment carefully." } }),
+    JSON.stringify({
+      reviewer: { instructions: "Review the assignment carefully." },
+      planner: { instructions: "Plan a bounded recovery graph." },
+    }),
+  );
+  const replanningFile = join(workdir, "replanning.json");
+  writeFileSync(
+    replanningFile,
+    JSON.stringify({
+      planner_specialist: "planner",
+      templates: {
+        recovery: { workflow: "./work-smoke.mjs", max_attempts: 1, root: true },
+      },
+    }),
   );
   const supervisorCreateOut = run([
     "supervisor",
@@ -137,6 +150,8 @@ try {
     teamFile,
     "--id",
     "goal-smoke",
+    "--replanning",
+    replanningFile,
   ]);
   if (!/goal-smoke/.test(supervisorCreateOut) || !/ready/.test(supervisorCreateOut)) {
     fail("supervisor create did not produce a ready durable goal");
@@ -144,6 +159,10 @@ try {
   const supervisorListOut = run(["supervisor", "list"]);
   if (!/goal-smoke/.test(supervisorListOut) || !/Package smoke/.test(supervisorListOut)) {
     fail("supervisor list did not read the packed durable goal");
+  }
+  const supervisorPlansOut = run(["supervisor", "plan", "list", "goal-smoke"]);
+  if (!/no replanning attempts/.test(supervisorPlansOut)) {
+    fail("supervisor plan list did not render the packed empty history");
   }
   const supervisorServiceOut = run(["supervisor", "service", "status"]);
   if (!/unconfigured/.test(supervisorServiceOut)) {
@@ -207,7 +226,7 @@ try {
     [
       'import { WORK_INTENT_SCHEMA_VERSION, createWorkItem, readWorkItem, reconcileWorkItem } from "harnery/core/work";',
       'if (WORK_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected work schema version");',
-      'for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem]) {',
+      "for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem]) {",
       '  if (typeof fn !== "function") throw new Error("work function missing");',
       "}",
       'const readonly = await import("harnery/core/work/state");',
@@ -226,15 +245,16 @@ try {
   writeFileSync(
     supervisorProbe,
     [
-      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION, configureSupervisorService, createSupervisor, readSupervisor, runSupervisor, runSupervisorServiceSweep } from "harnery/core/supervisor";',
+      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, SUPERVISOR_PLAN_SCHEMA_VERSION, SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION, approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, runSupervisor, runSupervisorServiceSweep } from "harnery/core/supervisor";',
       'if (SUPERVISOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor schema version");',
+      'if (SUPERVISOR_PLAN_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor plan schema version");',
       'if (SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor service schema version");',
-      'for (const fn of [configureSupervisorService, createSupervisor, readSupervisor, runSupervisor, runSupervisorServiceSweep]) {',
+      "for (const fn of [approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, runSupervisor, runSupervisorServiceSweep]) {",
       '  if (typeof fn !== "function") throw new Error("supervisor function missing");',
       "}",
       'const readonly = await import("harnery/core/supervisor/state");',
       'if (typeof readonly.readSupervisor !== "function" || typeof readonly.readSupervisorServiceStatus !== "function") throw new Error("read-only supervisor state export missing");',
-      'for (const forbidden of ["runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
+      'for (const forbidden of ["approveSupervisorPlan", "rejectSupervisorPlan", "runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
       '  if (forbidden in readonly) throw new Error("read-only supervisor state export gained execution: " + forbidden);',
       "}",
     ].join("\n"),

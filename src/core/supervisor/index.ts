@@ -1,3 +1,21 @@
+export { approveSupervisorPlan, rejectSupervisorPlan } from "./plan-api.ts";
+export { readSupervisorPlan, readSupervisorPlans } from "./plan-read.ts";
+export {
+  type CreateSupervisorPlanTemplateInput,
+  type CreateSupervisorReplanningInput,
+  SUPERVISOR_PLAN_SCHEMA_VERSION,
+  type SupervisorPlanEvent,
+  type SupervisorPlanEventType,
+  type SupervisorPlanHistory,
+  type SupervisorPlanOutcome,
+  type SupervisorPlanProposal,
+  type SupervisorPlanRecord,
+  type SupervisorPlanRequest,
+  type SupervisorPlanStatus,
+  type SupervisorPlanTemplate,
+  type SupervisorPlanWorkSpec,
+  type SupervisorReplanningPolicy,
+} from "./plan-types.ts";
 export {
   type RunSupervisorInput,
   runSupervisor,

@@ -10,9 +10,17 @@ describe("supervisor command", () => {
       "create",
       "list",
       "show",
+      "plan",
       "service",
       "tick",
       "run",
+    ]);
+    const plan = command?.commands.find((candidate) => candidate.name() === "plan");
+    expect(plan?.commands.map((candidate) => candidate.name())).toEqual([
+      "list",
+      "show",
+      "approve",
+      "reject",
     ]);
     const service = command?.commands.find((candidate) => candidate.name() === "service");
     expect(service?.commands.map((candidate) => candidate.name())).toEqual([

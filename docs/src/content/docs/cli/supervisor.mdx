@@ -12,9 +12,13 @@ harn supervisor create <root-work-id> --team <file>
                        [--max-parallel-work <n>] [--max-total-attempts <n>]
                        [--max-agents-per-work <n>] [--agent-concurrency <n>]
                        [--accept-passing-proof] [--no-resume-approved]
-                       [--retry-blocked] [--json]
+                       [--retry-blocked] [--replanning <file>] [--json]
 harn supervisor list [--json]
 harn supervisor show <goal-id> [--json]
+harn supervisor plan list <goal-id> [--json]
+harn supervisor plan show <goal-id> <plan-id> [--json]
+harn supervisor plan approve <goal-id> <plan-id> [--actor <name>] [--reason <text>] [--json]
+harn supervisor plan reject <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
 harn supervisor tick <goal-id> [workflow host options] [--json]
 harn supervisor run <goal-id> [workflow host options] [--json]
 harn supervisor service start [goal-id...] [service options] [--json]
@@ -117,6 +121,88 @@ team, automation decisions, and these defaults:
 The maximum simultaneous children is `max_parallel_work × agent_concurrency`.
 Work items retain their own stricter attempt limits.
 
+## Bounded dynamic replanning
+
+Replanning is opt-in at goal creation. Pass a JSON policy that names one frozen
+specialist as the planner and exposes a bounded catalog of workflows the
+planner is allowed to select:
+
+```json
+{
+  "planner_specialist": "architect",
+  "auto_apply": false,
+  "max_replans": 5,
+  "max_work_items_per_plan": 8,
+  "max_total_work_items": 25,
+  "templates": {
+    "implementation": {
+      "workflow": "./workflows/implement.mjs",
+      "max_attempts": 3,
+      "root": true
+    },
+    "verification": {
+      "workflow": "./workflows/verify.mjs",
+      "max_attempts": 2,
+      "root": true
+    }
+  }
+}
+```
+
+```bash
+harn supervisor create work-root --team ./team.json \
+  --replanning ./replanning.json --id goal-release
+```
+
+Paths are resolved relative to the replanning file. Harnery freezes each
+workflow's absolute path, SHA-256 digest, attempt ceiling, and root capability
+inside goal intent. A later file edit is detected before planner-created work
+is materialized.
+
+The planner runs only after the active graph has no legal progress action. It
+does not replace review, approval, cancellation, retry policy, or an exhausted
+goal-wide work-attempt budget. One schema-gated planner child receives the
+active graph, remaining bounds, and frozen template catalog. Its result is one
+of:
+
+- `apply`: a replacement graph with a new root;
+- `attention`: a bounded explanation that operator judgment is required.
+
+Every proposed dependency must name an active work ID or an earlier key in the
+same proposal. Every proposed item must be reachable from the proposed root,
+and the root must use a template explicitly marked `root: true`. The planner
+cannot introduce a script path, mutate an existing work intent, or remove
+history.
+
+Proposals are private under
+`.harnery/supervisors/<goal-id>/plans/<plan-id>/`. Review and resolve them with:
+
+```bash
+harn supervisor plan list goal-release
+harn supervisor plan show goal-release plan-0001-a1b2c3d4
+harn supervisor plan approve goal-release plan-0001-a1b2c3d4 \
+  --actor operator --reason "Scoped recovery graph"
+# or
+harn supervisor plan reject goal-release plan-0001-a1b2c3d4 \
+  --actor operator --reason "Needs a narrower migration"
+```
+
+Approval creates new immutable work items with planner provenance, then appends
+a `plan.applied` event that advances the goal's active root. The prior graph is
+not edited or deleted. All attempts across original and superseded generations
+continue to count against `max_total_attempts`, so replanning cannot reset the
+execution budget.
+
+Rejecting a proposal records the reason as planner feedback and makes the goal
+eligible for another bounded planner attempt, if its replan budget remains.
+An `attention` decision stays quiescent because the planner itself has declared
+that another model pass cannot safely resolve the missing judgment.
+
+`auto_apply` defaults to `false`. Setting it to `true` is immutable authority
+for valid proposals to advance the active root without human review. Schema,
+template, dependency, reachability, workflow-digest, per-plan, cumulative-work,
+replan, cycle, wall-time, and work-attempt bounds still apply.
+
 ## Tick and run
 
 ```bash
@@ -160,8 +246,10 @@ harn supervisor service stop
 The service is one process per coordination root. It runs one supervisor tick
 for each ready goal, then polls compact durable state without making model calls
 while goals are unchanged. A review, unresolved approval, terminal state, or
-blocked goal becomes `awaiting_change`. Resolving the approval or otherwise
-changing the goal fingerprint wakes it on the next poll.
+blocked goal becomes `awaiting_change`. A replanning-enabled terminal graph is
+instead ready for one bounded planner tick. A pending proposal then becomes
+`awaiting_change`; approving it changes the active-root fingerprint and wakes
+the service without model churn while it waits.
 
 Service configuration is private and frozen at start under
 `.harnery/supervisor-service/config.json`. It includes the exact enrolled goal
@@ -206,11 +294,11 @@ Automation fails closed by default:
 These choices are immutable goal intent, not runtime convenience flags. Create
 a new supervisor when the automation authority must change.
 
-## Initial boundary
+## Current boundary
 
-The current schema supervises a static local dependency closure. It does not yet
-let a planner append new work, maintain a mutable kanban board, or create
-worktrees and sandboxes. `--isolation` declares a boundary the host already
-created. Dynamic planning and host-created isolation can be added above this
-restartable scheduling contract without weakening its stop conditions. The
-background service adds durable time and wakeups, not dynamic replanning.
+Replanning advances between immutable graph generations. It is not a mutable
+kanban board: a planner cannot edit work in place, change frozen authority,
+silently discard attempt cost, or choose arbitrary workflows. Harnery still
+does not create worktrees and sandboxes; `--isolation` declares a boundary the
+host already created. A future planning layer may add richer operator feedback
+and proactive milestone planning without weakening this append-only contract.

@@ -13,21 +13,23 @@ export default function SupervisorsPage() {
   const root = coordRoot();
   const records = readSupervisors(root);
   const service = readSupervisorBackgroundService(root);
-  const serviceState = service.running ? service.record?.state ?? "running" : service.stale ? "stale" : "stopped";
+  const serviceState = service.running
+    ? (service.record?.state ?? "running")
+    : service.stale
+      ? "stale"
+      : "stopped";
   return (
     <div className="min-h-screen">
       <NavBar scannedDir={coordRoot()} />
       <main className="mx-auto max-w-5xl px-4 py-6">
         <h1 className="mb-1 text-xl font-semibold">Durable goals</h1>
         <p className="mb-6 text-sm text-muted-foreground">
-          Bounded specialist teams supervising static durable-work dependency graphs.
+          Bounded specialist teams supervising durable work graphs with optional audited replanning.
         </p>
         <section className="mb-6 rounded-lg border border-border bg-card px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-sm font-semibold">Background service</h2>
-            <Badge
-              variant={service.running ? "info" : service.stale ? "warning" : "muted"}
-            >
+            <Badge variant={service.running ? "info" : service.stale ? "warning" : "muted"}>
               {service.config ? serviceState : "unconfigured"}
             </Badge>
           </div>
@@ -68,6 +70,15 @@ export default function SupervisorsPage() {
                       {projection.attempts_used}/{intent.limits.max_total_attempts} attempts
                     </span>
                     <span>next: {projection.next_action}</span>
+                    {intent.replanning ? (
+                      <span>
+                        plan generation {projection.plan_generation} · {projection.replans_used}/
+                        {intent.replanning.max_replans} replans
+                      </span>
+                    ) : null}
+                    {projection.pending_plan_id ? (
+                      <span>pending: {projection.pending_plan_id}</span>
+                    ) : null}
                     <span>{projection.reason}</span>
                     {service.config?.goal_ids.includes(intent.id) ? (
                       <span>service: {service.runtime?.goals[intent.id]?.state ?? "enrolled"}</span>
