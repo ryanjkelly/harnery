@@ -53,7 +53,8 @@ const server = Bun.serve<WsData, never>({
       if (!ALLOW.has(ip)) {
         // Log denials so operators can whitelist a phone/laptop that just
         // hit 403 without asking the human to dig up their public IP.
-        console.log( // lint-ok-emission: detached worker, see file note above
+        console.log(
+          // lint-ok-emission: detached worker, see file note above
           `deny: ${ip || "(missing-cf-connecting-ip)"} ${req.method} ${url.pathname}`,
         );
         return new Response("403 Forbidden\n", { status: 403 });
