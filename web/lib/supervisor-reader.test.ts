@@ -37,6 +37,8 @@ describe("supervisor dashboard reader", () => {
 
     expect(readSupervisors(root).map((record) => record.intent.id)).toEqual(["dashboard-goal"]);
     expect(readSupervisorGoal(root, "dashboard-goal")?.projection.state).toBe("ready");
+    expect(readSupervisorGoal(root, "dashboard-goal")?.projection.plan_generation).toBe(0);
+    expect(readSupervisorGoal(root, "dashboard-goal")?.plans).toEqual([]);
     expect(readSupervisorGoal(root, "../escape")).toBeNull();
     expect(readSupervisorBackgroundService(root)).toEqual({ running: false, stale: false });
   });

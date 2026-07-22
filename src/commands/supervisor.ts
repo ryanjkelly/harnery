@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
@@ -8,15 +8,21 @@ import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import {
+  approveSupervisorPlan,
+  type CreateSupervisorReplanningInput,
   configureSupervisorService,
   createSupervisor,
   listSupervisors,
   readSupervisor,
+  readSupervisorPlan,
   readSupervisorServiceConfig,
   readSupervisorServiceStatus,
+  rejectSupervisorPlan,
   requestSupervisorServiceStop,
   runSupervisor,
   runSupervisorServiceDaemon,
+  type SupervisorPlanOutcome,
+  type SupervisorPlanRecord,
   type SupervisorRecord,
   type SupervisorRunReport,
   type SupervisorServiceConfig,
@@ -39,6 +45,7 @@ interface CreateOpts {
   acceptPassingProof?: boolean;
   resumeApproved?: boolean;
   retryBlocked?: boolean;
+  replanning?: string;
   json?: boolean;
 }
 
@@ -82,6 +89,7 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
     .option("--accept-passing-proof", "Allow the supervisor to explicitly accept passing proof")
     .option("--no-resume-approved", "Stop after an approval instead of resuming its parked run")
     .option("--retry-blocked", "Allow bounded retry of blocked work")
+    .option("--replanning <file>", "Frozen planner policy and allowed workflow-template catalog")
     .option("--json", "Emit the complete supervisor record as JSON")
     .action((rootWorkId: string, opts: CreateOpts) => {
       withSupervisorRoot(emit, (coordRoot) => {
@@ -113,6 +121,7 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
               resume_approved: opts.resumeApproved,
               retry_blocked: opts.retryBlocked,
             },
+            replanning: opts.replanning ? readReplanningFile(opts.replanning) : undefined,
           }),
           opts.json,
           emit,
@@ -149,9 +158,100 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
       });
     });
 
+  registerPlanCommand(supervisor, emit);
   registerServiceCommand(supervisor, registry, emit);
   registerRunCommand(supervisor, "tick", registry, emit);
   registerRunCommand(supervisor, "run", registry, emit);
+}
+
+function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
+  const plan = supervisor
+    .command("plan")
+    .description("Inspect and resolve bounded planner proposals for a durable goal.");
+
+  plan
+    .command("list <goal-id>")
+    .description("List append-only replanning attempts for one goal.")
+    .option("--json", "Emit complete plan records as JSON")
+    .action((goalId: string, opts: { json?: boolean }) => {
+      withSupervisorRoot(emit, (coordRoot) => {
+        const plans = readSupervisor(coordRoot, goalId).plans;
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(plans);
+        } else if (plans.length === 0) {
+          emit.text(`supervisor ${goalId} has no replanning attempts\n`);
+        } else {
+          emit.text(`${plans.map(renderPlanRow).join("\n")}\n`);
+        }
+      });
+    });
+
+  plan
+    .command("show <goal-id> <plan-id>")
+    .description("Show one planner request, schema-gated proposal, and audit events.")
+    .option("--json", "Emit the complete plan record as JSON")
+    .action((goalId: string, planId: string, opts: { json?: boolean }) => {
+      withSupervisorRoot(emit, (coordRoot) => {
+        emitPlan(readSupervisorPlan(coordRoot, goalId, planId), opts.json, emit);
+      });
+    });
+
+  plan
+    .command("approve <goal-id> <plan-id>")
+    .description("Materialize a reviewed proposal and advance the active immutable root.")
+    .option("--actor <name>", "Actor recorded on the plan decision")
+    .option("--reason <text>", "Reason for approval")
+    .option("--json", "Emit the plan outcome as JSON")
+    .action(
+      (
+        goalId: string,
+        planId: string,
+        opts: { actor?: string; reason?: string; json?: boolean },
+      ) => {
+        withSupervisorRoot(emit, (coordRoot) => {
+          emitPlanOutcome(
+            approveSupervisorPlan({
+              coordRoot,
+              goalId,
+              planId,
+              actor: opts.actor,
+              reason: opts.reason,
+            }),
+            opts.json,
+            emit,
+          );
+        });
+      },
+    );
+
+  plan
+    .command("reject <goal-id> <plan-id>")
+    .description("Reject a pending proposal without mutating durable work.")
+    .requiredOption("--reason <text>", "Reason the proposal is rejected")
+    .option("--actor <name>", "Actor recorded on the plan decision")
+    .option("--json", "Emit the plan outcome as JSON")
+    .action(
+      (
+        goalId: string,
+        planId: string,
+        opts: { actor?: string; reason: string; json?: boolean },
+      ) => {
+        withSupervisorRoot(emit, (coordRoot) => {
+          emitPlanOutcome(
+            rejectSupervisorPlan({
+              coordRoot,
+              goalId,
+              planId,
+              actor: opts.actor,
+              reason: opts.reason,
+            }),
+            opts.json,
+            emit,
+          );
+        });
+      },
+    );
 }
 
 function registerServiceCommand(
@@ -467,6 +567,65 @@ function readTeamFile(path: string): Record<string, WorkflowSpecialistProfile> {
   return value as Record<string, WorkflowSpecialistProfile>;
 }
 
+function readReplanningFile(path: string): CreateSupervisorReplanningInput {
+  const absolute = resolve(path);
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(absolute, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `cannot read supervisor replanning policy at ${absolute}: ${(error as Error).message}`,
+    );
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("supervisor replanning policy must be a JSON object");
+  }
+  const config = value as Record<string, unknown>;
+  if (typeof config.planner_specialist !== "string") {
+    throw new Error("supervisor replanning planner_specialist must be a string");
+  }
+  if (
+    !config.templates ||
+    typeof config.templates !== "object" ||
+    Array.isArray(config.templates)
+  ) {
+    throw new Error("supervisor replanning templates must be an object");
+  }
+  const base = dirname(absolute);
+  const templates = Object.fromEntries(
+    Object.entries(config.templates as Record<string, unknown>).map(([id, raw]) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Error(`supervisor replanning template ${id} must be an object`);
+      }
+      const template = raw as Record<string, unknown>;
+      if (typeof template.workflow !== "string") {
+        throw new Error(`supervisor replanning template ${id} workflow must be a string`);
+      }
+      return [
+        id,
+        {
+          workflowPath: isAbsolute(template.workflow)
+            ? template.workflow
+            : resolve(base, template.workflow),
+          maxAttempts: jsonInteger(template.max_attempts, `template ${id} max_attempts`),
+          root: jsonBoolean(template.root, `template ${id} root`),
+        },
+      ];
+    }),
+  );
+  return {
+    plannerSpecialist: config.planner_specialist,
+    autoApply: jsonBoolean(config.auto_apply, "replanning auto_apply"),
+    maxReplans: jsonInteger(config.max_replans, "replanning max_replans"),
+    maxWorkItemsPerPlan: jsonInteger(
+      config.max_work_items_per_plan,
+      "replanning max_work_items_per_plan",
+    ),
+    maxTotalWorkItems: jsonInteger(config.max_total_work_items, "replanning max_total_work_items"),
+    templates,
+  };
+}
+
 function emitSupervisor(
   record: SupervisorRecord,
   json: boolean | undefined,
@@ -486,7 +645,7 @@ function emitSupervisor(
   const lines = [
     `${record.intent.id}: ${record.intent.title}`,
     `state: ${projection.state}`,
-    `root: ${record.intent.root_work_id}`,
+    `root: ${projection.root_work_id}`,
     `reason: ${projection.reason}`,
     `next: ${projection.next_action}`,
     `work: ${projection.work_ids.length}`,
@@ -495,6 +654,15 @@ function emitSupervisor(
     `automation: accept=${record.intent.automation.accept_passing_proof}, ` +
       `resume=${record.intent.automation.resume_approved}, retry=${record.intent.automation.retry_blocked}`,
   ];
+  if (record.intent.replanning) {
+    lines.push(
+      `replanning: generation=${projection.plan_generation}, used=${projection.replans_used}/${record.intent.replanning.max_replans}, auto_apply=${record.intent.replanning.auto_apply}`,
+    );
+    if (projection.root_work_id !== record.intent.root_work_id) {
+      lines.push(`original root: ${record.intent.root_work_id}`);
+    }
+    if (projection.pending_plan_id) lines.push(`pending plan: ${projection.pending_plan_id}`);
+  }
   if (projection.attention_work.length) {
     lines.push(`attention: ${projection.attention_work.join(", ")}`);
   }
@@ -515,6 +683,7 @@ function emitSupervisorReport(
     `supervisor ${report.goal_id}: ${report.stop_reason}\n` +
       `reason: ${report.reason}\n` +
       `cycles: ${report.cycles}; dispatches: ${report.dispatches}; acceptances: ${report.acceptances}\n` +
+      `replans: ${report.replans}\n` +
       `state: ${report.projection.state}; next: ${report.projection.next_action}\n`,
   );
 }
@@ -529,6 +698,64 @@ function integer(value: string | undefined): number | undefined {
   if (!/^\d+$/.test(value))
     throw new Error(`expected a positive integer, got ${JSON.stringify(value)}`);
   return Number.parseInt(value, 10);
+}
+
+function jsonInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  return value as number;
+}
+
+function jsonBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${field} must be boolean`);
+  return value;
+}
+
+function emitPlan(plan: SupervisorPlanRecord, json: boolean | undefined, emit: EmitContext): void {
+  if (json) {
+    emit.config({ format: "json" });
+    emit.data(plan);
+    return;
+  }
+  const lines = [
+    `${plan.request.id}: ${plan.status}`,
+    `goal: ${plan.request.goal_id}`,
+    `sequence: ${plan.request.sequence}`,
+    `prior root: ${plan.request.prior_root_work_id}`,
+    `planner run: ${plan.request.workflow_run_id}`,
+  ];
+  if (plan.proposal) {
+    lines.push(`decision: ${plan.proposal.decision}`);
+    lines.push(`rationale: ${plan.proposal.rationale}`);
+    lines.push(`proposed work: ${plan.proposal.work.length}`);
+  }
+  if (plan.root_work_id) lines.push(`applied root: ${plan.root_work_id}`);
+  if (plan.approval_id) lines.push(`approval: ${plan.approval_id}`);
+  emit.text(`${lines.join("\n")}\n`);
+}
+
+function emitPlanOutcome(
+  outcome: SupervisorPlanOutcome,
+  json: boolean | undefined,
+  emit: EmitContext,
+): void {
+  if (json) {
+    emit.config({ format: "json" });
+    emit.data(outcome);
+    return;
+  }
+  emit.text(
+    `supervisor plan ${outcome.plan_id}: ${outcome.status}\n` +
+      `${outcome.reason ? `reason: ${outcome.reason}\n` : ""}` +
+      `${outcome.root_work_id ? `root: ${outcome.root_work_id}\n` : ""}`,
+  );
+}
+
+function renderPlanRow(plan: SupervisorPlanRecord): string {
+  return `${plan.request.id}  ${plan.status.padEnd(18)}  ${plan.request.prior_root_work_id}`;
 }
 
 function delay(ms: number): Promise<void> {

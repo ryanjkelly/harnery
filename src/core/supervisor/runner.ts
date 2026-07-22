@@ -6,6 +6,8 @@ import {
   runWorkItem,
   type WorkRecord,
 } from "../work/index.ts";
+import type { SupervisorPlanOutcome } from "./plan-types.ts";
+import { runSupervisorPlanner } from "./planning.ts";
 import {
   acquireSupervisorLease,
   readSupervisorIgnoringLease,
@@ -40,7 +42,9 @@ export interface SupervisorRunReport {
   cycles: number;
   dispatches: number;
   acceptances: number;
+  replans: number;
   outcomes: SupervisorDispatchOutcome[];
+  plan_outcomes: SupervisorPlanOutcome[];
   projection: SupervisorProjection;
 }
 
@@ -70,7 +74,9 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
   let cycles = 0;
   let dispatches = 0;
   let acceptances = 0;
+  let replans = 0;
   const outcomes: SupervisorDispatchOutcome[] = [];
+  const planOutcomes: SupervisorPlanOutcome[] = [];
   try {
     const initial = readSupervisorIgnoringLease(coordRoot, input.goalId);
     const cycleLimit = mode === "tick" ? 1 : initial.intent.limits.max_cycles;
@@ -91,6 +97,32 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
 
       const before = graphFingerprint(record);
       let changed = false;
+      if (record.projection.next_action === "replan") {
+        log(
+          `[${record.intent.title}] replan active graph generation ${record.projection.plan_generation}`,
+        );
+        const plan = await runSupervisorPlanner({
+          coordRoot,
+          record,
+          engine: input.engine,
+          actor,
+          onLog: input.onLog,
+        });
+        replans++;
+        planOutcomes.push(plan);
+        record = refreshGraph(coordRoot, input.goalId, actor);
+        if (mode === "tick") {
+          return report(
+            "tick_complete",
+            `planner produced ${plan.status} plan ${plan.plan_id}`,
+            record,
+          );
+        }
+        if (record.projection.state !== "ready") {
+          return report(stopForProjection(record.projection), record.projection.reason, record);
+        }
+        continue;
+      }
       if (record.intent.automation.accept_passing_proof) {
         for (const work of record.work) {
           if (work.projection.state !== "in_review") continue;
@@ -206,7 +238,9 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
       cycles,
       dispatches,
       acceptances,
+      replans,
       outcomes,
+      plan_outcomes: planOutcomes,
       projection: record.projection,
     };
   }
@@ -255,7 +289,10 @@ function selectWithinAttemptBudget(record: SupervisorRecord, candidates: Candida
 }
 
 function graphFingerprint(record: SupervisorRecord): string {
-  return JSON.stringify(
+  return JSON.stringify([
+    record.projection.root_work_id,
+    record.projection.plan_generation,
+    record.projection.latest_plan_status,
     record.work.map((work) => [
       work.intent.id,
       work.projection.state,
@@ -263,7 +300,7 @@ function graphFingerprint(record: SupervisorRecord): string {
       work.projection.attempts_used,
       work.events.length,
     ]),
-  );
+  ]);
 }
 
 function stopForProjection(projection: SupervisorProjection): SupervisorStopReason {

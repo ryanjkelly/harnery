@@ -1,0 +1,116 @@
+---
+title: "0027: Dynamic replanning advances immutable graph generations"
+description: "ADR: let a bounded planner recover terminal goals without rewriting work, resetting budgets, or selecting arbitrary execution code."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, background service)
+
+## Context
+
+ADR 0025 deliberately started with one static durable-work dependency closure.
+ADR 0026 added durable time, wakeups, and quiescence without changing that
+graph. A team can now run for hours, but a terminal approach still requires a
+human to create a separate goal even when a specialist could safely decompose
+a recovery path.
+
+Allowing a model to rewrite existing work would destroy the evidence chain. A
+planner could erase failed attempts, loosen acceptance, introduce an arbitrary
+script, create a dependency cycle, or silently turn a bounded goal into an
+open-ended task generator. Treating replanning as ordinary retry would also
+hide a materially different execution decision.
+
+## Decision
+
+Make replanning optional immutable goal authority. `harn supervisor create
+--replanning <file>` freezes:
+
+- one planner specialist already present in the goal's frozen team;
+- whether valid proposals require explicit review (`auto_apply: false`, the
+  default) or may be applied by the supervisor;
+- maximum planner invocations, work items per proposal, and cumulative
+  planner-created work;
+- a named workflow-template catalog. Each template freezes an absolute path,
+  SHA-256 digest, work-attempt ceiling, and whether it may serve as a plan root.
+
+The planner is eligible only when the active graph has no legal scheduling
+action. Pending work review, workflow approval, explicit cancellation,
+unauthorized retry, and exhausted graph-wide attempt budget retain their
+existing stop behavior. A planner invocation is one supervisor cycle and one
+schema-gated workflow child using the frozen planner profile.
+
+Planner output is either `attention` with a bounded rationale or `apply` with
+an ordered list of work specifications and one proposed root key. The host,
+not the model, validates these invariants:
+
+1. every template ID exists in frozen goal intent;
+2. every dependency names active work or an earlier proposal key;
+3. the proposed root is new and uses a root-capable template;
+4. every proposed work item is reachable from that root;
+5. per-plan, cumulative planned-work, replan, cycle, wall-time, work-attempt,
+   and child-agent bounds remain satisfied;
+6. every selected workflow still matches its frozen digest at materialization.
+
+Store each request, generated planner script, proposal, and append-only event
+log privately under
+`.harnery/supervisors/<goal-id>/plans/<plan-id>/`. A parked planner dispatch
+records its durable workflow approval and resumes the same run after the
+decision. Interrupted non-parked runs consume a replan slot and may start a new
+request; they cannot leave a mutable half-request as truth.
+
+Applying a proposal materializes deterministic immutable work IDs, attaching
+`workflow` provenance that names the goal and plan. Materialization is
+idempotent: a crash may leave some new work intents, but the same proposal can
+verify and reuse exact matches before appending `plan.applied`. Conflicting
+partial work fails closed.
+
+`plan.applied` advances the goal's active root. The original graph and every
+prior generation remain on disk. The supervisor derives its attempt total from
+all governed generations rather than only the active closure, preventing a
+replacement graph from resetting `max_total_attempts`.
+
+The background service needs no separate planner loop. A replannable terminal
+projection is `ready`, so an ordinary service tick invokes one bounded planner
+cycle. A pending or attention proposal becomes quiescent. Approval changes the
+projection fingerprint and wakes the enrolled goal.
+
+## Alternatives considered
+
+- **Edit dependency arrays or work objectives in place.** Rejected because an
+  observer could no longer reconstruct what a prior attempt was asked to do.
+- **Append new prerequisites to the existing root.** Rejected because work
+  intent is immutable and a terminal root may itself be the approach being
+  replaced.
+- **Let the planner choose any local workflow path.** Rejected because model
+  output would become code-selection authority. Frozen named templates keep
+  that authority with the host.
+- **Delete or ignore superseded attempts.** Rejected because replanning would
+  reset the goal-wide budget and reward repeated failed decomposition.
+- **Apply every valid proposal automatically.** Rejected as the default.
+  Syntactic validity cannot prove that a new decomposition preserves operator
+  intent. Automatic application remains an explicit frozen opt-in.
+- **Maintain one mutable board document.** Rejected because crash recovery,
+  concurrent readers, provenance, and historical review are simpler and safer
+  over immutable work plus append-only plan decisions.
+- **Run the planner proactively before work blocks.** Deferred. Terminal-state
+  recovery proves the generation contract with a narrow trigger. Milestone or
+  predictive planning can build on the same records later.
+
+## Result and gotchas
+
+- A subscription-backed planner dogfood replaced a terminal workflow with one
+  reviewed immutable recovery root. The planner produced its schema-valid
+  proposal in 17.2 seconds; after explicit approval, the replacement completed
+  in 32 milliseconds. The final projection retained both governed work IDs and
+  counted two attempts: the failed original plus the passing replacement.
+- `auto_apply` authorizes plan application, not arbitrary execution. Work still
+  runs through normal workflow policy, proof, approval, acceptance, and retry
+  controls.
+- Superseded work remains visible through `governed_work_ids` but only the
+  active root closure is dispatchable.
+- Rejecting a plan records operator feedback and permits another bounded
+  planner attempt while budget remains. A planner `attention` result keeps the
+  unchanged graph quiescent, preventing model churn around judgment the planner
+  has already declared unresolved.
+- A plan template changing on disk does not corrupt goal reads, but applying a
+  proposal that names it fails until a new supervisor with new frozen authority
+  is created.

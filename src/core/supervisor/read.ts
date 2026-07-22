@@ -1,3 +1,18 @@
+export { readSupervisorPlan, readSupervisorPlans } from "./plan-read.ts";
+export {
+  SUPERVISOR_PLAN_SCHEMA_VERSION,
+  type SupervisorPlanEvent,
+  type SupervisorPlanEventType,
+  type SupervisorPlanHistory,
+  type SupervisorPlanOutcome,
+  type SupervisorPlanProposal,
+  type SupervisorPlanRecord,
+  type SupervisorPlanRequest,
+  type SupervisorPlanStatus,
+  type SupervisorPlanTemplate,
+  type SupervisorPlanWorkSpec,
+  type SupervisorReplanningPolicy,
+} from "./plan-types.ts";
 export type {
   SupervisorServiceConfig,
   SupervisorServiceGoalRuntime,

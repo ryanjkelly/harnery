@@ -12,16 +12,27 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { assertWorkId, readWorkItem, type WorkRecord } from "../work/read.ts";
+import { workflowScriptDigest } from "../workflow/run-state.ts";
 import { normalizeWorkflowSpecialists } from "../workflow/specialists.ts";
 import type { WorkflowSpecialistProfile } from "../workflow/types.ts";
+import { readSupervisorPlans } from "./plan-read.ts";
+import {
+  type CreateSupervisorReplanningInput,
+  type SupervisorPlanHistory,
+  type SupervisorPlanRecord,
+  type SupervisorReplanningPolicy,
+  supervisorGraphFingerprint,
+} from "./plan-types.ts";
 
 export const SUPERVISOR_INTENT_SCHEMA_VERSION = 1 as const;
 
 const GOAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const MAX_TITLE = 200;
 const MAX_INTENT_BYTES = 256 * 1024;
+const MAX_TEMPLATES = 20;
+const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
 
 export interface SupervisorLimits {
@@ -47,6 +58,7 @@ export interface SupervisorIntent {
   specialists: Record<string, WorkflowSpecialistProfile>;
   limits: SupervisorLimits;
   automation: SupervisorAutomationPolicy;
+  replanning?: SupervisorReplanningPolicy;
   created_at: string;
 }
 
@@ -64,6 +76,8 @@ export type SupervisorNextAction =
   | "resolve_approval"
   | "review"
   | "retry"
+  | "replan"
+  | "review_plan"
   | "none";
 
 export interface SupervisorProjection {
@@ -81,12 +95,19 @@ export interface SupervisorProjection {
   attempts_used: number;
   attempts_remaining: number;
   specialists: string[];
+  plan_generation: number;
+  replans_used: number;
+  replans_remaining: number;
+  pending_plan_id?: string;
+  latest_plan_status?: SupervisorPlanRecord["status"];
+  governed_work_ids: string[];
 }
 
 export interface SupervisorRecord {
   intent: SupervisorIntent;
   projection: SupervisorProjection;
   work: WorkRecord[];
+  plans: SupervisorPlanRecord[];
 }
 
 export interface CreateSupervisorInput {
@@ -97,6 +118,7 @@ export interface CreateSupervisorInput {
   id?: string;
   limits?: Partial<SupervisorLimits>;
   automation?: Partial<SupervisorAutomationPolicy>;
+  replanning?: CreateSupervisorReplanningInput;
 }
 
 export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord {
@@ -105,6 +127,9 @@ export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord
   const root = readWorkItem(coordRoot, input.rootWorkId);
   const id = input.id ?? newSupervisorId();
   assertSupervisorId(id);
+  const replanning = input.replanning
+    ? normalizeReplanning(input.replanning, input.specialists)
+    : undefined;
   const intent: SupervisorIntent = {
     schema_version: SUPERVISOR_INTENT_SCHEMA_VERSION,
     id,
@@ -113,6 +138,7 @@ export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord
     specialists: normalizeWorkflowSpecialists(input.specialists),
     limits: normalizeLimits(input.limits),
     automation: normalizeAutomation(input.automation),
+    ...(replanning ? { replanning } : {}),
     created_at: new Date().toISOString(),
   };
   const path = supervisorIntentPath(coordRoot, id);
@@ -221,11 +247,14 @@ function readSupervisorInternal(
 ): SupervisorRecord {
   const coordRoot = resolve(coordRootRaw);
   const intent = readSupervisorIntent(coordRoot, goalId);
-  const work = collectSupervisorWork(coordRoot, intent.root_work_id);
+  const plans = readSupervisorPlans(coordRoot, intent.id, intent.root_work_id);
+  const work = collectSupervisorWork(coordRoot, plans.active_root_work_id);
+  const governed = collectGovernedWork(coordRoot, intent.root_work_id, plans, work);
   return {
     intent,
     work,
-    projection: deriveProjection(coordRoot, intent, work, ignoreLease),
+    plans: plans.plans,
+    projection: deriveProjection(coordRoot, intent, work, governed, plans, ignoreLease),
   };
 }
 
@@ -233,11 +262,13 @@ function deriveProjection(
   coordRoot: string,
   intent: SupervisorIntent,
   work: WorkRecord[],
+  governed: WorkRecord[],
+  plans: SupervisorPlanHistory,
   ignoreLease: boolean,
 ): SupervisorProjection {
-  const root = work.find((record) => record.intent.id === intent.root_work_id);
+  const root = work.find((record) => record.intent.id === plans.active_root_work_id);
   if (!root) throw new Error(`supervisor ${intent.id} root work is missing`);
-  const attemptsUsed = work.reduce((sum, record) => sum + record.projection.attempts_used, 0);
+  const attemptsUsed = governed.reduce((sum, record) => sum + record.projection.attempts_used, 0);
   const readyWork = work
     .filter((record) => record.projection.state === "ready")
     .map((record) => record.intent.id);
@@ -283,7 +314,7 @@ function deriveProjection(
   const base = {
     id: intent.id,
     title: intent.title,
-    root_work_id: intent.root_work_id,
+    root_work_id: plans.active_root_work_id,
     work_ids: work.map((record) => record.intent.id),
     ready_work: readyWork,
     resumable_work: resumableWork,
@@ -292,6 +323,12 @@ function deriveProjection(
     attempts_used: attemptsUsed,
     attempts_remaining: Math.max(0, intent.limits.max_total_attempts - attemptsUsed),
     specialists: Object.keys(intent.specialists),
+    plan_generation: plans.generation,
+    replans_used: plans.plans.length,
+    replans_remaining: Math.max(0, (intent.replanning?.max_replans ?? 0) - plans.plans.length),
+    pending_plan_id: plans.latest?.status === "proposed" ? plans.latest.request.id : undefined,
+    latest_plan_status: plans.latest?.status,
+    governed_work_ids: governed.map((record) => record.intent.id),
   };
   if (!ignoreLease && supervisorLeaseIsLive(coordRoot, intent.id)) {
     return {
@@ -307,6 +344,30 @@ function deriveProjection(
       state: "succeeded",
       reason: "root work was explicitly accepted",
       next_action: "none",
+    };
+  }
+  if (plans.latest?.status === "proposed") {
+    return {
+      ...base,
+      state: "awaiting_attention",
+      reason: `replacement plan ${plans.latest.request.id} awaits explicit review`,
+      next_action: "review_plan",
+    };
+  }
+  if (plans.latest?.status === "awaiting_approval") {
+    return {
+      ...base,
+      state: "awaiting_attention",
+      reason: `planner workflow awaits approval ${plans.latest.approval_id}`,
+      next_action: "resolve_approval",
+    };
+  }
+  if (plans.latest?.status === "resumable") {
+    return {
+      ...base,
+      state: "ready",
+      reason: `planner workflow ${plans.latest.request.workflow_run_id} is resumable`,
+      next_action: "replan",
     };
   }
   const resumableDispatchable = intent.automation.resume_approved ? resumableWork : [];
@@ -379,6 +440,58 @@ function deriveProjection(
       next_action: "retry",
     };
   }
+  if (attemptsUsed >= intent.limits.max_total_attempts && cancelled.length === 0) {
+    return {
+      ...base,
+      state: "budget_exhausted",
+      reason: `goal exhausted its ${intent.limits.max_total_attempts} total attempts`,
+      next_action: "none",
+    };
+  }
+  const triggerFingerprint = supervisorGraphFingerprint({
+    rootWorkId: plans.active_root_work_id,
+    generation: plans.generation,
+    work,
+  });
+  const latestHandledSameGraph =
+    plans.latest?.request.trigger_fingerprint === triggerFingerprint &&
+    plans.latest.request.prior_root_work_id === plans.active_root_work_id &&
+    plans.latest.status === "attention";
+  const canReplan =
+    intent.replanning !== undefined &&
+    plans.plans.length < intent.replanning.max_replans &&
+    cancelled.length === 0 &&
+    !latestHandledSameGraph;
+  if (canReplan) {
+    return {
+      ...base,
+      state: "ready",
+      reason: terminalBlocked.length
+        ? `${terminalBlocked.length} terminally blocked work item${terminalBlocked.length === 1 ? " can" : "s can"} be replanned`
+        : "the active graph has no legal progress action and may be replanned",
+      next_action: "replan",
+    };
+  }
+  if (
+    intent.replanning &&
+    plans.plans.length >= intent.replanning.max_replans &&
+    cancelled.length === 0
+  ) {
+    return {
+      ...base,
+      state: "budget_exhausted",
+      reason: `goal exhausted its ${intent.replanning.max_replans} replans`,
+      next_action: "none",
+    };
+  }
+  if (latestHandledSameGraph && plans.latest) {
+    return {
+      ...base,
+      state: "awaiting_attention",
+      reason: plans.latest.reason ?? `plan ${plans.latest.request.id} requires attention`,
+      next_action: "none",
+    };
+  }
   return {
     ...base,
     state: "blocked",
@@ -430,6 +543,7 @@ function validateIntent(intent: SupervisorIntent, goalId: string): void {
   ) {
     throw new Error(`supervisor intent ${goalId} automation policy is not canonical`);
   }
+  if (intent.replanning) validateReplanning(intent.replanning, specialists, goalId);
 }
 
 function normalizeLimits(input: Partial<SupervisorLimits> | undefined): SupervisorLimits {
@@ -463,6 +577,121 @@ function normalizeAutomation(
     resume_approved: boolean(input?.resume_approved ?? true, "resume_approved"),
     retry_blocked: boolean(input?.retry_blocked ?? false, "retry_blocked"),
   };
+}
+
+function normalizeReplanning(
+  input: CreateSupervisorReplanningInput,
+  specialistsInput: Readonly<Record<string, WorkflowSpecialistProfile>>,
+): SupervisorReplanningPolicy {
+  const specialists = normalizeWorkflowSpecialists(specialistsInput);
+  const plannerSpecialist = bounded(input.plannerSpecialist, "planner specialist", 100);
+  if (!specialists[plannerSpecialist]) {
+    throw new Error(`planner specialist ${plannerSpecialist} is not present in the frozen team`);
+  }
+  const entries = Object.entries(input.templates);
+  if (entries.length < 1 || entries.length > MAX_TEMPLATES) {
+    throw new Error(`replanning templates must contain 1 to ${MAX_TEMPLATES} entries`);
+  }
+  const templates = Object.fromEntries(
+    entries
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, template]) => {
+        if (!TEMPLATE_ID.test(id)) throw new Error(`invalid replanning template id ${id}`);
+        const path = resolve(template.workflowPath);
+        if (!existsSync(path))
+          throw new Error(`replanning template ${id} does not exist at ${path}`);
+        const maxAttempts = positive(
+          template.maxAttempts ?? 3,
+          `replanning template ${id} maxAttempts`,
+          100,
+        );
+        return [
+          id,
+          {
+            workflow: { path, sha256: workflowScriptDigest(path) },
+            max_attempts: maxAttempts,
+            root: boolean(template.root ?? false, `replanning template ${id} root`),
+          },
+        ];
+      }),
+  );
+  if (!Object.values(templates).some((template) => template.root)) {
+    throw new Error("replanning requires at least one root-capable template");
+  }
+  const maxWorkItemsPerPlan = positive(
+    input.maxWorkItemsPerPlan ?? 8,
+    "replanning max_work_items_per_plan",
+    25,
+  );
+  const maxTotalWorkItems = positive(
+    input.maxTotalWorkItems ?? 25,
+    "replanning max_total_work_items",
+    100,
+  );
+  if (maxWorkItemsPerPlan > maxTotalWorkItems) {
+    throw new Error("replanning max_work_items_per_plan cannot exceed max_total_work_items");
+  }
+  return {
+    planner_specialist: plannerSpecialist,
+    auto_apply: boolean(input.autoApply ?? false, "replanning auto_apply"),
+    max_replans: positive(input.maxReplans ?? 5, "replanning max_replans", 100),
+    max_work_items_per_plan: maxWorkItemsPerPlan,
+    max_total_work_items: maxTotalWorkItems,
+    templates,
+  };
+}
+
+function validateReplanning(
+  policy: SupervisorReplanningPolicy,
+  specialists: Record<string, WorkflowSpecialistProfile>,
+  goalId: string,
+): void {
+  if (!specialists[policy.planner_specialist]) {
+    throw new Error(`supervisor ${goalId} planner specialist is not in the frozen team`);
+  }
+  boolean(policy.auto_apply, "replanning auto_apply");
+  positive(policy.max_replans, "replanning max_replans", 100);
+  positive(policy.max_work_items_per_plan, "replanning max_work_items_per_plan", 25);
+  positive(policy.max_total_work_items, "replanning max_total_work_items", 100);
+  if (policy.max_work_items_per_plan > policy.max_total_work_items) {
+    throw new Error(`supervisor ${goalId} replanning work-item bounds are inconsistent`);
+  }
+  const entries = Object.entries(policy.templates ?? {});
+  if (entries.length < 1 || entries.length > MAX_TEMPLATES) {
+    throw new Error(`supervisor ${goalId} has invalid replanning templates`);
+  }
+  let rootCapable = false;
+  for (const [id, template] of entries) {
+    if (
+      !TEMPLATE_ID.test(id) ||
+      !isAbsolute(template.workflow?.path) ||
+      !/^[a-f0-9]{64}$/.test(template.workflow?.sha256) ||
+      !Number.isSafeInteger(template.max_attempts) ||
+      template.max_attempts < 1 ||
+      template.max_attempts > 100 ||
+      typeof template.root !== "boolean"
+    ) {
+      throw new Error(`supervisor ${goalId} replanning template ${id} is invalid`);
+    }
+    rootCapable ||= template.root;
+  }
+  if (!rootCapable) throw new Error(`supervisor ${goalId} has no root-capable replanning template`);
+}
+
+function collectGovernedWork(
+  coordRoot: string,
+  originalRootWorkId: string,
+  plans: SupervisorPlanHistory,
+  active: WorkRecord[],
+): WorkRecord[] {
+  const governed = new Map<string, WorkRecord>();
+  for (const record of collectSupervisorWork(coordRoot, originalRootWorkId)) {
+    governed.set(record.intent.id, record);
+  }
+  for (const workId of plans.applied_work_ids)
+    governed.set(workId, readWorkItem(coordRoot, workId));
+  for (const record of active) governed.set(record.intent.id, record);
+  return [...governed.values()];
 }
 
 function supervisorDir(coordRoot: string, goalId: string): string {
