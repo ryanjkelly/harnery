@@ -1,4 +1,4 @@
-import { releaseClaim } from "@/lib/coord-writer";
+import { releaseClaim, safeOwnerId } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +11,15 @@ export async function POST(req: Request): Promise<Response> {
   }
   const { instance_id, path } = (body ?? {}) as { instance_id?: string; path?: string };
   if (!instance_id || !path) {
-    return Response.json({ error: "missing_fields", required: ["instance_id", "path"] }, {
-      status: 400,
-    });
+    return Response.json(
+      { error: "missing_fields", required: ["instance_id", "path"] },
+      {
+        status: 400,
+      },
+    );
+  }
+  if (!safeOwnerId(instance_id)) {
+    return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
   return Response.json(releaseClaim(instance_id, path));
 }

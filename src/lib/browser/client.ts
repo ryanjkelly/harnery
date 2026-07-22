@@ -285,8 +285,13 @@ export class Browser {
    * on screen" signal for LLM iteration loops. For richer extraction, use
    * `htmlContent()` and pipe through a readability filter.
    */
-  async textSnapshot(): Promise<string> {
+  async textSnapshot(selector?: string): Promise<string> {
     const page = this.currentPage;
+    if (selector) {
+      const el = await page.$(selector);
+      if (!el) throw new Error(`Selector matched nothing: ${selector}`);
+      return await el.evaluate((node) => (node as HTMLElement).innerText ?? "");
+    }
     return await page.evaluate(() => document.body?.innerText ?? "");
   }
 

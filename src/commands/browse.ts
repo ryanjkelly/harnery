@@ -650,11 +650,7 @@ async function runPrintMode(
   if (opts.html) {
     body = await browser.htmlContent(opts.selector);
   } else if (opts.snapshot) {
-    body = opts.selector
-      ? await browser.evaluate<string>(
-          `(() => { const el = document.querySelector(${JSON.stringify(opts.selector)}); return el ? el.innerText : ''; })()`,
-        )
-      : await browser.textSnapshot();
+    body = await browser.textSnapshot(opts.selector);
   }
 
   if (opts.json) {

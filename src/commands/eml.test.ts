@@ -36,3 +36,25 @@ describe("eml renderMarkdown --headers", () => {
     expect(md).toContain("Subject: Test Thread");
   });
 });
+
+describe("eml HTML sanitization", () => {
+  test("removes active elements and neutralizes entity-decoded raw HTML", async () => {
+    const parsed = await simpleParser(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Subject: Untrusted HTML",
+        "Date: Mon, 01 Jan 2026 10:00:00 +0000",
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        "<p>Hello</p><script>alert('executed')</script>",
+        "<p>&lt;img src=x onerror=alert(1)&gt;</p>",
+      ].join("\r\n"),
+    );
+    const output = renderMarkdown(parsed, extractThread(parsed), { format: "markdown" });
+    expect(output).toContain("Hello");
+    expect(output).not.toContain("executed");
+    expect(output).not.toContain("<img");
+    expect(output).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+});

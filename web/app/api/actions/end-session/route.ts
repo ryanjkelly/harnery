@@ -1,4 +1,4 @@
-import { endSession } from "@/lib/coord-writer";
+import { endSession, safeOwnerId } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,9 @@ export async function POST(req: Request): Promise<Response> {
   const { instance_id } = (body ?? {}) as { instance_id?: string };
   if (!instance_id) {
     return Response.json({ error: "missing_fields", required: ["instance_id"] }, { status: 400 });
+  }
+  if (!safeOwnerId(instance_id)) {
+    return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
   return Response.json(endSession(instance_id));
 }

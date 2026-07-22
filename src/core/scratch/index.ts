@@ -10,7 +10,12 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
-import { monorepoRoot, readHeartbeat, resolveOwner } from "../agents/index.ts";
+import {
+  assertSafeInstanceId,
+  monorepoRoot,
+  readHeartbeat,
+  resolveOwner,
+} from "../agents/index.ts";
 
 /**
  * Agent scratchpad: per-agent markdown journal at `.harnery/scratch/<instance_id>.md`.
@@ -88,6 +93,7 @@ export function archiveDir(): string {
 }
 
 export function scratchPath(instanceId: string): string {
+  assertSafeInstanceId(instanceId);
   return resolve(scratchDir(), `${instanceId}.md`);
 }
 
@@ -144,9 +150,18 @@ export function parseScratch(path: string, content: string): ScratchDoc {
       i++;
       break;
     }
-    const m = line.match(/^(session_id|machine|started|last_updated):\s*(.+?)\s*$/);
-    if (m) {
-      (header as unknown as Record<string, string>)[m[1]] = m[2].trim();
+    const separator = line.indexOf(":");
+    if (separator > 0) {
+      const key = line.slice(0, separator);
+      if (
+        key === "session_id" ||
+        key === "machine" ||
+        key === "started" ||
+        key === "last_updated"
+      ) {
+        const value = line.slice(separator + 1).trim();
+        if (value) (header as unknown as Record<string, string>)[key] = value;
+      }
     }
   }
 
@@ -366,6 +381,7 @@ export function appendEntry(
 
 /** Move `<owner>.md` → `archived/<owner>-<ts>.md`. No-op if missing. Returns archive path (or null). */
 export function archiveScratch(instanceId: string): string | null {
+  assertSafeInstanceId(instanceId);
   const src = scratchPath(instanceId);
   if (!existsSync(src)) return null;
   const ts = new Date().toISOString().replace(/[:.]/g, "-");

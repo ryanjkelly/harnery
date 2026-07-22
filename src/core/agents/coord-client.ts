@@ -10,8 +10,35 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
 // NOTE: kept dependency-free (node builtins only); this file is vendored verbatim into
 // a downstream consumer, so it cannot import the coordEnv helper.
+
+const MAX_INSTANCE_ID_LENGTH = 128;
+
+/**
+ * Instance IDs become coordination filenames, so only one portable basename
+ * alphabet is accepted at every filesystem boundary. UUIDs, test IDs, and
+ * legacy hex IDs all fit this contract; separators and dot segments do not.
+ */
+export function isSafeInstanceId(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_INSTANCE_ID_LENGTH) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    const alpha = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const digit = code >= 48 && code <= 57;
+    if (!alpha && !digit && code !== 45 && code !== 95) return false;
+  }
+  return true;
+}
+
+export function assertSafeInstanceId(value: unknown): asserts value is string {
+  if (!isSafeInstanceId(value)) {
+    throw new Error("instance_id must be 1-128 ASCII letters, digits, hyphens, or underscores");
+  }
+}
 
 export interface Heartbeat {
   instance_id: string;
@@ -339,7 +366,7 @@ export function resolveSingleActiveOwner(root: string): string | null {
  * `.harnery/active/<id>.json` (the canonical location every reader expects).
  */
 export function readHeartbeat(instanceId: string): Heartbeat | null {
-  if (!instanceId) return null;
+  if (!isSafeInstanceId(instanceId)) return null;
   const root = monorepoRoot();
   if (!root) return null;
   return readJsonHeartbeatFile(resolve(root, ".harnery", "active", `${instanceId}.json`));

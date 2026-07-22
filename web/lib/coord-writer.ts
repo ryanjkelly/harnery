@@ -10,14 +10,15 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { isSafeInstanceId } from "harnery/core/agents";
 import {
   appendEntry,
   archiveScratch,
   parseScratch,
-  scratchPath,
-  serializeScratch,
   SCRATCH_CATEGORIES,
   type ScratchCategory,
+  scratchPath,
+  serializeScratch,
 } from "harnery/core/scratch";
 import { activeDir, coordRoot } from "./coord-reader";
 
@@ -65,12 +66,7 @@ function runHelper(args: string[]): Promise<HelperResult> {
 
 /** Defensive instance_id validation: owner_ids are UUIDs in practice. */
 export function safeOwnerId(owner: string): boolean {
-  if (!owner) return false;
-  if (owner.length > 128) return false;
-  if (owner.includes("/") || owner.includes("..") || owner.includes("\0")) {
-    return false;
-  }
-  return true;
+  return isSafeInstanceId(owner);
 }
 
 /** Force a coord-layer recovery action on an agent. Shells to harnery/bin/agent-coord. */
@@ -79,11 +75,7 @@ export async function healAgent(
   kind: "pidmap" | "heartbeat" | "kill",
 ): Promise<HelperResult> {
   const action =
-    kind === "pidmap"
-      ? "heal-pidmap"
-      : kind === "heartbeat"
-        ? "heal-heartbeat"
-        : "kill-heartbeat";
+    kind === "pidmap" ? "heal-pidmap" : kind === "heartbeat" ? "heal-heartbeat" : "kill-heartbeat";
   return runHelper([action, owner]);
 }
 
@@ -269,6 +261,7 @@ export interface HeartbeatFile {
 }
 
 function heartbeatPath(instanceId: string): string {
+  if (!safeOwnerId(instanceId)) throw new Error("invalid instance_id");
   return path.join(activeDir(), `${instanceId}.json`);
 }
 
@@ -292,6 +285,16 @@ export interface ReleaseClaimResult {
 }
 
 export function releaseClaim(instanceId: string, target: string): ReleaseClaimResult {
+  if (!safeOwnerId(instanceId)) {
+    return {
+      ok: false,
+      instance_id: instanceId,
+      path: target,
+      removed: false,
+      remaining: 0,
+      error: "invalid instance_id",
+    };
+  }
   const hb = readHeartbeatFile(instanceId);
   if (!hb) {
     return {
@@ -324,6 +327,14 @@ export interface PingResult {
 }
 
 export function pingAgent(targetInstanceId: string, message: string): PingResult {
+  if (!safeOwnerId(targetInstanceId)) {
+    return {
+      ok: false,
+      target_instance: targetInstanceId,
+      bytes: 0,
+      error: "invalid instance_id",
+    };
+  }
   ensureCoordRootEnv();
   const trimmed = message.trim();
   if (!trimmed) {
@@ -351,6 +362,9 @@ export interface EndSessionResult {
 }
 
 export function endSession(instanceId: string): EndSessionResult {
+  if (!safeOwnerId(instanceId)) {
+    return { ok: false, instance_id: instanceId, removed_from: "", error: "invalid instance_id" };
+  }
   const p = heartbeatPath(instanceId);
   if (!existsSync(p)) {
     return {
