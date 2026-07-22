@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0
+
+### Minor Changes
+
+- 54c3a95: Add a durable workflow approval inbox with idempotent decisions, honest parked runs, script-drift protection, same-run cached resume, CLI controls, journal receipts, and dashboard visibility.
+
 ## 0.12.2
 
 ### Patch Changes
