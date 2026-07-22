@@ -6,13 +6,14 @@ sidebar:
 ---
 
 ```
-harn supervisor create <root-work-id> --team <file>
+harn supervisor create [root-work-id] --team <file>
                        [--id <goal-id>] [--title <text>]
                        [--max-cycles <n>] [--max-runtime-ms <n>]
                        [--max-parallel-work <n>] [--max-total-attempts <n>]
                        [--max-agents-per-work <n>] [--agent-concurrency <n>]
                        [--accept-passing-proof] [--no-resume-approved]
-                       [--retry-blocked] [--replanning <file>] [--json]
+                       [--retry-blocked] [--replanning <file>]
+                       [--mission <file>] [--json]
 harn supervisor list [--json]
 harn supervisor show <goal-id> [--json]
 harn supervisor plan list <goal-id> [--json]
@@ -121,6 +122,47 @@ team, automation decisions, and these defaults:
 The maximum simultaneous children is `max_parallel_work × agent_concurrency`.
 Work items retain their own stricter attempt limits.
 
+## Start from a mission
+
+To let the planner create the first bounded graph, omit the root work ID and
+provide a mission file alongside replanning authority:
+
+```json
+{
+  "objective": "Ship the verified release without weakening compatibility",
+  "acceptance": [
+    "The requested behavior is available through the public package",
+    "Regression, package, and runtime verification pass"
+  ],
+  "max_milestones": 4
+}
+```
+
+```bash
+harn supervisor create --team ./team.json \
+  --mission ./mission.json --replanning ./replanning.json \
+  --id goal-release
+```
+
+The mission, team, planner, templates, policy, and limits are normalized into
+private immutable intent before the first planner runs. Harnery creates no
+placeholder work item. The initial projection is `ready/plan_initial`; one
+ordinary `tick` or `run` produces an `initial` plan request.
+
+Mission plans materialize one milestone at a time. An `apply` proposal includes
+the milestone sequence, title, objective, acceptance, and its immutable work
+graph. When that graph's root is explicitly accepted, the goal becomes
+`ready/plan_milestone` and the planner reassesses structured proof and remaining
+bounds. It may propose another milestone, return `attention`, or propose
+`complete`. Completion follows the same explicit-review default as work plans;
+only a durable `plan.completed` event succeeds the mission.
+
+Reject a plan with a narrow reason to redirect the next bounded proposal. The
+rejected proposal remains unchanged and its planner call still consumes budget.
+Mission, recovery, and completion requests all share `max_replans`; for an
+objective-first mission that bound must be greater than `max_milestones` so a
+final boundary decision remains possible.
+
 ## Bounded dynamic replanning
 
 Replanning is opt-in at goal creation. Pass a JSON policy that names one frozen
@@ -159,7 +201,7 @@ workflow's absolute path, SHA-256 digest, attempt ceiling, and root capability
 inside goal intent. A later file edit is detected before planner-created work
 is materialized.
 
-The planner runs only after the active graph has no legal progress action. It
+Without a mission, the planner runs only after the active graph has no legal progress action. It
 does not replace review, approval, cancellation, retry policy, or an exhausted
 goal-wide work-attempt budget. One schema-gated planner child receives the
 active graph, remaining bounds, and frozen template catalog. Its result is one
@@ -214,7 +256,8 @@ harn supervisor run goal-release --subscription-only --policy ./policy.jsonc
 stepwise inspection. `run` repeats in the foreground until one of these stop
 conditions is reconstructed:
 
-- the root reaches explicitly accepted `succeeded`;
+- a non-mission root reaches explicitly accepted `succeeded`, or a mission
+  receives an accepted `complete` proposal;
 - work needs an unresolved approval or explicit review;
 - blocked work is not authorized for retry, or its attempt limit is exhausted;
 - the graph-wide attempt, cycle, or wall-time limit is exhausted;
@@ -300,5 +343,5 @@ Replanning advances between immutable graph generations. It is not a mutable
 kanban board: a planner cannot edit work in place, change frozen authority,
 silently discard attempt cost, or choose arbitrary workflows. Harnery still
 does not create worktrees and sandboxes; `--isolation` declares a boundary the
-host already created. A future planning layer may add richer operator feedback
-and proactive milestone planning without weakening this append-only contract.
+host already created. Mission planning adds bounded foresight without weakening
+this append-only contract.

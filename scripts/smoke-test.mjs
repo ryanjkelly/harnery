@@ -168,6 +168,41 @@ try {
   if (!/unconfigured/.test(supervisorServiceOut)) {
     fail("supervisor service status did not render its empty packed state");
   }
+  const missionFile = join(workdir, "mission.json");
+  writeFileSync(
+    missionFile,
+    JSON.stringify({
+      objective: "Verify objective-first mission creation from the packed package",
+      acceptance: ["The mission starts in initial planning"],
+      max_milestones: 2,
+    }),
+  );
+  const missionReplanningFile = join(workdir, "mission-replanning.json");
+  writeFileSync(
+    missionReplanningFile,
+    JSON.stringify({
+      planner_specialist: "planner",
+      max_replans: 3,
+      templates: {
+        delivery: { workflow: "./work-smoke.mjs", max_attempts: 1, root: true },
+      },
+    }),
+  );
+  const missionCreateOut = run([
+    "supervisor",
+    "create",
+    "--team",
+    teamFile,
+    "--id",
+    "goal-smoke-mission",
+    "--mission",
+    missionFile,
+    "--replanning",
+    missionReplanningFile,
+  ]);
+  if (!/goal-smoke-mission/.test(missionCreateOut) || !/next: plan_initial/.test(missionCreateOut)) {
+    fail("supervisor mission create did not produce an objective-first planning state");
+  }
   log("durable supervisor CLI OK");
 
   // outline on PHP: works without the `typescript` dep.

@@ -24,7 +24,7 @@ export default function SupervisorsPage() {
       <main className="mx-auto max-w-5xl px-4 py-6">
         <h1 className="mb-1 text-xl font-semibold">Durable goals</h1>
         <p className="mb-6 text-sm text-muted-foreground">
-          Bounded specialist teams supervising durable work graphs with optional audited replanning.
+          Bounded specialist teams supervising durable missions and immutable work graphs.
         </p>
         <section className="mb-6 rounded-lg border border-border bg-card px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -74,6 +74,11 @@ export default function SupervisorsPage() {
                       <span>
                         plan generation {projection.plan_generation} · {projection.replans_used}/
                         {intent.replanning.max_replans} replans
+                      </span>
+                    ) : null}
+                    {intent.mission ? (
+                      <span>
+                        milestones {projection.milestones_completed}/{intent.mission.max_milestones}
                       </span>
                     ) : null}
                     {projection.pending_plan_id ? (

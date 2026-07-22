@@ -7,6 +7,7 @@ export {
   type SupervisorPlanEvent,
   type SupervisorPlanEventType,
   type SupervisorPlanHistory,
+  type SupervisorPlanMilestone,
   type SupervisorPlanOutcome,
   type SupervisorPlanProposal,
   type SupervisorPlanRecord,
@@ -53,6 +54,7 @@ export {
 export {
   assertSupervisorId,
   type CreateSupervisorInput,
+  type CreateSupervisorMissionInput,
   collectSupervisorWork,
   createSupervisor,
   listSupervisors,
@@ -62,6 +64,7 @@ export {
   type SupervisorAutomationPolicy,
   type SupervisorIntent,
   type SupervisorLimits,
+  type SupervisorMission,
   type SupervisorNextAction,
   type SupervisorProjection,
   type SupervisorRecord,

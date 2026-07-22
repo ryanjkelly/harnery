@@ -1,0 +1,116 @@
+---
+title: "0028: Missions advance through reviewed milestone plans"
+description: "ADR: accept a bounded objective before work exists, plan one immutable milestone at a time, and reassess before declaring mission success."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, background service)
+
+## Context
+
+ADR 0027 lets a planner replace a terminal work graph without rewriting its
+history or choosing arbitrary execution code. That planner is deliberately
+reactive: an operator must create the first root work item, and planning begins
+only after the graph has no legal move. An accepted replacement root also ends
+the goal immediately.
+
+That is safe recovery, but it is not enough for a long-running project whose
+best next work depends on evidence that does not exist at the start. Freezing a
+large predicted graph up front makes later work stale. Letting a model mutate a
+live graph in place loses review, reproducibility, and cumulative budget truth.
+Treating each accepted root as overall success confuses one useful delivery
+boundary with satisfaction of the operator's objective.
+
+## Decision
+
+Add an optional immutable `mission` to supervisor intent. A mission freezes:
+
+- one bounded objective;
+- one or more mission acceptance criteria;
+- a maximum number of materialized milestones.
+
+Mission creation also requires the existing replanning policy and its frozen
+planner specialist, workflow-template catalog, application policy, and bounds.
+`harn supervisor create --mission <file> --replanning <file> --team <file>` may
+omit the root work ID. In that form Harnery writes intent first and derives an
+initial planning action without creating placeholder executable work.
+
+Each planner request records one trigger:
+
+- `initial` when an objective-first mission has no materialized root;
+- `recovery` when the active graph has no legal progress action;
+- `milestone` when the active root has been explicitly accepted.
+
+Planner output remains schema-gated data. A mission planner may return:
+
+- `apply` with one milestone descriptor and one bounded immutable work graph;
+- `complete` with a rationale and no work;
+- `attention` with a rationale and no work.
+
+The milestone descriptor carries its sequence, title, objective, and acceptance
+criteria. Harnery requires the next exact sequence and enforces the frozen
+milestone ceiling. Work continues to reference only named, digest-bound host
+templates. Dependency order, reachability, root capability, per-plan work,
+cumulative planned work, work attempts, planner calls, cycles, runtime, and
+child concurrency remain host-validated hard limits.
+
+Valid `apply` and `complete` proposals require explicit review by default.
+`auto_apply` is the same frozen opt-in authority introduced by ADR 0027.
+Rejecting a proposal records bounded operator guidance and permits a new request
+while budget remains; it never edits the rejected proposal or active graph.
+
+Applying work preserves the existing crash contract: deterministic work IDs are
+materialized idempotently, exact partial writes are reused, conflicts fail
+closed, and `plan.applied` advances authority only after work exists. Earlier
+generations, attempts, proofs, and planner decisions stay visible and keep
+counting against cumulative limits.
+
+For mission supervisors, accepting a milestone root does not make the goal
+terminal. Projection becomes `ready/plan_milestone`. The next planner receives
+the frozen mission, remaining bounds, prior plan outcome, active work state, and
+bounded proof summaries. A reviewed `plan.completed` event is the only new path
+to mission success. Supervisors without a mission retain the existing rule that
+an accepted root succeeds immediately.
+
+The background service gains no planner daemon. Mission planning is another
+derived supervisor action under the existing goal lease. Mission phase and
+milestone counters enter the service fingerprint, so a plan or acceptance
+transition wakes one ordinary bounded tick and unchanged attention states remain
+quiescent.
+
+## Alternatives considered
+
+- **Generate the complete project graph at creation.** Rejected because later
+  stages would encode guesses made before earlier proof and constraints exist.
+- **Let the planner append tasks continuously.** Rejected because there would
+  be no stable review boundary, quiescent state, or clear cumulative authority.
+- **Use a synthetic bootstrap workflow as the first root.** Rejected because it
+  would present planning metadata as executable work and distort attempt truth.
+- **Treat every milestone root as mission success.** Rejected because a local
+  graph can pass while mission acceptance remains unmet.
+- **Allow a completion claim in the initial plan.** Rejected because no
+  milestone evidence exists yet. Initial planning may apply work or request
+  attention only.
+- **Edit an approved proposal to narrow or redirect it.** Rejected because the
+  reviewed artifact would no longer explain the materialized graph. Rejection
+  plus a new immutable proposal preserves both intent and response.
+- **Store full agent transcripts as project memory.** Rejected because they are
+  unbounded, privacy-sensitive, and weaker than structured work, proof, plan,
+  and decision records for reconstruction.
+
+## Result and gotchas
+
+- An objective-first goal is real durable intent even while its work graph is
+  empty. It can be listed, inspected, enrolled, recovered, and budgeted before
+  any executable work exists.
+- `max_replans` covers initial, recovery, milestone, and completion proposals.
+  Objective-first creation requires it to exceed `max_milestones`, reserving at
+  least one boundary decision after the maximum materialized milestones.
+- A mission may also wrap an existing root. In that form the operator supplies
+  the first milestone graph and Harnery begins proactive planning when that root
+  is accepted.
+- Planner quality remains a model concern. Harnery proves that proposals are
+  bounded, reviewed, reconstructible, and restricted to frozen authority; it
+  does not claim that a syntactically valid decomposition is strategically good.
+- Project memory is intentionally structured and bounded: mission intent,
+  immutable plans, work/proof summaries, attempts, and operator decisions. Raw
+  prompts and replies do not enter supervisor projection or the dashboard.
