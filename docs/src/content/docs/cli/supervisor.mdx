@@ -1,0 +1,161 @@
+---
+title: harn supervisor
+description: Run a bounded, restartable specialist team over a durable-work dependency graph.
+sidebar:
+  order: 28
+---
+
+```
+harn supervisor create <root-work-id> --team <file>
+                       [--id <goal-id>] [--title <text>]
+                       [--max-cycles <n>] [--max-runtime-ms <n>]
+                       [--max-parallel-work <n>] [--max-total-attempts <n>]
+                       [--max-agents-per-work <n>] [--agent-concurrency <n>]
+                       [--accept-passing-proof] [--no-resume-approved]
+                       [--retry-blocked] [--json]
+harn supervisor list [--json]
+harn supervisor show <goal-id> [--json]
+harn supervisor tick <goal-id> [workflow host options] [--json]
+harn supervisor run <goal-id> [workflow host options] [--json]
+```
+
+A supervisor is an explicitly invoked foreground host above
+[`harn work`](./work/). It reconstructs a root work item's immutable dependency
+closure, selects legal progress actions, dispatches bounded workflow attempts,
+and reconstructs the graph from journals and proof before every new cycle.
+
+It is not a background daemon and does not change reconciliation. Running
+`harn work reconcile` remains observational. Only `supervisor tick` or
+`supervisor run` can execute the automation policy frozen at goal creation.
+
+## Define a specialist team
+
+The team file is a JSON object keyed by role ID:
+
+```json
+{
+  "architect": {
+    "instructions": "Own system boundaries, contracts, and decomposition.",
+    "harness": "codex",
+    "effort": "high",
+    "maxTurns": 20,
+    "timeoutMs": 900000
+  },
+  "implementer": {
+    "instructions": "Implement the assigned slice and attach concrete verification.",
+    "harness": "claude-code",
+    "maxTurns": 30
+  },
+  "reviewer": {
+    "instructions": "Review independently. Report defects with file and evidence references.",
+    "harness": "codex",
+    "effort": "high"
+  }
+}
+```
+
+A workflow selects a frozen profile:
+
+```js
+export default async ({ agent, evidence }) => {
+  const result = await agent("Implement the scoped change", {
+    specialist: "implementer",
+  });
+  const review = await agent(`Review this result:\n${result}`, {
+    specialist: "reviewer",
+  });
+  evidence({
+    kind: "review",
+    status: "passed",
+    label: "Independent review complete",
+    acceptanceIds: ["review"],
+  });
+  return { result, review };
+};
+```
+
+Instructions and defaults are copied into the private supervisor intent. Each
+workflow run freezes that same map in its run manifest, so a parked run resumes
+under exactly the team contract it started with. The original team file may be
+moved or edited without changing existing goals.
+
+## Create the graph and goal
+
+Durable-work dependencies point from a consumer to its prerequisites. Create
+leaves first and the final root last:
+
+```bash
+harn work create "Implement" ./workflows/implement.mjs \
+  --objective "Produce the scoped implementation" --id work-implement
+
+harn work create "Verify" ./workflows/verify.mjs \
+  --objective "Verify the implementation" \
+  --depends-on work-implement --id work-verify
+
+harn supervisor create work-verify --team ./team.json \
+  --id goal-release --max-runtime-ms 14400000
+```
+
+The supervisor intent is private and immutable. It freezes the root, the full
+team, automation decisions, and these defaults:
+
+| Limit | Default | Meaning |
+| --- | ---: | --- |
+| `max_cycles` | 50 | Scheduling/reconciliation cycles per `run` invocation |
+| `max_runtime_ms` | 14,400,000 | Four-hour foreground wall-time ceiling |
+| `max_parallel_work` | 1 | Work workflows running at once |
+| `max_total_attempts` | 100 | Attempt budget across the complete graph |
+| `max_agents_per_work` | 20 | Child-agent ceiling inside one work workflow |
+| `agent_concurrency` | 4 | Child concurrency inside one work workflow |
+
+The maximum simultaneous children is `max_parallel_work × agent_concurrency`.
+Work items retain their own stricter attempt limits.
+
+## Tick and run
+
+```bash
+harn supervisor tick goal-release --subscription-only
+harn supervisor run goal-release --subscription-only --policy ./policy.jsonc
+```
+
+`tick` performs at most one cycle. It is useful for schedulers, tests, and
+stepwise inspection. `run` repeats in the foreground until one of these stop
+conditions is reconstructed:
+
+- the root reaches explicitly accepted `succeeded`;
+- work needs an unresolved approval or explicit review;
+- blocked work is not authorized for retry, or its attempt limit is exhausted;
+- the graph-wide attempt, cycle, or wall-time limit is exhausted;
+- a cycle produces no durable state change;
+- no legal progress action remains.
+
+Process loss does not erase the goal. Restart `supervisor run`; work attempt
+receipts, workflow journals, approvals, proofs, and accepted dependencies
+determine where it continues. A private exclusive lease prevents two
+supervisors from driving the same goal concurrently.
+
+Standard workflow host options remain available: `--harness`, `--cwd`,
+`--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
+`--approval-to`.
+
+## Automation policy
+
+Automation fails closed by default:
+
+- Passing proof stops in `in_review`. `--accept-passing-proof` authorizes the
+  supervisor to append an explicit acceptance event as its own actor.
+- A resolved approval resumes the same attempt by default. Use
+  `--no-resume-approved` to require a separate invocation.
+- Failed work stops blocked. `--retry-blocked` authorizes bounded retry, still
+  constrained by work-level and goal-wide attempt ceilings.
+
+These choices are immutable goal intent, not runtime convenience flags. Create
+a new supervisor when the automation authority must change.
+
+## Initial boundary
+
+The first schema supervises a static local dependency closure. It does not yet
+let a planner append new work, maintain a mutable kanban board, or create
+worktrees and sandboxes. `--isolation` declares a boundary the host already
+created. Dynamic planning and host-created isolation can be added above this
+restartable scheduling contract without weakening its stop conditions.

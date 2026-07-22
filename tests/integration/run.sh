@@ -59,6 +59,7 @@ check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
 check "harn --help mentions harness" "$HARN --help" "harness"
 check "harn --help mentions durable work" "$HARN --help" "work"
+check "harn --help mentions supervisor" "$HARN --help" "supervisor"
 
 # 2. harn doctor
 check "harn doctor reports node check" "$HARN doctor" "node"
@@ -94,20 +95,25 @@ check "harn work --help mentions reconcile" "$HARN work --help" "reconcile"
 check "harn work --help mentions explicit retry" "$HARN work --help" "retry"
 check "harn work list starts empty" "$HARN work list" "no durable work"
 
-# 7. harn web --help mentions all subcommands
+# 7. harn supervisor exposes bounded goal execution
+check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"
+check "harn supervisor --help mentions run" "$HARN supervisor --help" "run"
+check "harn supervisor list starts empty" "$HARN supervisor list" "no durable supervisors"
+
+# 8. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
 check "harn web --help mentions build" "$HARN web --help" "build"
 check "harn web --help mentions start" "$HARN web --help" "start"
 
-# 8. harn backup --help mentions subcommands
+# 9. harn backup --help mentions subcommands
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 9. harn sync --help mentions subcommands
+# 10. harn sync --help mentions subcommands
 check "harn sync --help mentions push" "$HARN sync --help" "push"
 check "harn sync --help mentions pull" "$HARN sync --help" "pull"
 
-# 10. Error path: harn backup init without restic surfaces a structured error
+# 11. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1

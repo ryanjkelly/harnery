@@ -51,6 +51,7 @@ import {
   workflowScriptDigest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
+import { normalizeWorkflowSpecialists, resolveSpecialistAssignment } from "./specialists.ts";
 import type {
   AgentOpts,
   EngineOpts,
@@ -175,6 +176,8 @@ async function executeWorkflow(
   const log = opts.onLog ?? ((line: string) => process.stderr.write(`${line}\n`));
   const defaultHarness: HarnessName =
     frozen?.default_harness ?? opts.defaultHarness ?? "claude-code";
+  const specialists =
+    frozen?.specialists ?? (resumeState ? {} : normalizeWorkflowSpecialists(opts.specialists));
   const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
   const networkAccess = frozen?.network_access ?? opts.networkAccess ?? "unknown";
   const policy =
@@ -210,6 +213,7 @@ async function executeWorkflow(
           isolation,
           network_access: networkAccess,
           policy: policy ? (policy as NormalizedPolicy) : undefined,
+          specialists,
         },
       },
     });
@@ -415,7 +419,10 @@ async function executeWorkflow(
     return decision;
   };
 
-  const agent = async (prompt: string, agentOpts: AgentOpts = {}): Promise<unknown> => {
+  const agent = async (prompt: string, requestedOpts: AgentOpts = {}): Promise<unknown> => {
+    const assignment = resolveSpecialistAssignment(specialists, prompt, requestedOpts);
+    const agentOpts = assignment.opts;
+    const assignmentPrompt = assignment.prompt;
     let reservedForDispatch = 0;
     let spawnCountClaimed = false;
     const harness = agentOpts.harness ?? defaultHarness;
@@ -433,6 +440,7 @@ async function executeWorkflow(
       id,
       label: proofLabel,
       stage: currentStage || undefined,
+      specialist: agentOpts.specialist,
       harness,
       model: agentOpts.model,
       status: "failed",
@@ -443,7 +451,7 @@ async function executeWorkflow(
 
     // Call identity for resume: same stage + harness + model + effort + turns + schema
     // + ORIGINAL prompt → same key. Retry-mutated prompts never enter the key.
-    const key = agentCallKey(currentStage, harness, agentOpts, prompt);
+    const key = agentCallKey(currentStage, harness, agentOpts, assignmentPrompt);
     const cached = resumeCache.get(key);
     if (cached) {
       // Exact-run replay skips dispatch authorization because no dispatch
@@ -458,6 +466,7 @@ async function executeWorkflow(
         label,
         key,
         harness,
+        specialist: agentOpts.specialist ?? null,
         model: agentOpts.model ?? null,
         kind: cached.kind,
       });
@@ -478,7 +487,7 @@ async function executeWorkflow(
         max_attempts: maxAttempts,
         max_turns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
         timeout_ms: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        prompt_bytes: Buffer.byteLength(prompt),
+        prompt_bytes: Buffer.byteLength(assignmentPrompt),
         isolation,
         network_access: networkAccess,
         current_cost_usd: round4(costUsd + reservedCostUsd),
@@ -594,12 +603,13 @@ async function executeWorkflow(
         label,
         key,
         harness,
+        specialist: agentOpts.specialist ?? null,
         model: agentOpts.model ?? null,
         effort: agentOpts.effort ?? null,
       });
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${harness}] ${label}`);
 
-      let attemptPrompt = prompt;
+      let attemptPrompt = assignmentPrompt;
       let last: SpawnResult | null = null;
       let agentCostUsd = 0;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -671,7 +681,7 @@ async function executeWorkflow(
         // Feed the validation failure back verbatim — the retry prompt carries
         // exactly what was wrong, which is what makes bounded retry converge.
         attemptPrompt =
-          `${prompt}\n\nYour previous reply failed validation:\n` +
+          `${assignmentPrompt}\n\nYour previous reply failed validation:\n` +
           `${problems.map((p) => `  - ${p}`).join("\n")}\n` +
           `Reply with ONLY the corrected JSON object. No prose, no code fences.`;
       }
@@ -761,6 +771,7 @@ async function executeWorkflow(
         acceptance: meta.acceptance,
         max_agents: maxAgents,
         concurrency,
+        specialists: Object.keys(specialists),
         policy: policy ? { name: policy.name, sha256: policyDigest(policy) } : null,
         isolation,
         network_access: networkAccess,
@@ -889,15 +900,17 @@ function agentCallKey(
   agentOpts: AgentOpts,
   prompt: string,
 ): string {
-  const basis = JSON.stringify([
+  const parts: unknown[] = [
     stage,
     harness,
     agentOpts.model ?? null,
     agentOpts.effort ?? null,
     agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
     agentOpts.schema ?? null,
-    prompt,
-  ]);
+  ];
+  if (agentOpts.specialist) parts.push(agentOpts.specialist);
+  parts.push(prompt);
+  const basis = JSON.stringify(parts);
   return createHash("sha256").update(basis).digest("hex").slice(0, 16);
 }
 

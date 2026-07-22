@@ -82,6 +82,7 @@ export interface WorkflowAgentProof {
   id: string;
   label: string;
   stage?: string;
+  specialist?: string;
   harness: HarnessName;
   model?: string;
   status: "succeeded" | "failed" | "cached";
@@ -210,6 +211,9 @@ export interface StageSchema {
 }
 
 export interface AgentOpts {
+  /** Frozen specialist profile whose instructions and defaults wrap this
+   * assignment. The host supplies profiles through EngineOpts.specialists. */
+  specialist?: string;
   /** Stage gate: when present, the agent's reply must strict-parse as JSON and
    * validate; the engine retries with the validation error appended, up to
    * `maxAttempts`. Without it, `agent()` resolves to the raw reply text. */
@@ -238,6 +242,18 @@ export interface AgentOpts {
  * Codex, and Cursor; consumers may register another adapter without widening
  * a package-owned union first. */
 export type HarnessName = string;
+
+/** Durable role defaults supplied by a goal supervisor or embedding host.
+ * Profiles are frozen into a workflow run manifest before the first spawn. */
+export interface WorkflowSpecialistProfile {
+  instructions: string;
+  harness?: HarnessName;
+  model?: string;
+  effort?: string;
+  maxAttempts?: number;
+  timeoutMs?: number;
+  maxTurns?: number;
+}
 
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
@@ -309,6 +325,8 @@ export interface EngineOpts {
   spawners: Readonly<Record<HarnessName, Spawner | undefined>>;
   /** Harness used when an agent() call doesn't name one (default "claude-code"). */
   defaultHarness?: HarnessName;
+  /** Named specialist roles available to agent(..., { specialist }). */
+  specialists?: Readonly<Record<string, WorkflowSpecialistProfile>>;
   /** Resume: run id of a prior run whose journal supplies cached results.
    * agent() calls whose (stage, prompt, model, maxTurns, schema) key matches a
    * completed prior agent return the journaled result without spawning. */

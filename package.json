@@ -77,6 +77,16 @@
       "types": "./dist/core/work/read.d.ts",
       "import": "./dist/core/work/read.js"
     },
+    "./core/supervisor": {
+      "bun": "./src/core/supervisor/index.ts",
+      "types": "./dist/core/supervisor/index.d.ts",
+      "import": "./dist/core/supervisor/index.js"
+    },
+    "./core/supervisor/state": {
+      "bun": "./src/core/supervisor/read.ts",
+      "types": "./dist/core/supervisor/read.d.ts",
+      "import": "./dist/core/supervisor/read.js"
+    },
     "./core/policy": {
       "bun": "./src/core/policy/index.ts",
       "types": "./dist/core/policy/index.d.ts",

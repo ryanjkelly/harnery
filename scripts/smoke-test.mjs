@@ -122,6 +122,31 @@ try {
   }
   log("durable work CLI OK");
 
+  // A durable supervisor must freeze a team around packed durable work.
+  log("checking durable supervisor CLI boots ...");
+  const teamFile = join(workdir, "team.json");
+  writeFileSync(
+    teamFile,
+    JSON.stringify({ reviewer: { instructions: "Review the assignment carefully." } }),
+  );
+  const supervisorCreateOut = run([
+    "supervisor",
+    "create",
+    "work-smoke",
+    "--team",
+    teamFile,
+    "--id",
+    "goal-smoke",
+  ]);
+  if (!/goal-smoke/.test(supervisorCreateOut) || !/ready/.test(supervisorCreateOut)) {
+    fail("supervisor create did not produce a ready durable goal");
+  }
+  const supervisorListOut = run(["supervisor", "list"]);
+  if (!/goal-smoke/.test(supervisorListOut) || !/Package smoke/.test(supervisorListOut)) {
+    fail("supervisor list did not read the packed durable goal");
+  }
+  log("durable supervisor CLI OK");
+
   // outline on PHP: works without the `typescript` dep.
   log("checking `outline` on a PHP file ...");
   const phpFile = join(workdir, "sample.php");
@@ -191,6 +216,27 @@ try {
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
   log("harnery/core/work import OK");
+
+  log("checking public `harnery/core/supervisor` import ...");
+  const supervisorProbe = join(workdir, "supervisor-import.mjs");
+  writeFileSync(
+    supervisorProbe,
+    [
+      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, createSupervisor, readSupervisor, runSupervisor } from "harnery/core/supervisor";',
+      'if (SUPERVISOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor schema version");',
+      'for (const fn of [createSupervisor, readSupervisor, runSupervisor]) {',
+      '  if (typeof fn !== "function") throw new Error("supervisor function missing");',
+      "}",
+      'const readonly = await import("harnery/core/supervisor/state");',
+      'if (typeof readonly.readSupervisor !== "function" || "runSupervisor" in readonly) throw new Error("read-only supervisor state export invalid");',
+    ].join("\n"),
+  );
+  execFileSync(nodePath, [supervisorProbe], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
+  log("harnery/core/supervisor import OK");
 
   log("checking public `harnery/core/policy` import ...");
   const policyProbe = join(workdir, "policy-import.mjs");
