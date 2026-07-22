@@ -53,6 +53,7 @@ import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
 import { registerTokensCommand } from "./commands/tokens.ts";
 import { registerTunnelCommand } from "./commands/tunnel.ts";
 import { registerWebCommand } from "./commands/web.ts";
+import { registerWorkCommand } from "./commands/work.ts";
 import { registerWorkflowCommand } from "./commands/workflow.ts";
 
 export interface HarneryContextOpts {
@@ -287,6 +288,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerClaudeDesktopCommand(program, emit);
   registerSyncCommand(program, emit);
   registerWorkflowCommand(program, emit);
+  registerWorkCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);
 
   return program;

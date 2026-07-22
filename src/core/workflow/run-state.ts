@@ -31,6 +31,7 @@ const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
 export interface WorkflowRunManifest {
   schema_version: typeof WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION;
   run_id: string;
+  work_item_id?: string;
   name: string;
   started_at: string;
   script: { path: string; sha256: string };
@@ -97,6 +98,8 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
   if (
     manifest.schema_version !== WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION ||
     manifest.run_id !== runId ||
+    (manifest.work_item_id !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(manifest.work_item_id)) ||
     typeof manifest.name !== "string" ||
     manifest.name.length === 0 ||
     manifest.name.length > 200 ||

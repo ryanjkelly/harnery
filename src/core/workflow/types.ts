@@ -147,6 +147,8 @@ export interface WorkflowProof {
   schema_version: typeof WORKFLOW_PROOF_SCHEMA_VERSION;
   run: {
     id: string;
+    /** Durable objective this execution attempt belongs to, when linked. */
+    work_item_id?: string;
     name: string;
     status: WorkflowRunStatus;
     started_at: string;
@@ -315,6 +317,10 @@ export interface EngineOpts {
    * approval has been resolved. The frozen run manifest supplies execution
    * options and the original repository-before snapshot. */
   resumeRunId?: string;
+  /** Stable id for a new run allocated by a durable-work host. */
+  runId?: string;
+  /** Durable objective this execution attempt belongs to. */
+  workItemId?: string;
   /** Total-agent ceiling for the run (default 50): the runaway backstop. */
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */
@@ -357,6 +363,7 @@ export interface EngineOpts {
 
 export interface RunReport {
   runId: string;
+  workItemId?: string;
   name: string;
   /** What the script's default export returned. */
   result: unknown;

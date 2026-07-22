@@ -58,6 +58,7 @@ export interface NormalizedWorkflowMeta {
 
 export interface BuildWorkflowProofInput {
   runId: string;
+  workItemId?: string;
   meta: NormalizedWorkflowMeta;
   status: "succeeded" | "failed";
   startedAt: string;
@@ -213,6 +214,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
     run: {
       id: input.runId,
+      work_item_id: input.workItemId,
       name: input.meta.name,
       status: input.status,
       started_at: input.startedAt,

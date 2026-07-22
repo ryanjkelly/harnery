@@ -35,7 +35,7 @@ import {
   policyDigest,
   summarizePolicyRequest,
 } from "../policy/index.ts";
-import { createWorkflowApproval } from "./approvals.ts";
+import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import {
   buildWorkflowProof,
@@ -101,12 +101,26 @@ export class WorkflowParkedError extends Error {
 }
 
 export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise<RunReport> {
+  if (opts.runId && opts.resumeRunId) {
+    throw new Error("runId and resumeRunId are mutually exclusive");
+  }
+  if (opts.runId) assertWorkflowRunId(opts.runId);
+  if (opts.workItemId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(opts.workItemId)) {
+    throw new Error(`invalid work item id ${JSON.stringify(opts.workItemId)}`);
+  }
   if (opts.resumeRunId && opts.resumeFrom) {
     throw new Error("resumeRunId and resumeFrom are mutually exclusive");
   }
   const resumeState = opts.resumeRunId
     ? assertWorkflowRunResumable(opts.coordRoot, opts.resumeRunId)
     : undefined;
+  if (
+    resumeState !== undefined &&
+    opts.workItemId !== undefined &&
+    resumeState.manifest.work_item_id !== opts.workItemId
+  ) {
+    throw new Error(`workflow run ${opts.resumeRunId} belongs to a different work item`);
+  }
   const absScript = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
   if (resumeState) {
     if (resolve(resumeState.manifest.script.path) !== resolve(absScript)) {
@@ -145,6 +159,7 @@ async function executeWorkflow(
 
   const runId =
     opts.resumeRunId ??
+    opts.runId ??
     `wf-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const runDir = join(opts.coordRoot, ".harnery", "workflows", runId);
   mkdirSync(runDir, { recursive: true });
@@ -178,6 +193,7 @@ async function executeWorkflow(
       manifest: {
         schema_version: 1,
         run_id: runId,
+        work_item_id: opts.workItemId,
         name,
         started_at: startedAt,
         script: { path: absScript, sha256: workflowScriptDigest(absScript) },
@@ -739,6 +755,7 @@ async function executeWorkflow(
     } else {
       journal("run.start", {
         name,
+        work_item_id: opts.workItemId ?? null,
         script: absScript,
         objective: meta.objective ?? null,
         acceptance: meta.acceptance,
@@ -763,6 +780,7 @@ async function executeWorkflow(
     try {
       proof = buildWorkflowProof({
         runId,
+        workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
         meta,
         status: "succeeded",
         startedAt,
@@ -795,6 +813,7 @@ async function executeWorkflow(
     }
     const report: RunReport = {
       runId,
+      workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
       name,
       result,
       agentsSpawned,
@@ -827,6 +846,7 @@ async function executeWorkflow(
     try {
       const proof = buildWorkflowProof({
         runId,
+        workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
         meta,
         status: "failed",
         startedAt,
