@@ -279,7 +279,13 @@ function safeTarget(value: unknown): unknown {
     const url = new URL(value);
     return `${url.origin}${url.pathname}`;
   } catch {
-    return value.replace(/[?#].*$/, "");
+    const query = value.indexOf("?");
+    const fragment = value.indexOf("#");
+    const boundary = Math.min(
+      query === -1 ? value.length : query,
+      fragment === -1 ? value.length : fragment,
+    );
+    return value.slice(0, boundary);
   }
 }
 

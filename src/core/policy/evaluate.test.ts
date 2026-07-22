@@ -120,6 +120,17 @@ describe("host policy", () => {
     expect(request.target).toBe("https://example.com/path");
   });
 
+  test("receipt summaries strip adversarial non-URL fragments in linear time", () => {
+    const request = summarizePolicyRequest({
+      phase: "external_mutation",
+      action: "publish release",
+      isolation: "shared",
+      network_access: "enabled",
+      target: `/registry/package${"#".repeat(100_000)}?token=secret`,
+    });
+    expect(request.target).toBe("/registry/package");
+  });
+
   test("policy files accept JSONC and resolve paths relative to the file", () => {
     const root = join(tmpdir(), `policy-file-${process.pid}-${Date.now()}`);
     mkdirSync(root, { recursive: true });
