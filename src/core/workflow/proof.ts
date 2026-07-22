@@ -203,6 +203,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
   const agents = input.agents.map((agent) => ({
     ...agent,
     label: clipped(agent.label, MAX_LABEL_CHARS),
+    specialist: clippedOptional(agent.specialist, MAX_LABEL_CHARS),
     model: clippedOptional(agent.model, MAX_LABEL_CHARS),
     session_id: clippedOptional(agent.session_id, MAX_REF_CHARS),
     error: clippedOptional(agent.error, MAX_SUMMARY_CHARS),

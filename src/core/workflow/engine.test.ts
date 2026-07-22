@@ -230,6 +230,91 @@ describe("runWorkflow", () => {
     expect(requests[1]?.effort).toBe("low");
   });
 
+  test("specialist profiles freeze role instructions and dispatch defaults", async () => {
+    const requests: SpawnRequest[] = [];
+    const spawner: Spawner = async (req) => {
+      requests.push(req);
+      return okSpawn("reviewed");
+    };
+    const script = writeScript(`
+      export default async ({ agent }) => agent("Inspect the patch", { specialist: "reviewer" });
+    `);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { codex: spawner },
+      specialists: {
+        reviewer: {
+          instructions: "You are the independent reviewer. Report concrete defects.",
+          harness: "codex",
+          model: "review-model",
+          effort: "high",
+          maxTurns: 12,
+          timeoutMs: 45_000,
+        },
+      },
+      ...quiet,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.prompt).toStartWith("You are the independent reviewer");
+    expect(requests[0]?.prompt).toContain("Assignment:\nInspect the patch");
+    expect(requests[0]?.model).toBe("review-model");
+    expect(requests[0]?.effort).toBe("high");
+    expect(requests[0]?.maxTurns).toBe(12);
+    expect(requests[0]?.timeoutMs).toBe(45_000);
+    const manifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
+    );
+    expect(manifest.execution.specialists.reviewer.instructions).toContain("independent reviewer");
+    const proof = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", report.runId, "proof.json"), "utf8"),
+    );
+    expect(proof.agents[0].specialist).toBe("reviewer");
+  });
+
+  test("specialist identity participates in resume caching and unknown roles fail closed", async () => {
+    let calls = 0;
+    const spawner: Spawner = async () => {
+      calls++;
+      return okSpawn("done");
+    };
+    const script = writeScript(`
+      export default async ({ agent }) => agent("Inspect", { specialist: "reviewer" });
+    `);
+    const first = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { codex: spawner },
+      specialists: { reviewer: { instructions: "Review version one", harness: "codex" } },
+      ...quiet,
+    });
+    const changed = await runWorkflow(
+      writeScript(`
+      export default async ({ agent }) => agent("Inspect", { specialist: "reviewer" });
+    `),
+      {
+        coordRoot: root,
+        spawners: { codex: spawner },
+        resumeFrom: first.runId,
+        specialists: { reviewer: { instructions: "Review version two", harness: "codex" } },
+        ...quiet,
+      },
+    );
+    expect(changed.agentsCached).toBe(0);
+    expect(calls).toBe(2);
+    await expect(
+      runWorkflow(
+        writeScript(`
+        export default async ({ agent }) => agent("Inspect", { specialist: "missing" });
+      `),
+        {
+          coordRoot: root,
+          spawners: { codex: spawner },
+          specialists: { reviewer: { instructions: "Review", harness: "codex" } },
+          ...quiet,
+        },
+      ),
+    ).rejects.toThrow(/specialist "missing" is not configured/);
+  });
+
   test("spawn-level failure retries, then surfaces the spawn error", async () => {
     let calls = 0;
     const spawner: Spawner = async () => {

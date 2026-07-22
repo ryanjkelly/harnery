@@ -22,6 +22,8 @@ import {
   policyDigest,
 } from "../policy/index.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
+import { normalizeWorkflowSpecialists } from "./specialists.ts";
+import type { WorkflowSpecialistProfile } from "./types.ts";
 
 export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -48,6 +50,7 @@ export interface WorkflowRunManifest {
     isolation: PolicyIsolation;
     network_access: PolicyNetworkAccess;
     policy?: NormalizedPolicy;
+    specialists?: Record<string, WorkflowSpecialistProfile>;
   };
 }
 
@@ -253,8 +256,22 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
     value.approval_addressee.length <= 200 &&
     ["shared", "worktree", "sandbox", "remote"].includes(value.isolation) &&
     ["enabled", "disabled", "unknown"].includes(value.network_access) &&
+    validSpecialists(value.specialists) &&
     validFrozenPolicy(value.policy, value.cwd)
   );
+}
+
+function validSpecialists(
+  specialists: Record<string, WorkflowSpecialistProfile> | undefined,
+): boolean {
+  if (specialists === undefined) return true;
+  try {
+    return (
+      JSON.stringify(normalizeWorkflowSpecialists(specialists)) === JSON.stringify(specialists)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function validFrozenPolicy(policy: NormalizedPolicy | undefined, cwd: string): boolean {

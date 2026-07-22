@@ -1,0 +1,109 @@
+---
+title: "0025: Goal supervision is an explicit bounded host"
+description: "ADR: compose durable work into a restartable specialist team loop without turning reconciliation into an autonomous daemon."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, workflow specialist profiles)
+
+## Context
+
+Harnery can run a bounded multi-agent workflow and can preserve a durable work
+objective across attempts. It does not yet connect several dependent work
+items into a foreground loop that repeatedly discovers ready work, dispatches
+it, reviews proof, and stops for governance or safety limits.
+
+Putting that behavior inside the work reconciler would break its observational
+contract. A read or repair command could unexpectedly spend usage, mutate a
+repository, repeat an external side effect, or accept work. Keeping one model
+session alive indefinitely would also make correctness depend on context
+compaction and process lifetime rather than durable records.
+
+The missing layer is an explicitly invoked host above durable work. It needs a
+frozen team contract, objective-level bounds, restartable projection, and clear
+stop reasons. It does not need a mandatory daemon, mutable task board, or
+unbounded recursive agents.
+
+## Decision
+
+Add the product-tier `harnery/core/supervisor` module and `harn supervisor`
+command. A supervisor intent is created once under
+`.harnery/supervisors/<goal-id>/intent.json` with private permissions. It
+freezes:
+
+- one root durable-work ID whose immutable dependency closure is the goal graph;
+- named specialist profiles with bounded instructions and optional harness,
+  model, effort, turn, timeout, and schema-retry defaults;
+- run limits for supervisor cycles, wall time, graph-wide attempts, parallel
+  work items, agents per work item, and child-agent concurrency;
+- explicit automation policy for accepting passing proof, resuming resolved
+  approvals, and retrying blocked work.
+
+Workflow `agent()` calls may name a specialist. The engine resolves the frozen
+profile before dispatch, prepends its instructions to the assignment, records
+the specialist in the journal and proof-facing agent record, and includes the
+resolved profile in call identity. A workflow run manifest freezes the complete
+specialist map so approval resume cannot pick up changed team behavior.
+
+`harn supervisor tick <goal-id>` performs at most one bounded cycle.
+`harn supervisor run <goal-id>` repeats cycles in the foreground. Each cycle:
+
+1. reconstructs the root dependency closure from work intent and reconciles it;
+2. stops for pending approvals, reviews not authorized for automatic
+   acceptance, blocked work not authorized for retry, cancellation, malformed
+   evidence, exhausted budgets, or lack of progress;
+3. records authorized acceptance or selects ready/resumable/retryable work;
+4. dispatches at most the frozen parallel-work limit and lets each work lease
+   serialize its own attempt;
+5. reconstructs all state again from work journals and proof before deciding
+   whether another cycle is legal.
+
+The supervisor has an exclusive crash-recoverable lease, but no mutable status
+file. Its projection and reports are derived from immutable supervisor intent
+plus the work ledger. Restarting `run` after a process loss continues from
+those records. It never keeps a model process alive merely to preserve role
+identity; specialist roles are durable configuration and child sessions remain
+bounded leaf processes.
+
+Expose the same read-only projection at `/supervisors` and
+`/supervisors/<goal-id>`. The dashboard imports a state-only package subpath so
+rendering goal state does not bundle the workflow execution engine.
+
+Automation defaults fail closed. Passing proof still enters `in_review` unless
+the immutable supervisor policy explicitly authorizes acceptance. Blocked work
+is not retried unless the intent explicitly authorizes it, and the work item's
+own attempt ceiling plus the goal-wide attempt ceiling still apply. Resolved
+approval resume is separately configurable and never bypasses the recorded
+approval decision.
+
+## Alternatives considered
+
+- **Make reconciliation execute its `next_action`.** Rejected because callers
+  rely on reconciliation being safe to run for inspection and recovery.
+- **Run an always-on background daemon.** Rejected as a required runtime. A
+  host may schedule the foreground command, but ledger correctness cannot
+  depend on daemon liveness.
+- **Use one long-lived model session as the supervisor.** Rejected because
+  process death and context compaction would become state-loss mechanisms.
+- **Let a planner dynamically rewrite the graph in the first schema.**
+  Deferred. The initial static dependency closure is auditable and enough to
+  prove safe scheduling; append-only graph expansion needs its own provenance
+  and cycle semantics.
+- **Retry every failed attempt automatically.** Rejected as the default because
+  repeated execution may duplicate side effects or repeat a deterministic
+  defect. Explicit immutable policy can authorize bounded retry.
+- **Allow specialist profiles to remain runtime-only.** Rejected because a
+  parked workflow could resume under changed instructions or model settings.
+
+## Result and gotchas
+
+- Goal continuity lives in private records rather than model context.
+- The initial graph is static: create prerequisite work first, then the root,
+  then the supervisor intent. Dynamic planning is a later additive layer.
+- Parallel work items each enforce their own child concurrency, so the maximum
+  simultaneous child count is `parallel_work × agent_concurrency`.
+- `isolation` remains a host declaration; the supervisor does not create a
+  worktree or sandbox. Shared-checkout children still use Harnery's normal
+  coordination and claim guards.
+- Automatic acceptance means the supervisor writes an explicit governance
+  event as its named actor after fully passing proof; it is not a reconciler
+  side effect or an inference from process exit.

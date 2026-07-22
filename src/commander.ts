@@ -48,6 +48,7 @@ import { registerReadCommand } from "./commands/read.ts";
 import { registerRelayCommand } from "./commands/relay.ts";
 import { registerScratchCommand } from "./commands/scratch.ts";
 import { registerSessionCommand } from "./commands/session.ts";
+import { registerSupervisorCommand } from "./commands/supervisor.ts";
 import { registerSyncCommand } from "./commands/sync.ts";
 import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
 import { registerTokensCommand } from "./commands/tokens.ts";
@@ -289,6 +290,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerSyncCommand(program, emit);
   registerWorkflowCommand(program, emit);
   registerWorkCommand(program, emit);
+  registerSupervisorCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);
 
   return program;
