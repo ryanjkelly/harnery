@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0
+
+### Minor Changes
+
+- ea47a1d: Add a durable work ledger and one-shot reconciler above workflow attempts. Work items preserve immutable objectives, dependencies, bounded attempt history, approval parking, proof-derived review, and explicit acceptance across process restarts. The new `harn work` CLI, `harnery/core/work` export, workflow backlinks, and dashboard views expose the same reconstructable local state without silently starting, retrying, or completing work.
+
 ## 0.13.0
 
 ### Minor Changes
