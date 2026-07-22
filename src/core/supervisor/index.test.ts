@@ -739,6 +739,352 @@ describe("durable goal supervisor", () => {
     expect(invalid.plans[0]?.status).toBe("failed");
     expect(invalid.projection.state).toBe("budget_exhausted");
   });
+
+  test("creates an objective-first mission without inventing executable root work", () => {
+    const { root, passing } = fixture();
+    const record = createSupervisor({
+      coordRoot: root,
+      id: "goal-mission-initial",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      mission: {
+        objective: "Deliver the bounded mission",
+        acceptance: ["The mission outcome is independently verified"],
+        maxMilestones: 3,
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { delivery: { workflowPath: passing, root: true } },
+      },
+    });
+    expect(record.work).toEqual([]);
+    expect(record.projection.state).toBe("ready");
+    expect(record.projection.next_action).toBe("plan_initial");
+    expect(record.projection.milestones_completed).toBe(0);
+    expect(record.projection.milestones_remaining).toBe(3);
+    expect(record.intent.mission?.objective).toBe("Deliver the bounded mission");
+    expect(() =>
+      createSupervisor({
+        coordRoot: root,
+        id: "goal-mission-invalid",
+        specialists: {},
+      }),
+    ).toThrow("requires a mission and replanning policy");
+    expect(() =>
+      createSupervisor({
+        coordRoot: root,
+        id: "goal-mission-no-completion-slot",
+        specialists: { planner: { instructions: "Plan", harness: "codex" } },
+        mission: {
+          objective: "Use every milestone slot",
+          acceptance: ["The mission is complete"],
+          maxMilestones: 5,
+        },
+        replanning: {
+          plannerSpecialist: "planner",
+          maxReplans: 5,
+          templates: { delivery: { workflowPath: passing, root: true } },
+        },
+      }),
+    ).toThrow("must exceed max_milestones");
+  });
+
+  test("counts a supplied root as the first accepted mission milestone", async () => {
+    const { root, passing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "supplied-milestone",
+      title: "Supplied milestone",
+      objective: "Deliver the operator-supplied first milestone",
+      workflowPath: passing,
+    });
+    expect(() =>
+      createSupervisor({
+        coordRoot: root,
+        id: "goal-mission-missing-planner",
+        rootWorkId: "supplied-milestone",
+        specialists: { implementer: { instructions: "Implement", harness: "codex" } },
+        mission: {
+          objective: "Complete a supplied mission",
+          acceptance: ["The mission is complete"],
+        },
+      }),
+    ).toThrow("mission requires a replanning policy");
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-mission-supplied",
+      rootWorkId: "supplied-milestone",
+      specialists: {
+        planner: { instructions: "Reassess", harness: "codex" },
+        implementer: { instructions: "Implement", harness: "codex" },
+      },
+      mission: {
+        objective: "Complete a supplied mission",
+        acceptance: ["The mission is complete"],
+        maxMilestones: 3,
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { delivery: { workflowPath: passing, root: true } },
+      },
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mission-supplied",
+      engine: {
+        spawners: {
+          codex: async (request) => ({
+            ok: true,
+            text: request.prompt.includes("bounded replacement plan")
+              ? JSON.stringify({
+                  decision: "attention",
+                  rationale: "Further mission direction needs review",
+                  root: "",
+                  work: [],
+                })
+              : "supplied milestone delivered",
+            durationMs: 1,
+          }),
+        },
+        probeBilling,
+      },
+    });
+    expect(report.stop_reason).toBe("awaiting_attention");
+    expect(report.projection.milestones_completed).toBe(1);
+    expect(report.projection.milestones_remaining).toBe(2);
+    expect(readSupervisor(root, "goal-mission-supplied").plans[0]?.request.trigger).toBe(
+      "milestone",
+    );
+  });
+
+  test("refuses to declare an objective-first mission complete before milestone evidence", async () => {
+    const { root, passing } = fixture();
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-mission-premature",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      mission: {
+        objective: "Produce verified evidence",
+        acceptance: ["Evidence exists"],
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { delivery: { workflowPath: passing, root: true } },
+      },
+    });
+    await expect(
+      runSupervisor({
+        coordRoot: root,
+        goalId: "goal-mission-premature",
+        engine: {
+          spawners: {
+            codex: async () => ({
+              ok: true,
+              text: JSON.stringify({
+                decision: "complete",
+                rationale: "Nothing appears necessary",
+                root: "",
+                work: [],
+              }),
+              durationMs: 1,
+            }),
+          },
+          probeBilling,
+        },
+      }),
+    ).rejects.toThrow("only at a milestone boundary");
+    expect(readSupervisor(root, "goal-mission-premature").plans[0]?.status).toBe("failed");
+  });
+
+  test("keeps an objective-first attention decision quiescent until durable state changes", async () => {
+    const { root, passing } = fixture();
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-mission-attention",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      mission: {
+        objective: "Clarify a blocked mission",
+        acceptance: ["The mission outcome is verified"],
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        templates: { delivery: { workflowPath: passing, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const spawner: Spawner = async () => {
+      plannerCalls++;
+      return {
+        ok: true,
+        text: JSON.stringify({
+          decision: "attention",
+          rationale: "The operator must resolve an external dependency",
+          root: "",
+          work: [],
+        }),
+        durationMs: 1,
+      };
+    };
+    const engine = { spawners: { codex: spawner }, probeBilling };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mission-attention",
+      engine,
+    });
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mission-attention",
+      engine,
+    });
+    expect(first.stop_reason).toBe("awaiting_attention");
+    expect(second.stop_reason).toBe("awaiting_attention");
+    expect(second.projection.next_action).toBe("none");
+    expect(plannerCalls).toBe(1);
+  });
+
+  test("requires review for each mission plan and approves completion idempotently", async () => {
+    const { root, passing } = fixture();
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-mission-reviewed",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        implementer: { instructions: "Implement", harness: "codex" },
+      },
+      mission: {
+        objective: "Ship one reviewed milestone",
+        acceptance: ["The reviewed milestone satisfies the mission"],
+        maxMilestones: 2,
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 3,
+        templates: { delivery: { workflowPath: passing, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        plannerCalls++;
+        return {
+          ok: true,
+          text:
+            plannerCalls === 1
+              ? missionMilestoneProposal()
+              : JSON.stringify({
+                  decision: "complete",
+                  rationale: "Reviewed proof satisfies mission acceptance",
+                  root: "",
+                  work: [],
+                }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: "milestone delivered", durationMs: 1 };
+    };
+    const engine = { spawners: { codex: spawner }, probeBilling };
+    const initial = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mission-reviewed",
+      engine,
+    });
+    const initialPlanId = initial.projection.pending_plan_id!;
+    expect(initial.projection.next_action).toBe("review_plan");
+    expect(
+      approveSupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-mission-reviewed",
+        planId: initialPlanId,
+        actor: "reviewer",
+      }).status,
+    ).toBe("applied");
+
+    const boundary = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mission-reviewed",
+      engine,
+    });
+    const completionPlanId = boundary.projection.pending_plan_id!;
+    expect(boundary.projection.next_action).toBe("review_plan");
+    expect(readSupervisorPlan(root, "goal-mission-reviewed", completionPlanId).status).toBe(
+      "proposed",
+    );
+    const firstApproval = approveSupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-mission-reviewed",
+      planId: completionPlanId,
+      actor: "reviewer",
+    });
+    const repeatedApproval = approveSupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-mission-reviewed",
+      planId: completionPlanId,
+      actor: "reviewer",
+    });
+    expect(firstApproval.status).toBe("completed");
+    expect(repeatedApproval.status).toBe("completed");
+    expect(readSupervisor(root, "goal-mission-reviewed").projection.state).toBe("succeeded");
+  });
+
+  test("plans, executes, reassesses, and explicitly completes a bounded mission", async () => {
+    const { root, passing } = fixture();
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-mission-loop",
+      specialists: {
+        planner: { instructions: "Plan one milestone", harness: "codex" },
+        implementer: { instructions: "Execute the milestone", harness: "codex" },
+      },
+      mission: {
+        objective: "Ship one verified milestone",
+        acceptance: ["The milestone proof is accepted"],
+        maxMilestones: 2,
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        autoApply: true,
+        maxReplans: 3,
+        templates: { delivery: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        plannerCalls++;
+        return {
+          ok: true,
+          text:
+            plannerCalls === 1
+              ? missionMilestoneProposal()
+              : JSON.stringify({
+                  decision: "complete",
+                  rationale: "The accepted milestone satisfies mission acceptance",
+                  root: "",
+                  work: [],
+                }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: "milestone delivered", durationMs: 1 };
+    };
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mission-loop",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(report.stop_reason).toBe("succeeded");
+    expect(report.dispatches).toBe(1);
+    expect(report.acceptances).toBe(1);
+    expect(report.replans).toBe(2);
+    expect(report.plan_outcomes.map((plan) => plan.status)).toEqual(["applied", "completed"]);
+    expect(report.projection.milestones_completed).toBe(1);
+    expect(report.projection.state).toBe("succeeded");
+    expect(
+      readSupervisor(root, "goal-mission-loop").plans.map((plan) => plan.request.trigger),
+    ).toEqual(["initial", "milestone"]);
+  });
 });
 
 function replacementProposal(): string {
@@ -754,6 +1100,30 @@ function replacementProposal(): string {
         acceptance: ["The original goal is complete"],
         dependencies: [],
         template: "repair",
+      },
+    ],
+  });
+}
+
+function missionMilestoneProposal(): string {
+  return JSON.stringify({
+    decision: "apply",
+    rationale: "Start with the smallest independently verifiable milestone",
+    root: "delivery",
+    milestone: {
+      sequence: 1,
+      title: "Verified delivery",
+      objective: "Produce and verify the mission outcome",
+      acceptance: ["The milestone proof passes"],
+    },
+    work: [
+      {
+        key: "delivery",
+        title: "Deliver the milestone",
+        objective: "Produce the bounded mission outcome",
+        acceptance: ["The outcome is complete"],
+        dependencies: [],
+        template: "delivery",
       },
     ],
   });

@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { readWorkItem } from "../work/read.ts";
 import {
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
@@ -25,6 +26,7 @@ const EVENT_TYPES = new Set<SupervisorPlanEventType>([
   "plan.resumed",
   "plan.proposed",
   "plan.applied",
+  "plan.completed",
   "plan.rejected",
   "plan.attention",
   "plan.failed",
@@ -46,6 +48,8 @@ export function readSupervisorPlans(
       generation: 0,
       applied_work_ids: [],
       materialized_work_ids: [],
+      milestones_completed: 0,
+      completed: false,
     };
   }
   const entries = readdirSync(root, { withFileTypes: true })
@@ -64,6 +68,8 @@ export function readSupervisorPlans(
   }
   let activeRoot = originalRootWorkId;
   let generation = 0;
+  let milestonesCompleted = 0;
+  let completed = false;
   const appliedWork = new Set<string>();
   const materializedWork = new Set<string>();
   for (const plan of plans) {
@@ -76,14 +82,30 @@ export function readSupervisorPlans(
     if (plan.status !== "applied" || !plan.root_work_id) continue;
     activeRoot = plan.root_work_id;
     generation++;
+    if (
+      plan.proposal?.milestone &&
+      readWorkItem(coordRoot, plan.root_work_id).projection.state === "succeeded"
+    ) {
+      milestonesCompleted++;
+    }
     for (const workId of plan.work_ids) appliedWork.add(workId);
   }
+  const completedPlans = plans.filter((plan) => plan.status === "completed");
+  if (
+    completedPlans.length > 1 ||
+    (completedPlans.length === 1 && completedPlans[0] !== plans.at(-1))
+  ) {
+    throw new Error(`supervisor ${goalId} has invalid completion history`);
+  }
+  completed = completedPlans.length === 1;
   return {
     plans,
     active_root_work_id: activeRoot,
     generation,
     applied_work_ids: [...appliedWork],
     materialized_work_ids: [...materializedWork],
+    milestones_completed: milestonesCompleted,
+    completed,
     latest: plans.at(-1),
   };
 }
@@ -115,6 +137,10 @@ function deriveStatus(
   proposal: SupervisorPlanProposal | undefined,
 ): Pick<SupervisorPlanRecord, "status" | "approval_id" | "root_work_id" | "work_ids" | "reason"> {
   const latest = events.at(-1);
+  const completed = [...events].reverse().find((event) => event.event === "plan.completed");
+  if (completed) {
+    return { status: "completed", work_ids: [], reason: completed.reason };
+  }
   const applied = [...events].reverse().find((event) => event.event === "plan.applied");
   if (applied) {
     return {
@@ -180,6 +206,8 @@ function validateRequest(request: SupervisorPlanRequest, goalId: string, planId:
     !Number.isSafeInteger(request.sequence) ||
     request.sequence < 1 ||
     request.sequence > MAX_PLANS ||
+    (request.trigger !== undefined &&
+      !["initial", "recovery", "milestone"].includes(request.trigger)) ||
     typeof request.trigger_fingerprint !== "string" ||
     request.trigger_fingerprint.length < 1 ||
     request.trigger_fingerprint.length > 64_000 ||
@@ -195,7 +223,7 @@ function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: stri
   if (
     proposal.schema_version !== SUPERVISOR_PLAN_SCHEMA_VERSION ||
     proposal.plan_id !== planId ||
-    !["apply", "attention"].includes(proposal.decision) ||
+    !["apply", "complete", "attention"].includes(proposal.decision) ||
     typeof proposal.rationale !== "string" ||
     proposal.rationale.length < 1 ||
     proposal.rationale.length > 2_000 ||
@@ -206,6 +234,35 @@ function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: stri
     !validTimestamp(proposal.proposed_at)
   ) {
     throw new Error(`supervisor plan proposal ${planId} has an unsupported schema`);
+  }
+  if (proposal.milestone !== undefined) {
+    const milestone = proposal.milestone;
+    if (
+      !Number.isSafeInteger(milestone.sequence) ||
+      milestone.sequence < 1 ||
+      milestone.sequence > 20 ||
+      typeof milestone.title !== "string" ||
+      milestone.title.length < 1 ||
+      milestone.title.length > 200 ||
+      typeof milestone.objective !== "string" ||
+      milestone.objective.length < 1 ||
+      milestone.objective.length > 4_000 ||
+      !Array.isArray(milestone.acceptance) ||
+      milestone.acceptance.length < 1 ||
+      milestone.acceptance.length > 50 ||
+      milestone.acceptance.some(
+        (criterion) =>
+          typeof criterion !== "string" || criterion.length < 1 || criterion.length > 500,
+      )
+    ) {
+      throw new Error(`supervisor plan proposal ${planId} milestone is invalid`);
+    }
+  }
+  if (
+    (proposal.decision === "attention" || proposal.decision === "complete") &&
+    (proposal.root !== "" || proposal.work.length > 0 || proposal.milestone !== undefined)
+  ) {
+    throw new Error(`supervisor plan proposal ${planId} terminal decision contains work`);
   }
   for (const [index, spec] of proposal.work.entries()) {
     if (

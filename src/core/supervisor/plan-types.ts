@@ -35,10 +35,18 @@ export interface SupervisorPlanRequest {
   id: string;
   goal_id: string;
   sequence: number;
+  trigger?: "initial" | "recovery" | "milestone";
   trigger_fingerprint: string;
   prior_root_work_id: string;
   workflow_run_id: string;
   created_at: string;
+}
+
+export interface SupervisorPlanMilestone {
+  sequence: number;
+  title: string;
+  objective: string;
+  acceptance: string[];
 }
 
 export interface SupervisorPlanWorkSpec {
@@ -53,10 +61,11 @@ export interface SupervisorPlanWorkSpec {
 export interface SupervisorPlanProposal {
   schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
   plan_id: string;
-  decision: "apply" | "attention";
+  decision: "apply" | "complete" | "attention";
   rationale: string;
   root: string;
   work: SupervisorPlanWorkSpec[];
+  milestone?: SupervisorPlanMilestone;
   proposed_at: string;
 }
 
@@ -65,6 +74,7 @@ export type SupervisorPlanEventType =
   | "plan.resumed"
   | "plan.proposed"
   | "plan.applied"
+  | "plan.completed"
   | "plan.rejected"
   | "plan.attention"
   | "plan.failed";
@@ -88,6 +98,7 @@ export type SupervisorPlanStatus =
   | "resumable"
   | "proposed"
   | "applied"
+  | "completed"
   | "rejected"
   | "attention"
   | "failed";
@@ -109,6 +120,8 @@ export interface SupervisorPlanHistory {
   generation: number;
   applied_work_ids: string[];
   materialized_work_ids: string[];
+  milestones_completed: number;
+  completed: boolean;
   latest?: SupervisorPlanRecord;
 }
 

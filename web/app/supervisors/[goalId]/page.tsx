@@ -38,8 +38,25 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
           <h1 className="text-xl font-semibold">{intent.title}</h1>
         </div>
         <p className="mb-6 text-xs text-muted-foreground">
-          {intent.id} · active root {projection.root_work_id} · next: {projection.next_action}
+          {intent.id} · {projection.root_materialized ? `active root ${projection.root_work_id}` : "root pending initial plan"} · next: {projection.next_action}
         </p>
+
+        {intent.mission ? (
+          <section className="mb-8 rounded-lg border border-border bg-card p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold">Mission</h2>
+              <Badge variant="info">
+                milestone {projection.milestones_completed}/{intent.mission.max_milestones}
+              </Badge>
+            </div>
+            <p className="mt-2 text-sm">{intent.mission.objective}</p>
+            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+              {intent.mission.acceptance.map((criterion) => (
+                <li key={criterion}>{criterion}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <section className="mb-8 rounded-lg border border-border bg-card p-4">
           <h2 className="text-sm font-semibold">Current decision</h2>
@@ -67,15 +84,16 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
         {intent.replanning ? (
           <section className="mb-8">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold">Replanning history</h2>
+              <h2 className="text-sm font-semibold">Planning history</h2>
               <Badge variant={intent.replanning.auto_apply ? "warning" : "muted"}>
                 {intent.replanning.auto_apply ? "automatic application" : "review required"}
               </Badge>
             </div>
             {plans.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No replanning attempts. The planner runs only after the active graph has no legal
-                progress action.
+                {intent.mission
+                  ? "No planning attempts. The mission is ready for its initial milestone proposal."
+                  : "No replanning attempts. The planner runs only after the active graph has no legal progress action."}
               </p>
             ) : (
               <ul className="space-y-2">
@@ -87,7 +105,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge
                         variant={
-                          plan.status === "applied"
+                          plan.status === "applied" || plan.status === "completed"
                             ? "success"
                             : plan.status === "proposed" || plan.status === "awaiting_approval"
                               ? "warning"
@@ -100,7 +118,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                       </Badge>
                       <span className="font-medium">{plan.request.id}</span>
                       <span className="text-xs text-muted-foreground">
-                        generation request {plan.request.sequence}
+                        {plan.request.trigger ?? "recovery"} request {plan.request.sequence}
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
@@ -108,6 +126,11 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                       {plan.request.workflow_run_id}
                     </p>
                     {plan.reason ? <p className="mt-2 text-xs">{plan.reason}</p> : null}
+                    {plan.proposal?.milestone ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        milestone {plan.proposal.milestone.sequence}: {plan.proposal.milestone.title}
+                      </p>
+                    ) : null}
                     {plan.proposal?.work.length ? (
                       <p className="mt-2 text-xs text-muted-foreground">
                         {plan.proposal.work.length} proposed work item
@@ -171,6 +194,12 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
 
         <section className="mb-8">
           <h2 className="mb-2 text-sm font-semibold">Work graph</h2>
+          {work.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No executable work has been materialized. The initial plan must be proposed and
+              accepted first.
+            </p>
+          ) : (
           <ul className="space-y-2">
             {work.map(({ intent: workIntent, projection: workProjection }) => (
               <li
@@ -198,6 +227,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
               </li>
             ))}
           </ul>
+          )}
         </section>
 
         <section className="mb-8 rounded-lg border border-border bg-card p-4">

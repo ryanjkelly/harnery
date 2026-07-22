@@ -97,9 +97,13 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
 
       const before = graphFingerprint(record);
       let changed = false;
-      if (record.projection.next_action === "replan") {
+      if (
+        record.projection.next_action === "replan" ||
+        record.projection.next_action === "plan_initial" ||
+        record.projection.next_action === "plan_milestone"
+      ) {
         log(
-          `[${record.intent.title}] replan active graph generation ${record.projection.plan_generation}`,
+          `[${record.intent.title}] ${record.projection.next_action} at graph generation ${record.projection.plan_generation}`,
         );
         const plan = await runSupervisorPlanner({
           coordRoot,
@@ -117,6 +121,9 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
             `planner produced ${plan.status} plan ${plan.plan_id}`,
             record,
           );
+        }
+        if (record.projection.state === "succeeded") {
+          return report("succeeded", record.projection.reason, record);
         }
         if (record.projection.state !== "ready") {
           return report(stopForProjection(record.projection), record.projection.reason, record);

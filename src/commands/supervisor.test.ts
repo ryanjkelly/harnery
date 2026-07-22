@@ -31,5 +31,8 @@ describe("supervisor command", () => {
       "logs",
       "daemon",
     ]);
+    const create = command?.commands.find((candidate) => candidate.name() === "create");
+    expect(create?.registeredArguments[0]?.required).toBe(false);
+    expect(create?.options.map((option) => option.long)).toContain("--mission");
   });
 });

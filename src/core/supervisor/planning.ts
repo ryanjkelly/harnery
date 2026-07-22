@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { createWorkItem, readWorkItem } from "../work/index.ts";
 import {
   type EngineOpts,
+  readWorkflowProof,
   runWorkflow,
   WorkflowParkedError,
   workflowScriptDigest,
@@ -22,6 +23,7 @@ import { readSupervisorPlan, readSupervisorPlans } from "./plan-read.ts";
 import {
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
+  type SupervisorPlanMilestone,
   type SupervisorPlanOutcome,
   type SupervisorPlanProposal,
   type SupervisorPlanRequest,
@@ -60,6 +62,7 @@ export async function runSupervisorPlanner(
     generation: input.record.projection.plan_generation,
     work: input.record.work,
   });
+  const trigger = planTrigger(input.record);
   const resumable =
     history.latest?.status === "resumable" &&
     history.latest.request.trigger_fingerprint === triggerFingerprint &&
@@ -68,7 +71,13 @@ export async function runSupervisorPlanner(
       : undefined;
   const request = resumable
     ? resumable.request
-    : createPlanRequest(coordRoot, input.record, history.plans.length + 1, triggerFingerprint);
+    : createPlanRequest(
+        coordRoot,
+        input.record,
+        history.plans.length + 1,
+        triggerFingerprint,
+        trigger,
+      );
   const scriptPath = planScriptPath(coordRoot, input.record.intent.id, request.id);
   if (resumable) {
     appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
@@ -96,6 +105,7 @@ export async function runSupervisorPlanner(
       report.result,
       input.record,
       history.materialized_work_ids.length,
+      request.trigger ?? "recovery",
     );
     writeExclusiveJson(
       planProposalPath(coordRoot, input.record.intent.id, request.id),
@@ -157,8 +167,12 @@ export function applySupervisorPlanProposal(input: {
   const policy = input.record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${input.record.intent.id} does not allow replanning`);
   const plan = readSupervisorPlan(coordRoot, input.record.intent.id, input.planId);
-  if (plan.status === "applied") return outcome(plan);
-  if (plan.status !== "proposed" || !plan.proposal || plan.proposal.decision !== "apply") {
+  if (plan.status === "applied" || plan.status === "completed") return outcome(plan);
+  if (
+    plan.status !== "proposed" ||
+    !plan.proposal ||
+    !["apply", "complete"].includes(plan.proposal.decision)
+  ) {
     throw new Error(`supervisor plan ${input.planId} cannot be applied from ${plan.status}`);
   }
   if (plan.request.prior_root_work_id !== input.record.projection.root_work_id) {
@@ -176,7 +190,16 @@ export function applySupervisorPlanProposal(input: {
     plan.proposal,
     input.record,
     history.materialized_work_ids.filter((workId) => !workId.startsWith(`${input.planId}-`)).length,
+    plan.request.trigger ?? "recovery",
   );
+  if (proposal.decision === "complete") {
+    appendPlanEvent(coordRoot, input.record.intent.id, input.planId, {
+      event: "plan.completed",
+      actor: input.actor,
+      reason: input.reason ?? proposal.rationale,
+    });
+    return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, input.planId));
+  }
   const ids = new Map<string, string>();
   const created: string[] = [];
   for (const spec of proposal.work) {
@@ -268,6 +291,7 @@ function createPlanRequest(
   record: SupervisorRecord,
   sequence: number,
   triggerFingerprint: string,
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
 ): SupervisorPlanRequest {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
@@ -280,36 +304,47 @@ function createPlanRequest(
     id: planId,
     goal_id: record.intent.id,
     sequence,
+    trigger,
     trigger_fingerprint: triggerFingerprint,
     prior_root_work_id: record.projection.root_work_id,
     workflow_run_id: `${planId}-workflow`,
     created_at: new Date().toISOString(),
   };
+  const script = plannerScript(coordRoot, record, planId, trigger);
   const dir = planDir(coordRoot, record.intent.id, planId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   writeExclusiveJson(join(dir, "request.json"), request, "supervisor plan request");
-  const script = plannerScript(record, planId);
   writeExclusive(join(dir, "planner.mjs"), script, "supervisor planner script");
   return request;
 }
 
-function plannerScript(record: SupervisorRecord, planId: string): string {
+function plannerScript(
+  coordRoot: string,
+  record: SupervisorRecord,
+  planId: string,
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+): string {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
   const prompt = [
-    "You are producing a bounded replacement plan for a durable supervised goal.",
-    "The current graph is blocked and cannot make a legal scheduling step.",
-    "Return decision=apply with a new immutable root graph, or decision=attention when human judgment is required.",
-    "Never claim work is complete. Never request a workflow outside the frozen template catalog.",
+    "You are producing one bounded replacement plan or milestone decision for a durable supervised goal.",
+    record.intent.mission
+      ? "Return decision=apply with the next immutable milestone graph, decision=complete only when mission acceptance is met, or decision=attention when human judgment is required."
+      : "Return decision=apply with a replacement immutable root graph, or decision=attention when human judgment is required.",
+    "Never claim mission completion unless the frozen mission acceptance is met. Never request a workflow outside the frozen template catalog.",
     "Dependencies may name an active work ID or an earlier key in your proposed work array.",
     "Every proposed item must be reachable from root. The root must be a proposed key using a root-capable template.",
     `Plan id: ${planId}`,
+    `Planning trigger: ${trigger}`,
     `Goal: ${record.intent.title}`,
+    `Mission: ${JSON.stringify(record.intent.mission ?? null)}`,
     `Original root: ${record.intent.root_work_id}`,
     `Active root: ${record.projection.root_work_id}`,
     `Remaining work attempts: ${record.projection.attempts_remaining}`,
     `Remaining replans: ${record.projection.replans_remaining}`,
+    `Completed milestones: ${record.projection.milestones_completed}`,
+    `Remaining milestones: ${record.projection.milestones_remaining}`,
     `Latest planner outcome: ${JSON.stringify(
       record.plans.at(-1)
         ? {
@@ -328,13 +363,32 @@ function plannerScript(record: SupervisorRecord, planId: string): string {
         dependencies: work.intent.dependencies,
         state: work.projection.state,
         reason: work.projection.reason,
+        proof: work.projection.proof_path
+          ? (() => {
+              const proof = readWorkflowProof(coordRoot, work.projection.latest_run_id!);
+              return {
+                run_id: proof.run.id,
+                status: proof.run.status,
+                acceptance: proof.acceptance.summary,
+                repository: {
+                  head_changed: proof.repository.drift.head_changed,
+                  dirty_paths_added: proof.repository.drift.dirty_paths_added,
+                  incomplete: proof.repository.drift.incomplete,
+                },
+                unknowns: proof.unknowns.map((unknown) => unknown.code),
+              };
+            })()
+          : null,
       })),
     )}`,
   ].join("\n\n");
   const schema = {
     type: "object",
     properties: {
-      decision: { type: "string", enum: ["apply", "attention"] },
+      decision: {
+        type: "string",
+        enum: record.intent.mission ? ["apply", "complete", "attention"] : ["apply", "attention"],
+      },
       rationale: { type: "string" },
       root: { type: "string" },
       work: {
@@ -352,13 +406,29 @@ function plannerScript(record: SupervisorRecord, planId: string): string {
           required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
         },
       },
+      milestone: {
+        type: "object",
+        properties: {
+          sequence: { type: "number" },
+          title: { type: "string" },
+          objective: { type: "string" },
+          acceptance: { type: "array", items: { type: "string" } },
+        },
+        required: ["sequence", "title", "objective", "acceptance"],
+      },
     },
     required: ["decision", "rationale", "root", "work"],
   };
   return [
     `export const meta = ${JSON.stringify({ name: `replan-${planId}` })};`,
     "export default async ({ agent, stage }) => {",
-    '  stage("Replan blocked goal");',
+    `  stage(${JSON.stringify(
+      trigger === "initial"
+        ? "Plan initial mission milestone"
+        : trigger === "milestone"
+          ? "Reassess completed milestone"
+          : "Replan blocked goal",
+    )});`,
     `  return await agent(${JSON.stringify(prompt)}, ${JSON.stringify({
       specialist: policy.planner_specialist,
       schema,
@@ -374,6 +444,7 @@ function normalizeProposal(
   raw: unknown,
   record: SupervisorRecord,
   previouslyApplied: number,
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
 ): SupervisorPlanProposal {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
@@ -381,12 +452,17 @@ function normalizeProposal(
     throw new Error("planner result must be an object");
   }
   const value = raw as Record<string, unknown>;
-  const decision = enumValue(value.decision, ["apply", "attention"], "plan decision");
+  const decision = enumValue(value.decision, ["apply", "complete", "attention"], "plan decision");
   const rationale = bounded(value.rationale, "plan rationale", MAX_REASON);
   const root = typeof value.root === "string" ? value.root.trim() : "";
   if (!Array.isArray(value.work)) throw new Error("plan work must be an array");
-  if (decision === "attention") {
-    if (root || value.work.length > 0) throw new Error("attention plan must not contain work");
+  if (decision === "attention" || decision === "complete") {
+    if (root || value.work.length > 0 || value.milestone !== undefined) {
+      throw new Error(`${decision} plan must not contain work or milestone data`);
+    }
+    if (decision === "complete" && (!record.intent.mission || trigger !== "milestone")) {
+      throw new Error("mission completion may be proposed only at a milestone boundary");
+    }
     return {
       schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
       plan_id: planId,
@@ -396,6 +472,17 @@ function normalizeProposal(
       work: [],
       proposed_at: new Date().toISOString(),
     };
+  }
+  const milestone = record.intent.mission
+    ? normalizeMilestone(value.milestone, record.projection.milestones_completed + 1)
+    : undefined;
+  if (!record.intent.mission && value.milestone !== undefined) {
+    throw new Error("non-mission replacement plan must not contain milestone data");
+  }
+  if (milestone && milestone.sequence > record.intent.mission!.max_milestones) {
+    throw new Error(
+      `milestone ${milestone.sequence} exceeds mission limit ${record.intent.mission!.max_milestones}`,
+    );
   }
   if (value.work.length < 1 || value.work.length > policy.max_work_items_per_plan) {
     throw new Error(`plan work must contain 1 to ${policy.max_work_items_per_plan} items`);
@@ -477,8 +564,43 @@ function normalizeProposal(
     rationale,
     root,
     work,
+    ...(milestone ? { milestone } : {}),
     proposed_at: new Date().toISOString(),
   };
+}
+
+function normalizeMilestone(raw: unknown, expectedSequence: number): SupervisorPlanMilestone {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("mission plan must contain a milestone object");
+  }
+  const value = raw as Record<string, unknown>;
+  if (value.sequence !== expectedSequence) {
+    throw new Error(`milestone sequence must be ${expectedSequence}`);
+  }
+  if (!Array.isArray(value.acceptance) || value.acceptance.length < 1) {
+    throw new Error("milestone acceptance must be a non-empty array");
+  }
+  if (value.acceptance.length > 50) throw new Error("milestone acceptance exceeds 50 criteria");
+  return {
+    sequence: expectedSequence,
+    title: bounded(value.title, "milestone title", 200),
+    objective: bounded(value.objective, "milestone objective", 4_000),
+    acceptance: value.acceptance.map((criterion, index) =>
+      bounded(criterion, `milestone acceptance[${index}]`, 500),
+    ),
+  };
+}
+
+function planTrigger(record: SupervisorRecord): NonNullable<SupervisorPlanRequest["trigger"]> {
+  if (
+    record.intent.mission &&
+    record.projection.plan_generation === 0 &&
+    record.work.length === 0
+  ) {
+    return "initial";
+  }
+  const root = record.work.find((work) => work.intent.id === record.projection.root_work_id);
+  return record.intent.mission && root?.projection.state === "succeeded" ? "milestone" : "recovery";
 }
 
 function appendPlanEvent(
