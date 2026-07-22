@@ -22,12 +22,45 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("workflow proof reader", () => {
+  test("keeps a durable approval park distinct from stale and clears it on resume", () => {
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "run.parked", approval_id: "apr-123" })}\n`,
+      "utf8",
+    );
+    expect(readWorkflowRun(root, "wf-reader")).toMatchObject({
+      status: "parked",
+      parkedApprovalId: "apr-123",
+    });
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:02.000Z", event: "run.resume" })}\n`,
+      { encoding: "utf8", flag: "a" },
+    );
+    expect(readWorkflowRun(root, "wf-reader")?.status).toBe("running");
+  });
+
   test("attaches a matching terminal proof packet to the journal summary", () => {
     writeFileSync(join(runDir, "proof.json"), JSON.stringify(sampleProof()), "utf8");
     const run = readWorkflowRun(root, "wf-reader");
     expect(run?.proof?.run.objective).toBe("Show proof in the dashboard");
     expect(run?.proof?.acceptance.summary.satisfied).toBe(1);
     expect(run?.proof?.policy?.decisions[0]?.verdict).toBe("allow");
+  });
+
+  test("uses total retry cost instead of only the final attempt cost", () => {
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "retry" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "agent.end", id: "a1", cost_usd: 0.2, total_cost_usd: 0.45 })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:02.000Z", event: "run.end", ok: true })}\n`,
+      "utf8",
+    );
+    const run = readWorkflowRun(root, "wf-reader");
+    expect(run?.costUsd).toBe(0.45);
+    expect(run?.agents[0]?.costUsd).toBe(0.45);
   });
 
   test("ignores malformed and mismatched packets without hiding the journal run", () => {

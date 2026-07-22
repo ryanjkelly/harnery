@@ -86,7 +86,7 @@ export interface PolicyDecision {
   phase: PolicyPhase;
   initial_verdict: PolicyVerdict;
   verdict: "allow" | "deny";
-  resolved_by: "policy" | "host" | "fail_closed";
+  resolved_by: "policy" | "host" | "approval" | "fail_closed";
   reason: string;
   rule_codes: string[];
   request: PolicyRequestSummary;

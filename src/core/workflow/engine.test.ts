@@ -145,6 +145,18 @@ describe("runWorkflow", () => {
     expect(report.agentsSpawned).toBe(2);
   });
 
+  test("rejects non-positive execution bounds before a run can deadlock", async () => {
+    const script = writeScript(`export default async () => "done";`);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: {},
+        concurrency: 0,
+        ...quiet,
+      }),
+    ).rejects.toThrow(/concurrency must be a positive safe integer/);
+  });
+
   test("parallel() bounds real concurrency to the shared pool", async () => {
     let inFlight = 0;
     let maxInFlight = 0;

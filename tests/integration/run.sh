@@ -77,10 +77,16 @@ check "harn harness list includes all built-ins" \
 check "harn harness bench makes no model calls" \
   "$HARN harness bench" "offline (no model calls)"
 
-# 5. harn workflow --help exposes proof inspection
+# 5. harn workflow --help exposes proof and durable approval operations
 check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"
+check "harn workflow --help mentions resume" "$HARN workflow --help" "resume"
+check "harn workflow --help mentions approvals" "$HARN workflow --help" "approvals"
 check "harn workflow proof --help mentions JSON output" \
   "$HARN workflow proof --help" "--json"
+check "harn workflow approvals --help exposes resolution" \
+  "$HARN workflow approvals --help" "approve"
+check "harn workflow approvals list starts with an empty inbox" \
+  "$HARN workflow approvals list" "no workflow approvals"
 
 # 6. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"

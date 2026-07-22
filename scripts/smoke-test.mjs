@@ -20,7 +20,7 @@
  */
 
 import { execFileSync, execSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +90,15 @@ try {
   }
   log("--help OK");
 
+  // Durable workflow approvals must be reachable through the packed Node CLI.
+  log("checking durable workflow approval CLI boots ...");
+  mkdirSync(join(workdir, ".harnery"));
+  const approvalsOut = run(["workflow", "approvals", "list"]);
+  if (!/no workflow approvals/.test(approvalsOut)) {
+    fail("workflow approvals list did not render an empty durable inbox");
+  }
+  log("workflow approvals CLI OK");
+
   // outline on PHP: works without the `typescript` dep.
   log("checking `outline` on a PHP file ...");
   const phpFile = join(workdir, "sample.php");
@@ -126,6 +135,10 @@ try {
       'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow proof schema version");',
       'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
       'if (typeof WorkflowRunError !== "function") throw new Error("WorkflowRunError missing");',
+      'const durable = await import("harnery/core/workflow");',
+      'for (const name of ["createWorkflowApproval", "resolveWorkflowApproval", "readWorkflowApproval", "acquireWorkflowResumeLease"]) {',
+      '  if (typeof durable[name] !== "function") throw new Error(name + " missing");',
+      "}",
     ].join("\n"),
   );
   execFileSync(nodePath, [workflowProbe], {

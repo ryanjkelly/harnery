@@ -22,7 +22,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "n
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { snapshotRepo } from "../context/index.ts";
-import type { ExternalMutationRequest, PolicyDecision, PolicyRequest } from "../policy/index.ts";
+import type {
+  ExternalMutationRequest,
+  NormalizedPolicy,
+  PolicyDecision,
+  PolicyRequest,
+} from "../policy/index.ts";
 import {
   evaluatePolicy,
   normalizePolicy,
@@ -30,6 +35,7 @@ import {
   policyDigest,
   summarizePolicyRequest,
 } from "../policy/index.ts";
+import { createWorkflowApproval } from "./approvals.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import {
   buildWorkflowProof,
@@ -38,6 +44,13 @@ import {
   normalizeWorkflowMeta,
   writeWorkflowProof,
 } from "./proof.ts";
+import {
+  acquireWorkflowResumeLease,
+  assertWorkflowRunResumable,
+  assertWorkflowScriptUnchanged,
+  workflowScriptDigest,
+  writeWorkflowRunManifest,
+} from "./run-state.ts";
 import type {
   AgentOpts,
   EngineOpts,
@@ -73,8 +86,55 @@ export class WorkflowRunError extends Error {
   }
 }
 
+export class WorkflowParkedError extends Error {
+  readonly runId: string;
+  readonly approvalId: string;
+  readonly journalPath: string;
+
+  constructor(message: string, runId: string, approvalId: string, journalPath: string) {
+    super(message);
+    this.name = "WorkflowParkedError";
+    this.runId = runId;
+    this.approvalId = approvalId;
+    this.journalPath = journalPath;
+  }
+}
+
 export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise<RunReport> {
+  if (opts.resumeRunId && opts.resumeFrom) {
+    throw new Error("resumeRunId and resumeFrom are mutually exclusive");
+  }
+  const resumeState = opts.resumeRunId
+    ? assertWorkflowRunResumable(opts.coordRoot, opts.resumeRunId)
+    : undefined;
   const absScript = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
+  if (resumeState) {
+    if (resolve(resumeState.manifest.script.path) !== resolve(absScript)) {
+      throw new Error(`workflow run ${opts.resumeRunId} belongs to a different script`);
+    }
+    assertWorkflowScriptUnchanged(resumeState.manifest);
+  }
+  const releaseResumeLease = opts.resumeRunId
+    ? acquireWorkflowResumeLease(opts.coordRoot, opts.resumeRunId)
+    : undefined;
+  try {
+    if (resumeState) {
+      // Recheck under the exclusive lease. Another process may have completed
+      // the run between the optimistic read and lease acquisition.
+      assertWorkflowRunResumable(opts.coordRoot, resumeState.manifest.run_id);
+    }
+    return await executeWorkflow(scriptPath, absScript, opts, resumeState);
+  } finally {
+    releaseResumeLease?.();
+  }
+}
+
+async function executeWorkflow(
+  scriptPath: string,
+  absScript: string,
+  opts: EngineOpts,
+  resumeState: ReturnType<typeof assertWorkflowRunResumable> | undefined,
+): Promise<RunReport> {
   const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
   if (typeof mod.default !== "function") {
     throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
@@ -83,21 +143,61 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   const meta = normalizeWorkflowMeta(mod.meta, fallbackName);
   const name = meta.name;
 
-  const runId = `wf-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
+  const runId =
+    opts.resumeRunId ??
+    `wf-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const runDir = join(opts.coordRoot, ".harnery", "workflows", runId);
   mkdirSync(runDir, { recursive: true });
   const journalPath = join(runDir, "journal.jsonl");
   const proofPath = join(runDir, "proof.json");
 
-  const maxAgents = opts.maxAgents ?? DEFAULT_MAX_AGENTS;
-  const concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
-  const cwd = opts.cwd ?? opts.coordRoot;
+  const frozen = resumeState?.manifest.execution;
+  const maxAgents = frozen?.max_agents ?? opts.maxAgents ?? DEFAULT_MAX_AGENTS;
+  const concurrency = frozen?.concurrency ?? opts.concurrency ?? DEFAULT_CONCURRENCY;
+  assertPositiveWorkflowBound(maxAgents, "maxAgents");
+  assertPositiveWorkflowBound(concurrency, "concurrency");
+  const cwd = frozen?.cwd ?? opts.cwd ?? opts.coordRoot;
   const log = opts.onLog ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const defaultHarness: HarnessName = opts.defaultHarness ?? "claude-code";
-  const isolation = opts.isolation ?? "shared";
-  const networkAccess = opts.networkAccess ?? "unknown";
-  const policy = opts.policy ? normalizePolicy(opts.policy, { baseDir: cwd }) : undefined;
-  const repoBefore = snapshotRepo(cwd);
+  const defaultHarness: HarnessName =
+    frozen?.default_harness ?? opts.defaultHarness ?? "claude-code";
+  const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
+  const networkAccess = frozen?.network_access ?? opts.networkAccess ?? "unknown";
+  const policy =
+    frozen?.policy ?? (opts.policy ? normalizePolicy(opts.policy, { baseDir: cwd }) : undefined);
+  const approvalMode = frozen?.approval_mode ?? opts.approvalMode ?? "deny";
+  const approvalAddressee = frozen?.approval_addressee ?? opts.approvalAddressee ?? "operator";
+  const subscriptionOnly = frozen?.subscription_only ?? Boolean(opts.subscriptionOnly);
+  const allowApiBilling = frozen?.allow_api_billing ?? Boolean(opts.allowApiBilling);
+  const repoBefore = resumeState?.manifest.repository_before ?? snapshotRepo(cwd);
+  const startedAt = resumeState?.manifest.started_at ?? new Date().toISOString();
+  const t0 = resumeState ? Date.parse(startedAt) : Date.now();
+
+  if (!resumeState) {
+    writeWorkflowRunManifest({
+      coordRoot: opts.coordRoot,
+      manifest: {
+        schema_version: 1,
+        run_id: runId,
+        name,
+        started_at: startedAt,
+        script: { path: absScript, sha256: workflowScriptDigest(absScript) },
+        repository_before: repoBefore,
+        execution: {
+          cwd,
+          default_harness: defaultHarness,
+          max_agents: maxAgents,
+          concurrency,
+          subscription_only: subscriptionOnly,
+          allow_api_billing: allowApiBilling,
+          approval_mode: approvalMode,
+          approval_addressee: approvalAddressee,
+          isolation,
+          network_access: networkAccess,
+          policy: policy ? (policy as NormalizedPolicy) : undefined,
+        },
+      },
+    });
+  }
 
   // Per-child fixed context overhead: children spawn in `cwd` and load its
   // repo-instructions file into their system prompt, cache-writing it once
@@ -111,13 +211,16 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   }
 
   // Resume: journaled results of a prior run, keyed by agent-call identity.
-  const resumeCache = opts.resumeFrom
-    ? loadResumeCache(opts.coordRoot, opts.resumeFrom)
+  const resumeSource = opts.resumeRunId ?? opts.resumeFrom;
+  const resumeCache = resumeSource
+    ? loadResumeCache(opts.coordRoot, resumeSource)
     : new Map<string, { kind: "json" | "text"; value: unknown }>();
 
-  let agentsSpawned = 0;
+  const history = opts.resumeRunId ? loadRunHistory(journalPath) : undefined;
+
+  let agentsSpawned = history?.agentsSpawned ?? 0;
   let agentsCached = 0;
-  let costUsd = 0;
+  let costUsd = history?.costUsd ?? 0;
   let reservedCostUsd = 0;
   let currentStage = "";
   let agentSeq = 0;
@@ -126,7 +229,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   const billingProbed = new Map<HarnessName, BillingProbe>();
   const agentProofs = new Map<string, WorkflowAgentProof>();
   const evidenceRecords: WorkflowEvidenceRecord[] = [];
-  const policyDecisions: PolicyDecision[] = [];
+  const policyDecisions = new Map<string, PolicyDecision>(
+    history?.policyDecisions.map((decision) => [decision.id, decision]),
+  );
   const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
 
   const journal = (event: string, data: Record<string, unknown>): void => {
@@ -181,7 +286,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     if (!policy) {
       throw new Error("external mutation authorization requires a host policy");
     }
-    if (policyDecisions.length >= MAX_POLICY_DECISIONS) {
+    if (policyDecisions.size >= MAX_POLICY_DECISIONS && !policyDecisions.has(`p${policySeq + 1}`)) {
       throw new Error(
         `workflow policy decision cap reached (${MAX_POLICY_DECISIONS}); split the workflow or reduce protected actions`,
       );
@@ -204,9 +309,8 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     let reason = evaluation.reason;
     if (evaluation.verdict === "ask") {
       resolvedBy = "fail_closed";
-      if (!opts.resolvePolicyAsk) {
-        reason = `${evaluation.reason}; no host approval resolver is configured`;
-      } else {
+      let immediateResolution = false;
+      if (opts.resolvePolicyAsk) {
         try {
           const resolution = await withTimeout(
             Promise.resolve(opts.resolvePolicyAsk(request, evaluation)),
@@ -218,10 +322,57 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
             verdict = resolution.verdict;
             resolvedBy = "host";
             reason = boundedPolicyReason(resolution.reason ?? evaluation.reason);
+            immediateResolution = true;
           }
         } catch (error) {
           reason = `${evaluation.reason}; approval failed closed: ${(error as Error).message}`;
         }
+      } else {
+        reason = `${evaluation.reason}; no host approval resolver is configured`;
+      }
+
+      if (!immediateResolution && approvalMode === "park") {
+        const stored = createWorkflowApproval({
+          coordRoot: opts.coordRoot,
+          runId,
+          decisionId: id,
+          addressedTo: approvalAddressee,
+          policy: { name: policy.name, sha256: policyDigest(policy) },
+          request,
+          evaluation,
+        });
+        if (stored.approval.status === "pending") {
+          if (stored.created) {
+            journal("approval.requested", {
+              approval_id: stored.approval.request.id,
+              decision_id: id,
+              addressed_to: stored.approval.request.addressed_to,
+              request_sha256: stored.approval.request.request_sha256,
+            });
+          }
+          journal("run.parked", {
+            approval_id: stored.approval.request.id,
+            decision_id: id,
+            phase: request.phase,
+            action: request.action,
+          });
+          throw new WorkflowParkedError(
+            `workflow parked for approval ${stored.approval.request.id}: ${evaluation.reason}`,
+            runId,
+            stored.approval.request.id,
+            journalPath,
+          );
+        }
+        verdict = stored.approval.decision!.verdict;
+        resolvedBy = "approval";
+        reason = boundedPolicyReason(stored.approval.decision!.reason ?? evaluation.reason);
+        journal("approval.consumed", {
+          approval_id: stored.approval.request.id,
+          decision_id: id,
+          verdict,
+          actor: stored.approval.decision!.actor,
+          decided_at: stored.approval.decision!.decided_at,
+        });
       }
     }
 
@@ -237,7 +388,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       rule_codes: evaluation.rules.map((rule) => rule.code),
       request,
     };
-    policyDecisions.push(decision);
+    policyDecisions.set(decision.id, decision);
     journal("policy.resolve", { ...decision });
     if (decision.verdict === "deny") {
       throw new PolicyDeniedError(
@@ -279,6 +430,10 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     const key = agentCallKey(currentStage, harness, agentOpts, prompt);
     const cached = resumeCache.get(key);
     if (cached) {
+      // Exact-run replay skips dispatch authorization because no dispatch
+      // occurs, but it must still reserve the original policy slot so a later
+      // durable ASK resolves against the same pN identity.
+      if (policy && opts.resumeRunId) policySeq++;
       agentsCached++;
       agentProof.status = "cached";
       agentProof.result = digestResult(cached.value, cached.kind);
@@ -291,7 +446,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         kind: cached.kind,
       });
       log(
-        `[${name}] ${currentStage || "(no stage)"} → ${id} ${label} (cached from ${opts.resumeFrom})`,
+        `[${name}] ${currentStage || "(no stage)"} → ${id} ${label} (cached from ${resumeSource})`,
       );
       return cached.value;
     }
@@ -370,12 +525,12 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         billingProbed.set(harness, probe);
         journal("billing.probe", {
           harness,
-          mode: opts.subscriptionOnly ? "subscription" : probe.mode,
+          mode: subscriptionOnly ? "subscription" : probe.mode,
           api_key_source: probe.apiKeySource,
           login: probe.login,
-          subscription_only: Boolean(opts.subscriptionOnly),
+          subscription_only: subscriptionOnly,
         });
-        if (opts.subscriptionOnly) {
+        if (subscriptionOnly) {
           if (probe.login === "absent") {
             throw new Error(
               `subscription-only: no stored login detected for ${harness}; ` +
@@ -383,7 +538,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
             );
           }
           log(`[billing] ${harness}: subscription-only (API-key vars scrubbed from child env)`);
-        } else if (probe.mode === "api-key-override" && !opts.allowApiBilling) {
+        } else if (probe.mode === "api-key-override" && !allowApiBilling) {
           throw new Error(
             `${probe.apiKeySource} is set AND a stored ${harness} login exists — the key silently ` +
               `overrides your subscription auth, so children would bill per-token API rates. ` +
@@ -440,7 +595,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
           maxTurns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
           cwd,
           runId,
-          subscriptionOnly: opts.subscriptionOnly,
+          subscriptionOnly,
         });
         agentProof.attempts = attempt;
         agentProof.duration_ms += last.durationMs;
@@ -462,6 +617,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
             key,
             attempts: attempt,
             cost_usd: last.costUsd,
+            total_cost_usd: agentCostUsd,
             duration_ms: last.durationMs,
             session_id: last.sessionId,
             result_kind: "text",
@@ -486,6 +642,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
             key,
             attempts: attempt,
             cost_usd: last.costUsd,
+            total_cost_usd: agentCostUsd,
             duration_ms: last.durationMs,
             session_id: last.sessionId,
             result_kind: "json",
@@ -572,21 +729,26 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   };
 
   const ctx: WorkflowContext = { agent, parallel, stage, log, evidence, authorize };
-
-  const t0 = Date.now();
-  const startedAt = new Date(t0).toISOString();
-  journal("run.start", {
-    name,
-    script: absScript,
-    objective: meta.objective ?? null,
-    acceptance: meta.acceptance,
-    max_agents: maxAgents,
-    concurrency,
-    policy: policy ? { name: policy.name, sha256: policyDigest(policy) } : null,
-    isolation,
-    network_access: networkAccess,
-  });
   try {
+    if (resumeState) {
+      journal("run.resume", {
+        approval_id: resumeState.approvalId,
+        script: absScript,
+        resumed_at: new Date().toISOString(),
+      });
+    } else {
+      journal("run.start", {
+        name,
+        script: absScript,
+        objective: meta.objective ?? null,
+        acceptance: meta.acceptance,
+        max_agents: maxAgents,
+        concurrency,
+        policy: policy ? { name: policy.name, sha256: policyDigest(policy) } : null,
+        isolation,
+        network_access: networkAccess,
+      });
+    }
     const result = await mod.default(ctx);
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
@@ -613,7 +775,12 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
         policy: policy
-          ? { config: policy, decisions: policyDecisions, isolation, networkAccess }
+          ? {
+              config: policy,
+              decisions: Array.from(policyDecisions.values()),
+              isolation,
+              networkAccess,
+            }
           : undefined,
         result,
       });
@@ -640,13 +807,13 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       contextTokensPerChildEstimate,
       billing: Array.from(billingProbed.values()).map((p) => ({
         harness: p.harness,
-        mode: opts.subscriptionOnly ? "subscription" : p.mode,
+        mode: subscriptionOnly ? "subscription" : p.mode,
       })),
       policy: proof.policy?.summary,
     };
     return report;
   } catch (err) {
-    if (err instanceof WorkflowRunError) throw err;
+    if (err instanceof WorkflowParkedError || err instanceof WorkflowRunError) throw err;
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
     journal("run.end", {
@@ -672,7 +839,12 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
         policy: policy
-          ? { config: policy, decisions: policyDecisions, isolation, networkAccess }
+          ? {
+              config: policy,
+              decisions: Array.from(policyDecisions.values()),
+              isolation,
+              networkAccess,
+            }
           : undefined,
         error: (err as Error).message,
       });
@@ -758,6 +930,52 @@ function loadResumeCache(
   return cache;
 }
 
+function loadRunHistory(path: string): {
+  agentsSpawned: number;
+  costUsd: number;
+  policyDecisions: PolicyDecision[];
+} {
+  const agentIds = new Set<string>();
+  const agentCosts = new Map<string, number>();
+  const decisions = new Map<string, PolicyDecision>();
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    const event = JSON.parse(line) as {
+      event?: string;
+      id?: string;
+      cost_usd?: number;
+      total_cost_usd?: number;
+      verdict?: unknown;
+      resolved_by?: unknown;
+      request?: unknown;
+    };
+    if (event.event === "agent.start" && typeof event.id === "string") {
+      agentIds.add(event.id);
+    }
+    if (event.event === "agent.end" && typeof event.id === "string") {
+      const cost = event.total_cost_usd ?? event.cost_usd;
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
+        agentCosts.set(event.id, cost);
+      }
+    }
+    if (
+      event.event === "policy.resolve" &&
+      typeof event.id === "string" &&
+      (event.verdict === "allow" || event.verdict === "deny") &&
+      typeof event.resolved_by === "string" &&
+      event.request &&
+      typeof event.request === "object"
+    ) {
+      decisions.set(event.id, event as PolicyDecision);
+    }
+  }
+  return {
+    agentsSpawned: agentIds.size,
+    costUsd: round4(Array.from(agentCosts.values()).reduce((sum, value) => sum + value, 0)),
+    policyDecisions: Array.from(decisions.values()),
+  };
+}
+
 function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
 }
@@ -767,6 +985,12 @@ function assertAgentCapacity(agentsSpawned: number, maxAgents: number): void {
     throw new Error(
       `workflow agent cap reached (${maxAgents}); raise --max-agents deliberately if the fan-out is intended`,
     );
+  }
+}
+
+function assertPositiveWorkflowBound(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${field} must be a positive safe integer`);
   }
 }
 
