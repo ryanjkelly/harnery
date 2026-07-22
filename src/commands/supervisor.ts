@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
@@ -8,12 +8,21 @@ import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import {
+  configureSupervisorService,
   createSupervisor,
   listSupervisors,
   readSupervisor,
+  readSupervisorServiceConfig,
+  readSupervisorServiceStatus,
+  requestSupervisorServiceStop,
   runSupervisor,
+  runSupervisorServiceDaemon,
   type SupervisorRecord,
   type SupervisorRunReport,
+  type SupervisorServiceConfig,
+  type SupervisorServiceStatus,
+  spawnSupervisorService,
+  supervisorServiceLogPath,
 } from "../core/supervisor/index.ts";
 import type { WorkflowSpecialistProfile } from "../core/workflow/index.ts";
 
@@ -43,6 +52,13 @@ interface RunOpts {
   approvalTo?: string;
   actor?: string;
   json?: boolean;
+}
+
+interface ServiceOpts extends RunOpts {
+  wakeIntervalMs?: string;
+  heartbeatIntervalMs?: string;
+  errorBackoffBaseMs?: string;
+  errorBackoffMaxMs?: string;
 }
 
 export function registerSupervisorCommand(program: Command, emit: EmitContext): void {
@@ -133,8 +149,248 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
       });
     });
 
+  registerServiceCommand(supervisor, registry, emit);
   registerRunCommand(supervisor, "tick", registry, emit);
   registerRunCommand(supervisor, "run", registry, emit);
+}
+
+function registerServiceCommand(
+  supervisor: Command,
+  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+  emit: EmitContext,
+): void {
+  const service = supervisor
+    .command("service")
+    .description("Run explicitly enrolled durable goals in a restartable background service.");
+
+  addServiceOptions(
+    service
+      .command("start [goal-ids...]")
+      .description("Configure and start the detached per-repository supervisor service."),
+  )
+    .option("--json", "Emit complete service status as JSON")
+    .action(async (goalIds: string[], opts: ServiceOpts) => {
+      await withSupervisorRootAsync(emit, async (coordRoot) => {
+        prepareServiceConfig(coordRoot, goalIds, opts, registry);
+        const status = await spawnSupervisorService(coordRoot);
+        emitServiceStatus(status, opts.json, emit);
+      });
+    });
+
+  addServiceOptions(
+    service
+      .command("run [goal-ids...]")
+      .description("Run the persistent service loop in the foreground for a process manager."),
+  )
+    .option("--json", "Emit terminal service status as JSON")
+    .action(async (goalIds: string[], opts: ServiceOpts) => {
+      await withSupervisorRootAsync(emit, async (coordRoot) => {
+        const config = prepareServiceConfig(coordRoot, goalIds, opts, registry);
+        const status = await runSupervisorServiceDaemon({
+          coordRoot,
+          engine: serviceEngine(config, registry),
+          onLog: opts.json ? undefined : (line) => emit.text(`${line}\n`),
+        });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(status);
+        }
+      });
+    });
+
+  service
+    .command("status")
+    .description("Show service liveness, heartbeat, enrolled goals, and durable wake state.")
+    .option("--json", "Emit complete service status as JSON")
+    .action((opts: { json?: boolean }) => {
+      withSupervisorRoot(emit, (coordRoot) => {
+        emitServiceStatus(readSupervisorServiceStatus(coordRoot), opts.json, emit);
+      });
+    });
+
+  service
+    .command("stop")
+    .description("Request a graceful stop; an active goal tick is allowed to finish safely.")
+    .option("--json", "Emit complete service status as JSON")
+    .action(async (opts: { json?: boolean }) => {
+      await withSupervisorRootAsync(emit, async (coordRoot) => {
+        let status = requestSupervisorServiceStop(coordRoot);
+        const deadline = Date.now() + 5_000;
+        while (status.running && Date.now() < deadline) {
+          await delay(50);
+          status = readSupervisorServiceStatus(coordRoot);
+        }
+        emitServiceStatus(status, opts.json, emit);
+      });
+    });
+
+  service
+    .command("logs")
+    .description("Show the tail of the private background-service log.")
+    .option("--lines <n>", "Number of lines to show (default 50)", "50")
+    .action((opts: { lines: string }) => {
+      withSupervisorRoot(emit, (coordRoot) => {
+        const lines = integer(opts.lines) ?? 50;
+        if (lines > 10_000) throw new Error("service log lines must not exceed 10000");
+        const path = supervisorServiceLogPath(coordRoot);
+        if (!existsSync(path)) {
+          emit.text("no supervisor service log\n");
+          return;
+        }
+        const selected = readFileSync(path, "utf8")
+          .split("\n")
+          .slice(-(lines + 1))
+          .join("\n");
+        emit.text(selected.endsWith("\n") ? selected : `${selected}\n`);
+      });
+    });
+
+  service
+    .command("daemon", { hidden: true })
+    .description("Internal detached service entrypoint.")
+    .action(async () => {
+      await withSupervisorRootAsync(emit, async (coordRoot) => {
+        const config = readSupervisorServiceConfig(coordRoot);
+        await runSupervisorServiceDaemon({
+          coordRoot,
+          engine: serviceEngine(config, registry),
+          onLog: (line) => emit.text(`${line}\n`),
+        });
+      });
+    });
+}
+
+function addServiceOptions(command: Command): Command {
+  return command
+    .option("--wake-interval-ms <n>", "State-change poll interval (default 5000)")
+    .option("--heartbeat-interval-ms <n>", "Heartbeat interval (default 2000)")
+    .option("--error-backoff-base-ms <n>", "Initial service-error backoff (default 2000)")
+    .option("--error-backoff-max-ms <n>", "Maximum service-error backoff (default 300000)")
+    .option("--harness <name>", "Fallback harness for agent calls without a specialist")
+    .option("--cwd <dir>", "Working directory for child agents")
+    .option("--subscription-only", "Require stored harness-login billing")
+    .option("--allow-api-billing", "Permit API-key override billing")
+    .option("--policy <file>", "Host policy JSON/JSONC")
+    .option("--isolation <mode>", "shared | worktree | sandbox | remote")
+    .option("--approval-to <address>", "Address durable ASK requests");
+}
+
+function prepareServiceConfig(
+  coordRoot: string,
+  goalIds: string[],
+  opts: ServiceOpts,
+  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+): SupervisorServiceConfig {
+  if (goalIds.length === 0) {
+    if (hasServiceConfigOverrides(opts)) {
+      throw new Error("goal ids are required when changing supervisor service options");
+    }
+    return readSupervisorServiceConfig(coordRoot);
+  }
+  if (opts.harness && !registry.get(opts.harness)) {
+    throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
+  }
+  const policy = opts.policy ? loadPolicyFile(opts.policy) : undefined;
+  return configureSupervisorService({
+    coordRoot,
+    goalIds,
+    wakeIntervalMs: integer(opts.wakeIntervalMs),
+    heartbeatIntervalMs: integer(opts.heartbeatIntervalMs),
+    errorBackoffBaseMs: integer(opts.errorBackoffBaseMs),
+    errorBackoffMaxMs: integer(opts.errorBackoffMaxMs),
+    engine: {
+      default_harness: opts.harness,
+      cwd: opts.cwd,
+      subscription_only:
+        opts.subscriptionOnly === true ? true : workflowSubscriptionOnly(coordRoot),
+      allow_api_billing: opts.allowApiBilling,
+      policy,
+      isolation: opts.isolation,
+      approval_addressee: opts.approvalTo,
+    },
+  });
+}
+
+function hasServiceConfigOverrides(opts: ServiceOpts): boolean {
+  return Boolean(
+    opts.wakeIntervalMs ||
+      opts.heartbeatIntervalMs ||
+      opts.errorBackoffBaseMs ||
+      opts.errorBackoffMaxMs ||
+      opts.harness ||
+      opts.cwd ||
+      opts.subscriptionOnly ||
+      opts.allowApiBilling ||
+      opts.policy ||
+      opts.isolation ||
+      opts.approvalTo,
+  );
+}
+
+function serviceEngine(
+  config: SupervisorServiceConfig,
+  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+) {
+  return {
+    spawners: registry.spawners(),
+    defaultHarness: config.engine.default_harness,
+    cwd: config.engine.cwd,
+    subscriptionOnly: config.engine.subscription_only,
+    allowApiBilling: config.engine.allow_api_billing,
+    harnessEvidence: Object.fromEntries(
+      registry
+        .list()
+        .map((adapter) => [
+          adapter.profile.id,
+          { toolEvidence: adapter.profile.capabilities.toolEvidence },
+        ]),
+    ),
+    policy: config.engine.policy,
+    approvalMode: "park" as const,
+    approvalAddressee: config.engine.approval_addressee,
+    isolation: config.engine.isolation,
+    networkAccess: "enabled" as const,
+  };
+}
+
+function emitServiceStatus(
+  status: SupervisorServiceStatus,
+  json: boolean | undefined,
+  emit: EmitContext,
+): void {
+  if (json) {
+    emit.config({ format: "json" });
+    emit.data(status);
+    return;
+  }
+  if (!status.config && !status.record) {
+    emit.text("supervisor service: unconfigured\n");
+    return;
+  }
+  const state = status.running
+    ? (status.record?.state ?? "running")
+    : status.stale
+      ? "stale"
+      : "stopped";
+  const lines = [
+    `supervisor service: ${state}`,
+    `goals: ${status.config?.goal_ids.join(", ") || "none"}`,
+  ];
+  if (status.record) {
+    lines.push(`pid: ${status.record.pid} on ${status.record.host}`);
+    lines.push(`heartbeat: ${status.record.heartbeat_at}`);
+    lines.push(`sweeps: ${status.record.sweep_count}`);
+    if (status.record.active_goal_id) lines.push(`active: ${status.record.active_goal_id}`);
+    if (status.record.next_wake_at) lines.push(`next wake: ${status.record.next_wake_at}`);
+    if (status.record.last_error) lines.push(`error: ${status.record.last_error}`);
+  }
+  const backingOff = Object.entries(status.runtime?.goals ?? {}).filter(
+    ([, runtime]) => runtime.state === "backoff",
+  );
+  if (backingOff.length) {
+    lines.push(`backoff: ${backingOff.map(([goalId]) => goalId).join(", ")}`);
+  }
+  emit.text(`${lines.join("\n")}\n`);
 }
 
 function registerRunCommand(
@@ -273,6 +529,10 @@ function integer(value: string | undefined): number | undefined {
   if (!/^\d+$/.test(value))
     throw new Error(`expected a positive integer, got ${JSON.stringify(value)}`);
   return Number.parseInt(value, 10);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 function withSupervisorRoot(emit: EmitContext, fn: (coordRoot: string) => void): void {

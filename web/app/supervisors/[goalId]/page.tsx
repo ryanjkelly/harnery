@@ -3,8 +3,12 @@ import { notFound } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
 import { SupervisorStateBadge } from "@/components/SupervisorStateBadge";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
+import { Badge } from "@/components/ui/badge";
 import { coordRoot } from "@/lib/coord-reader";
-import { readSupervisorGoal } from "@/lib/supervisor-reader";
+import {
+  readSupervisorBackgroundService,
+  readSupervisorGoal,
+} from "@/lib/supervisor-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,9 +19,14 @@ interface PageProps {
 
 export default async function SupervisorGoalPage({ params }: PageProps) {
   const { goalId } = await params;
-  const record = readSupervisorGoal(coordRoot(), decodeURIComponent(goalId));
+  const root = coordRoot();
+  const decodedGoalId = decodeURIComponent(goalId);
+  const record = readSupervisorGoal(root, decodedGoalId);
   if (!record) notFound();
   const { intent, projection, work } = record;
+  const service = readSupervisorBackgroundService(root);
+  const serviceRuntime = service.runtime?.goals[intent.id];
+  const enrolled = service.config?.goal_ids.includes(intent.id) ?? false;
   return (
     <div className="min-h-screen">
       <NavBar scannedDir={coordRoot()} />
@@ -48,6 +57,40 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
           {projection.attention_work.length ? (
             <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
               Attention: {projection.attention_work.join(", ")}
+            </p>
+          ) : null}
+        </section>
+
+        <section className="mb-8 rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold">Background wake state</h2>
+            <Badge variant={enrolled ? (service.running ? "info" : "warning") : "muted"}>
+              {enrolled ? (service.running ? "enrolled · live" : "enrolled · stopped") : "not enrolled"}
+            </Badge>
+          </div>
+          {serviceRuntime ? (
+            <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+              <div>
+                <dt className="text-xs text-muted-foreground">Wake state</dt>
+                <dd>{serviceRuntime.state.replaceAll("_", " ")}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Service errors</dt>
+                <dd>{serviceRuntime.consecutive_errors}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Last tick result</dt>
+                <dd>{serviceRuntime.last_stop_reason ?? "not run"}</dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Enroll this goal with <code>harn supervisor service start {intent.id}</code>.
+            </p>
+          )}
+          {serviceRuntime?.last_error ? (
+            <p className="mt-3 text-xs text-red-700 dark:text-red-300">
+              {serviceRuntime.last_error}
             </p>
           ) : null}
         </section>

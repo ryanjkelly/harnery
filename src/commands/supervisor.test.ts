@@ -10,8 +10,18 @@ describe("supervisor command", () => {
       "create",
       "list",
       "show",
+      "service",
       "tick",
       "run",
+    ]);
+    const service = command?.commands.find((candidate) => candidate.name() === "service");
+    expect(service?.commands.map((candidate) => candidate.name())).toEqual([
+      "start",
+      "run",
+      "status",
+      "stop",
+      "logs",
+      "daemon",
     ]);
   });
 });

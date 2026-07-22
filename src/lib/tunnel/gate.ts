@@ -47,13 +47,19 @@ const server = Bun.serve<WsData, never>({
   // Bun's max, and beyond any realistic single-turn delay.
   idleTimeout: 255,
   async fetch(req, server) {
+    const url = new URL(req.url);
     if (ACCESS === "cloudflare-allowlist") {
       const ip = req.headers.get("cf-connecting-ip") ?? "";
       if (!ALLOW.has(ip)) {
+        // Log denials so operators can whitelist a phone/laptop that just
+        // hit 403 without asking the human to dig up their public IP.
+        console.log(
+          // lint-ok-emission: detached worker, see file note above
+          `deny: ${ip || "(missing-cf-connecting-ip)"} ${req.method} ${url.pathname}`,
+        );
         return new Response("403 Forbidden\n", { status: 403 });
       }
     }
-    const url = new URL(req.url);
 
     if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       if (server.upgrade(req, { data: { path: url.pathname + url.search } })) {

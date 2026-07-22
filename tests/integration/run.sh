@@ -99,6 +99,10 @@ check "harn work list starts empty" "$HARN work list" "no durable work"
 check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"
 check "harn supervisor --help mentions run" "$HARN supervisor --help" "run"
 check "harn supervisor list starts empty" "$HARN supervisor list" "no durable supervisors"
+check "harn supervisor service exposes lifecycle commands" \
+  "$HARN supervisor service --help" "status"
+check "harn supervisor service starts unconfigured" \
+  "$HARN supervisor service status" "unconfigured"
 
 # 8. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
