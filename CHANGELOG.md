@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0
+
+### Minor Changes
+
+- e94966b: Add objective-first supervisor missions with reviewed initial plans, immutable milestone generations, boundary reassessment, and explicit mission-completion decisions.
+
 ## 0.17.0
 
 ### Minor Changes
