@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0
+
+### Minor Changes
+
+- 6b4ca9c: Add a host-enforced workflow policy seam with fail-closed dispatch and external-mutation decisions, cost and capability constraints, approval callbacks, CLI inspection, and proof-packet receipts.
+
+### Patch Changes
+
+- 6b4ca9c: Harden coordination file boundaries, email HTML conversion, browser selector evaluation, and scratch parsing; refresh vulnerable documentation and runtime dependencies.
+
 ## 0.12.0
 
 ### Minor Changes
