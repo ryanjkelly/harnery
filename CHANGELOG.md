@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.0
+
+### Minor Changes
+
+- 65ec4ef: Add an optional background supervisor service with explicit goal enrollment, durable wake state, live heartbeat and status, graceful stop/restart, quiescence while goals await external change, and persisted exponential backoff for service-level errors.
+- 65ec4ef: Add a durable goal supervisor that freezes specialist profiles and bounded automation policy around a root durable-work dependency graph. The new `harn supervisor` CLI and `harnery/core/supervisor` export can run one scheduling tick or continue foreground cycles until accepted success, attention, no progress, or budget exhaustion, while workflow specialist instructions and defaults remain frozen across approval resume.
+
 ## 0.15.0
 
 ### Minor Changes
