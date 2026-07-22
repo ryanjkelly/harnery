@@ -26,6 +26,7 @@ export type EvidenceStatus = "passed" | "failed" | "observed" | "unknown";
 export type EvidenceSource = "workflow" | "engine";
 export type AcceptanceStatus = "satisfied" | "unsatisfied" | "unknown";
 export type WorkflowRunStatus = "succeeded" | "failed";
+export type WorkflowApprovalMode = "deny" | "park";
 
 export interface AcceptanceCriterion {
   /** Stable identifier referenced by evidence, for example `tests-pass`. */
@@ -310,6 +311,10 @@ export interface EngineOpts {
    * agent() calls whose (stage, prompt, model, maxTurns, schema) key matches a
    * completed prior agent return the journaled result without spawning. */
   resumeFrom?: string;
+  /** Continue a parked run in its original directory after its durable
+   * approval has been resolved. The frozen run manifest supplies execution
+   * options and the original repository-before snapshot. */
+  resumeRunId?: string;
   /** Total-agent ceiling for the run (default 50): the runaway backstop. */
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */
@@ -340,6 +345,10 @@ export interface EngineOpts {
   estimateDispatchCost?: DispatchCostEstimator;
   /** Maximum wait for an ASK resolver (default 60 seconds). */
   policyAskTimeoutMs?: number;
+  /** Missing or unavailable ASK resolver behavior (library default: deny). */
+  approvalMode?: WorkflowApprovalMode;
+  /** Bounded address recorded on newly parked approval requests. */
+  approvalAddressee?: string;
   /** Execution boundary created by the host (default shared). */
   isolation?: PolicyIsolation;
   /** Network state of spawned harness subprocesses (default unknown). */

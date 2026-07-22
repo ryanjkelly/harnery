@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runWorkflow } from "./engine.ts";
+import { resolveWorkflowApproval } from "./approvals.ts";
+import { runWorkflow, WorkflowParkedError } from "./engine.ts";
 import type { Spawner, WorkflowProof } from "./types.ts";
 
 let root: string;
@@ -109,6 +110,79 @@ describe("workflow policy enforcement", () => {
     const decision = latestProof().policy?.decisions[0];
     expect(decision?.resolved_by).toBe("host");
     expect(decision?.reason).toBe("operator approved");
+  });
+
+  test("durable ASK parks without a terminal proof and resumes the same run from cache", async () => {
+    let spawns = 0;
+    const workflow = script(`
+      export default async ({ agent, authorize }) => {
+        const prepared = await agent("prepare");
+        await authorize({ action: "publish release", network: false, service: "registry" });
+        return prepared;
+      };
+    `);
+    let parked: WorkflowParkedError | undefined;
+    try {
+      await runWorkflow(workflow, {
+        coordRoot: root,
+        spawners: {
+          "claude-code": async () => {
+            spawns++;
+            return { ok: true, text: "ready", durationMs: 1, costUsd: 0.25 };
+          },
+        },
+        probeBilling: () => ({
+          harness: "claude-code",
+          apiKeySource: null,
+          apiKeyPresent: false,
+          login: "present",
+          mode: "subscription",
+        }),
+        policy: { network: "allow", external_actions: "ask" },
+        approvalMode: "park",
+        ...quiet,
+      });
+    } catch (error) {
+      parked = error as WorkflowParkedError;
+    }
+    expect(parked).toBeInstanceOf(WorkflowParkedError);
+    expect(spawns).toBe(1);
+    expect(existsSync(join(root, ".harnery", "workflows", parked!.runId, "proof.json"))).toBe(
+      false,
+    );
+
+    resolveWorkflowApproval({
+      coordRoot: root,
+      approvalId: parked!.approvalId,
+      verdict: "allow",
+      actor: "operator",
+      reason: "ship it",
+    });
+    const report = await runWorkflow(workflow, {
+      coordRoot: root,
+      spawners: {
+        "claude-code": async () => {
+          spawns++;
+          return { ok: true, text: "unexpected", durationMs: 1 };
+        },
+      },
+      resumeRunId: parked!.runId,
+      ...quiet,
+    });
+    expect(report.runId).toBe(parked!.runId);
+    expect(report.result).toBe("ready");
+    expect(report.agentsSpawned).toBe(1);
+    expect(report.agentsCached).toBe(1);
+    expect(report.costUsd).toBe(0.25);
+    expect(spawns).toBe(1);
+    const proof = latestProof();
+    expect(proof.policy?.decisions.find((decision) => decision.id === "p2")?.resolved_by).toBe(
+      "approval",
+    );
+    const journal = readFileSync(report.journalPath, "utf8");
+    expect(journal).toContain('"event":"run.parked"');
+    expect(journal).toContain('"event":"run.resume"');
+    expect(journal).toContain('"event":"approval.consumed"');
   });
 
   test("unknown pricing under a ceiling denies before spawn", async () => {

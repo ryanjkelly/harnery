@@ -51,6 +51,7 @@ export default function WorkflowsPage() {
                     </span>
                     <span>${run.costUsd.toFixed(4)}</span>
                     <span>{run.stages.join(" → ") || "no stages"}</span>
+                    {run.parkedApprovalId ? <span>approval {run.parkedApprovalId}</span> : null}
                     {run.startedAt ? <span>{new Date(run.startedAt).toLocaleString()}</span> : null}
                   </div>
                 </Link>

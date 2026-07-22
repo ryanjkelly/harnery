@@ -1,4 +1,22 @@
-export { runWorkflow, WorkflowRunError } from "./engine.ts";
+export type {
+  CreateWorkflowApprovalInput,
+  ResolveWorkflowApprovalInput,
+  WorkflowApproval,
+  WorkflowApprovalDecision,
+  WorkflowApprovalRequest,
+  WorkflowApprovalStatus,
+} from "./approvals.ts";
+export {
+  assertWorkflowRunId,
+  createWorkflowApproval,
+  listWorkflowApprovals,
+  readWorkflowApproval,
+  renderWorkflowApproval,
+  resolveWorkflowApproval,
+  WORKFLOW_APPROVAL_SCHEMA_VERSION,
+  workflowApprovalId,
+} from "./approvals.ts";
+export { runWorkflow, WorkflowParkedError, WorkflowRunError } from "./engine.ts";
 export {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -9,6 +27,17 @@ export {
   rollupAcceptance,
   writeWorkflowProof,
 } from "./proof.ts";
+export type { WorkflowRunManifest } from "./run-state.ts";
+export {
+  acquireWorkflowResumeLease,
+  assertWorkflowRunResumable,
+  assertWorkflowScriptUnchanged,
+  readWorkflowRunManifest,
+  WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION,
+  workflowRunManifestPath,
+  workflowScriptDigest,
+  writeWorkflowRunManifest,
+} from "./run-state.ts";
 export type {
   AcceptanceCriterion,
   AcceptanceResult,
@@ -29,6 +58,7 @@ export type {
   SpawnResult,
   StageSchema,
   WorkflowAgentProof,
+  WorkflowApprovalMode,
   WorkflowContext,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,

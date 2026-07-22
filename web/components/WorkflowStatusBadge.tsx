@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 export function WorkflowStatusBadge({
   status,
 }: {
-  status: "running" | "done" | "failed" | "stale" | "cached";
+  status: "running" | "parked" | "done" | "failed" | "stale" | "cached";
 }) {
   if (status === "running") {
     return (
@@ -19,6 +19,13 @@ export function WorkflowStatusBadge({
     return (
       <Badge className="border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
         done
+      </Badge>
+    );
+  }
+  if (status === "parked") {
+    return (
+      <Badge className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+        awaiting approval
       </Badge>
     );
   }

@@ -5,6 +5,8 @@ import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
+import type { WorkflowApprovalStatus } from "../core/workflow/approvals.ts";
+import { WorkflowParkedError } from "../core/workflow/engine.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
@@ -26,10 +28,22 @@ interface WorkflowRunOpts {
   allowApiBilling?: boolean;
   policy?: string;
   isolation?: PolicyIsolation;
+  approvalTo?: string;
   json?: boolean;
 }
 
 interface WorkflowProofOpts {
+  json?: boolean;
+}
+
+interface WorkflowApprovalListOpts {
+  status?: WorkflowApprovalStatus;
+  json?: boolean;
+}
+
+interface WorkflowApprovalDecisionOpts {
+  actor?: string;
+  reason?: string;
   json?: boolean;
 }
 
@@ -75,6 +89,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       "--isolation <mode>",
       "Host-created execution boundary: shared | worktree | sandbox | remote (default shared)",
     )
+    .option("--approval-to <address>", "Address durable ASK requests (default: operator)")
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
       const coordRoot = findCoordRoot();
@@ -134,6 +149,8 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
               ]),
           ),
           policy: opts.policy ? loadPolicyFile(opts.policy) : undefined,
+          approvalMode: "park",
+          approvalAddressee: opts.approvalTo,
           isolation: opts.isolation,
           // CLI harness subprocesses inherit the host network. A policy that
           // forbids network must therefore deny dispatch unless a future host
@@ -159,6 +176,24 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
         );
       } catch (err) {
+        if (err instanceof WorkflowParkedError) {
+          if (opts.json) {
+            emit.config({ format: "json" });
+            emit.data({
+              status: "parked",
+              runId: err.runId,
+              approvalId: err.approvalId,
+              journalPath: err.journalPath,
+            });
+          } else {
+            emit.text(
+              `run ${err.runId} parked\napproval: ${err.approvalId}\n` +
+                `journal: ${err.journalPath}\n` +
+                `resume after resolution: harn workflow resume ${err.runId}\n`,
+            );
+          }
+          return;
+        }
         const proofPath =
           typeof err === "object" && err !== null && "proofPath" in err
             ? String(err.proofPath)
@@ -170,6 +205,197 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
     });
+
+  workflow
+    .command("resume <run-id>")
+    .description("Resume a parked workflow after its durable approval has been resolved.")
+    .option("--json", "Emit the full RunReport or parked result as JSON")
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      try {
+        const { assertWorkflowRunResumable, runWorkflow } = await import(
+          "../core/workflow/index.ts"
+        );
+        const { manifest } = assertWorkflowRunResumable(coordRoot, runId);
+        const report = await runWorkflow(manifest.script.path, {
+          coordRoot,
+          spawners: registry.spawners(),
+          resumeRunId: runId,
+          harnessEvidence: Object.fromEntries(
+            registry
+              .list()
+              .map((adapter) => [
+                adapter.profile.id,
+                { toolEvidence: adapter.profile.capabilities.toolEvidence },
+              ]),
+          ),
+        });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(report);
+          return;
+        }
+        const cachedPart = report.agentsCached > 0 ? ` (+${report.agentsCached} cached)` : "";
+        emit.text(
+          `run ${report.runId} (${report.name}) finished: ${report.agentsSpawned} agent(s)${cachedPart}, ` +
+            `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n` +
+            `acceptance: ${report.acceptance.satisfied} satisfied, ${report.acceptance.unsatisfied} unsatisfied, ` +
+            `${report.acceptance.unknown} unknown\n` +
+            `journal: ${report.journalPath}\nproof: ${report.proofPath}\n` +
+            `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
+        );
+      } catch (err) {
+        if (err instanceof WorkflowParkedError) {
+          if (opts.json) {
+            emit.config({ format: "json" });
+            emit.data({
+              status: "parked",
+              runId: err.runId,
+              approvalId: err.approvalId,
+              journalPath: err.journalPath,
+            });
+          } else {
+            emit.text(
+              `run ${err.runId} parked again\napproval: ${err.approvalId}\n` +
+                `journal: ${err.journalPath}\n`,
+            );
+          }
+          return;
+        }
+        const proofPath =
+          typeof err === "object" && err !== null && "proofPath" in err
+            ? String(err.proofPath)
+            : undefined;
+        emit.error({
+          code: "workflow_resume_failed",
+          message: `${(err as Error).message}${proofPath ? `\nproof: ${proofPath}` : ""}`,
+        });
+        process.exit(1);
+      }
+    });
+
+  const approvals = workflow
+    .command("approvals")
+    .description("Inspect and resolve durable workflow policy approvals.");
+
+  approvals
+    .command("list")
+    .description("List durable workflow approvals.")
+    .option("--status <status>", "Filter: pending | approved | denied")
+    .option("--json", "Emit approval records as JSON")
+    .action(async (opts: WorkflowApprovalListOpts) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({ code: "no_coord_root", message: "no .harnery/ coordination root found" });
+        process.exit(1);
+      }
+      if (opts.status && !(["pending", "approved", "denied"] as const).includes(opts.status)) {
+        emit.error({
+          code: "bad_approval_status",
+          message: `unknown approval status ${JSON.stringify(opts.status)}`,
+        });
+        process.exit(1);
+      }
+      const { listWorkflowApprovals } = await import("../core/workflow/approvals.ts");
+      const records = listWorkflowApprovals(coordRoot, { status: opts.status });
+      if (opts.json) {
+        emit.config({ format: "json" });
+        emit.data(records);
+        return;
+      }
+      if (records.length === 0) {
+        emit.text("no workflow approvals\n");
+        return;
+      }
+      emit.text(
+        `${records
+          .map(
+            ({ request, status }) =>
+              `${request.id}  ${status.padEnd(8)}  ${request.run_id}  ${request.request.phase}  ${request.request.action}  -> ${request.addressed_to}`,
+          )
+          .join("\n")}\n`,
+      );
+    });
+
+  approvals
+    .command("show <approval-id>")
+    .description("Show one durable workflow approval.")
+    .option("--json", "Emit the approval record as JSON")
+    .action(async (approvalId: string, opts: { json?: boolean }) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({ code: "no_coord_root", message: "no .harnery/ coordination root found" });
+        process.exit(1);
+      }
+      try {
+        const { readWorkflowApproval, renderWorkflowApproval } = await import(
+          "../core/workflow/approvals.ts"
+        );
+        const approval = readWorkflowApproval(coordRoot, approvalId);
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(approval);
+        } else {
+          emit.text(renderWorkflowApproval(approval));
+        }
+      } catch (err) {
+        emit.error({ code: "workflow_approval_read_failed", message: (err as Error).message });
+        process.exit(1);
+      }
+    });
+
+  const registerApprovalDecision = (command: "approve" | "deny", verdict: "allow" | "deny") => {
+    approvals
+      .command(`${command} <approval-id>`)
+      .description(`${command === "approve" ? "Approve" : "Deny"} a pending workflow approval.`)
+      .option("--actor <name>", "Decision actor recorded in the receipt")
+      .option("--reason <text>", "Bounded decision reason")
+      .option("--json", "Emit the resolved approval as JSON")
+      .action(async (approvalId: string, opts: WorkflowApprovalDecisionOpts) => {
+        const coordRoot = findCoordRoot();
+        if (!coordRoot) {
+          emit.error({ code: "no_coord_root", message: "no .harnery/ coordination root found" });
+          process.exit(1);
+        }
+        try {
+          const { resolveWorkflowApproval, renderWorkflowApproval } = await import(
+            "../core/workflow/approvals.ts"
+          );
+          const resolved = resolveWorkflowApproval({
+            coordRoot,
+            approvalId,
+            verdict,
+            actor: opts.actor ?? process.env.USER ?? process.env.USERNAME ?? "operator",
+            reason: opts.reason,
+          });
+          if (opts.json) {
+            emit.config({ format: "json" });
+            emit.data(resolved);
+          } else {
+            emit.text(
+              `${renderWorkflowApproval(resolved.approval)}` +
+                `${resolved.applied ? "decision recorded" : "decision already recorded"}\n` +
+                `resume: harn workflow resume ${resolved.approval.request.run_id}\n`,
+            );
+          }
+        } catch (err) {
+          emit.error({
+            code: "workflow_approval_resolution_failed",
+            message: (err as Error).message,
+          });
+          process.exit(1);
+        }
+      });
+  };
+  registerApprovalDecision("approve", "allow");
+  registerApprovalDecision("deny", "deny");
 
   workflow
     .command("proof <run-id>")

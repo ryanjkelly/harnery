@@ -26,7 +26,9 @@ export interface WorkflowRunSummary {
   name: string;
   startedAt?: string;
   endedAt?: string;
-  status: "running" | "done" | "failed" | "stale";
+  status: "running" | "parked" | "done" | "failed" | "stale";
+  /** Durable approval currently holding the run, only while status=parked. */
+  parkedApprovalId?: string;
   stages: string[];
   agents: WorkflowAgentRow[];
   agentsCached: number;
@@ -52,10 +54,12 @@ interface JournalLine {
   mode?: string;
   attempts?: number;
   cost_usd?: number;
+  total_cost_usd?: number;
   duration_ms?: number;
   session_id?: string;
   ok?: boolean;
   error?: string;
+  approval_id?: string;
 }
 
 /** A run with no journal writes for this long, and no run.end, is "stale"
@@ -117,6 +121,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
   let startedAt: string | undefined;
   let endedAt: string | undefined;
   let runOk: boolean | undefined;
+  let parkedApprovalId: string | undefined;
   let agentsCached = 0;
   let costUsd = 0;
   const billing: string[] = [];
@@ -134,6 +139,12 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
       case "run.start":
         name = e.name ?? runId;
         startedAt = e.ts;
+        break;
+      case "run.parked":
+        parkedApprovalId = e.approval_id;
+        break;
+      case "run.resume":
+        parkedApprovalId = undefined;
         break;
       case "stage.start":
         if (e.title && !stages.includes(e.title)) stages.push(e.title);
@@ -159,11 +170,11 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
           if (row) {
             row.status = "done";
             row.attempts = e.attempts;
-            row.costUsd = e.cost_usd;
+            row.costUsd = e.total_cost_usd ?? e.cost_usd;
             row.durationMs = e.duration_ms;
             row.sessionId = e.session_id;
           }
-          costUsd += e.cost_usd ?? 0;
+          costUsd += e.total_cost_usd ?? e.cost_usd ?? 0;
         }
         break;
       case "agent.failed":
@@ -196,9 +207,11 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
     ? runOk
       ? "done"
       : "failed"
-    : Date.now() - Date.parse(mtimeIso) > STALE_MS
-      ? "stale"
-      : "running";
+    : parkedApprovalId
+      ? "parked"
+      : Date.now() - Date.parse(mtimeIso) > STALE_MS
+        ? "stale"
+        : "running";
 
   return {
     runId,
@@ -206,6 +219,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
     startedAt,
     endedAt,
     status,
+    parkedApprovalId,
     stages,
     agents: Array.from(agents.values()),
     agentsCached,

@@ -1,0 +1,135 @@
+---
+title: "0023: Policy approvals park workflows durably"
+description: "ADR: persist ASK requests and first-writer decisions, park without a terminal result, and resume deterministic workflow scripts from their journaled agent cache."
+---
+
+**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/workflow`, workflow CLI, dashboard)
+
+## Context
+
+Workflow policy already evaluated `allow`, `ask`, and `deny` before an agent
+dispatch or declared external mutation. An embedding host could resolve `ask`
+through a callback, but the standalone CLI had no safe approval mechanism. A
+missing callback therefore denied the request and failed the run.
+
+Keeping the process alive on an interactive prompt would make approval depend
+on one terminal, one machine process, and one timeout. It would not survive a
+crash or let another authorized surface resolve the request. Treating the park
+as an ordinary failure would also lose an important distinction: the workflow
+has not failed, completed, or received authorization. It is waiting.
+
+Harnery workflows are plain asynchronous JavaScript functions, not persisted
+graphs. The engine can replay completed `agent()` calls from its journal, but
+it cannot serialize a JavaScript stack or make arbitrary script side effects
+idempotent. The durable design must preserve that capability boundary.
+
+## Decision
+
+Add a file-backed approval inbox under `.harnery/approvals/`. Each approval has
+an immutable, mode-`0600` `request.json`. Resolution creates a separate
+mode-`0600` `decision.json` with exclusive-create semantics. The first valid
+decision wins. Repeating the same decision is idempotent; a conflicting
+approve/deny attempt fails visibly instead of overwriting authority.
+
+An approval request contains only the existing bounded policy summary,
+evaluation, policy digest, workflow run and decision-slot identity, addressee,
+and timestamps. It never stores the workflow prompt, environment, credentials,
+arbitrary mutation payload, response body, or URL query string. A digest binds
+the durable decision to the exact policy request. A changed request at the same
+decision slot cannot consume the earlier authorization.
+
+Library callers retain the existing fail-closed default. `EngineOpts` gains an
+explicit approval mode: `deny` or `park`. The standalone CLI selects `park`
+because it now exposes a durable resolver. Embedding hosts may keep resolving
+`ask` synchronously through `resolvePolicyAsk`.
+
+When a policy request asks and has no immediate resolution, the engine writes
+or verifies the immutable approval request before appending
+`approval.requested` and `run.parked`. It then returns a typed parked outcome.
+No protected action runs. A parked run receives no `run.end` and no terminal
+proof packet because it is not terminal.
+
+Each workflow run also receives a private, frozen resume manifest before its
+first dispatch. It records the script path and SHA-256, original start time,
+repository-before snapshot, normalized policy, working directory, harness and
+bounded execution options. `harn workflow resume <run-id>` acquires an
+exclusive, crash-recoverable lease before loading the workflow module, refuses
+script drift, reuses the same run ID and journal, reconstructs completed agent
+results and committed cost, appends `run.resume`, and reruns the deterministic
+script from its entry point. A concurrent resume attempt fails visibly.
+
+During replay, completed `agent()` calls return their journaled results without
+spawning. The matching policy slot consumes the durable decision. Approval
+continues; denial throws before the protected action. A later unresolved `ask`
+creates another approval and parks the same run again. Only terminal success or
+failure appends `run.end` and writes the final proof packet.
+
+Add:
+
+- `harn workflow approvals list [--status pending|approved|denied]`;
+- `harn workflow approvals show <approval-id>`;
+- `harn workflow approvals approve <approval-id> [--actor <name>] [--reason <text>]`;
+- `harn workflow approvals deny <approval-id> [--actor <name>] [--reason <text>]`;
+- `harn workflow resume <run-id>`.
+
+Journal the request, resolution, consumption, park, and resume as separate
+events. Resolution is authoritative when `decision.json` exists. If a process
+crashes after the decision file is created but before its journal receipt, a
+later read or resume still observes the decision and can append consumption
+evidence. Approval never auto-spawns work; an operator or embedding host must
+invoke resume deliberately.
+
+## Alternatives considered
+
+- **Hold an interactive prompt open.** Rejected because it ties authorization
+  to a live process and terminal, turns downtime into denial, and cannot be
+  inspected or resolved safely from another surface.
+- **Treat `ask` as a failed run and start over manually.** Rejected because it
+  loses the non-terminal waiting state and repeats completed work unless the
+  operator reconstructs resume flags correctly.
+- **Store one mutable approval JSON file.** Rejected because concurrent
+  approve and deny writers could overwrite each other or duplicate wakeup
+  side effects. Immutable request and exclusive decision files make the
+  winning transition obvious and recoverable.
+- **Automatically resume immediately after approval.** Rejected for the local
+  runtime. Harnery has no always-on trusted daemon, and approval should not
+  smuggle in background process execution. A host may build an explicit wakeup
+  service on the exported API.
+- **Create a new run for every continuation.** Rejected because the journal,
+  approval slots, cost ledger, proof, and operator mental model all describe
+  one workflow attempt. The same run ID may have multiple execution segments
+  before its single terminal result.
+- **Serialize the JavaScript continuation.** Rejected because JavaScript
+  closures, resources, and arbitrary side effects do not have a safe portable
+  persistence contract. Harnery replays the script and caches only operations
+  it owns.
+- **Assume all workflow code is replay-safe.** Rejected. The contract explicitly
+  covers engine-managed agent calls and policy decisions. Workflow authors must
+  keep direct pre-park side effects idempotent or place them behind
+  `ctx.authorize()`.
+- **Put pending approvals into default agent context.** Rejected because
+  approval is operator work, can expose unnecessary policy detail, and should
+  not consume every agent's context budget.
+
+## Result and gotchas
+
+- A policy `ask` can survive process death without becoming an accidental
+  denial or authorization.
+- Approval and execution remain separate actions. A resolved request is safe
+  to inspect indefinitely and does not resume work by itself.
+- The same-verdict retry is idempotent, but a conflicting verdict is a hard
+  conflict even if it supplies a different actor or reason.
+- Resume refuses a changed workflow script. Starting a new run is the honest
+  path when behavior changed after approval was requested.
+- Only one resume segment may execute at once. Same-host process liveness and a
+  bounded foreign-host lease allow stale locks to recover without treating a
+  live continuation as abandoned.
+- A parked run intentionally has no terminal proof. Its journal and approval
+  record are the inspectable non-terminal evidence; the final packet covers the
+  complete run after success or failure.
+- Crash-safe resume applies to Harnery-owned effects. Plain JavaScript executed
+  directly before the park runs again on resume. This is a documented partial
+  capability, not hidden behind a stronger product claim.
+- Local CLI attribution records the selected operator or OS identity but is not
+  a remote authorization system. An embedding web or service host must check
+  its own access boundary before calling the approval API.

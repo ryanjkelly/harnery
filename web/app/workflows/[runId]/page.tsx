@@ -55,6 +55,20 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           {run.billing.length > 0 ? ` · billing: ${run.billing.join(", ")}` : ""}
         </p>
 
+        {run.status === "parked" && run.parkedApprovalId ? (
+          <section className="mb-8 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
+            <h2 className="text-sm font-semibold">Awaiting durable approval</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              No further protected work will run until this request is resolved and the workflow is
+              resumed explicitly.
+            </p>
+            <code className="mt-3 block break-all text-xs">{run.parkedApprovalId}</code>
+            <code className="mt-1 block break-all text-xs">
+              harn workflow approvals show {run.parkedApprovalId}
+            </code>
+          </section>
+        ) : null}
+
         {run.proof ? (
           <section className="mb-8 rounded-lg border border-border bg-card p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

@@ -8,8 +8,12 @@ sidebar:
 ```
 harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
-                           [--policy <file>] [--isolation <mode>]
+                           [--policy <file>] [--isolation <mode>] [--approval-to <address>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
+harn workflow resume <run-id> [--json]
+harn workflow approvals list [--status pending|approved|denied] [--json]
+harn workflow approvals show <approval-id> [--json]
+harn workflow approvals approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
 harn workflow proof <run-id> [--json]
 ```
 
@@ -178,10 +182,11 @@ pricing, harness, model, working path, network state, and the host-declared
 isolation mode. It is not part of workflow metadata, so the script and child
 prompts cannot weaken it.
 
-Rules return `allow`, `ask`, or `deny`. The standalone CLI fails closed on
-`ask` because it has no implicit approval channel. An embedding host can supply
-`EngineOpts.resolvePolicyAsk`; only an explicit valid approval proceeds.
-Missing, invalid, throwing, or timed-out resolution denies. Use
+Rules return `allow`, `ask`, or `deny`. The standalone CLI parks on `ask` and
+writes a durable request under `.harnery/approvals/`; no protected operation
+runs while it is pending. Library callers remain fail-closed by default and
+must select `EngineOpts.approvalMode = "park"` deliberately. An embedding host
+can still supply `EngineOpts.resolvePolicyAsk` for immediate decisions. Use
 [`harn policy`](./policy/) to validate a document before a run.
 
 `--isolation` declares the boundary the host actually created: `shared`,
@@ -215,6 +220,32 @@ Changed or previously-failed calls re-run live. Same script + same inputs →
 100% cache, $0. A typo'd run id fails loud rather than silently re-running
 everything.
 
+### Durable approval parking
+
+A CLI run that reaches policy `ask` writes `run.parked`, prints its approval
+ID, and exits without `run.end` or a terminal proof. Inspect and resolve it:
+
+```bash
+harn workflow approvals list --status pending
+harn workflow approvals show apr-0123456789abcdef0123
+harn workflow approvals approve apr-0123456789abcdef0123 \
+  --actor ryan --reason "reviewed the release target"
+harn workflow resume wf-2026-07-21T12-00-00-000Z-a1b2c3
+```
+
+Requests are immutable private records. Resolution creates a separate
+exclusive decision record: the first verdict wins, the same-verdict retry is
+idempotent, and a conflicting retry is refused. Approval does not auto-spawn
+work. Resume must be invoked explicitly, and an exclusive resume lease refuses
+concurrent attempts for the same run.
+
+`workflow resume` reuses the same run ID and journal. It verifies the frozen
+script SHA-256, reconstructs completed agent results and committed cost, and
+reruns the deterministic script from its entry point. Engine-managed
+`agent()` calls return cached results and the matching approval decision is
+replayed. Plain JavaScript side effects executed directly before the park run
+again; keep them idempotent or put protected effects behind `authorize()`.
+
 ## Context-cost heads-up
 
 Children spawn in `--cwd` (default: the coord root) and load that directory's
@@ -234,6 +265,8 @@ path, proof path, acceptance summary, result). `--json` emits the full
 `agent.start/end` (cost, duration, child session id, result), `agent.cached`,
 `agent.schema_retry`, `evidence.recorded`, `run.end`. New journal lines carry
 `schema_version` and `run_id`; older journals remain resumable.
+Durable approval runs also use `approval.requested`, `approval.resolved`,
+`approval.consumed`, `run.parked`, and `run.resume`.
 
 ## Proof packets
 
@@ -283,7 +316,8 @@ the engine, proof reader and renderer, schema types, and
 The dashboard (`harn web up`) ships a **/workflows** page: journal-driven list
 of runs (status, agents, cached count, cost, stage chain) and a per-run detail
 view rendering the stages → agents tree with per-agent harness, attempts,
-duration, and cost. When a terminal proof packet exists, the detail page also
+duration, and cost. Parked runs have a distinct awaiting-approval status and
+show the durable approval ID and inspection command. When a terminal proof packet exists, the detail page also
 shows the objective, acceptance criteria, declared evidence, repository drift,
 host-policy decisions, and explicit unknowns. Journal-driven means a run stays
 inspectable while live
