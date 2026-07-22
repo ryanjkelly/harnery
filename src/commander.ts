@@ -42,6 +42,7 @@ import { registerGrepCommand } from "./commands/grep.ts";
 import { registerHarnessCommand } from "./commands/harness.ts";
 import { registerInitCommand } from "./commands/init.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
+import { registerPolicyCommand } from "./commands/policy.ts";
 import { registerPresenceCommand } from "./commands/presence.ts";
 import { registerReadCommand } from "./commands/read.ts";
 import { registerRelayCommand } from "./commands/relay.ts";
@@ -264,6 +265,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerEditBatchCommand(program, emit);
   registerGrepCommand(program, emit, opts.context);
   registerHarnessCommand(program, emit);
+  registerPolicyCommand(program, emit);
   registerCookiesCommand(program, emit);
   registerFetchCommand(program, emit, opts.context);
   registerReadCommand(program, emit);

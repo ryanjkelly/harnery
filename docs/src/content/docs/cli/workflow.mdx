@@ -8,6 +8,7 @@ sidebar:
 ```
 harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
+                           [--policy <file>] [--isolation <mode>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
 harn workflow proof <run-id> [--json]
 ```
@@ -150,6 +151,7 @@ export default async function run({ agent, parallel, stage, log, evidence }) {
 | `stage(title)` | Declare the current stage: journal marker + progress grouping. |
 | `log(message)` | Narrate progress (stderr + journal). |
 | `evidence(input)` | Attach a bounded receipt to the run and optional acceptance IDs. Returns a stable ID such as `e1`. Kinds: `test`, `command`, `artifact`, `change`, `review`, `observation`. Statuses: `passed`, `failed`, `observed`, `unknown`. |
+| `authorize(input)` | Authorize one host-mediated external mutation before performing it. Input includes a short `action` plus optional `path`, `network`, `service`, and bounded `target`. Returns the final allow decision; denial or missing host policy throws before control returns. |
 
 `effort` is validated and mapped per registered adapter: Claude Code accepts
 `low | medium | high | xhigh | max`; Codex accepts
@@ -165,6 +167,43 @@ executable capability declaration.
   subagents are leaf processes.
 - `--concurrency` (default 4): one shared slot pool for every spawn in the run,
   so nesting `parallel()` inside loops can't exceed it.
+- Policy receipts are capped at 50 per run. Reaching the cap fails closed
+  before another protected action.
+
+## Host policy
+
+`--policy <file>` applies a host-owned JSON/JSONC policy immediately before
+every uncached agent dispatch. The policy can constrain run cost, unknown
+pricing, harness, model, working path, network state, and the host-declared
+isolation mode. It is not part of workflow metadata, so the script and child
+prompts cannot weaken it.
+
+Rules return `allow`, `ask`, or `deny`. The standalone CLI fails closed on
+`ask` because it has no implicit approval channel. An embedding host can supply
+`EngineOpts.resolvePolicyAsk`; only an explicit valid approval proceeds.
+Missing, invalid, throwing, or timed-out resolution denies. Use
+[`harn policy`](./policy/) to validate a document before a run.
+
+`--isolation` declares the boundary the host actually created: `shared`,
+`worktree`, `sandbox`, or `remote`. It does not create that boundary. Ordinary
+CLI harness subprocesses inherit host networking, so the CLI declares network
+enabled and a `network: deny` policy blocks dispatch.
+
+Workflow code may use `ctx.authorize()` before an external mutation:
+
+```js
+await authorize({
+  action: "publish release",
+  network: true,
+  service: "package registry",
+  target: "https://registry.example.test/package",
+});
+// Perform the operation only after authorization returns.
+```
+
+This seam protects host-mediated operations. It does not intercept arbitrary
+tools invoked inside an opaque harness subprocess. Adapter-native policy
+mapping remains a separate capability claim in `harn harness show`.
 
 ## Resume
 
@@ -212,6 +251,8 @@ mode `0600` and contains:
 - explicit unknowns for missing capability claims, cost, session IDs, and
   incomplete repository drift;
 - a SHA-256 digest of the final journal.
+- the normalized host policy, its digest, host isolation/network declarations,
+  and bounded initial/final decision receipts when policy was configured.
 
 Acceptance is deliberately simple. Any attached `failed` evidence makes a
 criterion unsatisfied. At least one `passed` item and no failure makes it
@@ -244,7 +285,8 @@ of runs (status, agents, cached count, cost, stage chain) and a per-run detail
 view rendering the stages → agents tree with per-agent harness, attempts,
 duration, and cost. When a terminal proof packet exists, the detail page also
 shows the objective, acceptance criteria, declared evidence, repository drift,
-and explicit unknowns. Journal-driven means a run stays inspectable while live
+host-policy decisions, and explicit unknowns. Journal-driven means a run stays
+inspectable while live
 and after the orchestrator exits, with no terminal paging limits.
 
 ## Workflow children and the end-of-turn ritual

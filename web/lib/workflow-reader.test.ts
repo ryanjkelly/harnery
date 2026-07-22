@@ -27,6 +27,7 @@ describe("workflow proof reader", () => {
     const run = readWorkflowRun(root, "wf-reader");
     expect(run?.proof?.run.objective).toBe("Show proof in the dashboard");
     expect(run?.proof?.acceptance.summary.satisfied).toBe(1);
+    expect(run?.proof?.policy?.decisions[0]?.verdict).toBe("allow");
   });
 
   test("ignores malformed and mismatched packets without hiding the journal run", () => {
@@ -67,6 +68,40 @@ function sampleProof(): WorkflowProof {
     },
     agents: [],
     evidence: [],
+    policy: {
+      schema_version: 1,
+      name: "dashboard policy",
+      sha256: "b".repeat(64),
+      isolation: "worktree",
+      network_access: "enabled",
+      config: {
+        schema_version: 1,
+        name: "dashboard policy",
+        unknown_cost: "deny",
+        network: "allow",
+        external_actions: "deny",
+      },
+      decisions: [
+        {
+          id: "p1",
+          checked_at: "2026-07-21T12:00:00.500Z",
+          policy: "dashboard policy",
+          phase: "dispatch",
+          initial_verdict: "allow",
+          verdict: "allow",
+          resolved_by: "policy",
+          reason: "all configured rules allow",
+          rule_codes: ["policy_allow"],
+          request: {
+            phase: "dispatch",
+            action: "spawn agent",
+            isolation: "worktree",
+            network_access: "enabled",
+          },
+        },
+      ],
+      summary: { allowed: 1, denied: 0, asked: 0, total: 1 },
+    },
     repository: {
       source: "engine",
       before: { cwd: root, dirty_paths: [] },

@@ -12,6 +12,13 @@ import {
 import { dirname, join } from "node:path";
 import type { RepoSnapshot } from "../context/index.ts";
 import type {
+  NormalizedPolicy,
+  PolicyDecision,
+  PolicyIsolation,
+  PolicyNetworkAccess,
+} from "../policy/index.ts";
+import { policyDigest } from "../policy/index.ts";
+import type {
   AcceptanceCriterion,
   AcceptanceResult,
   AcceptanceSummary,
@@ -22,6 +29,7 @@ import type {
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
   WorkflowMeta,
+  WorkflowPolicyProof,
   WorkflowProof,
   WorkflowProofUnknown,
   WorkflowRepoEvidence,
@@ -61,6 +69,12 @@ export interface BuildWorkflowProofInput {
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
   harnessEvidence?: Readonly<Record<string, HarnessEvidenceCapability | undefined>>;
+  policy?: {
+    config: Readonly<NormalizedPolicy>;
+    decisions: readonly PolicyDecision[];
+    isolation: PolicyIsolation;
+    networkAccess: PolicyNetworkAccess;
+  };
   result?: unknown;
   error?: string;
 }
@@ -211,6 +225,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     acceptance,
     agents,
     evidence: input.evidence,
+    policy: input.policy ? buildPolicyProof(input.policy) : undefined,
     repository,
     harnesses,
     unknowns,
@@ -220,6 +235,36 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
         sha256: createHash("sha256").update(journal).digest("hex"),
         bytes: journal.byteLength,
       },
+    },
+  };
+}
+
+function buildPolicyProof(
+  input: NonNullable<BuildWorkflowProofInput["policy"]>,
+): WorkflowPolicyProof {
+  const decisions = input.decisions.map((decision) => ({
+    ...decision,
+    reason: clipped(decision.reason, MAX_SUMMARY_CHARS),
+    request: {
+      ...decision.request,
+      action: clipped(decision.request.action, MAX_REF_CHARS),
+      path: clippedOptional(decision.request.path, MAX_REF_CHARS),
+      target: clippedOptional(decision.request.target, MAX_REF_CHARS),
+    },
+  }));
+  return {
+    schema_version: input.config.schema_version,
+    name: input.config.name,
+    sha256: policyDigest(input.config),
+    isolation: input.isolation,
+    network_access: input.networkAccess,
+    config: input.config as NormalizedPolicy,
+    decisions,
+    summary: {
+      allowed: decisions.filter((decision) => decision.verdict === "allow").length,
+      denied: decisions.filter((decision) => decision.verdict === "deny").length,
+      asked: decisions.filter((decision) => decision.initial_verdict === "ask").length,
+      total: decisions.length,
     },
   };
 }
@@ -278,6 +323,12 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
     lines.push(`  ${mark} ${criterion.id}: ${criterion.statement}${refs}`);
   }
   lines.push(`evidence: ${proof.evidence.length} record(s); agents: ${proof.agents.length}`);
+  if (proof.policy) {
+    lines.push(
+      `policy: ${proof.policy.name}; ${proof.policy.summary.allowed} allowed, ` +
+        `${proof.policy.summary.denied} denied, ${proof.policy.summary.asked} asked`,
+    );
+  }
   const repo = proof.repository;
   const drift = repo.drift;
   lines.push(

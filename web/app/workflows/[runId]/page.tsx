@@ -68,6 +68,38 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             {run.proof.run.objective ? (
               <p className="mb-4 text-sm">{run.proof.run.objective}</p>
             ) : null}
+            {run.proof.policy ? (
+              <div className="mb-4 rounded-md border border-border px-3 py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">Policy: {run.proof.policy.name}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {run.proof.policy.summary.allowed} allowed · {run.proof.policy.summary.denied}{" "}
+                    denied · {run.proof.policy.summary.asked} asked
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {run.proof.policy.isolation} · network {run.proof.policy.network_access}
+                  </span>
+                </div>
+                {run.proof.policy.decisions.length > 0 ? (
+                  <details className="mt-2 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer">
+                      {run.proof.policy.decisions.length} decision
+                      {run.proof.policy.decisions.length === 1 ? "" : "s"}
+                    </summary>
+                    <ul className="mt-2 space-y-1">
+                      {run.proof.policy.decisions.map((decision) => (
+                        <li key={decision.id} className="rounded bg-muted/50 px-2 py-1.5">
+                          <span className="font-mono">{decision.id}</span> · {decision.verdict}
+                          {decision.initial_verdict === "ask" ? " after ask" : ""} ·{" "}
+                          {decision.phase} · {decision.request.action}
+                          <span className="block break-all pt-0.5">{decision.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
             {run.proof.acceptance.criteria.length > 0 ? (
               <ul className="mb-4 space-y-1">
                 {run.proof.acceptance.criteria.map((criterion) => (
