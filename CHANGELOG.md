@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1
+
+### Patch Changes
+
+- 6b4ca9c: Harden coordination file boundaries, email HTML conversion, browser selector evaluation, and scratch parsing; refresh vulnerable documentation and runtime dependencies.
+
 ## 0.12.0
 
 ### Minor Changes
