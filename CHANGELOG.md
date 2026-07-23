@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.0
+
+### Minor Changes
+
+- 88f44a8: Add durable operator-guided recovery for the latest supervisor plan in attention. Preserve the original request, proposal, review receipt, and attention event while an addressed, idempotent retry event authorizes one new planner attempt under the frozen graph and cumulative budgets.
+
 ## 0.19.1
 
 ### Patch Changes
