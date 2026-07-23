@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.0
+
+### Minor Changes
+
+- 6087db7: Add rendered alignment, gap, clipping, target-size, and sibling-overlap checks to `browse`, with structured outcomes, screenshot annotations, and fail gates that run together in one browser state.
+- 2964e43: Add independent, bounded milestone-plan review with deterministic revision, durable receipts, CLI and dashboard rendering, public read APIs, and supervisor recovery.
+
 ## 0.18.0
 
 ### Minor Changes
