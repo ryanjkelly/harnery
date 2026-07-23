@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install Playwright Chromium
+        run: bun x playwright install --with-deps chromium
+
       - name: Lint (Biome)
         run: bun run lint
 
