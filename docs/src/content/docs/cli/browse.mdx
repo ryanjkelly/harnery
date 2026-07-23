@@ -82,6 +82,45 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-runts-min-chars <n>` | Minimum block text length to scan. Default `40`. |
 | `--check-runts-fail` | Exit non-zero if any runt is detected. |
 | `--no-check-runts-annotate` | Skip drawing runt boxes. |
+| `--check-align <selector>` | Compare rendered child-content centers inside a container. Uses text fragments, then descendant SVGs, then border boxes. Repeatable. |
+| `--check-align-axis <axis>` | `auto`, `x`, or `y`. Auto checks y-centers for rows and x-centers for flex columns. Default `auto`. |
+| `--check-align-threshold <px>` | Maximum center drift in CSS pixels. Default `2`. |
+| `--check-align-fail` | Exit 2 when an alignment target fails or is missing. |
+| `--no-check-align-annotate` | Skip alignment annotations. |
+| `--check-gap <selector>` | Compare adjacent rendered gaps inside a container. Groups of 3+ infer their median gap. Repeatable. |
+| `--check-gap-axis <axis>` | `auto`, `x`, or `y`. Default `auto`. |
+| `--check-gap-expected <px>` | Supply the expected gap. Required to make a two-item group conclusive. |
+| `--check-gap-threshold <px>` | Maximum gap deviation in CSS pixels. Default `2`. |
+| `--check-gap-fail` | Exit 2 when a gap target fails or is missing. An uninferable gap remains `unknown` without failing. |
+| `--no-check-gap-annotate` | Skip gap annotations. |
+| `--check-clip <selector>` | Compare painted descendants with the container's rectangular clipping chain. Repeatable. |
+| `--check-clip-threshold <px>` | Allowed rectangular overrun in CSS pixels. Default `0`. |
+| `--check-clip-fail` | Exit 2 when rectangular clipping fails or the selector is missing. Unsupported shapes remain `unknown`. |
+| `--no-check-clip-annotate` | Skip clipping annotations. |
+| `--check-overlap <selector>` | Detect area intersections among measurable in-flow siblings. Repeatable. |
+| `--check-overlap-threshold <px>` | Allowed overlap depth on either axis. Default `0`. |
+| `--check-overlap-fail` | Exit 2 when an overlap target fails or is missing. |
+| `--no-check-overlap-annotate` | Skip overlap annotations. |
+| `--check-hit [selector]` | Check interactive target size and spacing in the document or optional scope. Repeatable. |
+| `--check-hit-profile <profile>` | `wcag-aa` uses 24px; `comfortable` uses 44px as a product-quality policy. Default `wcag-aa`. |
+| `--check-hit-fail` | Exit 2 on target-size `fail`, `unknown`, or a missing scope. |
+| `--no-check-hit-annotate` | Skip target-size annotations. |
+
+Alignment and gap checks cluster wrapped rows or columns before comparing them.
+They measure the rendered result rather than trusting `align-items`, `gap`, or
+margin declarations. Do not aim center alignment at an intentional
+`align-items: baseline` row.
+
+Clipping is deliberately rectangular. Border radius, arbitrary `clip-path`,
+non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
+are reported as `unknown`, not certified. Overlap covers sibling geometry;
+paint-order and sticky-layer obstruction remain `--check-visible` concerns.
+
+All requested checks run before one screenshot is captured. Fail gates are
+evaluated only after JSON and screenshot evidence is complete. Missing selectors
+always fail their enabled gate. Target-size `unknown` also fails closed; other
+layout `unknown` results stay visible without making common curved containers or
+two-item groups unusable.
 
 ### Visual regression
 
@@ -112,7 +151,7 @@ On by default. When a `<nextjs-portal>` shadow root is present, `browse` reads t
 
 ## Output
 
-In print mode (`--json`) or the trio's `.json` file, the envelope carries: `url`, `title`, `status`, `viewport`, `consoleEvents`, `consoleErrors`, `pageErrors`, `failedRequests`, and — when the corresponding flag ran — `eval`, `har`, `visibility`, `width`, `overflow`, `runts`, `devOverlay`, `batchClipboardReads`, `baselineSaved`, and `diff`.
+In print mode (`--json`) or the trio's `.json` file, the envelope carries: `url`, `title`, `status`, `viewport`, `consoleEvents`, `consoleErrors`, `pageErrors`, `failedRequests`, and — when the corresponding flag ran — `eval`, `har`, `visibility`, `width`, `overflow`, `runts`, `align`, `gap`, `clip`, `overlap`, `hit`, `devOverlay`, `batchClipboardReads`, `baselineSaved`, and `diff`.
 
 ## Examples
 
@@ -131,6 +170,13 @@ harn browse https://example.com --fill 'input[name=q]=>hello' --click 'button[ty
 
 # Assert layout on mobile — break the build on overflow or narrow tables
 harn browse https://example.com --viewport 430x932 --check-width 'table' --check-overflow --check-overflow-fail
+
+# Run the rendered-layout suite in one browser state
+harn browse https://example.com --viewport mobile \
+  --check-align 'nav' --check-gap 'nav' --check-clip 'main' \
+  --check-overlap '.toolbar' --check-hit 'header' \
+  --check-align-fail --check-gap-fail --check-clip-fail \
+  --check-overlap-fail --check-hit-fail
 
 # Save a visual baseline, then diff a later run against it
 harn browse https://example.com --baseline home-desktop

@@ -183,6 +183,7 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "axe-core": "^4.12.1",
     "commander": "^14.0.3",
     "gpt-tokenizer": "^3.4.0",
     "js-yaml": "^4.3.0",

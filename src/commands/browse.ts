@@ -9,8 +9,12 @@ import {
   captureDevOverlay,
   type DevOverlayResult,
   type Diagnostics,
+  type LayoutAxis,
+  type LayoutLintResult,
   type OverflowResult,
   type RuntsResult,
+  type TargetSizeProfile,
+  type TargetSizeResult,
   type VisibilityResult,
   type WidthResult,
   wslHeadedLaunchArgs,
@@ -96,6 +100,31 @@ interface BrowseOpts {
   checkOverflow?: boolean;
   checkOverflowFail?: boolean;
   checkOverflowAnnotate?: boolean;
+  // Rendered-layout relation checks
+  checkAlign?: string[];
+  checkAlignAxis?: string;
+  checkAlignThreshold?: string;
+  checkAlignFail?: boolean;
+  checkAlignAnnotate?: boolean;
+  checkGap?: string[];
+  checkGapAxis?: string;
+  checkGapExpected?: string;
+  checkGapThreshold?: string;
+  checkGapFail?: boolean;
+  checkGapAnnotate?: boolean;
+  checkClip?: string[];
+  checkClipThreshold?: string;
+  checkClipFail?: boolean;
+  checkClipAnnotate?: boolean;
+  checkOverlap?: string[];
+  checkOverlapThreshold?: string;
+  checkOverlapFail?: boolean;
+  checkOverlapAnnotate?: boolean;
+  // Optional selector; null means the full document. Repeatable.
+  checkHit?: Array<string | null>;
+  checkHitProfile?: string;
+  checkHitFail?: boolean;
+  checkHitAnnotate?: boolean;
   // Visual regression
   baseline?: string;
   diff?: string;
@@ -270,6 +299,79 @@ export function registerBrowseCommand(
       "Skip drawing runt boxes on the screenshot (JSON still emitted).",
     )
     .option(
+      "--check-align <selector>",
+      "Check rendered child-content alignment inside this container (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option("--check-align-axis <axis>", "Alignment axis: auto | x | y (default auto).", "auto")
+    .option(
+      "--check-align-threshold <px>",
+      "Maximum rendered-center drift in CSS pixels (default 2).",
+      "2",
+    )
+    .option("--check-align-fail", "Exit 2 when an alignment target fails or is missing.")
+    .option("--no-check-align-annotate", "Skip alignment screenshot annotations.")
+    .option(
+      "--check-gap <selector>",
+      "Check adjacent rendered gaps inside this container (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option("--check-gap-axis <axis>", "Gap axis: auto | x | y (default auto).", "auto")
+    .option(
+      "--check-gap-expected <px>",
+      "Expected gap in CSS pixels. Without it, groups of 3+ infer the median gap.",
+    )
+    .option("--check-gap-threshold <px>", "Maximum gap deviation in CSS pixels (default 2).", "2")
+    .option("--check-gap-fail", "Exit 2 when a gap target fails or is missing.")
+    .option("--no-check-gap-annotate", "Skip gap screenshot annotations.")
+    .option(
+      "--check-clip <selector>",
+      "Check descendants against this container's rectangular clipping chain (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--check-clip-threshold <px>",
+      "Allowed rectangular overrun in CSS pixels (default 0).",
+      "0",
+    )
+    .option("--check-clip-fail", "Exit 2 when a clip target fails or is missing.")
+    .option("--no-check-clip-annotate", "Skip clip screenshot annotations.")
+    .option(
+      "--check-overlap <selector>",
+      "Check measurable in-flow siblings for unintended overlap (repeatable).",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--check-overlap-threshold <px>",
+      "Allowed overlap depth on either axis in CSS pixels (default 0).",
+      "0",
+    )
+    .option("--check-overlap-fail", "Exit 2 when an overlap target fails or is missing.")
+    .option("--no-check-overlap-annotate", "Skip overlap screenshot annotations.")
+    .option(
+      "--check-hit [selector]",
+      "Check pointer-target size and spacing in the document or optional scope (repeatable).",
+      (value: string | boolean, previous: Array<string | null> = []) => [
+        ...previous,
+        typeof value === "string" ? value : null,
+      ],
+      [] as Array<string | null>,
+    )
+    .option(
+      "--check-hit-profile <profile>",
+      "Target profile: wcag-aa (24px) | comfortable (44px).",
+      "wcag-aa",
+    )
+    .option(
+      "--check-hit-fail",
+      "Exit 2 when target sizing fails, is incomplete, or a scope is missing.",
+    )
+    .option("--no-check-hit-annotate", "Skip target-size screenshot annotations.")
+    .option(
       "--baseline <name>",
       "Save the captured screenshot as a named baseline at " +
         "~/.cache/harnery/visual-baselines/<name>.png. Use --diff <name> later to " +
@@ -308,6 +410,30 @@ async function runBrowse(
   opts: BrowseOpts,
   context: HarneryProgramContext | undefined,
 ): Promise<void> {
+  const alignAxis = parseLayoutAxis(opts.checkAlignAxis ?? "auto", "--check-align-axis");
+  const gapAxis = parseLayoutAxis(opts.checkGapAxis ?? "auto", "--check-gap-axis");
+  const alignThreshold = parseNonNegativeNumber(
+    opts.checkAlignThreshold ?? "2",
+    "--check-align-threshold",
+  );
+  const gapThreshold = parseNonNegativeNumber(
+    opts.checkGapThreshold ?? "2",
+    "--check-gap-threshold",
+  );
+  const gapExpected =
+    opts.checkGapExpected === undefined
+      ? null
+      : parseNonNegativeNumber(opts.checkGapExpected, "--check-gap-expected");
+  const clipThreshold = parseNonNegativeNumber(
+    opts.checkClipThreshold ?? "0",
+    "--check-clip-threshold",
+  );
+  const overlapThreshold = parseNonNegativeNumber(
+    opts.checkOverlapThreshold ?? "0",
+    "--check-overlap-threshold",
+  );
+  const hitProfile = parseTargetSizeProfile(opts.checkHitProfile ?? "wcag-aa");
+
   // Commander: `--no-cookies` turns `opts.cookies` into `false`. Default is `true`.
   const jar =
     opts.cookies === false
@@ -388,6 +514,39 @@ async function runBrowse(
         minChars: Number.parseInt(opts.checkRuntsMinChars ?? "40", 10),
       });
     }
+    const hasLayoutLint =
+      (opts.checkAlign?.length ?? 0) > 0 ||
+      (opts.checkGap?.length ?? 0) > 0 ||
+      (opts.checkClip?.length ?? 0) > 0 ||
+      (opts.checkOverlap?.length ?? 0) > 0;
+    let layoutLint: LayoutLintResult | undefined;
+    if (hasLayoutLint) {
+      layoutLint = await browser.checkLayoutLint({
+        align: (opts.checkAlign ?? []).map((selector) => ({
+          selector,
+          axis: alignAxis,
+          tolerancePx: alignThreshold,
+        })),
+        gap: (opts.checkGap ?? []).map((selector) => ({
+          selector,
+          axis: gapAxis,
+          tolerancePx: gapThreshold,
+          expectedGapPx: gapExpected,
+        })),
+        clip: (opts.checkClip ?? []).map((selector) => ({
+          selector,
+          tolerancePx: clipThreshold,
+        })),
+        overlap: (opts.checkOverlap ?? []).map((selector) => ({
+          selector,
+          tolerancePx: overlapThreshold,
+        })),
+      });
+    }
+    let hit: TargetSizeResult[] | undefined;
+    if (opts.checkHit && opts.checkHit.length > 0) {
+      hit = await browser.checkTargetSize(opts.checkHit, hitProfile);
+    }
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
     const annotateWidth = widths && opts.checkWidthAnnotate !== false;
     const annotateOverflow = overflow && opts.checkOverflowAnnotate !== false;
@@ -401,6 +560,27 @@ async function runBrowse(
     const annotateRunts = runts && runts.runts.length > 0 && opts.checkRuntsAnnotate !== false;
     if (annotateRunts) {
       await browser.annotateRunts(runts!);
+    }
+    const annotateLayoutLint = layoutLint
+      ? {
+          align: opts.checkAlignAnnotate === false ? [] : layoutLint.align,
+          gap: opts.checkGapAnnotate === false ? [] : layoutLint.gap,
+          clip: opts.checkClipAnnotate === false ? [] : layoutLint.clip,
+          overlap: opts.checkOverlapAnnotate === false ? [] : layoutLint.overlap,
+        }
+      : undefined;
+    if (
+      annotateLayoutLint &&
+      (annotateLayoutLint.align.length > 0 ||
+        annotateLayoutLint.gap.length > 0 ||
+        annotateLayoutLint.clip.length > 0 ||
+        annotateLayoutLint.overlap.length > 0)
+    ) {
+      await browser.annotateLayoutLint(annotateLayoutLint);
+    }
+    const annotateHit = hit && opts.checkHitAnnotate !== false;
+    if (annotateHit) {
+      await browser.annotateTargetSize(hit!);
     }
 
     if (opts.login) {
@@ -435,6 +615,8 @@ async function runBrowse(
         widths,
         overflow,
         runts,
+        layoutLint,
+        hit,
         devOverlay,
         batchResult,
       );
@@ -448,6 +630,8 @@ async function runBrowse(
         widths,
         overflow,
         runts,
+        layoutLint,
+        hit,
         devOverlay,
         batchResult,
       );
@@ -461,6 +645,12 @@ async function runBrowse(
     }
     if (annotateRunts) {
       await browser.clearRuntsAnnotations();
+    }
+    if (annotateLayoutLint) {
+      await browser.clearLayoutLintAnnotations();
+    }
+    if (annotateHit) {
+      await browser.clearTargetSizeAnnotations();
     }
 
     if (opts.checkVisibleFail && visibility) {
@@ -521,6 +711,8 @@ async function runBrowse(
       );
       process.exitCode = 2;
     }
+
+    applyLayoutLintFailGates(opts, layoutLint, hit);
   } finally {
     await browser.close();
   }
@@ -643,6 +835,8 @@ async function runPrintMode(
   widths: WidthResult[] | undefined,
   overflow: OverflowResult | undefined,
   runts: RuntsResult | undefined,
+  layoutLint: LayoutLintResult | undefined,
+  hit: TargetSizeResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -667,6 +861,13 @@ async function runPrintMode(
     if (widths) result.width = widths;
     if (overflow) result.overflow = overflow;
     if (runts) result.runts = runts;
+    if (layoutLint) {
+      result.align = layoutLint.align;
+      result.gap = layoutLint.gap;
+      result.clip = layoutLint.clip;
+      result.overlap = layoutLint.overlap;
+    }
+    if (hit) result.hit = hit;
     if (devOverlay) result.devOverlay = devOverlay;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
@@ -697,6 +898,8 @@ async function runTrioMode(
   widths: WidthResult[] | undefined,
   overflow: OverflowResult | undefined,
   runts: RuntsResult | undefined,
+  layoutLint: LayoutLintResult | undefined,
+  hit: TargetSizeResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -739,6 +942,13 @@ async function runTrioMode(
   if (widths) envelope.width = widths;
   if (overflow) envelope.overflow = overflow;
   if (runts) envelope.runts = runts;
+  if (layoutLint) {
+    envelope.align = layoutLint.align;
+    envelope.gap = layoutLint.gap;
+    envelope.clip = layoutLint.clip;
+    envelope.overlap = layoutLint.overlap;
+  }
+  if (hit) envelope.hit = hit;
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
@@ -845,6 +1055,18 @@ async function runTrioMode(
     emit.log(`check-overflow: [${ok ? "OK" : "FAIL"}] ${detail}`, ok ? "info" : "warn");
   }
 
+  if (layoutLint) {
+    logLayoutLintSummary(layoutLint);
+  }
+  if (hit) {
+    const lines = hit.map((result) => {
+      const failed = result.nodes.filter((node) => node.outcome === "fail").length;
+      const unknown = result.nodes.filter((node) => node.outcome === "unknown").length;
+      return `  [${result.outcome.toUpperCase()}] ${result.selector ?? "document"}: ${failed} failed, ${unknown} unknown, ${result.nodes.length} evaluated (${result.minSizePx}px)`;
+    });
+    emit.log(`check-hit:\n${lines.join("\n")}`, "info");
+  }
+
   if (savedBaseline) {
     emit.log(
       `baseline saved: ${savedBaseline.name} → ${savedBaseline.path} (${savedBaseline.bytes} bytes)`,
@@ -876,6 +1098,103 @@ async function runTrioMode(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function parseNonNegativeNumber(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${flag} must be a finite non-negative number (got: ${value})`);
+  }
+  return parsed;
+}
+
+function parseLayoutAxis(value: string, flag: string): LayoutAxis {
+  if (value === "auto" || value === "x" || value === "y") return value;
+  throw new Error(`${flag} must be auto, x, or y (got: ${value})`);
+}
+
+function parseTargetSizeProfile(value: string): TargetSizeProfile {
+  if (value === "wcag-aa" || value === "comfortable") return value;
+  throw new Error(`--check-hit-profile must be wcag-aa or comfortable (got: ${value})`);
+}
+
+function logLayoutLintSummary(result: LayoutLintResult): void {
+  const lines: string[] = [];
+  for (const check of result.align) {
+    const worst = Math.max(
+      0,
+      ...check.clusters.flatMap((cluster) =>
+        cluster.children.map((child) => Math.abs(child.deltaPx)),
+      ),
+    );
+    lines.push(
+      `  [${check.outcome.toUpperCase()}] align ${check.selector}: worst ${worst.toFixed(1)}px (${check.axis})`,
+    );
+  }
+  for (const check of result.gap) {
+    const worst = Math.max(
+      0,
+      ...check.clusters.flatMap((cluster) =>
+        cluster.pairs.map((pair) => Math.abs(pair.deltaPx ?? 0)),
+      ),
+    );
+    lines.push(
+      `  [${check.outcome.toUpperCase()}] gap ${check.selector}: worst ${worst.toFixed(1)}px (${check.axis})`,
+    );
+  }
+  for (const check of result.clip) {
+    const worst = Math.max(0, ...check.issues.map((issue) => issue.maxOverrunPx));
+    lines.push(
+      `  [${check.outcome.toUpperCase()}] clip ${check.selector}: ${check.issues.length} issues, worst ${worst.toFixed(1)}px, ${check.unsupported.length} unknown shapes`,
+    );
+  }
+  for (const check of result.overlap) {
+    const worst = Math.max(0, ...check.issues.map((issue) => issue.areaPx));
+    lines.push(
+      `  [${check.outcome.toUpperCase()}] overlap ${check.selector}: ${check.issues.length} collisions, worst ${worst.toFixed(0)}px²`,
+    );
+  }
+  if (lines.length > 0) emit.log(`layout-lint:\n${lines.join("\n")}`, "info");
+}
+
+function applyLayoutLintFailGates(
+  opts: BrowseOpts,
+  layoutLint: LayoutLintResult | undefined,
+  hit: TargetSizeResult[] | undefined,
+): void {
+  const gate = <T extends { selector: string; found: boolean; outcome: string }>(
+    enabled: boolean | undefined,
+    rule: string,
+    results: T[] | undefined,
+  ): void => {
+    if (!enabled || !results) return;
+    const failed = results.filter((result) => !result.found || result.outcome === "fail");
+    for (const result of failed) {
+      emit.log(
+        `check-${rule} FAIL ${result.selector}: ${result.found ? "rendered relation failed" : "element not found"}`,
+        "warn",
+      );
+    }
+    if (failed.length > 0) process.exitCode = 2;
+  };
+
+  gate(opts.checkAlignFail, "align", layoutLint?.align);
+  gate(opts.checkGapFail, "gap", layoutLint?.gap);
+  gate(opts.checkClipFail, "clip", layoutLint?.clip);
+  gate(opts.checkOverlapFail, "overlap", layoutLint?.overlap);
+
+  if (opts.checkHitFail && hit) {
+    const failed = hit.filter(
+      (result) => !result.found || result.outcome === "fail" || result.outcome === "unknown",
+    );
+    for (const result of failed) {
+      emit.log(
+        `check-hit FAIL ${result.selector ?? "document"}: ${result.found ? result.outcome : "element not found"}`,
+        "warn",
+      );
+    }
+    if (failed.length > 0) process.exitCode = 2;
+  }
+}
 
 function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
   return {

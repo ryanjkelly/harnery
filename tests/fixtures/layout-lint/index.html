@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Rendered layout checks</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 24px; font: 16px/20px system-ui, sans-serif; }
+      section { margin: 24px 0; }
+      .row { display: flex; align-items: center; width: max-content; }
+      .row > * { display: inline-flex; align-items: center; }
+      .icon { width: 16px; height: 16px; }
+      .bad-align .icon { transform: translateY(-6px); }
+      .good-gap { gap: 10px; }
+      .bad-gap { gap: 10px; }
+      .bad-gap > :last-child { margin-left: 10px; }
+      .gap-box { width: 20px; height: 20px; background: #ddd; }
+      .clip-good, .clip-bad { width: 100px; height: 30px; overflow: hidden; }
+      .clip-good > div { width: 100px; height: 30px; }
+      .clip-bad > div { width: 120px; height: 30px; }
+      .overlap-good { display: flex; gap: 4px; }
+      .overlap-bad { display: grid; width: 40px; height: 24px; }
+      .overlap-bad > * { grid-area: 1 / 1; width: 30px; height: 20px; }
+      .overlap-box { width: 20px; height: 20px; background: #bbb; }
+      .hit-good button { width: 28px; height: 28px; padding: 0; }
+      .hit-bad { display: flex; gap: 0; }
+      .hit-bad button { width: 12px; height: 12px; min-width: 0; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <section class="row align-good">
+      <a href="#good"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" /></svg></a>
+      <span>Aligned text</span>
+    </section>
+    <section class="row bad-align">
+      <a href="#bad"><svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" /></svg></a>
+      <span>Reference text</span>
+    </section>
+    <section class="row good-gap">
+      <div class="gap-box"></div><div class="gap-box"></div><div class="gap-box"></div>
+    </section>
+    <section class="row bad-gap">
+      <div class="gap-box"></div><div class="gap-box"></div><div class="gap-box"></div>
+    </section>
+    <section class="row two-gap">
+      <div class="gap-box"></div><div class="gap-box"></div>
+    </section>
+    <section class="clip-good"><div></div></section>
+    <section class="clip-bad"><div></div></section>
+    <section class="overlap-good">
+      <div class="overlap-box"></div><div class="overlap-box"></div>
+    </section>
+    <section class="overlap-bad">
+      <button type="button">A</button><button type="button">B</button>
+    </section>
+    <section class="hit-good"><button type="button" aria-label="Good target"></button></section>
+    <section class="hit-bad">
+      <button type="button" aria-label="Small target one"></button>
+      <button type="button" aria-label="Small target two"></button>
+    </section>
+  </body>
+</html>

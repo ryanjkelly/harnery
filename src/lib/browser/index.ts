@@ -12,6 +12,25 @@ export {
   type DevOverlayError,
   type DevOverlayResult,
 } from "./dev-overlay.js";
+export type {
+  AlignChild,
+  AlignCluster,
+  AlignResult,
+  ClipIssue,
+  ClipResult,
+  GapCluster,
+  GapPair,
+  GapResult,
+  LayoutAxis,
+  LayoutElementMeasurement,
+  LayoutExclusion,
+  LayoutLintRequest,
+  LayoutLintResult,
+  LayoutOutcome,
+  LayoutRect,
+  OverlapIssue,
+  OverlapResult,
+} from "./geometry.js";
 export { isWSL, wslHeadedLaunchArgs } from "./launch-args.js";
 export type {
   OverflowElement,
@@ -22,6 +41,12 @@ export type {
   RuntHit,
   RuntsResult,
 } from "./runts.js";
+export type {
+  TargetSizeNode,
+  TargetSizeOutcome,
+  TargetSizeProfile,
+  TargetSizeResult,
+} from "./target-size.js";
 export type {
   CheckVisibilityOptions,
   VisibilityResult,

@@ -1,0 +1,111 @@
+---
+title: "0030: Browser checks use explicit rendered-layout relations"
+description: "ADR: add one shared geometry result model, explicit selector-scoped layout checks, and standards-based target-size evaluation to browse."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** toolkit tier (`lib/browser`, `browse` CLI)
+
+## Context
+
+The browser toolkit can already detect CSS-hidden or occluded elements, narrow
+content, horizontal overflow, typography runts, and pixel drift against a
+trusted baseline. It cannot explain several common first-render defects:
+sibling content that misses a visual midline, irregular repeated spacing,
+painted descendants clipped by a container, undersized pointer targets, or
+in-flow siblings that collide.
+
+CSS declarations are not sufficient evidence. A centered flex wrapper can
+still contain an SVG displaced by line-height. Declared `gap` can combine with
+margins and transformed content. A target's nominal border box can be reduced
+by another interactive element. Screenshot comparison also needs a known-good
+reference, so it cannot certify the first capture of a new surface.
+
+The checks must remain portable, deterministic, useful from JSON without opening
+DevTools, and compatible with the existing screenshot annotation and exit-code
+workflow. Broad automatic discovery would create noise on intentionally
+staggered or overlapping designs.
+
+## Decision
+
+Add one shared rendered-geometry contract to `lib/browser` and expose five
+selector-scoped checks through `browse`:
+
+- alignment compares rendered content centers inside wrapped visual clusters;
+- gap compares adjacent rendered edge distance with an explicit or inferred
+  reference;
+- clipping compares painted descendant rectangles with the effective
+  rectangular clipping chain;
+- target size evaluates interactive targets against a 24 CSS-pixel standards
+  profile or an optional 44-pixel product-quality profile;
+- overlap reports area intersections among measurable in-flow siblings.
+
+All measurements use unrounded CSS pixels from the same Playwright page state.
+Serialized diagnostics round only for readability. Alignment prefers a
+non-empty text fragment rectangle, then descendant SVG geometry, then the
+element border box. Wrapped layouts are clustered before comparisons. Hidden,
+zero-area, and out-of-flow elements carry explicit exclusion reasons rather
+than disappearing from result truth.
+
+Target-size evaluation delegates to the unmodified `axe-core` runtime rule. The
+adapter runs only that rule, configures its two underlying size and spacing
+checks, and preserves `pass`, `fail`, and `unknown` outcomes. This dependency is
+larger than a local rectangle helper, but its handling of inline fragments,
+focusability, tab order, neighboring widgets, pointer events, obscuration,
+spacing exceptions, and uncertainty is load-bearing. Harnery does not fork or
+copy its implementation and does not claim that one rule is a complete
+accessibility audit.
+
+Every check returns a common outcome plus bounded rule-specific diagnostics.
+Repeatable selectors can run together in one browse invocation. One annotation
+layer captures all enabled results on a single screenshot and is removed after
+capture. Both JSON output modes expose the same fields. Fail gates are evaluated
+after artifacts are complete:
+
+- a missing requested selector always exits 2;
+- target-size `unknown` exits 2 when its fail gate is enabled;
+- alignment, gap, clip, and overlap `unknown` remains reviewable evidence but
+  does not fail, because unsupported shape geometry or an uninferable two-item
+  gap should not make common containers unusable.
+
+Paint-order obstruction remains the existing visibility check's authority.
+Overlap is limited to sibling geometry, so no separate stack or z-index checker
+creates a competing truth. Pixel diff remains complementary after a baseline is
+trusted.
+
+## Alternatives considered
+
+- **Use screenshot or vision review alone.** Rejected as the correctness gate
+  because it cannot provide stable sub-pixel thresholds or structural reasons,
+  and a screenshot baseline can preserve the first bad render.
+- **Adopt a separate layout-test language and runner.** Rejected because a
+  second browser/runtime/spec system would duplicate Playwright, fragment CLI
+  output, and add product concepts unrelated to the toolkit.
+- **Use a small box-alignment assertion package.** Rejected because first-item
+  authority and border-box-only measurement miss the motivating text/SVG
+  displacement and wrapped-group behavior.
+- **Reimplement pointer-target sizing from rectangles.** Rejected because a
+  nominal box check would silently omit spacing exceptions, inline fragments,
+  obscuration, tab order, and honest uncertainty.
+- **Add another visual-regression dependency.** Rejected because Playwright and
+  the existing image-diff module already cover trusted-baseline comparison.
+- **Automatically scan every flex and grid container.** Rejected because
+  intentional stagger, badges, overlap, and scroll clipping are common. Explicit
+  geometry selectors keep rules explainable and recipes reviewable.
+- **Fail every `unknown` outcome.** Rejected for non-target rules because curved
+  clipping and uninferable small groups are common and should guide recipe
+  refinement rather than make the gate unusable.
+
+## Result and gotchas
+
+- Geometric centers do not claim optical glyph-ink alignment. Text ranges and
+  SVG boxes are improved rendered proxies, not aesthetic judgment.
+- `align-items: baseline` deliberately produces different midlines and should
+  not be targeted by the center rule.
+- Inferred gap regularity needs at least three children; two-item checks require
+  an explicit expected gap or return `unknown`.
+- Rectangular clipping does not certify border radius, arbitrary `clip-path`,
+  non-axis-aligned transforms, closed shadow roots, or cross-origin frames.
+- The 44-pixel target profile is a product policy, not a standards-conformance
+  claim.
+- The target-size adapter must remain parity-tested when its dependency changes,
+  because the delegated rule is explicitly enabled and configured by Harnery.

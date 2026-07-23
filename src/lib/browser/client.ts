@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import axe from "axe-core";
 import {
   type BrowserContext,
   type ConsoleMessage,
@@ -10,6 +11,13 @@ import {
   type Request,
 } from "playwright";
 import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
+import {
+  buildClearLayoutLintAnnotationsScript,
+  buildLayoutLintAnnotateScript,
+  buildLayoutLintCheck,
+  type LayoutLintRequest,
+  type LayoutLintResult,
+} from "./geometry.js";
 import {
   buildClearLayoutAnnotationsScript,
   buildLayoutAnnotateScript,
@@ -24,6 +32,13 @@ import {
   buildRuntsCheck,
   type RuntsResult,
 } from "./runts.js";
+import {
+  buildClearTargetSizeAnnotationsScript,
+  buildTargetSizeAnnotateScript,
+  buildTargetSizeCheck,
+  type TargetSizeProfile,
+  type TargetSizeResult,
+} from "./target-size.js";
 import {
   buildAnnotateScript,
   buildClearAnnotationsScript,
@@ -439,6 +454,53 @@ export class Browser {
   /** Remove layout annotation overlays. */
   async clearLayoutAnnotations(): Promise<void> {
     await this.currentPage.evaluate(buildClearLayoutAnnotationsScript());
+  }
+
+  /** Run the selector-scoped rendered-geometry rule family in one page evaluation. */
+  async checkLayoutLint(request: LayoutLintRequest): Promise<LayoutLintResult> {
+    return await this.currentPage.evaluate(buildLayoutLintCheck(), request);
+  }
+
+  /** Draw one document-space annotation layer for rendered-geometry results. */
+  async annotateLayoutLint(result: LayoutLintResult): Promise<void> {
+    await this.currentPage.evaluate(buildLayoutLintAnnotateScript(), result);
+  }
+
+  /** Remove rendered-geometry annotations. */
+  async clearLayoutLintAnnotations(): Promise<void> {
+    await this.currentPage.evaluate(buildClearLayoutLintAnnotationsScript());
+  }
+
+  /**
+   * Run the target-size rule against the page or explicit scopes. The
+   * dependency's browser bundle is evaluated directly in the page context so
+   * a document CSP cannot silently block a script element.
+   */
+  async checkTargetSize(
+    selectors: Array<string | null>,
+    profile: TargetSizeProfile,
+  ): Promise<TargetSizeResult[]> {
+    await this.currentPage.evaluate(axe.source);
+    const results: TargetSizeResult[] = [];
+    for (const selector of selectors) {
+      results.push(
+        await this.currentPage.evaluate(buildTargetSizeCheck(), {
+          selector,
+          profile,
+        }),
+      );
+    }
+    return results;
+  }
+
+  /** Draw target-size failures and unknowns on the screenshot. */
+  async annotateTargetSize(results: TargetSizeResult[]): Promise<void> {
+    await this.currentPage.evaluate(buildTargetSizeAnnotateScript(), results);
+  }
+
+  /** Remove target-size annotations. */
+  async clearTargetSizeAnnotations(): Promise<void> {
+    await this.currentPage.evaluate(buildClearTargetSizeAnnotationsScript());
   }
 
   /**
