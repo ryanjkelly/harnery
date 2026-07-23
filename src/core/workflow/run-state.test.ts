@@ -54,4 +54,45 @@ describe("workflow run state", () => {
     writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
     expect(() => readWorkflowRunManifest(root, "wf-fixture")).toThrow(/mismatched schema/);
   });
+
+  test("requires canonical work context paired with its work item id", () => {
+    const path = writeWorkflowRunManifest({
+      coordRoot: root,
+      manifest: {
+        schema_version: 1,
+        run_id: "wf-work-context",
+        work_item_id: "work-a",
+        work_context: {
+          schema_version: 1,
+          id: "work-a",
+          title: "Work A",
+          objective: "Complete A",
+          acceptance: ["Tests pass"],
+        },
+        name: "fixture",
+        started_at: "2026-07-23T05:00:00.000Z",
+        script: { path: join(root, "workflow.mjs"), sha256: "a".repeat(64) },
+        repository_before: { cwd: root, dirty_paths: [] },
+        execution: {
+          cwd: root,
+          default_harness: "codex",
+          max_agents: 1,
+          concurrency: 1,
+          subscription_only: true,
+          allow_api_billing: false,
+          approval_mode: "deny",
+          approval_addressee: "operator",
+          isolation: "shared",
+          network_access: "unknown",
+        },
+      },
+    });
+    expect(readWorkflowRunManifest(root, "wf-work-context").work_context?.objective).toBe(
+      "Complete A",
+    );
+    const persisted = JSON.parse(readFileSync(path, "utf8"));
+    persisted.work_context.id = "work-b";
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
+    expect(() => readWorkflowRunManifest(root, "wf-work-context")).toThrow(/mismatched schema/);
+  });
 });

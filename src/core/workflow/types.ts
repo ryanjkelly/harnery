@@ -20,6 +20,7 @@ import type {
 import type { BillingMode, BillingProber } from "./billing.ts";
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
+export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
 
 export type EvidenceKind = "test" | "command" | "artifact" | "change" | "review" | "observation";
 export type EvidenceStatus = "passed" | "failed" | "observed" | "unknown";
@@ -155,6 +156,7 @@ export interface WorkflowProof {
     started_at: string;
     ended_at: string;
     duration_ms: number;
+    work_context?: WorkflowWorkContext;
     objective?: string;
     error?: string;
     result?: ResultDigest;
@@ -299,6 +301,9 @@ export type Spawner = (req: SpawnRequest) => Promise<SpawnResult>;
 /** The API surface injected into a workflow script's default export. Explicit
  * injection (no ambient globals): keeps scripts portable and unit-testable. */
 export interface WorkflowContext {
+  /** Frozen durable-work assignment for work-linked runs. Standalone and
+   * legacy-resumed workflows have no work context. */
+  work?: Readonly<WorkflowWorkContext>;
   /** Spawn one subagent; resolves to validated JSON (schema) or reply text. */
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>;
   /** Run thunks with bounded concurrency; a rejected thunk resolves to null. */
@@ -326,6 +331,15 @@ export interface WorkflowModule {
   default: (ctx: WorkflowContext) => Promise<unknown>;
 }
 
+/** Minimal immutable durable-work input exposed to reusable workflow code. */
+export interface WorkflowWorkContext {
+  readonly schema_version: typeof WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION;
+  readonly id: string;
+  readonly title: string;
+  readonly objective: string;
+  readonly acceptance: readonly string[];
+}
+
 export interface EngineOpts {
   /** Repo root whose .harnery/ receives the run journal. */
   coordRoot: string;
@@ -348,6 +362,9 @@ export interface EngineOpts {
   runId?: string;
   /** Durable objective this execution attempt belongs to. */
   workItemId?: string;
+  /** Frozen assignment data supplied by a durable-work host. Requires the
+   * matching `workItemId`; parked resume always uses the manifest copy. */
+  workContext?: WorkflowWorkContext;
   /** Total-agent ceiling for the run (default 50): the runaway backstop. */
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */

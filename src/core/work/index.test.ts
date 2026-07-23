@@ -105,7 +105,7 @@ describe("durable work ledger", () => {
       export const meta = { name: "proof", acceptance: [{ id: "tests", statement: "Tests pass" }] };
       export default async (ctx) => {
         ctx.evidence({ kind: "test", status: "passed", label: "suite", acceptanceIds: ["tests"] });
-        return "done";
+        return ctx.work;
       };
     `);
     createWorkItem({
@@ -113,6 +113,7 @@ describe("durable work ledger", () => {
       id: "ship",
       title: "Ship",
       objective: "Ship safely",
+      acceptance: ["The focused tests pass"],
       workflowPath,
     });
     const report = await runWorkItem({
@@ -134,6 +135,15 @@ describe("durable work ledger", () => {
     );
     expect(manifest.work_item_id).toBe("ship");
     expect(proof.run.work_item_id).toBe("ship");
+    expect(report.result).toEqual({
+      schema_version: 1,
+      id: "ship",
+      title: "Ship",
+      objective: "Ship safely",
+      acceptance: ["The focused tests pass"],
+    });
+    expect(manifest.work_context).toEqual(report.result);
+    expect(proof.run.work_context).toEqual(report.result);
 
     const accepted = acceptWorkItem(root, "ship", { actor: "reviewer", reason: "proof reviewed" });
     expect(accepted.projection.state).toBe("succeeded");
@@ -180,6 +190,30 @@ describe("durable work ledger", () => {
     ).rejects.toThrow(/exhausted/);
   });
 
+  test("fails closed when proof work context no longer matches its manifest", async () => {
+    const { root, workflowPath } = fixture(`
+      export default async ({ work }) => work.objective;
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "tamper-proof",
+      title: "Tamper proof",
+      objective: "Preserve the exact assignment",
+      workflowPath,
+    });
+    const report = await runWorkItem({
+      coordRoot: root,
+      workId: "tamper-proof",
+      engine: { spawners: {} },
+    });
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8"));
+    proof.run.work_context.objective = "Changed after execution";
+    writeFileSync(report.proofPath, `${JSON.stringify(proof)}\n`, "utf8");
+    expect(() => readWorkItem(root, "tamper-proof")).toThrow(
+      /work context does not match its run manifest/,
+    );
+  });
+
   test("records the attempt before workflow import and surfaces an import crash", async () => {
     const { root, workflowPath } = fixture(`throw new Error("top-level crash");\n`);
     createWorkItem({
@@ -200,11 +234,13 @@ describe("durable work ledger", () => {
 
   test("a parked run resumes as the same attempt after explicit approval", async () => {
     const { root, workflowPath } = fixture(`
-      export default async (ctx) => ctx.agent("do the work");
+      export default async (ctx) => ctx.agent("do the work: " + ctx.work.objective);
     `);
     let spawns = 0;
-    const countingSpawner: Spawner = async () => {
+    const prompts: string[] = [];
+    const countingSpawner: Spawner = async (request) => {
       spawns++;
+      prompts.push(request.prompt);
       return { ok: true, text: "done", durationMs: 1 };
     };
     createWorkItem({
@@ -251,6 +287,7 @@ describe("durable work ledger", () => {
     });
     expect(report.runId).toBe(originalRunId!);
     expect(spawns).toBe(1);
+    expect(prompts).toEqual(["do the work: Wait safely"]);
     expect(readWorkItem(root, "parked").projection.attempts_used).toBe(1);
   });
 

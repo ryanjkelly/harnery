@@ -59,6 +59,20 @@ before loading the workflow script. Standard workflow options are available:
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
 `--approval-to`.
 
+The workflow receives the immutable work assignment as `ctx.work`:
+
+```js
+export default async ({ work, agent }) => {
+  if (!work) throw new Error("durable work context required");
+  return agent(`Objective: ${work.objective}\nAcceptance:\n${work.acceptance.join("\n")}`);
+};
+```
+
+Harnery freezes the work ID, title, objective, and acceptance criteria in the
+workflow run manifest before executing the script. The terminal proof carries
+the same value. A parked attempt resumes from the manifest snapshot instead of
+rereading or synthesizing context.
+
 When host policy parks the workflow, the work item derives
 `awaiting_approval`. Resolve the request with `harn workflow approvals`, then
 run the work item again. Harnery resumes the same workflow run and does not

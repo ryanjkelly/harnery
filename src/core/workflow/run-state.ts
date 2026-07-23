@@ -23,7 +23,8 @@ import {
 } from "../policy/index.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
-import type { WorkflowSpecialistProfile } from "./types.ts";
+import type { WorkflowSpecialistProfile, WorkflowWorkContext } from "./types.ts";
+import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 
 export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -34,6 +35,7 @@ export interface WorkflowRunManifest {
   schema_version: typeof WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION;
   run_id: string;
   work_item_id?: string;
+  work_context?: WorkflowWorkContext;
   name: string;
   started_at: string;
   script: { path: string; sha256: string };
@@ -103,6 +105,10 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
     manifest.run_id !== runId ||
     (manifest.work_item_id !== undefined &&
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(manifest.work_item_id)) ||
+    (manifest.work_context !== undefined &&
+      (!manifest.work_item_id ||
+        manifest.work_context.id !== manifest.work_item_id ||
+        !isCanonicalWorkflowWorkContext(manifest.work_context))) ||
     typeof manifest.name !== "string" ||
     manifest.name.length === 0 ||
     manifest.name.length > 200 ||

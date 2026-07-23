@@ -71,5 +71,9 @@ export type {
   WorkflowRepoSnapshot,
   WorkflowRunStatus,
   WorkflowSpecialistProfile,
+  WorkflowWorkContext,
 } from "./types.ts";
-export { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
+export {
+  WORKFLOW_PROOF_SCHEMA_VERSION,
+  WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION,
+} from "./types.ts";

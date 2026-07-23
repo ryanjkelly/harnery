@@ -94,6 +94,20 @@ check "harn workflow approvals list starts with an empty inbox" \
 check "harn work --help mentions reconcile" "$HARN work --help" "reconcile"
 check "harn work --help mentions explicit retry" "$HARN work --help" "retry"
 check "harn work list starts empty" "$HARN work list" "no durable work"
+WORK_CONTEXT_FIXTURE="$TMPDIR_TEST/work-context.mjs"
+printf '%s\n' 'export default async ({ work }) => work;' > "$WORK_CONTEXT_FIXTURE"
+check "harn work creates a reusable context-backed assignment" \
+  "$HARN work create 'Integration context' '$WORK_CONTEXT_FIXTURE' --id integration-context --objective 'Execute reusable context' --accept 'The exact assignment reaches the script'" \
+  "integration-context"
+check "harn work injects the exact assignment into generic workflow code" \
+  "$HARN work run integration-context --json" "Execute reusable context"
+WORK_CONTEXT_RUN_ID=$(
+  "$HARN" work show integration-context --json |
+    node -e 'let s=""; process.stdin.on("data", d => s += d).on("end", () => console.log(JSON.parse(s).projection.latest_run_id))'
+)
+check "harn workflow proof preserves the work context" \
+  "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
+  '"work_context"'
 
 # 7. harn supervisor exposes bounded goal execution
 check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"

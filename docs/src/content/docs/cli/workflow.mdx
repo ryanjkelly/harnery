@@ -146,10 +146,51 @@ export default async function run({ agent, parallel, stage, log, evidence }) {
 }
 ```
 
+### Work-linked context
+
+When the workflow runs through [`harn work`](./work/) or
+[`harn supervisor`](./supervisor/), `ctx.work` contains the frozen assignment:
+
+```js
+export default async function run({ work, agent, evidence }) {
+  if (!work) throw new Error("this workflow requires durable work context");
+
+  const result = await agent(
+    [
+      "Complete the durable assignment below.",
+      `Title: ${work.title}`,
+      `Objective: ${work.objective}`,
+      "Acceptance:",
+      ...work.acceptance.map((criterion) => `- ${criterion}`),
+    ].join("\n"),
+    { specialist: "implementer" },
+  );
+
+  evidence({
+    kind: "observation",
+    status: "observed",
+    label: `Specialist completed ${work.id}`,
+  });
+  return result;
+}
+```
+
+The shape is `{ schema_version, id, title, objective, acceptance }`. It is
+deeply frozen before the script starts, copied into the private run manifest
+and terminal proof, and restored from that manifest after an approval park.
+Standalone workflows and historical parked runs created before this capability
+have `ctx.work === undefined`.
+
+Harnery does not automatically prepend this data to child prompts. The script
+controls how much assignment context each specialist needs and must preserve the
+host's instruction and policy hierarchy when work text came from an external
+source.
+
 ## The ctx API
 
-| Function | Contract |
+| Property or function | Contract |
 | --- | --- |
+| `work` | Optional deeply frozen durable-work assignment: work ID, title, objective, and acceptance criteria. Present for new work-linked attempts; absent for standalone and legacy-resumed runs. |
 | `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must strict-parse as JSON and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`); failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
 | `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch — filter and route. |
 | `stage(title)` | Declare the current stage: journal marker + progress grouping. |
@@ -290,6 +331,7 @@ Every terminal run, including a failed one, writes
 mode `0600` and contains:
 
 - the objective, terminal status, timestamps, and acceptance rollup;
+- the exact bounded work context for work-linked runs;
 - typed evidence declared through `ctx.evidence()`;
 - agent outcomes, attempts, duration, cost, and session ID when reported;
 - SHA-256 digests and byte counts for agent and workflow results, not their raw

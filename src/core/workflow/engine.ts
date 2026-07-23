@@ -64,9 +64,11 @@ import type {
   WorkflowEvidenceRecord,
   WorkflowModule,
   WorkflowProof,
+  WorkflowWorkContext,
 } from "./types.ts";
 import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
+import { freezeWorkflowWorkContext } from "./work-context.ts";
 
 const DEFAULT_MAX_AGENTS = 50;
 const DEFAULT_CONCURRENCY = 4;
@@ -110,6 +112,19 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   if (opts.workItemId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(opts.workItemId)) {
     throw new Error(`invalid work item id ${JSON.stringify(opts.workItemId)}`);
   }
+  if (opts.resumeRunId && opts.workContext !== undefined) {
+    throw new Error("parked workflow resume uses the frozen manifest work context");
+  }
+  const requestedWorkContext =
+    opts.workContext === undefined ? undefined : freezeWorkflowWorkContext(opts.workContext);
+  if (requestedWorkContext && !opts.workItemId) {
+    throw new Error("workflow work context requires a work item id");
+  }
+  if (requestedWorkContext && requestedWorkContext.id !== opts.workItemId) {
+    throw new Error(
+      `workflow work context ${requestedWorkContext.id} does not match work item ${opts.workItemId}`,
+    );
+  }
   if (opts.resumeRunId && opts.resumeFrom) {
     throw new Error("resumeRunId and resumeFrom are mutually exclusive");
   }
@@ -123,6 +138,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   ) {
     throw new Error(`workflow run ${opts.resumeRunId} belongs to a different work item`);
   }
+  const workContext = resumeState?.manifest.work_context
+    ? freezeWorkflowWorkContext(resumeState.manifest.work_context)
+    : requestedWorkContext;
   const absScript = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
   if (resumeState) {
     if (resolve(resumeState.manifest.script.path) !== resolve(absScript)) {
@@ -139,7 +157,7 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       // the run between the optimistic read and lease acquisition.
       assertWorkflowRunResumable(opts.coordRoot, resumeState.manifest.run_id);
     }
-    return await executeWorkflow(scriptPath, absScript, opts, resumeState);
+    return await executeWorkflow(scriptPath, absScript, opts, resumeState, workContext);
   } finally {
     releaseResumeLease?.();
   }
@@ -150,6 +168,7 @@ async function executeWorkflow(
   absScript: string,
   opts: EngineOpts,
   resumeState: ReturnType<typeof assertWorkflowRunResumable> | undefined,
+  workContext: Readonly<WorkflowWorkContext> | undefined,
 ): Promise<RunReport> {
   const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
   if (typeof mod.default !== "function") {
@@ -198,6 +217,7 @@ async function executeWorkflow(
         schema_version: 1,
         run_id: runId,
         work_item_id: opts.workItemId,
+        work_context: workContext,
         name,
         started_at: startedAt,
         script: { path: absScript, sha256: workflowScriptDigest(absScript) },
@@ -762,7 +782,15 @@ async function executeWorkflow(
     });
   };
 
-  const ctx: WorkflowContext = { agent, parallel, stage, log, evidence, authorize };
+  const ctx: WorkflowContext = {
+    work: workContext,
+    agent,
+    parallel,
+    stage,
+    log,
+    evidence,
+    authorize,
+  };
   try {
     if (resumeState) {
       journal("run.resume", {
@@ -774,6 +802,7 @@ async function executeWorkflow(
       journal("run.start", {
         name,
         work_item_id: opts.workItemId ?? null,
+        work_context: workContext ?? null,
         script: absScript,
         objective: meta.objective ?? null,
         acceptance: meta.acceptance,
@@ -800,6 +829,7 @@ async function executeWorkflow(
       proof = buildWorkflowProof({
         runId,
         workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
+        workContext,
         meta,
         status: "succeeded",
         startedAt,
@@ -866,6 +896,7 @@ async function executeWorkflow(
       const proof = buildWorkflowProof({
         runId,
         workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
+        workContext,
         meta,
         status: "failed",
         startedAt,
