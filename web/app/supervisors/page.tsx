@@ -101,6 +101,9 @@ export default function SupervisorsPage() {
                           pending plan: {projection.pending_plan_id} · {pendingPlanStatus.label}
                         </span>
                       ) : null}
+                      {projection.attention_plan_id ? (
+                        <span>attention plan: {projection.attention_plan_id}</span>
+                      ) : null}
                       <span>{decision.reason}</span>
                       {service.config?.goal_ids.includes(intent.id) ? (
                         <span>

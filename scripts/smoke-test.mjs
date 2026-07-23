@@ -167,6 +167,10 @@ try {
   if (!/no replanning attempts/.test(supervisorPlansOut)) {
     fail("supervisor plan list did not render the packed empty history");
   }
+  const supervisorPlanHelp = run(["supervisor", "plan", "--help"]);
+  if (!/retry/.test(supervisorPlanHelp)) {
+    fail("supervisor plan help did not expose attention recovery");
+  }
   const supervisorServiceOut = run(["supervisor", "service", "status"]);
   if (!/unconfigured/.test(supervisorServiceOut)) {
     fail("supervisor service status did not render its empty packed state");
@@ -286,17 +290,17 @@ try {
   writeFileSync(
     supervisorProbe,
     [
-      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, SUPERVISOR_PLAN_SCHEMA_VERSION, SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION, approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, runSupervisor, runSupervisorServiceSweep } from "harnery/core/supervisor";',
+      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, SUPERVISOR_PLAN_SCHEMA_VERSION, SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION, approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, retrySupervisorPlan, runSupervisor, runSupervisorServiceSweep } from "harnery/core/supervisor";',
       'if (SUPERVISOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor schema version");',
       'if (SUPERVISOR_PLAN_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor plan schema version");',
       'if (SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor service schema version");',
-      "for (const fn of [approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, runSupervisor, runSupervisorServiceSweep]) {",
+      "for (const fn of [approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, retrySupervisorPlan, runSupervisor, runSupervisorServiceSweep]) {",
       '  if (typeof fn !== "function") throw new Error("supervisor function missing");',
       "}",
       'const readonly = await import("harnery/core/supervisor/state");',
       'if (typeof readonly.readSupervisor !== "function" || typeof readonly.readSupervisorServiceStatus !== "function") throw new Error("read-only supervisor state export missing");',
       'if (typeof readonly.readSupervisorPlanReviewReceipt !== "function" || readonly.MAX_SUPERVISOR_PLAN_REVIEWERS !== 5) throw new Error("read-only supervisor review export missing");',
-      'for (const forbidden of ["approveSupervisorPlan", "rejectSupervisorPlan", "runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
+      'for (const forbidden of ["approveSupervisorPlan", "rejectSupervisorPlan", "retrySupervisorPlan", "runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
       '  if (forbidden in readonly) throw new Error("read-only supervisor state export gained execution: " + forbidden);',
       "}",
       'const plans = await import("harnery/core/supervisor/plans");',

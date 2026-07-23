@@ -99,6 +99,7 @@ check "harn work list starts empty" "$HARN work list" "no durable work"
 check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"
 check "harn supervisor --help mentions run" "$HARN supervisor --help" "run"
 check "harn supervisor exposes replanning review" "$HARN supervisor plan --help" "approve"
+check "harn supervisor exposes attention recovery" "$HARN supervisor plan --help" "retry"
 check "harn supervisor list starts empty" "$HARN supervisor list" "no durable supervisors"
 check "harn supervisor service exposes lifecycle commands" \
   "$HARN supervisor service --help" "status"

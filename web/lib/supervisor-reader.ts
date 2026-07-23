@@ -60,7 +60,7 @@ export function readSupervisorBackgroundService(root: string): SupervisorService
 export function supervisorPlanDashboardStatus(
   plan: SupervisorPlanRecord,
 ): SupervisorPlanDashboardStatus {
-  if (plan.review && plan.review.status !== "passed") {
+  if (plan.status === "attention" && plan.review && plan.review.status !== "passed") {
     return {
       state: reviewedProposalState(plan.review.status),
       label: reviewedProposalLabel(plan.review.status),
@@ -95,11 +95,13 @@ export function supervisorPlanDashboardStatus(
     badgeVariant:
       plan.status === "applied" || plan.status === "completed"
         ? "success"
-        : plan.status === "failed" || plan.status === "rejected"
-          ? "destructive"
-          : plan.status === "awaiting_approval"
-            ? "warning"
-            : "muted",
+        : plan.status === "retry_requested"
+          ? "info"
+          : plan.status === "failed" || plan.status === "rejected"
+            ? "destructive"
+            : plan.status === "awaiting_approval"
+              ? "warning"
+              : "muted",
     requiresReview: false,
     requiresDecision: false,
     reviewLabel: formatSupervisorPlanReview(plan),

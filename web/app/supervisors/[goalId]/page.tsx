@@ -89,6 +89,15 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
               Attention: {projection.attention_work.join(", ")}
             </p>
           ) : null}
+          {projection.attention_plan_id ? (
+            <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+              Plan {projection.attention_plan_id} needs operator guidance. Review it, then run{" "}
+              <code>
+                {`harn supervisor plan retry ${intent.id} ${projection.attention_plan_id} --reason <text>`}
+              </code>
+              .
+            </p>
+          ) : null}
         </section>
 
         {intent.replanning ? (
@@ -162,6 +171,16 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                           or reject it with{" "}
                           <code>
                             {`harn supervisor plan reject ${intent.id} ${plan.request.id} --reason <text>`}
+                          </code>
+                          .
+                        </p>
+                      ) : null}
+                      {plan.status === "attention" &&
+                      projection.attention_plan_id === plan.request.id ? (
+                        <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                          Supply the missing judgment with{" "}
+                          <code>
+                            {`harn supervisor plan retry ${intent.id} ${plan.request.id} --reason <text>`}
                           </code>
                           .
                         </p>

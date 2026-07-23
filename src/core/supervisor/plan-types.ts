@@ -87,6 +87,7 @@ export type SupervisorPlanEventType =
   | "plan.applied"
   | "plan.completed"
   | "plan.rejected"
+  | "plan.retry_requested"
   | "plan.attention"
   | "plan.failed";
 
@@ -154,6 +155,7 @@ export type SupervisorPlanStatus =
   | "applied"
   | "completed"
   | "rejected"
+  | "retry_requested"
   | "attention"
   | "failed";
 

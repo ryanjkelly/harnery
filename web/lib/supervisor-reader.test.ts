@@ -187,6 +187,21 @@ describe("supervisor dashboard reader", () => {
       requiresDecision: false,
       reviewLabel: "revision exhausted · 1 review round · 1 blocking · 0 advisory",
     });
+    expect(
+      supervisorPlanDashboardStatus({
+        ...plan!,
+        proposal: undefined,
+        status: "retry_requested",
+        review: { ...plan!.review!, status: "revision_exhausted", blocking_findings: 1 },
+      }),
+    ).toMatchObject({
+      state: "retry_requested",
+      label: "retry requested",
+      badgeVariant: "info",
+      requiresReview: false,
+      requiresDecision: false,
+      reviewLabel: "revision exhausted · 1 review round · 1 blocking · 0 advisory",
+    });
   });
 });
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createWorkItem, readWorkItem } from "../work/index.ts";
+import { cancelWorkItem, createWorkItem, readWorkItem } from "../work/index.ts";
 import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
 import {
   approveSupervisorPlan,
@@ -10,6 +10,7 @@ import {
   readSupervisor,
   readSupervisorPlan,
   rejectSupervisorPlan,
+  retrySupervisorPlan,
   runSupervisor,
 } from "./index.ts";
 
@@ -824,6 +825,27 @@ describe("durable goal supervisor", () => {
       ),
     ).toBe(false);
     expect(revisionCalls).toBe(0);
+    const reviewedPlanDir = join(
+      root,
+      ".harnery",
+      "supervisors",
+      "goal-reviewed-exhausted",
+      "plans",
+      planId,
+    );
+    const requestBeforeRetry = readFileSync(join(reviewedPlanDir, "request.json"), "utf8");
+    const reviewBeforeRetry = readFileSync(join(reviewedPlanDir, "review.json"), "utf8");
+    expect(
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-reviewed-exhausted",
+        planId,
+        actor: "operator",
+        reason: "Narrow the proof requirement to the existing acceptance boundary",
+      }).status,
+    ).toBe("retry_requested");
+    expect(readFileSync(join(reviewedPlanDir, "request.json"), "utf8")).toBe(requestBeforeRetry);
+    expect(readFileSync(join(reviewedPlanDir, "review.json"), "utf8")).toBe(reviewBeforeRetry);
   });
 
   test("partial review receipt fails closed", async () => {
@@ -1262,6 +1284,10 @@ describe("durable goal supervisor", () => {
     });
     expect(first.stop_reason).toBe("awaiting_attention");
     expect(first.projection.latest_plan_status).toBe("attention");
+    expect(first.projection.next_action).toBe("retry_plan");
+    expect(first.projection.attention_plan_id).toBe(
+      readSupervisor(root, "goal-replan-attention").plans[0]?.request.id,
+    );
     const second = await runSupervisor({
       coordRoot: root,
       goalId: "goal-replan-attention",
@@ -1269,6 +1295,182 @@ describe("durable goal supervisor", () => {
     });
     expect(second.stop_reason).toBe("awaiting_attention");
     expect(calls).toBe(1);
+    cancelWorkItem(root, "needs-judgment", {
+      actor: "operator",
+      reason: "Change durable graph truth",
+    });
+    expect(
+      readSupervisor(root, "goal-replan-attention").projection.attention_plan_id,
+    ).toBeUndefined();
+    expect(() =>
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-replan-attention",
+        planId: first.projection.attention_plan_id!,
+        reason: "Retry stale attention",
+      }),
+    ).toThrow("no longer matches the active graph");
+  });
+
+  test("an addressed attention retry preserves prior evidence and guides one new plan", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "guided-retry-root",
+      title: "Guided retry root",
+      objective: "Recover after operator judgment",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-guided-retry",
+      rootWorkId: "guided-retry-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 2,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const prompts: string[] = [];
+    const spawner: Spawner = async (request) => {
+      prompts.push(request.prompt);
+      return {
+        ok: true,
+        text: JSON.stringify({
+          decision: "attention",
+          rationale:
+            prompts.length === 1
+              ? "The goal needs an operator decision"
+              : "The operator guidance was considered",
+          root: "",
+          work: [],
+        }),
+        durationMs: 1,
+      };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-guided-retry",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = first.projection.attention_plan_id!;
+    const planDir = join(root, ".harnery", "supervisors", "goal-guided-retry", "plans", planId);
+    const requestBefore = readFileSync(join(planDir, "request.json"), "utf8");
+    const proposalBefore = readFileSync(join(planDir, "proposal.json"), "utf8");
+    const eventsBefore = readFileSync(join(planDir, "events.jsonl"), "utf8");
+
+    expect(() =>
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-guided-retry",
+        planId,
+        reason: "   ",
+      }),
+    ).toThrow("plan retry reason must not be empty");
+    expect(() =>
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-guided-retry",
+        planId,
+        reason: "x".repeat(2_001),
+      }),
+    ).toThrow("plan retry reason exceeds 2000 characters");
+
+    const retried = retrySupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-guided-retry",
+      planId,
+      actor: "operator",
+      reason: "Keep the recovery local and preserve the existing API",
+    });
+    const repeated = retrySupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-guided-retry",
+      planId,
+      actor: "operator",
+      reason: "This duplicate must not replace the first guidance",
+    });
+    expect(retried.status).toBe("retry_requested");
+    expect(repeated).toEqual(retried);
+    expect(readFileSync(join(planDir, "request.json"), "utf8")).toBe(requestBefore);
+    expect(readFileSync(join(planDir, "proposal.json"), "utf8")).toBe(proposalBefore);
+    const eventsAfter = readFileSync(join(planDir, "events.jsonl"), "utf8");
+    expect(eventsAfter.slice(0, eventsBefore.length)).toBe(eventsBefore);
+    expect(eventsAfter.match(/plan\.retry_requested/g)).toHaveLength(1);
+    expect(eventsAfter).toContain("Keep the recovery local and preserve the existing API");
+    expect(eventsAfter).not.toContain("This duplicate must not replace the first guidance");
+    expect(readSupervisor(root, "goal-guided-retry").projection.next_action).toBe("replan");
+
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-guided-retry",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(second.projection.replans_used).toBe(2);
+    expect(prompts[1]).toContain("Keep the recovery local and preserve the existing API");
+    expect(readFileSync(join(planDir, "request.json"), "utf8")).toBe(requestBefore);
+    expect(readFileSync(join(planDir, "proposal.json"), "utf8")).toBe(proposalBefore);
+    expect(() =>
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-guided-retry",
+        planId,
+        reason: "Retry the historical plan",
+      }),
+    ).toThrow(`supervisor plan ${planId} is not the latest plan`);
+  });
+
+  test("attention retry stays unavailable after the frozen replan budget is exhausted", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "retry-budget-root",
+      title: "Retry budget root",
+      objective: "Respect the frozen planning budget",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-retry-budget",
+      rootWorkId: "retry-budget-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-retry-budget",
+      engine: {
+        spawners: {
+          codex: async () => ({
+            ok: true,
+            text: JSON.stringify({
+              decision: "attention",
+              rationale: "Human judgment is required",
+              root: "",
+              work: [],
+            }),
+            durationMs: 1,
+          }),
+        },
+        probeBilling,
+      },
+    });
+    expect(report.projection.next_action).toBe("none");
+    expect(() =>
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-retry-budget",
+        planId: report.projection.attention_plan_id!,
+        reason: "Try once more",
+      }),
+    ).toThrow("supervisor goal-retry-budget exhausted its 1 replans");
   });
 
   test("feeds an explicit rejection reason into the next bounded planner attempt", async () => {
@@ -1314,6 +1516,14 @@ describe("durable goal supervisor", () => {
       goalId: "goal-replan-rejected",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
+    expect(() =>
+      retrySupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-replan-rejected",
+        planId: first.projection.pending_plan_id!,
+        reason: "Retry a proposal that still awaits review",
+      }),
+    ).toThrow("cannot be retried from proposed");
     rejectSupervisorPlan({
       coordRoot: root,
       goalId: "goal-replan-rejected",
@@ -1880,7 +2090,7 @@ describe("durable goal supervisor", () => {
     });
     expect(first.stop_reason).toBe("awaiting_attention");
     expect(second.stop_reason).toBe("awaiting_attention");
-    expect(second.projection.next_action).toBe("none");
+    expect(second.projection.next_action).toBe("retry_plan");
     expect(plannerCalls).toBe(1);
   });
 
