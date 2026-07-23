@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.1
+
+### Patch Changes
+
+- d1d9add: Accept one unambiguous schema-gated JSON object or array after a harness-added leading sentence while continuing to reject trailing prose, multiple candidates, malformed values, and schema mismatches.
+
 ## 0.22.0
 
 ### Minor Changes
