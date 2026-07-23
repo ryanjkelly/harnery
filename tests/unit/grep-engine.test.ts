@@ -369,7 +369,11 @@ describe("context materialization (-C/-A/-B)", () => {
   test("-C 2: overlapping windows merge into one contiguous block", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "2" });
     expect(shape(r).map((s) => s.line)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(shape(r).filter((s) => s.kind === "match").map((s) => s.line)).toEqual([1, 5]);
+    expect(
+      shape(r)
+        .filter((s) => s.kind === "match")
+        .map((s) => s.line),
+    ).toEqual([1, 5]);
     expect(r.total_matches).toBe(2);
   });
 
@@ -508,11 +512,11 @@ describe("boolean composition (--and / --without)", () => {
       try {
         // The --and membership scan hits the unreadable file (engine exit 2)
         // and must reject — NOT treat the partial set as authoritative.
-        expect(runWith("grep", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
+        await expect(runWith("grep", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
           /exited 2/,
         );
         if (hasRg) {
-          expect(runWith("rg", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
+          await expect(runWith("rg", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
             /exited 2/,
           );
         }
