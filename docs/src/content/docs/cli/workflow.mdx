@@ -186,11 +186,62 @@ controls how much assignment context each specialist needs and must preserve the
 host's instruction and policy hierarchy when work text came from an external
 source.
 
+### Attempt and retry context
+
+New work-linked runs also receive frozen `ctx.attempt` data:
+
+```js
+export default async function run({ work, attempt, agent }) {
+  if (!work || !attempt) throw new Error("durable work context required");
+
+  const correction =
+    attempt.trigger === "retry"
+      ? [
+          `This is attempt ${attempt.number}.`,
+          `Prior causes: ${attempt.prior.causes.join(", ")}`,
+          attempt.prior.error ? `Prior error: ${attempt.prior.error}` : "",
+          ...attempt.prior.unresolved.map(
+            (criterion) => `${criterion.status}: ${criterion.statement}`,
+          ),
+        ].filter(Boolean)
+      : [];
+
+  return agent(
+    [
+      `Objective: ${work.objective}`,
+      ...correction,
+      "Complete the assignment and verify its acceptance criteria.",
+    ].join("\n"),
+    { specialist: "implementer" },
+  );
+}
+```
+
+An initial attempt receives
+`{ schema_version: 1, number, trigger: "initial" }`. A retry additionally
+receives `prior` with the prior run ID, deterministic failure causes, the
+bounded workflow error when present, the acceptance summary, and only
+unsatisfied or unknown criteria. Causes can be `workflow_error`,
+`acceptance_unsatisfied`, `acceptance_unknown`, or `lost`. `lost` means only
+that terminal proof is absent; it does not diagnose why the run disappeared.
+
+The engine persists the same value as `attempt_context` in the private manifest,
+journal, and terminal proof. Approval resume restores that original value and
+does not become a retry. Standalone and historical context-free runs have
+`ctx.attempt === undefined`.
+
+Attempt context does not grant retry authority or add attempts. Explicit
+`harn work retry`, frozen supervisor policy, and the existing work and
+goal-wide ceilings still decide whether another run may start. As with
+`ctx.work`, the workflow controls whether and how the data enters a child
+prompt.
+
 ## The ctx API
 
 | Property or function | Contract |
 | --- | --- |
 | `work` | Optional deeply frozen durable-work assignment: work ID, title, objective, and acceptance criteria. Present for new work-linked attempts; absent for standalone and legacy-resumed runs. |
+| `attempt` | Optional deeply frozen attempt identity. A retry includes a bounded synopsis of the preceding terminal evidence; approval resume preserves the original attempt. |
 | `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must strict-parse as JSON and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`); failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
 | `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch — filter and route. |
 | `stage(title)` | Declare the current stage: journal marker + progress grouping. |

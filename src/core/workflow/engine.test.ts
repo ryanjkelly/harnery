@@ -110,6 +110,70 @@ describe("runWorkflow", () => {
     );
   });
 
+  test("injects a frozen attempt context and binds it to manifest, journal, and proof", async () => {
+    const script = writeScript(`
+      export default async ({ attempt }) => {
+        let priorFrozen = false;
+        let criteriaFrozen = false;
+        try { attempt.prior.error = "mutated"; } catch { priorFrozen = true; }
+        try { attempt.prior.unresolved.push({}); } catch { criteriaFrozen = true; }
+        return { attempt, priorFrozen, criteriaFrozen };
+      };
+    `);
+    const workContext = {
+      schema_version: 1 as const,
+      id: "retry-work",
+      title: "Retry work",
+      objective: "Finish after evidence changes",
+      acceptance: ["Release exists"],
+    };
+    const attemptContext = {
+      schema_version: 1 as const,
+      number: 2,
+      trigger: "retry" as const,
+      prior: {
+        run_id: "wf-prior",
+        causes: ["acceptance_unknown" as const],
+        acceptance: { satisfied: 0, unsatisfied: 0, unknown: 1, total: 1 },
+        unresolved: [{ id: "release", statement: "Release exists", status: "unknown" as const }],
+      },
+    };
+    const pending = runWorkflow(script, {
+      coordRoot: root,
+      spawners: {},
+      workItemId: "retry-work",
+      workContext,
+      attemptContext,
+      ...quiet,
+    });
+    attemptContext.prior.unresolved[0]!.statement = "caller mutation";
+    const report = await pending;
+    expect(report.result).toEqual({
+      attempt: {
+        schema_version: 1,
+        number: 2,
+        trigger: "retry",
+        prior: {
+          run_id: "wf-prior",
+          causes: ["acceptance_unknown"],
+          acceptance: { satisfied: 0, unsatisfied: 0, unknown: 1, total: 1 },
+          unresolved: [{ id: "release", statement: "Release exists", status: "unknown" }],
+        },
+      },
+      priorFrozen: true,
+      criteriaFrozen: true,
+    });
+    const manifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
+    );
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(manifest.attempt_context).toEqual((report.result as { attempt: unknown }).attempt);
+    expect(proof.run.attempt_context).toEqual(manifest.attempt_context);
+    expect(readJournal().find((event) => event.event === "run.start")?.attempt_context).toEqual(
+      manifest.attempt_context,
+    );
+  });
+
   test("keeps standalone context absent and rejects invalid work bindings", async () => {
     const script = writeScript(`export default async ({ work }) => work ?? null;`);
     const standalone = await runWorkflow(script, {
@@ -163,6 +227,15 @@ describe("runWorkflow", () => {
         ...quiet,
       }),
     ).rejects.toThrow(/resume uses the frozen manifest work context/);
+
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: {},
+        attemptContext: { schema_version: 1, number: 1, trigger: "initial" },
+        ...quiet,
+      }),
+    ).rejects.toThrow(/attempt context requires work context/);
   });
 
   test("schema-gated agent returns validated JSON; report totals populated", async () => {

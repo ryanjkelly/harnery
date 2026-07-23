@@ -36,6 +36,7 @@ import {
   summarizePolicyRequest,
 } from "../policy/index.ts";
 import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
+import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import {
   buildWorkflowProof,
@@ -60,6 +61,7 @@ import type {
   SpawnResult,
   StageSchema,
   WorkflowAgentProof,
+  WorkflowAttemptContext,
   WorkflowContext,
   WorkflowEvidenceRecord,
   WorkflowModule,
@@ -115,8 +117,15 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   if (opts.resumeRunId && opts.workContext !== undefined) {
     throw new Error("parked workflow resume uses the frozen manifest work context");
   }
+  if (opts.resumeRunId && opts.attemptContext !== undefined) {
+    throw new Error("parked workflow resume uses the frozen manifest attempt context");
+  }
   const requestedWorkContext =
     opts.workContext === undefined ? undefined : freezeWorkflowWorkContext(opts.workContext);
+  const requestedAttemptContext =
+    opts.attemptContext === undefined
+      ? undefined
+      : freezeWorkflowAttemptContext(opts.attemptContext);
   if (requestedWorkContext && !opts.workItemId) {
     throw new Error("workflow work context requires a work item id");
   }
@@ -124,6 +133,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
     throw new Error(
       `workflow work context ${requestedWorkContext.id} does not match work item ${opts.workItemId}`,
     );
+  }
+  if (requestedAttemptContext && !requestedWorkContext) {
+    throw new Error("workflow attempt context requires work context");
   }
   if (opts.resumeRunId && opts.resumeFrom) {
     throw new Error("resumeRunId and resumeFrom are mutually exclusive");
@@ -141,6 +153,9 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   const workContext = resumeState?.manifest.work_context
     ? freezeWorkflowWorkContext(resumeState.manifest.work_context)
     : requestedWorkContext;
+  const attemptContext = resumeState?.manifest.attempt_context
+    ? freezeWorkflowAttemptContext(resumeState.manifest.attempt_context)
+    : requestedAttemptContext;
   const absScript = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
   if (resumeState) {
     if (resolve(resumeState.manifest.script.path) !== resolve(absScript)) {
@@ -157,7 +172,14 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
       // the run between the optimistic read and lease acquisition.
       assertWorkflowRunResumable(opts.coordRoot, resumeState.manifest.run_id);
     }
-    return await executeWorkflow(scriptPath, absScript, opts, resumeState, workContext);
+    return await executeWorkflow(
+      scriptPath,
+      absScript,
+      opts,
+      resumeState,
+      workContext,
+      attemptContext,
+    );
   } finally {
     releaseResumeLease?.();
   }
@@ -169,6 +191,7 @@ async function executeWorkflow(
   opts: EngineOpts,
   resumeState: ReturnType<typeof assertWorkflowRunResumable> | undefined,
   workContext: Readonly<WorkflowWorkContext> | undefined,
+  attemptContext: Readonly<WorkflowAttemptContext> | undefined,
 ): Promise<RunReport> {
   const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
   if (typeof mod.default !== "function") {
@@ -218,6 +241,7 @@ async function executeWorkflow(
         run_id: runId,
         work_item_id: opts.workItemId,
         work_context: workContext,
+        attempt_context: attemptContext,
         name,
         started_at: startedAt,
         script: { path: absScript, sha256: workflowScriptDigest(absScript) },
@@ -784,6 +808,7 @@ async function executeWorkflow(
 
   const ctx: WorkflowContext = {
     work: workContext,
+    attempt: attemptContext,
     agent,
     parallel,
     stage,
@@ -803,6 +828,7 @@ async function executeWorkflow(
         name,
         work_item_id: opts.workItemId ?? null,
         work_context: workContext ?? null,
+        attempt_context: attemptContext ?? null,
         script: absScript,
         objective: meta.objective ?? null,
         acceptance: meta.acceptance,
@@ -830,6 +856,7 @@ async function executeWorkflow(
         runId,
         workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
         workContext,
+        attemptContext,
         meta,
         status: "succeeded",
         startedAt,
@@ -897,6 +924,7 @@ async function executeWorkflow(
         runId,
         workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
         workContext,
+        attemptContext,
         meta,
         status: "failed",
         startedAt,

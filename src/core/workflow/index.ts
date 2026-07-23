@@ -16,6 +16,11 @@ export {
   WORKFLOW_APPROVAL_SCHEMA_VERSION,
   workflowApprovalId,
 } from "./approvals.ts";
+export {
+  freezeWorkflowAttemptContext,
+  isCanonicalWorkflowAttemptContext,
+  normalizeWorkflowAttemptContext,
+} from "./attempt-context.ts";
 export { runWorkflow, WorkflowParkedError, WorkflowRunError } from "./engine.ts";
 export {
   buildWorkflowProof,
@@ -59,6 +64,10 @@ export type {
   StageSchema,
   WorkflowAgentProof,
   WorkflowApprovalMode,
+  WorkflowAttemptContext,
+  WorkflowAttemptFailureCause,
+  WorkflowAttemptPriorContext,
+  WorkflowAttemptUnresolvedCriterion,
   WorkflowContext,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
@@ -74,6 +83,7 @@ export type {
   WorkflowWorkContext,
 } from "./types.ts";
 export {
+  WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION,
   WORKFLOW_PROOF_SCHEMA_VERSION,
   WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION,
 } from "./types.ts";

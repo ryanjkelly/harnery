@@ -262,6 +262,69 @@ describe("durable goal supervisor", () => {
     expect(readWorkItem(root, "failing").projection.next_action).toBe("none");
   });
 
+  test("an authorized supervisor retry receives the prior failure synopsis", async () => {
+    const { root } = fixture();
+    const contextual = join(root, "contextual-retry.mjs");
+    writeFileSync(
+      contextual,
+      `
+        export const meta = {
+          name: "contextual-retry",
+          acceptance: [{ id: "done", statement: "The correction is verified" }],
+        };
+        export default async (ctx) => {
+          if (ctx.attempt.trigger === "initial") throw new Error("first attempt failed");
+          if (!ctx.attempt.prior.causes.includes("workflow_error")) {
+            throw new Error("retry did not receive the prior workflow error");
+          }
+          ctx.evidence({
+            kind: "review",
+            status: "passed",
+            label: "corrected from prior evidence",
+            acceptanceIds: ["done"],
+          });
+          return ctx.attempt;
+        };
+      `,
+    );
+    createWorkItem({
+      coordRoot: root,
+      id: "contextual",
+      title: "Contextual",
+      objective: "Correct a failed attempt",
+      workflowPath: contextual,
+      maxAttempts: 2,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-contextual",
+      rootWorkId: "contextual",
+      specialists: {},
+      automation: { accept_passing_proof: true, retry_blocked: true },
+      limits: { max_total_attempts: 2 },
+    });
+
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-contextual",
+      engine: { spawners: {}, probeBilling },
+    });
+    expect(report.stop_reason).toBe("succeeded");
+    expect(report.dispatches).toBe(2);
+    const attempts = readWorkItem(root, "contextual").projection.attempts;
+    expect(attempts.map((attempt) => attempt.trigger)).toEqual(["initial", "retry"]);
+    const proof = JSON.parse(readFileSync(attempts[1]!.proof_path!, "utf8"));
+    expect(proof.run.attempt_context).toMatchObject({
+      number: 2,
+      trigger: "retry",
+      prior: {
+        run_id: attempts[0]!.run_id,
+        causes: ["workflow_error", "acceptance_unknown"],
+        error: "first attempt failed",
+      },
+    });
+  });
+
   test("graph-wide attempt budget prevents a ready dependent from launching", async () => {
     const { root, passing } = fixture();
     createWorkItem({

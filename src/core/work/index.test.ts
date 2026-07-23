@@ -190,6 +190,138 @@ describe("durable work ledger", () => {
     ).rejects.toThrow(/exhausted/);
   });
 
+  test("a retry receives the prior terminal evidence as frozen typed context", async () => {
+    const { root, workflowPath } = fixture(`
+      export const meta = {
+        name: "retry-context",
+        acceptance: [{ id: "release", statement: "Release exists" }],
+      };
+      export default async (ctx) => {
+        if (ctx.attempt.trigger === "retry") {
+          ctx.evidence({
+            kind: "artifact",
+            status: "passed",
+            label: "published release",
+            acceptanceIds: ["release"],
+          });
+        }
+        return ctx.attempt;
+      };
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "contextual-retry",
+      title: "Contextual retry",
+      objective: "Finish from prior evidence",
+      acceptance: ["Release exists"],
+      workflowPath,
+      maxAttempts: 2,
+    });
+
+    const first = await runWorkItem({
+      coordRoot: root,
+      workId: "contextual-retry",
+      engine: { spawners: {} },
+    });
+    expect(first.result).toEqual({ schema_version: 1, number: 1, trigger: "initial" });
+    expect(readWorkItem(root, "contextual-retry").projection.state).toBe("blocked");
+
+    const second = await runWorkItem({
+      coordRoot: root,
+      workId: "contextual-retry",
+      retry: true,
+      engine: { spawners: {} },
+    });
+    expect(second.result).toEqual({
+      schema_version: 1,
+      number: 2,
+      trigger: "retry",
+      prior: {
+        run_id: first.runId,
+        causes: ["acceptance_unknown"],
+        acceptance: { satisfied: 0, unsatisfied: 0, unknown: 1, total: 1 },
+        unresolved: [{ id: "release", statement: "Release exists", status: "unknown" }],
+      },
+    });
+    const manifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", second.runId, "run.json"), "utf8"),
+    );
+    const proof = JSON.parse(readFileSync(second.proofPath, "utf8"));
+    expect(manifest.attempt_context).toEqual(second.result);
+    expect(proof.run.attempt_context).toEqual(second.result);
+    expect(readWorkItem(root, "contextual-retry").projection.state).toBe("in_review");
+  });
+
+  test("a lost prior attempt is explicit without inventing a diagnosis", async () => {
+    const { root, workflowPath } = fixture(`
+      export default async ({ attempt }) => attempt;
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "lost-retry",
+      title: "Lost retry",
+      objective: "Recover from missing terminal evidence",
+      workflowPath,
+      maxAttempts: 2,
+    });
+    appendFileSync(
+      join(root, ".harnery", "work", "lost-retry", "events.jsonl"),
+      `${JSON.stringify({
+        schema_version: 1,
+        work_id: "lost-retry",
+        seq: 2,
+        ts: new Date().toISOString(),
+        event: "attempt.started",
+        actor: "crashed-runner",
+        reason: "workflow attempt started",
+        run_id: "wf-lost",
+        attempt: 1,
+        trigger: "initial",
+      })}\n`,
+    );
+    expect(readWorkItem(root, "lost-retry").projection.attempts[0]?.status).toBe("lost");
+
+    const report = await runWorkItem({
+      coordRoot: root,
+      workId: "lost-retry",
+      retry: true,
+      engine: { spawners: {} },
+    });
+    expect(report.result).toEqual({
+      schema_version: 1,
+      number: 2,
+      trigger: "retry",
+      prior: { run_id: "wf-lost", causes: ["lost"], unresolved: [] },
+    });
+  });
+
+  test("governed reopen starts a fresh initial attempt instead of a retry", async () => {
+    const { root, workflowPath } = fixture(`
+      export default async ({ attempt }) => attempt;
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "reopened-attempt",
+      title: "Reopened attempt",
+      objective: "Start again under fresh lifecycle authority",
+      workflowPath,
+      maxAttempts: 2,
+    });
+    const first = await runWorkItem({
+      coordRoot: root,
+      workId: "reopened-attempt",
+      engine: { spawners: {} },
+    });
+    expect(first.result).toEqual({ schema_version: 1, number: 1, trigger: "initial" });
+    reopenWorkItem(root, "reopened-attempt", { actor: "operator", reason: "run it again" });
+    const second = await runWorkItem({
+      coordRoot: root,
+      workId: "reopened-attempt",
+      engine: { spawners: {} },
+    });
+    expect(second.result).toEqual({ schema_version: 1, number: 2, trigger: "initial" });
+  });
+
   test("fails closed when proof work context no longer matches its manifest", async () => {
     const { root, workflowPath } = fixture(`
       export default async ({ work }) => work.objective;
@@ -211,6 +343,31 @@ describe("durable work ledger", () => {
     writeFileSync(report.proofPath, `${JSON.stringify(proof)}\n`, "utf8");
     expect(() => readWorkItem(root, "tamper-proof")).toThrow(
       /work context does not match its run manifest/,
+    );
+  });
+
+  test("fails closed when manifest attempt context disagrees with the work ledger", async () => {
+    const { root, workflowPath } = fixture(`
+      export default async ({ attempt }) => attempt;
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "attempt-tamper",
+      title: "Attempt tamper",
+      objective: "Bind the attempt to the ledger",
+      workflowPath,
+    });
+    const report = await runWorkItem({
+      coordRoot: root,
+      workId: "attempt-tamper",
+      engine: { spawners: {} },
+    });
+    const manifestPath = join(root, ".harnery", "workflows", report.runId, "run.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.attempt_context.number = 2;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+    expect(() => readWorkItem(root, "attempt-tamper")).toThrow(
+      /attempt context does not match work item/,
     );
   });
 
@@ -289,6 +446,14 @@ describe("durable work ledger", () => {
     expect(spawns).toBe(1);
     expect(prompts).toEqual(["do the work: Wait safely"]);
     expect(readWorkItem(root, "parked").projection.attempts_used).toBe(1);
+    const manifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
+    );
+    expect(manifest.attempt_context).toEqual({
+      schema_version: 1,
+      number: 1,
+      trigger: "initial",
+    });
   });
 
   test("reconciliation is a no-op over unchanged evidence", () => {

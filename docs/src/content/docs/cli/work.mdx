@@ -59,26 +59,40 @@ before loading the workflow script. Standard workflow options are available:
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
 `--approval-to`.
 
-The workflow receives the immutable work assignment as `ctx.work`:
+The workflow receives the immutable assignment as `ctx.work` and its attempt
+identity as `ctx.attempt`:
 
 ```js
-export default async ({ work, agent }) => {
-  if (!work) throw new Error("durable work context required");
-  return agent(`Objective: ${work.objective}\nAcceptance:\n${work.acceptance.join("\n")}`);
+export default async ({ work, attempt, agent }) => {
+  if (!work || !attempt) throw new Error("durable work context required");
+  const retry =
+    attempt.trigger === "retry"
+      ? `\nPrior failure: ${attempt.prior.causes.join(", ")}`
+      : "";
+  return agent(
+    `Objective: ${work.objective}\nAcceptance:\n${work.acceptance.join("\n")}${retry}`,
+  );
 };
 ```
 
 Harnery freezes the work ID, title, objective, and acceptance criteria in the
 workflow run manifest before executing the script. The terminal proof carries
-the same value. A parked attempt resumes from the manifest snapshot instead of
-rereading or synthesizing context.
+the same value. It also freezes the one-based attempt number and whether the run
+is an initial attempt or retry. A retry adds the prior run ID, deterministic
+failure causes, bounded error, acceptance counts, and unresolved criteria.
+Harnery does not inject that data into child prompts automatically.
+
+A parked attempt resumes from the manifest snapshot instead of rereading or
+synthesizing context. It remains the same attempt and retains its original
+`ctx.attempt`.
 
 When host policy parks the workflow, the work item derives
 `awaiting_approval`. Resolve the request with `harn workflow approvals`, then
 run the work item again. Harnery resumes the same workflow run and does not
 charge another attempt. A failed or lost run derives `blocked`; only the
 explicit `retry` command creates a new attempt, and the immutable attempt
-ceiling still applies.
+ceiling still applies. The retry's `ctx.attempt.prior` is derived from the
+preceding proof. Missing proof is reported as `lost` without guessing a cause.
 
 ## Reconcile and close
 

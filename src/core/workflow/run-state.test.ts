@@ -69,6 +69,11 @@ describe("workflow run state", () => {
           objective: "Complete A",
           acceptance: ["Tests pass"],
         },
+        attempt_context: {
+          schema_version: 1,
+          number: 1,
+          trigger: "initial",
+        },
         name: "fixture",
         started_at: "2026-07-23T05:00:00.000Z",
         script: { path: join(root, "workflow.mjs"), sha256: "a".repeat(64) },
@@ -91,6 +96,10 @@ describe("workflow run state", () => {
       "Complete A",
     );
     const persisted = JSON.parse(readFileSync(path, "utf8"));
+    persisted.attempt_context = { schema_version: 1, number: 2, trigger: "retry" };
+    writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
+    expect(() => readWorkflowRunManifest(root, "wf-work-context")).toThrow(/mismatched schema/);
+    persisted.attempt_context = { schema_version: 1, number: 1, trigger: "initial" };
     persisted.work_context.id = "work-b";
     writeFileSync(path, `${JSON.stringify(persisted)}\n`, "utf8");
     expect(() => readWorkflowRunManifest(root, "wf-work-context")).toThrow(/mismatched schema/);

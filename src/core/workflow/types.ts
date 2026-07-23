@@ -21,6 +21,7 @@ import type { BillingMode, BillingProber } from "./billing.ts";
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
+export const WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION = 1 as const;
 
 export type EvidenceKind = "test" | "command" | "artifact" | "change" | "review" | "observation";
 export type EvidenceStatus = "passed" | "failed" | "observed" | "unknown";
@@ -157,6 +158,7 @@ export interface WorkflowProof {
     ended_at: string;
     duration_ms: number;
     work_context?: WorkflowWorkContext;
+    attempt_context?: WorkflowAttemptContext;
     objective?: string;
     error?: string;
     result?: ResultDigest;
@@ -304,6 +306,9 @@ export interface WorkflowContext {
   /** Frozen durable-work assignment for work-linked runs. Standalone and
    * legacy-resumed workflows have no work context. */
   work?: Readonly<WorkflowWorkContext>;
+  /** Frozen attempt identity and, on retry, a bounded synopsis of prior
+   * terminal evidence. Absent for standalone and legacy-resumed workflows. */
+  attempt?: Readonly<WorkflowAttemptContext>;
   /** Spawn one subagent; resolves to validated JSON (schema) or reply text. */
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>;
   /** Run thunks with bounded concurrency; a rejected thunk resolves to null. */
@@ -340,6 +345,33 @@ export interface WorkflowWorkContext {
   readonly acceptance: readonly string[];
 }
 
+export type WorkflowAttemptFailureCause =
+  | "workflow_error"
+  | "acceptance_unsatisfied"
+  | "acceptance_unknown"
+  | "lost";
+
+export interface WorkflowAttemptUnresolvedCriterion {
+  readonly id: string;
+  readonly statement: string;
+  readonly status: "unsatisfied" | "unknown";
+}
+
+export interface WorkflowAttemptPriorContext {
+  readonly run_id: string;
+  readonly causes: readonly WorkflowAttemptFailureCause[];
+  readonly error?: string;
+  readonly acceptance?: Readonly<AcceptanceSummary>;
+  readonly unresolved: readonly WorkflowAttemptUnresolvedCriterion[];
+}
+
+export interface WorkflowAttemptContext {
+  readonly schema_version: typeof WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION;
+  readonly number: number;
+  readonly trigger: "initial" | "retry";
+  readonly prior?: Readonly<WorkflowAttemptPriorContext>;
+}
+
 export interface EngineOpts {
   /** Repo root whose .harnery/ receives the run journal. */
   coordRoot: string;
@@ -365,6 +397,9 @@ export interface EngineOpts {
   /** Frozen assignment data supplied by a durable-work host. Requires the
    * matching `workItemId`; parked resume always uses the manifest copy. */
   workContext?: WorkflowWorkContext;
+  /** Frozen attempt data supplied by a durable-work host. Requires matching
+   * work item and work contexts; parked resume uses the manifest copy. */
+  attemptContext?: WorkflowAttemptContext;
   /** Total-agent ceiling for the run (default 50): the runaway backstop. */
   maxAgents?: number;
   /** Concurrent-subagent cap for parallel() (default 4). */

@@ -14,6 +14,7 @@ export {
   WORK_EVENT_SCHEMA_VERSION,
   WORK_INTENT_SCHEMA_VERSION,
   type WorkAttempt,
+  type WorkAttemptTrigger,
   type WorkEvent,
   type WorkEventType,
   type WorkIntent,
