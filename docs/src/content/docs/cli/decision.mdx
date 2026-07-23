@@ -17,7 +17,7 @@ review the human skims asynchronously.
 
 The engine is deliberately generic. It stores a **tier** (`0`/`1`/`2`,
 human-involvement level) and **stakes** (`small`/`medium`/`high`) on every
-decision, but it never decides *what* belongs in which tier — that is host
+decision, but it never decides *what* belongs in which tier; that is host
 policy, applied by the filing agent (a host project supplies the rubric, e.g.
 via its own decision skill). State lives under `.harnery/decisions/`, one JSON
 manifest per decision plus a sibling dir for long-form bodies, mirroring
@@ -46,7 +46,7 @@ harn decision wontfix <id>         # close an un-deliberated decision without ac
 | ---- | ----------------------------------- | ------------- |
 | 0    | agent decides; no human involvement | never live |
 | 1    | agent decides + proceeds; human reviews after | async review feed |
-| 2    | human decides — but from a deliberated brief, not a raw question | before enactment |
+| 2    | human decides, but from a deliberated brief, not a raw question | before enactment |
 
 ## Lifecycle
 
@@ -67,7 +67,7 @@ feed but still returned by `search` (and `list --archived`) as precedent.
 Without an exit, a reviewed decision would sit in the feed forever.
 
 `archive` is terminal, but `harn decision reopen <id>` (alias `unarchive`) is the
-one sanctioned way back out — for a fat-fingered `--graduated-to` or the wrong
+one sanctioned way back out, for a fat-fingered `--graduated-to` or the wrong
 decision archived. It pulls the decision back to `reviewed`, moves it out of the
 archive, and clears `graduated_to` (a re-archive sets it fresh). Only `archived`
 decisions reopen; `superseded` and `wontfix` stay terminal.
@@ -76,7 +76,7 @@ decisions reopen; `superseded` and `wontfix` stay terminal.
 
 `resolve` **requires at least one `--evidence` citation** (a query run, a file
 read, a cost computed). A resolution with no cited evidence is structurally
-incomplete and is rejected — the same guard a background deliberator enforces,
+incomplete and is rejected, the same guard a background deliberator enforces,
 so "confident prose with no facts" never lands as a resolution.
 
 ## Events
@@ -84,7 +84,7 @@ so "confident prose with no facts" never lands as a resolution.
 `file`, `resolve`, and `review` emit canonical `decision.filed`,
 `decision.resolved`, and `decision.reviewed` events into `.harnery/events.ndjson`
 (carrying `decision_id`, `tier`, `stakes`/`verdict`) when run inside an agent
-session — enough to compute interrupt-rate and override-rate metrics with no
+session, enough to compute interrupt-rate and override-rate metrics with no
 extra telemetry plumbing. Operator-side runs (no agent session) skip the event.
 
 ## Examples

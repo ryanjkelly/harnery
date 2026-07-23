@@ -10,8 +10,8 @@ sidebar:
 
 ## Context
 
-harnery ships a coordination *engine* — decision docket (ADR 0007), councils,
-scratch journals, agent heartbeats, harness hooks — but no agent-facing
+harnery ships a coordination *engine*: decision docket (ADR 0007), councils,
+scratch journals, agent heartbeats, harness hooks. But it ships no agent-facing
 *guidance*. `harn init` wires hooks and creates the coord root, and the runtime
 injects dynamic session context (identity, peer table), yet nothing tells the
 consumer's agent that these surfaces exist or when to reach for them. "Start a
@@ -19,8 +19,8 @@ council" said to a bare-consumer agent does nothing: the procedure lives in no
 skill the agent can load. The first host only works because it hand-authored
 several thousand tokens of instructions-file sections and skills on top of the
 engine; every other adopter would have to reverse-engineer that layer. ADR 0007
-even names the contract — "host projects layer their triage rubric + a capture
-skill on top" — without giving the *generic* half of that layer a vehicle.
+even names the contract ("host projects layer their triage rubric + a capture
+skill on top") without giving the *generic* half of that layer a vehicle.
 
 Two kinds of guidance want two different lifetimes:
 
@@ -28,7 +28,7 @@ Two kinds of guidance want two different lifetimes:
   exist *before* it can decide to use them, so this must sit in the project
   instructions file that loads every session.
 - **On-demand procedure.** How to run a council round, how to resolve a
-  decision with evidence — long, only needed when invoked. This is what
+  decision with evidence: long, and only needed when invoked. This is what
   harness skills are for.
 
 ## Alternatives considered
@@ -45,26 +45,26 @@ Two kinds of guidance want two different lifetimes:
   channel that reaches a harness whose hooks aren't wired yet.
 - **One big skill instead of an instructions block.** Rejected: skills load
   only when invoked, and an agent that doesn't know the docket exists never
-  invokes the docket skill. Chicken-and-egg — the *existence* claim must be
-  always-on.
+  invokes the docket skill. It is a chicken-and-egg problem: the *existence*
+  claim must be always-on.
 - **Bin-derived skill names** (a host bin `acme` gets `/acme-decide`). Reads
   nicer per host, but skill names churn when a host renames its bin, collide
   when two harnery-composed CLIs coexist, and hide which skills harnery owns.
   Rejected for a literal `harn-` prefix: stable, collision-proof, and marks
   provenance. The *content* still renders the host's bin everywhere it tells
   the agent to run something.
-- **Ship the triage rubric (host policy) inside the skills.** Rejected —
+- **Ship the triage rubric (host policy) inside the skills.** Rejected.
   ADR 0007's portability split holds: tier *numbers* are engine, tier
   *criteria* are host policy. Shipped skills carry engine mechanics only;
   a host layers its own policy skill on top or replaces ours outright.
 - **A new top-level command** (`harn instructions apply`). Rejected: ADR 0005
-  settled one verb per intent — `init` wires a project, `deinit` unwires it.
+  settled one verb per intent: `init` wires a project, `deinit` unwires it.
   This is more wiring, so it rides the same pair; a separate verb would make
   three commands whose lifecycles a consumer must sequence by hand.
 - **A freeform, hand-editable block** (inject once, let the consumer own it).
   Rejected: upgrades become merge conflicts and drift becomes invisible. The
-  first host's HTML-theme splicer proved the alternative shape — a
-  machine-owned, hash-versioned managed region — over dozens of pages: splices
+  first host's HTML-theme splicer proved the alternative shape, a
+  machine-owned, hash-versioned managed region, over dozens of pages: splices
   stay idempotent, drift is a byte-compare, and everything outside the markers
   is untouchable.
 
@@ -93,8 +93,8 @@ Two kinds of guidance want two different lifetimes:
 - **Claude Code reads only `CLAUDE.md`, not `AGENTS.md`** (Claude Code docs,
   memory § AGENTS.md). So when `CLAUDE.md` is absent, `init` creates one whose
   managed region contains the `@AGENTS.md` import; when `CLAUDE.md` exists
-  without either that import or the block, `init` warns and leaves it alone —
-  a host that *generates* `CLAUDE.md` from `AGENTS.md` flows the block through
+  without either that import or the block, `init` warns and leaves it alone.
+  A host that *generates* `CLAUDE.md` from `AGENTS.md` flows the block through
   on its own, and double-injection would duplicate it.
 - **Content budget: orientation, not procedure.** What exists (identity +
   peer awareness via `agents whoami|status|set-task`, intent declaration,
@@ -104,7 +104,7 @@ Two kinds of guidance want two different lifetimes:
   skills precisely so it stays small.
 - Rendered at init time from templates shipped in the package, with the bin
   name substituted from the same value `init` stamps into
-  `.harnery/config.jsonc` — static markdown can't call `resolveBinName()` at
+  `.harnery/config.jsonc`. Static markdown can't call `resolveBinName()` at
   runtime, so re-running `init` after a bin rename re-renders the block.
 
 **2. Generic skills**, written where the harness has a native skill primitive:
@@ -114,8 +114,8 @@ Two kinds of guidance want two different lifetimes:
   `.claude/skills/harn-council/SKILL.md` (steward/member procedure, guard
   checks, prompt routing). Both are engine-mechanics only.
 - Each generated file carries a harnery-ownership header (generated-by marker
-  + content hash). `deinit` deletes only marked files — the same ownership
-  rule that lets `unwireHooks` strip only `agent-hook` entries — and `--check`
+  + content hash). `deinit` deletes only marked files (the same ownership
+  rule that lets `unwireHooks` strip only `agent-hook` entries), and `--check`
   flags a hand-edited or stale skill.
 - Cursor and Codex get no native skill fan-out in v1: both read `AGENTS.md`
   natively, so the injected block carries the orientation and the CLI's
@@ -123,34 +123,34 @@ Two kinds of guidance want two different lifetimes:
   Cursor rules) is a tracked follow-on once those conventions are pinned.
 - Deferred skills: scratch (a block one-liner suffices), handoff and
   docs-sweep (their procedures embed host doc-layout policy the engine
-  doesn't own — same boundary as the triage rubric).
+  doesn't own, the same boundary as the triage rubric).
 - `.harnery/config.jsonc` gains `skills.exclude` so a host with its own
   richer skill (e.g. a policy-laden decide) suppresses the generic one while
   keeping the rest.
 
 **3. Drift contract.** `harn init --check` writes nothing and exits 0 when
 fresh, 2 on drift (block or skills stale, missing, or hand-edited), 1 on
-error — the exit shape consumers wire into a pre-commit hook. Block and skills
+error. That exit shape is what consumers wire into a pre-commit hook. Block and skills
 are *committed by the consumer* (agents and CI see them without running
 `init`); the source of truth is the installed harnery version's templates, so
 an upgrade shows up as `--check` drift until `init` is re-run.
 
 **4. Deinit symmetry.** Splice the block out of `AGENTS.md`/`CLAUDE.md`
 (deleting the file only when `init` created it and nothing outside the block
-remains — mirroring the harness-only settings-file removal), delete marked
+remains, mirroring the harness-only settings-file removal), delete marked
 skill files, leave everything else. `--purge-state` semantics are unchanged.
 
 ## Consequences
 
-- **Staged rollout, in order:** (1) implement in harnery — a pure splice lib
+- **Staged rollout, in order:** (1) implement in harnery: a pure splice lib
   (unit-testable like `wireHooks`/`unwireHooks`), templates, init/deinit/
   `--check` wiring, tests, changeset; (2) dry-run against a copy of the first
   host's instructions file and diff which hand-authored sections the block
-  subsumes; (3) the first host de-tangles — generic sections (intent capture,
+  subsumes; (3) the first host de-tangles: generic sections (intent capture,
   command capture, coord surface, scratch journal, docket engine mechanics,
   council procedure) retire in favor of the injected block + shipped skills,
   while host policy (triage rubric, escalation targets, prose gates, the host
-  CLI reference) stays hand-authored — gated on its config-sync and
+  CLI reference) stays hand-authored, gated on its config-sync and
   `init --check` pre-commit checks; (4) a second host adopts from scratch and
   validates the bare-consumer experience end-to-end. Do not start (3) before
   (1) ships and (2) is diffed.
@@ -158,8 +158,8 @@ skill files, leave everything else. `--purge-state` semantics are unchanged.
   `harn-decide` via `skills.exclude`; its hand-authored council skill (~90%
   engine procedure) retires in favor of `harn-council` plus a thin host
   addendum.
-- The npm package must ship the template files (`files` field / build copy) —
-  needs a packaging test, since a Bun submodule checkout resolves paths the
+- The npm package must ship the template files (`files` field / build copy).
+  This needs a packaging test, since a Bun submodule checkout resolves paths the
   published `dist/` build won't.
 - Templates are agent-facing prose inside `src/`, so the portability guard
   applies in full: no host tokens, and every command string renders through
@@ -167,7 +167,7 @@ skill files, leave everything else. `--purge-state` semantics are unchanged.
   bug.
 - Skill *names* are fixed (`harn-*`) even for a renamed bin; only skill
   *content* tracks the bin. Two harnery-composed CLIs in one repo would still
-  collide on skill files — out of scope, same as today's single-coord-root
+  collide on skill files. That is out of scope, same as today's single-coord-root
   assumption.
 - Not decided here: runtime *enforcement* of any ritual the block describes
   (host hook policy), web-UI surfacing of drift, and auto-refresh on version

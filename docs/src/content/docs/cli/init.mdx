@@ -15,12 +15,12 @@ One command to make a project harnery-ready. It does the setup steps that are ot
 2. **Wires the agent-hook entries** into the chosen harness's settings file (see the harness-specific counts below).
 3. **Injects the agent-facing guidance** so a fresh consumer's agent actually knows the coord surfaces exist (design: [ADR 0008](/decisions/0008-agent-facing-skills/)):
    - A machine-owned **instructions block** spliced into `AGENTS.md` (a hash-versioned `<!-- harnery:begin instructions -->` region; everything outside the markers is untouched). Every command in it renders in *your* bin name.
-   - The generic **skills** `harn-decide` and `harn-council` written to `.claude/skills/` (claude-code only — Cursor and Codex read `AGENTS.md` natively). Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you ship your own richer version. The block is **exclusion-aware**: it only points at a skill it actually wrote — an excluded skill (or a harness with no skill files, like Cursor/Codex) gets a `<bin> decision --help` / `<bin> council --help` pointer instead of a dangling reference.
+   - The generic **skills** `harn-decide` and `harn-council` written to `.claude/skills/` (claude-code only; Cursor and Codex read `AGENTS.md` natively). Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you ship your own richer version. The block is **exclusion-aware**: it only points at a skill it actually wrote, so an excluded skill (or a harness with no skill files, like Cursor/Codex) gets a `<bin> decision --help` / `<bin> council --help` pointer instead of a dangling reference.
    - A `CLAUDE.md` `@AGENTS.md` import shim when `CLAUDE.md` is absent (Claude Code reads `CLAUDE.md`, not `AGENTS.md`). A `CLAUDE.md` that already imports `AGENTS.md`, or already carries the block, is left alone.
 
 When you run `init` through a host CLI that composes Harnery under its own bin name (e.g. `mycli init`), it also **stamps `binName` into `.harnery/config.jsonc`** so Harnery's coord binaries and web UI tell agents to run *your* command (`mycli agents status`, …) rather than the `harn` default. The stamp is comment-preserving and idempotent. Standalone `harn` needs no stamp; it's the resolver's default. See [the config reference](/reference/config-schema/#binname).
 
-`init` also **pins `workflow.subscriptionOnly: true` into `.harnery/config.jsonc`** so [workflow](/cli/workflow/) children can only authenticate via the harness CLI's logged-in (subscription) auth — API-key vars are scrubbed from child envs, making accidental per-token billing structurally impossible in the repo. The pin is written only when no `workflow` key exists; a committed `workflow` key of any shape (including `subscriptionOnly: false` for key-only CI hosts) is a deliberate choice and is never touched. Per-process escape hatch: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0`.
+`init` also **pins `workflow.subscriptionOnly: true` into `.harnery/config.jsonc`** so [workflow](/cli/workflow/) children can only authenticate via the harness CLI's logged-in (subscription) auth, so API-key vars are scrubbed from child envs, making accidental per-token billing structurally impossible in the repo. The pin is written only when no `workflow` key exists; a committed `workflow` key of any shape (including `subscriptionOnly: false` for key-only CI hosts) is a deliberate choice and is never touched. Per-process escape hatch: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0`.
 
 ```bash
 harn init            # wire the current project for Claude Code
@@ -40,7 +40,7 @@ harn init
 
 ## Re-run after a Harnery upgrade that changes hooks
 
-Updating the package is enough for code fixes — your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds, renames, or retires a hook event, or changes the wired command form**: re-run `harn init` to migrate the Harnery-owned entries. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the drift.
+Updating the package is enough for code fixes: your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds, renames, or retires a hook event, or changes the wired command form**: re-run `harn init` to migrate the Harnery-owned entries. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `harness hooks` check flags this, and a one-line nudge appears at your next session start naming the drift.
 
 The same is true of the instructions block and skills: they're committed by you, and the source of truth is the installed Harnery version's templates, so a package upgrade shows up as drift until you re-run `init`.
 
@@ -50,9 +50,9 @@ The same is true of the instructions block and skills: they're committed by you,
 
 | Exit | Meaning |
 |---|---|
-| `0` | Fresh — block and skills are current |
-| `2` | Drift — a block or skill is stale, missing, or hand-edited |
-| `1` | Error — a file couldn't be read |
+| `0` | Fresh: block and skills are current |
+| `2` | Drift: a block or skill is stale, missing, or hand-edited |
+| `1` | Error: a file couldn't be read |
 
 ```text
 harn init --check: drift found (re-run `init` to refresh)

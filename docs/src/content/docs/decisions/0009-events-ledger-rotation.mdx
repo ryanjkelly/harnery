@@ -13,7 +13,7 @@ sidebar:
 `.harnery/events.ndjson` is the canonical, deliberately-immutable, append-only
 coordination + telemetry ledger. Every tool call, session/turn boundary, image
 capture, and coordination event across all agents appends one line. It was never
-rotated or pruned, so it grew monotonically — on the first production host it
+rotated or pruned, so it grew monotonically. On the first production host it
 reached 541 MB.
 
 Past ~512 MB, any code that does `readFileSync(path, "utf-8")` on it throws V8's
@@ -21,7 +21,7 @@ max-string-length error ("Cannot create a string longer than 0x1fffffe8
 characters"). Four readers hit this before being bounded reactively: the web
 `/events` and `/images` feeds, the stop-hook heartbeat projection
 (`consumeSince`), and `agents trace` / `agents health`. Each was patched to read
-a bounded tail — but that makes "stay bounded" a standing obligation on every
+a bounded tail, but that makes "stay bounded" a standing obligation on every
 current and future reader, and a naive `cat` / editor / `jq` still chokes.
 
 The value the ledger provides is exactly its immutability: `agents trace`,
@@ -33,13 +33,13 @@ history from it. So the fix has to bound reads without destroying history.
 Rotate the **active** file by size, keeping archives.
 
 When `events.ndjson` exceeds a byte cap (`HARNERY_EVENTS_ROLL_BYTES`, default
-256 MiB — half of the V8 cliff, so even a whole-file read of one file stays
+256 MiB, half of the V8 cliff, so even a whole-file read of one file stays
 clear), rename it to `events-YYYY-MM-DD.ndjson` (UTC, deduped with a `.N` suffix
 for a second roll the same day) and start a fresh active file. Archives are never
 deleted. Readers that want history glob `events-*.ndjson` newest-first.
 
 The roll is triggered from inside both `emit()` paths (agent-hooks and
-agent-coord) before each append, gated by a single `statSync` — so a long-lived
+agent-coord) before each append, gated by a single `statSync`, so a long-lived
 session stays bounded even if it never restarts, not only at session boundaries.
 
 ## Alternatives considered
@@ -50,13 +50,13 @@ session stays bounded even if it never restarts, not only at session boundaries.
   a naive whole-file tool still chokes.
 - **Destructive age/size janitor** (mirror the image-blob janitor: prune old
   lines / head-trim past a cap). Rejected: it breaks the immutable-ledger
-  guarantee — old history is destroyed, not archived — and head-trimming a live
+  guarantee (old history is destroyed, not archived), and head-trimming a live
   append-only file races concurrent appenders.
 - **Calendar-monthly roll.** Rejected: measured traffic already put 95–115 MB in
   a *single day*, so a month of it could itself breach the 512 MB limit. The roll
   trigger must be size, not date.
 - **Hybrid: roll + gzip/evict old archives past a retention horizon.** Deferred,
-  not rejected — a clean growth path on top of this decision once disk pressure
+  not rejected: a clean growth path on top of this decision once disk pressure
   or roll churn warrants it.
 
 ## Why rotation-under-lock is safe
@@ -66,7 +66,7 @@ safe:
 
 - **The rename is atomic.** A concurrent appender that `openSync(path, 'a')`s
   during the roll opens either the pre-rename inode (its line lands in the
-  archive) or the fresh inode (lands in the new active file) — never nowhere. No
+  archive) or the fresh inode (lands in the new active file), never nowhere. No
   line is lost or duplicated.
 - **An `O_EXCL` roll-lock serializes rollers.** The only hazard is two processes
   both renaming (the second would move the fresh empty file to a second archive).
@@ -88,7 +88,7 @@ the append that triggered it.
   roll boundary. The shared `maxScanBytes` budget is summed across files.
 - **Web identity index:** it persists a byte offset into the active file. It now
   also records which archives it has folded (`foldedArchives`) and folds each
-  exactly once — through a line-aligned, windowed reader so a just-rolled
+  exactly once, through a line-aligned, windowed reader so a just-rolled
   multi-hundred-MB archive never overflows the string limit. A shrunk active file
   (a roll just happened) resets the offset but keeps identities; the rolled-out
   content is re-resolved from the archive. Index version bumped 2 → 3.
@@ -96,7 +96,7 @@ the append that triggered it.
 ## Result / gotchas
 
 - On the first web request after this ships, the index rebuilds (version bump)
-  and folds the pre-existing ~541 MB file once it has rolled to an archive —
+  and folds the pre-existing ~541 MB file once it has rolled to an archive;
   windowed folding keeps that under the string limit. The active file rolls on
   the next emit past the cap (constant traffic ⇒ within seconds).
 - `events-legacy.ndjson` (an earlier manual roll) matches the archive glob and is

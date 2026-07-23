@@ -14,15 +14,15 @@ sidebar:
 ended the path, the second ended the line number. Three defects followed. With
 `-C`, both engines emit context rows as `path-line-text` and bare `--`
 separators between groups; both fell into the colonless branch meant for `-l`
-paths and became fake `line=0` matches — garbling TTY output, inflating
+paths and became fake `line=0` matches. That garbled TTY output, inflated
 `total_matches`/`total_files` (context rows counted as distinct files), and
-poisoning the JSON envelope. Second, a colon-bearing path broke even normal
+poisoned the JSON envelope. Second, a colon-bearing path broke even normal
 match rows. Third, `--limit` killed the subprocess at `N` collected rows, so
 "exactly N results" was indistinguishable from "more than N" and exact-limit
 searches falsely reported `truncated: true`.
 
-Separately, the command had no way to express "files containing X and Y" —
-the most common composed search an agent runs — and a naive filter-after-limit
+Separately, the command had no way to express "files containing X and Y",
+the most common composed search an agent runs, and a naive filter-after-limit
 implementation would let non-qualifying early hits consume the budget and hide
 valid later results.
 
@@ -31,7 +31,7 @@ valid later results.
 Four contracts, shipped together because they interlock:
 
 1. **NUL filename framing.** Content searches pass `--null` to both engines
-   (the long spelling — BSD grep repurposes `-Z` for decompression), and a
+   (the long spelling, since BSD grep repurposes `-Z` for decompression), and a
    mode-aware streaming decoder (`NulDecoder`) frames records on raw bytes
    before any string decoding, so chunk boundaries can fall anywhere,
    including inside a UTF-8 sequence. Filename boundaries are never inferred
@@ -41,7 +41,7 @@ Four contracts, shipped together because they interlock:
 2. **Post-selection context materialization.** `-C`/`-A`/`-B` are never
    passed to the engines. The primary search selects (and budgets) match rows
    first; context windows are then materialized from one file read per
-   selected file — intervals clamped, merged, and deduplicated, with rows
+   selected file, with intervals clamped, merged, and deduplicated, and rows
    carrying `kind: "match" | "context"`. Context rows are free: they never
    consume `--limit`, never count toward totals, and a selected match always
    keeps its full trailing window. The TOCTOU window between scan and read is
@@ -54,23 +54,23 @@ Four contracts, shipped together because they interlock:
 
 4. **File-level composition.** `--and`/`--without` build complete membership
    sets per repo (files-only scans, sequential within each repo worker to
-   bound process fan-out, strict failure on partial reads — an incomplete set
-   cannot prove absence) before the primary scan runs with an in-stream file
+   bound process fan-out, strict failure on partial reads, since an incomplete
+   set cannot prove absence) before the primary scan runs with an in-stream file
    predicate. Only qualified rows consume the budget. The envelope gains
    always-present `and_patterns`/`without_patterns` arrays.
 
 ## Alternatives considered
 
-- **Parse the dash-separated context form** — rejected: a filename containing
+- **Parse the dash-separated context form.** Rejected: a filename containing
   `-<digits>-` is indistinguishable from a context row; punctuation parsing is
   the root defect, not the instance.
-- **ripgrep `--json` plus a separate GNU grep parser** — rejected: two output
+- **ripgrep `--json` plus a separate GNU grep parser.** Rejected: two output
   implementations where the engines already share a NUL delimiter; doubles
   the parity-drift surface.
-- **Keep engine context output and tag rows** — rejected: leaves limit
+- **Keep engine context output and tag rows.** Rejected: leaves limit
   lookahead, trailing-context cutoff, overlapping groups, and match `N+1`
   leakage unresolved.
-- **Filter after the limited primary scan** (for `--and`) — rejected: early
+- **Filter after the limited primary scan** (for `--and`). Rejected: early
   non-qualifying rows consume the budget and cause false negatives.
 
 ## Result

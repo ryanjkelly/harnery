@@ -30,7 +30,7 @@ The shape was sound; the packaging and positioning weren't.
 Four surfaces, one per intent, each following the conventions of the tool class
 it belongs to.
 
-1. **Get the CLI — a hosted one-liner.**
+1. **Get the CLI: a hosted one-liner.**
    `curl -fsSL https://harnery.com/install.sh | bash`, served from
    `docs/public/install.sh` (GitHub Pages copies `public/` to the site root).
    It installs the published npm package globally with whatever package manager
@@ -38,13 +38,13 @@ it belongs to.
    PATH-checks, verifies `harn --version`, and points at `harn init`. A mirror
    `uninstall.sh` removes it. Equivalent manual path: `npm install -g harnery`.
 
-2. **Wire a project — `harn init`.** Unchanged.
+2. **Wire a project: `harn init`.** Unchanged.
 
-3. **Unwire a project — `harn deinit`.** Renamed from `harn uninstall` (see the
+3. **Unwire a project: `harn deinit`.** Renamed from `harn uninstall` (see the
    naming note below). The inverse of `harn init`; on a TTY it now asks before
    deleting `.harnery/` and prints how to remove the CLI itself.
 
-4. **Contribute / run the dashboard — `scripts/setup.sh` + `scripts/teardown.sh`.**
+4. **Contribute / run the dashboard: `scripts/setup.sh` + `scripts/teardown.sh`.**
    The former repo-root `install.sh`/`uninstall.sh`, moved under `scripts/` and
    reframed as clone setup. This frees the name `install.sh` for the real hosted
    installer and signals "this is for a checkout, not for end users."

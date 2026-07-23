@@ -12,7 +12,7 @@ harn claude-desktop [accounts|sessions|mirror] [options]
 The Claude desktop app scopes its Claude Code session sidebar **per signed-in
 account**: sign out of one Claude account and into another (a common move when
 one account hits its usage limit) and every session the first account created
-disappears from the sidebar. Nothing is deleted — the transcripts live
+disappears from the sidebar. Nothing is deleted; the transcripts live
 account-agnostically under `~/.claude/projects/` in the runtime environment,
 and the sidebar entries themselves are plain JSON files under the desktop
 app's data directory:
@@ -22,7 +22,7 @@ app's data directory:
 ```
 
 Each file is one sidebar entry (`{ cliSessionId, title, cwd, model, … }`)
-with no account binding inside it — the account scoping is purely which
+with no account binding inside it; the account scoping is purely which
 directory it sits in. `harn claude-desktop mirror` copies entry files across
 account directories so each account's sidebar lists the union. Fully quit and
 relaunch the desktop app afterward; opening a mirrored session resumes it
@@ -31,8 +31,8 @@ with full history.
 ## Locating the data directory
 
 Auto-discovered per platform: `~/Library/Application Support/Claude` (macOS),
-`%APPDATA%\Claude` (Windows), `~/.config/Claude` (Linux). Under WSL — where
-the desktop app runs on the Windows side but the CLI runs in the distro —
+`%APPDATA%\Claude` (Windows), `~/.config/Claude` (Linux). Under WSL (the
+desktop app runs on the Windows side but the CLI runs in the distro),
 every `/mnt/c/Users/<user>/AppData/Roaming/Claude` is scanned. Only
 directories containing a `claude-code-sessions/` index count. Override with
 `--data-dir <path>` or `HARNERY_CLAUDE_DESKTOP_DIR`.
@@ -54,7 +54,7 @@ harn claude-desktop mirror --all --to 6d725f2a --yes         # only INTO one acc
 harn claude-desktop mirror --all --from e6c7dc4f --yes       # only FROM one account
 ```
 
-`mirror` is **dry-run by default** — it prints the planned copies and exits;
+`mirror` is **dry-run by default**: it prints the planned copies and exits;
 `--yes` applies them. It is idempotent: entries the target account already
 lists (matched by `cliSessionId`, falling back to filename) are skipped, so
 re-running after every account switch is safe and cheap. Archived entries are
@@ -64,11 +64,11 @@ skipped unless `--include-archived`.
 
 - The entry-file format is the desktop app's **private state**, not a public
   API. Mirror copies files verbatim (never rewrites them), so a format change
-  degrades to "copies stop being useful", not corruption — but a future app
+  degrades to "copies stop being useful", not corruption, though a future app
   version could change the layout entirely.
 - After mirroring, **both** accounts list the same session, backed by one
   transcript file. Don't drive the same session from two signed-in accounts
   at once.
 - The desktop app reads the index at startup: fully quit it (system tray →
-  quit — the window X usually just minimizes) and relaunch to see mirrored
+  quit; the window X usually just minimizes) and relaunch to see mirrored
   sessions.

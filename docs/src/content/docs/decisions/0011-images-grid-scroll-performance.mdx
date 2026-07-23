@@ -39,8 +39,8 @@ screenshots at extreme heights (one is **1280×179095**). Width-only resize:
 
 The fix (`web/lib/images.ts` `resolveThumb`): resize with `fit: "cover"` to the
 grid cell's 4:3 box (`w × ¾w`, top-anchored) with `limitInputPixels: false`.
-Every thumbnail becomes tiny and uniform — 71 images went to a largest of
-14.8 KB, 528 KB total, all 360×270, zero PNG fallbacks — and no thumbnail can
+Every thumbnail becomes tiny and uniform (71 images went to a largest of
+14.8 KB, 528 KB total, all 360×270, zero PNG fallbacks), and no thumbnail can
 exceed WebP's limit. Cache prefix changed `.w<n>` → `.t<n>` to invalidate the
 stale width-only files. **This was the only change that moved the needle.**
 
@@ -52,7 +52,7 @@ dimensions; a large single axis silently exceeds the 16383px limit and throws.
 Several other changes were made while chasing this. Each was re-judged against
 "would I make this on its own merits, knowing the crop is the fix?"
 
-**Kept — independent value or load-bearing:**
+**Kept (independent value or load-bearing):**
 
 - The thumbnail pipeline itself (`?w=<px>` → cached WebP in `resolveThumb` +
   `/api/image/[hash]`). The crop is a property of this; it is the fix.
@@ -64,11 +64,11 @@ Several other changes were made while chasing this. Each was re-judged against
 - Suppressing the global `LiveRefresher` `router.refresh()` on self-live routes
   (`web/components/LiveRefresher.tsx`). `/api/stream` fires on any `.harnery`
   change, so during active production a self-live page was doing a full RSC
-  re-render (tail-scanning a 67 MB `events.ndjson`) ~4×/sec for nothing — the
+  re-render (tail-scanning a 67 MB `events.ndjson`) ~4×/sec for nothing. The
   gallery already folds new events client-side. Genuinely wasteful independent
   of the scroll bug, so kept.
 
-**Reverted — speculative attempts that did not help and cost something:**
+**Reverted (speculative attempts that did not help and cost something):**
 
 - A `pointer-events: none`-during-scroll guard (a scroll listener toggling the
   grid via refs). Premised on a hover-churn theory that scrollbar-drag later
@@ -84,5 +84,5 @@ Several other changes were made while chasing this. Each was re-judged against
 Decode/raster, which was ~2 s of a ~2.5 s trace window, collapses to near zero:
 no grid image can decode to more than a 360×270 bitmap. If `/images` scroll ever
 regresses again, get a real DevTools trace and check the image-decode totals
-first — do not trust a headless `scrollTop` probe, and do not re-add the
+first. Do not trust a headless `scrollTop` probe, and do not re-add the
 reverted hover/pointer-events changes expecting them to matter.

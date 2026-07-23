@@ -20,20 +20,20 @@ harn workflow proof <run-id> [--json]
 A workflow is a small throwaway JS script with staged fan-out: the **script**
 (deterministic code), not any model, decides what runs next, and the run always
 terminates when the script returns. Subagents spawn as headless harness-CLI
-subprocesses and are **born coordination-registered** — they heartbeat, emit
+subprocesses and are **born coordination-registered**: they heartbeat, emit
 canonical events, and stay visible to peers, so a workflow child editing a file
 is subject to the same claim/guard protections as any other agent. Design
 record: decision 0015.
 
 Spawn adapters: `claude-code` (default), `codex` (`codex exec
 --output-last-message`), and `cursor` (`cursor-agent -p --output-format json
---trust` — headless cursor refuses untrusted workspaces without the flag).
+--trust`, since headless cursor refuses untrusted workspaces without the flag).
 All three are live-verified end-to-end (codex against codex-cli 0.144.5,
 cursor against cursor-agent 2026.07.16). A missing harness
 CLI fails loud with the vendor's install one-liner and login command in the
 error, and `harn doctor` reports all three spawn targets up front
 (installed? authenticated? how will children bill?). Select the run default
-with `--harness`, or per agent via `opts.harness` — mixed-harness workflows
+with `--harness`, or per agent via `opts.harness`. Mixed-harness workflows
 are legal (triage on one CLI, deep work on another). Codex and cursor expose
 no per-run cost or max-turns controls, so `costUsd` is unreported and
 `maxTurns` is ignored on those harnesses.
@@ -44,12 +44,12 @@ The engine never handles credentials. Each child is the plain harness CLI, so
 it authenticates exactly the way that CLI already does on the machine:
 `claude` uses the OAuth login in `~/.claude` (a subscription seat), `codex`
 uses its ChatGPT login, `cursor-agent` uses `cursor-agent login`. **A
-subscription login is the default and preferred path** — no per-token API
+subscription login is the default and preferred path.** No per-token API
 billing is required or implied by running workflows.
 
 The child-env scrub deletes *session* variables (`CLAUDE*`, `CODEX*`,
 `CURSOR*`), not auth: credential files and keychains are untouched
-(`CURSOR_API_KEY` is carved out of the `CURSOR*` scrub — it's a credential,
+(`CURSOR_API_KEY` is carved out of the `CURSOR*` scrub because it's a credential,
 not session state). The one way to end up on API billing is an API-key
 variable in the parent shell (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `CURSOR_API_KEY`): harness CLIs prefer a key over a stored login when both
@@ -61,17 +61,17 @@ The engine probes each harness's billing state on its **first spawn** of the
 run (journaled as `billing.probe`, echoed as a `[billing]` line, and reported
 per harness in the RunReport and web view):
 
-- **`subscription`** — no key exported; children ride the stored login.
-- **`api-key`** — key present, no stored login detected: a deliberate
+- **`subscription`**: no key exported; children ride the stored login.
+- **`api-key`**: key present but no stored login detected, a deliberate
   key-only host (e.g. CI). Proceeds with a printed notice.
-- **`api-key-override`** — key present AND a stored login exists: the key is
+- **`api-key-override`**: key present AND a stored login exists, so the key is
   silently shadowing subsidized auth, almost always by accident. The engine
   **refuses to spawn** unless you pass `--allow-api-billing`.
 
 `--subscription-only` goes further: every API-key var is deleted from every
 child env, so children *can only* authenticate via their stored login, and a
 harness whose login is provably absent fails loud before spawning. Pin it
-repo-wide with `.harnery/config.jsonc` — **`harn init` stamps this pin by
+repo-wide with `.harnery/config.jsonc`. **`harn init` stamps this pin by
 default** into any project without a committed `workflow` key, so new setups
 are subscription-only out of the box:
 
@@ -85,15 +85,15 @@ escape hatch exists for a key-only CI job inside a pinned repo).
 are rejected as a pair.
 
 Login detection is a heuristic over well-known credential locations (Claude
-Code's `~/.claude/.credentials.json`, codex's `$CODEX_HOME/auth.json` — a
+Code's `~/.claude/.credentials.json`, codex's `$CODEX_HOME/auth.json`; a
 `codex login --api-key` stored key is classified as API-key billing, not a
 login). Where presence can't be proven either way (macOS keychain storage,
-cursor), the state is `unknown` and never hard-fails — the harness CLI itself
+cursor), the state is `unknown` and never hard-fails. The harness CLI itself
 is the final authority.
 
 Two accounting consequences: the `costUsd` the claude adapter journals is the
-CLI's *notional* cost figure — under subscription auth it is not an invoice,
-just a burn gauge — and a large fan-out consumes the subscription's usage
+CLI's *notional* cost figure (under subscription auth it is not an invoice,
+just a burn gauge), and a large fan-out consumes the subscription's usage
 allowance the same way interactive sessions do, so the agent cap and
 concurrency pool are still your throttles.
 
@@ -243,7 +243,7 @@ prompt.
 | `work` | Optional deeply frozen durable-work assignment: work ID, title, objective, and acceptance criteria. Present for new work-linked attempts; absent for standalone and legacy-resumed runs. |
 | `attempt` | Optional deeply frozen attempt identity. A retry includes a bounded synopsis of the preceding terminal evidence; approval resume preserves the original attempt. |
 | `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must parse as one JSON value and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`). Exact JSON and a whole fenced value are accepted. A harness-added leading sentence is tolerated only when exactly one unambiguous object or array reaches the end of the reply; trailing prose, multiple candidates, malformed values, and schema mismatches still fail. Failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
-| `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch — filter and route. |
+| `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch; filter and route. |
 | `stage(title)` | Declare the current stage: journal marker + progress grouping. |
 | `log(message)` | Narrate progress (stderr + journal). |
 | `evidence(input)` | Attach a bounded receipt to the run and optional acceptance IDs. Returns a stable ID such as `e1`. Kinds: `test`, `command`, `artifact`, `change`, `review`, `observation`. Statuses: `passed`, `failed`, `observed`, `unknown`. |
@@ -274,7 +274,7 @@ resolved options, and wrapped prompt participate in resume-cache identity.
 ## Bounds
 
 - `--max-agents` (default 50): total-agent ceiling for the run. The cap failing
-  loud is the runaway backstop — there is no recursive spawning path, because
+  loud is the runaway backstop; there is no recursive spawning path, because
   subagents are leaf processes.
 - `--concurrency` (default 4): one shared slot pool for every spawn in the run,
   so nesting `parallel()` inside loops can't exceed it.
@@ -320,8 +320,8 @@ mapping remains a separate capability claim in `harn harness show`.
 ## Resume
 
 `--resume-from <run-id>` reuses completed agent results from a prior run's
-journal: an `agent()` call whose identity — stage, harness, model, effort, maxTurns,
-schema, and the ORIGINAL prompt — matches a journaled `agent.end` returns the
+journal: an `agent()` call whose identity (stage, harness, model, effort, maxTurns,
+schema, and the ORIGINAL prompt) matches a journaled `agent.end` returns the
 recorded result instantly without spawning (journaled as `agent.cached`).
 Changed or previously-failed calls re-run live. Same script + same inputs →
 100% cache, $0. A typo'd run id fails loud rather than silently re-running
@@ -356,7 +356,7 @@ again; keep them idempotent or put protected effects behind `authorize()`.
 ## Context-cost heads-up
 
 Children spawn in `--cwd` (default: the coord root) and load that directory's
-repo-instructions file (`CLAUDE.md` / `AGENTS.md`) into their system prompt —
+repo-instructions file (`CLAUDE.md` / `AGENTS.md`) into their system prompt,
 a per-child cache-write a fan-out multiplies. The engine prints the estimate
 up front (`[context] each child cache-writes ~51K tokens …`, bytes/4
 heuristic) and reports it as `contextTokensPerChildEstimate` in the
@@ -437,4 +437,4 @@ Children run with the host's hooks **on** (that's what makes them
 coordination-visible) but with `HARNERY_WORKFLOW_CHILD=1`, which the stop-hook
 rule honors as an exemption (`stop-hook.workflow_child`): the human-facing
 end-of-turn ritual doesn't apply to a headless child reporting to a journal.
-Everything else — heartbeats, canonical events, claims — behaves normally.
+Everything else (heartbeats, canonical events, claims) behaves normally.
