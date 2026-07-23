@@ -57,6 +57,8 @@ export type WorkNextAction =
   | "review"
   | "none";
 
+export type WorkAttemptTrigger = "initial" | "retry";
+
 export interface WorkIntent {
   schema_version: typeof WORK_INTENT_SCHEMA_VERSION;
   id: string;
@@ -89,6 +91,7 @@ export interface WorkEvent {
   reason?: string;
   run_id?: string;
   attempt?: number;
+  trigger?: WorkAttemptTrigger;
   state?: WorkState;
   next_action?: WorkNextAction;
 }
@@ -97,6 +100,7 @@ export interface WorkAttempt {
   number: number;
   run_id: string;
   started_at: string;
+  trigger?: WorkAttemptTrigger;
   status: "running" | "parked" | "succeeded" | "failed" | "lost";
   approval_id?: string;
   proof_path?: string;
@@ -317,7 +321,9 @@ function deriveWorkProjection(
   const terminal =
     latestGovernance?.event === "work.accepted" || latestGovernance?.event === "work.cancelled";
   const attemptEvents = events.filter((event) => event.event === "attempt.started");
-  const attempts = attemptEvents.map((event) => inspectAttempt(coordRoot, event, intent));
+  const attempts = attemptEvents.map((event, index) =>
+    inspectAttempt(coordRoot, event, intent, attemptEvents[index - 1]?.run_id),
+  );
   const base = {
     id: intent.id,
     title: intent.title,
@@ -340,9 +346,7 @@ function deriveWorkProjection(
     };
   }
   const reopenSeq = latestGovernance?.event === "work.reopened" ? latestGovernance.seq : 0;
-  const currentAttempts = attemptEvents
-    .filter((event) => event.seq > reopenSeq)
-    .map((event) => inspectAttempt(coordRoot, event, intent));
+  const currentAttempts = attempts.filter((_, index) => attemptEvents[index]!.seq > reopenSeq);
   const unresolved = intent.dependencies.filter((dependency) => {
     try {
       return readWorkItem(coordRoot, dependency).projection.state !== "succeeded";
@@ -419,12 +423,18 @@ function deriveWorkProjection(
   };
 }
 
-function inspectAttempt(coordRoot: string, event: WorkEvent, intent: WorkIntent): WorkAttempt {
+function inspectAttempt(
+  coordRoot: string,
+  event: WorkEvent,
+  intent: WorkIntent,
+  priorRunId?: string,
+): WorkAttempt {
   const runId = event.run_id as string;
   const attempt: WorkAttempt = {
     number: event.attempt as number,
     run_id: runId,
     started_at: event.ts,
+    trigger: event.trigger,
     status: "lost",
   };
   const proofPath = join(coordRoot, ".harnery", "workflows", runId, "proof.json");
@@ -443,6 +453,17 @@ function inspectAttempt(coordRoot: string, event: WorkEvent, intent: WorkIntent)
         `workflow run ${runId} work context does not match work item ${event.work_id}`,
       );
     }
+    if (
+      manifest.attempt_context !== undefined &&
+      (manifest.attempt_context.number !== event.attempt ||
+        manifest.attempt_context.trigger !== event.trigger ||
+        (manifest.attempt_context.trigger === "retry" &&
+          manifest.attempt_context.prior?.run_id !== priorRunId))
+    ) {
+      throw new Error(
+        `workflow run ${runId} attempt context does not match work item ${event.work_id}`,
+      );
+    }
   }
   if (existsSync(proofPath)) {
     if (!existsSync(manifestPath)) {
@@ -454,6 +475,9 @@ function inspectAttempt(coordRoot: string, event: WorkEvent, intent: WorkIntent)
     }
     if (JSON.stringify(proof.run.work_context) !== JSON.stringify(manifest?.work_context)) {
       throw new Error(`workflow proof ${runId} work context does not match its run manifest`);
+    }
+    if (JSON.stringify(proof.run.attempt_context) !== JSON.stringify(manifest?.attempt_context)) {
+      throw new Error(`workflow proof ${runId} attempt context does not match its run manifest`);
     }
     attempt.proof_path = proofPath;
     attempt.status =
@@ -684,6 +708,13 @@ function validateWorkEvent(event: WorkEvent, workId: string, seq: number): void 
     ) {
       throw new Error(`work item ${workId} event ${seq} has invalid attempt data`);
     }
+  }
+  if (
+    event.trigger !== undefined &&
+    (event.event !== "attempt.started" ||
+      (event.trigger !== "initial" && event.trigger !== "retry"))
+  ) {
+    throw new Error(`work item ${workId} event ${seq} has invalid attempt trigger`);
   }
   if (event.event === "work.reconciled") {
     const states: WorkState[] = [

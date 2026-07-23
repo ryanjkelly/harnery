@@ -247,7 +247,8 @@ try {
   writeFileSync(
     workflowProbe,
     [
-      'import { WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, readWorkflowProof, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
+      'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, readWorkflowProof, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
+      'if (WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow attempt-context schema version");',
       'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow proof schema version");',
       'if (WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow work-context schema version");',
       'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
@@ -277,11 +278,21 @@ try {
   writeFileSync(
     workProbe,
     [
-      'import { WORK_INTENT_SCHEMA_VERSION, createWorkItem, readWorkItem, reconcileWorkItem } from "harnery/core/work";',
+      'import { WORK_INTENT_SCHEMA_VERSION, createWorkItem, readWorkItem, reconcileWorkItem, runWorkItem } from "harnery/core/work";',
       'if (WORK_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected work schema version");',
-      "for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem]) {",
+      "for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem, runWorkItem]) {",
       '  if (typeof fn !== "function") throw new Error("work function missing");',
       "}",
+      'const fs = await import("node:fs");',
+      `const retryWorkflow = ${JSON.stringify(join(workdir, "retry-probe.mjs"))};`,
+      'fs.writeFileSync(retryWorkflow, `export const meta = { name: "retry-probe", acceptance: [{ id: "done", statement: "Correction is verified" }] }; export default async (ctx) => { if (ctx.attempt.trigger === "retry") ctx.evidence({ kind: "review", status: "passed", label: "corrected", acceptanceIds: ["done"] }); return { work: ctx.work, attempt: ctx.attempt, frozen: Object.isFrozen(ctx.attempt), priorFrozen: !ctx.attempt.prior || Object.isFrozen(ctx.attempt.prior) }; };\\n`);',
+      'createWorkItem({ coordRoot: process.cwd(), id: "retry-smoke", title: "Retry smoke", objective: "Verify packaged retry context", acceptance: ["Correction is verified"], workflowPath: retryWorkflow, maxAttempts: 2 });',
+      'const first = await runWorkItem({ coordRoot: process.cwd(), workId: "retry-smoke", engine: { spawners: {}, onLog: () => {} } });',
+      'if (first.result.attempt.trigger !== "initial" || readWorkItem(process.cwd(), "retry-smoke").projection.state !== "blocked") throw new Error("initial attempt context invalid");',
+      'const second = await runWorkItem({ coordRoot: process.cwd(), workId: "retry-smoke", retry: true, engine: { spawners: {}, onLog: () => {} } });',
+      'if (second.result.work.id !== "retry-smoke" || second.result.attempt.trigger !== "retry" || second.result.attempt.prior.run_id !== first.runId || second.result.attempt.prior.causes.join(",") !== "acceptance_unknown" || !second.result.frozen || !second.result.priorFrozen) throw new Error("retry attempt context invalid");',
+      'const retryProof = JSON.parse(fs.readFileSync(second.proofPath, "utf8"));',
+      'if (retryProof.run.attempt_context.prior.run_id !== first.runId) throw new Error("retry proof lost attempt context");',
       'const readonly = await import("harnery/core/work/state");',
       'if (typeof readonly.readWorkItem !== "function" || "runWorkItem" in readonly) throw new Error("read-only work state export invalid");',
     ].join("\n"),

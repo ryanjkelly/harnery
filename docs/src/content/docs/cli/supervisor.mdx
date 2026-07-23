@@ -365,7 +365,9 @@ Automation fails closed by default:
 - A resolved approval resumes the same attempt by default. Use
   `--no-resume-approved` to require a separate invocation.
 - Failed work stops blocked. `--retry-blocked` authorizes bounded retry, still
-  constrained by work-level and goal-wide attempt ceilings.
+  constrained by work-level and goal-wide attempt ceilings. The new attempt
+  receives a frozen synopsis of the preceding terminal evidence as
+  `ctx.attempt.prior`; the workflow decides how to use it.
 
 These choices are immutable goal intent, not runtime convenience flags. Create
 a new supervisor when the automation authority must change.

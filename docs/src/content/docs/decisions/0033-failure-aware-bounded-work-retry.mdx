@@ -1,0 +1,96 @@
+---
+title: "0033: Bounded work retries receive prior terminal evidence"
+description: "ADR: bind a fresh durable-work attempt to a small immutable synopsis of the attempt it follows without adding hidden retry authority."
+---
+
+**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/work`, `core/workflow`, `core/supervisor`)
+
+## Context
+
+Durable work can already survive failed workflow runs and supervisors can
+optionally retry blocked items under fixed work and goal-wide attempt ceilings.
+The retry is safe but informationally identical to the first attempt: reusable
+workflow code receives the exact work assignment, but it cannot tell that a
+prior attempt failed or which declared evidence remained incomplete.
+
+A host can hard-code special retry workflows, inspect private files directly, or
+reconstruct failure text before every call. Each option weakens the shared
+durable-work boundary. The ledger and proof packet already contain the
+authoritative attempt number, terminal status, bounded engine error, and
+acceptance rollup.
+
+The retry mechanism must not become a hidden loop. A model must not gain
+authority to raise attempt ceilings, approval resume must remain the same
+attempt, and raw transcripts or logs must not become ambient workflow input.
+
+## Decision
+
+Add a small `WorkflowAttemptContext` value for new work-linked workflow runs.
+It contains:
+
+- schema version;
+- one-based attempt number;
+- `initial` or `retry` trigger;
+- on retry, the prior run ID, deterministic failure causes, optional bounded
+  engine error, acceptance summary, and only the criteria that remained
+  unsatisfied or unknown.
+
+`runWorkItem` derives the value under the existing work lease. Missing terminal
+proof is classified as `lost`. A failed workflow adds `workflow_error`; positive
+acceptance counts add `acceptance_unsatisfied` or `acceptance_unknown`. These
+labels describe evidence. They do not authorize another attempt.
+
+Before importing the script or spawning an agent, the workflow engine validates
+and clones the value, writes it as `attempt_context` in the run manifest, and
+exposes a deeply frozen copy as optional `ctx.attempt`. Terminal proof copies
+the same value. Durable-work reconciliation verifies the attempt number and
+trigger against the append-only ledger and requires manifest and proof to
+agree.
+
+The property is optional for standalone and historical runs. A parked approval
+resume reconstructs the exact context from its original manifest and consumes
+no new attempt. A governed reopen starts a new `initial` attempt because reopen
+changes lifecycle authority rather than requesting correction of the
+immediately preceding failure.
+
+Retry context is data, not an automatic prompt prefix. The deterministic
+workflow script decides whether the next specialist needs it and how to render
+it. Existing explicit `--retry`, supervisor `retry_blocked`, work
+`max_attempts`, and supervisor `max_total_attempts` rules remain unchanged.
+
+## Alternatives considered
+
+- **Automatically prepend the prior error to every agent prompt.** Rejected
+  because it would silently change prompt identity, duplicate context across
+  stages, and elevate terminal text without script control.
+- **Let a reviewer model decide whether the supervisor may retry.** Rejected
+  because immutable host policy and attempt budgets already own that decision.
+  Another model call would add nondeterminism, cost, recovery state, and an
+  override path before evidence shows it is needed.
+- **Pass the complete prior proof or transcript.** Rejected because raw model
+  output, repository evidence, logs, policy decisions, and unrelated successful
+  evidence create an oversized and privacy-sensitive ambient history channel.
+- **Add cooldown or exponential backoff to semantic attempts.** Rejected for
+  this layer. Explicit foreground work has no polling timer, and background
+  service failures already have separate backoff. A workflow that waits on
+  external state must model that condition directly.
+- **Make only supervisor retries context-aware.** Rejected because manual and
+  supervisor dispatch share the same durable-work transition and evidence
+  contract. Different retry semantics would make proof depend on the caller.
+- **Treat approval resume as a retry.** Rejected because the parked workflow has
+  not reached terminal evidence and must continue under its original frozen
+  manifest and approval.
+
+## Result and gotchas
+
+- A generic workflow can make its second assignment materially different while
+  preserving the exact durable objective and all existing retry ceilings.
+- Failure causes are deterministic evidence labels, not diagnoses. In
+  particular, `lost` means no terminal proof exists; it does not claim why the
+  process disappeared.
+- Acceptance criteria come from workflow proof, while `ctx.work.acceptance`
+  comes from durable intent. Reusable workflow authors remain responsible for
+  declaring proof criteria that meaningfully cover the work assignment.
+- Old parked workflows resume honestly without synthetic attempt context.
+- Custom scripts may ignore `ctx.attempt`. Harnery proves delivery and
+  persistence of the context, not that every workflow used it in a prompt.

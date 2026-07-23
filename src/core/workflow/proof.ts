@@ -18,6 +18,7 @@ import type {
   PolicyNetworkAccess,
 } from "../policy/index.ts";
 import { policyDigest } from "../policy/index.ts";
+import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
 import type {
   AcceptanceCriterion,
   AcceptanceResult,
@@ -26,6 +27,7 @@ import type {
   HarnessEvidenceCoverage,
   ResultDigest,
   WorkflowAgentProof,
+  WorkflowAttemptContext,
   WorkflowEvidenceInput,
   WorkflowEvidenceRecord,
   WorkflowMeta,
@@ -62,6 +64,7 @@ export interface BuildWorkflowProofInput {
   runId: string;
   workItemId?: string;
   workContext?: Readonly<WorkflowWorkContext>;
+  attemptContext?: Readonly<WorkflowAttemptContext>;
   meta: NormalizedWorkflowMeta;
   status: "succeeded" | "failed";
   startedAt: string;
@@ -225,6 +228,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
       ended_at: input.endedAt,
       duration_ms: input.durationMs,
       work_context: input.workContext,
+      attempt_context: input.attemptContext,
       objective: input.meta.objective,
       error: clippedOptional(input.error, MAX_SUMMARY_CHARS),
       result: input.result === undefined ? undefined : digestResult(input.result),
@@ -313,7 +317,11 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
     (proof.run.work_context !== undefined &&
       (!proof.run.work_item_id ||
         proof.run.work_context.id !== proof.run.work_item_id ||
-        !isCanonicalWorkflowWorkContext(proof.run.work_context)))
+        !isCanonicalWorkflowWorkContext(proof.run.work_context))) ||
+    (proof.run.attempt_context !== undefined &&
+      (!proof.run.work_item_id ||
+        !proof.run.work_context ||
+        !isCanonicalWorkflowAttemptContext(proof.run.attempt_context)))
   ) {
     throw new Error(`workflow proof at ${path} has an unsupported or mismatched schema`);
   }

@@ -108,6 +108,9 @@ WORK_CONTEXT_RUN_ID=$(
 check "harn workflow proof preserves the work context" \
   "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
   '"work_context"'
+check "harn workflow proof preserves the attempt context" \
+  "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
+  '"attempt_context"'
 
 # 7. harn supervisor exposes bounded goal execution
 check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"
