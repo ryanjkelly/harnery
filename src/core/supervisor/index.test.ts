@@ -1558,6 +1558,67 @@ describe("durable goal supervisor", () => {
     expect(readSupervisor(root, "goal-bounded-plan").plans[0]?.status).toBe("proposed");
   });
 
+  test("retries a malformed reviewer finding code at the schema gate", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-code-root",
+      title: "Review code root",
+      objective: "Keep review receipts inside the durable identifier contract",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-review-code",
+      rootWorkId: "review-code-root",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const reviewPrompts: string[] = [];
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        return { ok: true, text: replacementProposal(), durationMs: 1 };
+      }
+      if (request.prompt.includes("Review this bounded")) {
+        reviewPrompts.push(request.prompt);
+        return {
+          ok: true,
+          text:
+            reviewPrompts.length === 1
+              ? reviewVerdict("revise", [
+                  { code: "Invalid Finding Code", severity: "blocking", summary: "Fix it" },
+                ])
+              : reviewVerdict("approve"),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: "ignored", durationMs: 1 };
+    };
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-review-code",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(reviewPrompts).toHaveLength(2);
+    expect(reviewPrompts[1]).toContain(
+      '$.findings[0].code: expected string matching "^[a-z][a-z0-9._-]*$"',
+    );
+    expect(report.projection.next_action).toBe("review_plan");
+    expect(readSupervisor(root, "goal-review-code").plans[0]).toMatchObject({
+      status: "proposed",
+      review: { status: "passed", blocking_findings: 0 },
+    });
+  });
+
   test("rejects a proposal that escapes the active graph or frozen template catalog", async () => {
     const { root, passing, failing } = fixture();
     createWorkItem({

@@ -709,26 +709,34 @@ function plannerReviewScript(
   const review = policy?.review;
   if (!policy || !review) throw new Error(`supervisor ${record.intent.id} does not review plans`);
   const proposalSchema = planProposalSchema(record);
-  const reviewerSchema = {
+  const reviewerSchema: StageSchema = {
     type: "object",
     properties: {
       verdict: { type: "string", enum: ["approve", "revise", "attention"] },
-      rationale: { type: "string" },
+      rationale: { type: "string", minLength: 1, maxLength: MAX_REASON },
       findings: {
         type: "array",
+        maxItems: 50,
         items: {
           type: "object",
           properties: {
-            code: { type: "string" },
+            code: {
+              type: "string",
+              minLength: 1,
+              maxLength: 100,
+              pattern: "^[a-z][a-z0-9._-]*$",
+            },
             severity: { type: "string", enum: ["blocking", "advisory"] },
-            summary: { type: "string" },
-            recommendation: { type: "string" },
+            summary: { type: "string", minLength: 1, maxLength: 1_000 },
+            recommendation: { type: "string", minLength: 1, maxLength: 1_000 },
           },
           required: ["code", "severity", "summary", "recommendation"],
+          additionalProperties: false,
         },
       },
     },
     required: ["verdict", "rationale", "findings"],
+    additionalProperties: false,
   };
   return [
     `export const meta = ${JSON.stringify({ name: `review-${planId}` })};`,

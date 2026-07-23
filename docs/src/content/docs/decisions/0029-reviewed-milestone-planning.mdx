@@ -48,6 +48,10 @@ an independent call. Reviewer output is schema-gated data containing:
 - bounded findings with a stable code, `blocking` or `advisory` severity,
   summary, and recommendation.
 
+The reviewer stage schema carries the same identifier, count, and text bounds as
+the durable receipt. A malformed finding therefore receives a bounded correction
+attempt before receipt normalization.
+
 Harnery aggregates those results in deterministic code. It does not ask another
 model to decide which reviewer to believe. A pass succeeds only when every
 reviewer returns a valid result, no reviewer requests attention or revision,
