@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { readWorkItem } from "../work/read.ts";
 import {
+  MAX_SUPERVISOR_PLAN_REVIEWERS,
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
   type SupervisorPlanEventType,
@@ -9,6 +11,13 @@ import {
   type SupervisorPlanProposal,
   type SupervisorPlanRecord,
   type SupervisorPlanRequest,
+  type SupervisorPlanReviewFinding,
+  type SupervisorPlanReviewReceipt,
+  type SupervisorPlanReviewReviewer,
+  type SupervisorPlanReviewRound,
+  type SupervisorPlanReviewSummary,
+  type SupervisorPlanReviewVerdict,
+  type SupervisorReplanningPolicy,
 } from "./plan-types.ts";
 
 const PLAN_ID = /^plan-[0-9]{4}-[a-f0-9]{8}$/;
@@ -24,6 +33,7 @@ const MAX_EVENTS = 100;
 const EVENT_TYPES = new Set<SupervisorPlanEventType>([
   "plan.awaiting_approval",
   "plan.resumed",
+  "plan.reviewed",
   "plan.proposed",
   "plan.applied",
   "plan.completed",
@@ -126,9 +136,33 @@ export function readSupervisorPlan(
     ? readJson<SupervisorPlanProposal>(proposalPath, "plan proposal")
     : undefined;
   if (proposal) validateProposalEnvelope(proposal, planId);
+  const review = readSupervisorPlanReviewReceipt(coordRootRaw, goalId, planId);
   const events = readEvents(join(dir, "events.jsonl"), planId);
   const derived = deriveStatus(coordRoot, events, proposal);
-  return { request, proposal, events, ...derived };
+  return {
+    request,
+    proposal,
+    review: review ? summarizeReview(review) : undefined,
+    events,
+    ...derived,
+  };
+}
+
+export function readSupervisorPlanReviewReceipt(
+  coordRootRaw: string,
+  goalId: string,
+  planId: string,
+): SupervisorPlanReviewReceipt | undefined {
+  assertId(goalId, GOAL_ID, "supervisor id");
+  assertId(planId, PLAN_ID, "supervisor plan id");
+  const coordRoot = resolve(coordRootRaw);
+  const path = join(planDir(coordRoot, goalId, planId), "review.json");
+  if (!existsSync(path)) return undefined;
+  const receipt = readJson<SupervisorPlanReviewReceipt>(path, "plan review receipt");
+  validateReviewReceipt(receipt, planId);
+  const reviewPolicy = readFrozenReviewPolicy(coordRoot, goalId);
+  if (reviewPolicy) validateReviewReceiptMatchesPolicy(receipt, planId, reviewPolicy);
+  return receipt;
 }
 
 function deriveStatus(
@@ -286,6 +320,204 @@ function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: stri
       throw new Error(`supervisor plan proposal ${planId} work[${index}] is invalid`);
     }
   }
+}
+
+function validateReviewReceipt(receipt: SupervisorPlanReviewReceipt, planId: string): void {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    receipt.schema_version !== SUPERVISOR_PLAN_SCHEMA_VERSION ||
+    receipt.plan_id !== planId ||
+    !["passed", "revision_exhausted", "attention", "failed"].includes(receipt.status) ||
+    !/^[a-f0-9]{64}$/.test(receipt.candidate_sha256) ||
+    !Array.isArray(receipt.rounds) ||
+    receipt.rounds.length < 1 ||
+    receipt.rounds.length > 11
+  ) {
+    throw new Error(`supervisor plan review ${planId} has an unsupported schema`);
+  }
+  validateProposalEnvelope(receipt.final_candidate, planId);
+  if (receipt.candidate_sha256 !== candidateDigest(receipt.final_candidate)) {
+    throw new Error(`supervisor plan review ${planId} has invalid candidate digest`);
+  }
+  receipt.rounds.forEach((round, index) => {
+    validateReviewRound(round, planId, index + 1);
+  });
+  const finalRound = receipt.rounds.at(-1);
+  if (finalRound?.candidate_sha256 !== receipt.candidate_sha256) {
+    throw new Error(`supervisor plan review ${planId} final round does not match its candidate`);
+  }
+  if (receipt.status === "passed" && finalRound?.outcome !== "approved") {
+    throw new Error(`supervisor plan review ${planId} passed without approval`);
+  }
+  if (receipt.status === "attention" && finalRound?.outcome === "approved") {
+    throw new Error(`supervisor plan review ${planId} attention conflicts with approval`);
+  }
+}
+
+function readFrozenReviewPolicy(
+  coordRoot: string,
+  goalId: string,
+): SupervisorReplanningPolicy["review"] | undefined {
+  const path = join(coordRoot, ".harnery", "supervisors", goalId, "intent.json");
+  if (!existsSync(path)) return undefined;
+  const intent = readJson<{ replanning?: SupervisorReplanningPolicy }>(path, "supervisor intent");
+  return intent.replanning?.review;
+}
+
+function validateReviewReceiptMatchesPolicy(
+  receipt: SupervisorPlanReviewReceipt,
+  planId: string,
+  review: NonNullable<SupervisorReplanningPolicy["review"]>,
+): void {
+  if (receipt.rounds.length > review.max_revision_rounds + 1) {
+    throw new Error(`supervisor plan review ${planId} exceeds the frozen review policy`);
+  }
+  for (const round of receipt.rounds) {
+    if (round.reviewers.length !== review.reviewer_specialists.length) {
+      throw new Error(`supervisor plan review ${planId} does not match the frozen review policy`);
+    }
+    round.reviewers.forEach((reviewer, index) => {
+      if (reviewer.specialist !== review.reviewer_specialists[index]) {
+        throw new Error(`supervisor plan review ${planId} does not match the frozen review policy`);
+      }
+    });
+    const outcome = aggregateReviewers(round.reviewers);
+    if (round.outcome !== outcome) {
+      throw new Error(`supervisor plan review ${planId} has an invalid reviewer outcome`);
+    }
+  }
+  const finalRound = receipt.rounds.at(-1)!;
+  if (receipt.status === "passed" && finalRound.outcome !== "approved") {
+    throw new Error(`supervisor plan review ${planId} passed without policy approval`);
+  }
+  if (receipt.status === "revision_exhausted" && finalRound.round <= review.max_revision_rounds) {
+    throw new Error(`supervisor plan review ${planId} exhausted before the frozen review limit`);
+  }
+}
+
+function aggregateReviewers(
+  reviewers: readonly SupervisorPlanReviewReviewer[],
+): SupervisorPlanReviewRound["outcome"] {
+  if (reviewers.length < 1) return "failed";
+  if (reviewers.some((reviewer) => reviewer.verdict === "attention")) return "attention";
+  if (
+    reviewers.some(
+      (reviewer) =>
+        reviewer.verdict === "revise" ||
+        reviewer.findings.some((finding) => finding.severity === "blocking"),
+    )
+  ) {
+    return "revise";
+  }
+  return "approved";
+}
+
+function candidateDigest(candidate: SupervisorPlanProposal): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalCandidate(candidate)))
+    .digest("hex");
+}
+
+function canonicalCandidate(candidate: SupervisorPlanProposal): unknown {
+  return {
+    schema_version: candidate.schema_version,
+    plan_id: candidate.plan_id,
+    decision: candidate.decision,
+    rationale: candidate.rationale,
+    root: candidate.root,
+    work: candidate.work,
+    milestone: candidate.milestone,
+  };
+}
+
+function validateReviewRound(
+  round: SupervisorPlanReviewRound,
+  planId: string,
+  sequence: number,
+): void {
+  if (
+    !round ||
+    typeof round !== "object" ||
+    round.round !== sequence ||
+    !/^[a-f0-9]{64}$/.test(round.candidate_sha256) ||
+    !Array.isArray(round.reviewers) ||
+    round.reviewers.length < 1 ||
+    round.reviewers.length > MAX_SUPERVISOR_PLAN_REVIEWERS ||
+    !["approved", "revise", "attention", "failed"].includes(round.outcome) ||
+    (round.revision_workflow_run_id !== undefined &&
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(round.revision_workflow_run_id))
+  ) {
+    throw new Error(`supervisor plan review ${planId} round ${sequence} is invalid`);
+  }
+  round.reviewers.forEach((reviewer, index) => {
+    validateReviewReviewer(reviewer, planId, sequence, index);
+  });
+}
+
+function validateReviewReviewer(
+  reviewer: SupervisorPlanReviewReviewer,
+  planId: string,
+  round: number,
+  index: number,
+): void {
+  if (
+    !reviewer ||
+    typeof reviewer !== "object" ||
+    typeof reviewer.specialist !== "string" ||
+    reviewer.specialist.length < 1 ||
+    reviewer.specialist.length > 100 ||
+    !["approve", "revise", "attention"].includes(reviewer.verdict as SupervisorPlanReviewVerdict) ||
+    typeof reviewer.rationale !== "string" ||
+    reviewer.rationale.length < 1 ||
+    reviewer.rationale.length > 2_000 ||
+    !Array.isArray(reviewer.findings) ||
+    reviewer.findings.length > 50
+  ) {
+    throw new Error(`supervisor plan review ${planId} round ${round} reviewer ${index} is invalid`);
+  }
+  reviewer.findings.forEach((finding, findingIndex) => {
+    validateReviewFinding(finding, planId, round, index, findingIndex);
+  });
+}
+
+function validateReviewFinding(
+  finding: SupervisorPlanReviewFinding,
+  planId: string,
+  round: number,
+  reviewerIndex: number,
+  findingIndex: number,
+): void {
+  if (
+    !finding ||
+    typeof finding !== "object" ||
+    typeof finding.code !== "string" ||
+    !/^[a-z][a-z0-9._-]{0,99}$/.test(finding.code) ||
+    !["blocking", "advisory"].includes(finding.severity) ||
+    typeof finding.summary !== "string" ||
+    finding.summary.length < 1 ||
+    finding.summary.length > 1_000 ||
+    typeof finding.recommendation !== "string" ||
+    finding.recommendation.length < 1 ||
+    finding.recommendation.length > 1_000
+  ) {
+    throw new Error(
+      `supervisor plan review ${planId} round ${round} reviewer ${reviewerIndex} finding ${findingIndex} is invalid`,
+    );
+  }
+}
+
+function summarizeReview(receipt: SupervisorPlanReviewReceipt): SupervisorPlanReviewSummary {
+  const findings = receipt.rounds.flatMap((round) =>
+    round.reviewers.flatMap((reviewer) => reviewer.findings),
+  );
+  return {
+    status: receipt.status,
+    candidate_sha256: receipt.candidate_sha256,
+    rounds: receipt.rounds.length,
+    blocking_findings: findings.filter((finding) => finding.severity === "blocking").length,
+    advisory_findings: findings.filter((finding) => finding.severity === "advisory").length,
+  };
 }
 
 function validateEvent(event: SupervisorPlanEvent, planId: string, sequence: number): void {

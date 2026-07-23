@@ -20,6 +20,7 @@ import type { WorkflowSpecialistProfile } from "../workflow/types.ts";
 import { readSupervisorPlans } from "./plan-read.ts";
 import {
   type CreateSupervisorReplanningInput,
+  MAX_SUPERVISOR_PLAN_REVIEWERS,
   type SupervisorPlanHistory,
   type SupervisorPlanRecord,
   type SupervisorReplanningPolicy,
@@ -157,8 +158,9 @@ export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord
   }
   if (input.rootWorkId) assertWorkId(input.rootWorkId);
   const root = input.rootWorkId ? readWorkItem(coordRoot, input.rootWorkId) : undefined;
+  const limits = normalizeLimits(input.limits);
   const replanning = input.replanning
-    ? normalizeReplanning(input.replanning, input.specialists)
+    ? normalizeReplanning(input.replanning, input.specialists, limits)
     : undefined;
   if (
     mission &&
@@ -180,7 +182,7 @@ export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord
     ),
     root_work_id: input.rootWorkId ?? missionRootId(id),
     specialists: normalizeWorkflowSpecialists(input.specialists),
-    limits: normalizeLimits(input.limits),
+    limits,
     automation: normalizeAutomation(input.automation),
     ...(mission ? { mission } : {}),
     ...(replanning ? { replanning } : {}),
@@ -655,7 +657,7 @@ function validateIntent(intent: SupervisorIntent, goalId: string): void {
   ) {
     throw new Error(`supervisor intent ${goalId} automation policy is not canonical`);
   }
-  if (intent.replanning) validateReplanning(intent.replanning, specialists, goalId);
+  if (intent.replanning) validateReplanning(intent.replanning, specialists, intent.limits, goalId);
 }
 
 function normalizeMission(input: CreateSupervisorMissionInput): SupervisorMission {
@@ -720,6 +722,7 @@ function normalizeAutomation(
 function normalizeReplanning(
   input: CreateSupervisorReplanningInput,
   specialistsInput: Readonly<Record<string, WorkflowSpecialistProfile>>,
+  limits: SupervisorLimits,
 ): SupervisorReplanningPolicy {
   const specialists = normalizeWorkflowSpecialists(specialistsInput);
   const plannerSpecialist = bounded(input.plannerSpecialist, "planner specialist", 100);
@@ -769,6 +772,9 @@ function normalizeReplanning(
   if (maxWorkItemsPerPlan > maxTotalWorkItems) {
     throw new Error("replanning max_work_items_per_plan cannot exceed max_total_work_items");
   }
+  const review = input.review
+    ? normalizeReviewPolicy(input.review, specialists, plannerSpecialist, limits)
+    : undefined;
   return {
     planner_specialist: plannerSpecialist,
     auto_apply: boolean(input.autoApply ?? false, "replanning auto_apply"),
@@ -776,12 +782,60 @@ function normalizeReplanning(
     max_work_items_per_plan: maxWorkItemsPerPlan,
     max_total_work_items: maxTotalWorkItems,
     templates,
+    ...(review ? { review } : {}),
+  };
+}
+
+function normalizeReviewPolicy(
+  input: NonNullable<CreateSupervisorReplanningInput["review"]>,
+  specialists: Record<string, WorkflowSpecialistProfile>,
+  plannerSpecialist: string,
+  limits: SupervisorLimits,
+): NonNullable<SupervisorReplanningPolicy["review"]> {
+  if (!Array.isArray(input.reviewerSpecialists) || input.reviewerSpecialists.length < 1) {
+    throw new Error("replanning review requires at least one reviewer specialist");
+  }
+  if (input.reviewerSpecialists.length > MAX_SUPERVISOR_PLAN_REVIEWERS) {
+    throw new Error(
+      `replanning review cannot exceed ${MAX_SUPERVISOR_PLAN_REVIEWERS} reviewer specialists`,
+    );
+  }
+  const reviewerSpecialists = input.reviewerSpecialists.map((specialist, index) =>
+    bounded(specialist, `reviewer specialist[${index}]`, 100),
+  );
+  if (new Set(reviewerSpecialists).size !== reviewerSpecialists.length) {
+    throw new Error("replanning reviewer specialists must be unique");
+  }
+  for (const specialist of reviewerSpecialists) {
+    if (!specialists[specialist]) {
+      throw new Error(`reviewer specialist ${specialist} is not present in the frozen team`);
+    }
+    if (specialist === plannerSpecialist) {
+      throw new Error("reviewer specialist cannot be the planner specialist");
+    }
+  }
+  const maxRevisionRounds = positive(
+    input.maxRevisionRounds,
+    "replanning review max_revision_rounds",
+    10,
+  );
+  const worstCaseAgents =
+    1 + reviewerSpecialists.length * (maxRevisionRounds + 1) + maxRevisionRounds;
+  if (worstCaseAgents > limits.max_agents_per_work) {
+    throw new Error(
+      `replanning review worst-case ${worstCaseAgents} agents exceeds max_agents_per_work ${limits.max_agents_per_work}`,
+    );
+  }
+  return {
+    reviewer_specialists: reviewerSpecialists,
+    max_revision_rounds: maxRevisionRounds,
   };
 }
 
 function validateReplanning(
   policy: SupervisorReplanningPolicy,
   specialists: Record<string, WorkflowSpecialistProfile>,
+  limits: SupervisorLimits,
   goalId: string,
 ): void {
   if (!specialists[policy.planner_specialist]) {
@@ -814,6 +868,37 @@ function validateReplanning(
     rootCapable ||= template.root;
   }
   if (!rootCapable) throw new Error(`supervisor ${goalId} has no root-capable replanning template`);
+  if (policy.review !== undefined) {
+    const review = policy.review;
+    if (
+      !Array.isArray(review.reviewer_specialists) ||
+      review.reviewer_specialists.length < 1 ||
+      review.reviewer_specialists.length > MAX_SUPERVISOR_PLAN_REVIEWERS ||
+      !Number.isSafeInteger(review.max_revision_rounds) ||
+      review.max_revision_rounds < 1 ||
+      review.max_revision_rounds > 10
+    ) {
+      throw new Error(`supervisor ${goalId} replanning review policy is invalid`);
+    }
+    if (new Set(review.reviewer_specialists).size !== review.reviewer_specialists.length) {
+      throw new Error(`supervisor ${goalId} replanning reviewers are not unique`);
+    }
+    for (const specialist of review.reviewer_specialists) {
+      if (!specialists[specialist]) {
+        throw new Error(`supervisor ${goalId} reviewer specialist is not in the frozen team`);
+      }
+      if (specialist === policy.planner_specialist) {
+        throw new Error(`supervisor ${goalId} reviewer specialist cannot be planner`);
+      }
+    }
+    const worstCaseAgents =
+      1 +
+      review.reviewer_specialists.length * (review.max_revision_rounds + 1) +
+      review.max_revision_rounds;
+    if (worstCaseAgents > limits.max_agents_per_work) {
+      throw new Error(`supervisor ${goalId} review policy exceeds the agent budget`);
+    }
+  }
 }
 
 function collectGovernedWork(

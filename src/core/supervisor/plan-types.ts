@@ -1,4 +1,5 @@
 export const SUPERVISOR_PLAN_SCHEMA_VERSION = 1 as const;
+export const MAX_SUPERVISOR_PLAN_REVIEWERS = 25 as const;
 
 export interface SupervisorPlanTemplate {
   workflow: { path: string; sha256: string };
@@ -13,6 +14,10 @@ export interface SupervisorReplanningPolicy {
   max_work_items_per_plan: number;
   max_total_work_items: number;
   templates: Record<string, SupervisorPlanTemplate>;
+  review?: {
+    reviewer_specialists: string[];
+    max_revision_rounds: number;
+  };
 }
 
 export interface CreateSupervisorPlanTemplateInput {
@@ -28,6 +33,10 @@ export interface CreateSupervisorReplanningInput {
   maxWorkItemsPerPlan?: number;
   maxTotalWorkItems?: number;
   templates: Readonly<Record<string, CreateSupervisorPlanTemplateInput>>;
+  review?: {
+    reviewerSpecialists: readonly string[];
+    maxRevisionRounds: number;
+  };
 }
 
 export interface SupervisorPlanRequest {
@@ -72,12 +81,56 @@ export interface SupervisorPlanProposal {
 export type SupervisorPlanEventType =
   | "plan.awaiting_approval"
   | "plan.resumed"
+  | "plan.reviewed"
   | "plan.proposed"
   | "plan.applied"
   | "plan.completed"
   | "plan.rejected"
   | "plan.attention"
   | "plan.failed";
+
+export type SupervisorPlanReviewStatus = "passed" | "revision_exhausted" | "attention" | "failed";
+
+export type SupervisorPlanReviewVerdict = "approve" | "revise" | "attention";
+
+export interface SupervisorPlanReviewFinding {
+  code: string;
+  severity: "blocking" | "advisory";
+  summary: string;
+  recommendation: string;
+}
+
+export interface SupervisorPlanReviewReviewer {
+  specialist: string;
+  verdict: SupervisorPlanReviewVerdict;
+  rationale: string;
+  findings: SupervisorPlanReviewFinding[];
+}
+
+export interface SupervisorPlanReviewRound {
+  round: number;
+  candidate_sha256: string;
+  reviewers: SupervisorPlanReviewReviewer[];
+  outcome: "approved" | "revise" | "attention" | "failed";
+  revision_workflow_run_id?: string;
+}
+
+export interface SupervisorPlanReviewReceipt {
+  schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
+  plan_id: string;
+  status: SupervisorPlanReviewStatus;
+  candidate_sha256: string;
+  final_candidate: SupervisorPlanProposal;
+  rounds: SupervisorPlanReviewRound[];
+}
+
+export interface SupervisorPlanReviewSummary {
+  status: SupervisorPlanReviewStatus;
+  candidate_sha256: string;
+  rounds: number;
+  blocking_findings: number;
+  advisory_findings: number;
+}
 
 export interface SupervisorPlanEvent {
   schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
@@ -106,6 +159,7 @@ export type SupervisorPlanStatus =
 export interface SupervisorPlanRecord {
   request: SupervisorPlanRequest;
   proposal?: SupervisorPlanProposal;
+  review?: SupervisorPlanReviewSummary;
   events: SupervisorPlanEvent[];
   status: SupervisorPlanStatus;
   approval_id?: string;

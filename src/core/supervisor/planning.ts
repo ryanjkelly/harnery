@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -13,13 +13,20 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { createWorkItem, readWorkItem } from "../work/index.ts";
 import {
+  digestResult,
   type EngineOpts,
+  type ResultDigest,
   readWorkflowProof,
   runWorkflow,
   WorkflowParkedError,
+  type WorkflowProof,
   workflowScriptDigest,
 } from "../workflow/index.ts";
-import { readSupervisorPlan, readSupervisorPlans } from "./plan-read.ts";
+import {
+  readSupervisorPlan,
+  readSupervisorPlanReviewReceipt,
+  readSupervisorPlans,
+} from "./plan-read.ts";
 import {
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
@@ -27,7 +34,12 @@ import {
   type SupervisorPlanOutcome,
   type SupervisorPlanProposal,
   type SupervisorPlanRequest,
+  type SupervisorPlanReviewFinding,
+  type SupervisorPlanReviewReceipt,
+  type SupervisorPlanReviewReviewer,
+  type SupervisorPlanReviewRound,
   type SupervisorPlanWorkSpec,
+  type SupervisorReplanningPolicy,
   supervisorGraphFingerprint,
 } from "./plan-types.ts";
 import type { SupervisorRecord } from "./state.ts";
@@ -69,44 +81,129 @@ export async function runSupervisorPlanner(
     history.latest.request.prior_root_work_id === input.record.projection.root_work_id
       ? history.latest
       : undefined;
-  const request = resumable
-    ? resumable.request
-    : createPlanRequest(
-        coordRoot,
-        input.record,
-        history.plans.length + 1,
-        triggerFingerprint,
-        trigger,
-      );
+  const interrupted =
+    !resumable &&
+    history.latest?.status === "interrupted" &&
+    history.latest.request.trigger_fingerprint === triggerFingerprint &&
+    history.latest.request.prior_root_work_id === input.record.projection.root_work_id &&
+    policy.review &&
+    hasReviewRecoveryEvidence(coordRoot, input.record.intent.id, history.latest.request.id)
+      ? history.latest
+      : undefined;
+  const request =
+    resumable || interrupted
+      ? (resumable ?? interrupted)!.request
+      : createPlanRequest(
+          coordRoot,
+          input.record,
+          history.plans.length + 1,
+          triggerFingerprint,
+          trigger,
+        );
   const scriptPath = planScriptPath(coordRoot, input.record.intent.id, request.id);
   if (resumable) {
     appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
       event: "plan.resumed",
       actor: input.actor,
-      reason: `resuming planner workflow after approval ${resumable.approval_id}`,
+      reason: `resuming planning workflow after approval ${resumable.approval_id}`,
       approval_id: resumable.approval_id,
     });
   }
+  if (interrupted) {
+    const recovered = await recoverReviewedPlan({
+      coordRoot,
+      record: input.record,
+      request,
+      history,
+      trigger: request.trigger ?? "recovery",
+      policy,
+      actor: input.actor,
+    });
+    if (recovered) return recovered;
+  }
   let proposalWritten = false;
   try {
-    const report = await runWorkflow(scriptPath, {
-      ...input.engine,
-      coordRoot,
-      ...(resumable
-        ? { resumeRunId: request.workflow_run_id }
-        : { runId: request.workflow_run_id }),
-      specialists: input.record.intent.specialists,
-      maxAgents: 1,
-      concurrency: 1,
-      onLog: input.onLog,
-    });
+    const reviewRunId = reviewWorkflowRunId(request.id);
+    const resumingReview = Boolean(
+      resumable &&
+        policy.review &&
+        existsSync(reviewInputPath(coordRoot, input.record.intent.id, request.id)) &&
+        existsSync(join(coordRoot, ".harnery", "workflows", reviewRunId, "run.json")),
+    );
+    const reviewInput = resumingReview
+      ? readBoundedJson<{ candidate: unknown }>(
+          reviewInputPath(coordRoot, input.record.intent.id, request.id),
+          "supervisor plan review input",
+        )
+      : undefined;
+    const rawProposal = reviewInput
+      ? reviewInput.candidate
+      : (
+          await runWorkflow(scriptPath, {
+            ...input.engine,
+            coordRoot,
+            ...(resumable
+              ? { resumeRunId: request.workflow_run_id }
+              : { runId: request.workflow_run_id }),
+            specialists: input.record.intent.specialists,
+            maxAgents: 1,
+            concurrency: 1,
+            onLog: input.onLog,
+          })
+        ).result;
     const proposal = normalizeProposal(
       request.id,
-      report.result,
+      rawProposal,
       input.record,
       history.materialized_work_ids.length,
       request.trigger ?? "recovery",
+      reviewInput ? persistedProposalTimestamp(reviewInput.candidate) : undefined,
     );
+    if (policy.review) {
+      if (proposal.decision === "attention") {
+        appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
+          event: "plan.attention",
+          actor: input.actor,
+          reason: proposal.rationale,
+        });
+        return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+      }
+      let receipt: SupervisorPlanReviewReceipt;
+      try {
+        receipt = await ensurePlanReview({
+          coordRoot,
+          record: input.record,
+          request,
+          proposal,
+          history,
+          trigger: request.trigger ?? "recovery",
+          policy,
+          engine: input.engine,
+          actor: input.actor,
+          onLog: input.onLog,
+        });
+      } catch (error) {
+        if (error instanceof WorkflowParkedError) throw error;
+        appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
+          event: "plan.attention",
+          actor: input.actor,
+          reason: bounded(
+            `plan review requires attention: ${(error as Error).message}`,
+            "plan review attention",
+            MAX_REASON,
+          ),
+        });
+        return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+      }
+      return finalizeReviewedProposal({
+        coordRoot,
+        record: input.record,
+        request,
+        receipt,
+        policy,
+        actor: input.actor,
+      });
+    }
     writeExclusiveJson(
       planProposalPath(coordRoot, input.record.intent.id, request.id),
       proposal,
@@ -142,7 +239,7 @@ export async function runSupervisorPlanner(
       appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
         event: "plan.awaiting_approval",
         actor: input.actor,
-        reason: `planner workflow parked for approval ${error.approvalId}`,
+        reason: `planning workflow parked for approval ${error.approvalId}`,
         approval_id: error.approvalId,
       });
       return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
@@ -154,6 +251,187 @@ export async function runSupervisorPlanner(
     });
     throw error;
   }
+}
+
+async function recoverReviewedPlan(input: {
+  coordRoot: string;
+  record: SupervisorRecord;
+  request: SupervisorPlanRequest;
+  history: ReturnType<typeof readSupervisorPlans>;
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
+  policy: SupervisorReplanningPolicy;
+  actor: string;
+}): Promise<SupervisorPlanOutcome | undefined> {
+  const review = input.policy.review;
+  if (!review) return undefined;
+  const existing = readSupervisorPlanReviewReceipt(
+    input.coordRoot,
+    input.record.intent.id,
+    input.request.id,
+  );
+  const receipt =
+    existing ??
+    reconstructReviewReceiptFromProof({
+      coordRoot: input.coordRoot,
+      record: input.record,
+      request: input.request,
+      history: input.history,
+      trigger: input.trigger,
+      policy: input.policy,
+    });
+  if (!receipt) return undefined;
+  if (!existing) {
+    writeExclusiveJson(
+      reviewReceiptPath(input.coordRoot, input.record.intent.id, input.request.id),
+      receipt,
+      "supervisor plan review receipt",
+    );
+  }
+  return finalizeReviewedProposal({
+    coordRoot: input.coordRoot,
+    record: input.record,
+    request: input.request,
+    receipt,
+    policy: input.policy,
+    actor: input.actor,
+  });
+}
+
+async function ensurePlanReview(input: {
+  coordRoot: string;
+  record: SupervisorRecord;
+  request: SupervisorPlanRequest;
+  proposal: SupervisorPlanProposal;
+  history: ReturnType<typeof readSupervisorPlans>;
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
+  policy: SupervisorReplanningPolicy;
+  engine: Omit<EngineOpts, "coordRoot" | "runId" | "resumeRunId" | "specialists">;
+  actor: string;
+  onLog?: (line: string) => void;
+}): Promise<SupervisorPlanReviewReceipt> {
+  const existing = readSupervisorPlanReviewReceipt(
+    input.coordRoot,
+    input.record.intent.id,
+    input.request.id,
+  );
+  if (existing) return existing;
+  const reconstructed = reconstructReviewReceiptFromProof(input);
+  if (reconstructed) {
+    writeExclusiveJson(
+      reviewReceiptPath(input.coordRoot, input.record.intent.id, input.request.id),
+      reconstructed,
+      "supervisor plan review receipt",
+    );
+    return reconstructed;
+  }
+  const reviewScript = reviewScriptPath(input.coordRoot, input.record.intent.id, input.request.id);
+  writeExclusiveJson(
+    reviewInputPath(input.coordRoot, input.record.intent.id, input.request.id),
+    { candidate: input.proposal },
+    "supervisor plan review input",
+  );
+  writeExclusive(
+    reviewScript,
+    plannerReviewScript(input.record, input.request.id, input.proposal, input.trigger),
+    "supervisor plan review script",
+  );
+  const review = input.policy.review!;
+  const runId = reviewWorkflowRunId(input.request.id);
+  const runExists = existsSync(join(input.coordRoot, ".harnery", "workflows", runId, "run.json"));
+  const report = await runWorkflow(reviewScript, {
+    ...input.engine,
+    coordRoot: input.coordRoot,
+    ...(runExists ? { resumeRunId: runId } : { runId }),
+    specialists: input.record.intent.specialists,
+    maxAgents:
+      review.reviewer_specialists.length * (review.max_revision_rounds + 1) +
+      review.max_revision_rounds,
+    concurrency: input.record.intent.limits.agent_concurrency,
+    onLog: input.onLog,
+  });
+  const receipt = normalizeReviewReceipt({
+    raw: report.result,
+    initialCandidate: input.proposal,
+    record: input.record,
+    request: input.request,
+    history: input.history,
+    trigger: input.trigger,
+    policy: input.policy,
+  });
+  writeExclusiveJson(
+    reviewReceiptPath(input.coordRoot, input.record.intent.id, input.request.id),
+    receipt,
+    "supervisor plan review receipt",
+  );
+  return receipt;
+}
+
+function finalizeReviewedProposal(input: {
+  coordRoot: string;
+  record: SupervisorRecord;
+  request: SupervisorPlanRequest;
+  receipt: SupervisorPlanReviewReceipt;
+  policy: SupervisorReplanningPolicy;
+  actor: string;
+}): SupervisorPlanOutcome {
+  if (input.receipt.status !== "passed") {
+    const event = input.receipt.status === "failed" ? "plan.failed" : "plan.attention";
+    appendPlanEventIfMissing(input.coordRoot, input.record.intent.id, input.request.id, event, {
+      event,
+      actor: input.actor,
+      reason: reviewStatusReason(input.receipt),
+    });
+    return outcome(readSupervisorPlan(input.coordRoot, input.record.intent.id, input.request.id));
+  }
+  // The review authority must become durable before the proposal can become
+  // visible. If the process stops after this event, the plan remains
+  // interrupted and proof-backed recovery can reconstruct the proposal. The
+  // opposite order can expose an unapprovable proposal with no recovery path.
+  appendPlanEventIfMissing(
+    input.coordRoot,
+    input.record.intent.id,
+    input.request.id,
+    "plan.reviewed",
+    {
+      event: "plan.reviewed",
+      actor: input.actor,
+      reason: `plan review passed after ${input.receipt.rounds.length} round(s)`,
+    },
+  );
+  writeExclusiveJson(
+    planProposalPath(input.coordRoot, input.record.intent.id, input.request.id),
+    input.receipt.final_candidate,
+    "supervisor plan proposal",
+  );
+  appendPlanEventIfMissing(
+    input.coordRoot,
+    input.record.intent.id,
+    input.request.id,
+    "plan.proposed",
+    {
+      event: "plan.proposed",
+      actor: input.actor,
+      reason: input.receipt.final_candidate.rationale,
+    },
+  );
+  if (input.policy.auto_apply) {
+    return applySupervisorPlanProposal({
+      coordRoot: input.coordRoot,
+      record: input.record,
+      planId: input.request.id,
+      actor: input.actor,
+      reason: "proposal applied by frozen supervisor replanning policy",
+    });
+  }
+  return outcome(readSupervisorPlan(input.coordRoot, input.record.intent.id, input.request.id));
+}
+
+function reviewStatusReason(receipt: SupervisorPlanReviewReceipt): string {
+  if (receipt.status === "revision_exhausted") {
+    return "plan review exhausted its bounded revision rounds";
+  }
+  if (receipt.status === "failed") return "plan review failed";
+  return "plan review requires attention";
 }
 
 export function applySupervisorPlanProposal(input: {
@@ -174,6 +452,22 @@ export function applySupervisorPlanProposal(input: {
     !["apply", "complete"].includes(plan.proposal.decision)
   ) {
     throw new Error(`supervisor plan ${input.planId} cannot be applied from ${plan.status}`);
+  }
+  if (policy.review) {
+    const receipt = readSupervisorPlanReviewReceipt(
+      coordRoot,
+      input.record.intent.id,
+      input.planId,
+    );
+    if (receipt?.status !== "passed") {
+      throw new Error(`supervisor plan ${input.planId} has no passed review receipt`);
+    }
+    if (candidateDigest(plan.proposal) !== receipt.candidate_sha256) {
+      throw new Error(`supervisor plan ${input.planId} proposal does not match its passed review`);
+    }
+    if (!plan.events.some((event) => event.event === "plan.reviewed")) {
+      throw new Error(`supervisor plan ${input.planId} has no reviewed authority event`);
+    }
   }
   if (plan.request.prior_root_work_id !== input.record.projection.root_work_id) {
     throw new Error(
@@ -439,12 +733,518 @@ function plannerScript(
   ].join("\n");
 }
 
+function plannerReviewScript(
+  record: SupervisorRecord,
+  planId: string,
+  initialCandidate: SupervisorPlanProposal,
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+): string {
+  const policy = record.intent.replanning;
+  const review = policy?.review;
+  if (!policy || !review) throw new Error(`supervisor ${record.intent.id} does not review plans`);
+  const proposalSchema = planProposalSchema(record);
+  const reviewerSchema = {
+    type: "object",
+    properties: {
+      verdict: { type: "string", enum: ["approve", "revise", "attention"] },
+      rationale: { type: "string" },
+      findings: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            code: { type: "string" },
+            severity: { type: "string", enum: ["blocking", "advisory"] },
+            summary: { type: "string" },
+            recommendation: { type: "string" },
+          },
+          required: ["code", "severity", "summary", "recommendation"],
+        },
+      },
+    },
+    required: ["verdict", "rationale", "findings"],
+  };
+  return [
+    `export const meta = ${JSON.stringify({ name: `review-${planId}` })};`,
+    "export default async ({ agent, stage }) => {",
+    `  const reviewers = ${JSON.stringify(review.reviewer_specialists)};`,
+    `  const planner = ${JSON.stringify(policy.planner_specialist)};`,
+    `  const maxRevisionRounds = ${JSON.stringify(review.max_revision_rounds)};`,
+    `  const proposalSchema = ${JSON.stringify(proposalSchema)};`,
+    `  const reviewerSchema = ${JSON.stringify(reviewerSchema)};`,
+    `  const goalContext = ${JSON.stringify({
+      plan_id: planId,
+      trigger,
+      goal: record.intent.title,
+      mission: record.intent.mission ?? null,
+      original_root: record.intent.root_work_id,
+      active_root: record.projection.root_work_id,
+      templates: policy.templates,
+    })};`,
+    `  let candidate = ${JSON.stringify(initialCandidate)};`,
+    "  const rounds = [];",
+    "  const aggregate = (items) => {",
+    "    if (items.some((item) => item.verdict === 'attention')) return 'attention';",
+    "    if (items.some((item) => item.verdict === 'revise')) return 'revise';",
+    "    if (items.some((item) => item.findings.some((finding) => finding.severity === 'blocking'))) return 'revise';",
+    "    return 'approved';",
+    "  };",
+    "  for (let round = 1; round <= maxRevisionRounds + 1; round++) {",
+    "    stage('Review round ' + round);",
+    "    const reviewersOut = await Promise.all(reviewers.map(async (specialist) => {",
+    "      const prompt = [",
+    "        'Review this bounded supervisor plan candidate independently.',",
+    "        'Return approve only when the candidate is complete, scoped, and satisfies the goal context.',",
+    "        'Return revise for blocking defects. Return attention when human judgment is required.',",
+    "        'Goal context: ' + JSON.stringify(goalContext),",
+    "        'Candidate: ' + JSON.stringify(candidate)",
+    "      ].join('\\n\\n');",
+    "      const result = await agent(prompt, {",
+    "        specialist,",
+    "        schema: reviewerSchema,",
+    "        label: 'Review plan candidate as ' + specialist",
+    "      });",
+    "      return { specialist, ...result };",
+    "    }));",
+    "    const roundRecord = { round, candidate, reviewers: reviewersOut, outcome: aggregate(reviewersOut) };",
+    "    rounds.push(roundRecord);",
+    "    if (roundRecord.outcome === 'approved' || roundRecord.outcome === 'attention') break;",
+    "    if (round > maxRevisionRounds) break;",
+    "    stage('Revise round ' + round);",
+    "    const revisionPrompt = [",
+    "      'Revise this supervisor plan candidate. Return a complete replacement candidate, not a patch.',",
+    "      'Do not merge reviewer text mechanically; satisfy the blocking findings within the frozen goal and template constraints.',",
+    "      'Goal context: ' + JSON.stringify(goalContext),",
+    "      'Current candidate: ' + JSON.stringify(candidate),",
+    "      'Reviewer findings: ' + JSON.stringify(reviewersOut)",
+    "    ].join('\\n\\n');",
+    "    roundRecord.revision_candidate = await agent(revisionPrompt, {",
+    "      specialist: planner,",
+    "      schema: proposalSchema,",
+    "      label: 'Revise bounded replacement plan'",
+    "    });",
+    "    candidate = roundRecord.revision_candidate;",
+    "  }",
+    "  return { rounds };",
+    "};",
+    "",
+  ].join("\n");
+}
+
+function normalizeReviewReceipt(input: {
+  raw: unknown;
+  initialCandidate: SupervisorPlanProposal;
+  record: SupervisorRecord;
+  request: SupervisorPlanRequest;
+  history: ReturnType<typeof readSupervisorPlans>;
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
+  policy: SupervisorReplanningPolicy;
+}): SupervisorPlanReviewReceipt {
+  const review = input.policy.review;
+  if (!review) throw new Error("missing review policy");
+  if (!input.raw || typeof input.raw !== "object" || Array.isArray(input.raw)) {
+    throw new Error("review result must be an object");
+  }
+  const raw = input.raw as Record<string, unknown>;
+  if (!Array.isArray(raw.rounds)) throw new Error("review result rounds must be an array");
+  if (raw.rounds.length < 1 || raw.rounds.length > review.max_revision_rounds + 1) {
+    throw new Error("review result has an invalid number of rounds");
+  }
+  const rounds: SupervisorPlanReviewRound[] = [];
+  let candidate = input.initialCandidate;
+  let status: SupervisorPlanReviewReceipt["status"] | undefined;
+  for (const [index, rawRound] of raw.rounds.entries()) {
+    if (!rawRound || typeof rawRound !== "object" || Array.isArray(rawRound)) {
+      throw new Error(`review round ${index + 1} must be an object`);
+    }
+    if (status) throw new Error("review result contains rounds after a terminal outcome");
+    const value = rawRound as Record<string, unknown>;
+    const roundNumber = positive(value.round, "review round", review.max_revision_rounds + 1);
+    if (roundNumber !== index + 1) throw new Error(`review round must be ${index + 1}`);
+    const reviewers = normalizeReviewers(value.reviewers, review.reviewer_specialists);
+    const outcome = aggregateReviewers(reviewers);
+    const round: SupervisorPlanReviewRound = {
+      round: roundNumber,
+      candidate_sha256: candidateDigest(candidate),
+      reviewers,
+      outcome,
+    };
+    if (outcome === "approved") {
+      status = "passed";
+    } else if (outcome === "attention") {
+      status = "attention";
+    } else if (roundNumber > review.max_revision_rounds) {
+      status = "revision_exhausted";
+    } else {
+      const revision = normalizeProposal(
+        input.request.id,
+        value.revision_candidate,
+        input.record,
+        input.history.materialized_work_ids.length,
+        input.trigger,
+      );
+      round.revision_workflow_run_id = reviewWorkflowRunId(input.request.id);
+      if (candidateDigest(revision) === candidateDigest(candidate)) {
+        status = "attention";
+      } else {
+        candidate = revision;
+      }
+    }
+    rounds.push(round);
+  }
+  status ??= "attention";
+  return {
+    schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
+    plan_id: input.request.id,
+    status,
+    candidate_sha256: candidateDigest(candidate),
+    final_candidate: candidate,
+    rounds,
+  };
+}
+
+function normalizeReviewers(
+  raw: unknown,
+  expectedSpecialists: readonly string[],
+): SupervisorPlanReviewReviewer[] {
+  if (!Array.isArray(raw) || raw.length !== expectedSpecialists.length) {
+    throw new Error("reviewer result count does not match the frozen review policy");
+  }
+  return raw.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`reviewer result ${index + 1} must be an object`);
+    }
+    const item = value as Record<string, unknown>;
+    const specialist = bounded(item.specialist, `reviewer ${index + 1} specialist`, 100);
+    if (specialist !== expectedSpecialists[index]) {
+      throw new Error(`reviewer ${index + 1} does not match the frozen review order`);
+    }
+    const findings = normalizeFindings(item.findings, specialist);
+    return {
+      specialist,
+      verdict: enumValue(item.verdict, ["approve", "revise", "attention"], "review verdict"),
+      rationale: bounded(item.rationale, "review rationale", MAX_REASON),
+      findings,
+    };
+  });
+}
+
+function normalizeFindings(raw: unknown, specialist: string): SupervisorPlanReviewFinding[] {
+  if (!Array.isArray(raw) || raw.length > 50) {
+    throw new Error(`review findings from ${specialist} must contain at most 50 items`);
+  }
+  return raw.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`review finding ${index + 1} from ${specialist} must be an object`);
+    }
+    const item = value as Record<string, unknown>;
+    return {
+      code: findingCode(item.code, specialist, index),
+      severity: enumValue(item.severity, ["blocking", "advisory"], "review finding severity"),
+      summary: bounded(item.summary, "review finding summary", 1_000),
+      recommendation: bounded(item.recommendation, "review finding recommendation", 1_000),
+    };
+  });
+}
+
+function findingCode(value: unknown, specialist: string, index: number): string {
+  const code = bounded(value, `review finding ${index + 1} code from ${specialist}`, 100);
+  if (!/^[a-z][a-z0-9._-]*$/.test(code)) {
+    throw new Error(
+      `review finding ${index + 1} code from ${specialist} must be a stable lowercase identifier`,
+    );
+  }
+  return code;
+}
+
+function aggregateReviewers(
+  reviewers: readonly SupervisorPlanReviewReviewer[],
+): SupervisorPlanReviewRound["outcome"] {
+  if (reviewers.length < 1) return "failed";
+  if (reviewers.some((reviewer) => reviewer.verdict === "attention")) return "attention";
+  if (
+    reviewers.some(
+      (reviewer) =>
+        reviewer.verdict === "revise" ||
+        reviewer.findings.some((finding) => finding.severity === "blocking"),
+    )
+  ) {
+    return "revise";
+  }
+  return "approved";
+}
+
+function reconstructReviewReceiptFromProof(input: {
+  coordRoot: string;
+  record: SupervisorRecord;
+  request: SupervisorPlanRequest;
+  history: ReturnType<typeof readSupervisorPlans>;
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
+  policy: SupervisorReplanningPolicy;
+}): SupervisorPlanReviewReceipt | undefined {
+  const runId = reviewWorkflowRunId(input.request.id);
+  const proofPath = join(input.coordRoot, ".harnery", "workflows", runId, "proof.json");
+  if (!existsSync(proofPath)) return undefined;
+  const proof = readWorkflowProof(input.coordRoot, runId);
+  if (proof.run.status !== "succeeded") return undefined;
+  const raw = recoverReviewWorkflowResult(
+    input.coordRoot,
+    input.record.intent.id,
+    input.request.id,
+    proof,
+    input.policy.review!.reviewer_specialists,
+  );
+  assertResultDigest(raw.result, proof.run.result, runId);
+  return normalizeReviewReceipt({
+    raw: raw.result,
+    initialCandidate: raw.initialCandidate,
+    record: input.record,
+    request: input.request,
+    history: input.history,
+    trigger: input.trigger,
+    policy: input.policy,
+  });
+}
+
+function recoverReviewWorkflowResult(
+  coordRoot: string,
+  goalId: string,
+  planId: string,
+  proof: WorkflowProof,
+  expectedSpecialists: readonly string[],
+): {
+  initialCandidate: SupervisorPlanProposal;
+  result: { rounds: unknown[] };
+} {
+  const inputPath = reviewInputPath(coordRoot, goalId, planId);
+  const reviewInput = readBoundedJson<{ candidate: SupervisorPlanProposal }>(
+    inputPath,
+    "supervisor plan review input",
+  );
+  const journal = readVerifiedWorkflowJournal(coordRoot, reviewWorkflowRunId(planId), proof);
+  const starts = new Map<string, { specialist?: string }>();
+  const byRound = new Map<number, Record<string, unknown>>();
+  let currentCandidate: unknown = reviewInput.candidate;
+  for (const line of journal.split("\n")) {
+    if (!line.trim()) continue;
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event.event === "agent.start" && typeof event.id === "string") {
+      starts.set(event.id, {
+        specialist: typeof event.specialist === "string" ? event.specialist : undefined,
+      });
+    }
+    if (event.event !== "agent.end" || event.result_kind !== "json") continue;
+    const round = workflowJournalRound(event.stage);
+    if (!round) continue;
+    let record = byRound.get(round.round);
+    if (!record) {
+      record = { round: round.round, candidate: currentCandidate, reviewers: [] };
+      byRound.set(round.round, record);
+    }
+    if (round.kind === "review") {
+      const specialist =
+        typeof event.id === "string" ? starts.get(event.id)?.specialist : undefined;
+      if (!event.result || typeof event.result !== "object" || Array.isArray(event.result)) {
+        throw new Error("supervisor plan review journal contains an invalid reviewer result");
+      }
+      (record.reviewers as unknown[]).push({
+        specialist,
+        ...(event.result as Record<string, unknown>),
+      });
+    } else {
+      record.revision_candidate = event.result;
+      currentCandidate = event.result;
+    }
+  }
+  const rounds = [...byRound.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, value]) => {
+      const reviewers = orderRecoveredReviewers(value.reviewers, expectedSpecialists);
+      const round: Record<string, unknown> = {
+        round: value.round,
+        candidate: value.candidate,
+        reviewers,
+        outcome: aggregateRecoveredReviewers(reviewers),
+      };
+      if (value.revision_candidate !== undefined) {
+        round.revision_candidate = value.revision_candidate;
+      }
+      return round;
+    });
+  return {
+    initialCandidate: reviewInput.candidate,
+    result: { rounds },
+  };
+}
+
+function readVerifiedWorkflowJournal(
+  coordRoot: string,
+  runId: string,
+  proof: WorkflowProof,
+): string {
+  const journalPath = join(coordRoot, ".harnery", "workflows", runId, proof.integrity.journal.path);
+  const journal = readFileSync(journalPath, "utf8");
+  const bytes = Buffer.byteLength(journal);
+  if (bytes <= 0 || bytes > MAX_RECORD_BYTES || bytes !== proof.integrity.journal.bytes) {
+    throw new Error(`supervisor plan review journal does not match proof integrity`);
+  }
+  const sha256 = createHash("sha256").update(journal).digest("hex");
+  if (sha256 !== proof.integrity.journal.sha256) {
+    throw new Error(`supervisor plan review journal does not match proof integrity`);
+  }
+  return journal;
+}
+
+function orderRecoveredReviewers(raw: unknown, expectedSpecialists: readonly string[]): unknown[] {
+  if (!Array.isArray(raw) || raw.length !== expectedSpecialists.length) return raw as unknown[];
+  const expected = new Set(expectedSpecialists);
+  const bySpecialist = new Map<string, unknown>();
+  for (const value of raw) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return raw;
+    const specialist = (value as Record<string, unknown>).specialist;
+    if (
+      typeof specialist !== "string" ||
+      !expected.has(specialist) ||
+      bySpecialist.has(specialist)
+    ) {
+      return raw;
+    }
+    bySpecialist.set(specialist, value);
+  }
+  return expectedSpecialists.map((specialist) => bySpecialist.get(specialist));
+}
+
+function aggregateRecoveredReviewers(reviewers: readonly unknown[]): string {
+  if (
+    reviewers.some(
+      (value) =>
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).verdict === "attention",
+    )
+  ) {
+    return "attention";
+  }
+  if (
+    reviewers.some((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+      const reviewer = value as Record<string, unknown>;
+      return (
+        reviewer.verdict === "revise" ||
+        (Array.isArray(reviewer.findings) &&
+          reviewer.findings.some(
+            (finding) =>
+              finding &&
+              typeof finding === "object" &&
+              !Array.isArray(finding) &&
+              (finding as Record<string, unknown>).severity === "blocking",
+          ))
+      );
+    })
+  ) {
+    return "revise";
+  }
+  return "approved";
+}
+
+function assertResultDigest(raw: unknown, expected: ResultDigest | undefined, runId: string): void {
+  if (!expected) {
+    throw new Error(`supervisor plan review proof ${runId} is missing its result digest`);
+  }
+  const actual = digestResult(raw, "json");
+  if (
+    actual.kind !== expected.kind ||
+    actual.sha256 !== expected.sha256 ||
+    actual.bytes !== expected.bytes
+  ) {
+    throw new Error(`supervisor plan review result does not match proof digest`);
+  }
+}
+
+function workflowJournalRound(
+  stage: unknown,
+): { kind: "review" | "revision"; round: number } | undefined {
+  if (typeof stage !== "string") return undefined;
+  const review = /^Review round ([1-9][0-9]*)$/.exec(stage);
+  if (review) return { kind: "review", round: Number(review[1]) };
+  const revision = /^Revise round ([1-9][0-9]*)$/.exec(stage);
+  if (revision) return { kind: "revision", round: Number(revision[1]) };
+  return undefined;
+}
+
+function candidateDigest(candidate: SupervisorPlanProposal): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalCandidate(candidate)))
+    .digest("hex");
+}
+
+function canonicalCandidate(candidate: SupervisorPlanProposal): unknown {
+  return {
+    schema_version: candidate.schema_version,
+    plan_id: candidate.plan_id,
+    decision: candidate.decision,
+    rationale: candidate.rationale,
+    root: candidate.root,
+    work: candidate.work,
+    milestone: candidate.milestone,
+  };
+}
+
+function hasReviewRecoveryEvidence(coordRoot: string, goalId: string, planId: string): boolean {
+  return (
+    existsSync(reviewReceiptPath(coordRoot, goalId, planId)) ||
+    existsSync(join(coordRoot, ".harnery", "workflows", reviewWorkflowRunId(planId), "proof.json"))
+  );
+}
+
+function planProposalSchema(record: SupervisorRecord): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      decision: {
+        type: "string",
+        enum: record.intent.mission ? ["apply", "complete", "attention"] : ["apply", "attention"],
+      },
+      rationale: { type: "string" },
+      root: { type: "string" },
+      work: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            key: { type: "string" },
+            title: { type: "string" },
+            objective: { type: "string" },
+            acceptance: { type: "array", items: { type: "string" } },
+            dependencies: { type: "array", items: { type: "string" } },
+            template: { type: "string" },
+          },
+          required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
+        },
+      },
+      milestone: {
+        type: "object",
+        properties: {
+          sequence: { type: "number" },
+          title: { type: "string" },
+          objective: { type: "string" },
+          acceptance: { type: "array", items: { type: "string" } },
+        },
+        required: ["sequence", "title", "objective", "acceptance"],
+      },
+    },
+    required: ["decision", "rationale", "root", "work"],
+  };
+}
+
 function normalizeProposal(
   planId: string,
   raw: unknown,
   record: SupervisorRecord,
   previouslyApplied: number,
   trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+  preservedProposedAt?: string,
 ): SupervisorPlanProposal {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
@@ -452,6 +1252,7 @@ function normalizeProposal(
     throw new Error("planner result must be an object");
   }
   const value = raw as Record<string, unknown>;
+  const proposedAt = preservedProposedAt ?? new Date().toISOString();
   const decision = enumValue(value.decision, ["apply", "complete", "attention"], "plan decision");
   const rationale = bounded(value.rationale, "plan rationale", MAX_REASON);
   const root = typeof value.root === "string" ? value.root.trim() : "";
@@ -470,7 +1271,7 @@ function normalizeProposal(
       rationale,
       root: "",
       work: [],
-      proposed_at: new Date().toISOString(),
+      proposed_at: proposedAt,
     };
   }
   const milestone = record.intent.mission
@@ -565,8 +1366,19 @@ function normalizeProposal(
     root,
     work,
     ...(milestone ? { milestone } : {}),
-    proposed_at: new Date().toISOString(),
+    proposed_at: proposedAt,
   };
+}
+
+function persistedProposalTimestamp(raw: unknown): string {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("persisted review candidate must be an object");
+  }
+  const value = (raw as Record<string, unknown>).proposed_at;
+  if (typeof value !== "string" || value.length > 40 || !Number.isFinite(Date.parse(value))) {
+    throw new Error("persisted review candidate has an invalid proposed_at timestamp");
+  }
+  return value;
 }
 
 function normalizeMilestone(raw: unknown, expectedSequence: number): SupervisorPlanMilestone {
@@ -630,6 +1442,18 @@ function appendPlanEvent(
   chmodSync(path, 0o600);
 }
 
+function appendPlanEventIfMissing(
+  coordRoot: string,
+  goalId: string,
+  planId: string,
+  eventType: SupervisorPlanEvent["event"],
+  input: Omit<SupervisorPlanEvent, "schema_version" | "plan_id" | "seq" | "ts">,
+): void {
+  const plan = readSupervisorPlan(coordRoot, goalId, planId);
+  if (plan.events.some((event) => event.event === eventType)) return;
+  appendPlanEvent(coordRoot, goalId, planId, input);
+}
+
 function outcome(plan: ReturnType<typeof readSupervisorPlan>): SupervisorPlanOutcome {
   return {
     plan_id: plan.request.id,
@@ -682,12 +1506,46 @@ function planProposalPath(coordRoot: string, goalId: string, planId: string): st
   return join(planDir(coordRoot, goalId, planId), "proposal.json");
 }
 
+function reviewScriptPath(coordRoot: string, goalId: string, planId: string): string {
+  return join(planDir(coordRoot, goalId, planId), "review.mjs");
+}
+
+function reviewInputPath(coordRoot: string, goalId: string, planId: string): string {
+  return join(planDir(coordRoot, goalId, planId), "review-input.json");
+}
+
+function reviewReceiptPath(coordRoot: string, goalId: string, planId: string): string {
+  return join(planDir(coordRoot, goalId, planId), "review.json");
+}
+
+function reviewWorkflowRunId(planId: string): string {
+  return `${planId}-review`;
+}
+
+function readBoundedJson<T>(path: string, label: string): T {
+  if (!existsSync(path)) throw new Error(`${label} does not exist at ${path}`);
+  const size = statSync(path).size;
+  if (size <= 0 || size > MAX_RECORD_BYTES) throw new Error(`${label} has invalid size ${size}`);
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch (error) {
+    throw new Error(`cannot parse ${label} at ${path}: ${(error as Error).message}`);
+  }
+}
+
 function bounded(value: unknown, field: string, max: number): string {
   if (typeof value !== "string") throw new Error(`${field} must be a string`);
   const normalized = value.trim();
   if (!normalized) throw new Error(`${field} must not be empty`);
   if (normalized.length > max) throw new Error(`${field} exceeds ${max} characters`);
   return normalized;
+}
+
+function positive(value: unknown, field: string, max: number): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new Error(`${field} must be an integer from 1 to ${max}`);
+  }
+  return value;
 }
 
 function enumValue<T extends string>(value: unknown, values: readonly T[], field: string): T {

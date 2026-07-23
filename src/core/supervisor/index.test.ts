@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createWorkItem, readWorkItem } from "../work/index.ts";
 import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
@@ -416,7 +417,9 @@ describe("durable goal supervisor", () => {
     expect(first.projection.next_action).toBe("review_plan");
     expect(plannerCalls).toBe(1);
     const planId = first.projection.pending_plan_id!;
-    expect(readSupervisorPlan(root, "goal-replan-review", planId).status).toBe("proposed");
+    const unreviewedPlan = readSupervisorPlan(root, "goal-replan-review", planId);
+    expect(unreviewedPlan.status).toBe("proposed");
+    expect(unreviewedPlan.review).toBeUndefined();
     expect(
       statSync(
         join(
@@ -513,6 +516,697 @@ describe("durable goal supervisor", () => {
     expect(report.plan_outcomes[0]?.status).toBe("applied");
     expect(report.projection.plan_generation).toBe(1);
     expect(report.projection.replans_remaining).toBe(0);
+  });
+
+  test("reviewed proposal passes then waits for explicit plan approval unless auto-apply already exists", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-blocked",
+      title: "Review blocked",
+      objective: "Recover only after independent review",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-pass",
+      rootWorkId: "review-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review plans independently", harness: "codex" },
+        implementer: { instructions: "Implement", harness: "codex" },
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("Review this bounded")
+        ? reviewVerdict("approve")
+        : request.prompt.includes("bounded replacement plan")
+          ? replacementProposal()
+          : "implemented",
+      durationMs: 1,
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-pass",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = report.projection.pending_plan_id!;
+    const plan = readSupervisorPlan(root, "goal-reviewed-pass", planId);
+    expect(report.stop_reason).toBe("awaiting_attention");
+    expect(report.projection.next_action).toBe("review_plan");
+    expect(plan.status).toBe("proposed");
+    expect(plan.review).toMatchObject({ status: "passed", rounds: 1 });
+    expect(plan.root_work_id).toBeUndefined();
+    expect(existsSync(join(root, ".harnery", "work", `${planId}-repair`, "intent.json"))).toBe(
+      false,
+    );
+
+    const planDir = join(root, ".harnery", "supervisors", "goal-reviewed-pass", "plans", planId);
+    const reviewPath = join(planDir, "review.json");
+    const proposalPath = join(planDir, "proposal.json");
+    const originalReview = readFileSync(reviewPath, "utf8");
+    const receipt = JSON.parse(originalReview);
+    receipt.final_candidate.rationale = "Replace the candidate after its final review round";
+    receipt.candidate_sha256 = candidateDigestForTest(receipt.final_candidate);
+    writeFileSync(reviewPath, `${JSON.stringify(receipt, null, 2)}\n`);
+    expect(() => readSupervisorPlan(root, "goal-reviewed-pass", planId)).toThrow(
+      "final round does not match its candidate",
+    );
+
+    writeFileSync(reviewPath, originalReview);
+    const proposal = JSON.parse(readFileSync(proposalPath, "utf8"));
+    proposal.work[0].objective = "Apply work that the reviewers never evaluated";
+    writeFileSync(proposalPath, `${JSON.stringify(proposal, null, 2)}\n`);
+    expect(() =>
+      approveSupervisorPlan({
+        coordRoot: root,
+        goalId: "goal-reviewed-pass",
+        planId,
+        actor: "operator",
+      }),
+    ).toThrow("proposal does not match its passed review");
+  });
+
+  test("reviewed auto-apply still requires pre-existing frozen auto_apply", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-auto-blocked",
+      title: "Review auto blocked",
+      objective: "Recover after approved review under frozen authority",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-auto",
+      rootWorkId: "review-auto-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+        implementer: { instructions: "Implement", harness: "codex" },
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        autoApply: true,
+        maxReplans: 1,
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("Review this bounded")
+        ? reviewVerdict("approve")
+        : request.prompt.includes("bounded replacement plan")
+          ? replacementProposal()
+          : "implemented",
+      durationMs: 1,
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-auto",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(report.stop_reason).toBe("succeeded");
+    expect(report.plan_outcomes[0]?.status).toBe("applied");
+    expect(report.projection.plan_generation).toBe(1);
+  });
+
+  test("blocking review finding triggers one bounded revision before proposal", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-revision-blocked",
+      title: "Review revision blocked",
+      objective: "Revise a recovery candidate once",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-revision",
+      rootWorkId: "review-revision-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    let reviewerCalls = 0;
+    let revisionCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        return { ok: true, text: replacementProposal(), durationMs: 1 };
+      }
+      if (request.prompt.includes("Review this bounded")) {
+        reviewerCalls++;
+        return {
+          ok: true,
+          text:
+            reviewerCalls === 1
+              ? reviewVerdict("approve", [{ severity: "blocking", summary: "Scope is too broad" }])
+              : reviewVerdict("approve"),
+          durationMs: 1,
+        };
+      }
+      if (request.prompt.includes("Revise this supervisor plan candidate")) {
+        revisionCalls++;
+        return {
+          ok: true,
+          text: replacementProposal({
+            rationale: "Use the narrower reviewed recovery item",
+            objective: "Complete the original goal through the narrowed recovery workflow",
+          }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: "ignored", durationMs: 1 };
+    };
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-revision",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = report.projection.pending_plan_id!;
+    const plan = readSupervisorPlan(root, "goal-reviewed-revision", planId);
+    const receipt = JSON.parse(
+      readFileSync(
+        join(
+          root,
+          ".harnery",
+          "supervisors",
+          "goal-reviewed-revision",
+          "plans",
+          planId,
+          "review.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(plan.status).toBe("proposed");
+    expect(plan.review).toMatchObject({
+      status: "passed",
+      rounds: 2,
+      blocking_findings: 1,
+    });
+    expect(plan.proposal?.work[0]?.objective).toBe(
+      "Complete the original goal through the narrowed recovery workflow",
+    );
+    expect(receipt).toMatchObject({ schema_version: 1, plan_id: planId });
+    expect(receipt.rounds[0].reviewers[0].findings[0]).toEqual({
+      code: "test-finding-1",
+      severity: "blocking",
+      summary: "Scope is too broad",
+      recommendation: "Revise the candidate to resolve this finding",
+    });
+    expect(reviewerCalls).toBe(2);
+    expect(revisionCalls).toBe(1);
+  });
+
+  test("exhausted review revisions park the plan for attention without a proposal", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-exhausted-blocked",
+      title: "Review exhausted blocked",
+      objective: "Exhaust the bounded review loop",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-exhausted",
+      rootWorkId: "review-exhausted-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    let revisionCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        return { ok: true, text: replacementProposal(), durationMs: 1 };
+      }
+      if (request.prompt.includes("Review this bounded")) {
+        return {
+          ok: true,
+          text: reviewVerdict("revise", [
+            { severity: "blocking", summary: "The candidate still misses acceptance evidence" },
+          ]),
+          durationMs: 1,
+        };
+      }
+      if (request.prompt.includes("Revise this supervisor plan candidate")) {
+        revisionCalls++;
+        return {
+          ok: true,
+          text: replacementProposal({
+            rationale: "Attempt a narrower recovery",
+            objective: "Complete a narrower recovery path",
+          }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: "ignored", durationMs: 1 };
+    };
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-exhausted",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = readSupervisor(root, "goal-reviewed-exhausted").plans[0]!.request.id;
+    const plan = readSupervisorPlan(root, "goal-reviewed-exhausted", planId);
+    expect(report.stop_reason).toBe("awaiting_attention");
+    expect(plan.status).toBe("attention");
+    expect(plan.review).toMatchObject({ status: "revision_exhausted", rounds: 2 });
+    expect(
+      existsSync(
+        join(
+          root,
+          ".harnery",
+          "supervisors",
+          "goal-reviewed-exhausted",
+          "plans",
+          planId,
+          "proposal.json",
+        ),
+      ),
+    ).toBe(false);
+    expect(revisionCalls).toBe(1);
+  });
+
+  test("partial review receipt fails closed", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-corrupt-blocked",
+      title: "Review corrupt blocked",
+      objective: "Corrupt the private review receipt",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-corrupt",
+      rootWorkId: "review-corrupt-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("Review this bounded")
+        ? reviewVerdict("approve")
+        : replacementProposal(),
+      durationMs: 1,
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-corrupt",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = report.projection.pending_plan_id!;
+    writeFileSync(
+      join(
+        root,
+        ".harnery",
+        "supervisors",
+        "goal-reviewed-corrupt",
+        "plans",
+        planId,
+        "review.json",
+      ),
+      '{"status":"passed"',
+    );
+    expect(() => readSupervisorPlan(root, "goal-reviewed-corrupt", planId)).toThrow();
+  });
+
+  test("completed review proof reconstructs a missing receipt and proposal idempotently", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-recover-blocked",
+      title: "Review recover blocked",
+      objective: "Recover reviewed plan artifacts from proof",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-recover",
+      rootWorkId: "review-recover-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    let calls = 0;
+    const spawner: Spawner = async (request) => {
+      calls++;
+      return {
+        ok: true,
+        text: request.prompt.includes("Review this bounded")
+          ? reviewVerdict("approve")
+          : replacementProposal(),
+        durationMs: 1,
+      };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-recover",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = first.projection.pending_plan_id!;
+    const planDir = join(root, ".harnery", "supervisors", "goal-reviewed-recover", "plans", planId);
+    rmSync(join(planDir, "review.json"), { force: true });
+    rmSync(join(planDir, "proposal.json"), { force: true });
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-recover",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const recovered = readSupervisorPlan(root, "goal-reviewed-recover", planId);
+    expect(second.stop_reason).toBe("awaiting_attention");
+    expect(recovered.status).toBe("proposed");
+    expect(recovered.review).toMatchObject({ status: "passed", rounds: 1 });
+    expect(calls).toBe(2);
+  });
+
+  test("review proof recovery preserves frozen reviewer order after out-of-order completion", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-recover-order-blocked",
+      title: "Review recover order blocked",
+      objective: "Recover reviewed plan artifacts with multiple reviewers",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-recover-order",
+      rootWorkId: "review-recover-order-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        alpha: { instructions: "Review first", harness: "codex" },
+        beta: { instructions: "Review second", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["alpha", "beta"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    let reviewCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("Review this bounded")) {
+        reviewCalls++;
+        if (reviewCalls === 1) await new Promise((resolve) => setTimeout(resolve, 20));
+        return { ok: true, text: reviewVerdict("approve"), durationMs: 1 };
+      }
+      return { ok: true, text: replacementProposal(), durationMs: 1 };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-recover-order",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = first.projection.pending_plan_id!;
+    const planDir = join(
+      root,
+      ".harnery",
+      "supervisors",
+      "goal-reviewed-recover-order",
+      "plans",
+      planId,
+    );
+    rmSync(join(planDir, "review.json"), { force: true });
+    rmSync(join(planDir, "proposal.json"), { force: true });
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-recover-order",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const receipt = JSON.parse(readFileSync(join(planDir, "review.json"), "utf8"));
+    expect(second.stop_reason).toBe("awaiting_attention");
+    expect(
+      receipt.rounds[0].reviewers.map((reviewer: { specialist: string }) => reviewer.specialist),
+    ).toEqual(["alpha", "beta"]);
+    expect(reviewCalls).toBe(2);
+  });
+
+  test("review proof recovery rejects journals that no longer match proof integrity", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-integrity-blocked",
+      title: "Review integrity blocked",
+      objective: "Reject stale review journal recovery",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-integrity",
+      rootWorkId: "review-integrity-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("Review this bounded")
+        ? reviewVerdict("approve")
+        : replacementProposal(),
+      durationMs: 1,
+    });
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-integrity",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = first.projection.pending_plan_id!;
+    const planDir = join(
+      root,
+      ".harnery",
+      "supervisors",
+      "goal-reviewed-integrity",
+      "plans",
+      planId,
+    );
+    const journalPath = join(root, ".harnery", "workflows", `${planId}-review`, "journal.jsonl");
+    rmSync(join(planDir, "review.json"), { force: true });
+    rmSync(join(planDir, "proposal.json"), { force: true });
+    writeFileSync(journalPath, `${readFileSync(journalPath, "utf8")} `);
+    await expect(
+      runSupervisor({
+        coordRoot: root,
+        goalId: "goal-reviewed-integrity",
+        engine: { spawners: { codex: spawner }, probeBilling },
+      }),
+    ).rejects.toThrow("journal does not match proof integrity");
+  });
+
+  test("review proof recovery rejects journals that no longer match proof result", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-result-blocked",
+      title: "Review result blocked",
+      objective: "Reject stale review result recovery",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-result",
+      rootWorkId: "review-result-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("Review this bounded")
+        ? reviewVerdict("approve")
+        : replacementProposal(),
+      durationMs: 1,
+    });
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-result",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = first.projection.pending_plan_id!;
+    const planDir = join(root, ".harnery", "supervisors", "goal-reviewed-result", "plans", planId);
+    const runDir = join(root, ".harnery", "workflows", `${planId}-review`);
+    const journalPath = join(runDir, "journal.jsonl");
+    const proofPath = join(runDir, "proof.json");
+    rmSync(join(planDir, "review.json"), { force: true });
+    rmSync(join(planDir, "proposal.json"), { force: true });
+    const journal = readFileSync(journalPath, "utf8")
+      .split("\n")
+      .map((line) => {
+        if (!line.trim()) return line;
+        const event = JSON.parse(line);
+        if (event.event === "agent.end" && event.stage === "Review round 1") {
+          return JSON.stringify({
+            ...event,
+            result: { ...event.result, rationale: "A stale reviewer result" },
+          });
+        }
+        return line;
+      })
+      .join("\n");
+    writeFileSync(journalPath, journal);
+    const proof = JSON.parse(readFileSync(proofPath, "utf8"));
+    proof.integrity.journal = {
+      path: "journal.jsonl",
+      sha256: createHash("sha256").update(journal).digest("hex"),
+      bytes: Buffer.byteLength(journal),
+    };
+    writeFileSync(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
+    await expect(
+      runSupervisor({
+        coordRoot: root,
+        goalId: "goal-reviewed-result",
+        engine: { spawners: { codex: spawner }, probeBilling },
+      }),
+    ).rejects.toThrow("result does not match proof digest");
+  });
+
+  test("existing review receipts must match the frozen review policy", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-policy-mismatch-blocked",
+      title: "Review policy mismatch blocked",
+      objective: "Reject mismatched private review receipt",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewed-policy-mismatch",
+      rootWorkId: "review-policy-mismatch-blocked",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        alpha: { instructions: "Review first", harness: "codex" },
+        beta: { instructions: "Review second", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["alpha", "beta"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const spawner: Spawner = async (request) => ({
+      ok: true,
+      text: request.prompt.includes("Review this bounded")
+        ? reviewVerdict("approve")
+        : replacementProposal(),
+      durationMs: 1,
+    });
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewed-policy-mismatch",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const planId = first.projection.pending_plan_id!;
+    const reviewPath = join(
+      root,
+      ".harnery",
+      "supervisors",
+      "goal-reviewed-policy-mismatch",
+      "plans",
+      planId,
+      "review.json",
+    );
+    const receipt = JSON.parse(readFileSync(reviewPath, "utf8"));
+    receipt.rounds[0].reviewers.reverse();
+    writeFileSync(reviewPath, `${JSON.stringify(receipt, null, 2)}\n`);
+    expect(() => readSupervisorPlan(root, "goal-reviewed-policy-mismatch", planId)).toThrow(
+      "frozen review policy",
+    );
+  });
+
+  test("rejects invalid reviewer specialists at supervisor creation", () => {
+    const { root, passing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-policy-root",
+      title: "Review policy root",
+      objective: "Validate review policy",
+      workflowPath: passing,
+    });
+    expect(() =>
+      createSupervisor({
+        coordRoot: root,
+        id: "goal-reviewer-planner",
+        rootWorkId: "review-policy-root",
+        specialists: { planner: { instructions: "Plan", harness: "codex" } },
+        replanning: {
+          plannerSpecialist: "planner",
+          review: { reviewerSpecialists: ["planner"], maxRevisionRounds: 1 },
+          templates: { repair: { workflowPath: passing, root: true } },
+        },
+      }),
+    ).toThrow("reviewer specialist cannot be the planner specialist");
+    expect(() =>
+      createSupervisor({
+        coordRoot: root,
+        id: "goal-reviewer-missing",
+        rootWorkId: "review-policy-root",
+        specialists: { planner: { instructions: "Plan", harness: "codex" } },
+        replanning: {
+          plannerSpecialist: "planner",
+          review: { reviewerSpecialists: ["missing"], maxRevisionRounds: 1 },
+          templates: { repair: { workflowPath: passing, root: true } },
+        },
+      }),
+    ).toThrow("reviewer specialist missing is not present in the frozen team");
   });
 
   test("an attention decision stays quiescent until durable graph state changes", async () => {
@@ -686,6 +1380,117 @@ describe("durable goal supervisor", () => {
     expect(resumed.projection.replans_used).toBe(1);
     expect(resumed.plan_outcomes[0]?.workflow_run_id).toBe(planBefore.request.workflow_run_id);
     expect(spawns).toBe(1);
+  });
+
+  test("resumes a parked review workflow without rerunning its completed planner", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "review-approval-root",
+      title: "Review approval root",
+      objective: "Resume reviewed replanning after host approval",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-review-approval",
+      rootWorkId: "review-approval-root",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    let spawns = 0;
+    const engine = {
+      spawners: {
+        codex: async (request: SpawnRequest) => {
+          spawns++;
+          return {
+            ok: true,
+            text: request.prompt.includes("Review this bounded")
+              ? reviewVerdict("approve")
+              : replacementProposal(),
+            durationMs: 1,
+          };
+        },
+      },
+      probeBilling,
+      policy: { name: "review-approval", network: "ask" as const },
+      networkAccess: "enabled" as const,
+      approvalMode: "park" as const,
+    };
+
+    await runSupervisor({ coordRoot: root, goalId: "goal-review-approval", engine });
+    let plan = readSupervisor(root, "goal-review-approval").plans[0]!;
+    resolveWorkflowApproval({
+      coordRoot: root,
+      approvalId: plan.approval_id!,
+      verdict: "allow",
+      actor: "operator",
+    });
+
+    const reviewParked = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-review-approval",
+      engine,
+    });
+    expect(reviewParked.projection.next_action).toBe("resolve_approval");
+    expect(spawns).toBe(1);
+    plan = readSupervisor(root, "goal-review-approval").plans[0]!;
+    expect(plan.status).toBe("awaiting_approval");
+    resolveWorkflowApproval({
+      coordRoot: root,
+      approvalId: plan.approval_id!,
+      verdict: "allow",
+      actor: "operator",
+    });
+
+    const resumed = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-review-approval",
+      engine,
+    });
+    expect(readSupervisor(root, "goal-review-approval").plans[0]).toMatchObject({
+      status: "proposed",
+    });
+    expect(resumed.projection.next_action).toBe("review_plan");
+    expect(resumed.projection.replans_used).toBe(1);
+    expect(spawns).toBe(2);
+  });
+
+  test("rejects review panels larger than the durable receipt contract", () => {
+    const { root, passing } = fixture();
+    const reviewerSpecialists = Array.from({ length: 26 }, (_, index) => `reviewer-${index + 1}`);
+    const specialists = Object.fromEntries([
+      ["planner", { instructions: "Plan", harness: "codex" }],
+      ...reviewerSpecialists.map(
+        (specialist) => [specialist, { instructions: "Review", harness: "codex" }] as const,
+      ),
+    ]);
+    expect(() =>
+      createSupervisor({
+        coordRoot: root,
+        id: "goal-oversized-review-panel",
+        rootWorkId: undefined,
+        mission: {
+          objective: "Reject a panel that cannot be read durably",
+          acceptance: ["Creation fails closed"],
+        },
+        specialists,
+        limits: { max_agents_per_work: 1_000 },
+        replanning: {
+          plannerSpecialist: "planner",
+          review: { reviewerSpecialists, maxRevisionRounds: 1 },
+          templates: { repair: { workflowPath: passing, root: true } },
+        },
+      }),
+    ).toThrow(/cannot exceed 25 reviewer specialists/);
   });
 
   test("rejects a proposal that escapes the active graph or frozen template catalog", async () => {
@@ -1087,21 +1892,58 @@ describe("durable goal supervisor", () => {
   });
 });
 
-function replacementProposal(): string {
+function replacementProposal(
+  options: { rationale?: string; objective?: string; title?: string } = {},
+): string {
   return JSON.stringify({
     decision: "apply",
-    rationale: "Replace the terminal approach with one focused recovery item",
+    rationale: options.rationale ?? "Replace the terminal approach with one focused recovery item",
     root: "repair",
     work: [
       {
         key: "repair",
-        title: "Repair the goal",
-        objective: "Complete the original goal through the approved recovery workflow",
+        title: options.title ?? "Repair the goal",
+        objective:
+          options.objective ?? "Complete the original goal through the approved recovery workflow",
         acceptance: ["The original goal is complete"],
         dependencies: [],
         template: "repair",
       },
     ],
+  });
+}
+
+function candidateDigestForTest(candidate: Record<string, unknown>): string {
+  const canonical = {
+    schema_version: candidate.schema_version,
+    plan_id: candidate.plan_id,
+    decision: candidate.decision,
+    rationale: candidate.rationale,
+    root: candidate.root,
+    work: candidate.work,
+    milestone: candidate.milestone,
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
+function reviewVerdict(
+  verdict: "approve" | "revise" | "attention",
+  findings: Array<{
+    code?: string;
+    severity: "blocking" | "advisory";
+    summary: string;
+    recommendation?: string;
+  }> = [],
+): string {
+  return JSON.stringify({
+    verdict,
+    rationale: verdict === "approve" ? "The plan is bounded and complete" : "The plan needs work",
+    findings: findings.map((finding, index) => ({
+      code: finding.code ?? `test-finding-${index + 1}`,
+      severity: finding.severity,
+      summary: finding.summary,
+      recommendation: finding.recommendation ?? "Revise the candidate to resolve this finding",
+    })),
   });
 }
 
