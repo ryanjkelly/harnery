@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.21.0
+
+### Minor Changes
+
+- f4e973f: Expose each durable work assignment to reusable workflow scripts as frozen typed context, with the exact value preserved in run manifests and proof packets.
+
 ## 0.20.0
 
 ### Minor Changes
