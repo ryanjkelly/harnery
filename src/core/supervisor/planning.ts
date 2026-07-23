@@ -583,6 +583,58 @@ export function rejectSupervisorPlanProposal(input: {
   return outcome(readSupervisorPlan(input.coordRoot, input.goalId, input.planId));
 }
 
+export function retrySupervisorPlanProposal(input: {
+  coordRoot: string;
+  record: SupervisorRecord;
+  planId: string;
+  actor: string;
+  reason: string;
+}): SupervisorPlanOutcome {
+  const policy = input.record.intent.replanning;
+  if (!policy) {
+    throw new Error(`supervisor ${input.record.intent.id} does not allow replanning`);
+  }
+  const reason = bounded(input.reason, "plan retry reason", MAX_REASON);
+  const history = readSupervisorPlans(
+    input.coordRoot,
+    input.record.intent.id,
+    input.record.intent.root_work_id,
+  );
+  const latest = history.latest;
+  if (!latest || latest.request.id !== input.planId) {
+    throw new Error(`supervisor plan ${input.planId} is not the latest plan`);
+  }
+  const triggerFingerprint = supervisorGraphFingerprint({
+    rootWorkId: history.active_root_work_id,
+    generation: history.generation,
+    work: input.record.work,
+  });
+  if (
+    latest.request.trigger_fingerprint !== triggerFingerprint ||
+    latest.request.prior_root_work_id !== history.active_root_work_id
+  ) {
+    throw new Error(`supervisor plan ${input.planId} no longer matches the active graph`);
+  }
+  if (history.completed) {
+    throw new Error(`supervisor ${input.record.intent.id} mission is already complete`);
+  }
+  if (latest.status === "retry_requested") return outcome(latest);
+  if (latest.status !== "attention") {
+    throw new Error(`supervisor plan ${input.planId} cannot be retried from ${latest.status}`);
+  }
+  if (history.plans.length >= policy.max_replans) {
+    throw new Error(
+      `supervisor ${input.record.intent.id} exhausted its ${policy.max_replans} replans`,
+    );
+  }
+  appendPlanEvent(input.coordRoot, input.record.intent.id, input.planId, {
+    event: "plan.retry_requested",
+    actor: input.actor,
+    reason,
+  });
+  return outcome(readSupervisorPlan(input.coordRoot, input.record.intent.id, input.planId));
+}
+
 function createPlanRequest(
   coordRoot: string,
   record: SupervisorRecord,

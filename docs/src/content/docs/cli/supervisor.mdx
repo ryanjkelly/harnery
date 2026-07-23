@@ -20,6 +20,7 @@ harn supervisor plan list <goal-id> [--json]
 harn supervisor plan show <goal-id> <plan-id> [--json]
 harn supervisor plan approve <goal-id> <plan-id> [--actor <name>] [--reason <text>] [--json]
 harn supervisor plan reject <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
+harn supervisor plan retry <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
 harn supervisor tick <goal-id> [workflow host options] [--json]
 harn supervisor run <goal-id> [workflow host options] [--json]
 harn supervisor service start [goal-id...] [service options] [--json]
@@ -238,6 +239,9 @@ harn supervisor plan approve goal-release plan-0001-a1b2c3d4 \
 # or
 harn supervisor plan reject goal-release plan-0001-a1b2c3d4 \
   --actor operator --reason "Needs a narrower migration"
+# or, after the plan stops for human judgment
+harn supervisor plan retry goal-release plan-0001-a1b2c3d4 \
+  --actor operator --reason "Keep the migration local and preserve the old API"
 ```
 
 Approval creates new immutable work items with planner provenance, then appends
@@ -249,7 +253,13 @@ execution budget.
 Rejecting a proposal records the reason as planner feedback and makes the goal
 eligible for another bounded planner attempt, if its replan budget remains.
 An `attention` decision stays quiescent because the planner itself has declared
-that another model pass cannot safely resolve the missing judgment.
+that another model pass cannot safely resolve the missing judgment. When an
+operator supplies that judgment, `plan retry` appends one addressed
+`plan.retry_requested` event to the latest attention plan. It requires an
+unchanged active graph and a remaining replan slot, then creates a distinct
+planner workflow on the next tick. The original request, proposal, review
+receipt, attention event, frozen team, templates, and cumulative limits remain
+unchanged. Repeating the accepted retry is idempotent.
 
 With independent plan review enabled, a planner candidate is reviewed before it
 can become a pending proposal. Each reviewer returns structured findings and a

@@ -1,0 +1,98 @@
+---
+title: "0031: Plan attention recovery is an addressed durable transition"
+description: "ADR: let an operator attach bounded guidance to the latest attention plan and authorize one new planner attempt without mutating prior evidence."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, public package APIs)
+
+## Context
+
+A planner or independent reviewer may conclude that a proposal needs human
+judgment. Harnery records that outcome as `attention` and deliberately leaves
+the goal quiescent. This fail-closed behavior prevents another model pass from
+silently overriding a request for human judgment, but it previously had no
+durable recovery path. An operator could inspect the plan and its review
+receipt, yet could not attach guidance and authorize another bounded planner
+attempt.
+
+Editing the attention plan would destroy the evidence that explains why work
+stopped. Reusing the prior model session would make recovery depend on hidden
+provider state and would blur the boundary between a completed judgment and a
+new attempt. Treating any comment or graph change as authority would allow
+accidental wakeups. Resetting limits on recovery would turn a bounded
+supervisor into an unbounded loop.
+
+## Decision
+
+Add an explicit addressed transition for the latest attention plan:
+
+```bash
+harn supervisor plan retry <goal-id> <plan-id> \
+  --actor <name> --reason <bounded-guidance>
+```
+
+The operation acquires the existing per-goal lease and re-reads durable state.
+It accepts only the latest plan, only when that plan is in `attention`, only
+while its frozen root and graph fingerprint still match current supervisor
+state, and only while another frozen replan slot remains. The reason is required
+and uses the existing 2,000-character plan-event bound.
+
+Acceptance appends one `plan.retry_requested` event to the addressed plan. It
+does not edit the request, proposal, review receipt, attention event, workflow
+journal, or existing work graph. The plan derives the new
+`retry_requested` status from that event. Repeating the same operation after a
+successful append is idempotent and returns the existing outcome without
+appending a second event.
+
+Before recovery, projection exposes `attention_plan_id` and reports
+`awaiting_attention/retry_plan` when the transition is eligible. If the frozen
+replan budget is exhausted, the goal remains `awaiting_attention/none`.
+After the retry event, ordinary projection selects `replan`, `plan_initial`, or
+`plan_milestone` from current durable graph truth.
+
+The next tick creates a distinct plan request and planner workflow. Existing
+planner context already carries the latest plan status and reason, so the new
+attempt receives the operator's bounded guidance. It reuses the frozen planner,
+reviewers, workflow templates, mission, and all cumulative budgets. It consumes
+the next existing replan slot and receives the same structural validation and
+independent-review treatment as any other plan.
+
+Recovery is never inferred. A background supervisor remains quiescent until the
+operator event exists. Historical plans, non-attention plans, changed graph
+truth, completed missions, blank or overlong reasons, and exhausted replan
+budgets reject the transition.
+
+## Alternatives considered
+
+- **Leave attention permanently terminal.** Rejected because the operator can
+  supply the missing judgment, but Harnery would force goal recreation and lose
+  a continuous audit trail.
+- **Edit or replace the attention proposal.** Rejected because the prior
+  proposal and review receipt are evidence, not mutable working files.
+- **Resume the same model session.** Rejected because durable recovery must not
+  depend on provider-specific session retention or hidden conversation state.
+- **Treat a new comment as implicit retry authority.** Rejected because
+  guidance and authorization must be explicit and addressed to one exact plan.
+- **Retry any plan in history.** Rejected because stale guidance could compete
+  with newer graph or planning truth.
+- **Reset the plan budget after human input.** Rejected because recovery should
+  not weaken frozen bounds.
+- **Let the service retry attention automatically.** Rejected because a request
+  for human judgment is an authority boundary, not a transient failure.
+
+## Result and gotchas
+
+- Attention remains fail-closed by default, but is no longer a dead end.
+- Recovery creates a new planner attempt; it does not claim live steering or
+  session continuation.
+- The operator reason is durable private state and appears in the next planner
+  prompt. Raw model transcripts are still excluded from projection.
+- Exact latest-plan and graph checks prevent stale operator actions from
+  reviving superseded work.
+- Idempotency covers a repeated request for the same already-retried plan. It
+  does not let a caller replace the first recorded reason.
+- Replan counts remain cumulative. An attention plan that used the final slot
+  can be inspected but cannot be retried.
+- Process loss before the event append changes nothing. Process loss after the
+  append is recoverable from the event journal and ordinary supervisor
+  projection.

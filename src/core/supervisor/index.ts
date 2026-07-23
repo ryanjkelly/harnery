@@ -1,4 +1,8 @@
-export { approveSupervisorPlan, rejectSupervisorPlan } from "./plan-api.ts";
+export {
+  approveSupervisorPlan,
+  rejectSupervisorPlan,
+  retrySupervisorPlan,
+} from "./plan-api.ts";
 export {
   readSupervisorPlan,
   readSupervisorPlanReviewReceipt,

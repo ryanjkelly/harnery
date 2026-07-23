@@ -97,6 +97,7 @@ export type SupervisorNextAction =
   | "plan_initial"
   | "plan_milestone"
   | "review_plan"
+  | "retry_plan"
   | "none";
 
 export interface SupervisorProjection {
@@ -121,6 +122,7 @@ export interface SupervisorProjection {
   milestones_completed: number;
   milestones_remaining: number;
   pending_plan_id?: string;
+  attention_plan_id?: string;
   latest_plan_status?: SupervisorPlanRecord["status"];
   governed_work_ids: string[];
 }
@@ -445,7 +447,11 @@ function deriveProjection(
       ...base,
       state: "awaiting_attention",
       reason: plans.latest.reason ?? `plan ${plans.latest.request.id} requires attention`,
-      next_action: "none",
+      attention_plan_id: plans.latest.request.id,
+      next_action:
+        intent.replanning && plans.plans.length < intent.replanning.max_replans
+          ? "retry_plan"
+          : "none",
     };
   }
   if (!root && intent.mission) {

@@ -39,6 +39,7 @@ const EVENT_TYPES = new Set<SupervisorPlanEventType>([
   "plan.applied",
   "plan.completed",
   "plan.rejected",
+  "plan.retry_requested",
   "plan.attention",
   "plan.failed",
 ]);
@@ -187,6 +188,9 @@ function deriveStatus(
   }
   if (latest?.event === "plan.rejected") {
     return { status: "rejected", work_ids: [], reason: latest.reason };
+  }
+  if (latest?.event === "plan.retry_requested") {
+    return { status: "retry_requested", work_ids: [], reason: latest.reason };
   }
   if (latest?.event === "plan.attention") {
     return { status: "attention", work_ids: [], reason: latest.reason };

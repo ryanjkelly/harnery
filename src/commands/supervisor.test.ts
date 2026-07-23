@@ -21,6 +21,7 @@ describe("supervisor command", () => {
       "show",
       "approve",
       "reject",
+      "retry",
     ]);
     const service = command?.commands.find((candidate) => candidate.name() === "service");
     expect(service?.commands.map((candidate) => candidate.name())).toEqual([

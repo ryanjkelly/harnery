@@ -20,6 +20,7 @@ import {
   readSupervisorServiceStatus,
   rejectSupervisorPlan,
   requestSupervisorServiceStop,
+  retrySupervisorPlan,
   runSupervisor,
   runSupervisorServiceDaemon,
   type SupervisorPlanOutcome,
@@ -244,6 +245,34 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
         withSupervisorRoot(emit, (coordRoot) => {
           emitPlanOutcome(
             rejectSupervisorPlan({
+              coordRoot,
+              goalId,
+              planId,
+              actor: opts.actor,
+              reason: opts.reason,
+            }),
+            opts.json,
+            emit,
+          );
+        });
+      },
+    );
+
+  plan
+    .command("retry <goal-id> <plan-id>")
+    .description("Attach bounded guidance and authorize a new attempt after plan attention.")
+    .requiredOption("--reason <text>", "Guidance for the next planner attempt")
+    .option("--actor <name>", "Actor recorded on the retry request")
+    .option("--json", "Emit the plan outcome as JSON")
+    .action(
+      (
+        goalId: string,
+        planId: string,
+        opts: { actor?: string; reason: string; json?: boolean },
+      ) => {
+        withSupervisorRoot(emit, (coordRoot) => {
+          emitPlanOutcome(
+            retrySupervisorPlan({
               coordRoot,
               goalId,
               planId,
@@ -723,6 +752,9 @@ function emitSupervisor(
       lines.push(`original root: ${record.intent.root_work_id}`);
     }
     if (projection.pending_plan_id) lines.push(`pending plan: ${projection.pending_plan_id}`);
+    if (projection.attention_plan_id) {
+      lines.push(`attention plan: ${projection.attention_plan_id}`);
+    }
   }
   if (record.intent.mission) {
     lines.push(`mission: ${record.intent.mission.objective}`);
