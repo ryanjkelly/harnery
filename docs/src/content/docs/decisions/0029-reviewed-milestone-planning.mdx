@@ -40,6 +40,9 @@ Decision-specific schema branches require executable `apply` plans to carry a
 non-empty graph and require `complete` or `attention` decisions to carry no work
 or milestone data. Shape mistakes therefore receive the same bounded correction
 attempt as other schema failures rather than consuming another plan request.
+At a milestone boundary, the schema exposes `apply` only while milestone budget
+remains and requires the next exact milestone sequence. Once the budget reaches
+zero, only `complete` or `attention` can pass the gate.
 Each reviewer receives that same candidate and bounded mission/graph context in
 an independent call. Reviewer output is schema-gated data containing:
 

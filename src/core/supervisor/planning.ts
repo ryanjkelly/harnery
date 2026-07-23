@@ -678,7 +678,7 @@ function plannerScript(
       })),
     )}`,
   ].join("\n\n");
-  const schema = planProposalSchema(record);
+  const schema = planProposalSchema(record, trigger);
   return [
     `export const meta = ${JSON.stringify({ name: `replan-${planId}` })};`,
     "export default async ({ agent, stage }) => {",
@@ -708,7 +708,7 @@ function plannerReviewScript(
   const policy = record.intent.replanning;
   const review = policy?.review;
   if (!policy || !review) throw new Error(`supervisor ${record.intent.id} does not review plans`);
-  const proposalSchema = planProposalSchema(record);
+  const proposalSchema = planProposalSchema(record, trigger);
   const reviewerSchema: StageSchema = {
     type: "object",
     properties: {
@@ -1172,7 +1172,10 @@ function hasReviewRecoveryEvidence(coordRoot: string, goalId: string, planId: st
   );
 }
 
-function planProposalSchema(record: SupervisorRecord): StageSchema {
+function planProposalSchema(
+  record: SupervisorRecord,
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+): StageSchema {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
   const rationale: StageSchema = { type: "string", minLength: 1, maxLength: MAX_REASON };
@@ -1200,7 +1203,10 @@ function planProposalSchema(record: SupervisorRecord): StageSchema {
   const milestone: StageSchema = {
     type: "object",
     properties: {
-      sequence: { type: "number" },
+      sequence: {
+        type: "number",
+        enum: [record.projection.milestones_completed + 1],
+      },
       title: { type: "string", minLength: 1, maxLength: 200 },
       objective: { type: "string", minLength: 1, maxLength: 4_000 },
       acceptance: {
@@ -1251,12 +1257,11 @@ function planProposalSchema(record: SupervisorRecord): StageSchema {
     required: ["decision", "rationale", "root", "work"],
     additionalProperties: false,
   });
-  return {
-    type: "object",
-    oneOf: record.intent.mission
-      ? [apply, terminal("complete"), terminal("attention")]
-      : [apply, terminal("attention")],
-  };
+  const branches: StageSchema[] = [];
+  if (!record.intent.mission || record.projection.milestones_remaining > 0) branches.push(apply);
+  if (record.intent.mission && trigger === "milestone") branches.push(terminal("complete"));
+  branches.push(terminal("attention"));
+  return { type: "object", oneOf: branches };
 }
 
 function normalizeProposal(

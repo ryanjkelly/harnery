@@ -1803,27 +1803,32 @@ describe("durable goal supervisor", () => {
         templates: { delivery: { workflowPath: passing, root: true } },
       },
     });
+    let plannerCalls = 0;
     await expect(
       runSupervisor({
         coordRoot: root,
         goalId: "goal-mission-premature",
         engine: {
           spawners: {
-            codex: async () => ({
-              ok: true,
-              text: JSON.stringify({
-                decision: "complete",
-                rationale: "Nothing appears necessary",
-                root: "",
-                work: [],
-              }),
-              durationMs: 1,
-            }),
+            codex: async () => {
+              plannerCalls++;
+              return {
+                ok: true,
+                text: JSON.stringify({
+                  decision: "complete",
+                  rationale: "Nothing appears necessary",
+                  root: "",
+                  work: [],
+                }),
+                durationMs: 1,
+              };
+            },
           },
           probeBilling,
         },
       }),
-    ).rejects.toThrow("only at a milestone boundary");
+    ).rejects.toThrow("schema validation failed after 2 attempt(s)");
+    expect(plannerCalls).toBe(2);
     expect(readSupervisor(root, "goal-mission-premature").plans[0]?.status).toBe("failed");
   });
 
