@@ -55,6 +55,13 @@ The reviewer stage schema carries the same identifier, count, and text bounds as
 the durable receipt. A malformed finding therefore receives a bounded correction
 attempt before receipt normalization.
 
+The review and revision context also repeats the planner's root-namespace rule.
+`proposal.root` names one newly proposed work key using a root-capable template;
+it does not preserve or repeat the existing `active_root` work ID. The latter is
+context only. Keeping that distinction in every model-facing pass prevents a
+review finding from inventing an impossible requirement when an active work ID
+is longer than the bounded local key.
+
 Harnery aggregates those results in deterministic code. It does not ask another
 model to decide which reviewer to believe. A pass succeeds only when every
 reviewer returns a valid result, no reviewer requests attention or revision,
@@ -125,6 +132,9 @@ attempt; it cannot invent approval or duplicate executable work.
 - Reviewer approval establishes contract-compliant evidence, not strategic
   correctness. Quality still depends on specialist instructions and harness
   behavior.
+- Existing work IDs and newly proposed keys occupy different namespaces. Any
+  model-authored finding that requires `proposal.root` to equal `active_root`
+  contradicts the frozen plan contract.
 - Agent counts are hard-bounded and reported costs remain truthful where a
   harness supplies them. Harnery does not claim a universal token budget for
   subscription harnesses that do not expose one.

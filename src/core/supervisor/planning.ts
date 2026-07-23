@@ -50,6 +50,8 @@ const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_EVENTS_BYTES = 512 * 1024;
 const MAX_REASON = 2_000;
+const PROPOSAL_ROOT_RULE =
+  "proposal.root names one newly proposed work key using a root-capable template; it does not preserve or repeat active_root, which is context only";
 
 export interface RunSupervisorPlannerInput {
   coordRoot: string;
@@ -629,7 +631,7 @@ function plannerScript(
       : "Return decision=apply with a replacement immutable root graph, or decision=attention when human judgment is required.",
     "Never claim mission completion unless the frozen mission acceptance is met. Never request a workflow outside the frozen template catalog.",
     "Dependencies may name an active work ID or an earlier key in your proposed work array.",
-    "Every proposed item must be reachable from root. The root must be a proposed key using a root-capable template.",
+    `Every proposed item must be reachable from root. ${PROPOSAL_ROOT_RULE}.`,
     "Work keys are lowercase identifiers no longer than 32 characters. Keep titles within 200 characters, objectives within 4000 characters, and each acceptance criterion within 500 characters.",
     `Plan id: ${planId}`,
     `Planning trigger: ${trigger}`,
@@ -753,6 +755,7 @@ function plannerReviewScript(
       mission: record.intent.mission ?? null,
       original_root: record.intent.root_work_id,
       active_root: record.projection.root_work_id,
+      proposal_root_rule: PROPOSAL_ROOT_RULE,
       templates: policy.templates,
     })};`,
     `  let candidate = ${JSON.stringify(initialCandidate)};`,
@@ -770,6 +773,7 @@ function plannerReviewScript(
     "        'Review this bounded supervisor plan candidate independently.',",
     "        'Return approve only when the candidate is complete, scoped, and satisfies the goal context.',",
     "        'Return revise for blocking defects. Return attention when human judgment is required.',",
+    "        'Apply proposal_root_rule exactly; never require proposal.root to equal active_root.',",
     "        'Goal context: ' + JSON.stringify(goalContext),",
     "        'Candidate: ' + JSON.stringify(candidate)",
     "      ].join('\\n\\n');",
@@ -788,6 +792,7 @@ function plannerReviewScript(
     "    const revisionPrompt = [",
     "      'Revise this supervisor plan candidate. Return a complete replacement candidate, not a patch.',",
     "      'Do not merge reviewer text mechanically; satisfy the blocking findings within the frozen goal and template constraints.',",
+    "      'Apply proposal_root_rule exactly; never require proposal.root to equal active_root.',",
     "      'Goal context: ' + JSON.stringify(goalContext),",
     "      'Current candidate: ' + JSON.stringify(candidate),",
     "      'Reviewer findings: ' + JSON.stringify(reviewersOut)",
