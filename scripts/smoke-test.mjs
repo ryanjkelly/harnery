@@ -19,7 +19,7 @@
  * Runs on Node only. Exits non-zero on the first failure with a clear message.
  */
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,11 +39,14 @@ let tarball;
 try {
   // 1. Build dist/
   log("building dist/ ...");
-  execSync("npm run build", { cwd: repoRoot, stdio: "inherit" });
+  execFileSync("npm", ["run", "build"], { cwd: repoRoot, stdio: "inherit" });
 
   // 2. Pack the tarball npm would publish
   log("packing tarball ...");
-  tarball = execSync("npm pack", { cwd: repoRoot, encoding: "utf8" }).trim().split("\n").pop();
+  tarball = execFileSync("npm", ["pack"], { cwd: repoRoot, encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .pop();
   const tarballPath = join(repoRoot, tarball);
   log(`packed ${tarball}`);
 
@@ -54,7 +57,7 @@ try {
     JSON.stringify({ name: "harnery-smoke", version: "1.0.0", private: true }, null, 2),
   );
   log("installing tarball with --omit=dev ...");
-  execSync(`npm install "${tarballPath}" --omit=dev --no-audit --no-fund`, {
+  execFileSync("npm", ["install", tarballPath, "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: workdir,
     stdio: "inherit",
   });
@@ -200,7 +203,10 @@ try {
     "--replanning",
     missionReplanningFile,
   ]);
-  if (!/goal-smoke-mission/.test(missionCreateOut) || !/next: plan_initial/.test(missionCreateOut)) {
+  if (
+    !/goal-smoke-mission/.test(missionCreateOut) ||
+    !/next: plan_initial/.test(missionCreateOut)
+  ) {
     fail("supervisor mission create did not produce an objective-first planning state");
   }
   log("durable supervisor CLI OK");
@@ -289,9 +295,12 @@ try {
       "}",
       'const readonly = await import("harnery/core/supervisor/state");',
       'if (typeof readonly.readSupervisor !== "function" || typeof readonly.readSupervisorServiceStatus !== "function") throw new Error("read-only supervisor state export missing");',
+      'if (typeof readonly.readSupervisorPlanReviewReceipt !== "function" || readonly.MAX_SUPERVISOR_PLAN_REVIEWERS !== 5) throw new Error("read-only supervisor review export missing");',
       'for (const forbidden of ["approveSupervisorPlan", "rejectSupervisorPlan", "runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
       '  if (forbidden in readonly) throw new Error("read-only supervisor state export gained execution: " + forbidden);',
       "}",
+      'const plans = await import("harnery/core/supervisor/plans");',
+      'if (typeof plans.readSupervisorPlanReviewReceipt !== "function") throw new Error("supervisor plans export missing");',
     ].join("\n"),
   );
   execFileSync(nodePath, [supervisorProbe], {

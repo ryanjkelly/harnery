@@ -3,7 +3,12 @@ import { NavBar } from "@/components/NavBar";
 import { SupervisorStateBadge } from "@/components/SupervisorStateBadge";
 import { Badge } from "@/components/ui/badge";
 import { coordRoot } from "@/lib/coord-reader";
-import { readSupervisorBackgroundService, readSupervisors } from "@/lib/supervisor-reader";
+import {
+  readSupervisorBackgroundService,
+  readSupervisors,
+  supervisorDashboardDecision,
+  supervisorPlanDashboardStatus,
+} from "@/lib/supervisor-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -53,45 +58,60 @@ export default function SupervisorsPage() {
           </p>
         ) : (
           <ul className="space-y-2">
-            {records.map(({ intent, projection }) => (
-              <li key={intent.id}>
-                <Link
-                  href={`/supervisors/${encodeURIComponent(intent.id)}`}
-                  className="block rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:border-foreground/25"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <SupervisorStateBadge state={projection.state} />
-                    <span className="font-medium">{intent.title}</span>
-                    <span className="text-xs text-muted-foreground">{intent.id}</span>
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                    <span>{projection.work_ids.length} work items</span>
-                    <span>
-                      {projection.attempts_used}/{intent.limits.max_total_attempts} attempts
-                    </span>
-                    <span>next: {projection.next_action}</span>
-                    {intent.replanning ? (
+            {records.map((record) => {
+              const { intent, projection, plans } = record;
+              const decision = supervisorDashboardDecision(record);
+              const pendingPlan = projection.pending_plan_id
+                ? plans.find((plan) => plan.request.id === projection.pending_plan_id)
+                : undefined;
+              const pendingPlanStatus = pendingPlan
+                ? supervisorPlanDashboardStatus(pendingPlan)
+                : undefined;
+              return (
+                <li key={intent.id}>
+                  <Link
+                    href={`/supervisors/${encodeURIComponent(intent.id)}`}
+                    className="block rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:border-foreground/25"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <SupervisorStateBadge state={projection.state} />
+                      <span className="font-medium">{intent.title}</span>
+                      <span className="text-xs text-muted-foreground">{intent.id}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span>{projection.work_ids.length} work items</span>
                       <span>
-                        plan generation {projection.plan_generation} · {projection.replans_used}/
-                        {intent.replanning.max_replans} replans
+                        {projection.attempts_used}/{intent.limits.max_total_attempts} attempts
                       </span>
-                    ) : null}
-                    {intent.mission ? (
-                      <span>
-                        milestones {projection.milestones_completed}/{intent.mission.max_milestones}
-                      </span>
-                    ) : null}
-                    {projection.pending_plan_id ? (
-                      <span>pending: {projection.pending_plan_id}</span>
-                    ) : null}
-                    <span>{projection.reason}</span>
-                    {service.config?.goal_ids.includes(intent.id) ? (
-                      <span>service: {service.runtime?.goals[intent.id]?.state ?? "enrolled"}</span>
-                    ) : null}
-                  </div>
-                </Link>
-              </li>
-            ))}
+                      <span>next: {decision.nextAction}</span>
+                      {intent.replanning ? (
+                        <span>
+                          plan generation {projection.plan_generation} · {projection.replans_used}/
+                          {intent.replanning.max_replans} replans
+                        </span>
+                      ) : null}
+                      {intent.mission ? (
+                        <span>
+                          milestones {projection.milestones_completed}/
+                          {intent.mission.max_milestones}
+                        </span>
+                      ) : null}
+                      {pendingPlanStatus && projection.pending_plan_id ? (
+                        <span>
+                          pending plan: {projection.pending_plan_id} · {pendingPlanStatus.label}
+                        </span>
+                      ) : null}
+                      <span>{decision.reason}</span>
+                      {service.config?.goal_ids.includes(intent.id) ? (
+                        <span>
+                          service: {service.runtime?.goals[intent.id]?.state ?? "enrolled"}
+                        </span>
+                      ) : null}
+                    </div>
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         )}
       </main>

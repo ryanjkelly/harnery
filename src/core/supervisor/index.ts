@@ -1,8 +1,14 @@
 export { approveSupervisorPlan, rejectSupervisorPlan } from "./plan-api.ts";
-export { readSupervisorPlan, readSupervisorPlans } from "./plan-read.ts";
+export {
+  readSupervisorPlan,
+  readSupervisorPlanReviewReceipt,
+  readSupervisorPlans,
+} from "./plan-read.ts";
 export {
   type CreateSupervisorPlanTemplateInput,
   type CreateSupervisorReplanningInput,
+  MAX_SUPERVISOR_PLAN_REVIEWERS,
+  MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
   type SupervisorPlanEventType,

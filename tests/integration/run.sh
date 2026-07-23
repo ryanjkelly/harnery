@@ -107,19 +107,23 @@ check "harn supervisor service starts unconfigured" \
 
 MISSION_FIXTURE="$TMPDIR_TEST/mission-fixture"
 mkdir -p "$MISSION_FIXTURE"
-printf '%s\n' '{"planner":{"instructions":"Plan bounded milestones","harness":"codex"}}' \
+printf '%s\n' '{"planner":{"instructions":"Plan bounded milestones","harness":"codex"},"reviewer":{"instructions":"Review milestone plans independently","harness":"codex"}}' \
   > "$MISSION_FIXTURE/team.json"
 printf '%s\n' '{"objective":"Deliver a verified mission","acceptance":["The mission proof passes"],"max_milestones":2}' \
   > "$MISSION_FIXTURE/mission.json"
 printf '%s\n' 'export default async () => "done";' \
   > "$MISSION_FIXTURE/workflow.mjs"
-printf '%s\n' '{"planner_specialist":"planner","max_replans":3,"templates":{"delivery":{"workflow":"./workflow.mjs","root":true}}}' \
+printf '%s\n' '{"planner_specialist":"planner","max_replans":3,"review":{"reviewer_specialists":["reviewer"],"max_revision_rounds":1},"templates":{"delivery":{"workflow":"./workflow.mjs","root":true}}}' \
   > "$MISSION_FIXTURE/replanning.json"
 check "harn supervisor creates an objective-first mission" \
   "$HARN supervisor create --id goal-integration-mission --team '$MISSION_FIXTURE/team.json' --mission '$MISSION_FIXTURE/mission.json' --replanning '$MISSION_FIXTURE/replanning.json'" \
   "next: plan_initial"
+check "harn supervisor renders frozen plan review policy" \
+  "$HARN supervisor show goal-integration-mission" "plan review: reviewers=reviewer, max_revision_rounds=1"
 check "harn supervisor shows frozen mission progress" \
   "$HARN supervisor show goal-integration-mission" "milestones: 0/2"
+check "harn supervisor json freezes reviewed planning policy" \
+  "$HARN supervisor show goal-integration-mission --json" '"max_revision_rounds":1'
 
 # 8. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"

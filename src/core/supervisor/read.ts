@@ -1,5 +1,11 @@
-export { readSupervisorPlan, readSupervisorPlans } from "./plan-read.ts";
 export {
+  readSupervisorPlan,
+  readSupervisorPlanReviewReceipt,
+  readSupervisorPlans,
+} from "./plan-read.ts";
+export {
+  MAX_SUPERVISOR_PLAN_REVIEWERS,
+  MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
   type SupervisorPlanEventType,

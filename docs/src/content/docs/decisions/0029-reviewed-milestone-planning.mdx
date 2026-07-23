@@ -3,7 +3,7 @@ title: "0029: Milestone proposals receive independent bounded review"
 description: "ADR: review one planner candidate through frozen specialists, revise it under hard bounds, and preserve ordinary plan authority."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/supervisor`, supervisor CLI, dashboard)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/supervisor`, supervisor CLI, dashboard, public package APIs)
 
 ## Context
 
@@ -61,7 +61,7 @@ Review produces an immutable private receipt beside the plan request and
 proposal. It records candidate digests, review rounds, specialist verdicts,
 bounded findings, outcome, and the final candidate needed for recovery and
 inspection. Raw transcripts do not enter supervisor projection. Plan events add
-a reviewed boundary, while CLI, package APIs, and the dashboard expose bounded
+a reviewed boundary, while CLI, dashboard, and package APIs expose bounded
 review status and counts.
 
 Passing review does not apply a plan. It only permits the ordinary

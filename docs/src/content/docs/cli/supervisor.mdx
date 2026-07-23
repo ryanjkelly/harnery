@@ -176,6 +176,10 @@ planner is allowed to select:
   "max_replans": 5,
   "max_work_items_per_plan": 8,
   "max_total_work_items": 25,
+  "review": {
+    "reviewer_specialists": ["reviewer"],
+    "max_revision_rounds": 1
+  },
   "templates": {
     "implementation": {
       "workflow": "./workflows/implement.mjs",
@@ -200,6 +204,13 @@ Paths are resolved relative to the replanning file. Harnery freezes each
 workflow's absolute path, SHA-256 digest, attempt ceiling, and root capability
 inside goal intent. A later file edit is detected before planner-created work
 is materialized.
+
+`review` is optional. When present, it freezes an ordered panel of specialists
+from the same team file and a hard revision bound. Reviewers must be distinct
+from the planner. A panel contains one to five reviewers and
+`max_revision_rounds` may be zero to three. The supervisor rejects a review
+policy whose worst-case planner, reviewer, and revision calls would exceed
+`max_agents_per_work`.
 
 Without a mission, the planner runs only after the active graph has no legal progress action. It
 does not replace review, approval, cancellation, retry policy, or an exhausted
@@ -239,6 +250,18 @@ Rejecting a proposal records the reason as planner feedback and makes the goal
 eligible for another bounded planner attempt, if its replan budget remains.
 An `attention` decision stays quiescent because the planner itself has declared
 that another model pass cannot safely resolve the missing judgment.
+
+With independent plan review enabled, a planner candidate is reviewed before it
+can become a pending proposal. Each reviewer returns structured findings and a
+verdict. Any `attention`, `revise`, or blocking finding fails the round. If
+revision budget remains, the planner must return a complete replacement
+candidate, which receives a new full review. Exhaustion, reviewer failure, or a
+no-change revision parks the plan for human attention.
+
+Passing review writes a bounded receipt and a `plan.reviewed` event, then
+continues through ordinary plan authority. It does not approve execution by
+itself. `harn supervisor plan show` renders receipt status, round count, and
+finding totals; `--json` includes the complete plan record for tooling.
 
 `auto_apply` defaults to `false`. Setting it to `true` is immutable authority
 for valid proposals to advance the active root without human review. Schema,

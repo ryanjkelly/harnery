@@ -5,7 +5,12 @@ import { SupervisorStateBadge } from "@/components/SupervisorStateBadge";
 import { Badge } from "@/components/ui/badge";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
-import { readSupervisorBackgroundService, readSupervisorGoal } from "@/lib/supervisor-reader";
+import {
+  readSupervisorBackgroundService,
+  readSupervisorGoal,
+  supervisorDashboardDecision,
+  supervisorPlanDashboardStatus,
+} from "@/lib/supervisor-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -21,6 +26,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
   const record = readSupervisorGoal(root, decodedGoalId);
   if (!record) notFound();
   const { intent, projection, work, plans } = record;
+  const decision = supervisorDashboardDecision(record);
   const service = readSupervisorBackgroundService(root);
   const serviceRuntime = service.runtime?.goals[intent.id];
   const enrolled = service.config?.goal_ids.includes(intent.id) ?? false;
@@ -38,7 +44,11 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
           <h1 className="text-xl font-semibold">{intent.title}</h1>
         </div>
         <p className="mb-6 text-xs text-muted-foreground">
-          {intent.id} · {projection.root_materialized ? `active root ${projection.root_work_id}` : "root pending initial plan"} · next: {projection.next_action}
+          {intent.id} ·{" "}
+          {projection.root_materialized
+            ? `active root ${projection.root_work_id}`
+            : "root pending initial plan"}{" "}
+          · next: {decision.nextAction}
         </p>
 
         {intent.mission ? (
@@ -60,7 +70,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
 
         <section className="mb-8 rounded-lg border border-border bg-card p-4">
           <h2 className="text-sm font-semibold">Current decision</h2>
-          <p className="mt-2 text-sm">{projection.reason}</p>
+          <p className="mt-2 text-sm">{decision.reason}</p>
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
             <span>{projection.work_ids.length} work items</span>
             <span>
@@ -97,58 +107,68 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
               </p>
             ) : (
               <ul className="space-y-2">
-                {[...plans].reverse().map((plan) => (
-                  <li
-                    key={plan.request.id}
-                    className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge
-                        variant={
-                          plan.status === "applied" || plan.status === "completed"
-                            ? "success"
-                            : plan.status === "proposed" || plan.status === "awaiting_approval"
-                              ? "warning"
-                              : plan.status === "failed" || plan.status === "rejected"
-                                ? "destructive"
-                                : "muted"
-                        }
-                      >
-                        {plan.status.replaceAll("_", " ")}
-                      </Badge>
-                      <span className="font-medium">{plan.request.id}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {plan.request.trigger ?? "recovery"} request {plan.request.sequence}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      prior root {plan.request.prior_root_work_id} · planner run{" "}
-                      {plan.request.workflow_run_id}
-                    </p>
-                    {plan.reason ? <p className="mt-2 text-xs">{plan.reason}</p> : null}
-                    {plan.proposal?.milestone ? (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        milestone {plan.proposal.milestone.sequence}: {plan.proposal.milestone.title}
+                {[...plans].reverse().map((plan) => {
+                  const planStatus = supervisorPlanDashboardStatus(plan);
+                  return (
+                    <li
+                      key={plan.request.id}
+                      className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant={planStatus.badgeVariant}>{planStatus.label}</Badge>
+                        <span className="font-medium">{plan.request.id}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {plan.request.trigger ?? "recovery"} request {plan.request.sequence}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        prior root {plan.request.prior_root_work_id} · planner run{" "}
+                        {plan.request.workflow_run_id}
                       </p>
-                    ) : null}
-                    {plan.proposal?.work.length ? (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        {plan.proposal.work.length} proposed work item
-                        {plan.proposal.work.length === 1 ? "" : "s"} · proposed root{" "}
-                        {plan.proposal.root}
-                      </p>
-                    ) : null}
-                    {plan.status === "proposed" ? (
-                      <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                        Review with{" "}
-                        <code>
-                          harn supervisor plan show {intent.id} {plan.request.id}
-                        </code>
-                        , then approve or reject it explicitly.
-                      </p>
-                    ) : null}
-                  </li>
-                ))}
+                      {planStatus.reviewLabel ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          review {planStatus.reviewLabel}
+                        </p>
+                      ) : null}
+                      {plan.reason ? <p className="mt-2 text-xs">{plan.reason}</p> : null}
+                      {plan.proposal?.milestone ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          milestone {plan.proposal.milestone.sequence}:{" "}
+                          {plan.proposal.milestone.title}
+                        </p>
+                      ) : null}
+                      {plan.proposal?.work.length ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {plan.proposal.work.length} proposed work item
+                          {plan.proposal.work.length === 1 ? "" : "s"} · proposed root{" "}
+                          {plan.proposal.root}
+                        </p>
+                      ) : null}
+                      {planStatus.requiresReview ? (
+                        <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                          Review with{" "}
+                          <code>
+                            harn supervisor plan show {intent.id} {plan.request.id}
+                          </code>
+                          , then approve or reject it explicitly.
+                        </p>
+                      ) : null}
+                      {planStatus.requiresDecision ? (
+                        <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">
+                          Review has passed. Approve with{" "}
+                          <code>
+                            {`harn supervisor plan approve ${intent.id} ${plan.request.id}`}
+                          </code>{" "}
+                          or reject it with{" "}
+                          <code>
+                            {`harn supervisor plan reject ${intent.id} ${plan.request.id} --reason <text>`}
+                          </code>
+                          .
+                        </p>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </section>
@@ -200,33 +220,33 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
               accepted first.
             </p>
           ) : (
-          <ul className="space-y-2">
-            {work.map(({ intent: workIntent, projection: workProjection }) => (
-              <li
-                key={workIntent.id}
-                className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <WorkStateBadge state={workProjection.state} />
-                  <Link
-                    href={`/work/${encodeURIComponent(workIntent.id)}`}
-                    className="font-medium hover:underline"
-                  >
-                    {workIntent.title}
-                  </Link>
-                  {workIntent.id === projection.root_work_id ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                      active root
-                    </span>
-                  ) : null}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {workIntent.id} · {workProjection.attempts_used}/{workIntent.max_attempts}{" "}
-                  attempts · next: {workProjection.next_action}
-                </p>
-              </li>
-            ))}
-          </ul>
+            <ul className="space-y-2">
+              {work.map(({ intent: workIntent, projection: workProjection }) => (
+                <li
+                  key={workIntent.id}
+                  className="rounded-lg border border-border bg-card px-4 py-3 text-sm"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <WorkStateBadge state={workProjection.state} />
+                    <Link
+                      href={`/work/${encodeURIComponent(workIntent.id)}`}
+                      className="font-medium hover:underline"
+                    >
+                      {workIntent.title}
+                    </Link>
+                    {workIntent.id === projection.root_work_id ? (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                        active root
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {workIntent.id} · {workProjection.attempts_used}/{workIntent.max_attempts}{" "}
+                    attempts · next: {workProjection.next_action}
+                  </p>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
 

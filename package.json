@@ -87,6 +87,11 @@
       "types": "./dist/core/supervisor/read.d.ts",
       "import": "./dist/core/supervisor/read.js"
     },
+    "./core/supervisor/plans": {
+      "bun": "./src/core/supervisor/plan-read.ts",
+      "types": "./dist/core/supervisor/plan-read.d.ts",
+      "import": "./dist/core/supervisor/plan-read.js"
+    },
     "./core/policy": {
       "bun": "./src/core/policy/index.ts",
       "types": "./dist/core/policy/index.d.ts",

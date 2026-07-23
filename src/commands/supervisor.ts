@@ -617,6 +617,7 @@ function readReplanningFile(path: string): CreateSupervisorReplanningInput {
       ];
     }),
   );
+  const review = readReplanningReview(config.review);
   return {
     plannerSpecialist: config.planner_specialist,
     autoApply: jsonBoolean(config.auto_apply, "replanning auto_apply"),
@@ -627,6 +628,29 @@ function readReplanningFile(path: string): CreateSupervisorReplanningInput {
     ),
     maxTotalWorkItems: jsonInteger(config.max_total_work_items, "replanning max_total_work_items"),
     templates,
+    ...(review ? { review } : {}),
+  };
+}
+
+function readReplanningReview(raw: unknown): CreateSupervisorReplanningInput["review"] | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("supervisor replanning review must be a JSON object");
+  }
+  const review = raw as Record<string, unknown>;
+  if (
+    !Array.isArray(review.reviewer_specialists) ||
+    review.reviewer_specialists.some((item) => typeof item !== "string")
+  ) {
+    throw new Error(
+      "supervisor replanning review reviewer_specialists must be an array of strings",
+    );
+  }
+  return {
+    reviewerSpecialists: review.reviewer_specialists as string[],
+    maxRevisionRounds:
+      jsonNonNegativeInteger(review.max_revision_rounds, "replanning review max_revision_rounds") ??
+      0,
   };
 }
 
@@ -690,6 +714,11 @@ function emitSupervisor(
     lines.push(
       `replanning: generation=${projection.plan_generation}, used=${projection.replans_used}/${record.intent.replanning.max_replans}, auto_apply=${record.intent.replanning.auto_apply}`,
     );
+    if (record.intent.replanning.review) {
+      lines.push(
+        `plan review: reviewers=${record.intent.replanning.review.reviewer_specialists.join(", ")}, max_revision_rounds=${record.intent.replanning.review.max_revision_rounds}`,
+      );
+    }
     if (projection.root_work_id !== record.intent.root_work_id) {
       lines.push(`original root: ${record.intent.root_work_id}`);
     }
@@ -747,6 +776,14 @@ function jsonInteger(value: unknown, field: string): number | undefined {
   return value as number;
 }
 
+function jsonNonNegativeInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${field} must be a non-negative integer`);
+  }
+  return value as number;
+}
+
 function jsonBoolean(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") throw new Error(`${field} must be boolean`);
@@ -775,6 +812,12 @@ function emitPlan(plan: SupervisorPlanRecord, json: boolean | undefined, emit: E
       lines.push(`milestone: ${plan.proposal.milestone.sequence} ${plan.proposal.milestone.title}`);
     }
   }
+  if (plan.review) {
+    lines.push(
+      `review: ${plan.review.status}, rounds=${plan.review.rounds}, blocking=${plan.review.blocking_findings}, advisory=${plan.review.advisory_findings}`,
+    );
+    lines.push(`review candidate: ${plan.review.candidate_sha256}`);
+  }
   if (plan.root_work_id) lines.push(`applied root: ${plan.root_work_id}`);
   if (plan.approval_id) lines.push(`approval: ${plan.approval_id}`);
   emit.text(`${lines.join("\n")}\n`);
@@ -798,7 +841,8 @@ function emitPlanOutcome(
 }
 
 function renderPlanRow(plan: SupervisorPlanRecord): string {
-  return `${plan.request.id}  ${plan.status.padEnd(18)}  ${plan.request.prior_root_work_id}`;
+  const review = plan.review ? `  review:${plan.review.status}` : "";
+  return `${plan.request.id}  ${plan.status.padEnd(18)}  ${plan.request.prior_root_work_id}${review}`;
 }
 
 function delay(ms: number): Promise<void> {
