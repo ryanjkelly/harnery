@@ -34,8 +34,10 @@ import type {
   WorkflowProofUnknown,
   WorkflowRepoEvidence,
   WorkflowRepoSnapshot,
+  WorkflowWorkContext,
 } from "./types.ts";
 import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
+import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 
 const MAX_ACCEPTANCE_CRITERIA = 50;
 const MAX_EVIDENCE_RECORDS = 200;
@@ -59,6 +61,7 @@ export interface NormalizedWorkflowMeta {
 export interface BuildWorkflowProofInput {
   runId: string;
   workItemId?: string;
+  workContext?: Readonly<WorkflowWorkContext>;
   meta: NormalizedWorkflowMeta;
   status: "succeeded" | "failed";
   startedAt: string;
@@ -221,6 +224,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
       started_at: input.startedAt,
       ended_at: input.endedAt,
       duration_ms: input.durationMs,
+      work_context: input.workContext,
       objective: input.meta.objective,
       error: clippedOptional(input.error, MAX_SUMMARY_CHARS),
       result: input.result === undefined ? undefined : digestResult(input.result),
@@ -303,7 +307,14 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
   } catch (error) {
     throw new Error(`cannot parse workflow proof at ${path}: ${(error as Error).message}`);
   }
-  if (proof.schema_version !== WORKFLOW_PROOF_SCHEMA_VERSION || proof.run?.id !== runId) {
+  if (
+    proof.schema_version !== WORKFLOW_PROOF_SCHEMA_VERSION ||
+    proof.run?.id !== runId ||
+    (proof.run.work_context !== undefined &&
+      (!proof.run.work_item_id ||
+        proof.run.work_context.id !== proof.run.work_item_id ||
+        !isCanonicalWorkflowWorkContext(proof.run.work_context)))
+  ) {
     throw new Error(`workflow proof at ${path} has an unsupported or mismatched schema`);
   }
   return proof;

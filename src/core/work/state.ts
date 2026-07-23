@@ -317,7 +317,7 @@ function deriveWorkProjection(
   const terminal =
     latestGovernance?.event === "work.accepted" || latestGovernance?.event === "work.cancelled";
   const attemptEvents = events.filter((event) => event.event === "attempt.started");
-  const attempts = attemptEvents.map((event) => inspectAttempt(coordRoot, event));
+  const attempts = attemptEvents.map((event) => inspectAttempt(coordRoot, event, intent));
   const base = {
     id: intent.id,
     title: intent.title,
@@ -342,7 +342,7 @@ function deriveWorkProjection(
   const reopenSeq = latestGovernance?.event === "work.reopened" ? latestGovernance.seq : 0;
   const currentAttempts = attemptEvents
     .filter((event) => event.seq > reopenSeq)
-    .map((event) => inspectAttempt(coordRoot, event));
+    .map((event) => inspectAttempt(coordRoot, event, intent));
   const unresolved = intent.dependencies.filter((dependency) => {
     try {
       return readWorkItem(coordRoot, dependency).projection.state !== "succeeded";
@@ -419,7 +419,7 @@ function deriveWorkProjection(
   };
 }
 
-function inspectAttempt(coordRoot: string, event: WorkEvent): WorkAttempt {
+function inspectAttempt(coordRoot: string, event: WorkEvent, intent: WorkIntent): WorkAttempt {
   const runId = event.run_id as string;
   const attempt: WorkAttempt = {
     number: event.attempt as number,
@@ -429,10 +429,19 @@ function inspectAttempt(coordRoot: string, event: WorkEvent): WorkAttempt {
   };
   const proofPath = join(coordRoot, ".harnery", "workflows", runId, "proof.json");
   const manifestPath = join(coordRoot, ".harnery", "workflows", runId, "run.json");
+  let manifest: ReturnType<typeof readWorkflowRunManifest> | undefined;
   if (existsSync(manifestPath)) {
-    const manifest = readWorkflowRunManifest(coordRoot, runId);
+    manifest = readWorkflowRunManifest(coordRoot, runId);
     if (manifest.work_item_id !== event.work_id) {
       throw new Error(`workflow run ${runId} does not belong to work item ${event.work_id}`);
+    }
+    if (
+      manifest.work_context !== undefined &&
+      JSON.stringify(manifest.work_context) !== JSON.stringify(workContextForIntent(intent))
+    ) {
+      throw new Error(
+        `workflow run ${runId} work context does not match work item ${event.work_id}`,
+      );
     }
   }
   if (existsSync(proofPath)) {
@@ -440,6 +449,12 @@ function inspectAttempt(coordRoot: string, event: WorkEvent): WorkAttempt {
       throw new Error(`workflow run ${runId} has proof without a work-linked manifest`);
     }
     const proof = readWorkflowProof(coordRoot, runId);
+    if (proof.run.work_item_id !== event.work_id) {
+      throw new Error(`workflow proof ${runId} does not belong to work item ${event.work_id}`);
+    }
+    if (JSON.stringify(proof.run.work_context) !== JSON.stringify(manifest?.work_context)) {
+      throw new Error(`workflow proof ${runId} work context does not match its run manifest`);
+    }
     attempt.proof_path = proofPath;
     attempt.status =
       proof.run.status === "succeeded" &&
@@ -469,6 +484,22 @@ function inspectAttempt(coordRoot: string, event: WorkEvent): WorkAttempt {
   }
   if (workflowResumeLeaseIsLive(coordRoot, runId)) attempt.status = "running";
   return attempt;
+}
+
+function workContextForIntent(intent: WorkIntent): {
+  schema_version: 1;
+  id: string;
+  title: string;
+  objective: string;
+  acceptance: string[];
+} {
+  return {
+    schema_version: 1,
+    id: intent.id,
+    title: intent.title,
+    objective: intent.objective,
+    acceptance: [...intent.acceptance],
+  };
 }
 
 function appendGovernanceEvent(

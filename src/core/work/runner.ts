@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { runWorkflow } from "../workflow/engine.ts";
 import type { EngineOpts, RunReport } from "../workflow/types.ts";
+import { WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION } from "../workflow/types.ts";
 import {
   acquireWorkLease,
   appendReconcileIfChanged,
@@ -14,7 +15,7 @@ import {
 export interface RunWorkItemInput {
   coordRoot: string;
   workId: string;
-  engine: Omit<EngineOpts, "coordRoot" | "runId" | "resumeRunId" | "workItemId">;
+  engine: Omit<EngineOpts, "coordRoot" | "runId" | "resumeRunId" | "workItemId" | "workContext">;
   retry?: boolean;
   actor?: string;
 }
@@ -69,6 +70,13 @@ export async function runWorkItem(input: RunWorkItemInput): Promise<RunReport> {
       coordRoot,
       runId,
       workItemId: input.workId,
+      workContext: {
+        schema_version: WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION,
+        id: record.intent.id,
+        title: record.intent.title,
+        objective: record.intent.objective,
+        acceptance: [...record.intent.acceptance],
+      },
     });
   } finally {
     try {

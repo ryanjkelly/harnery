@@ -61,6 +61,110 @@ const quiet = {
 };
 
 describe("runWorkflow", () => {
+  test("injects a cloned, deeply frozen typed work context and binds it to proof", async () => {
+    const script = writeScript(`
+      export default async ({ work }) => {
+        let objectiveFrozen = false;
+        let acceptanceFrozen = false;
+        try { work.objective = "mutated"; } catch { objectiveFrozen = true; }
+        try { work.acceptance.push("mutated"); } catch { acceptanceFrozen = true; }
+        return { work, objectiveFrozen, acceptanceFrozen };
+      };
+    `);
+    const context = {
+      schema_version: 1 as const,
+      id: "planned-work",
+      title: "Implement the reviewed milestone",
+      objective: "Ship the bounded assignment",
+      acceptance: ["The focused tests pass"],
+    };
+    const pending = runWorkflow(script, {
+      coordRoot: root,
+      spawners: {},
+      workItemId: "planned-work",
+      workContext: context,
+      ...quiet,
+    });
+    context.objective = "caller mutation";
+    context.acceptance.push("caller mutation");
+    const report = await pending;
+    expect(report.result).toEqual({
+      work: {
+        schema_version: 1,
+        id: "planned-work",
+        title: "Implement the reviewed milestone",
+        objective: "Ship the bounded assignment",
+        acceptance: ["The focused tests pass"],
+      },
+      objectiveFrozen: true,
+      acceptanceFrozen: true,
+    });
+    const manifest = JSON.parse(
+      readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
+    );
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(manifest.work_context).toEqual((report.result as { work: unknown }).work);
+    expect(proof.run.work_context).toEqual(manifest.work_context);
+    expect(readJournal().find((event) => event.event === "run.start")?.work_context).toEqual(
+      manifest.work_context,
+    );
+  });
+
+  test("keeps standalone context absent and rejects invalid work bindings", async () => {
+    const script = writeScript(`export default async ({ work }) => work ?? null;`);
+    const standalone = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: {},
+      ...quiet,
+    });
+    expect(standalone.result).toBeNull();
+
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: {},
+        workContext: {
+          schema_version: 1,
+          id: "work-a",
+          title: "A",
+          objective: "A",
+          acceptance: [],
+        },
+        ...quiet,
+      }),
+    ).rejects.toThrow(/requires a work item id/);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: {},
+        workItemId: "work-b",
+        workContext: {
+          schema_version: 1,
+          id: "work-a",
+          title: "A",
+          objective: "A",
+          acceptance: [],
+        },
+        ...quiet,
+      }),
+    ).rejects.toThrow(/does not match work item work-b/);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: {},
+        resumeRunId: "wf-does-not-exist",
+        workContext: {
+          schema_version: 1,
+          id: "work-a",
+          title: "A",
+          objective: "A",
+          acceptance: [],
+        },
+        ...quiet,
+      }),
+    ).rejects.toThrow(/resume uses the frozen manifest work context/);
+  });
+
   test("schema-gated agent returns validated JSON; report totals populated", async () => {
     const spawner: Spawner = async () => okSpawn('{"route": "keep", "reason": "fine"}');
     const script = writeScript(`

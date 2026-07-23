@@ -1,0 +1,87 @@
+---
+title: "0032: Work-linked workflows receive a frozen typed assignment"
+description: "ADR: bind reusable workflow code to immutable durable-work context without ambient ledger access or automatic prompt injection."
+---
+
+**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/work`, `core/workflow`)
+
+## Context
+
+Durable work stores a bounded title, objective, and acceptance criteria, but a
+workflow script currently receives only the work ID. A static workflow can
+therefore prove that it ran for the right ledger item while still being unable
+to read what that item asks it to accomplish.
+
+That gap is most visible when a supervisor materializes several planned work
+items against one reusable workflow template. The template is selected through
+frozen host authority, but it would need a separate hard-coded script for each
+objective.
+
+Letting scripts read `.harnery/work/` directly would create an ambient storage
+API, bypass the run manifest, and make parked-run behavior depend on whatever is
+on disk at resume time. Automatically concatenating work text to every agent
+prompt would also obscure prompt identity and remove control from deterministic
+workflow code.
+
+## Decision
+
+Add a small `WorkflowWorkContext` value containing:
+
+- schema version;
+- work ID;
+- title;
+- objective;
+- acceptance criteria.
+
+`runWorkItem` derives that value from the immutable work intent and passes it to
+the workflow engine beside the matching work ID. Before importing the script or
+spawning an agent, the engine validates and clones the value, writes it as
+`work_context` in the run manifest, and exposes a deeply frozen copy as optional
+`ctx.work`.
+
+The property is optional because standalone workflows have no durable work
+item. A reusable template that requires an assignment checks `ctx.work` and
+fails explicitly when it is absent.
+
+Success and failure proof packets copy the same normalized context. Durable-work
+reconciliation checks that context-bearing manifest and proof records agree
+with the immutable work intent. A parked run resumes from the manifest copy and
+rejects replacement context. Existing manifests without `work_context` remain
+readable and resume without a synthetic assignment.
+
+Work context is data, not standing instructions. Harnery does not automatically
+place it in child prompts, environment variables, dashboard lists, or remote
+presence. The host-owned workflow script decides which fields a specialist
+needs and how externally authored text should be framed.
+
+## Alternatives considered
+
+- **Have workflow scripts read the work ledger.** Rejected because storage
+  access would become ambient execution authority and parked runs could observe
+  a different value from the one that began the attempt.
+- **Prepend the objective to every `agent()` prompt.** Rejected because it would
+  silently change cache identity and prompt structure, duplicate context in
+  workflows that already render it, and prevent scripts from using assignment
+  data for deterministic routing.
+- **Accept an arbitrary host context object.** Rejected because it would become
+  an unbounded secret and transcript transport. The durable-work fields are
+  sufficient for reusable planned work.
+- **Render a general prompt-template language.** Rejected because workflow
+  scripts already provide typed deterministic composition without another DSL
+  or dependency.
+- **Reread the latest work record on resume.** Rejected even though work intent
+  is immutable today. The run manifest is the execution receipt and must remain
+  sufficient if the work model evolves later.
+
+## Result and gotchas
+
+- One workflow template can execute distinct human-created or
+  supervisor-created objectives without becoming planner-authored code.
+- `ctx.work` is deeply frozen at runtime, but its fields may still contain
+  externally authored text. A script that includes them in a model prompt must
+  preserve the host's policy and instruction hierarchy.
+- Old parked workflows remain honest: absence stays absence. Harnery does not
+  rewrite historical run manifests to claim they received context.
+- Work context does not replace workflow `meta.acceptance`. The former tells the
+  script what the durable work requires; the latter defines proof criteria that
+  workflow evidence can satisfy.
