@@ -111,7 +111,16 @@ export function validateAgainstSchema(value: unknown, schema: StageSchema, path 
   }
 }
 
-/** Strip accidental markdown code fences, then strict-parse JSON. */
+/**
+ * Parse one schema-gated JSON value.
+ *
+ * Exact JSON and a whole fenced value remain the normal paths. Some harnesses
+ * prepend a short narration despite an explicit JSON-only contract. Accept
+ * that drift only when the reply contains exactly one unambiguous top-level
+ * object or array, the value reaches the end of the reply, and JSON.parse
+ * accepts it. Trailing prose, multiple values, and malformed candidates remain
+ * failures.
+ */
 export function parseStageOutput(text: string): { value?: unknown; error?: string } {
   const stripped = text
     .trim()
@@ -120,8 +129,73 @@ export function parseStageOutput(text: string): { value?: unknown; error?: strin
   try {
     return { value: JSON.parse(stripped) };
   } catch (err) {
+    const embedded = singleTrailingJsonContainer(stripped);
+    if (embedded !== undefined) return { value: embedded };
     return { error: `not valid JSON: ${(err as Error).message}` };
   }
+}
+
+function singleTrailingJsonContainer(text: string): unknown | undefined {
+  const candidates: Array<{ end: number; value: unknown }> = [];
+  let start = -1;
+  let stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (start === -1) {
+      if (char === "{" || char === "[") {
+        start = index;
+        stack = [char];
+        inString = false;
+        escaped = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push(char);
+      continue;
+    }
+    if (char !== "}" && char !== "]") continue;
+
+    const expectedOpen = char === "}" ? "{" : "[";
+    if (stack.at(-1) !== expectedOpen) {
+      start = -1;
+      stack = [];
+      continue;
+    }
+    stack.pop();
+    if (stack.length > 0) continue;
+
+    const end = index + 1;
+    try {
+      candidates.push({ end, value: JSON.parse(text.slice(start, end)) });
+    } catch {
+      // A balanced brace pair in narration is not a JSON candidate.
+    }
+    start = -1;
+  }
+
+  if (candidates.length !== 1 || text.slice(candidates[0]!.end).trim() !== "") {
+    return undefined;
+  }
+  return candidates[0]!.value;
 }
 
 function short(value: unknown): string {
