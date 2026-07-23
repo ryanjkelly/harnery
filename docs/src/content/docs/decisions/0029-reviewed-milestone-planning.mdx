@@ -1,0 +1,123 @@
+---
+title: "0029: Milestone proposals receive independent bounded review"
+description: "ADR: review one planner candidate through frozen specialists, revise it under hard bounds, and preserve ordinary plan authority."
+---
+
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/supervisor`, supervisor CLI, dashboard)
+
+## Context
+
+ADR 0028 lets Harnery plan one immutable milestone at a time and reassess a
+long-running mission after each accepted boundary. The planner's output is
+structurally validated and restricted to frozen workflow templates, but one
+planner still makes every judgment about completeness, dependency order, risk,
+scope, and proof. Structural validity does not establish that a milestone is a
+good next move.
+
+An operator can reject a proposal and supply guidance, but that occurs after
+the planner workflow and depends on a human noticing every defect. Letting the
+planner certify its own work would add ceremony without independence. Allowing
+an unbounded debate would weaken the supervisor's budget and quiescence
+guarantees. Letting reviewer approval directly execute work would collapse the
+existing distinction between evidence and authority.
+
+The workflow engine also has a related contract gap. A stage may declare a
+schema that Harnery validates, but the child harness is not shown that schema.
+Simple stages often infer the expected shape from prose; larger planner
+responses can repeatedly omit required fields without ever seeing the complete
+output contract.
+
+## Decision
+
+Add an optional immutable review policy to supervisor replanning. It freezes a
+small ordered set of distinct review specialists and a maximum number of
+revision rounds. Every specialist must exist in the frozen team, no reviewer may
+also be the planner, and supervisor creation rejects a worst-case review loop
+that exceeds the existing per-work agent ceiling.
+
+The planner first returns one schema-gated candidate exactly as it does today.
+Each reviewer receives that same candidate and bounded mission/graph context in
+an independent call. Reviewer output is schema-gated data containing:
+
+- a verdict: `approve`, `revise`, or `attention`;
+- one bounded rationale;
+- bounded findings with a stable code, `blocking` or `advisory` severity,
+  summary, and recommendation.
+
+Harnery aggregates those results in deterministic code. It does not ask another
+model to decide which reviewer to believe. A pass succeeds only when every
+reviewer returns a valid result, no reviewer requests attention or revision,
+and no blocking finding exists. Advisory findings remain evidence but do not
+block the candidate.
+
+When a pass has actionable blocking findings and revision budget remains, the
+frozen planner receives the complete candidate and all bounded findings and
+must return a complete replacement. Harnery never merges a model-authored patch.
+The replacement must differ from the rejected candidate and receives a new full
+review. Reviewer failure, explicit attention, no-progress revision, or exhausted
+revision rounds moves the plan to human attention.
+
+Review produces an immutable private receipt beside the plan request and
+proposal. It records candidate digests, review rounds, specialist verdicts,
+bounded findings, outcome, and the final candidate needed for recovery and
+inspection. Raw transcripts do not enter supervisor projection. Plan events add
+a reviewed boundary, while CLI, package APIs, and the dashboard expose bounded
+review status and counts.
+
+Passing review does not apply a plan. It only permits the ordinary
+`plan.proposed` state. Existing explicit operator approval remains the default,
+and the pre-existing frozen `auto_apply` option remains the only automatic plan
+authority. Review cannot enable or broaden it.
+
+Schema-gated workflow calls now receive their full output contract on the first
+dispatch. If validation fails, the bounded retry prompt includes the rejected
+reply, exact validation problems, and the same schema, and requires a complete
+replacement JSON value. Retry ceilings, dispatch policy, billing safeguards,
+journal evidence, and resume identity remain unchanged.
+
+The crash contract follows existing durable boundaries. A completed workflow
+proof can reconstruct a receipt that was not yet written. An existing exact
+receipt is reused. Partial records fail closed. A process death during an
+unfinished read-only planner or reviewer call may consume a new bounded plan
+attempt; it cannot invent approval or duplicate executable work.
+
+## Alternatives considered
+
+- **Keep review entirely manual.** Rejected because the operator remains the
+  only independent quality check and repetitive planning defects cannot be
+  caught before the proposal reaches them.
+- **Ask the planner to critique itself.** Rejected because it does not provide
+  an independent perspective or a distinct durable receipt.
+- **Use majority or quorum voting.** Rejected because one concrete blocking
+  dependency or safety defect should not disappear behind several broad
+  approvals.
+- **Add a model-based synthesis judge.** Rejected because it adds cost and
+  order-dependent authority where deterministic aggregation is sufficient.
+- **Let reviewers edit the proposal.** Rejected because no single immutable
+  candidate would explain the later work graph. Only the planner may create a
+  full replacement.
+- **Continue revisions until reviewers agree.** Rejected because disagreement
+  must become a quiescent human-attention state under a hard bound.
+- **Treat review approval as execution approval.** Rejected because evidence
+  from agents must not silently become host authority.
+- **Rely on prompt authors to repeat stage schemas manually.** Rejected because
+  the declared schema is already the canonical contract and duplication drifts.
+
+## Result and gotchas
+
+- Independent review is opt-in. Existing replanning policies retain their exact
+  single-planner behavior and persisted shape.
+- The review panel is deliberately small and frozen. Changing specialists or
+  revision bounds requires a new supervisor, not mutation of durable intent.
+- Every configured reviewer is required. A missing or malformed verdict fails
+  closed rather than shrinking the panel at runtime.
+- Reviewer approval establishes contract-compliant evidence, not strategic
+  correctness. Quality still depends on specialist instructions and harness
+  behavior.
+- Agent counts are hard-bounded and reported costs remain truthful where a
+  harness supplies them. Harnery does not claim a universal token budget for
+  subscription harnesses that do not expose one.
+- Completed durable boundaries are recoverable, but Harnery cannot make an
+  arbitrary in-flight provider request exactly-once after process death.
+- Review receipts contain bounded structured findings, not hidden project
+  memory or full conversation history.

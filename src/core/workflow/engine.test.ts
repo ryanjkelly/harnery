@@ -105,9 +105,39 @@ describe("runWorkflow", () => {
     });
     expect(report.result).toEqual({ route: "close", reason: "stale" });
     expect(prompts.length).toBe(2);
-    // Retry prompt carries the validation problems verbatim.
+    // The first attempt sees the canonical contract. The retry also carries
+    // the rejected value and validation problems so it can repair the whole
+    // object instead of guessing at an unseen shape.
+    expect(prompts[0]).toContain("Output contract:");
+    expect(prompts[0]).toContain('"required":["route","reason"]');
     expect(prompts[1]).toContain("failed validation");
+    expect(prompts[1]).toContain("Previous reply (JSON string):");
+    expect(prompts[1]).toContain('\\"route\\": \\"maybe\\"');
     expect(prompts[1]).toContain("required property missing");
+    expect(prompts[1]).toContain("Return a complete replacement value, not a patch");
+  });
+
+  test("schema retry bounds the echoed invalid reply", async () => {
+    const prompts: string[] = [];
+    const spawner: Spawner = async (req: SpawnRequest) => {
+      prompts.push(req.prompt);
+      return prompts.length === 1
+        ? okSpawn(`not-json-${"x".repeat(20_000)}`)
+        : okSpawn('{"x":"fixed"}');
+    };
+    const script = writeScript(`
+      export default async ({ agent }) => agent("classify", {
+        schema: { type: "object", required: ["x"], properties: { x: { type: "string" } } },
+      });
+    `);
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
+    expect(report.result).toEqual({ x: "fixed" });
+    expect(prompts[1]).toContain("[truncated by Harnery]");
+    expect(prompts[1]!.length).toBeLessThan(18_000);
   });
 
   test("retry exhaustion throws and journals agent.failed + run.end ok:false", async () => {

@@ -58,6 +58,7 @@ import type {
   HarnessName,
   RunReport,
   SpawnResult,
+  StageSchema,
   WorkflowAgentProof,
   WorkflowContext,
   WorkflowEvidenceRecord,
@@ -423,6 +424,9 @@ async function executeWorkflow(
     const assignment = resolveSpecialistAssignment(specialists, prompt, requestedOpts);
     const agentOpts = assignment.opts;
     const assignmentPrompt = assignment.prompt;
+    const dispatchPrompt = agentOpts.schema
+      ? withSchemaContract(assignmentPrompt, agentOpts.schema)
+      : assignmentPrompt;
     let reservedForDispatch = 0;
     let spawnCountClaimed = false;
     const harness = agentOpts.harness ?? defaultHarness;
@@ -487,7 +491,7 @@ async function executeWorkflow(
         max_attempts: maxAttempts,
         max_turns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
         timeout_ms: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        prompt_bytes: Buffer.byteLength(assignmentPrompt),
+        prompt_bytes: Buffer.byteLength(dispatchPrompt),
         isolation,
         network_access: networkAccess,
         current_cost_usd: round4(costUsd + reservedCostUsd),
@@ -609,7 +613,7 @@ async function executeWorkflow(
       });
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${harness}] ${label}`);
 
-      let attemptPrompt = assignmentPrompt;
+      let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
       let agentCostUsd = 0;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -678,12 +682,16 @@ async function executeWorkflow(
         }
 
         journal("agent.schema_retry", { id, attempt, problems });
-        // Feed the validation failure back verbatim — the retry prompt carries
-        // exactly what was wrong, which is what makes bounded retry converge.
+        // Keep the original cache identity while making the actual output
+        // contract explicit. A full bounded copy of the rejected value lets the
+        // child repair omissions instead of reconstructing an unseen object.
         attemptPrompt =
-          `${assignmentPrompt}\n\nYour previous reply failed validation:\n` +
+          `${dispatchPrompt}\n\nYour previous reply failed validation. ` +
+          `Return a complete replacement value, not a patch.\n\n` +
+          `Previous reply (JSON string): ${JSON.stringify(boundedSchemaReply(last.text))}\n\n` +
+          `Validation problems:\n` +
           `${problems.map((p) => `  - ${p}`).join("\n")}\n` +
-          `Reply with ONLY the corrected JSON object. No prose, no code fences.`;
+          `Reply with ONLY the corrected JSON value. No prose, no code fences.`;
       }
 
       const reason = last?.ok
@@ -890,6 +898,21 @@ async function executeWorkflow(
     }
     throw new WorkflowRunError((err as Error).message, runId, proofPath, err);
   }
+}
+
+const MAX_SCHEMA_RETRY_REPLY = 16_000;
+
+function withSchemaContract(prompt: string, schema: StageSchema): string {
+  return (
+    `${prompt}\n\nOutput contract:\n` +
+    `Return ONLY one JSON value matching this schema. Do not use prose or code fences.\n` +
+    `${JSON.stringify(schema)}`
+  );
+}
+
+function boundedSchemaReply(value: string): string {
+  if (value.length <= MAX_SCHEMA_RETRY_REPLY) return value;
+  return `${value.slice(0, MAX_SCHEMA_RETRY_REPLY)}\n[truncated by Harnery]`;
 }
 
 /** Stable identity for one agent() call, for the resume cache. The ORIGINAL
