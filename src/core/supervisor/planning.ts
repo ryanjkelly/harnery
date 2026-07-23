@@ -629,6 +629,7 @@ function plannerScript(
     "Never claim mission completion unless the frozen mission acceptance is met. Never request a workflow outside the frozen template catalog.",
     "Dependencies may name an active work ID or an earlier key in your proposed work array.",
     "Every proposed item must be reachable from root. The root must be a proposed key using a root-capable template.",
+    "Work keys are lowercase identifiers no longer than 32 characters. Keep titles within 200 characters, objectives within 4000 characters, and each acceptance criterion within 500 characters.",
     `Plan id: ${planId}`,
     `Planning trigger: ${trigger}`,
     `Goal: ${record.intent.title}`,
@@ -676,43 +677,7 @@ function plannerScript(
       })),
     )}`,
   ].join("\n\n");
-  const schema = {
-    type: "object",
-    properties: {
-      decision: {
-        type: "string",
-        enum: record.intent.mission ? ["apply", "complete", "attention"] : ["apply", "attention"],
-      },
-      rationale: { type: "string" },
-      root: { type: "string" },
-      work: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            key: { type: "string" },
-            title: { type: "string" },
-            objective: { type: "string" },
-            acceptance: { type: "array", items: { type: "string" } },
-            dependencies: { type: "array", items: { type: "string" } },
-            template: { type: "string" },
-          },
-          required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
-        },
-      },
-      milestone: {
-        type: "object",
-        properties: {
-          sequence: { type: "number" },
-          title: { type: "string" },
-          objective: { type: "string" },
-          acceptance: { type: "array", items: { type: "string" } },
-        },
-        required: ["sequence", "title", "objective", "acceptance"],
-      },
-    },
-    required: ["decision", "rationale", "root", "work"],
-  };
+  const schema = planProposalSchema(record);
   return [
     `export const meta = ${JSON.stringify({ name: `replan-${planId}` })};`,
     "export default async ({ agent, stage }) => {",
@@ -1199,6 +1164,8 @@ function hasReviewRecoveryEvidence(coordRoot: string, goalId: string, planId: st
 }
 
 function planProposalSchema(record: SupervisorRecord): Record<string, unknown> {
+  const policy = record.intent.replanning;
+  if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
   return {
     type: "object",
     properties: {
@@ -1206,19 +1173,28 @@ function planProposalSchema(record: SupervisorRecord): Record<string, unknown> {
         type: "string",
         enum: record.intent.mission ? ["apply", "complete", "attention"] : ["apply", "attention"],
       },
-      rationale: { type: "string" },
-      root: { type: "string" },
+      rationale: { type: "string", minLength: 1, maxLength: MAX_REASON },
+      root: { type: "string", maxLength: 32 },
       work: {
         type: "array",
+        maxItems: policy.max_work_items_per_plan,
         items: {
           type: "object",
           properties: {
-            key: { type: "string" },
-            title: { type: "string" },
-            objective: { type: "string" },
-            acceptance: { type: "array", items: { type: "string" } },
-            dependencies: { type: "array", items: { type: "string" } },
-            template: { type: "string" },
+            key: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$", maxLength: 32 },
+            title: { type: "string", minLength: 1, maxLength: 200 },
+            objective: { type: "string", minLength: 1, maxLength: 4_000 },
+            acceptance: {
+              type: "array",
+              maxItems: 50,
+              items: { type: "string", minLength: 1, maxLength: 500 },
+            },
+            dependencies: {
+              type: "array",
+              maxItems: 50,
+              items: { type: "string", minLength: 1, maxLength: 100 },
+            },
+            template: { type: "string", enum: Object.keys(policy.templates), maxLength: 64 },
           },
           required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
         },
@@ -1227,9 +1203,14 @@ function planProposalSchema(record: SupervisorRecord): Record<string, unknown> {
         type: "object",
         properties: {
           sequence: { type: "number" },
-          title: { type: "string" },
-          objective: { type: "string" },
-          acceptance: { type: "array", items: { type: "string" } },
+          title: { type: "string", minLength: 1, maxLength: 200 },
+          objective: { type: "string", minLength: 1, maxLength: 4_000 },
+          acceptance: {
+            type: "array",
+            minItems: 1,
+            maxItems: 50,
+            items: { type: "string", minLength: 1, maxLength: 500 },
+          },
         },
         required: ["sequence", "title", "objective", "acceptance"],
       },

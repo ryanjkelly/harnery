@@ -2,8 +2,9 @@
  * Minimal validator for the StageSchema JSON-schema subset. Deliberately tiny:
  * a full JSON Schema implementation would pull a dependency (ajv) for
  * validation depth workflow gates don't need. Supported: type, properties,
- * required, items, enum. Returns a list of human-readable problems (empty =
- * valid) so the engine can feed failures back into the retry prompt verbatim.
+ * required, items, minItems/maxItems, minLength/maxLength, pattern, and enum.
+ * Returns a list of human-readable problems (empty = valid) so the engine can
+ * feed failures back into the retry prompt verbatim.
  */
 
 import type { StageSchema } from "./types.ts";
@@ -34,6 +35,12 @@ export function validateAgainstSchema(value: unknown, schema: StageSchema, path 
     }
     case "array": {
       if (!Array.isArray(value)) return [`${path}: expected array, got ${short(value)}`];
+      if (schema.minItems !== undefined && value.length < schema.minItems) {
+        problems.push(`${path}: expected at least ${schema.minItems} item(s), got ${value.length}`);
+      }
+      if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+        problems.push(`${path}: expected at most ${schema.maxItems} item(s), got ${value.length}`);
+      }
       if (schema.items) {
         for (const [i, item] of value.entries()) {
           problems.push(
@@ -43,7 +50,31 @@ export function validateAgainstSchema(value: unknown, schema: StageSchema, path 
       }
       return problems;
     }
-    case "string":
+    case "string": {
+      if (typeof value !== "string") {
+        return [`${path}: expected string, got ${short(value)}`];
+      }
+      if (schema.minLength !== undefined && value.length < schema.minLength) {
+        problems.push(
+          `${path}: expected at least ${schema.minLength} character(s), got ${value.length}`,
+        );
+      }
+      if (schema.maxLength !== undefined && value.length > schema.maxLength) {
+        problems.push(
+          `${path}: expected at most ${schema.maxLength} character(s), got ${value.length}`,
+        );
+      }
+      if (schema.pattern !== undefined) {
+        try {
+          if (!new RegExp(schema.pattern).test(value)) {
+            problems.push(`${path}: expected string matching ${JSON.stringify(schema.pattern)}`);
+          }
+        } catch {
+          problems.push(`${path}: schema pattern is invalid`);
+        }
+      }
+      return problems;
+    }
     case "number":
     case "boolean": {
       if (typeof value !== schema.type) {

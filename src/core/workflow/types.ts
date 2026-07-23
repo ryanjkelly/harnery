@@ -206,6 +206,12 @@ export interface StageSchema {
   required?: string[];
   /** type=array */
   items?: StageSchema;
+  minItems?: number;
+  maxItems?: number;
+  /** type=string */
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
   /** any type: closed value set (compared with ===) */
   enum?: Array<string | number | boolean>;
 }

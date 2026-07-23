@@ -544,15 +544,21 @@ describe("durable goal supervisor", () => {
         templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
       },
     });
-    const spawner: Spawner = async (request) => ({
-      ok: true,
-      text: request.prompt.includes("Review this bounded")
-        ? reviewVerdict("approve")
-        : request.prompt.includes("bounded replacement plan")
-          ? replacementProposal()
-          : "implemented",
-      durationMs: 1,
-    });
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        expect(request.prompt).toContain("Work keys are lowercase identifiers no longer than 32");
+        expect(request.prompt).toContain('"maxLength":32');
+      }
+      return {
+        ok: true,
+        text: request.prompt.includes("Review this bounded")
+          ? reviewVerdict("approve")
+          : request.prompt.includes("bounded replacement plan")
+            ? replacementProposal()
+            : "implemented",
+        durationMs: 1,
+      };
+    };
     const report = await runSupervisor({
       coordRoot: root,
       goalId: "goal-reviewed-pass",
@@ -1491,6 +1497,65 @@ describe("durable goal supervisor", () => {
         },
       }),
     ).toThrow(/cannot exceed 5 reviewer specialists/);
+  });
+
+  test("retries an overlong planner key at the schema gate before plan normalization", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "bounded-plan-root",
+      title: "Bounded plan root",
+      objective: "Keep planner identifiers inside the durable contract",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-bounded-plan",
+      rootWorkId: "bounded-plan-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const prompts: string[] = [];
+    const spawner: Spawner = async (request) => {
+      prompts.push(request.prompt);
+      if (prompts.length === 1) {
+        const key = `repair-${"x".repeat(32)}`;
+        return {
+          ok: true,
+          text: JSON.stringify({
+            decision: "apply",
+            rationale: "Return an identifier that exceeds the frozen bound",
+            root: key,
+            work: [
+              {
+                key,
+                title: "Repair",
+                objective: "Repair through the frozen workflow",
+                acceptance: ["The repair passes"],
+                dependencies: [],
+                template: "repair",
+              },
+            ],
+          }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: replacementProposal(), durationMs: 1 };
+    };
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-bounded-plan",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("$.work[0].key: expected at most 32 character(s)");
+    expect(report.projection.next_action).toBe("review_plan");
+    expect(readSupervisor(root, "goal-bounded-plan").plans[0]?.status).toBe("proposed");
   });
 
   test("rejects a proposal that escapes the active graph or frozen template catalog", async () => {

@@ -631,6 +631,27 @@ describe("validate", () => {
     ]);
   });
 
+  test("bounded string and array constraints carry paths", () => {
+    const schema = {
+      type: "object" as const,
+      required: ["key", "items"],
+      properties: {
+        key: {
+          type: "string" as const,
+          minLength: 2,
+          maxLength: 4,
+          pattern: "^[a-z]+$",
+        },
+        items: { type: "array" as const, minItems: 1, maxItems: 2 },
+      },
+    };
+    expect(validateAgainstSchema({ key: "TOO-LONG", items: [] }, schema)).toEqual([
+      "$.key: expected at most 4 character(s), got 8",
+      '$.key: expected string matching "^[a-z]+$"',
+      "$.items: expected at least 1 item(s), got 0",
+    ]);
+  });
+
   test("parseStageOutput strips code fences", () => {
     expect(parseStageOutput('```json\n{"ok": true}\n```').value).toEqual({ ok: true });
     expect(parseStageOutput("nope").error).toContain("not valid JSON");
