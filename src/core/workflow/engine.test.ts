@@ -869,6 +869,27 @@ describe("validate", () => {
     expect(parseStageOutput('```json\n{"ok": true}\n```').value).toEqual({ ok: true });
     expect(parseStageOutput("nope").error).toContain("not valid JSON");
   });
+
+  test("parseStageOutput accepts one leading harness preamble before a JSON container", () => {
+    expect(
+      parseStageOutput('I will inspect the files first.{"status":"complete","findings":[]}').value,
+    ).toEqual({ status: "complete", findings: [] });
+    expect(parseStageOutput('Analysis complete.\n["one",{"two":2}]').value).toEqual([
+      "one",
+      { two: 2 },
+    ]);
+  });
+
+  test("parseStageOutput rejects ambiguous or trailing schema replies", () => {
+    expect(parseStageOutput('{"first":true}{"second":true}').error).toContain("not valid JSON");
+    expect(parseStageOutput('Preamble {"ok":true} trailing prose').error).toContain(
+      "not valid JSON",
+    );
+    expect(parseStageOutput('Example {} then the answer {"ok":true}').error).toContain(
+      "not valid JSON",
+    );
+    expect(parseStageOutput('Preamble {"ok":true').error).toContain("not valid JSON");
+  });
 });
 
 describe("stop-hook workflow-child exemption", () => {

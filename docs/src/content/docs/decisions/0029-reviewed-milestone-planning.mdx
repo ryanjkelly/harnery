@@ -142,3 +142,8 @@ attempt; it cannot invent approval or duplicate executable work.
   arbitrary in-flight provider request exactly-once after process death.
 - Review receipts contain bounded structured findings, not hidden project
   memory or full conversation history.
+- A harness may add a short leading sentence even after receiving the explicit
+  JSON-only contract. Harnery accepts that drift only when the reply contains
+  exactly one unambiguous top-level object or array and the value reaches the
+  end of the reply. Trailing prose, multiple candidates, malformed values, and
+  schema mismatches continue to fail closed.
