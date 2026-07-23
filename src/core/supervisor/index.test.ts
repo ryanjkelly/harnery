@@ -737,7 +737,7 @@ describe("durable goal supervisor", () => {
     expect(revisionCalls).toBe(1);
   });
 
-  test("exhausted review revisions park the plan for attention without a proposal", async () => {
+  test("a zero-revision review parks its first blocker for attention", async () => {
     const { root, passing, failing } = fixture();
     createWorkItem({
       coordRoot: root,
@@ -757,7 +757,7 @@ describe("durable goal supervisor", () => {
       },
       replanning: {
         plannerSpecialist: "planner",
-        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 1 },
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 0 },
         templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
       },
     });
@@ -797,7 +797,7 @@ describe("durable goal supervisor", () => {
     const plan = readSupervisorPlan(root, "goal-reviewed-exhausted", planId);
     expect(report.stop_reason).toBe("awaiting_attention");
     expect(plan.status).toBe("attention");
-    expect(plan.review).toMatchObject({ status: "revision_exhausted", rounds: 2 });
+    expect(plan.review).toMatchObject({ status: "revision_exhausted", rounds: 1 });
     expect(
       existsSync(
         join(
@@ -811,7 +811,7 @@ describe("durable goal supervisor", () => {
         ),
       ),
     ).toBe(false);
-    expect(revisionCalls).toBe(1);
+    expect(revisionCalls).toBe(0);
   });
 
   test("partial review receipt fails closed", async () => {
@@ -1466,7 +1466,7 @@ describe("durable goal supervisor", () => {
 
   test("rejects review panels larger than the durable receipt contract", () => {
     const { root, passing } = fixture();
-    const reviewerSpecialists = Array.from({ length: 26 }, (_, index) => `reviewer-${index + 1}`);
+    const reviewerSpecialists = Array.from({ length: 6 }, (_, index) => `reviewer-${index + 1}`);
     const specialists = Object.fromEntries([
       ["planner", { instructions: "Plan", harness: "codex" }],
       ...reviewerSpecialists.map(
@@ -1490,7 +1490,7 @@ describe("durable goal supervisor", () => {
           templates: { repair: { workflowPath: passing, root: true } },
         },
       }),
-    ).toThrow(/cannot exceed 25 reviewer specialists/);
+    ).toThrow(/cannot exceed 5 reviewer specialists/);
   });
 
   test("rejects a proposal that escapes the active graph or frozen template catalog", async () => {

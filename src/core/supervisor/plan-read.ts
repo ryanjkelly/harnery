@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { readWorkItem } from "../work/read.ts";
 import {
   MAX_SUPERVISOR_PLAN_REVIEWERS,
+  MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
   SUPERVISOR_PLAN_SCHEMA_VERSION,
   type SupervisorPlanEvent,
   type SupervisorPlanEventType,
@@ -332,7 +333,7 @@ function validateReviewReceipt(receipt: SupervisorPlanReviewReceipt, planId: str
     !/^[a-f0-9]{64}$/.test(receipt.candidate_sha256) ||
     !Array.isArray(receipt.rounds) ||
     receipt.rounds.length < 1 ||
-    receipt.rounds.length > 11
+    receipt.rounds.length > MAX_SUPERVISOR_PLAN_REVISION_ROUNDS + 1
   ) {
     throw new Error(`supervisor plan review ${planId} has an unsupported schema`);
   }

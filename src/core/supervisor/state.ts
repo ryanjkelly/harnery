@@ -21,6 +21,7 @@ import { readSupervisorPlans } from "./plan-read.ts";
 import {
   type CreateSupervisorReplanningInput,
   MAX_SUPERVISOR_PLAN_REVIEWERS,
+  MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
   type SupervisorPlanHistory,
   type SupervisorPlanRecord,
   type SupervisorReplanningPolicy,
@@ -814,10 +815,10 @@ function normalizeReviewPolicy(
       throw new Error("reviewer specialist cannot be the planner specialist");
     }
   }
-  const maxRevisionRounds = positive(
+  const maxRevisionRounds = nonNegative(
     input.maxRevisionRounds,
     "replanning review max_revision_rounds",
-    10,
+    MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
   );
   const worstCaseAgents =
     1 + reviewerSpecialists.length * (maxRevisionRounds + 1) + maxRevisionRounds;
@@ -875,8 +876,8 @@ function validateReplanning(
       review.reviewer_specialists.length < 1 ||
       review.reviewer_specialists.length > MAX_SUPERVISOR_PLAN_REVIEWERS ||
       !Number.isSafeInteger(review.max_revision_rounds) ||
-      review.max_revision_rounds < 1 ||
-      review.max_revision_rounds > 10
+      review.max_revision_rounds < 0 ||
+      review.max_revision_rounds > MAX_SUPERVISOR_PLAN_REVISION_ROUNDS
     ) {
       throw new Error(`supervisor ${goalId} replanning review policy is invalid`);
     }
@@ -996,6 +997,13 @@ function bounded(value: unknown, field: string, max: number): string {
 function positive(value: unknown, field: string, max: number): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) {
     throw new Error(`${field} must be an integer from 1 to ${max}`);
+  }
+  return value as number;
+}
+
+function nonNegative(value: unknown, field: string, max: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > max) {
+    throw new Error(`${field} must be an integer between 0 and ${max}`);
   }
   return value as number;
 }

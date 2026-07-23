@@ -1,5 +1,6 @@
 export const SUPERVISOR_PLAN_SCHEMA_VERSION = 1 as const;
-export const MAX_SUPERVISOR_PLAN_REVIEWERS = 25 as const;
+export const MAX_SUPERVISOR_PLAN_REVIEWERS = 5 as const;
+export const MAX_SUPERVISOR_PLAN_REVISION_ROUNDS = 3 as const;
 
 export interface SupervisorPlanTemplate {
   workflow: { path: string; sha256: string };
