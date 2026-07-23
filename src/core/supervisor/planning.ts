@@ -18,6 +18,7 @@ import {
   type ResultDigest,
   readWorkflowProof,
   runWorkflow,
+  type StageSchema,
   WorkflowParkedError,
   type WorkflowProof,
   workflowScriptDigest,
@@ -1163,59 +1164,90 @@ function hasReviewRecoveryEvidence(coordRoot: string, goalId: string, planId: st
   );
 }
 
-function planProposalSchema(record: SupervisorRecord): Record<string, unknown> {
+function planProposalSchema(record: SupervisorRecord): StageSchema {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
-  return {
+  const rationale: StageSchema = { type: "string", minLength: 1, maxLength: MAX_REASON };
+  const workItem: StageSchema = {
     type: "object",
     properties: {
-      decision: {
-        type: "string",
-        enum: record.intent.mission ? ["apply", "complete", "attention"] : ["apply", "attention"],
-      },
-      rationale: { type: "string", minLength: 1, maxLength: MAX_REASON },
-      root: { type: "string", maxLength: 32 },
-      work: {
+      key: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$", maxLength: 32 },
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      objective: { type: "string", minLength: 1, maxLength: 4_000 },
+      acceptance: {
         type: "array",
-        maxItems: policy.max_work_items_per_plan,
-        items: {
-          type: "object",
-          properties: {
-            key: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$", maxLength: 32 },
-            title: { type: "string", minLength: 1, maxLength: 200 },
-            objective: { type: "string", minLength: 1, maxLength: 4_000 },
-            acceptance: {
-              type: "array",
-              maxItems: 50,
-              items: { type: "string", minLength: 1, maxLength: 500 },
-            },
-            dependencies: {
-              type: "array",
-              maxItems: 50,
-              items: { type: "string", minLength: 1, maxLength: 100 },
-            },
-            template: { type: "string", enum: Object.keys(policy.templates), maxLength: 64 },
-          },
-          required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
-        },
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 500 },
       },
-      milestone: {
-        type: "object",
-        properties: {
-          sequence: { type: "number" },
-          title: { type: "string", minLength: 1, maxLength: 200 },
-          objective: { type: "string", minLength: 1, maxLength: 4_000 },
-          acceptance: {
-            type: "array",
-            minItems: 1,
-            maxItems: 50,
-            items: { type: "string", minLength: 1, maxLength: 500 },
-          },
-        },
-        required: ["sequence", "title", "objective", "acceptance"],
+      dependencies: {
+        type: "array",
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 100 },
+      },
+      template: { type: "string", enum: Object.keys(policy.templates), maxLength: 64 },
+    },
+    required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
+    additionalProperties: false,
+  };
+  const milestone: StageSchema = {
+    type: "object",
+    properties: {
+      sequence: { type: "number" },
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      objective: { type: "string", minLength: 1, maxLength: 4_000 },
+      acceptance: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 500 },
       },
     },
+    required: ["sequence", "title", "objective", "acceptance"],
+    additionalProperties: false,
+  };
+  const applyProperties: Record<string, StageSchema> = {
+    decision: { type: "string", enum: ["apply"] },
+    rationale,
+    root: {
+      type: "string",
+      minLength: 1,
+      maxLength: 32,
+      pattern: "^[a-z][a-z0-9-]{0,31}$",
+    },
+    work: {
+      type: "array",
+      minItems: 1,
+      maxItems: policy.max_work_items_per_plan,
+      items: workItem,
+    },
+  };
+  const applyRequired = ["decision", "rationale", "root", "work"];
+  if (record.intent.mission) {
+    applyProperties.milestone = milestone;
+    applyRequired.push("milestone");
+  }
+  const apply: StageSchema = {
+    type: "object",
+    properties: applyProperties,
+    required: applyRequired,
+    additionalProperties: false,
+  };
+  const terminal = (decision: "complete" | "attention"): StageSchema => ({
+    type: "object",
+    properties: {
+      decision: { type: "string", enum: [decision] },
+      rationale,
+      root: { type: "string", enum: [""] },
+      work: { type: "array", maxItems: 0 },
+    },
     required: ["decision", "rationale", "root", "work"],
+    additionalProperties: false,
+  });
+  return {
+    type: "object",
+    oneOf: record.intent.mission
+      ? [apply, terminal("complete"), terminal("attention")]
+      : [apply, terminal("attention")],
   };
 }
 

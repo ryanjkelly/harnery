@@ -150,7 +150,7 @@ export default async function run({ agent, parallel, stage, log, evidence }) {
 
 | Function | Contract |
 | --- | --- |
-| `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must strict-parse as JSON and validate against the schema subset (`type`, `properties`, `required`, `items`, `enum`); failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
+| `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must strict-parse as JSON and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`); failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
 | `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch — filter and route. |
 | `stage(title)` | Declare the current stage: journal marker + progress grouping. |
 | `log(message)` | Narrate progress (stderr + journal). |

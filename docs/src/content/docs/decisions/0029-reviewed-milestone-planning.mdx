@@ -36,6 +36,10 @@ also be the planner, and supervisor creation rejects a worst-case review loop
 that exceeds the existing per-work agent ceiling.
 
 The planner first returns one schema-gated candidate exactly as it does today.
+Decision-specific schema branches require executable `apply` plans to carry a
+non-empty graph and require `complete` or `attention` decisions to carry no work
+or milestone data. Shape mistakes therefore receive the same bounded correction
+attempt as other schema failures rather than consuming another plan request.
 Each reviewer receives that same candidate and bounded mission/graph context in
 an independent call. Reviewer output is schema-gated data containing:
 

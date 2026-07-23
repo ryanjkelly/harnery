@@ -1920,20 +1920,28 @@ describe("durable goal supervisor", () => {
       },
     });
     let plannerCalls = 0;
+    const plannerPrompts: string[] = [];
     const spawner: Spawner = async (request) => {
       if (request.prompt.includes("bounded replacement plan")) {
         plannerCalls++;
+        plannerPrompts.push(request.prompt);
         return {
           ok: true,
           text:
             plannerCalls === 1
               ? missionMilestoneProposal()
-              : JSON.stringify({
-                  decision: "complete",
-                  rationale: "The accepted milestone satisfies mission acceptance",
-                  root: "",
-                  work: [],
-                }),
+              : plannerCalls === 2
+                ? JSON.stringify({
+                    ...JSON.parse(missionMilestoneProposal()),
+                    decision: "complete",
+                    rationale: "The accepted milestone satisfies mission acceptance",
+                  })
+                : JSON.stringify({
+                    decision: "complete",
+                    rationale: "The accepted milestone satisfies mission acceptance",
+                    root: "",
+                    work: [],
+                  }),
           durationMs: 1,
         };
       }
@@ -1948,6 +1956,9 @@ describe("durable goal supervisor", () => {
     expect(report.dispatches).toBe(1);
     expect(report.acceptances).toBe(1);
     expect(report.replans).toBe(2);
+    expect(plannerCalls).toBe(3);
+    expect(plannerPrompts[2]).toContain("expected exactly one schema option to match");
+    expect(plannerPrompts[2]).toContain("$.milestone: unexpected property");
     expect(report.plan_outcomes.map((plan) => plan.status)).toEqual(["applied", "completed"]);
     expect(report.projection.milestones_completed).toBe(1);
     expect(report.projection.state).toBe("succeeded");

@@ -652,6 +652,42 @@ describe("validate", () => {
     ]);
   });
 
+  test("oneOf and closed object branches explain conditional shape failures", () => {
+    const schema = {
+      type: "object" as const,
+      oneOf: [
+        {
+          type: "object" as const,
+          properties: {
+            decision: { type: "string" as const, enum: ["apply"] },
+            work: { type: "array" as const, minItems: 1 },
+          },
+          required: ["decision", "work"],
+          additionalProperties: false,
+        },
+        {
+          type: "object" as const,
+          properties: {
+            decision: { type: "string" as const, enum: ["complete"] },
+            work: { type: "array" as const, maxItems: 0 },
+          },
+          required: ["decision", "work"],
+          additionalProperties: false,
+        },
+      ],
+    };
+    expect(
+      validateAgainstSchema(
+        { decision: "complete", work: [{ key: "stale" }], milestone: { sequence: 1 } },
+        schema,
+      ),
+    ).toEqual([
+      "$: expected exactly one schema option to match",
+      '$: option 1: $.decision: expected one of ["apply"], got "complete"; $.milestone: unexpected property',
+      "$: option 2: $.work: expected at most 0 item(s), got 1; $.milestone: unexpected property",
+    ]);
+  });
+
   test("parseStageOutput strips code fences", () => {
     expect(parseStageOutput('```json\n{"ok": true}\n```').value).toEqual({ ok: true });
     expect(parseStageOutput("nope").error).toContain("not valid JSON");

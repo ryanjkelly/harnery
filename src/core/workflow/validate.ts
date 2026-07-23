@@ -1,8 +1,9 @@
 /**
  * Minimal validator for the StageSchema JSON-schema subset. Deliberately tiny:
  * a full JSON Schema implementation would pull a dependency (ajv) for
- * validation depth workflow gates don't need. Supported: type, properties,
- * required, items, minItems/maxItems, minLength/maxLength, pattern, and enum.
+ * validation depth workflow gates don't need. Supported: type, oneOf,
+ * properties, required, additionalProperties, items, minItems/maxItems,
+ * minLength/maxLength, pattern, and enum.
  * Returns a list of human-readable problems (empty = valid) so the engine can
  * feed failures back into the retry prompt verbatim.
  */
@@ -11,6 +12,23 @@ import type { StageSchema } from "./types.ts";
 
 export function validateAgainstSchema(value: unknown, schema: StageSchema, path = "$"): string[] {
   const problems: string[] = [];
+
+  if (schema.oneOf) {
+    const branches = schema.oneOf.map((branch) => validateAgainstSchema(value, branch, path));
+    const matches = branches.filter((branch) => branch.length === 0).length;
+    if (matches !== 1) {
+      if (matches > 1) {
+        return [`${path}: expected exactly one schema option to match, got ${matches}`];
+      }
+      return [
+        `${path}: expected exactly one schema option to match`,
+        ...branches.map(
+          (branch, index) =>
+            `${path}: option ${index + 1}: ${branch.slice(0, 4).join("; ") || "did not match"}`,
+        ),
+      ];
+    }
+  }
 
   if (schema.enum) {
     if (!schema.enum.some((v) => v === value)) {
@@ -30,6 +48,12 @@ export function validateAgainstSchema(value: unknown, schema: StageSchema, path 
       }
       for (const [key, sub] of Object.entries(schema.properties ?? {})) {
         if (key in obj) problems.push(...validateAgainstSchema(obj[key], sub, `${path}.${key}`));
+      }
+      if (schema.additionalProperties === false) {
+        const allowed = new Set(Object.keys(schema.properties ?? {}));
+        for (const key of Object.keys(obj)) {
+          if (!allowed.has(key)) problems.push(`${path}.${key}: unexpected property`);
+        }
       }
       return problems;
     }
