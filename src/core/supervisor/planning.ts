@@ -18,6 +18,7 @@ import {
   type ResultDigest,
   readWorkflowProof,
   runWorkflow,
+  type StageSchema,
   WorkflowParkedError,
   type WorkflowProof,
   workflowScriptDigest,
@@ -49,6 +50,8 @@ const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_EVENTS_BYTES = 512 * 1024;
 const MAX_REASON = 2_000;
+const PROPOSAL_ROOT_RULE =
+  "proposal.root names one newly proposed work key using a root-capable template; it does not preserve or repeat active_root, which is context only";
 
 export interface RunSupervisorPlannerInput {
   coordRoot: string;
@@ -628,7 +631,7 @@ function plannerScript(
       : "Return decision=apply with a replacement immutable root graph, or decision=attention when human judgment is required.",
     "Never claim mission completion unless the frozen mission acceptance is met. Never request a workflow outside the frozen template catalog.",
     "Dependencies may name an active work ID or an earlier key in your proposed work array.",
-    "Every proposed item must be reachable from root. The root must be a proposed key using a root-capable template.",
+    `Every proposed item must be reachable from root. ${PROPOSAL_ROOT_RULE}.`,
     "Work keys are lowercase identifiers no longer than 32 characters. Keep titles within 200 characters, objectives within 4000 characters, and each acceptance criterion within 500 characters.",
     `Plan id: ${planId}`,
     `Planning trigger: ${trigger}`,
@@ -677,7 +680,7 @@ function plannerScript(
       })),
     )}`,
   ].join("\n\n");
-  const schema = planProposalSchema(record);
+  const schema = planProposalSchema(record, trigger);
   return [
     `export const meta = ${JSON.stringify({ name: `replan-${planId}` })};`,
     "export default async ({ agent, stage }) => {",
@@ -707,27 +710,35 @@ function plannerReviewScript(
   const policy = record.intent.replanning;
   const review = policy?.review;
   if (!policy || !review) throw new Error(`supervisor ${record.intent.id} does not review plans`);
-  const proposalSchema = planProposalSchema(record);
-  const reviewerSchema = {
+  const proposalSchema = planProposalSchema(record, trigger);
+  const reviewerSchema: StageSchema = {
     type: "object",
     properties: {
       verdict: { type: "string", enum: ["approve", "revise", "attention"] },
-      rationale: { type: "string" },
+      rationale: { type: "string", minLength: 1, maxLength: MAX_REASON },
       findings: {
         type: "array",
+        maxItems: 50,
         items: {
           type: "object",
           properties: {
-            code: { type: "string" },
+            code: {
+              type: "string",
+              minLength: 1,
+              maxLength: 100,
+              pattern: "^[a-z][a-z0-9._-]*$",
+            },
             severity: { type: "string", enum: ["blocking", "advisory"] },
-            summary: { type: "string" },
-            recommendation: { type: "string" },
+            summary: { type: "string", minLength: 1, maxLength: 1_000 },
+            recommendation: { type: "string", minLength: 1, maxLength: 1_000 },
           },
           required: ["code", "severity", "summary", "recommendation"],
+          additionalProperties: false,
         },
       },
     },
     required: ["verdict", "rationale", "findings"],
+    additionalProperties: false,
   };
   return [
     `export const meta = ${JSON.stringify({ name: `review-${planId}` })};`,
@@ -744,6 +755,7 @@ function plannerReviewScript(
       mission: record.intent.mission ?? null,
       original_root: record.intent.root_work_id,
       active_root: record.projection.root_work_id,
+      proposal_root_rule: PROPOSAL_ROOT_RULE,
       templates: policy.templates,
     })};`,
     `  let candidate = ${JSON.stringify(initialCandidate)};`,
@@ -761,6 +773,7 @@ function plannerReviewScript(
     "        'Review this bounded supervisor plan candidate independently.',",
     "        'Return approve only when the candidate is complete, scoped, and satisfies the goal context.',",
     "        'Return revise for blocking defects. Return attention when human judgment is required.',",
+    "        'Apply proposal_root_rule exactly; never require proposal.root to equal active_root.',",
     "        'Goal context: ' + JSON.stringify(goalContext),",
     "        'Candidate: ' + JSON.stringify(candidate)",
     "      ].join('\\n\\n');",
@@ -779,6 +792,7 @@ function plannerReviewScript(
     "    const revisionPrompt = [",
     "      'Revise this supervisor plan candidate. Return a complete replacement candidate, not a patch.',",
     "      'Do not merge reviewer text mechanically; satisfy the blocking findings within the frozen goal and template constraints.',",
+    "      'Apply proposal_root_rule exactly; never require proposal.root to equal active_root.',",
     "      'Goal context: ' + JSON.stringify(goalContext),",
     "      'Current candidate: ' + JSON.stringify(candidate),",
     "      'Reviewer findings: ' + JSON.stringify(reviewersOut)",
@@ -1163,60 +1177,96 @@ function hasReviewRecoveryEvidence(coordRoot: string, goalId: string, planId: st
   );
 }
 
-function planProposalSchema(record: SupervisorRecord): Record<string, unknown> {
+function planProposalSchema(
+  record: SupervisorRecord,
+  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+): StageSchema {
   const policy = record.intent.replanning;
   if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
-  return {
+  const rationale: StageSchema = { type: "string", minLength: 1, maxLength: MAX_REASON };
+  const workItem: StageSchema = {
     type: "object",
     properties: {
-      decision: {
-        type: "string",
-        enum: record.intent.mission ? ["apply", "complete", "attention"] : ["apply", "attention"],
-      },
-      rationale: { type: "string", minLength: 1, maxLength: MAX_REASON },
-      root: { type: "string", maxLength: 32 },
-      work: {
+      key: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$", maxLength: 32 },
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      objective: { type: "string", minLength: 1, maxLength: 4_000 },
+      acceptance: {
         type: "array",
-        maxItems: policy.max_work_items_per_plan,
-        items: {
-          type: "object",
-          properties: {
-            key: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$", maxLength: 32 },
-            title: { type: "string", minLength: 1, maxLength: 200 },
-            objective: { type: "string", minLength: 1, maxLength: 4_000 },
-            acceptance: {
-              type: "array",
-              maxItems: 50,
-              items: { type: "string", minLength: 1, maxLength: 500 },
-            },
-            dependencies: {
-              type: "array",
-              maxItems: 50,
-              items: { type: "string", minLength: 1, maxLength: 100 },
-            },
-            template: { type: "string", enum: Object.keys(policy.templates), maxLength: 64 },
-          },
-          required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
-        },
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 500 },
       },
-      milestone: {
-        type: "object",
-        properties: {
-          sequence: { type: "number" },
-          title: { type: "string", minLength: 1, maxLength: 200 },
-          objective: { type: "string", minLength: 1, maxLength: 4_000 },
-          acceptance: {
-            type: "array",
-            minItems: 1,
-            maxItems: 50,
-            items: { type: "string", minLength: 1, maxLength: 500 },
-          },
-        },
-        required: ["sequence", "title", "objective", "acceptance"],
+      dependencies: {
+        type: "array",
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 100 },
+      },
+      template: { type: "string", enum: Object.keys(policy.templates), maxLength: 64 },
+    },
+    required: ["key", "title", "objective", "acceptance", "dependencies", "template"],
+    additionalProperties: false,
+  };
+  const milestone: StageSchema = {
+    type: "object",
+    properties: {
+      sequence: {
+        type: "number",
+        enum: [record.projection.milestones_completed + 1],
+      },
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      objective: { type: "string", minLength: 1, maxLength: 4_000 },
+      acceptance: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        items: { type: "string", minLength: 1, maxLength: 500 },
       },
     },
-    required: ["decision", "rationale", "root", "work"],
+    required: ["sequence", "title", "objective", "acceptance"],
+    additionalProperties: false,
   };
+  const applyProperties: Record<string, StageSchema> = {
+    decision: { type: "string", enum: ["apply"] },
+    rationale,
+    root: {
+      type: "string",
+      minLength: 1,
+      maxLength: 32,
+      pattern: "^[a-z][a-z0-9-]{0,31}$",
+    },
+    work: {
+      type: "array",
+      minItems: 1,
+      maxItems: policy.max_work_items_per_plan,
+      items: workItem,
+    },
+  };
+  const applyRequired = ["decision", "rationale", "root", "work"];
+  if (record.intent.mission) {
+    applyProperties.milestone = milestone;
+    applyRequired.push("milestone");
+  }
+  const apply: StageSchema = {
+    type: "object",
+    properties: applyProperties,
+    required: applyRequired,
+    additionalProperties: false,
+  };
+  const terminal = (decision: "complete" | "attention"): StageSchema => ({
+    type: "object",
+    properties: {
+      decision: { type: "string", enum: [decision] },
+      rationale,
+      root: { type: "string", enum: [""] },
+      work: { type: "array", maxItems: 0 },
+    },
+    required: ["decision", "rationale", "root", "work"],
+    additionalProperties: false,
+  });
+  const branches: StageSchema[] = [];
+  if (!record.intent.mission || record.projection.milestones_remaining > 0) branches.push(apply);
+  if (record.intent.mission && trigger === "milestone") branches.push(terminal("complete"));
+  branches.push(terminal("attention"));
+  return { type: "object", oneOf: branches };
 }
 
 function normalizeProposal(

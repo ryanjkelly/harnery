@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,22 @@ import {
  */
 
 const hasRg = spawnSync("rg", ["--version"], { stdio: "ignore" }).status === 0;
+
+function supportsUnreadableFixture(): boolean {
+  if (typeof process.getuid === "function" && process.getuid() === 0) return false;
+  const dir = mkdtempSync(join(tmpdir(), "harnery-grep-permissions-"));
+  const path = join(dir, "locked");
+  try {
+    writeFileSync(path, "locked\n");
+    chmodSync(path, 0o000);
+    return (statSync(path).mode & 0o777) === 0;
+  } finally {
+    chmodSync(path, 0o644);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const canTestUnreadableFiles = supportsUnreadableFixture();
 
 let fixtureRoot: string;
 
@@ -369,7 +385,11 @@ describe("context materialization (-C/-A/-B)", () => {
   test("-C 2: overlapping windows merge into one contiguous block", async () => {
     const r = await bothEngines("cmark", [join(ctxDir(), "main.txt")], { context: "2" });
     expect(shape(r).map((s) => s.line)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(shape(r).filter((s) => s.kind === "match").map((s) => s.line)).toEqual([1, 5]);
+    expect(
+      shape(r)
+        .filter((s) => s.kind === "match")
+        .map((s) => s.line),
+    ).toEqual([1, 5]);
     expect(r.total_matches).toBe(2);
   });
 
@@ -496,32 +516,36 @@ describe("boolean composition (--and / --without)", () => {
     expect(["all3.md", "both.md"]).toContain(rows[0]?.file.split("/").at(-1) ?? "");
   });
 
-  // Root reads through chmod 000, so the trigger can't fire under root/CI-as-root.
-  test.skipIf(typeof process.getuid === "function" && process.getuid() === 0)(
+  // Root and some mounted temporary filesystems cannot represent an unreadable
+  // fixture, so the trigger cannot fire there.
+  test.skipIf(!canTestUnreadableFiles)(
     "partial membership scan REJECTS the command (incomplete set can't prove absence)",
     async () => {
       const strictDir = join(fixtureRoot, "strict");
       mkdirSync(strictDir, { recursive: true });
-      writeFileSync(join(strictDir, "ok.md"), "zapple zbanana\n");
-      writeFileSync(join(strictDir, "locked.md"), "zbanana\n");
-      chmodSync(join(strictDir, "locked.md"), 0o000);
+      const okPath = join(strictDir, "ok.md");
+      const lockedPath = join(strictDir, "locked.md");
+      const paths = [okPath, lockedPath];
+      writeFileSync(okPath, "zapple zbanana\n");
+      writeFileSync(lockedPath, "zbanana\n");
+      chmodSync(lockedPath, 0o000);
       try {
         // The --and membership scan hits the unreadable file (engine exit 2)
         // and must reject — NOT treat the partial set as authoritative.
-        expect(runWith("grep", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
+        await expect(runWith("grep", "zapple", paths, { and: ["zbanana"] })).rejects.toThrow(
           /exited 2/,
         );
         if (hasRg) {
-          expect(runWith("rg", "zapple", [strictDir], { and: ["zbanana"] })).rejects.toThrow(
+          await expect(runWith("rg", "zapple", paths, { and: ["zbanana"] })).rejects.toThrow(
             /exited 2/,
           );
         }
         // The PRIMARY scan stays lenient: same tree without --and still
         // surfaces the readable file's matches.
-        const lenient = await bothEngines("zapple", [strictDir], {});
+        const lenient = await bothEngines("zapple", paths, {});
         expect(lenient.total_matches).toBe(1);
       } finally {
-        chmodSync(join(strictDir, "locked.md"), 0o644);
+        chmodSync(lockedPath, 0o644);
       }
     },
   );

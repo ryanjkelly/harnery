@@ -201,9 +201,12 @@ export interface HarnessEvidenceCapability {
 /** JSON-schema *subset* accepted by stage gates (see validate.ts). */
 export interface StageSchema {
   type: "object" | "array" | "string" | "number" | "boolean";
+  /** Exact-one branch selection, evaluated before the base schema. */
+  oneOf?: StageSchema[];
   /** type=object */
   properties?: Record<string, StageSchema>;
   required?: string[];
+  additionalProperties?: boolean;
   /** type=array */
   items?: StageSchema;
   minItems?: number;

@@ -36,6 +36,13 @@ also be the planner, and supervisor creation rejects a worst-case review loop
 that exceeds the existing per-work agent ceiling.
 
 The planner first returns one schema-gated candidate exactly as it does today.
+Decision-specific schema branches require executable `apply` plans to carry a
+non-empty graph and require `complete` or `attention` decisions to carry no work
+or milestone data. Shape mistakes therefore receive the same bounded correction
+attempt as other schema failures rather than consuming another plan request.
+At a milestone boundary, the schema exposes `apply` only while milestone budget
+remains and requires the next exact milestone sequence. Once the budget reaches
+zero, only `complete` or `attention` can pass the gate.
 Each reviewer receives that same candidate and bounded mission/graph context in
 an independent call. Reviewer output is schema-gated data containing:
 
@@ -43,6 +50,17 @@ an independent call. Reviewer output is schema-gated data containing:
 - one bounded rationale;
 - bounded findings with a stable code, `blocking` or `advisory` severity,
   summary, and recommendation.
+
+The reviewer stage schema carries the same identifier, count, and text bounds as
+the durable receipt. A malformed finding therefore receives a bounded correction
+attempt before receipt normalization.
+
+The review and revision context also repeats the planner's root-namespace rule.
+`proposal.root` names one newly proposed work key using a root-capable template;
+it does not preserve or repeat the existing `active_root` work ID. The latter is
+context only. Keeping that distinction in every model-facing pass prevents a
+review finding from inventing an impossible requirement when an active work ID
+is longer than the bounded local key.
 
 Harnery aggregates those results in deterministic code. It does not ask another
 model to decide which reviewer to believe. A pass succeeds only when every
@@ -114,6 +132,9 @@ attempt; it cannot invent approval or duplicate executable work.
 - Reviewer approval establishes contract-compliant evidence, not strategic
   correctness. Quality still depends on specialist instructions and harness
   behavior.
+- Existing work IDs and newly proposed keys occupy different namespaces. Any
+  model-authored finding that requires `proposal.root` to equal `active_root`
+  contradicts the frozen plan contract.
 - Agent counts are hard-bounded and reported costs remain truthful where a
   harness supplies them. Harnery does not claim a universal token budget for
   subscription harnesses that do not expose one.
