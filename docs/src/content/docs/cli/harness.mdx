@@ -9,7 +9,7 @@ sidebar:
 harn harness list [--json]
 harn harness show <id> [--json]
 harn harness bench [harnesses...] [--require-installed] [--json]
-harn harness attest [harnesses...] --yes [--timeout <ms>] [--json]
+harn harness attest [harnesses...] --yes [--subscription-only] [--timeout <ms>] [--json]
 harn harness attestations [--json]
 ```
 
@@ -115,6 +115,7 @@ attested is the path production takes.
 ```bash
 harn harness attest --yes                  # every registered harness
 harn harness attest --yes claude-code      # one harness
+harn harness attest --yes --subscription-only # match a subscription-only run
 harn harness attest --yes --timeout 180000 # per-harness probe timeout
 harn harness attestations                  # show records, no model calls
 ```
@@ -132,8 +133,16 @@ throughout: version strings, dimension names, timestamps, and digests. The probe
 prompt is a fixed constant, so no prompt text, completion text, or host path can
 reach the file.
 
+An observation is recorded against the **billing mode** it ran under.
+`--subscription-only` scrubs API-key variables so the child can only use its
+stored login, matching `workflow run --subscription-only` (and the repo default
+in `config.jsonc`). A child that may fall back to an API key can succeed where
+one restricted to its login fails, so a record made in one mode is not cited for
+the other.
+
 A record stops counting when the installed binary reports a different version,
-when the capability declaration is edited, or when it fails its own digest.
+when the capability declaration is edited, when it was made under a different
+billing mode, or when it fails its own digest.
 Stale and tampered records are ignored rather than trusted, and the affected
 bench rows fall back to `adapter` basis.
 

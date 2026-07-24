@@ -25,10 +25,11 @@ function tempRoot(): string {
 
 function record(overrides: Record<string, unknown> = {}) {
   return sealAttestation({
-    schema_version: 1,
+    schema_version: 2,
     harness: "codex",
     binary_version: "codex-cli 0.144.5",
     profile_digest: profileDigest(codex),
+    subscription_only: false,
     observed_at: "2026-07-24T19:00:00.000Z",
     observations: { invocation: "supported", finalResult: "supported", sessionId: "unsupported" },
     ...overrides,
@@ -114,5 +115,29 @@ describe("attestation staleness", () => {
 
   test("a null record is never current", () => {
     expect(isAttestationCurrent(null, "codex-cli 0.144.5", codex)).toBe(false);
+  });
+});
+
+describe("attestation billing mode", () => {
+  test("an observation made with API keys available does not speak for subscription-only", () => {
+    // A child that may fall back to an API key can succeed where one restricted
+    // to its stored login fails, so the modes are not interchangeable.
+    expect(isAttestationCurrent(record(), "codex-cli 0.144.5", codex, true)).toBe(false);
+  });
+
+  test("a matching billing mode is current", () => {
+    expect(isAttestationCurrent(record(), "codex-cli 0.144.5", codex, false)).toBe(true);
+    expect(
+      isAttestationCurrent(record({ subscription_only: true }), "codex-cli 0.144.5", codex, true),
+    ).toBe(true);
+  });
+
+  test("an unspecified mode accepts either, for reporting", () => {
+    expect(isAttestationCurrent(record(), "codex-cli 0.144.5", codex)).toBe(true);
+  });
+
+  test("a record without a billing mode is rejected", () => {
+    const { subscription_only: _dropped, ...legacy } = record();
+    expect(validateAttestation(legacy)).toBeNull();
   });
 });

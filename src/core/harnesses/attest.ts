@@ -8,7 +8,12 @@
 
 import type { SpawnResult } from "../workflow/types.ts";
 import type { AttestableDimension, HarnessAttestation } from "./attestation.ts";
-import { profileDigest, sealAttestation, writeAttestation } from "./attestation.ts";
+import {
+  ATTESTATION_SCHEMA_VERSION,
+  profileDigest,
+  sealAttestation,
+  writeAttestation,
+} from "./attestation.ts";
 import { probeBinaryVersion } from "./bench.ts";
 import type { HarnessRegistry } from "./registry.ts";
 import type { CapabilitySupport, HarnessId } from "./types.ts";
@@ -64,6 +69,11 @@ export interface RunHarnessAttestationOptions {
   timeoutMs?: number;
   cwd?: string;
   coordRoot?: string;
+  /** Scrub API-key vars from the child so it can only use its stored login,
+   * matching `workflow run --subscription-only`. The observation is recorded
+   * against this mode, because a child that may fall back to an API key can
+   * behave differently from one that may not. */
+  subscriptionOnly?: boolean;
   /** Test seam and alternate host probe. A null version means unavailable. */
   versionProbe?: (binary: string) => string | null;
   /** Test seam. Defaults to the adapter's production spawner. */
@@ -80,6 +90,7 @@ export async function runHarnessAttestation(
   const ids = opts.harnesses?.length ? [...opts.harnesses] : registry.ids();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_ATTESTATION_TIMEOUT_MS;
   const cwd = opts.cwd ?? process.cwd();
+  const subscriptionOnly = opts.subscriptionOnly === true;
   const versionProbe = opts.versionProbe ?? probeBinaryVersion;
   const now = opts.now ?? (() => new Date());
   const results: HarnessAttestationResult[] = [];
@@ -105,6 +116,7 @@ export async function runHarnessAttestation(
             timeoutMs,
             maxTurns: 1,
             cwd,
+            subscriptionOnly,
           });
     } catch (error) {
       results.push({
@@ -137,10 +149,11 @@ export async function runHarnessAttestation(
     };
 
     const record = sealAttestation({
-      schema_version: 1,
+      schema_version: ATTESTATION_SCHEMA_VERSION,
       harness: id,
       binary_version: binaryVersion,
       profile_digest: profileDigest(adapter.profile),
+      subscription_only: subscriptionOnly,
       observed_at: now().toISOString(),
       observations,
     });

@@ -65,6 +65,9 @@ export interface HarnessBenchOptions {
   coordRoot?: string;
   /** Test seam. Defaults to reading the attestation store. */
   attestationReader?: (harness: HarnessId) => HarnessAttestation | null;
+  /** Only cite attestations recorded under this billing mode. Omitted means
+   * any mode is acceptable for reporting purposes. */
+  subscriptionOnly?: boolean;
 }
 
 const EMPTY_SUMMARY: Record<BenchVerdict, number> = {
@@ -101,7 +104,9 @@ function loadAttestation(
     // No coord root, unreadable store: the bench still runs, just unattested.
     return null;
   }
-  return isAttestationCurrent(record, version, adapter.profile) ? record : null;
+  return isAttestationCurrent(record, version, adapter.profile, opts.subscriptionOnly)
+    ? record
+    : null;
 }
 
 /** First version-shaped token in a string, or null when there is none.

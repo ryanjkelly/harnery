@@ -25,7 +25,7 @@ import { monorepoRoot } from "../agents/coord-client.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
 import type { CapabilitySupport, HarnessId, HarnessProfile } from "./types.ts";
 
-export const ATTESTATION_SCHEMA_VERSION = 1;
+export const ATTESTATION_SCHEMA_VERSION = 2;
 
 /** Dimensions one minimal live turn can honestly establish. Everything else
  * needs a purpose-built scenario and stays outside the record rather than
@@ -43,6 +43,10 @@ export interface HarnessAttestation {
   /** Digest of the capability declaration at record time, so an edited
    * declaration also invalidates the record. */
   profile_digest: string;
+  /** The billing policy the probe ran under. A child launched with API keys
+   * scrubbed can behave differently from one that can fall back to them, so an
+   * observation only speaks for the mode it was made in. */
+  subscription_only: boolean;
   observed_at: string;
   /** Only what the probe actually saw. A dimension absent from this map was
    * not observed, which is not the same as unsupported. */
@@ -164,9 +168,11 @@ export function isAttestationCurrent(
   record: HarnessAttestation | null,
   binaryVersion: string | null,
   profile: HarnessProfile,
+  subscriptionOnly?: boolean,
 ): record is HarnessAttestation {
   if (!record || !binaryVersion) return false;
   if (record.binary_version !== binaryVersion) return false;
+  if (subscriptionOnly !== undefined && record.subscription_only !== subscriptionOnly) return false;
   return record.profile_digest === profileDigest(profile);
 }
 
@@ -194,6 +200,9 @@ export function harnessProofInputs(
   profiles: readonly HarnessProfile[],
   opts: AttestationStoreOptions & {
     versionProbe: (binary: string) => string | null;
+    /** Billing policy this run will use, so a record made under the other mode
+     * is not cited as if it applied. */
+    subscriptionOnly?: boolean;
   },
 ): {
   harnessEvidence: Record<string, { toolEvidence: HarnessProfile["capabilities"]["toolEvidence"] }>;
@@ -220,7 +229,16 @@ export function harnessProofInputs(
       // No coord root or unreadable store: run unattested rather than fail.
       continue;
     }
-    if (!isAttestationCurrent(record, opts.versionProbe(profile.binary), profile)) continue;
+    if (
+      !isAttestationCurrent(
+        record,
+        opts.versionProbe(profile.binary),
+        profile,
+        opts.subscriptionOnly,
+      )
+    ) {
+      continue;
+    }
     harnessAttestations[profile.id] = {
       binary_version: record.binary_version,
       observed_at: record.observed_at,

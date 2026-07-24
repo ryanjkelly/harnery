@@ -26,6 +26,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { workflowSubscriptionOnly } from "../src/core/config.ts";
 import {
   isAttestationCurrent,
   probeBinaryVersion,
@@ -47,7 +48,7 @@ interface Plan {
 function planFor(profile: HarnessProfile): Plan {
   const installed = probeBinaryVersion(profile.binary);
   const record = readAttestation(profile.id);
-  if (!isAttestationCurrent(record, installed, profile)) {
+  if (!isAttestationCurrent(record, installed, profile, workflowSubscriptionOnly())) {
     return {
       harness: profile.id,
       action: "no-attestation",

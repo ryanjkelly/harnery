@@ -59,10 +59,13 @@ timestamp, the observations, and a digest over all of it. Writes are an atomic
 replace, because unlike a workflow record an attestation is meant to be
 re-recorded.
 
-Three things invalidate it, all automatically:
+Four things invalidate it, all automatically:
 
 - the installed binary reports a different version;
 - the capability declaration was edited;
+- the observation was made under a different billing mode, since a child that
+  may fall back to an API key can succeed where one restricted to its stored
+  login fails;
 - the record fails its own digest, meaning someone hand-wrote it.
 
 A stale or tampered record is ignored, not repaired and not trusted. The

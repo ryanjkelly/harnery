@@ -237,10 +237,11 @@ describe("bench reads live attestations (ADR 0038)", () => {
 
   function attestation(overrides: Partial<HarnessAttestation> = {}): HarnessAttestation {
     return sealAttestation({
-      schema_version: 1,
+      schema_version: 2,
       harness: "codex",
       binary_version: "codex-cli 0.144.5",
       profile_digest: profileDigest(codex),
+      subscription_only: false,
       observed_at: "2026-07-24T19:00:00.000Z",
       observations: { sessionId: "supported" },
       ...overrides,

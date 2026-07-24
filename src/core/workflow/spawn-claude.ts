@@ -23,6 +23,7 @@ import { validateHarnessEffort } from "../harnesses/profiles.ts";
 import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
+import { vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 interface ClaudeEnvelope {
@@ -65,7 +66,7 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
       ok: false,
       text: "",
       durationMs: raw.durationMs,
-      error: `claude exited ${raw.exitCode}: ${(raw.stderr || raw.stdout).slice(0, 500)}`,
+      error: `claude exited ${raw.exitCode}: ${vendorFailureText(raw)}`,
     };
   }
 

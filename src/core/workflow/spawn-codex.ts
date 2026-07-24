@@ -24,6 +24,7 @@ import { validateHarnessEffort } from "../harnesses/profiles.ts";
 import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
+import { vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): HarnessInvocation {
@@ -53,7 +54,7 @@ export function normalizeCodexResult(raw: HarnessRawResult): SpawnResult {
       ok: false,
       text: "",
       durationMs: raw.durationMs,
-      error: `codex exited ${raw.exitCode}: ${(raw.stderr || raw.stdout).slice(0, 500)}`,
+      error: `codex exited ${raw.exitCode}: ${vendorFailureText(raw)}`,
     };
   }
   return {
