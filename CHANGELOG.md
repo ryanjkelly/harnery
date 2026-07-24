@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.0
+
+### Minor Changes
+
+- 3f3db3d: Add the optional durable workspace-provider lifecycle and local Git worktree
+  provider through `core/workflow`, including explicit CLI allocation, validated
+  status readers, dashboard visibility, proof-gated integration, recovery, and
+  cleanup.
+
+### Patch Changes
+
+- 3f3db3d: Preserve an explicitly configured Codex home when scrubbing parent-session variables from workflow children.
+
 ## 0.22.1
 
 ### Patch Changes
