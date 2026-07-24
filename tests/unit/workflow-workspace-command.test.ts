@@ -151,11 +151,13 @@ describe("workflow workspace commands", () => {
       "--approval-to",
       "operator",
     ];
+    const targetAtParkBoundary = git(repo, "rev-parse", "HEAD");
     await runCommand(prepareArgs, emit);
     const parkedText = output.join("\n");
     expect(parkedText).toContain("integration preparation parked");
     expect(parkedText).toContain(`run: ${report.runId}`);
     expect(parkedText).toMatch(/plan: integration-plan-/);
+    expect(git(repo, "rev-parse", "HEAD")).toBe(targetAtParkBoundary);
     const approvalId = workflowApprovalId(report.runId, "p99999");
     expect(parkedText).toContain(`approval: ${approvalId}`);
     expect(parkedText).toContain(
@@ -170,8 +172,10 @@ describe("workflow workspace commands", () => {
       runId: report.runId,
       approvalId,
     });
-    expect((emitted.at(-1) as { planId: string }).planId).toMatch(/^integration-plan-/);
+    const parkedPlanId = (emitted.at(-1) as { planId: string }).planId;
+    expect(parkedPlanId).toMatch(/^integration-plan-/);
 
+    output.length = 0;
     await runCommand(
       [
         "workflow",
@@ -185,9 +189,16 @@ describe("workflow workspace commands", () => {
       ],
       emit,
     );
+    const approveText = output.join("\n");
+    expect(approveText).toContain(
+      `prepare: ${resolveBinName()} workflow integration prepare ${report.runId}`,
+    );
+    expect(approveText).not.toContain("workflow resume");
+
     output.length = 0;
     await runCommand(prepareArgs, emit);
-    expect(output.join("\n")).toContain("integration plan");
+    expect(output.join("\n")).toContain(`integration plan ${parkedPlanId} authorized`);
+    expect(git(repo, "rev-parse", "HEAD")).toBe(targetAtParkBoundary);
     expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
       lifecycle: { integration_state: "planned" },
     });

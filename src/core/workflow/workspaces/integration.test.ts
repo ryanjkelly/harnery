@@ -35,7 +35,7 @@ import {
   readWorkspaceEvents,
   stableDigest,
 } from "./state.ts";
-import type { IntegrationAuthorization } from "./types.ts";
+import type { IntegrationAuthorization, IntegrationPlan } from "./types.ts";
 
 const roots: string[] = [];
 const TARGET_LEASE_STALE_MS = 5 * 60 * 1_000;
@@ -219,6 +219,7 @@ describe("verification-gated fast-forward integration", () => {
       }),
     ).rejects.toThrow(/policy denied/);
 
+    const targetAtParkBoundary = git(repo, "rev-parse", "HEAD");
     let parked: IntegrationPrepareParkedError | undefined;
     try {
       await prepareIntegration({
@@ -240,6 +241,14 @@ describe("verification-gated fast-forward integration", () => {
     expect(parked!.runId).toBe(report.runId);
     expect(parked!.planId).toMatch(/^integration-plan-/);
     expect(parked!.approvalId).toBe(workflowApprovalId(report.runId, "p99999"));
+    expect(git(repo, "rev-parse", "HEAD")).toBe(targetAtParkBoundary);
+    const parkedPlan = readWorkflowSupplement<IntegrationPlan>(
+      repo,
+      report.runId,
+      "integration/plan.json",
+    );
+    expect(parkedPlan?.plan_id).toBe(parked!.planId);
+    expect(parkedPlan?.provider_preview.target_commit).toBe(targetAtParkBoundary);
     resolveWorkflowApproval({
       coordRoot: repo,
       approvalId: parked!.approvalId,
@@ -255,6 +264,9 @@ describe("verification-gated fast-forward integration", () => {
       policy: { external_actions: "ask", allowed_isolation: ["worktree"], allowed_paths: [repo] },
       acceptedUnknowns: ["network_not_attested"],
     });
+    expect(plan.plan_id).toBe(parked!.planId);
+    expect(git(repo, "rev-parse", "HEAD")).toBe(targetAtParkBoundary);
+    expect(plan.provider_preview.target_commit).toBe(targetAtParkBoundary);
     const invalidIdentity = {
       ...provider,
       applyAuthorizedIntegration: async () => ({

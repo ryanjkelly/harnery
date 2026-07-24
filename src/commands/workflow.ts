@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
@@ -6,7 +7,7 @@ import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
-import type { WorkflowApprovalStatus } from "../core/workflow/approvals.ts";
+import type { WorkflowApproval, WorkflowApprovalStatus } from "../core/workflow/approvals.ts";
 import { WorkflowParkedError } from "../core/workflow/engine.ts";
 import type { WorkspaceProvider } from "../core/workflow/index.ts";
 
@@ -227,7 +228,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             emit.text(
               `run ${err.runId} parked\napproval: ${err.approvalId}\n` +
                 `journal: ${err.journalPath}\n` +
-                `resume after resolution: harn workflow resume ${err.runId}\n`,
+                `resume after resolution: ${resolveBinName()} workflow resume ${err.runId}\n`,
             );
           }
           return;
@@ -698,7 +699,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             emit.text(
               `${renderWorkflowApproval(resolved.approval)}` +
                 `${resolved.applied ? "decision recorded" : "decision already recorded"}\n` +
-                `resume: harn workflow resume ${resolved.approval.request.run_id}\n`,
+                approvalNextActionHint(coordRoot, resolved.approval),
             );
           }
         } catch (err) {
@@ -763,4 +764,24 @@ async function builtInProviderForRun(coordRoot: string, runId: string): Promise<
 
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+/** Next operator command after resolving an approval. Mid-run parks resume the
+ * workflow; integration prepare parks after the run is already terminal, so
+ * the durable plan is authorized by re-running prepare (resume would fail). */
+function approvalNextActionHint(coordRoot: string, approval: WorkflowApproval): string {
+  const bin = resolveBinName();
+  const runId = approval.request.run_id;
+  const integrationPlanPath = join(
+    coordRoot,
+    ".harnery",
+    "workflows",
+    runId,
+    "integration",
+    "plan.json",
+  );
+  if (existsSync(integrationPlanPath)) {
+    return `prepare: ${bin} workflow integration prepare ${runId}\n`;
+  }
+  return `resume: ${bin} workflow resume ${runId}\n`;
 }
