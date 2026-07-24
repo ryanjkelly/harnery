@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildWorkflowProof,
   createEvidenceRecord,
   normalizeWorkflowMeta,
   readWorkflowProof,
@@ -187,3 +188,76 @@ function sampleProof(): WorkflowProof {
     integrity: { journal: { path: "journal.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };
 }
+
+describe("harness attestation citation (ADR 0038)", () => {
+  const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
+  function journal(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+    writeFileSync(path, "{}\n");
+    return path;
+  }
+  const baseInput = {
+    runId: "wf-attest",
+    meta: { name: "attest", acceptance: [] },
+    status: "succeeded" as const,
+    startedAt: "2026-07-24T19:00:00.000Z",
+    endedAt: "2026-07-24T19:00:01.000Z",
+    durationMs: 1_000,
+    journalPath: "",
+    before: snapshot,
+    after: snapshot,
+    evidence: [],
+    agents: [
+      {
+        id: "a1",
+        label: "probe",
+        harness: "claude-code",
+        status: "succeeded" as const,
+        attempts: 1,
+        duration_ms: 10,
+        session_id: "s-1",
+        cost_usd: 0.01,
+      },
+    ],
+    harnessEvidence: { "claude-code": { toolEvidence: { support: "unsupported" as const } } },
+  };
+
+  test("a run cites the attestation backing the harness it used", () => {
+    const proof = buildWorkflowProof({
+      ...baseInput,
+      journalPath: journal(),
+      harnessAttestations: {
+        "claude-code": {
+          binary_version: "2.1.197",
+          observed_at: "2026-07-24T19:00:00.000Z",
+          record_digest: "abc123",
+        },
+      },
+    });
+    expect(proof.harnesses[0]?.attestation).toEqual({
+      binary_version: "2.1.197",
+      observed_at: "2026-07-24T19:00:00.000Z",
+      record_digest: "abc123",
+    });
+  });
+
+  test("no attestation means no citation and no new unknown", () => {
+    const proof = buildWorkflowProof({ ...baseInput, journalPath: journal() });
+    expect(proof.harnesses[0]?.attestation).toBeUndefined();
+    // Deliberate: an unattested host must not have every run gated on a new
+    // unknown it cannot clear without spending tokens.
+    expect(proof.unknowns.map((item) => item.code)).toEqual(["tool_evidence_unavailable"]);
+  });
+
+  test("a citation for an unused harness is not attached", () => {
+    const proof = buildWorkflowProof({
+      ...baseInput,
+      journalPath: journal(),
+      harnessAttestations: {
+        cursor: { binary_version: "x", observed_at: "y", record_digest: "z" },
+      },
+    });
+    expect(proof.harnesses).toHaveLength(1);
+    expect(proof.harnesses[0]?.attestation).toBeUndefined();
+  });
+});

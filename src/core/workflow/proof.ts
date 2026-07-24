@@ -16,6 +16,7 @@ import type {
   AcceptanceCriterion,
   AcceptanceResult,
   AcceptanceSummary,
+  HarnessAttestationCitation,
   HarnessEvidenceCapability,
   HarnessEvidenceCoverage,
   ResultDigest,
@@ -81,6 +82,9 @@ export interface BuildWorkflowProofInput {
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
   harnessEvidence?: Readonly<Record<string, HarnessEvidenceCapability | undefined>>;
+  /** Live attestations backing each harness's claims (ADR 0038). Injected by
+   * the caller so proof stays free of filesystem lookups. */
+  harnessAttestations?: Readonly<Record<string, HarnessAttestationCitation | undefined>>;
   policy?: {
     config: Readonly<NormalizedPolicy>;
     decisions: readonly PolicyDecision[];
@@ -222,7 +226,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     session_id: clippedOptional(agent.session_id, MAX_REF_CHARS),
     error: clippedOptional(agent.error, MAX_SUMMARY_CHARS),
   }));
-  const harnesses = buildHarnessCoverage(agents, input.harnessEvidence);
+  const harnesses = buildHarnessCoverage(agents, input.harnessEvidence, input.harnessAttestations);
   const unknowns = buildUnknowns(agents, harnesses, repository);
   const journal = readFileSync(input.journalPath);
   return {
@@ -455,6 +459,7 @@ function normalizeRepoSnapshot(snapshot: RepoSnapshot): WorkflowRepoSnapshot {
 function buildHarnessCoverage(
   agents: WorkflowAgentProof[],
   claims: Readonly<Record<string, HarnessEvidenceCapability | undefined>> | undefined,
+  attestations: Readonly<Record<string, HarnessAttestationCitation | undefined>> | undefined,
 ): HarnessEvidenceCoverage[] {
   return [...new Set(agents.map((agent) => agent.harness))].map((harness) => {
     const harnessAgents = agents.filter((agent) => agent.harness === harness);
@@ -469,6 +474,7 @@ function buildHarnessCoverage(
         session_ids: harnessAgents.filter((agent) => agent.session_id).length,
         costs: harnessAgents.filter((agent) => agent.cost_usd !== undefined).length,
       },
+      ...(attestations?.[harness] ? { attestation: attestations[harness] } : {}),
     };
   });
 }

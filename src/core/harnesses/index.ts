@@ -1,12 +1,37 @@
 export type { Spawner, SpawnRequest, SpawnResult } from "../workflow/types.ts";
 export type {
+  AttestationOutcome,
+  HarnessAttestationReport,
+  HarnessAttestationResult,
+  RunHarnessAttestationOptions,
+} from "./attest.ts";
+export { ATTESTATION_PROMPT, runHarnessAttestation } from "./attest.ts";
+export type {
+  AttestableDimension,
+  AttestationStoreOptions,
+  HarnessAttestation,
+} from "./attestation.ts";
+export {
+  ATTESTABLE_DIMENSIONS,
+  ATTESTATION_SCHEMA_VERSION,
+  attestationsDir,
+  harnessProofInputs,
+  isAttestationCurrent,
+  listAttestations,
+  profileDigest,
+  readAttestation,
+  validateAttestation,
+  writeAttestation,
+} from "./attestation.ts";
+export type {
+  BenchBasis,
   BenchDimension,
   BenchResult,
   BenchVerdict,
   HarnessBenchOptions,
   HarnessBenchReport,
 } from "./bench.ts";
-export { runHarnessBench } from "./bench.ts";
+export { probeBinaryVersion, runHarnessBench } from "./bench.ts";
 export type { BuiltinHarnessId } from "./profiles.ts";
 export {
   BUILTIN_HARNESS_IDS,

@@ -126,6 +126,14 @@ export interface WorkflowRepoEvidence {
   };
 }
 
+/** Bounded pointer to the live attestation backing a harness's claims
+ * (ADR 0038). Structural facts only: no prompt text, no host paths. */
+export interface HarnessAttestationCitation {
+  binary_version: string;
+  observed_at: string;
+  record_digest: string;
+}
+
 export interface HarnessEvidenceCoverage {
   harness: HarnessName;
   tool_evidence: {
@@ -137,6 +145,10 @@ export interface HarnessEvidenceCoverage {
     session_ids: number;
     costs: number;
   };
+  /** What backs this harness's capability claims (ADR 0038). Absent when the
+   * host recorded no live attestation, which is the common case and is not by
+   * itself a proof unknown. */
+  attestation?: HarnessAttestationCitation;
 }
 
 export interface WorkflowProofUnknown {
@@ -429,6 +441,9 @@ export interface EngineOpts {
   /** Capability claims used to state whether adapter-native tool evidence was
    * available. Missing claims remain unknown. */
   harnessEvidence?: Readonly<Record<HarnessName, HarnessEvidenceCapability | undefined>>;
+  /** Live attestations backing each harness's claims (ADR 0038). Read once by
+   * the host and injected, so the engine performs no capability lookups. */
+  harnessAttestations?: Readonly<Record<HarnessName, HarnessAttestationCitation | undefined>>;
   /** Immutable host policy. Workflow scripts and model prompts cannot replace it. */
   policy?: PolicySpec | NormalizedPolicy;
   /** Host callback for ASK. Missing, invalid, throwing, or timed-out resolution denies. */

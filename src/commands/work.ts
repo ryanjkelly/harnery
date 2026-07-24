@@ -1,7 +1,11 @@
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
-import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
+import {
+  createBuiltinHarnessRegistry,
+  harnessProofInputs,
+  probeBinaryVersion,
+} from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -192,13 +196,9 @@ function registerRunCommand(
               subscriptionOnly:
                 opts.subscriptionOnly === true ? true : workflowSubscriptionOnly(coordRoot),
               allowApiBilling: opts.allowApiBilling,
-              harnessEvidence: Object.fromEntries(
-                registry
-                  .list()
-                  .map((adapter) => [
-                    adapter.profile.id,
-                    { toolEvidence: adapter.profile.capabilities.toolEvidence },
-                  ]),
+              ...harnessProofInputs(
+                registry.list().map((adapter) => adapter.profile),
+                { versionProbe: probeBinaryVersion },
               ),
               policy: opts.policy ? loadPolicyFile(opts.policy) : undefined,
               approvalMode: "park",

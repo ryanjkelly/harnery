@@ -316,6 +316,7 @@ async function executeWorkflow(
         agents: [],
         evidence: [],
         harnessEvidence: opts.harnessEvidence,
+        harnessAttestations: opts.harnessAttestations,
         policy: policy
           ? {
               config: policy,
@@ -1054,6 +1055,7 @@ async function executeWorkflow(
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
+        harnessAttestations: opts.harnessAttestations,
         policy: policy
           ? {
               config: policy,
@@ -1133,6 +1135,7 @@ async function executeWorkflow(
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
+        harnessAttestations: opts.harnessAttestations,
         policy: policy
           ? {
               config: policy,

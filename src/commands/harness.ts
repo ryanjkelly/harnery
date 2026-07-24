@@ -3,7 +3,10 @@ import type { EmitContext } from "../commander.ts";
 import {
   type BenchResult,
   createBuiltinHarnessRegistry,
+  type HarnessAttestationReport,
   type HarnessBenchReport,
+  listAttestations,
+  runHarnessAttestation,
   runHarnessBench,
 } from "../core/harnesses/index.ts";
 import type { HarnessProfile } from "../core/harnesses/types.ts";
@@ -14,6 +17,11 @@ interface FormatOpts {
 
 interface BenchOpts extends FormatOpts {
   requireInstalled?: boolean;
+}
+
+interface AttestOpts extends FormatOpts {
+  timeout?: string;
+  yes?: boolean;
 }
 
 const registry = createBuiltinHarnessRegistry();
@@ -79,6 +87,104 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
         emit.setExitCode(1);
       }
     });
+
+  command
+    .command("attest [harnesses...]")
+    .description(
+      "Record what the installed vendor CLIs actually do. Runs one real model turn each; needs --yes.",
+    )
+    .option("--yes", "Confirm that this spends real vendor tokens")
+    .option("--timeout <ms>", "Per-harness probe timeout in milliseconds")
+    .option("--json", "Machine-readable attestation report")
+    .action(async (harnesses: string[], opts: AttestOpts) => {
+      if (!opts.yes) {
+        emit.error({
+          code: "harness_attest_unconfirmed",
+          message:
+            "harness attest runs one real model turn per harness and spends vendor tokens. Re-run with --yes.",
+        });
+        emit.setExitCode(1);
+        return;
+      }
+      const timeoutMs = opts.timeout ? Number(opts.timeout) : undefined;
+      if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+        emit.error({
+          code: "harness_attest_bad_timeout",
+          message: "--timeout must be a positive number",
+        });
+        emit.setExitCode(1);
+        return;
+      }
+      try {
+        const report = await runHarnessAttestation(registry, { harnesses, timeoutMs });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(report);
+        } else {
+          emit.text(renderAttestationReport(report));
+        }
+        // A sweep that recorded nothing at all is a failure; a partial sweep is
+        // reported honestly and still exits 0, because a host is not required
+        // to install every vendor CLI.
+        emit.setExitCode(report.recorded === 0 ? 1 : 0);
+      } catch (error) {
+        emit.error({ code: "harness_attest_failed", message: (error as Error).message });
+        emit.setExitCode(1);
+      }
+    });
+
+  command
+    .command("attestations")
+    .description("Show the recorded live attestations without running any model turns.")
+    .option("--json", "Machine-readable attestation list")
+    .action((opts: FormatOpts) => {
+      try {
+        const records = listAttestations();
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data({ attestations: records });
+          return;
+        }
+        if (records.length === 0) {
+          emit.text("No attestations recorded. Run `harness attest --yes` to create one.");
+          return;
+        }
+        emit.text(
+          renderTable(
+            ["HARNESS", "VERSION", "OBSERVED AT", "OBSERVATIONS"],
+            records.map((record) => [
+              record.harness,
+              record.binary_version,
+              record.observed_at,
+              Object.entries(record.observations)
+                .map(([dimension, support]) => `${dimension}=${support}`)
+                .join(" "),
+            ]),
+          ),
+        );
+      } catch (error) {
+        emit.error({ code: "harness_attestations_failed", message: (error as Error).message });
+        emit.setExitCode(1);
+      }
+    });
+}
+
+export function renderAttestationReport(report: HarnessAttestationReport): string {
+  const rows = report.results.map((result) => [
+    result.harness,
+    result.outcome,
+    result.binaryVersion ?? "",
+    result.observations
+      ? Object.entries(result.observations)
+          .map(([dimension, support]) => `${dimension}=${support}`)
+          .join(" ")
+      : result.note,
+  ]);
+  const table = renderTable(["HARNESS", "OUTCOME", "VERSION", "OBSERVED"], rows);
+  const tail = report.incomplete
+    ? "Some harnesses were not attested; their bench rows keep an adapter basis."
+    : "Every selected harness was attested.";
+  return `${table}\n\nrecorded: ${report.recorded}/${report.results.length}\n${tail}`;
 }
 
 export function renderProfileTable(profiles: readonly HarnessProfile[]): string {

@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { HARNESS_SPECS } from "../hooks/harness/events.ts";
 import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
+import type { AttestableDimension, HarnessAttestation } from "./attestation.ts";
+import { isAttestationCurrent, readAttestation } from "./attestation.ts";
 import type { HarnessRegistry } from "./registry.ts";
 import type {
   CapabilitySupport,
@@ -58,6 +60,11 @@ export interface HarnessBenchOptions {
   dimensions?: readonly HarnessCapabilityDimension[];
   /** Test seam and alternate host probe. A null version means unavailable. */
   versionProbe?: (binary: string) => string | null;
+  /** Where to look for live attestations (ADR 0038). Defaults to the coord
+   * root. Reading them never runs a model turn. */
+  coordRoot?: string;
+  /** Test seam. Defaults to reading the attestation store. */
+  attestationReader?: (harness: HarnessId) => HarnessAttestation | null;
 }
 
 const EMPTY_SUMMARY: Record<BenchVerdict, number> = {
@@ -76,6 +83,27 @@ const EMPTY_BASIS_SUMMARY: Record<BenchBasis, number> = {
   declared: 0,
 };
 
+/** A stored attestation only counts when it still matches the installed
+ * version and the current declaration. A stale one is ignored rather than
+ * trusted, so an upgraded vendor CLI silently drops back to adapter basis. */
+function loadAttestation(
+  id: HarnessId,
+  version: string | null,
+  adapter: HarnessAdapter,
+  opts: HarnessBenchOptions,
+): HarnessAttestation | null {
+  let record: HarnessAttestation | null = null;
+  try {
+    record = opts.attestationReader
+      ? opts.attestationReader(id)
+      : readAttestation(id, { coordRoot: opts.coordRoot });
+  } catch {
+    // No coord root, unreadable store: the bench still runs, just unattested.
+    return null;
+  }
+  return isAttestationCurrent(record, version, adapter.profile) ? record : null;
+}
+
 /** First version-shaped token in a string, or null when there is none.
  * Tolerates the vendor prefixes and suffixes real CLIs print, so
  * `codex-cli 0.144.5` and `2.1.197 (Claude Code)` both reduce to a token. */
@@ -93,7 +121,7 @@ export function runHarnessBench(
   const dimensions = opts.dimensions?.length
     ? [...new Set(opts.dimensions)]
     : [...HARNESS_CAPABILITY_DIMENSIONS];
-  const versionProbe = opts.versionProbe ?? probeVersion;
+  const versionProbe = opts.versionProbe ?? probeBinaryVersion;
   const results: BenchResult[] = [];
 
   for (const id of ids) {
@@ -123,9 +151,15 @@ export function runHarnessBench(
     results.push(contractResult(id, adapter, version));
 
     const observations = observeAdapter(adapter);
+    const attestation = loadAttestation(id, version, adapter, opts);
     for (const dimension of dimensions) {
       const claim = adapter.profile.capabilities[dimension];
-      const { observed, basis } = observations[dimension];
+      const live = attestation?.observations[dimension as AttestableDimension];
+      // A live observation of the installed CLI outranks a fixture check of
+      // Harnery's own normalizer. Everything else keeps its adapter basis.
+      const { observed, basis }: DimensionObservation = live
+        ? { observed: live, basis: "attested" }
+        : observations[dimension];
       results.push({
         harness: id,
         dimension,
@@ -133,7 +167,7 @@ export function runHarnessBench(
         observed,
         verdict: reconcile(claim.support, observed),
         basis,
-        note: claim.note,
+        note: live ? `attested on ${attestation?.binary_version}` : claim.note,
       });
     }
   }
@@ -325,7 +359,10 @@ function reconcile(declared: CapabilitySupport, observed: BenchVerdict): BenchVe
   return declared === observed ? observed : "drift";
 }
 
-function probeVersion(binary: string): string | null {
+/** Ask an installed vendor CLI what version it is. Null when it is absent or
+ * refuses to answer. Shared with the live attestation probe so both halves of
+ * the capability story key on the same string. */
+export function probeBinaryVersion(binary: string): string | null {
   const result = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: 5_000 });
   if (result.error || result.status !== 0) return null;
   return (result.stdout || result.stderr).trim().split("\n")[0] || "installed";

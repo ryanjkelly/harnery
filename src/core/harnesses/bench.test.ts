@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { HarnessAttestation } from "./attestation.ts";
+import { profileDigest, sealAttestation } from "./attestation.ts";
 import { runHarnessBench } from "./bench.ts";
 import { createBuiltinHarnessRegistry, HarnessRegistry } from "./registry.ts";
 
@@ -77,11 +79,14 @@ describe("harness conformance bench", () => {
 
 describe("bench result basis (ADR 0037)", () => {
   const registry = createBuiltinHarnessRegistry();
+  // Hermetic: never read this host's real attestation store.
+  const noAttestations = () => null;
 
   test("an adapter-checked dimension never claims to be attested", () => {
     const report = runHarnessBench(registry, {
       harnesses: ["claude-code"],
       versionProbe: matchingVersionProbe(registry),
+      attestationReader: noAttestations,
     });
     const sessionId = report.results.find((row) => row.dimension === "sessionId");
     expect(sessionId?.verdict).toBe("supported");
@@ -94,6 +99,7 @@ describe("bench result basis (ADR 0037)", () => {
       harnesses: ["claude-code"],
       dimensions: ["streaming"],
       versionProbe: matchingVersionProbe(registry),
+      attestationReader: noAttestations,
     });
     const streaming = report.results.find((row) => row.dimension === "streaming");
     expect(streaming?.observed).toBe("unknown");
@@ -103,6 +109,7 @@ describe("bench result basis (ADR 0037)", () => {
   test("only observations of the installed binary are attested", () => {
     const report = runHarnessBench(registry, {
       versionProbe: matchingVersionProbe(registry),
+      attestationReader: noAttestations,
     });
     const attested = report.results.filter((row) => row.basis === "attested");
     expect(attested.length).toBeGreaterThan(0);
@@ -112,7 +119,10 @@ describe("bench result basis (ADR 0037)", () => {
   });
 
   test("nothing is attested when no vendor binary is present", () => {
-    const report = runHarnessBench(registry, { versionProbe: () => null });
+    const report = runHarnessBench(registry, {
+      versionProbe: () => null,
+      attestationReader: noAttestations,
+    });
     expect(report.basisSummary.attested).toBe(0);
     expect(report.basisSummary.adapter).toBeGreaterThan(0);
   });
@@ -120,6 +130,7 @@ describe("bench result basis (ADR 0037)", () => {
   test("the basis rollup accounts for every result", () => {
     const report = runHarnessBench(registry, {
       versionProbe: matchingVersionProbe(registry),
+      attestationReader: noAttestations,
     });
     const total =
       report.basisSummary.adapter + report.basisSummary.attested + report.basisSummary.declared;
@@ -193,5 +204,85 @@ describe("vendor contract attestation (ADR 0037)", () => {
     const report = runHarnessBench(registryWithout, { versionProbe: () => "9.9.9" });
     expect(contractOf(report)?.verdict).toBe("unknown");
     expect(contractOf(report)?.note).toContain("no verified vendor contract recorded");
+  });
+});
+
+describe("bench reads live attestations (ADR 0038)", () => {
+  const registry = createBuiltinHarnessRegistry();
+  const codex = registry.require("codex").profile;
+
+  function attestation(overrides: Partial<HarnessAttestation> = {}): HarnessAttestation {
+    return sealAttestation({
+      schema_version: 1,
+      harness: "codex",
+      binary_version: "codex-cli 0.144.5",
+      profile_digest: profileDigest(codex),
+      observed_at: "2026-07-24T19:00:00.000Z",
+      observations: { sessionId: "supported" },
+      ...overrides,
+    });
+  }
+
+  const rowFor = (report: ReturnType<typeof runHarnessBench>, dimension: string) =>
+    report.results.find((row) => row.dimension === dimension);
+
+  test("a live observation outranks the fixture check and is marked attested", () => {
+    // codex declares sessionId unsupported and its fixture agrees. A live turn
+    // that DID return a session id must surface as drift, not be ignored.
+    const report = runHarnessBench(registry, {
+      harnesses: ["codex"],
+      dimensions: ["sessionId"],
+      versionProbe: () => "codex-cli 0.144.5",
+      attestationReader: () => attestation(),
+    });
+    expect(rowFor(report, "sessionId")?.observed).toBe("supported");
+    expect(rowFor(report, "sessionId")?.basis).toBe("attested");
+    expect(rowFor(report, "sessionId")?.verdict).toBe("drift");
+    expect(rowFor(report, "sessionId")?.note).toContain("codex-cli 0.144.5");
+  });
+
+  test("a stale attestation is ignored and the row falls back to adapter basis", () => {
+    const report = runHarnessBench(registry, {
+      harnesses: ["codex"],
+      dimensions: ["sessionId"],
+      versionProbe: () => "codex-cli 0.146.0",
+      attestationReader: () => attestation(),
+    });
+    expect(rowFor(report, "sessionId")?.basis).toBe("adapter");
+    expect(rowFor(report, "sessionId")?.verdict).toBe("unsupported");
+  });
+
+  test("a dimension the attestation did not observe keeps its adapter basis", () => {
+    const report = runHarnessBench(registry, {
+      harnesses: ["codex"],
+      dimensions: ["sessionId", "finalResult"],
+      versionProbe: () => "codex-cli 0.144.5",
+      attestationReader: () => attestation({ observations: { sessionId: "supported" } }),
+    });
+    expect(rowFor(report, "sessionId")?.basis).toBe("attested");
+    expect(rowFor(report, "finalResult")?.basis).toBe("adapter");
+  });
+
+  test("an unreadable attestation store never breaks the bench", () => {
+    const report = runHarnessBench(registry, {
+      harnesses: ["codex"],
+      dimensions: ["sessionId"],
+      versionProbe: () => "codex-cli 0.144.5",
+      attestationReader: () => {
+        throw new Error("store unreadable");
+      },
+    });
+    expect(rowFor(report, "sessionId")?.basis).toBe("adapter");
+  });
+
+  test("an attestation cannot be applied when the binary is absent", () => {
+    const report = runHarnessBench(registry, {
+      harnesses: ["codex"],
+      dimensions: ["sessionId"],
+      versionProbe: () => null,
+      attestationReader: () => attestation(),
+    });
+    expect(rowFor(report, "sessionId")?.basis).toBe("adapter");
+    expect(report.basisSummary.attested).toBe(0);
   });
 });

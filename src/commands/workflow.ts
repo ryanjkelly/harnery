@@ -3,7 +3,11 @@ import { join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
-import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
+import {
+  createBuiltinHarnessRegistry,
+  harnessProofInputs,
+  probeBinaryVersion,
+} from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -178,13 +182,9 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
           cwd: opts.cwd,
-          harnessEvidence: Object.fromEntries(
-            registry
-              .list()
-              .map((adapter) => [
-                adapter.profile.id,
-                { toolEvidence: adapter.profile.capabilities.toolEvidence },
-              ]),
+          ...harnessProofInputs(
+            registry.list().map((adapter) => adapter.profile),
+            { versionProbe: probeBinaryVersion },
           ),
           policy: opts.policy ? loadPolicyFile(opts.policy) : undefined,
           approvalMode: "park",
@@ -278,13 +278,9 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
                 writableRoots: [binding.writable_root.configured],
               }
             : undefined,
-          harnessEvidence: Object.fromEntries(
-            registry
-              .list()
-              .map((adapter) => [
-                adapter.profile.id,
-                { toolEvidence: adapter.profile.capabilities.toolEvidence },
-              ]),
+          ...harnessProofInputs(
+            registry.list().map((adapter) => adapter.profile),
+            { versionProbe: probeBinaryVersion },
           ),
         });
         if (opts.json) {

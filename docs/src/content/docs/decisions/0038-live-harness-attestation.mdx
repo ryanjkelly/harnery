@@ -1,0 +1,132 @@
+---
+title: "0038: Only a live turn may attest a vendor capability"
+description: "ADR: record what an installed vendor CLI actually did in one bounded opt-in turn, key it to the observed version, and let it outrank the fixture check."
+---
+
+**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/harnesses`, `harness` CLI, workflow proof)
+
+## Context
+
+[ADR 0037](/decisions/0037-attested-harness-capability-claims/) gave every bench
+result a basis. It also showed how little of the bench is attested: on a fully
+equipped host, 33 of 63 results were `adapter` (Harnery's own planner and
+normalizer against a committed fixture) and only 5 were `attested`. The two
+attested dimensions were binary presence and the recorded vendor contract, both
+free to read.
+
+Everything a workflow actually depends on stayed on the adapter side. Whether
+the installed CLI still returns a session id, still reports a cost, still
+completes a turn at all: none of that had ever been observed by Harnery on the
+host it was about to run on. The one adapter the bench scored clean on every
+proof-relevant dimension, `claude-code`, had never been exercised as a workflow
+child on this host at all.
+
+Meanwhile workflow proof does observe those facts, per agent, on every run. It
+records that an agent returned no session id and no cost. Then it throws the
+observation away. Nothing carries it back to the capability declaration, so the
+next run re-derives the same unknowns from scratch, and a run that *contradicted*
+a declaration would look exactly like one that confirmed it.
+
+Harnery had observations and it had claims. It had no path between them.
+
+## Decision
+
+Add an opt-in live probe that records what the installed vendor CLI did, and let
+that record outrank the fixture check.
+
+### The probe
+
+`harn harness attest --yes` runs one bounded turn per selected harness through
+the adapter's production `spawn`, the same call the workflow engine makes. The
+prompt is a fixed constant with no user content. `--yes` is required because the
+command spends real vendor tokens, which is why it can never be the default and
+never runs inside `harn harness bench`.
+
+Four dimensions are observable from one minimal turn: `invocation`,
+`finalResult`, `sessionId`, and `cost`. Anything needing a purpose-built
+scenario stays out of the record rather than being guessed at.
+
+**A failed turn records nothing.** If the subject is unreachable, the run is not
+written down as a page of `unsupported`, because none of it was observed. This
+is the difference between "the vendor does not do this" and "we could not ask".
+
+### The record
+
+One JSON document per harness under `.harnery/harnesses/attestations/`,
+resolved through the coordination root. It holds the harness id, the version the
+binary reported, a digest of the declaration it was recorded against, a
+timestamp, the observations, and a digest over all of it. Writes are an atomic
+replace, because unlike a workflow record an attestation is meant to be
+re-recorded.
+
+Three things invalidate it, all automatically:
+
+- the installed binary reports a different version;
+- the capability declaration was edited;
+- the record fails its own digest, meaning someone hand-wrote it.
+
+A stale or tampered record is ignored, not repaired and not trusted. The
+affected rows fall back to adapter basis, which is the honest state.
+
+### Effect on the bench
+
+`harn harness bench` reads attestations. It never writes one and never runs a
+turn. A current attestation supplies the observed value for its dimensions and
+marks them `attested`; a live observation that disagrees with the declaration
+becomes drift exactly as a fixture disagreement would. Dimensions the
+attestation did not cover keep their adapter basis.
+
+An unreadable or absent store is not an error. The bench runs unattested.
+
+### Effect on workflow proof
+
+`HarnessEvidenceCoverage` gains an optional `attestation` citation carrying the
+version, timestamp, and record digest. The host reads attestations once and
+injects them, so the engine performs no capability lookups and proof stays free
+of filesystem access.
+
+A missing attestation is deliberately **not** a new proof unknown. Raising one
+would put every existing run on an unknown its operator cannot clear without
+spending tokens, and would change the integration gate for hosts that never
+opted in.
+
+## Alternatives
+
+- **Attest inside `harn harness bench`.** Rejected because the bench is the
+  credential-free, cost-free command that runs on every change. Spending vendor
+  tokens there would make the cheap check expensive and flaky.
+- **Probe every dimension.** Rejected. Streaming, interruption, steering, and
+  policy behavior need scenarios a single turn cannot stage. Recording a guess
+  for them would rebuild the overstatement ADR 0037 removed.
+- **Record `unsupported` for everything when the probe turn fails.** Rejected.
+  An unreachable subject evidences nothing, and a page of false negatives is
+  worse than an empty record.
+- **Expire attestations on a timer.** Rejected because age is a poor proxy. A
+  record is invalid when the version or the declaration changed, and those are
+  observable directly.
+- **Raise a proof unknown when a harness has no attestation.** Rejected for
+  now. It is the philosophically correct end state, but it would gate every run
+  on every unattested host, including hosts that deliberately never spend
+  tokens. Revisit once attestation is routine.
+- **Trust a hand-written record.** Rejected. The record exists precisely because
+  hand-maintained capability facts drift, so one that fails its digest is
+  discarded.
+
+## Verification
+
+- Store tests cover round-trip, replacement, absence, malformed JSON, an
+  unknown schema version, a tampered digest, and a harness id that would escape
+  the directory.
+- Staleness tests cover a version change, a declaration edit, an absent binary,
+  and a null record.
+- Probe tests cover a recorded turn, a vendor that withholds session and cost,
+  a skipped binary, an unreachable subject recording nothing, a thrown probe
+  not stopping the sweep, and an empty reply.
+- Bench tests cover a live observation outranking the fixture, a stale record
+  being ignored, an uncovered dimension keeping adapter basis, an unreadable
+  store, and an absent binary.
+- Proof tests cover the citation, its absence adding no unknown, and a citation
+  for an unused harness not being attached.
+- Privacy tests assert the record contains no prompt text and no host path, and
+  that a console-transcript failure is collapsed to one bounded line with the
+  prompt echo stripped.
