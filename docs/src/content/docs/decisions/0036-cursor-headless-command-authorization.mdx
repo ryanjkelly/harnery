@@ -1,0 +1,49 @@
+---
+title: "0036: Cursor workflow children authorize headless commands"
+description: "ADR: map Cursor's non-interactive command flag so workflow children can test and commit their work."
+---
+
+**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/workflow` harness adapter)
+
+## Context
+
+The Cursor adapter launches `cursor-agent` in non-interactive print mode. It
+already passes workspace trust because there is no prompt where an operator can
+confirm the checkout. The same limitation applies to shell approval: Smart Auto
+may allow patch edits while rejecting every command. A real isolated-workspace
+run reached that state after editing ten files. It could not run its tests or
+create the commit required by proof-gated integration.
+
+The host policy had already authorized the Cursor dispatch, writable path,
+network posture, and worktree isolation. Harnery does not claim that this
+policy is translated into the opaque child tool system; the Cursor capability
+registry reports policy mapping as unsupported.
+
+## Alternatives considered
+
+- **Keep Smart Auto and accept partial execution.** Rejected because a workflow
+  child can return success after edits while skipping tests and the Git commit.
+  The terminal workspace then cannot satisfy integration authority.
+- **Wait for an interactive approval.** Rejected because print mode has no
+  operator response channel. The process returns after the rejected command.
+- **Treat `--trust` as command authorization.** Rejected because the installed
+  CLI distinguishes workspace trust from `--force`, its non-interactive command
+  authorization flag.
+- **Claim that host policy controls Cursor's inner tools.** Rejected because it
+  does not. Dispatch policy and adapter-native tool policy are separate
+  capability dimensions.
+
+## Decision
+
+`buildCursorInvocation()` passes both `--trust` and `--force`. A host that
+authorizes Cursor workflow dispatch therefore gets an executable headless
+child, not a session that can only make patch edits. The public capability
+claim remains unchanged: Cursor policy mapping is unsupported.
+
+This flag does not make a worktree a security sandbox. Hosts that need enforced
+filesystem containment must select a provider that can attest that stronger
+boundary.
+
+## Result
+
+Pending live isolated-workspace verification.

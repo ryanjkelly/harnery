@@ -42,6 +42,12 @@ describe("registered workflow adapter contracts", () => {
     );
   });
 
+  test("Cursor authorizes commands in non-interactive print mode", () => {
+    const plan = buildCursorInvocation(request);
+    expect(plan.argv).toContain("--trust");
+    expect(plan.argv).toContain("--force");
+  });
+
   test("normalizers expose only evidence their vendor result actually carries", () => {
     const claude = normalizeClaudeResult({
       stdout: JSON.stringify({ result: "done", session_id: "s1", total_cost_usd: 0.02 }),

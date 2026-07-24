@@ -327,6 +327,14 @@ This seam protects host-mediated operations. It does not intercept arbitrary
 tools invoked inside an opaque harness subprocess. Adapter-native policy
 mapping remains a separate capability claim in `harn harness show`.
 
+Cursor workflow children run in non-interactive print mode with workspace trust
+and command execution enabled. Print mode has no operator prompt channel, so a
+child without command authorization can edit through its patch tool but cannot
+run tests or create a commit. This does not make Cursor's inner tools
+policy-aware: `harn harness show cursor` still reports policy mapping as
+unsupported. Use a provider with a stronger filesystem boundary when prompt
+instructions alone are not sufficient isolation.
+
 ## Isolated worktrees
 
 The local provider needs an explicit writable parent:

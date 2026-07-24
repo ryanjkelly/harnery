@@ -10,6 +10,9 @@
  *   session_id, …}`).
  * - `--trust` is required: headless runs refuse untrusted workspaces (exit 1,
  *   "Workspace Trust Required") — see the argv comment below.
+ * - `--force` is required: print mode has no channel for an operator to approve
+ *   shell commands, so Smart Auto can leave a child able to patch files but
+ *   unable to test or commit them.
  * - Envelope drift guard: when stdout doesn't parse as JSON but the process
  *   exited 0, the raw stdout is returned as the reply text.
  * - No per-run cost surface → undefined. No max-turns equivalent → `maxTurns`
@@ -51,10 +54,11 @@ export function parseCursorOutput(stdout: string): {
 export function buildCursorInvocation(req: SpawnRequest): HarnessInvocation {
   validateHarnessEffort("cursor", req.effort);
   // --trust: headless cursor-agent refuses untrusted workspaces (exit 1,
-  // "Workspace Trust Required"). Workflow children run in the engine's cwd
-  // deliberately and may edit files — the same posture as the codex adapter's
-  // `--sandbox workspace-write` — so trusting that directory is implied.
-  const argv = ["cursor-agent", "-p", req.prompt, "--output-format", "json", "--trust"];
+  // "Workspace Trust Required"). --force: a print-mode child has no interactive
+  // approval channel, so host-authorized workflow dispatch must let it run
+  // commands. Neither flag maps host policy into child tools; that capability
+  // remains explicitly unsupported.
+  const argv = ["cursor-agent", "-p", req.prompt, "--output-format", "json", "--trust", "--force"];
   if (req.model) argv.push("--model", req.model);
   return { argv };
 }
