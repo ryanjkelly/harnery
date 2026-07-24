@@ -11,6 +11,7 @@ import type {
 import {
   createLocalGitWorktreeProvider,
   inspectWorkflowWorkspace,
+  IntegrationPrepareParkedError,
   listWorkflowWorkspaceInspections,
   prepareIntegration,
   probeLocalGitWorktreeProvider,
@@ -41,6 +42,7 @@ describe("workspace product-tier surface", () => {
     expect(typeof createLocalGitWorktreeProvider).toBe("function");
     expect(typeof probeLocalGitWorktreeProvider).toBe("function");
     expect(typeof prepareIntegration).toBe("function");
+    expect(IntegrationPrepareParkedError.name).toBe("IntegrationPrepareParkedError");
     expect(typeof readWorkflowWorkspaceStatus).toBe("function");
     expect(typeof inspectWorkflowWorkspace).toBe("function");
     expect(typeof listWorkflowWorkspaceInspections).toBe("function");

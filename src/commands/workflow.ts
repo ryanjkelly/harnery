@@ -447,29 +447,55 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
       try {
         const provider = await builtInProviderForRun(coordRoot, runId);
-        const { prepareIntegration } = await import("../core/workflow/index.ts");
-        const plan = await prepareIntegration({
-          coordRoot,
-          runId,
-          provider,
-          policy: loadPolicyFile(opts.policy),
-          targetRoot: opts.targetRoot,
-          review: opts.reviewer ? { actor: opts.reviewer, reason: opts.reason } : undefined,
-          acceptedUnknowns: opts.acceptUnknown,
-          approvalAddressee: opts.approvalTo,
-        });
-        if (opts.json) {
-          emit.config({ format: "json" });
-          emit.data(plan);
-          return;
-        }
-        emit.text(
-          `integration plan ${plan.plan_id} authorized\n` +
-            `source: ${plan.provider_preview.source_commit}\n` +
-            `target: ${plan.provider_preview.target_ref} at ${plan.provider_preview.target_commit}\n` +
-            `changes: ${plan.provider_preview.changed_paths.length}\n` +
-            `apply: ${resolveBinName()} workflow integration apply ${runId} --yes\n`,
+        const { IntegrationPrepareParkedError, prepareIntegration } = await import(
+          "../core/workflow/index.ts"
         );
+        try {
+          const plan = await prepareIntegration({
+            coordRoot,
+            runId,
+            provider,
+            policy: loadPolicyFile(opts.policy),
+            targetRoot: opts.targetRoot,
+            review: opts.reviewer ? { actor: opts.reviewer, reason: opts.reason } : undefined,
+            acceptedUnknowns: opts.acceptUnknown,
+            approvalAddressee: opts.approvalTo,
+          });
+          if (opts.json) {
+            emit.config({ format: "json" });
+            emit.data(plan);
+            return;
+          }
+          emit.text(
+            `integration plan ${plan.plan_id} authorized\n` +
+              `source: ${plan.provider_preview.source_commit}\n` +
+              `target: ${plan.provider_preview.target_ref} at ${plan.provider_preview.target_commit}\n` +
+              `changes: ${plan.provider_preview.changed_paths.length}\n` +
+              `apply: ${resolveBinName()} workflow integration apply ${runId} --yes\n`,
+          );
+        } catch (error) {
+          if (error instanceof IntegrationPrepareParkedError) {
+            if (opts.json) {
+              emit.config({ format: "json" });
+              emit.data({
+                status: "parked",
+                runId: error.runId,
+                planId: error.planId,
+                approvalId: error.approvalId,
+              });
+            } else {
+              emit.text(
+                `integration preparation parked\n` +
+                  `run: ${error.runId}\n` +
+                  `plan: ${error.planId}\n` +
+                  `approval: ${error.approvalId}\n` +
+                  `approve: ${resolveBinName()} workflow approvals approve ${error.approvalId}\n`,
+              );
+            }
+            return;
+          }
+          throw error;
+        }
       } catch (error) {
         emit.error({
           code: "workflow_integration_prepare_failed",

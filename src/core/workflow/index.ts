@@ -149,6 +149,7 @@ export {
   cleanupWorkspace,
   createLocalGitWorktreeProvider,
   deriveWorkspaceLifecycle,
+  IntegrationPrepareParkedError,
   inspectWorkflowWorkspace,
   isWorkspaceLifecycleState,
   listWorkflowWorkspaceInspections,

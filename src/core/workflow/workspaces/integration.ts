@@ -64,6 +64,22 @@ export interface ApplyIntegrationInput {
   plan?: IntegrationPlan;
 }
 
+/** Host-policy ASK still pending during integration prepare. Carries the exact
+ * durable IDs an operator needs to approve and resume the same plan. */
+export class IntegrationPrepareParkedError extends Error {
+  readonly runId: string;
+  readonly planId: string;
+  readonly approvalId: string;
+
+  constructor(runId: string, planId: string, approvalId: string) {
+    super(`integration preparation parked: run ${runId}, plan ${planId}, approval ${approvalId}`);
+    this.name = "IntegrationPrepareParkedError";
+    this.runId = runId;
+    this.planId = planId;
+    this.approvalId = approvalId;
+  }
+}
+
 export async function prepareIntegration(input: PrepareIntegrationInput): Promise<IntegrationPlan> {
   const evidence = await readAndValidateEvidence(input.coordRoot, input.runId, input.provider);
   const targetRoot = resolve(input.targetRoot ?? requiredIntegrationRoot(evidence.binding));
@@ -662,7 +678,7 @@ function authorizePlan(input: PrepareIntegrationInput, plan: IntegrationPlan): v
     });
     approvalId = created.approval.request.id;
     if (created.approval.status === "pending") {
-      throw new Error(`integration approval ${approvalId} is pending`);
+      throw new IntegrationPrepareParkedError(input.runId, plan.plan_id, approvalId);
     }
     if (created.approval.status !== "approved" || !created.approval.decision) {
       throw new Error(`integration approval ${approvalId} was denied`);

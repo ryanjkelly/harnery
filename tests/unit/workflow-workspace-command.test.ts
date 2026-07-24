@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
+import { resolveBinName } from "../../src/core/config.ts";
 import {
   createLocalGitWorktreeProvider,
   listWorkflowWorkspaceInspections,
@@ -150,13 +151,33 @@ describe("workflow workspace commands", () => {
       "--approval-to",
       "operator",
     ];
-    await expect(runCommand(prepareArgs, emit)).rejects.toThrow(/approval .* pending/);
+    await runCommand(prepareArgs, emit);
+    const parkedText = output.join("\n");
+    expect(parkedText).toContain("integration preparation parked");
+    expect(parkedText).toContain(`run: ${report.runId}`);
+    expect(parkedText).toMatch(/plan: integration-plan-/);
+    const approvalId = workflowApprovalId(report.runId, "p99999");
+    expect(parkedText).toContain(`approval: ${approvalId}`);
+    expect(parkedText).toContain(
+      `approve: ${resolveBinName()} workflow approvals approve ${approvalId}`,
+    );
+    expect(emitted).toHaveLength(0);
+
+    output.length = 0;
+    await runCommand([...prepareArgs, "--json"], emit);
+    expect(emitted.at(-1)).toMatchObject({
+      status: "parked",
+      runId: report.runId,
+      approvalId,
+    });
+    expect((emitted.at(-1) as { planId: string }).planId).toMatch(/^integration-plan-/);
+
     await runCommand(
       [
         "workflow",
         "approvals",
         "approve",
-        workflowApprovalId(report.runId, "p99999"),
+        approvalId,
         "--actor",
         "operator",
         "--reason",
@@ -164,6 +185,7 @@ describe("workflow workspace commands", () => {
       ],
       emit,
     );
+    output.length = 0;
     await runCommand(prepareArgs, emit);
     expect(output.join("\n")).toContain("integration plan");
     expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({

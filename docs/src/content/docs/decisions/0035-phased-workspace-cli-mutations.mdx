@@ -51,8 +51,12 @@ harn workflow cleanup <run-id> --yes
 `local-git-worktree` provider from the frozen run binding. It calls
 `prepareIntegration()` with an explicit policy file, optional target root,
 accepted unknown codes, approval addressee, and standalone reviewer. A policy
-`ASK` creates the existing durable approval and exits without applying Git
-changes. Rerunning prepare after approval reuses the exact plan and writes the
+`ASK` creates the existing durable approval and parks through a typed
+`IntegrationPrepareParkedError` that carries the exact run ID, plan ID, and
+approval ID. The CLI treats that park as handled output: text mode prints the
+IDs and a copyable approvals command, JSON mode emits a stable parked envelope,
+and neither path applies Git changes or reports a generic prepare failure.
+Rerunning prepare after approval reuses the exact plan and writes the
 authorization.
 
 `integration apply` requires `--yes` and calls `applyIntegration()`. It does
@@ -73,10 +77,10 @@ authority record, or lifecycle rule changes.
 
 The CLI adapters landed without changing provider or authority records. A
 real-Git test now runs the whole standalone path: create and commit work in an
-isolated worktree, park integration for an `ASK` approval, approve the exact
-request, replay the same plan, refuse unconfirmed mutations, fast-forward the
-target, and release the worktree. The validated run projection moves from
-planned to integrated to released.
+isolated worktree, park integration for an `ASK` approval with explicit plan and
+approval IDs, approve the exact request, replay the same plan, refuse
+unconfirmed mutations, fast-forward the target, and release the worktree. The
+validated run projection moves from planned to integrated to released.
 
 The full product suite passed with 1,010 tests, one intentional skip, and 208
 dashboard tests. Integration checks, the packaged Node smoke test, the public

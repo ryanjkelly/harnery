@@ -390,12 +390,16 @@ review from exact durable work acceptance, so `--reviewer` is needed only for a
 standalone run. Repeat `--accept-unknown` for each verification fact the
 reviewer accepts.
 
-If the policy returns `ASK`, preparation creates a durable approval and stops.
-Resolve it with `workflow approvals`, then rerun the same prepare command. The
-exact plan is reused and authorized. Apply requires `--yes` and rereads the
-plan, proof, review, policy decision, approval, target identity, and attempt
-chain before Git changes. Divergence, target movement, dirty state, or a Git
-operation in progress blocks the apply. Harnery does not resolve conflicts.
+If the policy returns `ASK`, preparation creates a durable approval and parks
+without applying Git changes or reporting a generic workflow failure. Text mode
+prints the run, plan, and approval IDs plus a copyable
+`workflow approvals approve` command. JSON mode emits a stable parked envelope
+with `status`, `runId`, `planId`, and `approvalId`. Resolve the approval, then
+rerun the same prepare command. The exact plan is reused and authorized. Apply
+requires `--yes` and rereads the plan, proof, review, policy decision, approval,
+target identity, and attempt chain before Git changes. Divergence, target
+movement, dirty state, or a Git operation in progress blocks the apply. Harnery
+does not resolve conflicts.
 
 Cleanup also requires `--yes`. It removes only resources covered by the frozen
 binding and cleanup intent. A clean unintegrated branch that is not reachable

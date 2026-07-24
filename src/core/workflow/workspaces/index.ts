@@ -15,7 +15,11 @@ export {
   renderWorkflowWorkspaceStatus,
 } from "./inspect.ts";
 export type { ApplyIntegrationInput, PrepareIntegrationInput } from "./integration.ts";
-export { applyIntegration, prepareIntegration } from "./integration.ts";
+export {
+  applyIntegration,
+  IntegrationPrepareParkedError,
+  prepareIntegration,
+} from "./integration.ts";
 export type {
   WorkspaceLifecycleProjection,
   WorkspaceLifecycleProjectionInput,

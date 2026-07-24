@@ -20,7 +20,11 @@ import { acceptWorkItem, createWorkItem, reopenWorkItem, runWorkItem } from "../
 import { resolveWorkflowApproval, workflowApprovalId } from "../approvals.ts";
 import { runWorkflow } from "../engine.ts";
 import { readWorkflowProof } from "../proof.ts";
-import { applyIntegration, prepareIntegration } from "./integration.ts";
+import {
+  applyIntegration,
+  IntegrationPrepareParkedError,
+  prepareIntegration,
+} from "./integration.ts";
 import { acquireNoClobberLease } from "./leases.ts";
 import { deriveWorkspaceLifecycle } from "./lifecycle.ts";
 import { createLocalGitWorktreeProvider } from "./local-git.ts";
@@ -215,8 +219,9 @@ describe("verification-gated fast-forward integration", () => {
       }),
     ).rejects.toThrow(/policy denied/);
 
-    await expect(
-      prepareIntegration({
+    let parked: IntegrationPrepareParkedError | undefined;
+    try {
+      await prepareIntegration({
         coordRoot: repo,
         runId: report.runId,
         provider,
@@ -227,11 +232,17 @@ describe("verification-gated fast-forward integration", () => {
           allowed_paths: [repo],
         },
         acceptedUnknowns: ["network_not_attested"],
-      }),
-    ).rejects.toThrow(/approval .* pending/);
+      });
+    } catch (error) {
+      parked = error as IntegrationPrepareParkedError;
+    }
+    expect(parked).toBeInstanceOf(IntegrationPrepareParkedError);
+    expect(parked!.runId).toBe(report.runId);
+    expect(parked!.planId).toMatch(/^integration-plan-/);
+    expect(parked!.approvalId).toBe(workflowApprovalId(report.runId, "p99999"));
     resolveWorkflowApproval({
       coordRoot: repo,
-      approvalId: workflowApprovalId(report.runId, "p99999"),
+      approvalId: parked!.approvalId,
       verdict: "allow",
       actor: "operator",
       reason: "reviewed exact fast-forward",
