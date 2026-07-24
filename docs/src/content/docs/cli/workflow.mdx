@@ -14,6 +14,11 @@ harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
 harn workflow resume <run-id> [--json]
 harn workflow workspace <run-id> [--json]
 harn workflow workspaces [--json]
+harn workflow integration prepare <run-id> --policy <file> [--reviewer <name>]
+                                    [--reason <text>] [--target-root <dir>]
+                                    [--accept-unknown <code>] [--approval-to <address>] [--json]
+harn workflow integration apply <run-id> --yes [--json]
+harn workflow cleanup <run-id> --yes [--json]
 harn workflow approvals list [--status pending|approved|denied] [--json]
 harn workflow approvals show <approval-id> [--json]
 harn workflow approvals approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
@@ -358,16 +363,37 @@ lifecycle. It reports allocation, verification, integration, conflicts,
 cleanup, and resource state. Corrupt or contradictory evidence returns an
 explicit invalid inspection.
 
-Integration is deliberately separate from workflow success. The provider can
-preview a fast-forward, but `prepareIntegration()` still requires satisfied
-proof, accepted review, and policy authorization. `applyIntegration()` rereads
-that authority and writes a durable receipt. Divergence, target movement,
-dirty state, or a Git operation in progress blocks the apply. Harnery does not
-resolve conflicts automatically.
+Finish a verified standalone run in explicit phases:
 
-Cleanup is also explicit. `cleanupWorkspace()` removes only resources covered
-by the frozen binding and cleanup intent. Dirty or ambiguous work is preserved
-for inspection.
+```bash
+harn workflow integration prepare <run-id> \
+  --policy ./integration-policy.json \
+  --reviewer sam \
+  --reason "reviewed the exact proof and diff" \
+  --accept-unknown network_not_attested
+
+harn workflow integration apply <run-id> --yes
+harn workflow cleanup <run-id> --yes
+```
+
+Preparation previews the fast-forward and writes review, plan, and policy
+authority. It does not update the target branch. A work-linked run gets its
+review from exact durable work acceptance, so `--reviewer` is needed only for a
+standalone run. Repeat `--accept-unknown` for each verification fact the
+reviewer accepts.
+
+If the policy returns `ASK`, preparation creates a durable approval and stops.
+Resolve it with `workflow approvals`, then rerun the same prepare command. The
+exact plan is reused and authorized. Apply requires `--yes` and rereads the
+plan, proof, review, policy decision, approval, target identity, and attempt
+chain before Git changes. Divergence, target movement, dirty state, or a Git
+operation in progress blocks the apply. Harnery does not resolve conflicts.
+
+Cleanup also requires `--yes`. It removes only resources covered by the frozen
+binding and cleanup intent. A clean unintegrated branch that is not reachable
+from the target is preserved, as is dirty or ambiguous work. The CLI supports
+the built-in local Git provider. Embedding hosts use `prepareIntegration()`,
+`applyIntegration()`, and `cleanupWorkspace()` for other providers.
 
 ## Resume
 

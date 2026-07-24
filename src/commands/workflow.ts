@@ -1,13 +1,14 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { workflowSubscriptionOnly } from "../core/config.ts";
+import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
 import { createBuiltinHarnessRegistry } from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import type { WorkflowApprovalStatus } from "../core/workflow/approvals.ts";
 import { WorkflowParkedError } from "../core/workflow/engine.ts";
+import type { WorkspaceProvider } from "../core/workflow/index.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
@@ -46,6 +47,21 @@ interface WorkflowApprovalListOpts {
 interface WorkflowApprovalDecisionOpts {
   actor?: string;
   reason?: string;
+  json?: boolean;
+}
+
+interface WorkflowIntegrationPrepareOpts {
+  policy?: string;
+  reviewer?: string;
+  reason?: string;
+  targetRoot?: string;
+  acceptUnknown?: string[];
+  approvalTo?: string;
+  json?: boolean;
+}
+
+interface WorkflowConfirmedMutationOpts {
+  yes?: boolean;
   json?: boolean;
 }
 
@@ -387,6 +403,174 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       );
     });
 
+  const integration = workflow
+    .command("integration")
+    .description("Prepare and apply proof-gated isolated-workspace integration.");
+
+  integration
+    .command("prepare <run-id>")
+    .description("Preview integration and write exact review and policy authority.")
+    .option("--policy <file>", "Current host policy JSON/JSONC for the Git mutation")
+    .option("--reviewer <name>", "Explicit reviewer for a standalone workflow")
+    .option("--reason <text>", "Reason recorded with the standalone review")
+    .option("--target-root <dir>", "Explicit target checkout (default: frozen source checkout)")
+    .option(
+      "--accept-unknown <code>",
+      "Accept one verification unknown by code (repeatable)",
+      collectOption,
+      [],
+    )
+    .option("--approval-to <address>", "Address a durable policy ASK request")
+    .option("--json", "Emit the durable integration plan as JSON")
+    .action(async (runId: string, opts: WorkflowIntegrationPrepareOpts) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      if (!opts.policy) {
+        emit.error({
+          code: "integration_policy_required",
+          message: "integration prepare requires --policy <file>",
+        });
+        process.exit(1);
+      }
+      if (opts.reason && !opts.reviewer) {
+        emit.error({
+          code: "integration_reviewer_required",
+          message: "--reason requires --reviewer <name>",
+        });
+        process.exit(1);
+      }
+      try {
+        const provider = await builtInProviderForRun(coordRoot, runId);
+        const { prepareIntegration } = await import("../core/workflow/index.ts");
+        const plan = await prepareIntegration({
+          coordRoot,
+          runId,
+          provider,
+          policy: loadPolicyFile(opts.policy),
+          targetRoot: opts.targetRoot,
+          review: opts.reviewer ? { actor: opts.reviewer, reason: opts.reason } : undefined,
+          acceptedUnknowns: opts.acceptUnknown,
+          approvalAddressee: opts.approvalTo,
+        });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(plan);
+          return;
+        }
+        emit.text(
+          `integration plan ${plan.plan_id} authorized\n` +
+            `source: ${plan.provider_preview.source_commit}\n` +
+            `target: ${plan.provider_preview.target_ref} at ${plan.provider_preview.target_commit}\n` +
+            `changes: ${plan.provider_preview.changed_paths.length}\n` +
+            `apply: ${resolveBinName()} workflow integration apply ${runId} --yes\n`,
+        );
+      } catch (error) {
+        emit.error({
+          code: "workflow_integration_prepare_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exit(1);
+      }
+    });
+
+  integration
+    .command("apply <run-id>")
+    .description("Apply an authorized durable integration plan.")
+    .option("--yes", "Confirm the target-branch mutation")
+    .option("--json", "Emit the durable integration receipt as JSON")
+    .action(async (runId: string, opts: WorkflowConfirmedMutationOpts) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      if (!opts.yes) {
+        emit.error({
+          code: "integration_confirmation_required",
+          message: "integration apply changes the target branch; pass --yes to confirm",
+        });
+        process.exit(1);
+      }
+      try {
+        const provider = await builtInProviderForRun(coordRoot, runId);
+        const { applyIntegration } = await import("../core/workflow/index.ts");
+        const receipt = await applyIntegration({ coordRoot, runId, provider });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(receipt);
+          return;
+        }
+        emit.text(
+          `integration ${receipt.status}: ${receipt.target_ref} at ${receipt.target_commit}\n` +
+            `receipt: ${receipt.receipt_id}\n` +
+            `cleanup: ${resolveBinName()} workflow cleanup ${runId} --yes\n`,
+        );
+      } catch (error) {
+        emit.error({
+          code: "workflow_integration_apply_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exit(1);
+      }
+    });
+
+  workflow
+    .command("cleanup <run-id>")
+    .description("Conservatively release a provider-owned isolated workspace.")
+    .option("--yes", "Confirm the worktree and provider-branch removal attempt")
+    .option("--json", "Emit the cleanup attempt or receipt as JSON")
+    .action(async (runId: string, opts: WorkflowConfirmedMutationOpts) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      if (!opts.yes) {
+        emit.error({
+          code: "cleanup_confirmation_required",
+          message: "workspace cleanup may remove a worktree and branch; pass --yes to confirm",
+        });
+        process.exit(1);
+      }
+      try {
+        const provider = await builtInProviderForRun(coordRoot, runId);
+        const { cleanupWorkspace } = await import("../core/workflow/index.ts");
+        const result = await cleanupWorkspace({ coordRoot, runId, provider });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data(result);
+          return;
+        }
+        const receipt =
+          "receipt_id" in result && typeof result.receipt_id === "string"
+            ? `\nreceipt: ${result.receipt_id}`
+            : "";
+        const reason =
+          "reason" in result && typeof result.reason === "string"
+            ? `\nreason: ${result.reason}`
+            : "";
+        emit.text(`workspace cleanup ${result.status}: ${result.binding_id}${receipt}${reason}\n`);
+      } catch (error) {
+        emit.error({
+          code: "workflow_cleanup_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exit(1);
+      }
+    });
+
   const approvals = workflow
     .command("approvals")
     .description("Inspect and resolve durable workflow policy approvals.");
@@ -532,4 +716,25 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
     });
+}
+
+async function builtInProviderForRun(coordRoot: string, runId: string): Promise<WorkspaceProvider> {
+  const { createLocalGitWorktreeProvider, readWorkflowRunManifest } = await import(
+    "../core/workflow/index.ts"
+  );
+  const manifest = readWorkflowRunManifest(coordRoot, runId);
+  const binding = manifest.execution.workspace_binding;
+  if (!binding) {
+    throw new Error(`workflow run ${runId} has no isolated workspace binding`);
+  }
+  if (binding.provider.id !== "local-git-worktree") {
+    throw new Error(
+      `workflow run ${runId} requires unavailable workspace provider ${binding.provider.id}`,
+    );
+  }
+  return createLocalGitWorktreeProvider({ coordRoot });
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }

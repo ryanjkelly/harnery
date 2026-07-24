@@ -83,8 +83,14 @@ check "harn harness bench makes no model calls" \
 check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"
 check "harn workflow --help mentions resume" "$HARN workflow --help" "resume"
 check "harn workflow --help mentions approvals" "$HARN workflow --help" "approvals"
+check "harn workflow --help mentions integration" "$HARN workflow --help" "integration"
+check "harn workflow --help mentions cleanup" "$HARN workflow --help" "cleanup"
 check "harn workflow proof --help mentions JSON output" \
   "$HARN workflow proof --help" "--json"
+check "harn workflow integration --help exposes phased apply" \
+  "$HARN workflow integration --help" "apply"
+check "harn workflow cleanup --help requires confirmation" \
+  "$HARN workflow cleanup --help" "--yes"
 check "harn workflow approvals --help exposes resolution" \
   "$HARN workflow approvals --help" "approve"
 check "harn workflow approvals list starts with an empty inbox" \

@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Command } from "commander";
 import { registerWorkflowCommand } from "../../src/commands/workflow.ts";
-import { listWorkflowWorkspaceInspections } from "../../src/core/workflow/index.ts";
+import {
+  createLocalGitWorktreeProvider,
+  listWorkflowWorkspaceInspections,
+  readWorkflowWorkspaceStatus,
+  runWorkflow,
+  workflowApprovalId,
+} from "../../src/core/workflow/index.ts";
 import { git, gitFixture, hasGit, writeScript } from "../workspace-test-helpers.ts";
 
 let host: string;
@@ -61,6 +68,125 @@ describe("workflow workspace commands", () => {
 
     await runCommand(["workflow", "workspaces"], emit);
     expect(output.join("\n")).toContain(`${inspection.value.run_id}\tisolated`);
+  });
+
+  test("prepares, applies, and cleans up through existing durable authority", async () => {
+    if (!hasGit() || process.platform !== "linux") return;
+    const script = writeScript(
+      repo,
+      `
+        export const meta = {
+          acceptance: [{ id: "ready", statement: "workspace change is ready" }],
+        };
+        export default async ({ agent, evidence }) => {
+          await agent("produce");
+          evidence({
+            kind: "test",
+            status: "passed",
+            label: "workspace verification",
+            acceptanceIds: ["ready"],
+          });
+          return "ready";
+        };
+      `,
+    );
+    git(repo, "add", ".");
+    git(repo, "commit", "-qm", "workflow");
+    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
+    const report = await runWorkflow(script, {
+      coordRoot: repo,
+      cwd: repo,
+      spawners: {
+        "claude-code": async (request) => {
+          writeFileSync(join(request.cwd, "result.txt"), "integrated\n");
+          git(request.cwd, "add", "result.txt");
+          git(request.cwd, "commit", "-qm", "workspace result");
+          return {
+            ok: true,
+            text: "done",
+            durationMs: 1,
+            costUsd: 0,
+            sessionId: "fixture",
+          };
+        },
+      },
+      harnessEvidence: {
+        "claude-code": { toolEvidence: { support: "supported" } },
+      },
+      isolation: "worktree",
+      workspace: { provider, writableRoots: [host] },
+    });
+    const policyPath = join(host, "integration-policy.json");
+    writeFileSync(
+      policyPath,
+      `${JSON.stringify({
+        external_actions: "ask",
+        allowed_isolation: ["worktree"],
+        allowed_paths: [host],
+      })}\n`,
+    );
+    const output: string[] = [];
+    const emitted: unknown[] = [];
+    const emit = {
+      text: (value: string) => output.push(value),
+      data: (value: unknown) => emitted.push(value),
+      config: () => {},
+      error: (error: { message: string }) => {
+        throw new Error(error.message);
+      },
+    };
+
+    const prepareArgs = [
+      "workflow",
+      "integration",
+      "prepare",
+      report.runId,
+      "--policy",
+      policyPath,
+      "--reviewer",
+      "reviewer",
+      "--accept-unknown",
+      "network_not_attested",
+      "--approval-to",
+      "operator",
+    ];
+    await expect(runCommand(prepareArgs, emit)).rejects.toThrow(/approval .* pending/);
+    await runCommand(
+      [
+        "workflow",
+        "approvals",
+        "approve",
+        workflowApprovalId(report.runId, "p99999"),
+        "--actor",
+        "operator",
+        "--reason",
+        "reviewed exact fast-forward",
+      ],
+      emit,
+    );
+    await runCommand(prepareArgs, emit);
+    expect(output.join("\n")).toContain("integration plan");
+    expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
+      lifecycle: { integration_state: "planned" },
+    });
+
+    await expect(
+      runCommand(["workflow", "integration", "apply", report.runId], emit),
+    ).rejects.toThrow(/pass --yes/);
+    await runCommand(["workflow", "integration", "apply", report.runId, "--yes"], emit);
+    expect(existsSync(join(repo, "result.txt"))).toBe(true);
+    expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
+      lifecycle: { state: "integrated", integration_state: "applied" },
+    });
+
+    await expect(runCommand(["workflow", "cleanup", report.runId], emit)).rejects.toThrow(
+      /pass --yes/,
+    );
+    await runCommand(["workflow", "cleanup", report.runId, "--yes"], emit);
+    expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
+      lifecycle: { state: "released", resource_state: "released" },
+      cleanup: { state: "released" },
+    });
   });
 });
 

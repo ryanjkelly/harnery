@@ -109,6 +109,17 @@ try {
   }
   log("workflow workspace CLI OK");
 
+  log("checking phased workflow mutation CLI boots ...");
+  const integrationHelp = run(["workflow", "integration", "--help"]);
+  const cleanupHelp = run(["workflow", "cleanup", "--help"]);
+  if (!/prepare/.test(integrationHelp) || !/apply/.test(integrationHelp)) {
+    fail("workflow integration help did not expose prepare and apply");
+  }
+  if (!/--yes/.test(cleanupHelp)) {
+    fail("workflow cleanup help did not expose explicit confirmation");
+  }
+  log("phased workflow mutation CLI OK");
+
   // Durable work must boot through the packed Node CLI and preserve a record.
   log("checking durable work CLI boots ...");
   const workWorkflow = join(workdir, "work-smoke.mjs");

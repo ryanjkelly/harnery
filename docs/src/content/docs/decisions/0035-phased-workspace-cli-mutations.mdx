@@ -1,0 +1,84 @@
+---
+title: "0035: Workspace CLI mutations preserve durable phase boundaries"
+description: "ADR: expose integration and cleanup through separate guarded commands that reuse workflow-core authority."
+---
+
+**Status:** accepted (2026-07-24) · **Scope:** product tier (`workflow` CLI and `core/workflow`)
+
+## Context
+
+ADR 0034 separates workspace allocation, proof, review, policy authorization,
+integration, and cleanup. The product API exposes each operation, while the
+standalone CLI can allocate and inspect a local Git worktree but cannot finish
+its lifecycle. An operator must write library code to integrate verified work
+or release a provider-owned worktree.
+
+The CLI must not turn that inconvenience into a one-shot merge command. A
+policy `ASK` may park between planning and authorization. The target can move
+after planning. Cleanup may preserve unintegrated or dirty work. Each condition
+needs to remain visible and retryable under the durable records defined by ADR
+0034.
+
+## Alternatives considered
+
+- **Add one `workflow integrate` command that plans and applies immediately.**
+  Rejected because it removes the inspection point between a verified preview
+  and the Git mutation. It also makes a pending policy approval look like a
+  failed one-shot command instead of a resumable authorization phase.
+- **Reuse the run's frozen dispatch policy automatically.** Rejected because
+  integration is a new external mutation at a later time. The host must supply
+  the policy it wants evaluated for that action. The durable authorization
+  records its digest.
+- **Infer review from the current OS user, Git author, or command invoker.**
+  Rejected because identity does not prove review. Standalone runs name a
+  reviewer explicitly. Work-linked runs continue to use exact durable work
+  acceptance.
+- **Shell directly to `git merge` and `git worktree remove`.** Rejected because
+  direct Git commands bypass provider identity, proof binding, leases,
+  compare-and-swap checks, replay receipts, and conservative preservation.
+
+## Decision
+
+Add three thin command adapters:
+
+```text
+harn workflow integration prepare <run-id> --policy <file> [review options]
+harn workflow integration apply <run-id> --yes
+harn workflow cleanup <run-id> --yes
+```
+
+`integration prepare` reconstructs only Harnery's built-in
+`local-git-worktree` provider from the frozen run binding. It calls
+`prepareIntegration()` with an explicit policy file, optional target root,
+accepted unknown codes, approval addressee, and standalone reviewer. A policy
+`ASK` creates the existing durable approval and exits without applying Git
+changes. Rerunning prepare after approval reuses the exact plan and writes the
+authorization.
+
+`integration apply` requires `--yes` and calls `applyIntegration()`. It does
+not accept replacement policy, review, target, or plan values. Workflow core
+rereads the durable plan, proof, review, authorization, approval, target
+identity, and attempt chain before the provider may fast-forward the target.
+
+`workflow cleanup` also requires `--yes` and calls `cleanupWorkspace()`.
+Cleanup keeps the existing behavior: it removes only resources named by the
+frozen binding and intent, preserves dirty or unreachable work, and returns a
+blocked or partial attempt instead of claiming release.
+
+The commands reject non-local provider bindings. Embedding hosts keep using the
+product API for their own providers. No package export, provider capability,
+authority record, or lifecycle rule changes.
+
+## Result
+
+The CLI adapters landed without changing provider or authority records. A
+real-Git test now runs the whole standalone path: create and commit work in an
+isolated worktree, park integration for an `ASK` approval, approve the exact
+request, replay the same plan, refuse unconfirmed mutations, fast-forward the
+target, and release the worktree. The validated run projection moves from
+planned to integrated to released.
+
+The full product suite passed with 1,010 tests, one intentional skip, and 208
+dashboard tests. Integration checks, the packaged Node smoke test, the public
+surface check, the portability check, the layering check, and the production
+documentation build also passed.
