@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tempRoot } from "../../../../tests/workspace-test-helpers.ts";
@@ -112,6 +121,54 @@ describe("no-clobber workspace leases", () => {
     expect(existsSync(join(path, "current"))).toBe(false);
     expect(readdirSync(path).filter((entry) => entry.startsWith("owner-"))).toEqual([]);
     expect(readdirSync(path).filter((entry) => entry.startsWith("recovery"))).toEqual([]);
+  });
+
+  test("abandons its recovery claim when current changes after stale observation", () => {
+    const path = join(tempRoot("workspace-lease-recovery-race"), "operation.lease");
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
+    acquireNoClobberLease({
+      path,
+      scope: "repository",
+      authoritySha256: DIGEST,
+      staleAfterMs: 1_000,
+      now: () => now,
+      pid: DEAD_PID,
+    });
+
+    const racerId = "racer";
+    const racerFile = `owner-${racerId}.json`;
+    const racer: NoClobberLeaseOwner = {
+      schema_version: 1,
+      owner_id: racerId,
+      owner_file: racerFile,
+      scope: "repository",
+      authority_sha256: DIGEST,
+      pid: process.pid,
+      host: "test-host",
+      created_at: new Date(now + 2_000).toISOString(),
+      expires_at: new Date(now + 3_000).toISOString(),
+    };
+    writeFileSync(join(path, racerFile), `${JSON.stringify(racer)}\n`);
+
+    expect(() =>
+      acquireNoClobberLease({
+        path,
+        scope: "repository",
+        authoritySha256: DIGEST,
+        staleAfterMs: 1_000,
+        now: () => now + 2_000,
+        validateStaleOwner: (owner) => owner.authority_sha256 === DIGEST,
+        onRecoveryStep: (step) => {
+          if (step !== "claim_created") return;
+          unlinkSync(join(path, "current"));
+          linkSync(join(path, racerFile), join(path, "current"));
+        },
+      }),
+    ).toThrow(/recovery raced with another contender/);
+
+    expect(readdirSync(path).filter((entry) => entry.startsWith("recovery"))).toEqual([]);
+    expect(readCurrentOwner(path).owner_id).toBe(racerId);
+    expect(readdirSync(path).filter((entry) => entry.startsWith("owner-"))).toHaveLength(2);
   });
 
   for (const boundary of [

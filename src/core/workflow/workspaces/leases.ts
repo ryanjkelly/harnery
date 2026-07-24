@@ -134,8 +134,14 @@ export function acquireNoClobberLease(input: AcquireNoClobberLeaseInput): NoClob
     input.onRecoveryStep?.("claim_created");
 
     const pinPath = join(recoveryPath, "stale-pin");
-    linkSync(currentPath, pinPath);
-    assertSameInodeAndBytes(currentPath, pinPath, observed.bytes);
+    try {
+      linkSync(currentPath, pinPath);
+      assertSameInodeAndBytes(currentPath, pinPath, observed.bytes);
+    } catch {
+      abortUnchangedRecoveryClaim(leaseDir, recoveryPath, pinPath, owner);
+      recoveryClaimed = false;
+      throw new Error(`lease ${input.scope} recovery raced with another contender`);
+    }
     fsyncDirectory(recoveryPath);
     input.onRecoveryStep?.("stale_pinned");
 
@@ -289,6 +295,22 @@ function reclaimAbandonedRecovery(
   }
   unlinkSync(join(quarantine, "claim.json"));
   rmdirSync(quarantine);
+  fsyncDirectory(leaseDir);
+}
+
+function abortUnchangedRecoveryClaim(
+  leaseDir: string,
+  recoveryPath: string,
+  pinPath: string,
+  claimant: NoClobberLeaseOwner,
+): void {
+  const claim = readRecoveryClaim(recoveryPath);
+  if (claim.claimant.owner_id !== claimant.owner_id) {
+    throw new Error(`lease ${claimant.scope} recovery ownership changed`);
+  }
+  safeUnlink(pinPath);
+  unlinkSync(join(recoveryPath, "claim.json"));
+  rmdirSync(recoveryPath);
   fsyncDirectory(leaseDir);
 }
 
