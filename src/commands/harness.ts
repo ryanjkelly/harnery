@@ -120,13 +120,28 @@ export function renderBenchReport(report: HarnessBenchReport): string {
     result.declared,
     result.observed,
     result.verdict,
+    result.basis,
   ]);
-  const table = renderTable(["HARNESS", "DIMENSION", "DECLARED", "OBSERVED", "VERDICT"], rows);
+  const table = renderTable(
+    ["HARNESS", "DIMENSION", "DECLARED", "OBSERVED", "VERDICT", "BASIS"],
+    rows,
+  );
   const summary = Object.entries(report.summary)
     .filter(([, count]) => count > 0)
     .map(([verdict, count]) => `${verdict}=${count}`)
     .join(", ");
-  return `${table}\n\nmode: ${report.mode} (no model calls)\n${summary}`;
+  const basis = Object.entries(report.basisSummary)
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `${name}=${count}`)
+    .join(", ");
+  return [
+    table,
+    "",
+    `mode: ${report.mode} (no model calls)`,
+    summary,
+    `basis: ${basis}`,
+    "adapter = checked against Harnery's planner/normalizer/fixture, not the installed CLI",
+  ].join("\n");
 }
 
 function renderTable(headers: string[], rows: string[][]): string {

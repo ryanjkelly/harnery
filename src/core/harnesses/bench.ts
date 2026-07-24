@@ -19,7 +19,16 @@ export type BenchVerdict =
   | "skipped"
   | "drift";
 
-export type BenchDimension = "registration" | "binary" | HarnessCapabilityDimension;
+export type BenchDimension = "registration" | "binary" | "contract" | HarnessCapabilityDimension;
+
+/** How a result was established (ADR 0037). Orthogonal to the verdict: this
+ * answers "how do we know", not "what is true".
+ *
+ * - `adapter`: checked against Harnery's own planner, normalizer, or fixture.
+ *   Proves the adapter contract, says nothing about the installed vendor CLI.
+ * - `attested`: checked by observing the installed vendor CLI on this host.
+ * - `declared`: not checked. The value is the declaration, repeated. */
+export type BenchBasis = "adapter" | "attested" | "declared";
 
 export interface BenchResult {
   harness: HarnessId;
@@ -27,6 +36,7 @@ export interface BenchResult {
   declared: CapabilitySupport | "not_applicable";
   observed: BenchVerdict;
   verdict: BenchVerdict;
+  basis: BenchBasis;
   note?: string;
 }
 
@@ -36,6 +46,9 @@ export interface HarnessBenchReport {
   harnesses: HarnessId[];
   results: BenchResult[];
   summary: Record<BenchVerdict, number>;
+  /** Result counts per basis, so a caller can tell a clean report from an
+   * unmeasured one without walking every result. */
+  basisSummary: Record<BenchBasis, number>;
   drift: boolean;
   skipped: boolean;
 }
@@ -57,6 +70,21 @@ const EMPTY_SUMMARY: Record<BenchVerdict, number> = {
   drift: 0,
 };
 
+const EMPTY_BASIS_SUMMARY: Record<BenchBasis, number> = {
+  adapter: 0,
+  attested: 0,
+  declared: 0,
+};
+
+/** First version-shaped token in a string, or null when there is none.
+ * Tolerates the vendor prefixes and suffixes real CLIs print, so
+ * `codex-cli 0.144.5` and `2.1.197 (Claude Code)` both reduce to a token. */
+function versionToken(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const match = value.match(/\d+(?:\.\d+)+(?:[-.][0-9a-z]+)*/i);
+  return match ? match[0].toLowerCase() : null;
+}
+
 export function runHarnessBench(
   registry: HarnessRegistry,
   opts: HarnessBenchOptions = {},
@@ -76,6 +104,7 @@ export function runHarnessBench(
       declared: "supported",
       observed: "supported",
       verdict: "supported",
+      basis: "adapter",
       note: `${adapter.profile.integrationMode}; ${adapter.profile.authModel}`,
     });
 
@@ -86,38 +115,119 @@ export function runHarnessBench(
       declared: "supported",
       observed: version ? "supported" : "skipped",
       verdict: version ? "supported" : "skipped",
+      // A skip establishes nothing about the vendor, so it is not an attestation.
+      basis: version ? "attested" : "declared",
       note: version ?? `${adapter.profile.binary} not found on PATH`,
     });
+
+    results.push(contractResult(id, adapter, version));
 
     const observations = observeAdapter(adapter);
     for (const dimension of dimensions) {
       const claim = adapter.profile.capabilities[dimension];
-      const observed = observations[dimension];
+      const { observed, basis } = observations[dimension];
       results.push({
         harness: id,
         dimension,
         declared: claim.support,
         observed,
         verdict: reconcile(claim.support, observed),
+        basis,
         note: claim.note,
       });
     }
   }
 
   const summary = { ...EMPTY_SUMMARY };
-  for (const result of results) summary[result.verdict]++;
+  const basisSummary = { ...EMPTY_BASIS_SUMMARY };
+  for (const result of results) {
+    summary[result.verdict]++;
+    basisSummary[result.basis]++;
+  }
   return {
     generatedAt: new Date().toISOString(),
     mode: "offline",
     harnesses: ids,
     results,
     summary,
+    basisSummary,
     drift: summary.drift > 0,
     skipped: summary.skipped > 0,
   };
 }
 
-function observeAdapter(adapter: HarnessAdapter): Record<HarnessCapabilityDimension, BenchVerdict> {
+/** Compare the vendor contract a declaration was validated against with the
+ * one actually installed (ADR 0037). This is the only dimension attested
+ * without a model turn, because a version string costs nothing to read.
+ *
+ * A mismatch is `drift`, not failure: a newer vendor CLI is not automatically
+ * broken, but the declaration is no longer backed by an observation. An
+ * unrecorded or unparseable declared version stays `unknown` rather than being
+ * inferred from the installed one. */
+function contractResult(
+  id: HarnessId,
+  adapter: HarnessAdapter,
+  version: string | null,
+): BenchResult {
+  const recorded = adapter.profile.verified;
+  const base = { harness: id, dimension: "contract" as const, declared: "supported" as const };
+
+  if (!version) {
+    return {
+      ...base,
+      observed: "skipped",
+      verdict: "skipped",
+      basis: "declared",
+      note: `${adapter.profile.binary} not found on PATH; installed contract unobservable`,
+    };
+  }
+  const declaredToken = versionToken(recorded?.version);
+  if (!declaredToken) {
+    return {
+      ...base,
+      observed: "unknown",
+      verdict: "unknown",
+      basis: "declared",
+      note: recorded
+        ? `verified.version "${recorded.version}" is not a version; installed ${version}`
+        : `no verified vendor contract recorded; installed ${version}`,
+    };
+  }
+  const installedToken = versionToken(version) ?? version.trim().toLowerCase();
+  if (installedToken === declaredToken) {
+    return {
+      ...base,
+      observed: "supported",
+      verdict: "supported",
+      basis: "attested",
+      note: `declaration validated against ${recorded?.version} on ${recorded?.date}`,
+    };
+  }
+  return {
+    ...base,
+    observed: "drift",
+    verdict: "drift",
+    basis: "attested",
+    note: `declaration validated against ${recorded?.version} (${recorded?.date}); installed ${version}`,
+  };
+}
+
+interface DimensionObservation {
+  observed: BenchVerdict;
+  basis: BenchBasis;
+}
+
+/** Checked against Harnery's planner, normalizer, or fixture. */
+function fromAdapter(observed: BenchVerdict): DimensionObservation {
+  return { observed, basis: "adapter" };
+}
+
+/** No check exists for this dimension yet. */
+const NOT_CHECKED: DimensionObservation = { observed: "unknown", basis: "declared" };
+
+function observeAdapter(
+  adapter: HarnessAdapter,
+): Record<HarnessCapabilityDimension, DimensionObservation> {
   const profile = adapter.profile;
   const effort = profile.effortValues[0];
   const request: SpawnRequest = {
@@ -154,49 +264,57 @@ function observeAdapter(adapter: HarnessAdapter): Record<HarnessCapabilityDimens
   const hookSubcommands = new Set(hookSpec?.events.map((event) => event.subcommand) ?? []);
 
   return {
-    invocation:
+    invocation: fromAdapter(
       !planningFailed && argv[0] === profile.binary && argv.includes(request.prompt)
         ? "supported"
         : "unsupported",
-    modelSelection:
+    ),
+    modelSelection: fromAdapter(
       !planningFailed && argv.includes(request.model ?? "") ? "supported" : "unsupported",
-    effortSelection:
+    ),
+    effortSelection: fromAdapter(
       effort === undefined
         ? "unsupported"
         : !planningFailed && argv.some((arg) => arg.includes(effort))
           ? "supported"
           : "unsupported",
-    maxTurns:
+    ),
+    maxTurns: fromAdapter(
       !planningFailed && argv.includes(String(request.maxTurns)) ? "supported" : "unsupported",
-    finalResult: finalMatches ? "supported" : "unsupported",
-    sessionId:
+    ),
+    finalResult: fromAdapter(finalMatches ? "supported" : "unsupported"),
+    sessionId: fromAdapter(
       sessionObserved === "supported" && normalized?.sessionId !== fixture.sessionId
         ? "unsupported"
         : sessionObserved,
-    cost:
+    ),
+    cost: fromAdapter(
       costObserved === "supported" && normalized?.costUsd !== fixture.costUsd
         ? "unsupported"
         : costObserved,
-    toolEvidence: normalized && "toolEvidence" in normalized ? "supported" : "unsupported",
-    policyMapping: "unknown",
-    interruption: "unknown",
-    streaming: "unknown",
-    steering: "unknown",
-    resume: "unknown",
-    images: "unknown",
-    contextTelemetry: "unknown",
+    ),
+    toolEvidence: fromAdapter(
+      normalized && "toolEvidence" in normalized ? "supported" : "unsupported",
+    ),
+    policyMapping: NOT_CHECKED,
+    interruption: NOT_CHECKED,
+    streaming: NOT_CHECKED,
+    steering: NOT_CHECKED,
+    resume: NOT_CHECKED,
+    images: NOT_CHECKED,
+    contextTelemetry: NOT_CHECKED,
     preCompactionSignal: hookSpec
-      ? hookSubcommands.has("pre-compact")
-        ? "supported"
-        : "unsupported"
-      : "unknown",
+      ? fromAdapter(hookSubcommands.has("pre-compact") ? "supported" : "unsupported")
+      : NOT_CHECKED,
     postCompactionSignal: hookSpec
-      ? hookSubcommands.has("post-compact") ||
-        (adapter.profile.id === "claude-code" && hookSubcommands.has("session-start"))
-        ? "supported"
-        : "unsupported"
-      : "unknown",
-    compaction: "unknown",
+      ? fromAdapter(
+          hookSubcommands.has("post-compact") ||
+            (adapter.profile.id === "claude-code" && hookSubcommands.has("session-start"))
+            ? "supported"
+            : "unsupported",
+        )
+      : NOT_CHECKED,
+    compaction: NOT_CHECKED,
   };
 }
 

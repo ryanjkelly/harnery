@@ -76,8 +76,13 @@ rm -f "$TOKENS_TMP"
 # 4. harn harness catalog + offline bench
 check "harn harness list includes all built-ins" \
   "$HARN harness list" "cursor-agent"
+# Drift is a legitimate result and exits non-zero, so these assert on output.
+# A host whose installed vendor CLI differs from the recorded contract will
+# report contract drift; that must not fail the smoke test.
 check "harn harness bench makes no model calls" \
-  "$HARN harness bench" "offline (no model calls)"
+  "$HARN harness bench" "offline (no model calls)" 1
+check "harn harness bench reports the basis of each result" \
+  "$HARN harness bench" "basis:" 1
 
 # 5. harn workflow --help exposes proof and durable approval operations
 check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"

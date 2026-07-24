@@ -63,12 +63,54 @@ tested on machines that do not install every vendor CLI. Pass
 `--require-installed` when the current machine is expected to host every
 registered harness. `--json` emits the complete report for CI or dashboards.
 
-The offline bench currently proves registration, binary availability,
-invocation planning, model and effort mapping, turn-ceiling mapping, final
-result normalization, session-id extraction, cost extraction, and the absence
-of normalized tool evidence. It also checks pre/post-compaction claims against
-the hook wiring that `harn init` installs. Context telemetry stays `unknown` in
-the offline bench because no static probe can prove a runtime measurement.
+### Basis: how a result was established
+
+Every row also carries a `basis`, which answers "how do we know" rather than
+"what is true". Verdict and basis are independent
+([ADR 0037](/decisions/0037-attested-harness-capability-claims/)).
+
+| Basis | Meaning |
+| --- | --- |
+| `adapter` | Checked against Harnery's own planner, normalizer, or fixture. Proves the adapter contract and says nothing about the installed vendor CLI. |
+| `attested` | Checked by observing the installed vendor CLI on this host. |
+| `declared` | Not checked. The value is the declaration, repeated. |
+
+Most of the bench is an adapter check. A `supported` session-id row proves that
+Harnery's normalizer can read a session id out of the committed fixture. It does
+not prove the vendor still emits that shape. Without a basis column, a clean
+report reads as "no disagreement found" when the accurate reading is usually "no
+vendor behavior was observed".
+
+The report includes a `basisSummary` count per basis so a caller can tell a
+measured run from an unmeasured one without walking every row.
+
+### The contract dimension
+
+Each harness profile can record the vendor CLI contract its declaration was
+last validated against. The `contract` dimension compares that recorded version
+with the version the installed binary reports:
+
+- `supported` when they match;
+- `drift` when they differ, because the declaration is no longer backed by an
+  observation;
+- `unknown` when nothing is recorded, or the recorded value is not a version;
+- `skipped` when the binary is absent.
+
+A newer vendor CLI is not automatically broken, so a mismatch is drift rather
+than failure. Harnery never infers that a dimension is probably still supported
+on an unverified version: an undeterminable fact stays `unknown`.
+
+`contract` is the only dimension attested without a model turn, because a
+version string costs nothing to read.
+
+### What the offline bench covers
+
+The offline bench proves registration, binary availability, the installed
+vendor contract, invocation planning, model and effort mapping, turn-ceiling
+mapping, final result normalization, session-id extraction, cost extraction,
+and the absence of normalized tool evidence. It also checks pre/post-compaction
+claims against the hook wiring that `harn init` installs. Context telemetry
+stays `unknown` because no static probe can prove a runtime measurement.
 Policy, active interruption, streaming, steering, resume, image input, and
 native compaction control remain `unknown` until a safe behavioral probe
 exists.
