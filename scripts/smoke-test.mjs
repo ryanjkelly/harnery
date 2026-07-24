@@ -102,6 +102,13 @@ try {
   }
   log("workflow approvals CLI OK");
 
+  log("checking workflow workspace CLI boots ...");
+  const workspacesOut = run(["workflow", "workspaces"]);
+  if (!/no isolated or shared-compatibility workspace runs/.test(workspacesOut)) {
+    fail("workflow workspaces did not render an empty validated list");
+  }
+  log("workflow workspace CLI OK");
+
   // Durable work must boot through the packed Node CLI and preserve a record.
   log("checking durable work CLI boots ...");
   const workWorkflow = join(workdir, "work-smoke.mjs");
@@ -247,7 +254,7 @@ try {
   writeFileSync(
     workflowProbe,
     [
-      'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, isWorkspaceLifecycleState, prepareIntegration, readWorkflowProof, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
+      'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
       'if (WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow attempt-context schema version");',
       'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow proof schema version");',
       'if (WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow work-context schema version");',
@@ -263,6 +270,9 @@ try {
       'if (report.result.work.id !== "smoke" || !report.result.frozen || !report.result.acceptanceFrozen) throw new Error("workflow work context invalid");',
       "const proof = readWorkflowProof(process.cwd(), report.runId);",
       'if (proof.run.work_context?.objective !== "Verify packaged work context") throw new Error("workflow proof lost work context");',
+      "const workspaceStatus = readWorkflowWorkspaceStatus(process.cwd(), report.runId);",
+      'if (workspaceStatus.selection !== "shared" || workspaceStatus.integrity.status !== "verified") throw new Error("workspace inspection invalid");',
+      'if (!inspectWorkflowWorkspace(process.cwd(), report.runId).ok || listWorkflowWorkspaceInspections(process.cwd()).length < 1 || !/shared/.test(renderWorkflowWorkspaceStatus(workspaceStatus))) throw new Error("workspace inspection surface missing");',
       'const durable = await import("harnery/core/workflow");',
       'for (const name of ["createWorkflowApproval", "resolveWorkflowApproval", "readWorkflowApproval", "acquireWorkflowResumeLease"]) {',
       '  if (typeof durable[name] !== "function") throw new Error(name + " missing");',

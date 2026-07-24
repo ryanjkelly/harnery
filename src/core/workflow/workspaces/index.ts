@@ -2,6 +2,18 @@ export type { CancelWorkspaceInput } from "./cancellation.ts";
 export { cancelWorkspace } from "./cancellation.ts";
 export type { CleanupWorkspaceInput } from "./cleanup.ts";
 export { cleanupWorkspace } from "./cleanup.ts";
+export type {
+  WorkflowWorkspaceInspection,
+  WorkflowWorkspaceSelection,
+  WorkflowWorkspaceStatus,
+  WorkflowWorkspaceVerification,
+} from "./inspect.ts";
+export {
+  inspectWorkflowWorkspace,
+  listWorkflowWorkspaceInspections,
+  readWorkflowWorkspaceStatus,
+  renderWorkflowWorkspaceStatus,
+} from "./inspect.ts";
 export type { ApplyIntegrationInput, PrepareIntegrationInput } from "./integration.ts";
 export { applyIntegration, prepareIntegration } from "./integration.ts";
 export type {

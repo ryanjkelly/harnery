@@ -1,19 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  createLocalGitWorktreeProvider,
-  prepareIntegration,
-  probeLocalGitWorktreeProvider,
-  WORKSPACE_BINDING_SCHEMA_VERSION,
-  WORKSPACE_RECEIPT_SCHEMA_VERSION,
-} from "../../src/core/workflow/index.ts";
 import type {
   RepositoryBinding,
   ValidatedFilesystemPath,
   WorkspaceObservation,
   WorkspaceProofOutcome,
   WorkspaceResourceState,
+} from "../../src/core/workflow/index.ts";
+import {
+  createLocalGitWorktreeProvider,
+  inspectWorkflowWorkspace,
+  listWorkflowWorkspaceInspections,
+  prepareIntegration,
+  probeLocalGitWorktreeProvider,
+  readWorkflowWorkspaceStatus,
+  renderWorkflowWorkspaceStatus,
+  WORKSPACE_BINDING_SCHEMA_VERSION,
+  WORKSPACE_RECEIPT_SCHEMA_VERSION,
 } from "../../src/core/workflow/index.ts";
 
 type ApprovedWorkspaceTypes = {
@@ -37,6 +41,10 @@ describe("workspace product-tier surface", () => {
     expect(typeof createLocalGitWorktreeProvider).toBe("function");
     expect(typeof probeLocalGitWorktreeProvider).toBe("function");
     expect(typeof prepareIntegration).toBe("function");
+    expect(typeof readWorkflowWorkspaceStatus).toBe("function");
+    expect(typeof inspectWorkflowWorkspace).toBe("function");
+    expect(typeof listWorkflowWorkspaceInspections).toBe("function");
+    expect(typeof renderWorkflowWorkspaceStatus).toBe("function");
     expect(undefined as ApprovedWorkspaceTypes | undefined).toBeUndefined();
   });
 });

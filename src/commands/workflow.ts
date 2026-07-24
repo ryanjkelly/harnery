@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
@@ -28,6 +29,7 @@ interface WorkflowRunOpts {
   allowApiBilling?: boolean;
   policy?: string;
   isolation?: PolicyIsolation;
+  workspaceRoot?: string;
   approvalTo?: string;
   json?: boolean;
 }
@@ -89,6 +91,10 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       "--isolation <mode>",
       "Host-created execution boundary: shared | worktree | sandbox | remote (default shared)",
     )
+    .option(
+      "--workspace-root <dir>",
+      "Explicit writable parent for the built-in local Git worktree provider (requires --isolation worktree)",
+    )
     .option("--approval-to <address>", "Address durable ASK requests (default: operator)")
     .option("--json", "Emit the full RunReport as JSON")
     .action(async (script: string, opts: WorkflowRunOpts) => {
@@ -117,6 +123,13 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
+      if (opts.workspaceRoot && opts.isolation !== "worktree") {
+        emit.error({
+          code: "bad_workspace_root",
+          message: "--workspace-root requires --isolation worktree",
+        });
+        process.exit(1);
+      }
       // Flag beats config; the two flags contradict each other by design.
       const subscriptionOnly = opts.subscriptionOnly || workflowSubscriptionOnly(coordRoot);
       if (subscriptionOnly && opts.allowApiBilling) {
@@ -129,7 +142,15 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       try {
-        const { runWorkflow } = await import("../core/workflow/engine.ts");
+        const { createLocalGitWorktreeProvider, runWorkflow } = await import(
+          "../core/workflow/index.ts"
+        );
+        const workspace = opts.workspaceRoot
+          ? {
+              provider: createLocalGitWorktreeProvider({ coordRoot }),
+              writableRoots: [resolve(opts.workspaceRoot)],
+            }
+          : undefined;
         const report = await runWorkflow(script, {
           coordRoot,
           spawners: registry.spawners(),
@@ -152,6 +173,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           approvalMode: "park",
           approvalAddressee: opts.approvalTo,
           isolation: opts.isolation,
+          workspace,
           // CLI harness subprocesses inherit the host network. A policy that
           // forbids network must therefore deny dispatch unless a future host
           // adapter creates and declares a network-disabled boundary.
@@ -220,14 +242,25 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         process.exit(1);
       }
       try {
-        const { assertWorkflowRunResumable, runWorkflow } = await import(
-          "../core/workflow/index.ts"
-        );
+        const { assertWorkflowRunResumable, createLocalGitWorktreeProvider, runWorkflow } =
+          await import("../core/workflow/index.ts");
         const { manifest } = assertWorkflowRunResumable(coordRoot, runId);
+        const binding = manifest.execution.workspace_binding;
+        if (binding && binding.provider.id !== "local-git-worktree") {
+          throw new Error(
+            `workflow run ${runId} requires unavailable workspace provider ${binding.provider.id}`,
+          );
+        }
         const report = await runWorkflow(manifest.script.path, {
           coordRoot,
           spawners: registry.spawners(),
           resumeRunId: runId,
+          workspace: binding
+            ? {
+                provider: createLocalGitWorktreeProvider({ coordRoot }),
+                writableRoots: [binding.writable_root.configured],
+              }
+            : undefined,
           harnessEvidence: Object.fromEntries(
             registry
               .list()
@@ -279,6 +312,79 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
+    });
+
+  workflow
+    .command("workspace <run-id>")
+    .description("Show validated allocation, verification, integration, and cleanup state.")
+    .option("--json", "Emit the validated workspace status as JSON")
+    .action(async (runId: string, opts: { json?: boolean }) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      const { inspectWorkflowWorkspace, renderWorkflowWorkspaceStatus } = await import(
+        "../core/workflow/index.ts"
+      );
+      const inspection = inspectWorkflowWorkspace(coordRoot, runId);
+      if (!inspection.ok) {
+        emit.error({ code: "workflow_workspace_invalid", message: inspection.error });
+        process.exit(1);
+      }
+      if (opts.json) {
+        emit.config({ format: "json" });
+        emit.data(inspection.value);
+        return;
+      }
+      emit.text(renderWorkflowWorkspaceStatus(inspection.value));
+    });
+
+  workflow
+    .command("workspaces")
+    .description("List validated isolated and shared-compatibility workspace decisions.")
+    .option("--json", "Emit workspace inspections as JSON")
+    .action(async (opts: { json?: boolean }) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      const { listWorkflowWorkspaceInspections } = await import("../core/workflow/index.ts");
+      const inspections = listWorkflowWorkspaceInspections(coordRoot).filter(
+        (inspection) => !inspection.ok || inspection.value.selection !== "shared",
+      );
+      if (opts.json) {
+        emit.config({ format: "json" });
+        emit.data(inspections);
+        return;
+      }
+      if (inspections.length === 0) {
+        emit.text("no isolated or shared-compatibility workspace runs\n");
+        return;
+      }
+      emit.text(
+        `${inspections
+          .map((inspection) =>
+            inspection.ok
+              ? [
+                  inspection.value.run_id,
+                  inspection.value.selection,
+                  inspection.value.lifecycle.state,
+                  `verify=${inspection.value.verification.status}`,
+                  `integration=${inspection.value.integration.state}`,
+                  `cleanup=${inspection.value.cleanup.state}`,
+                ].join("\t")
+              : `${inspection.run_id}\tinvalid\t${inspection.error}`,
+          )
+          .join("\n")}\n`,
+      );
     });
 
   const approvals = workflow

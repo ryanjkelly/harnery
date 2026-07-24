@@ -8,9 +8,12 @@ sidebar:
 ```
 harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
-                           [--policy <file>] [--isolation <mode>] [--approval-to <address>]
+                           [--policy <file>] [--isolation <mode>]
+                           [--workspace-root <dir>] [--approval-to <address>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
 harn workflow resume <run-id> [--json]
+harn workflow workspace <run-id> [--json]
+harn workflow workspaces [--json]
 harn workflow approvals list [--status pending|approved|denied] [--json]
 harn workflow approvals show <approval-id> [--json]
 harn workflow approvals approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
@@ -296,10 +299,12 @@ must select `EngineOpts.approvalMode = "park"` deliberately. An embedding host
 can still supply `EngineOpts.resolvePolicyAsk` for immediate decisions. Use
 [`harn policy`](./policy/) to validate a document before a run.
 
-`--isolation` declares the boundary the host actually created: `shared`,
-`worktree`, `sandbox`, or `remote`. It does not create that boundary. Ordinary
-CLI harness subprocesses inherit host networking, so the CLI declares network
-enabled and a `network: deny` policy blocks dispatch.
+`--isolation` declares the requested boundary: `shared`, `worktree`, `sandbox`,
+or `remote`. The standalone CLI can create the built-in local Git boundary
+when `worktree` is paired with an explicit `--workspace-root`. Other boundary
+types still require an embedding host provider. Ordinary CLI harness
+subprocesses inherit host networking, so the CLI declares network enabled and
+a `network: deny` policy blocks dispatch.
 
 Workflow code may use `ctx.authorize()` before an external mutation:
 
@@ -316,6 +321,53 @@ await authorize({
 This seam protects host-mediated operations. It does not intercept arbitrary
 tools invoked inside an opaque harness subprocess. Adapter-native policy
 mapping remains a separate capability claim in `harn harness show`.
+
+## Isolated worktrees
+
+The local provider needs an explicit writable parent:
+
+```bash
+harn workflow run ./review.mjs \
+  --isolation worktree \
+  --workspace-root ../workflow-workspaces \
+  --policy ./workflow-policy.json
+```
+
+Harnery probes Git and filesystem capabilities before allocation. A supported
+run receives a dedicated branch and worktree. The immutable run manifest binds
+that workspace to the exact run or durable-work attempt. Children start in the
+isolated active root, and approval resume reconstructs the same built-in
+provider from the frozen binding.
+
+If a non-shared mode has no provider, Harnery records a compatibility decision
+instead of pretending isolation happened. The run uses the shared checkout
+only when policy permits it. Once a binding exists, resume cannot fall back to
+shared execution.
+
+Inspect one run or list all isolated and compatibility decisions:
+
+```bash
+harn workflow workspace wf-2026-07-24T02-10-00-000Z-a1b2c3
+harn workflow workspace wf-2026-07-24T02-10-00-000Z-a1b2c3 --json
+harn workflow workspaces
+```
+
+The status reader validates the manifest, proof, provider event chain,
+integration authority, cleanup attempts, and receipts before projecting a
+lifecycle. It reports allocation, verification, integration, conflicts,
+cleanup, and resource state. Corrupt or contradictory evidence returns an
+explicit invalid inspection.
+
+Integration is deliberately separate from workflow success. The provider can
+preview a fast-forward, but `prepareIntegration()` still requires satisfied
+proof, accepted review, and policy authorization. `applyIntegration()` rereads
+that authority and writes a durable receipt. Divergence, target movement,
+dirty state, or a Git operation in progress blocks the apply. Harnery does not
+resolve conflicts automatically.
+
+Cleanup is also explicit. `cleanupWorkspace()` removes only resources covered
+by the frozen binding and cleanup intent. Dirty or ambiguous work is preserved
+for inspection.
 
 ## Resume
 
@@ -416,8 +468,10 @@ references. The detailed journal continues to retain full agent results for
 resume compatibility.
 
 The programmatic surface is exported from `harnery/core/workflow`, including
-the engine, proof reader and renderer, schema types, and
-`WORKFLOW_PROOF_SCHEMA_VERSION`.
+the engine, proof reader and renderer, workspace provider, integration and
+cleanup functions, `readWorkflowWorkspaceStatus()`,
+`inspectWorkflowWorkspace()`, `listWorkflowWorkspaceInspections()`, schema
+types, and `WORKFLOW_PROOF_SCHEMA_VERSION`.
 
 ## Web view
 
@@ -427,9 +481,12 @@ view rendering the stages → agents tree with per-agent harness, attempts,
 duration, and cost. Parked runs have a distinct awaiting-approval status and
 show the durable approval ID and inspection command. When a terminal proof packet exists, the detail page also
 shows the objective, acceptance criteria, declared evidence, repository drift,
-host-policy decisions, and explicit unknowns. Journal-driven means a run stays
-inspectable while live
-and after the orchestrator exits, with no terminal paging limits.
+host-policy decisions, and explicit unknowns. The run list also shows the
+workspace lifecycle. Detail pages separate allocation, verification,
+integration, cleanup, and repository conflicts. Invalid durable workspace
+evidence appears as an error instead of a healthy badge. Journal-driven means a
+run stays inspectable while live and after the orchestrator exits, with no
+terminal paging limits.
 
 ## Workflow children and the end-of-turn ritual
 

@@ -229,3 +229,17 @@ checkout behavior. Recovery and cleanup are conservative and may preserve a
 workspace for operator action. Integration requires more durable records, but
 those records make authorization loss, replay drift, and crash-after-apply
 detectable without rewriting terminal proof.
+
+## Result
+
+The product-tier `harnery/core/workflow` surface now includes the local Git
+provider, integration and cleanup operations, and a validated read model for
+workspace state. The standalone CLI creates the local provider only when
+`--isolation worktree` is paired with an explicit `--workspace-root`.
+Approval resume reconstructs that provider from the frozen binding.
+
+`harn workflow workspace` and `harn workflow workspaces` expose the read model.
+The dashboard consumes the same projection rather than inferring state from
+file presence. Both surfaces keep allocation, workflow verification,
+integration, repository conflicts, and cleanup separate. Invalid evidence is
+reported as invalid.
