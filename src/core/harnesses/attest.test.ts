@@ -122,6 +122,29 @@ describe("failure notes are bounded evidence", () => {
     expect(note).not.toContain("\n");
   });
 
+  test("the note keeps the tail, where the real failure is", async () => {
+    // Observed shape: a vendor CLI logs a cosmetic startup warning, prints a
+    // long banner, then fails on the last line. Head truncation kept the
+    // warning and hid the cause, which produced a wrong diagnosis.
+    const transcript = [
+      "ERROR codex_models_manager::cache: failed to load models cache: missing field `x`",
+      "OpenAI Codex v0.144.5",
+      "--------",
+      `workdir: /tmp\nmodel: gpt-5.5\nprovider: openai\n${"filler ".repeat(60)}`,
+      "session id: 019f9661-d51e-7dc0-b130-f6b852d86765",
+      "ERROR: Your workspace is out of credits. Add credits to continue.",
+    ].join("\n");
+    const report = await runHarnessAttestation(registry, {
+      harnesses: ["codex"],
+      versionProbe: () => "codex-cli 0.144.5",
+      spawn: async () => ({ ok: false, text: "", durationMs: 5, error: transcript }),
+      persist: () => {},
+    });
+    const note = report.results[0]?.note ?? "";
+    expect(note).toContain("out of credits");
+    expect(note).not.toContain("failed to load models cache");
+  });
+
   test("a failure with no reason still reads cleanly", async () => {
     const report = await runHarnessAttestation(registry, {
       harnesses: ["codex"],

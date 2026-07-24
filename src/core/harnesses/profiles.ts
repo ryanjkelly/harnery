@@ -43,7 +43,7 @@ export const BUILTIN_HARNESS_PROFILES = {
     authModel: "own-auth",
     modelFamily: "claude",
     effortValues: ["low", "medium", "high", "xhigh", "max"],
-    verified: { date: "2026-07-20", version: "current CLI contract" },
+    verified: { date: "2026-07-24", version: "2.1.197 (Claude Code)" },
     capabilities: capabilities({
       effortSelection: supported("Mapped to `--effort <level>`."),
       maxTurns: supported("Mapped to `--max-turns <n>`."),
@@ -95,7 +95,7 @@ export const BUILTIN_HARNESS_PROFILES = {
     authModel: "own-auth",
     modelFamily: "multi",
     effortValues: [],
-    verified: { date: "2026-07-21", version: "2026.07.16-899851b" },
+    verified: { date: "2026-07-24", version: "2026.07.23-e383d2b" },
     capabilities: capabilities({
       effortSelection: unsupported(
         "Cursor embeds effort in some parameterized model ids; Harnery does not rewrite model ids.",

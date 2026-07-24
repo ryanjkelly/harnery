@@ -24,11 +24,17 @@ export const DEFAULT_ATTESTATION_TIMEOUT_MS = 120_000;
  * short line and the echoed prompt is removed. */
 const MAX_NOTE_REASON_CHARS = 200;
 
+/** Keep the TAIL, not the head. A CLI prints its banner, config, and startup
+ * warnings first and the reason it actually failed last, so truncating from the
+ * front reliably preserves the noise and discards the answer. Learned the hard
+ * way: a head-truncated note once surfaced a cosmetic startup warning while
+ * hiding the real "out of credits" failure on the final line. */
 function boundedReason(reason: string | undefined): string {
   if (!reason) return "no error reported";
   const collapsed = reason.split(ATTESTATION_PROMPT).join("<prompt>").replace(/\s+/g, " ").trim();
+  if (!collapsed) return "no error reported";
   return collapsed.length > MAX_NOTE_REASON_CHARS
-    ? `${collapsed.slice(0, MAX_NOTE_REASON_CHARS)}…`
+    ? `…${collapsed.slice(-MAX_NOTE_REASON_CHARS)}`
     : collapsed;
 }
 

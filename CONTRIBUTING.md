@@ -63,6 +63,29 @@ bun run typecheck && bun run lint && bun test && bun run test:integration
 
 The `installers` job also runs only on `main`: it packs the tarball and exercises the `install.sh` / `uninstall.sh` one-liners plus a `scripts/setup.sh` → `scripts/teardown.sh` round-trip. Those shell scripts have no unit tests, so if you touch them, run that round-trip against a throwaway project yourself, or a regression stays hidden on `next` until release.
 
+## Keeping `verified` honest
+
+Each harness profile carries `verified: { date, version }`: the vendor CLI
+contract its capability declaration was last validated against. The `contract`
+bench dimension reads it, so a wrong value is worse than none.
+
+Never type it by hand. Record an attestation, then let the script write it:
+
+```bash
+bin/harn harness attest --yes          # one real turn per installed harness
+bun run verify:contracts               # writes verified from the attestations
+bun run verify:contracts:check         # report only; exit 2 when stale
+```
+
+The script refuses to write when an attestation contradicts a claim. That means
+the claim is wrong, and stamping a fresh version over it would launder a false
+statement into a verified-looking one. Fix the declaration, re-attest, then run
+it again.
+
+A harness with no attestation is skipped rather than guessed at, so its
+`verified` keeps whatever it had and its `contract` row keeps reporting drift.
+That is the correct state for a vendor CLI you cannot currently run.
+
 ## Adding a new command
 
 1. Create `src/commands/<name>.ts` (or `<name>/index.ts` for larger commands) exporting a `register<Name>Command(program: Command)` function (Commander pattern).

@@ -186,7 +186,9 @@
     "smoke": "node scripts/smoke-test.mjs",
     "docs:dev": "bun run --cwd docs dev",
     "docs:build": "bun run --cwd docs build",
-    "brand:showcase": "node scripts/build-brand-showcase.mjs"
+    "brand:showcase": "node scripts/build-brand-showcase.mjs",
+    "verify:contracts": "bun run scripts/sync-verified-contracts.ts",
+    "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

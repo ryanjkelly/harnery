@@ -175,14 +175,38 @@ describe("vendor contract attestation (ADR 0037)", () => {
   });
 
   test("an unparseable recorded contract stays unknown rather than being inferred", () => {
-    // `claude-code` records the literal string "current CLI contract".
-    const report = runHarnessBench(registry, {
-      harnesses: ["claude-code"],
+    // Synthetic on purpose: the rule under test is "a recorded value that is
+    // not a version yields unknown", not whatever the built-in profiles happen
+    // to carry today.
+    const base = createBuiltinHarnessRegistry().require("claude-code");
+    const unparseable = new HarnessRegistry([
+      {
+        ...base,
+        profile: {
+          ...base.profile,
+          id: "prose-contract",
+          verified: { date: "2026-07-20", version: "current CLI contract" },
+        },
+      },
+    ]);
+    const report = runHarnessBench(unparseable, {
       versionProbe: () => "2.1.197 (Claude Code)",
+      attestationReader: () => null,
     });
     expect(contractOf(report)?.verdict).toBe("unknown");
     expect(contractOf(report)?.basis).toBe("declared");
     expect(report.drift).toBe(false);
+  });
+
+  test("a recorded contract that matches the installed version is attested", () => {
+    // Guards the real catalog: after `bun run verify:contracts`, an attested
+    // profile's contract row must reconcile on the host it was written from.
+    const report = runHarnessBench(registry, {
+      harnesses: ["claude-code"],
+      versionProbe: () => registry.require("claude-code").profile.verified?.version ?? "",
+      attestationReader: () => null,
+    });
+    expect(contractOf(report)?.verdict).toBe("supported");
   });
 
   test("an absent binary skips the contract check instead of failing it", () => {
