@@ -46,4 +46,15 @@ boundary.
 
 ## Result
 
-Pending live isolated-workspace verification.
+A live isolated workflow used Cursor for implementation and bounded repair.
+Both children ran their checks and created clean local commits. An independent
+reviewer blocked an incorrect post-approval instruction, Cursor repaired it,
+and the final review passed.
+
+Host verification then passed the full 1,012-test suite with one intentional
+skip, all 52 CLI integration checks, the installed-package smoke test, and the
+documentation build. The guarded lifecycle parked on an exact approval,
+replayed the same integration plan after approval, fast-forwarded only after
+explicit confirmation, and released the clean worktree. This confirms that the
+adapter flags restore executable headless sessions. Cursor policy mapping
+remains unsupported.
