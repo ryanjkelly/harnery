@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.24.0
+
+### Minor Changes
+
+- 1cb5506: Add phased CLI commands for proof-gated workspace integration and conservative
+  cleanup, with explicit policy, review, and mutation confirmation. When
+  integration prepare parks on a host-policy ASK, expose the exact run, plan, and
+  approval IDs as a handled park instead of a generic failure. After approval,
+  point the operator back to the same integration prepare operation using the
+  host's configured binary name.
+
+### Patch Changes
+
+- f8151a7: Allow non-interactive Cursor workflow children to run their checks and create
+  commits after the host authorizes dispatch.
+- 1b49db9: Clean up an unmodified recovery claim when another workspace lease contender replaces the observed owner first.
+
 ## 0.23.0
 
 ### Minor Changes
