@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.25.0
+
+### Minor Changes
+
+- 23d2f77: Bench results now state the basis they were established on, and the bench
+  checks the installed vendor contract.
+
+  Every `BenchResult` carries a `basis` of `adapter` (checked against Harnery's
+  own planner, normalizer, or fixture), `attested` (checked against the installed
+  vendor CLI), or `declared` (not checked). The report gains a `basisSummary`
+  rollup. Previously a clean bench read as "no disagreement found" when the
+  accurate reading was usually "no vendor behavior was observed".
+
+  A new `contract` dimension compares the vendor CLI version a profile's
+  declaration was validated against with the version the installed binary
+  reports, and raises `drift` when they differ. The `verified` field on
+  `HarnessProfile` was inert before this change.
+
+  `harn harness bench` keeps its surface, its exit-on-drift contract, and its
+  behavior on hosts with no vendor CLI installed. The text report gains a BASIS
+  column; the JSON report is extended, not reshaped.
+
+- fa6f7ca: Add live harness attestation: record what an installed vendor CLI actually does.
+
+  `harn harness attest --yes` runs one bounded turn per harness through the
+  adapter's production spawner and records the result under
+  `.harnery/harnesses/attestations/`. `harn harness attestations` lists the
+  records without making a model call. `--yes` is required because the probe
+  spends real vendor tokens.
+
+  `harn harness bench` now reads those records. A current attestation supplies the
+  observed value for the dimensions it covers and marks them `attested`, so a live
+  observation that disagrees with the declaration becomes drift. Records are
+  invalidated automatically by a vendor version change, a declaration edit, or a
+  failed integrity digest, and stale records fall back to `adapter` basis.
+
+  Workflow proof gains an optional `attestation` citation on each
+  `HarnessEvidenceCoverage` entry. A missing attestation is not a new proof
+  unknown, so an unattested host keeps its existing gate behavior.
+
+  New exports from `harnery/core/harnesses`: `runHarnessAttestation`,
+  `harnessProofInputs`, `probeBinaryVersion`, and the attestation store surface.
+
 ## 0.24.0
 
 ### Minor Changes
