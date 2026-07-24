@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -6,7 +6,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -23,6 +22,7 @@ import {
 } from "../policy/index.ts";
 import { assertWorkflowRunId, readWorkflowApproval } from "./approvals.ts";
 import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
+import { readJsonRecord, writeImmutableJson } from "./durable-record.ts";
 import { normalizeWorkflowSpecialists } from "./specialists.ts";
 import type {
   WorkflowAttemptContext,
@@ -30,6 +30,16 @@ import type {
   WorkflowWorkContext,
 } from "./types.ts";
 import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
+import type {
+  WorkspaceAllocationRequest,
+  WorkspaceBinding,
+  WorkspaceUnsupportedExecutionEvidence,
+} from "./workspaces/index.ts";
+import {
+  assertWorkspaceManifestAuthority,
+  isWorkspaceBinding,
+  isWorkspaceUnsupportedExecutionEvidence,
+} from "./workspaces/validate.ts";
 
 export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -59,6 +69,8 @@ export interface WorkflowRunManifest {
     network_access: PolicyNetworkAccess;
     policy?: NormalizedPolicy;
     specialists?: Record<string, WorkflowSpecialistProfile>;
+    workspace_binding?: WorkspaceBinding;
+    workspace_fallback?: WorkspaceUnsupportedExecutionEvidence;
   };
 }
 
@@ -73,6 +85,10 @@ export function workflowScriptDigest(scriptPath: string): string {
 
 export function writeWorkflowRunManifest(input: WriteWorkflowRunManifestInput): string {
   assertWorkflowRunId(input.manifest.run_id);
+  assertWorkspaceManifestAuthority(
+    input.manifest,
+    readManifestWorkspaceRequest(input.coordRoot, input.manifest.run_id),
+  );
   const path = workflowRunManifestPath(input.coordRoot, input.manifest.run_id);
   if (existsSync(path))
     throw new Error(`workflow run ${input.manifest.run_id} already has a manifest`);
@@ -81,14 +97,7 @@ export function writeWorkflowRunManifest(input: WriteWorkflowRunManifestInput): 
     throw new Error(`workflow run manifest exceeds ${MANIFEST_LIMIT_BYTES} bytes`);
   }
   mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  try {
-    writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    renameSync(temporary, path);
-    chmodSync(path, 0o600);
-  } finally {
-    if (existsSync(temporary)) unlinkSync(temporary);
-  }
+  writeImmutableJson(path, input.manifest);
   return path;
 }
 
@@ -131,6 +140,7 @@ export function readWorkflowRunManifest(coordRoot: string, runId: string): Workf
   ) {
     throw new Error(`workflow run manifest at ${path} has an unsupported or mismatched schema`);
   }
+  assertWorkspaceManifestAuthority(manifest, readManifestWorkspaceRequest(coordRoot, runId));
   return manifest;
 }
 
@@ -273,8 +283,33 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
     ["shared", "worktree", "sandbox", "remote"].includes(value.isolation) &&
     ["enabled", "disabled", "unknown"].includes(value.network_access) &&
     validSpecialists(value.specialists) &&
-    validFrozenPolicy(value.policy, value.cwd)
+    validFrozenPolicy(value.policy, value.workspace_binding?.integration_root ?? value.cwd) &&
+    validWorkspaceBinding(value.workspace_binding) &&
+    validWorkspaceFallback(value.workspace_fallback) &&
+    !(value.workspace_binding && value.workspace_fallback) &&
+    (value.workspace_fallback === undefined ||
+      value.workspace_fallback.requested_isolation === value.isolation)
   );
+}
+
+function readManifestWorkspaceRequest(
+  coordRoot: string,
+  runId: string,
+): WorkspaceAllocationRequest | undefined {
+  const path = join(coordRoot, ".harnery", "workflows", runId, "workspace-request.json");
+  return existsSync(path)
+    ? readJsonRecord<WorkspaceAllocationRequest>(path, "workspace request")
+    : undefined;
+}
+
+function validWorkspaceBinding(binding: WorkspaceBinding | undefined): boolean {
+  return binding === undefined || isWorkspaceBinding(binding);
+}
+
+function validWorkspaceFallback(
+  fallback: WorkspaceUnsupportedExecutionEvidence | undefined,
+): boolean {
+  return fallback === undefined || isWorkspaceUnsupportedExecutionEvidence(fallback);
 }
 
 function validSpecialists(

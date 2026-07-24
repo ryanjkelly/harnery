@@ -38,6 +38,7 @@ import {
 import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
+import { stableDigest } from "./durable-record.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -71,6 +72,18 @@ import type {
 import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 import { freezeWorkflowWorkContext } from "./work-context.ts";
+import {
+  attestTerminal,
+  attestWorkspaceFailure,
+  resolveWorkspaceBinding,
+} from "./workspaces/execution.ts";
+import { appendWorkflowJournalEvent } from "./workspaces/state.ts";
+import type {
+  WorkspaceAttestation,
+  WorkspaceBinding,
+  WorkspaceUnsupportedExecutionEvidence,
+} from "./workspaces/types.ts";
+import { isWorkspaceAttestation } from "./workspaces/validate.ts";
 
 const DEFAULT_MAX_AGENTS = 50;
 const DEFAULT_CONCURRENCY = 4;
@@ -193,13 +206,19 @@ async function executeWorkflow(
   workContext: Readonly<WorkflowWorkContext> | undefined,
   attemptContext: Readonly<WorkflowAttemptContext> | undefined,
 ): Promise<RunReport> {
-  const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
-  if (typeof mod.default !== "function") {
-    throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
+  const frozen = resumeState?.manifest.execution;
+  const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
+  let sharedWorkflow: WorkflowModule["default"] | undefined;
+  let sharedMeta: ReturnType<typeof normalizeWorkflowMeta> | undefined;
+  if (isolation === "shared") {
+    const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
+    if (typeof mod.default !== "function") {
+      throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
+    }
+    const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
+    sharedWorkflow = mod.default;
+    sharedMeta = normalizeWorkflowMeta(mod.meta, fallbackName);
   }
-  const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
-  const meta = normalizeWorkflowMeta(mod.meta, fallbackName);
-  const name = meta.name;
 
   const runId =
     opts.resumeRunId ??
@@ -210,7 +229,6 @@ async function executeWorkflow(
   const journalPath = join(runDir, "journal.jsonl");
   const proofPath = join(runDir, "proof.json");
 
-  const frozen = resumeState?.manifest.execution;
   const maxAgents = frozen?.max_agents ?? opts.maxAgents ?? DEFAULT_MAX_AGENTS;
   const concurrency = frozen?.concurrency ?? opts.concurrency ?? DEFAULT_CONCURRENCY;
   assertPositiveWorkflowBound(maxAgents, "maxAgents");
@@ -221,7 +239,6 @@ async function executeWorkflow(
     frozen?.default_harness ?? opts.defaultHarness ?? "claude-code";
   const specialists =
     frozen?.specialists ?? (resumeState ? {} : normalizeWorkflowSpecialists(opts.specialists));
-  const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
   const networkAccess = frozen?.network_access ?? opts.networkAccess ?? "unknown";
   const policy =
     frozen?.policy ?? (opts.policy ? normalizePolicy(opts.policy, { baseDir: cwd }) : undefined);
@@ -229,10 +246,102 @@ async function executeWorkflow(
   const approvalAddressee = frozen?.approval_addressee ?? opts.approvalAddressee ?? "operator";
   const subscriptionOnly = frozen?.subscription_only ?? Boolean(opts.subscriptionOnly);
   const allowApiBilling = frozen?.allow_api_billing ?? Boolean(opts.allowApiBilling);
-  const repoBefore = resumeState?.manifest.repository_before ?? snapshotRepo(cwd);
   const startedAt = resumeState?.manifest.started_at ?? new Date().toISOString();
   const t0 = resumeState ? Date.parse(startedAt) : Date.now();
-
+  const scriptSha256 = resumeState?.manifest.script.sha256 ?? workflowScriptDigest(absScript);
+  const fallbackName = scriptPath.replace(/^.*\//, "").replace(/\.[cm]?js$/, "");
+  const fallbackMeta = normalizeWorkflowMeta(undefined, fallbackName);
+  const workspaceProvider = isolation === "shared" ? undefined : opts.workspace?.provider;
+  let workspaceBinding: WorkspaceBinding | undefined;
+  let workspaceFallback: WorkspaceUnsupportedExecutionEvidence | undefined =
+    resumeState?.manifest.execution.workspace_fallback;
+  try {
+    workspaceBinding = await resolveWorkspaceBinding({
+      opts,
+      resumeState,
+      runId,
+      cwd,
+      isolation,
+      absScript,
+      scriptSha256,
+      provider: workspaceProvider,
+      workContext,
+      attemptContext,
+      policy,
+      onUnsupportedFallback: (evidence) => {
+        workspaceFallback = evidence;
+      },
+    });
+  } catch (error) {
+    const frozenBinding = resumeState?.manifest.execution.workspace_binding;
+    if (!resumeState || !frozenBinding) throw error;
+    const failure = error instanceof Error ? error : new Error(String(error));
+    const endedAt = new Date().toISOString();
+    const durationMs = Date.now() - t0;
+    const failedAttestation = await attestWorkspaceFailure(workspaceProvider, frozenBinding, error);
+    appendWorkflowJournalEvent(opts.coordRoot, runId, "run.resume", {
+      approval_id: resumeState.approvalId,
+      script: absScript,
+      resumed_at: new Date().toISOString(),
+    });
+    appendWorkflowJournalEvent(opts.coordRoot, runId, "workspace.reattach.failed", {
+      binding_id: frozenBinding.binding_id,
+      provider_id: frozenBinding.provider.id,
+      status: failedAttestation.status,
+      reason: failure.message,
+      attestation_sha256: stableDigest(failedAttestation),
+    });
+    appendWorkflowJournalEvent(opts.coordRoot, runId, "run.end", {
+      ok: false,
+      error: failure.message,
+      agents: 0,
+      cached: 0,
+      cost_usd: 0,
+      duration_ms: durationMs,
+    });
+    try {
+      const proof = buildWorkflowProof({
+        runId,
+        workItemId: opts.workItemId ?? resumeState.manifest.work_item_id,
+        workContext,
+        attemptContext,
+        meta: fallbackMeta,
+        status: "failed",
+        startedAt,
+        endedAt,
+        durationMs,
+        journalPath,
+        before: resumeState.manifest.repository_before,
+        after: resumeState.manifest.repository_before,
+        agents: [],
+        evidence: [],
+        harnessEvidence: opts.harnessEvidence,
+        policy: policy
+          ? {
+              config: policy,
+              decisions: [],
+              isolation,
+              networkAccess,
+            }
+          : undefined,
+        workspaceBinding: frozenBinding,
+        workspaceAttestation: failedAttestation,
+        error: failure.message,
+      });
+      writeWorkflowProof(proofPath, proof);
+    } catch (proofError) {
+      throw new WorkflowRunError(
+        `${failure.message}; recovery proof packet write also failed: ${(proofError as Error).message}`,
+        runId,
+        proofPath,
+        failure,
+      );
+    }
+    throw new WorkflowRunError(failure.message, runId, proofPath, failure);
+  }
+  const effectiveIsolation = workspaceFallback?.effective_isolation ?? isolation;
+  const executionCwd = workspaceBinding?.active_root ?? cwd;
+  const executionRepoBefore = resumeState?.manifest.repository_before ?? snapshotRepo(executionCwd);
   if (!resumeState) {
     writeWorkflowRunManifest({
       coordRoot: opts.coordRoot,
@@ -242,12 +351,12 @@ async function executeWorkflow(
         work_item_id: opts.workItemId,
         work_context: workContext,
         attempt_context: attemptContext,
-        name,
+        name: sharedMeta?.name ?? fallbackMeta.name,
         started_at: startedAt,
-        script: { path: absScript, sha256: workflowScriptDigest(absScript) },
-        repository_before: repoBefore,
+        script: { path: absScript, sha256: scriptSha256 },
+        repository_before: executionRepoBefore,
         execution: {
-          cwd,
+          cwd: executionCwd,
           default_harness: defaultHarness,
           max_agents: maxAgents,
           concurrency,
@@ -259,19 +368,80 @@ async function executeWorkflow(
           network_access: networkAccess,
           policy: policy ? (policy as NormalizedPolicy) : undefined,
           specialists,
+          workspace_binding: workspaceBinding,
+          workspace_fallback: workspaceFallback,
         },
       },
     });
   }
 
+  let workflow = sharedWorkflow;
+  let meta = sharedMeta ?? fallbackMeta;
+  let initializationError: Error | undefined;
+  let initializationAttestation: WorkspaceAttestation | undefined;
+  if (isolation !== "shared") {
+    try {
+      const mod = (await import(pathToFileURL(absScript).href)) as WorkflowModule;
+      if (typeof mod.default !== "function") {
+        throw new Error(`${scriptPath}: workflow script must \`export default async (ctx) => …\``);
+      }
+      workflow = mod.default;
+      meta = normalizeWorkflowMeta(mod.meta, fallbackName);
+    } catch (error) {
+      initializationError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  if (workspaceBinding && workspaceProvider) {
+    try {
+      const postImport = await workspaceProvider.reattach(workspaceBinding);
+      if (!isWorkspaceAttestation(postImport, workspaceBinding) || postImport.status !== "ok") {
+        initializationAttestation = isWorkspaceAttestation(postImport, workspaceBinding)
+          ? postImport
+          : undefined;
+        throw new Error("workspace authority changed during workflow module initialization");
+      }
+      appendWorkflowJournalEvent(opts.coordRoot, runId, "workspace.reattach.module_initialized", {
+        binding_id: workspaceBinding.binding_id,
+        provider_id: workspaceBinding.provider.id,
+        attestation_sha256: stableDigest(postImport),
+      });
+    } catch (error) {
+      const reattachmentError = error instanceof Error ? error : new Error(String(error));
+      initializationAttestation ??= await attestWorkspaceFailure(
+        workspaceProvider,
+        workspaceBinding,
+        error,
+      );
+      initializationError = initializationError
+        ? new Error(`${initializationError.message}; ${reattachmentError.message}`, {
+            cause: reattachmentError,
+          })
+        : reattachmentError;
+      appendWorkflowJournalEvent(
+        opts.coordRoot,
+        runId,
+        "workspace.reattach.module_initialization_failed",
+        {
+          binding_id: workspaceBinding.binding_id,
+          provider_id: workspaceBinding.provider.id,
+          status: initializationAttestation.status,
+          reason: reattachmentError.message,
+          attestation_sha256: stableDigest(initializationAttestation),
+        },
+      );
+    }
+  }
+  const name = meta.name;
+  let observedWorkspaceAttestation = initializationAttestation;
+
   // Per-child fixed context overhead: children spawn in `cwd` and load its
   // repo-instructions file into their system prompt, cache-writing it once
   // per child. A fan-out multiplies this, so surface it BEFORE the burn.
-  const contextTokensPerChildEstimate = estimateInstructionTokens(cwd);
+  const contextTokensPerChildEstimate = estimateInstructionTokens(executionCwd);
   if (contextTokensPerChildEstimate > 0) {
     log(
       `[context] each child cache-writes ~${Math.round(contextTokensPerChildEstimate / 1000)}K tokens of repo ` +
-        `instructions from ${cwd}; a fan-out multiplies this per agent`,
+        `instructions from ${executionCwd}; a fan-out multiplies this per agent`,
     );
   }
 
@@ -528,7 +698,7 @@ async function executeWorkflow(
       const estimateRequest = summarizePolicyRequest({
         phase: "dispatch",
         action: "spawn agent",
-        path: cwd,
+        path: executionCwd,
         harness,
         model: agentOpts.model,
         effort: agentOpts.effort,
@@ -536,7 +706,7 @@ async function executeWorkflow(
         max_turns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
         timeout_ms: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         prompt_bytes: Buffer.byteLength(dispatchPrompt),
-        isolation,
+        isolation: effectiveIsolation,
         network_access: networkAccess,
         current_cost_usd: round4(costUsd + reservedCostUsd),
         projected_cost_usd: null,
@@ -667,7 +837,7 @@ async function executeWorkflow(
           effort: agentOpts.effort,
           timeoutMs: agentOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           maxTurns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
-          cwd,
+          cwd: executionCwd,
           runId,
           subscriptionOnly,
         });
@@ -797,8 +967,8 @@ async function executeWorkflow(
     return authorizePolicyRequest({
       phase: "external_mutation",
       action: input.action,
-      path: input.path ? resolve(cwd, input.path) : undefined,
-      isolation,
+      path: input.path ? resolve(executionCwd, input.path) : undefined,
+      isolation: effectiveIsolation,
       network_access: network,
       service: input.service,
       target: input.target,
@@ -836,13 +1006,29 @@ async function executeWorkflow(
         concurrency,
         specialists: Object.keys(specialists),
         policy: policy ? { name: policy.name, sha256: policyDigest(policy) } : null,
-        isolation,
+        isolation: effectiveIsolation,
         network_access: networkAccess,
+        workspace_binding: workspaceBinding
+          ? { binding_id: workspaceBinding.binding_id, provider_id: workspaceBinding.provider.id }
+          : null,
       });
     }
-    const result = await mod.default(ctx);
+    if (initializationError) throw initializationError;
+    if (!workflow) throw new Error("workflow module initialization did not produce an executable");
+    const result = await workflow(ctx);
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
+    const workspaceAttestation = workspaceBinding
+      ? await attestTerminal(workspaceProvider, workspaceBinding)
+      : undefined;
+    observedWorkspaceAttestation = workspaceAttestation;
+    if (workspaceAttestation && workspaceAttestation.status !== "ok") {
+      throw new Error(
+        `terminal workspace attestation ${workspaceAttestation.status}: ${
+          workspaceAttestation.provider_drift.join("; ") || "provider could not prove the workspace"
+        }`,
+      );
+    }
     journal("run.end", {
       ok: true,
       agents: agentsSpawned,
@@ -863,8 +1049,8 @@ async function executeWorkflow(
         endedAt,
         durationMs,
         journalPath,
-        before: repoBefore,
-        after: snapshotRepo(cwd),
+        before: executionRepoBefore,
+        after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
@@ -872,10 +1058,13 @@ async function executeWorkflow(
           ? {
               config: policy,
               decisions: Array.from(policyDecisions.values()),
-              isolation,
+              isolation: effectiveIsolation,
               networkAccess,
             }
           : undefined,
+        workspaceBinding,
+        workspaceAttestation,
+        workspaceFallback,
         result,
       });
       writeWorkflowProof(proofPath, proof);
@@ -905,10 +1094,14 @@ async function executeWorkflow(
         mode: subscriptionOnly ? "subscription" : p.mode,
       })),
       policy: proof.policy?.summary,
+      workspaceBinding,
     };
     return report;
   } catch (err) {
-    if (err instanceof WorkflowParkedError || err instanceof WorkflowRunError) throw err;
+    if (err instanceof WorkflowParkedError) {
+      throw err;
+    }
+    if (err instanceof WorkflowRunError) throw err;
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
     journal("run.end", {
@@ -920,6 +1113,10 @@ async function executeWorkflow(
       duration_ms: durationMs,
     });
     try {
+      const workspaceAttestation = workspaceBinding
+        ? (observedWorkspaceAttestation ??
+          (await attestTerminal(workspaceProvider, workspaceBinding)))
+        : undefined;
       const proof = buildWorkflowProof({
         runId,
         workItemId: opts.workItemId ?? resumeState?.manifest.work_item_id,
@@ -931,8 +1128,8 @@ async function executeWorkflow(
         endedAt,
         durationMs,
         journalPath,
-        before: repoBefore,
-        after: snapshotRepo(cwd),
+        before: executionRepoBefore,
+        after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
@@ -940,10 +1137,13 @@ async function executeWorkflow(
           ? {
               config: policy,
               decisions: Array.from(policyDecisions.values()),
-              isolation,
+              isolation: effectiveIsolation,
               networkAccess,
             }
           : undefined,
+        workspaceBinding,
+        workspaceAttestation,
+        workspaceFallback,
         error: (err as Error).message,
       });
       writeWorkflowProof(proofPath, proof);

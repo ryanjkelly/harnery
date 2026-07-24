@@ -124,7 +124,7 @@ describe("workflow proof contract", () => {
     expect(rolled.summary).toEqual({ satisfied: 1, unsatisfied: 1, unknown: 1, total: 3 });
   });
 
-  test("writes, reads, validates, and renders a stored packet", () => {
+  test("writes, reads, validates, and renders a version-1 proof-only packet", () => {
     const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
     const proof = sampleProof();
     writeWorkflowProof(path, proof);

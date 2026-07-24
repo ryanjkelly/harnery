@@ -1,15 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { RepoSnapshot } from "../context/index.ts";
 import type {
   NormalizedPolicy,
@@ -19,6 +10,8 @@ import type {
 } from "../policy/index.ts";
 import { policyDigest } from "../policy/index.ts";
 import { isCanonicalWorkflowAttemptContext } from "./attempt-context.ts";
+import { stableDigest, writeImmutableJson } from "./durable-record.ts";
+import { readWorkflowRunManifest } from "./run-state.ts";
 import type {
   AcceptanceCriterion,
   AcceptanceResult,
@@ -40,6 +33,18 @@ import type {
 } from "./types.ts";
 import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
+import type {
+  WorkspaceAttestation,
+  WorkspaceBinding,
+  WorkspaceExecutionEvidence,
+  WorkspaceUnsupportedExecutionEvidence,
+} from "./workspaces/index.ts";
+import {
+  isWorkspaceBoundExecutionEvidence,
+  isWorkspaceExecutionEvidence,
+  isWorkspaceUnsupportedExecutionEvidence,
+  workspaceProofLifecycle,
+} from "./workspaces/validate.ts";
 
 const MAX_ACCEPTANCE_CRITERIA = 50;
 const MAX_EVIDENCE_RECORDS = 200;
@@ -82,6 +87,9 @@ export interface BuildWorkflowProofInput {
     isolation: PolicyIsolation;
     networkAccess: PolicyNetworkAccess;
   };
+  workspaceBinding?: WorkspaceBinding;
+  workspaceAttestation?: WorkspaceAttestation;
+  workspaceFallback?: WorkspaceUnsupportedExecutionEvidence;
   result?: unknown;
   error?: string;
 }
@@ -237,6 +245,10 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     agents,
     evidence: input.evidence,
     policy: input.policy ? buildPolicyProof(input.policy) : undefined,
+    execution:
+      input.workspaceBinding && input.workspaceAttestation
+        ? buildExecutionEvidence(input.status, input.workspaceBinding, input.workspaceAttestation)
+        : input.workspaceFallback,
     repository,
     harnesses,
     unknowns,
@@ -286,15 +298,7 @@ export function writeWorkflowProof(path: string, proof: WorkflowProof): void {
   if (bytes > MAX_PACKET_BYTES) {
     throw new Error(`workflow proof is ${bytes} bytes; limit is ${MAX_PACKET_BYTES}`);
   }
-  mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
-  try {
-    writeFileSync(temporary, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    renameSync(temporary, path);
-    chmodSync(path, 0o600);
-  } finally {
-    if (existsSync(temporary)) unlinkSync(temporary);
-  }
+  writeImmutableJson(path, proof);
 }
 
 export function readWorkflowProof(coordRoot: string, runId: string): WorkflowProof {
@@ -321,11 +325,55 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
     (proof.run.attempt_context !== undefined &&
       (!proof.run.work_item_id ||
         !proof.run.work_context ||
-        !isCanonicalWorkflowAttemptContext(proof.run.attempt_context)))
+        !isCanonicalWorkflowAttemptContext(proof.run.attempt_context))) ||
+    (proof.execution !== undefined &&
+      !isWorkspaceExecutionEvidence(proof.execution, runId, proof.run.status))
   ) {
     throw new Error(`workflow proof at ${path} has an unsupported or mismatched schema`);
   }
+  const manifestPath = join(coordRoot, ".harnery", "workflows", runId, "run.json");
+  if (proof.execution === undefined && !existsSync(manifestPath)) return proof;
+  const manifest = readWorkflowRunManifest(coordRoot, runId);
+  const manifestBinding = manifest.execution.workspace_binding;
+  const manifestFallback = manifest.execution.workspace_fallback;
+  const proofExecution = proof.execution;
+  const executionMatches =
+    manifestBinding !== undefined
+      ? isWorkspaceBoundExecutionEvidence(proofExecution, runId) &&
+        stableDigest(proofExecution.binding) === stableDigest(manifestBinding)
+      : manifestFallback !== undefined
+        ? isWorkspaceUnsupportedExecutionEvidence(proofExecution, runId) &&
+          stableDigest(proofExecution) === stableDigest(manifestFallback)
+        : proofExecution === undefined;
+  if (!executionMatches) {
+    throw new Error(`workflow proof at ${path} does not match the frozen execution manifest`);
+  }
   return proof;
+}
+
+function buildExecutionEvidence(
+  workflowStatus: "succeeded" | "failed",
+  binding: WorkspaceBinding,
+  terminalAttestation: WorkspaceAttestation,
+): WorkspaceExecutionEvidence {
+  return {
+    schema_version: 1,
+    binding,
+    terminal_attestation: terminalAttestation,
+    terminal_lifecycle_state: workspaceProofLifecycle(workflowStatus, terminalAttestation),
+    drift: [...terminalAttestation.provider_drift],
+    unsupported: [...terminalAttestation.unsupported],
+    unknowns: [...terminalAttestation.unknowns],
+    receipts: {
+      request: "workspace-request.json",
+      cancellation_outcome: "cancellation/outcome.json",
+      integration_plan: "integration/plan.json",
+      integration_authorization: "integration/authorization.json",
+      integration_apply: "integration/receipt.json",
+      cleanup_intent: "cleanup/intent.json",
+      cleanup_receipt: "cleanup/receipt.json",
+    },
+  };
 }
 
 export function renderWorkflowProof(proof: WorkflowProof): string {

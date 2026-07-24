@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -15,8 +15,10 @@ import {
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { readWorkflowApproval } from "../workflow/approvals.ts";
+import { stableDigest } from "../workflow/durable-record.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
 import { readWorkflowRunManifest, workflowScriptDigest } from "../workflow/run-state.ts";
+import { isWorkspaceBoundExecutionEvidence } from "../workflow/workspaces/validate.ts";
 
 export const WORK_INTENT_SCHEMA_VERSION = 1 as const;
 export const WORK_EVENT_SCHEMA_VERSION = 1 as const;
@@ -92,6 +94,10 @@ export interface WorkEvent {
   run_id?: string;
   attempt?: number;
   trigger?: WorkAttemptTrigger;
+  workspace_binding_id?: string;
+  proof_sha256?: string;
+  terminal_attestation_sha256?: string;
+  accepted_unknowns?: string[];
   state?: WorkState;
   next_action?: WorkNextAction;
 }
@@ -264,7 +270,7 @@ export function reconcileAllWorkItems(coordRoot: string, actor?: string): WorkRe
 export function acceptWorkItem(
   coordRoot: string,
   workId: string,
-  input: { actor?: string; reason?: string } = {},
+  input: { actor?: string; reason?: string; acceptedUnknowns?: readonly string[] } = {},
 ): WorkRecord {
   return appendGovernanceEvent(coordRoot, workId, "work.accepted", ["in_review"], input);
 }
@@ -278,7 +284,7 @@ export function cancelWorkItem(
     coordRoot,
     workId,
     "work.cancelled",
-    ["waiting", "ready", "blocked", "in_review"],
+    ["waiting", "ready", "running", "awaiting_approval", "blocked", "in_review"],
     input,
   );
 }
@@ -531,25 +537,74 @@ function appendGovernanceEvent(
   workId: string,
   event: "work.accepted" | "work.cancelled" | "work.reopened",
   allowed: WorkState[],
-  input: { actor?: string; reason?: string },
+  input: { actor?: string; reason?: string; acceptedUnknowns?: readonly string[] },
 ): WorkRecord {
-  const release = acquireWorkLease(coordRoot, workId);
+  const releaseWork = event === "work.cancelled" ? undefined : acquireWorkLease(coordRoot, workId);
+  const releaseEvent = acquireWorkEventLease(coordRoot, workId);
   try {
-    const current = readWorkItemIgnoringLease(coordRoot, workId);
+    const current = releaseWork
+      ? readWorkItemIgnoringLease(coordRoot, workId)
+      : readWorkItem(coordRoot, workId);
     if (!allowed.includes(current.projection.state)) {
       throw new Error(
         `work item ${workId} cannot ${event.replace("work.", "")} from state ${current.projection.state}`,
       );
     }
-    appendWorkEvent(coordRoot, workId, {
+    const acceptance =
+      event === "work.accepted"
+        ? acceptanceAuthority(coordRoot, current, input.acceptedUnknowns ?? [])
+        : undefined;
+    appendWorkEventUnderLease(coordRoot, workId, {
       event,
       actor: boundedActor(input.actor),
       reason: boundedOptional(input.reason, "work reason", MAX_REASON),
+      ...acceptance,
     });
   } finally {
-    release();
+    releaseEvent();
+    releaseWork?.();
   }
   return reconcileWorkItem(coordRoot, workId, input.actor);
+}
+
+function acceptanceAuthority(
+  coordRoot: string,
+  current: WorkRecord,
+  acceptedUnknowns: readonly string[],
+): Pick<
+  WorkEvent,
+  | "run_id"
+  | "attempt"
+  | "proof_sha256"
+  | "workspace_binding_id"
+  | "terminal_attestation_sha256"
+  | "accepted_unknowns"
+> {
+  const latest = current.projection.attempts.at(-1);
+  if (!latest?.proof_path) throw new Error("work acceptance requires terminal workflow proof");
+  const manifest = readWorkflowRunManifest(coordRoot, latest.run_id);
+  const proof = readWorkflowProof(coordRoot, latest.run_id);
+  if (
+    proof.run.work_item_id !== current.intent.id ||
+    proof.run.attempt_context?.number !== latest.number
+  ) {
+    throw new Error("work acceptance proof does not match the durable attempt");
+  }
+  const accepted = [...new Set(acceptedUnknowns)].sort();
+  for (const code of accepted) {
+    boundedString(code, "accepted unknown code", 200);
+  }
+  const execution = proof.execution;
+  return {
+    run_id: latest.run_id,
+    attempt: latest.number,
+    proof_sha256: createHash("sha256").update(readFileSync(latest.proof_path)).digest("hex"),
+    workspace_binding_id: manifest.execution.workspace_binding?.binding_id,
+    terminal_attestation_sha256: isWorkspaceBoundExecutionEvidence(execution)
+      ? stableDigest(execution.terminal_attestation)
+      : undefined,
+    accepted_unknowns: execution ? accepted : undefined,
+  };
 }
 
 /** @internal Runner seam; not a separate persistence contract. */
@@ -558,21 +613,33 @@ export function appendReconcileIfChanged(
   record: WorkRecord,
   actor: string,
 ): void {
-  const last = [...record.events].reverse().find((event) => event.event === "work.reconciled");
-  if (
-    last?.state === record.projection.state &&
-    last.reason === record.projection.reason &&
-    last.next_action === record.projection.next_action
-  ) {
-    return;
+  let release: (() => void) | undefined;
+  try {
+    release = acquireWorkEventLease(coordRoot, record.intent.id);
+  } catch (error) {
+    if (workEventLeaseIsLive(coordRoot, record.intent.id)) return;
+    throw error;
   }
-  appendWorkEvent(coordRoot, record.intent.id, {
-    event: "work.reconciled",
-    actor,
-    reason: record.projection.reason,
-    state: record.projection.state,
-    next_action: record.projection.next_action,
-  });
+  try {
+    const current = readWorkItemIgnoringLease(coordRoot, record.intent.id);
+    const last = [...current.events].reverse().find((event) => event.event === "work.reconciled");
+    if (
+      last?.state === current.projection.state &&
+      last.reason === current.projection.reason &&
+      last.next_action === current.projection.next_action
+    ) {
+      return;
+    }
+    appendWorkEventUnderLease(coordRoot, current.intent.id, {
+      event: "work.reconciled",
+      actor,
+      reason: current.projection.reason,
+      state: current.projection.state,
+      next_action: current.projection.next_action,
+    });
+  } finally {
+    release();
+  }
 }
 
 /** @internal Runner seam; not a separate persistence contract. */
@@ -581,14 +648,27 @@ export function appendWorkEvent(
   workId: string,
   input: Omit<WorkEvent, "schema_version" | "work_id" | "seq" | "ts">,
 ): WorkEvent {
+  const release = acquireWorkEventLease(coordRoot, workId);
+  try {
+    return appendWorkEventUnderLease(coordRoot, workId, input);
+  } finally {
+    release();
+  }
+}
+
+function appendWorkEventUnderLease(
+  coordRoot: string,
+  workId: string,
+  input: Omit<WorkEvent, "schema_version" | "work_id" | "seq" | "ts">,
+): WorkEvent {
   const events = readWorkEvents(coordRoot, workId);
   if (events.length === 0 && input.event !== "work.created") {
-    appendWorkEvent(coordRoot, workId, {
+    appendWorkEventUnderLease(coordRoot, workId, {
       event: "work.created",
       actor: "recovery",
       reason: "recovered creation receipt from immutable intent",
     });
-    return appendWorkEvent(coordRoot, workId, input);
+    return appendWorkEventUnderLease(coordRoot, workId, input);
   }
   if (events.length >= MAX_EVENTS)
     throw new Error(`work item ${workId} exceeds ${MAX_EVENTS} events`);
@@ -699,7 +779,11 @@ function validateWorkEvent(event: WorkEvent, workId: string, seq: number): void 
   }
   boundedActor(event.actor);
   boundedOptional(event.reason, "work reason", MAX_REASON);
-  if (event.event === "attempt.started" || event.event === "attempt.resumed") {
+  if (
+    event.event === "attempt.started" ||
+    event.event === "attempt.resumed" ||
+    (event.event === "work.accepted" && event.run_id !== undefined)
+  ) {
     if (
       !event.run_id ||
       !RUN_ID.test(event.run_id) ||
@@ -707,6 +791,26 @@ function validateWorkEvent(event: WorkEvent, workId: string, seq: number): void 
       (event.attempt ?? 0) < 1
     ) {
       throw new Error(`work item ${workId} event ${seq} has invalid attempt data`);
+    }
+  }
+  if (event.event === "work.accepted" && event.run_id !== undefined) {
+    if (event.workspace_binding_id !== undefined) {
+      boundedString(event.workspace_binding_id, "workspace binding id", 200);
+    }
+    if (!/^[a-f0-9]{64}$/.test(event.proof_sha256 ?? "")) {
+      throw new Error(`work item ${workId} event ${seq} has invalid proof digest`);
+    }
+    if (event.workspace_binding_id !== undefined) {
+      if (
+        !/^[a-f0-9]{64}$/.test(event.terminal_attestation_sha256 ?? "") ||
+        !Array.isArray(event.accepted_unknowns) ||
+        event.accepted_unknowns.some(
+          (code) => typeof code !== "string" || code.length === 0 || code.length > 200,
+        ) ||
+        new Set(event.accepted_unknowns).size !== event.accepted_unknowns.length
+      ) {
+        throw new Error(`work item ${workId} event ${seq} has invalid execution review evidence`);
+      }
     }
   }
   if (
@@ -802,8 +906,27 @@ function workDir(coordRoot: string, workId: string): string {
 
 /** @internal Runner seam; not a separate persistence contract. */
 export function acquireWorkLease(coordRoot: string, workId: string): () => void {
+  return acquireWorkFileLease(coordRoot, workId, "lease.json", "is already active");
+}
+
+/** @internal Work journal mutation seam. */
+export function acquireWorkEventLease(coordRoot: string, workId: string): () => void {
+  return acquireWorkFileLease(
+    coordRoot,
+    workId,
+    "events.lease.json",
+    "event journal is already active",
+  );
+}
+
+function acquireWorkFileLease(
+  coordRoot: string,
+  workId: string,
+  filename: string,
+  activeMessage: string,
+): () => void {
   readWorkIntent(coordRoot, workId);
-  const path = join(workDir(coordRoot, workId), "lease.json");
+  const path = join(workDir(coordRoot, workId), filename);
   const owner = {
     pid: process.pid,
     host: hostname(),
@@ -829,7 +952,7 @@ export function acquireWorkLease(coordRoot: string, workId: string): () => void 
     const existing = readLease(path);
     if (existing && leaseIsLive(existing)) {
       throw new Error(
-        `work item ${workId} is already active under pid ${existing.pid} on ${existing.host}`,
+        `work item ${workId} ${activeMessage} under pid ${existing.pid} on ${existing.host}`,
       );
     }
     unlinkSync(path);
@@ -847,6 +970,11 @@ export function acquireWorkLease(coordRoot: string, workId: string): () => void 
 
 function workLeaseIsLive(coordRoot: string, workId: string): boolean {
   const lease = readLease(join(workDir(coordRoot, workId), "lease.json"));
+  return lease ? leaseIsLive(lease) : false;
+}
+
+function workEventLeaseIsLive(coordRoot: string, workId: string): boolean {
+  const lease = readLease(join(workDir(coordRoot, workId), "events.lease.json"));
   return lease ? leaseIsLive(lease) : false;
 }
 
