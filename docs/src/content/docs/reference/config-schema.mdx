@@ -19,11 +19,11 @@ Reference it in your config file's `$schema` field to get editor autocomplete an
 
 Settings resolve from these sources, lowest precedence first (later wins):
 
-1. `~/.config/harnery/config.jsonc`: the user-global file — a base for every project on the machine (honors `XDG_CONFIG_HOME`; falls back to `~/.config`)
-2. `<project>/.harnery/config.jsonc`: the project settings file — overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
+1. `~/.config/harnery/config.jsonc`: the user-global file, a base for every project on the machine (honors `XDG_CONFIG_HOME`; falls back to `~/.config`)
+2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only — a user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -74,7 +74,7 @@ Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
 
 | Field     | Type       | Default | Description |
 | --------- | ---------- | ------- | ----------- |
-| `exclude` | string[]   | `[]`    | Shipped harnery skills this repo suppresses — e.g. `["harn-decide", "harn-council"]` when the host keeps its own richer versions. The injected AGENTS.md block points at `--help` instead of an excluded skill |
+| `exclude` | string[]   | `[]`    | Shipped harnery skills this repo suppresses, e.g. `["harn-decide", "harn-council"]` when the host keeps its own richer versions. The injected AGENTS.md block points at `--help` instead of an excluded skill |
 
 ## `presence`
 
@@ -83,7 +83,7 @@ Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
 | `enabled` | bool   | `true`  | Cross-machine presence over git refs (`refs/harnery/presence/<machine>` on origin). On by default when an origin remote exists; every operation is fail-silent |
 | `relay`   | string | unset   | Optional live upgrade: a `wss://` relay URL (public reference: `wss://relay.harnery.com`; self-host via [`harn relay serve`](/cli/relay/) or `relay/worker/`). When set, hooks keep a per-machine daemon connected for seconds-latency presence; git refs stay on as the floor |
 
-Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRESENCE_RELAY=<url|0>` (relay only), `HARNERY_PRESENCE_FETCH_INTERVAL=<secs>` (git-refs fetch throttle). A committed `.harnery/presence-salt` file rotates the relay room (it is NOT a secret — see [decision record 0016](/decisions/0016-cross-machine-presence/)). Full behavior: [`harn presence`](/cli/presence/#cross-machine-session-presence).
+Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRESENCE_RELAY=<url|0>` (relay only), `HARNERY_PRESENCE_FETCH_INTERVAL=<secs>` (git-refs fetch throttle). A committed `.harnery/presence-salt` file rotates the relay room (it is NOT a secret; see [decision record 0016](/decisions/0016-cross-machine-presence/)). Full behavior: [`harn presence`](/cli/presence/#cross-machine-session-presence).
 
 ## `web`
 
@@ -119,7 +119,7 @@ Sync subset is fixed: `identities/`, `scratch/archived/`, `councils/`. Heartbeat
 
 ## `files`
 
-Web file-viewer path-serving policy (the universal file viewer in `harn web`). The shipped secret denylist is a non-removable floor baked into code; these knobs are **additive only** — they extend the floor, never shrink it.
+Web file-viewer path-serving policy (the universal file viewer in `harn web`). The shipped secret denylist is a non-removable floor baked into code; these knobs are **additive only**: they extend the floor, never shrink it.
 
 | Field             | Type      | Default | Description |
 | ----------------- | --------- | ------- | ----------- |

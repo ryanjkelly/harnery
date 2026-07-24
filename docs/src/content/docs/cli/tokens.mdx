@@ -9,7 +9,7 @@ sidebar:
 harn tokens [options] <files...>
 ```
 
-Count the tokens in one or more text/markdown files without any network call. It uses OpenAI's `o200k_base` BPE tokenizer (the GPT-4o tokenizer) as a stand-in for Claude's — Claude doesn't publish a local tokenizer, but for English markdown the two agree to within roughly 3-5%. Handy for keeping a doc, prompt, or context file under a budget.
+Count the tokens in one or more text/markdown files without any network call. It uses OpenAI's `o200k_base` BPE tokenizer (the GPT-4o tokenizer) as a stand-in for Claude's own. Claude doesn't publish a local tokenizer, but for English markdown the two agree to within roughly 3-5%. Handy for keeping a doc, prompt, or context file under a budget.
 
 ## Arguments
 
@@ -21,7 +21,7 @@ Count the tokens in one or more text/markdown files without any network call. It
 
 | Flag | Description |
 | --- | --- |
-| `--limit <n>` | Flag any file exceeding N tokens. The command exits non-zero if at least one file is over — usable as a CI/pre-commit budget check. |
+| `--limit <n>` | Flag any file exceeding N tokens. The command exits non-zero if at least one file is over, so it works as a CI/pre-commit budget check. |
 | `--format <type>` | Output format: `table` (default), `json`, or `plain`. |
 
 ## Examples
@@ -42,4 +42,4 @@ harn tokens --format json docs/*.md
 
 ## Output
 
-The JSON envelope carries `ok`, the `tokenizer` name (`o200k_base`), the `limit`, a `count` of files, an `over_count`, and a `results[]` array. Each result has `path`, `chars`, `tokens`, `error` (null on success), and — when `--limit` is set — `over_limit` and `pct_of_limit`. A file that can't be read is reported per-row with its `error` set rather than aborting the whole run.
+The JSON envelope carries `ok`, the `tokenizer` name (`o200k_base`), the `limit`, a `count` of files, an `over_count`, and a `results[]` array. Each result has `path`, `chars`, `tokens`, `error` (null on success), and, when `--limit` is set, `over_limit` and `pct_of_limit`. A file that can't be read is reported per-row with its `error` set rather than aborting the whole run.

@@ -27,10 +27,10 @@ harn cookies info [--json]                      # store path, size, counts, expo
 
 ## Options by subcommand
 
-- **`list`** — `--domain <domain>` filters to one domain; `--json` for machine output.
-- **`set`** — `--domain <domain>` is **required** (e.g. `.example.com`). Also `--path <path>` (default `/`), `--secure`, `--httpOnly`, `--sameSite <Strict|Lax|None>`, `--expires <unix-seconds>` (omit for a session cookie).
-- **`clear`** — one of `--domain <domain>` (drop cookies for a single domain) or `--all` (wipe cookies + origins) is required.
-- **`import`** — `--replace` replaces the entire store instead of merging by `(name, domain, path)`.
+- **`list`**: `--domain <domain>` filters to one domain; `--json` for machine output.
+- **`set`**: `--domain <domain>` is **required** (e.g. `.example.com`). Also `--path <path>` (default `/`), `--secure`, `--httpOnly`, `--sameSite <Strict|Lax|None>`, `--expires <unix-seconds>` (omit for a session cookie).
+- **`clear`**: one of `--domain <domain>` (drop cookies for a single domain) or `--all` (wipe cookies + origins) is required.
+- **`import`**: `--replace` replaces the entire store instead of merging by `(name, domain, path)`.
 
 ## Examples
 

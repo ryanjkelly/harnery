@@ -12,8 +12,8 @@ harn agents <subcommand> [options]
 The window into the coordination layer. Every agent sharing a checkout writes a
 heartbeat to `.harnery/active/<instance_id>.json` carrying its name, session
 age, the files it has claimed, its last tool call, and a self-declared task.
-`harn agents` reads that state — plus the append-only event ledger at
-`.harnery/events.ndjson` — to answer the questions that keep parallel agents out
+`harn agents` reads that state, plus the append-only event ledger at
+`.harnery/events.ndjson`, to answer the questions that keep parallel agents out
 of each other's way: who else is here, what are they holding, what is each one
 doing, and did anything go wrong.
 
@@ -42,7 +42,7 @@ harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fix
 Two further subtrees live under `agents` for advanced use: `harn agents council`
 (convene a temporary group for structured multi-round deliberation) and
 `harn agents identity` (the durable per-agent persona registry). Two more are
-recovery tools — `harn agents heal` forces a specific recovery action on one
+recovery tools: `harn agents heal` forces a specific recovery action on one
 agent, and `harn agents harness-probe` diagnoses harness wiring. Run
 `harn agents <sub> --help` for any of them.
 
@@ -85,7 +85,7 @@ The three orientation commands.
   (short-lived helper processes) into their parent; `--all` shows them raw.
   `--stale` includes heartbeats older than the freshness window (agents that
   likely exited without cleaning up). `--json` for structured output.
-- **`status`** renders the end-of-turn status box — your name, session age,
+- **`status`** renders the end-of-turn status box: your name, session age,
   declared task, last turn summary, context usage, files held, and a one-line
   peer roster. `--json` returns the same data unformatted. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
@@ -101,7 +101,7 @@ harnesses where the process walk can't resolve self.
 **First-of-session session name.** The first time you declare a focus in a
 session (detected by the absence of a prior `task_updated_at` stamp), the JSON
 result additionally carries `first_of_session: true` and a
-`suggested_session_name` — `Agent <you> - <your task>` — for the operator to set
+`suggested_session_name` (`Agent <you> - <your task>`) for the operator to set
 as their harness's session/tab title:
 
 ```json
@@ -111,13 +111,13 @@ as their harness's session/tab title:
 
 The single focus declaration feeds both the peer-visible task and the tab name,
 so there's one source of truth. Reproduce `suggested_session_name` inside a fenced
-code block in your reply — chat UIs add a one-click Copy button to code blocks, so
+code block in your reply. Chat UIs add a one-click Copy button to code blocks, so
 the operator grabs the exact string without hand-selecting. Every later `set-task`
 returns `first_of_session: false` and a null name.
 
 ### suggest-name
 
-Reprints a session name — `Agent <you> - <description>` — for the operator's tab
+Reprints a session name (`Agent <you> - <description>`) for the operator's tab
 title, **read-only**. This is the secondary path: `set-task` already suggests a
 name on the first focus declaration (above). Reach for `suggest-name` to reprint
 the current session's name or re-suggest one after a topic pivot. With an explicit
@@ -130,8 +130,8 @@ $ harn agents suggest-name            # no arg → from current task
 Agent Hollis - Auth Refactor
 ```
 
-It prints the bare name on stdout (not a drawn box — a box would copy its borders
-and labels too). `--json` returns `{ suggested_session_name, agent_name,
+It prints the bare name on stdout (not a drawn box, since a box would copy its
+borders and labels too). `--json` returns `{ suggested_session_name, agent_name,
 description }`. Like `status`, it accepts `--session-id <id>`. Mutates no state.
 
 ### show, trace
@@ -143,7 +143,7 @@ by `instance_id`.
   plus recent session history (latest title, recent prompts, tool-usage
   tallies). A name is disambiguated to an `instance_id` by prefix match.
 - **`trace`** is the *history* view: it reconstructs one agent's lifecycle from
-  the event ledger in chronological order — session start, prompts, turns,
+  the event ledger in chronological order: session start, prompts, turns,
   tools, heals, sweeps, file claims, exit. This is the answer to "what happened
   to this agent / why did it vanish?" without hand-grepping the stream.
   `--since <window>` bounds it (e.g. `1h`, `2d`), `--limit <n>` caps it (default
@@ -180,7 +180,7 @@ The layer's own diagnostics.
   commit-guard activity, council activity, and anomalies. Built for a daily
   glance or dashboard ingestion. `--since <window>` sets the window (default
   `24h`); `--json` for structured output.
-- **`heal-events`** surfaces PIDMAP_HEAL telemetry — how often the pid-map
+- **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
   self-heal had to correct drift. Sustained high counts point at an upstream
   process-spawn bug. `--since <window>` (default `7d`), `--limit <n>` (default
   `20`), plus `--json` / `--csv`.

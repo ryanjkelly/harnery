@@ -9,18 +9,19 @@ sidebar:
 harn devtools [--tool <name>] [--usage] [--window-days <n>] [--format table|json]
 ```
 
-Reports the on-disk state of the AI coding agents Harnery is built for — Claude
-Code (`~/.claude`), Codex (`~/.codex`), and Cursor (`~/.cursor`) — in one place:
-logged-in status, plan / seat tier, auth expiry, session counts, and, where the
-tool records them locally, rate-limit / quota windows.
+Reports, in one place, the on-disk state of the three AI coding agents Harnery
+is built for: Claude Code (`~/.claude`), Codex (`~/.codex`), and Cursor
+(`~/.cursor`). That covers logged-in status, plan / seat tier, auth expiry,
+session counts, and, where the tool records them locally, rate-limit / quota
+windows.
 
-The default report comes from files on disk — no network call. Auth tokens are
+The default report comes from files on disk, with no network call. Auth tokens are
 inspected only for their non-secret claims (email, plan, expiry); the token
 strings themselves are never printed. A signal a tool keeps server-side surfaces
 as blank with a note rather than a guess.
 
 Opt-in enrichments reach the network, each authenticating with the credential
-the tool already stores on disk — the user's own token reading the user's own
+the tool already stores on disk: the user's own token reading the user's own
 data. For Claude Code, `devtools` reads the OAuth token and calls the same
 `/api/oauth/usage` endpoint the `/usage` command uses, for the 5h + weekly
 windows and extra-usage spend. For Cursor, it reads the IDE session token and
@@ -43,25 +44,25 @@ cycle + percent-used. `--no-api` turns all of it off.
 
 Login, plan, tier, auth expiry, and session counts all come from files on disk.
 The quota windows, percent-used, and overage spend for Claude Code and Cursor
-are the enrichment's doing — they live server-side and are fetched with the
+are the enrichment's doing. They live server-side and are fetched with the
 local token. Cursor's `state.vscdb` read needs a SQLite engine (Bun's
 `bun:sqlite`); on a plain-Node host it degrades to login-presence only, and on
 WSL the reader opens the Windows-side DB immutable rather than copying it.
 
 Codex is read entirely from local files (`auth.json` + the JSONL session
-rollouts), no endpoint — and unlike Claude Code and Cursor, there is nothing to
+rollouts), with no endpoint. Unlike Claude Code and Cursor, there is nothing to
 gain from a network call. OpenAI delivers Codex's rate-limit state as a
 `token_count` event *inside the stream of an actual model turn*, not from a cheap
 standalone usage GET, so the rollout the running client writes each turn already
 carries the authoritative server snapshot for free. "Refreshing" it from the
 server would mean spending a model turn to learn how much quota is left; the
 local file is strictly better. The snapshot's freshness therefore equals **last
-active** — an idle Codex shows an older reading, and the last-active timestamp
+active**: an idle Codex shows an older reading, and the last-active timestamp
 says exactly how old.
 
 A machine can carry more than one Codex install (e.g. a WSL CLI and the Windows
-desktop app, each its own account); the reader locks onto the **active** one —
-whichever owns the most-recently-written rollout — and reads auth and rate limits
+desktop app, each its own account); the reader locks onto the **active** one
+(whichever owns the most-recently-written rollout) and reads auth and rate limits
 from that same install so the two never mix. Auth expiry is reported from the
 access token (which outlives the shorter id token and is what refreshes), so a
 healthy login isn't shown as "expired". When the snapshot's
@@ -72,23 +73,23 @@ Codex is also the one tool whose **token total is always on the card**, over the
 `--window-days` window (default 7). Each session's cumulative
 `total_token_usage` (cache reads included, matching Codex's own `/status`) is the
 last `token_count` event in its rollout, so the total is one bounded tail-read
-per in-window rollout rather than a full parse — cheap enough to run on every
+per in-window rollout rather than a full parse. That is cheap enough to run on every
 render.
 
 Claude Code's token total is also always on the card, but it's harder to keep
 cheap: a Claude transcript has no per-session cumulative field, so the total is
-the sum of every message — a full read of each in-window transcript, hundreds of
+the sum of every message, a full read of each in-window transcript, hundreds of
 MB in a busy week. So it's **memoized per transcript** at
 `~/.cache/harnery/devtools/claude-tokens.json`, keyed by each file's path +
 mtime + size. The first read scans everything; after that only the transcripts
 that actually changed (usually just the live session) are re-read, so the card
 stays responsive. `--usage` forces a fresh, cache-bypassing recount. The figure
-sums input + output + cache tokens, so cache reads dominate — expect a number
+sums input + output + cache tokens, so cache reads dominate; expect a number
 far larger than the billed-token count.
 
 ### Rate-limit discipline
 
-These endpoints are shared with the tools' own clients — Anthropic's
+These endpoints are shared with the tools' own clients. Anthropic's
 `oauth/usage` is the exact endpoint Claude Code's Account & Usage panel calls,
 and it is sharply rate-limited. The enrichment is built so the dashboard can
 never starve that client:
@@ -104,14 +105,14 @@ never starve that client:
   loop.
 - **Requests carry the tool's own client identity, with a live version.** Claude
   sends `claude-cli/<version> (external, cli)` + `x-app: cli`; Cursor sends its
-  Electron client UA (`… Cursor/<version> Chrome/… Electron/… Safari/537.36`) —
+  Electron client UA (`… Cursor/<version> Chrome/… Electron/… Safari/537.36`),
   so both read as first-party traffic, not a scraper. Each version is read live
   from the local install (Claude from the `version` field the running client
-  stamps into its newest session transcript — which tracks auto-updates and can
+  stamps into its newest session transcript, which tracks auto-updates and can
   be ahead of the bootstrap `package.json`; Cursor from `state.vscdb`).
 
 You can spot-check that these integrations still work with `harn devtools
-doctor` — see [Checking for drift](#checking-for-drift).
+doctor`; see [Checking for drift](#checking-for-drift).
 
 The remaining gap: **exact token totals** aren't exposed by either usage
 endpoint (only percentages and dollar spend).
@@ -139,7 +140,7 @@ An `auth_rejected` (401/403) means our headers or token stopped being accepted;
 `shape_changed` means a 200 came back without the fields we parse. Either is the
 signal to review the request builder or the parser. `rate_limited` is reported
 as-is (not a defect), and the printed client versions let you eyeball version
-drift. It is intentionally not scheduled — run it by hand so it can't itself
+drift. It is intentionally not scheduled; run it by hand so it can't itself
 contribute to a rate limit. Codex is local-file-only, so it has no endpoint to
 probe and is omitted.
 
@@ -162,16 +163,16 @@ backoff, and the client-identity headers keep these calls from starving the
 tools' own clients.
 
 **Claude Code usage (no key needed).** Reads the OAuth token from
-`~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage` —
-the endpoint the `/usage` command uses — with `Authorization: Bearer` plus the
+`~/.claude/.credentials.json` and calls `api.anthropic.com/api/oauth/usage`
+(the endpoint the `/usage` command uses) with `Authorization: Bearer` plus the
 `anthropic-beta: oauth-2025-04-20` header. Fills `quota[]` (the 5h session +
 weekly + model-scoped weekly windows) and `spend` (extra-usage credits). An
 expired token is skipped. That endpoint is rate-limited and shared with Claude
 Code's own usage panel, which is exactly why the result is cached.
 
 **Cursor usage + billing (no key needed).** Reads Cursor's session token from
-`state.vscdb` and calls `cursor.com/api/dashboard/get-current-period-usage` —
-the Spending-page request — authenticating with the WorkOS session cookie the
+`state.vscdb` and calls `cursor.com/api/dashboard/get-current-period-usage`
+(the Spending-page request), authenticating with the WorkOS session cookie the
 IDE already holds. Fills `usage: { cycleStart, cycleEnd, totalPercentUsed,
 apiPercentUsed, firstPartyPercentUsed, includedLimitCents }` and `spend`
 (on-demand). An expired token is skipped.
@@ -187,7 +188,7 @@ harn devtools cursor-key clear        # remove it
 
 The key is read from `CURSOR_API_KEY` first, then `~/.config/harnery/cursor-api-key`
 (stored `0600`). Cursor's public usage/spend API is **Team-only** (`/teams/*`), so
-an individual Pro/Pro+ key returns no token cost there — the key path only adds
+an individual Pro/Pro+ key returns no token cost there; the key path only adds
 Cloud Agent runs (`/v0/me`, `/v0/agents`). The richer billing numbers come from
 the session-token path above, not the key.
 

@@ -10,9 +10,9 @@ harn grep [options] <pattern> [paths...]
 ```
 
 Monorepo-aware code search with a curated skip list, repo scoping, and
-language presets — the everyday "find this string in the codebase" tool that
-doesn't drown you in matches from `node_modules/` or a build directory. Regex
-by default (extended-regex semantics); pass `-F` for a literal string.
+language presets. It's the everyday "find this string in the codebase" tool
+that doesn't drown you in matches from `node_modules/` or a build directory.
+Regex by default (extended-regex semantics); pass `-F` for a literal string.
 
 Reach for this for shell use, scripting, and anything that wants the `--json`
 envelope. It searches the current working directory unless you point it at
@@ -25,13 +25,13 @@ when it is on PATH and falls back to GNU `grep` transparently. Both engines
 are driven with equivalent flags and parsed into the same envelope, so
 **results are identical either way** (pinned by an engine-parity test suite);
 the envelope's `engine` field reports which one ran. Force a specific engine
-with `HARNERY_GREP_ENGINE=rg|grep` — the escape hatch if an exotic regex
+with `HARNERY_GREP_ENGINE=rg|grep`, the escape hatch if an exotic regex
 behaves differently across engines (e.g. backreferences, which GNU grep
 accepts and ripgrep rejects).
 
 Installing ripgrep is worth it on any non-trivial tree. Measured on a real
 24-repo monorepo (warm cache), the search phase of an `--all-repos` sweep
-dropped from 863ms (GNU grep) to 147ms with ripgrep — and the same release's
+dropped from 863ms (GNU grep) to 147ms with ripgrep. The same release's
 parallel repo fan-out plus parent-scan pruning took the end-to-end sweep from
 6.8s to about 1.1s while eliminating double-reported submodule matches
 (90 rows shrank to 56 unique ones). Ripgrep's parallel directory walker pulls
@@ -41,7 +41,7 @@ a synthetic tree or any directory you point it at.
 
 Ripgrep is run with `--hidden --no-ignore --no-config`: hidden directories
 are searched and `.gitignore` files are **not** honored, exactly like the
-grep path — the explicit exclude lists below are the only filters, so agent
+grep path. The explicit exclude lists below are the only filters, so agent
 config in dotdirs (`.agents/`, `.claude/`, …) stays findable.
 
 ### Managed install (harnery can provision rg itself)
@@ -49,7 +49,7 @@ config in dotdirs (`.agents/`, `.claude/`, …) stays findable.
 When no rg is found (probe order: `HARNERY_RG_PATH` → the managed install →
 PATH), harnery can install one: a **version-pinned, sha256-verified** ripgrep
 download into its own tools directory (`$XDG_DATA_HOME/harnery/tools`,
-default `~/.local/share/harnery/tools` — never system dirs), which `grep`
+default `~/.local/share/harnery/tools`, never system dirs), which `grep`
 probes directly so PATH doesn't need updating. Two ways to trigger it:
 
 - **Explicit:** `harn doctor --fix` installs it on demand.
@@ -60,8 +60,8 @@ probes directly so PATH doesn't need updating. Two ways to trigger it:
 
 Without the opt-in, a missing rg emits a rate-limited (once per day) stderr
 hint naming `doctor --fix` and falls back to GNU grep. Every failure path
-(no network, checksum mismatch, unsupported OS/arch) also falls back to grep
-— provisioning can never break a search. The checksums are pinned in
+(no network, checksum mismatch, unsupported OS/arch) also falls back to grep,
+so provisioning can never break a search. The checksums are pinned in
 `src/lib/tools/ripgrep.ts`, cross-checked against the official release
 `.sha256` assets; `HARNERY_TOOLS_AUTOINSTALL=1|0` overrides the config per
 process. Windows has no pinned artifact yet (hint only).
@@ -72,7 +72,7 @@ process. Windows has no pinned artifact yet (hint only).
 | --- | --- |
 | `--repo <name>` | Scope to one submodule; `.` (or `parent`) means the repo root. |
 | `--all-repos` | Search the parent repo plus every configured submodule, labeled per-repo. |
-| `--lang <lang>` | File-type preset: `ts`, `tsx`, `js`, `jsx`, `py`, `php`, `sql`, `md`, `sh`, `json`, `yaml`, `rb`, `go`, `rs`. Repeatable and/or comma-separated (`--lang ts,tsx`) — values union. |
+| `--lang <lang>` | File-type preset: `ts`, `tsx`, `js`, `jsx`, `py`, `php`, `sql`, `md`, `sh`, `json`, `yaml`, `rb`, `go`, `rs`. Repeatable and/or comma-separated (`--lang ts,tsx`); values union. |
 | `-i, --ignore-case` | Case-insensitive match. |
 | `-w, --whole-word` | Match whole words only. |
 | `-F, --literal` | Treat `<pattern>` as a literal string (no regex). |
@@ -121,7 +121,7 @@ returning false negatives.
 
 `-C N` sets both sides; `-A` / `-B` override one side regardless of flag
 order (`-C 2 -A 0` = two before, zero after). Context is materialized from
-one file read per selected file — not from engine context output — so both
+one file read per selected file, not from engine context output, so both
 engines produce byte-identical rows, overlapping windows merge, and
 `--limit` counts only match rows (a selected match always keeps its full
 context window). Human output separates disjoint windows with `--`; JSON
@@ -135,12 +135,12 @@ Unless `--no-default-excludes` is set, these directories are skipped: `.git`,
 `.turbo`, and the coordination directory. Binary files are always skipped.
 
 A host CLI can extend the skip list via the program context's
-`grepExcludeDirs` — meant for host-generated mirror directories whose matches
+`grepExcludeDirs`, meant for host-generated mirror directories whose matches
 only ever duplicate the source files they were generated from. Host excludes
 ride the same `--no-default-excludes` gate as the built-in list.
 
 In `--all-repos` mode the parent scan additionally prunes every submodule
-directory, since each submodule gets its own scoped scan — every match is
+directory, since each submodule gets its own scoped scan, so every match is
 attributed to exactly one repo. This pruning is about correct attribution,
 not noise, so it stays on even with `--no-default-excludes`.
 
@@ -180,9 +180,9 @@ harn grep 'Dockerfile*' --files -i
 ## Filename mode (`--files`)
 
 `--files` switches from content search to filename search: `<pattern>` becomes
-a filename glob (basename semantics — `'*.md'` matches at any depth) and the
+a filename glob (basename semantics, so `'*.md'` matches at any depth) and the
 output is the matching file paths. Backed by `rg --files` when ripgrep is
-available, POSIX `find` otherwise — results are identical (same parity suite).
+available, POSIX `find` otherwise; results are identical (same parity suite).
 The exclude lists, `--repo` / `--all-repos` scoping, `-i`, `--exclude`, and
 `--limit` all apply; content-search flags (`--lang`, `-c`, `-C`, `-w`, `-F`,
 `--max-count`, `--include`) are rejected with a clear error. Quote the glob so
@@ -200,7 +200,7 @@ every row is `{ repo, file, line, text, kind }` with
 
 Filenames are framed with the NUL delimiter (`--null` on both engines), so
 paths containing colons, dashes, or spaces can never be mis-split.
-`total_matches` / `total_files` count **match rows only** — context rows are
+`total_matches` / `total_files` count **match rows only**; context rows are
 free and never consume `--limit`. `truncated` is `true` only when a result
 beyond `--limit` actually exists: a search with exactly `N` results under
 `--limit N` is *not* truncated (one row of lookahead distinguishes the two).
@@ -208,7 +208,7 @@ beyond `--limit` actually exists: a search with exactly `N` results under
 Matches are sorted by file then line, so output is stable across runs and
 identical between engines. In `-c` count mode, zero-count rows are filtered
 on both engines. Under `--limit`, *which* matches survive truncation depends
-on engine walk order — counts and flags are stable, the selection may not be.
+on engine walk order. Counts and flags are stable, the selection may not be.
 
 ## Notes
 

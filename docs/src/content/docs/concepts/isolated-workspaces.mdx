@@ -1,0 +1,143 @@
+---
+title: Isolated workspaces
+description: Run a workflow in a durable local Git worktree without giving the provider authority over work, proof, review, or policy.
+sidebar:
+  order: 3
+---
+
+Shared checkout execution is Harnery's default. An isolated workspace is an
+optional boundary for workflows that should keep intermediate edits away from
+the host checkout.
+
+The built-in provider creates local Git worktrees. The provider owns the
+worktree resource, but it does not decide whether the work succeeded or whether
+its changes may enter the target branch. Harnery's existing work, proof,
+review, approval, and policy records keep those decisions.
+
+## Start an isolated run
+
+Supply both the isolation mode and an explicit writable parent:
+
+```bash
+harn workflow run ./workflow.mjs \
+  --isolation worktree \
+  --workspace-root ../workflow-workspaces \
+  --policy ./workflow-policy.json
+```
+
+The explicit root is part of the authority record. Harnery resolves it, records
+its filesystem identity, and refuses a later resume if the path or identity no
+longer matches.
+
+When Git or the required filesystem behavior is unavailable, the provider
+reports an unsupported capability. Shared fallback happens only when the
+frozen policy allows it. A bound run never falls back.
+
+## What Harnery records
+
+Allocation creates two related records:
+
+- the workflow manifest binds the run, requested isolation, provider, paths,
+  script, policy, and work-attempt owner;
+- the provider stores an immutable ownership claim and binding, followed by a
+  digest-chained event history.
+
+The provider cannot update work outcomes, proof, review decisions, approvals,
+supervisor state, or budgets. It reports workspace facts to workflow core.
+
+## Verification and recovery
+
+Harnery reattaches the exact binding before importing the workflow module and
+again when a parked run resumes. Reattachment checks path containment,
+filesystem identity, Git registration, branch ownership, commits, ancestry,
+dirty files, conflicts, and Git operations in progress.
+
+Missing or contradictory authority becomes blocked or lost evidence. Harnery
+does not silently move execution back to the shared checkout.
+
+The terminal proof keeps workflow outcome separate from workspace resource
+state. A workflow can fail while its worktree remains healthy and available for
+inspection. It can also finish successfully while integration remains pending.
+
+## Integration
+
+Workflow success does not merge changes. Integration has two explicit calls:
+
+```ts
+import {
+  applyIntegration,
+  prepareIntegration,
+} from "harnery/core/workflow";
+
+const plan = await prepareIntegration({
+  coordRoot,
+  runId,
+  provider,
+  review: { actor: "reviewer" },
+  policy,
+  acceptedUnknowns: [],
+});
+
+const receipt = await applyIntegration({
+  coordRoot,
+  runId,
+  provider,
+  plan,
+});
+```
+
+Preparation requires a successful proof with satisfied acceptance, a review
+bound to that exact proof, a current attestation, and policy authorization.
+Application rereads the durable plan and authority before mutation. The local
+provider supports fast-forward integration only. Divergence, target movement,
+dirty state, or conflicts block the operation.
+
+An exact replay returns the existing receipt. It does not apply the same change
+twice.
+
+## Cleanup
+
+Cleanup runs separately:
+
+```ts
+import { cleanupWorkspace } from "harnery/core/workflow";
+
+await cleanupWorkspace({ coordRoot, runId, provider });
+```
+
+The cleanup intent freezes the exact worktree, provider ref, and target state.
+A digest-chained attempt record is written before mutation. The final receipt
+is written only after Harnery verifies that the worktree registration and
+provider branch are gone.
+
+Dirty work is preserved. Ambiguous ancestry, a live run, changed ownership, or
+an incomplete release blocks cleanup and leaves evidence for another attempt.
+
+## Inspect state
+
+Use the CLI:
+
+```bash
+harn workflow workspace <run-id>
+harn workflow workspaces
+```
+
+Or use the product-tier reader:
+
+```ts
+import {
+  inspectWorkflowWorkspace,
+  readWorkflowWorkspaceStatus,
+} from "harnery/core/workflow";
+
+const status = readWorkflowWorkspaceStatus(coordRoot, runId);
+const safeResult = inspectWorkflowWorkspace(coordRoot, runId);
+```
+
+`readWorkflowWorkspaceStatus()` throws when authority is corrupt or
+contradictory. `inspectWorkflowWorkspace()` returns an explicit `{ ok: false,
+error }` result for dashboards and other read surfaces that must stay
+available while showing the defect.
+
+The local dashboard uses this same reader. Its workflow pages show allocation,
+verification, integration, conflicts, cleanup, and the current resource state.

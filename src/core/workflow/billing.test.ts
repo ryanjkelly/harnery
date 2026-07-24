@@ -108,7 +108,14 @@ describe("probeBilling: cursor", () => {
 });
 
 describe("buildChildEnv billing behavior", () => {
-  const SAVED = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CURSOR_API_KEY", "CURSOR_SESSION"];
+  const SAVED = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CURSOR_API_KEY",
+    "CURSOR_SESSION",
+    "CODEX_HOME",
+    "CODEX_THREAD_ID",
+  ];
   const saved = new Map<string, string | undefined>();
 
   beforeEach(() => {
@@ -128,6 +135,14 @@ describe("buildChildEnv billing behavior", () => {
     const env = buildChildEnv("wf-1");
     expect(env.CURSOR_API_KEY).toBe("key");
     expect(env.CURSOR_SESSION).toBeUndefined();
+  });
+
+  test("CODEX_HOME survives the CODEX* session scrub; thread identity does not", () => {
+    process.env.CODEX_HOME = "/tmp/codex-auth-home";
+    process.env.CODEX_THREAD_ID = "thread-1";
+    const env = buildChildEnv("wf-1");
+    expect(env.CODEX_HOME).toBe("/tmp/codex-auth-home");
+    expect(env.CODEX_THREAD_ID).toBeUndefined();
   });
 
   test("subscriptionOnly deletes every API-key var", () => {

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
+import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
 import { readLiveChildSessions, readWorkflowRun } from "@/lib/workflow-reader";
 
@@ -44,6 +45,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
         </p>
         <div className="mb-1 flex flex-wrap items-center gap-2">
           <WorkflowStatusBadge status={run.status} />
+          {run.workspace ? <WorkspaceStateBadge inspection={run.workspace} /> : null}
           <h1 className="text-xl font-semibold">{run.name}</h1>
         </div>
         <p className="mb-6 text-xs text-muted-foreground">
@@ -67,6 +69,90 @@ export default async function WorkflowRunPage({ params }: PageProps) {
               harn workflow approvals show {run.parkedApprovalId}
             </code>
           </section>
+        ) : null}
+
+        {run.workspace ? (
+          !run.workspace.ok ? (
+            <section className="mb-8 rounded-lg border border-red-500/40 bg-red-500/5 p-4">
+              <h2 className="text-sm font-semibold">Workspace evidence is invalid</h2>
+              <p className="mt-1 break-all text-sm text-muted-foreground">{run.workspace.error}</p>
+            </section>
+          ) : (
+            <section className="mb-8 rounded-lg border border-border bg-card p-4">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">Workspace</h2>
+                <WorkspaceStateBadge inspection={run.workspace} />
+              </div>
+              <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Allocation
+                  </dt>
+                  <dd className="mt-1">
+                    {run.workspace.value.requested_isolation} requested ·{" "}
+                    {run.workspace.value.effective_isolation} effective
+                  </dd>
+                  {run.workspace.value.provider ? (
+                    <dd className="mt-1 font-mono text-xs text-muted-foreground">
+                      {run.workspace.value.provider.id}@{run.workspace.value.provider.version}
+                    </dd>
+                  ) : null}
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Verification
+                  </dt>
+                  <dd className="mt-1">{run.workspace.value.verification.status}</dd>
+                  <dd className="mt-1 text-xs text-muted-foreground">
+                    {run.workspace.value.verification.drift.length} drift ·{" "}
+                    {run.workspace.value.verification.unknowns.length} unknown
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Integration
+                  </dt>
+                  <dd className="mt-1">{run.workspace.value.integration.state}</dd>
+                  <dd className="mt-1 text-xs text-muted-foreground">
+                    {run.workspace.value.integration.changed_paths.length} changed path
+                    {run.workspace.value.integration.changed_paths.length === 1 ? "" : "s"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">Cleanup</dt>
+                  <dd className="mt-1">{run.workspace.value.cleanup.state.replaceAll("_", " ")}</dd>
+                  <dd className="mt-1 text-xs text-muted-foreground">
+                    {run.workspace.value.cleanup.attempts} attempt
+                    {run.workspace.value.cleanup.attempts === 1 ? "" : "s"}
+                  </dd>
+                </div>
+              </dl>
+              {run.workspace.value.compatibility ? (
+                <p className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                  Compatibility selection: {run.workspace.value.compatibility.reason}. The run used
+                  the shared checkout.
+                </p>
+              ) : null}
+              {run.workspace.value.allocation ? (
+                <div className="mt-4 space-y-1 border-t border-border pt-3 font-mono text-xs text-muted-foreground">
+                  <p className="break-all">binding {run.workspace.value.allocation.binding_id}</p>
+                  <p className="break-all">
+                    workspace {run.workspace.value.allocation.workspace_root}
+                  </p>
+                  <p className="break-all">active {run.workspace.value.allocation.active_root}</p>
+                </div>
+              ) : null}
+              {run.workspace.value.repository.dirty_paths.length > 0 ||
+              run.workspace.value.repository.conflicts.length > 0 ||
+              run.workspace.value.repository.operations_in_progress.length > 0 ? (
+                <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+                  {run.workspace.value.repository.dirty_paths.length} dirty path ·{" "}
+                  {run.workspace.value.repository.conflicts.length} conflict ·{" "}
+                  {run.workspace.value.repository.operations_in_progress.length} Git operation
+                </div>
+              ) : null}
+            </section>
+          )
         ) : null}
 
         {run.proof ? (

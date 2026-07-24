@@ -18,6 +18,11 @@ import type {
   PolicySpec,
 } from "../policy/index.ts";
 import type { BillingMode, BillingProber } from "./billing.ts";
+import type {
+  WorkspaceBinding,
+  WorkspaceExecutionEvidence,
+  WorkspaceProvider,
+} from "./workspaces/index.ts";
 
 export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
@@ -170,6 +175,8 @@ export interface WorkflowProof {
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
   policy?: WorkflowPolicyProof;
+  /** Immutable terminal provider evidence for isolated execution. */
+  execution?: WorkspaceExecutionEvidence;
   repository: WorkflowRepoEvidence;
   harnesses: HarnessEvidenceCoverage[];
   unknowns: WorkflowProofUnknown[];
@@ -438,6 +445,11 @@ export interface EngineOpts {
   isolation?: PolicyIsolation;
   /** Network state of spawned harness subprocesses (default unknown). */
   networkAccess?: PolicyNetworkAccess;
+  /** Explicit provider and host-owned roots. Omit for shared or declaration-only execution. */
+  workspace?: {
+    provider: WorkspaceProvider;
+    writableRoots: readonly string[];
+  };
 }
 
 export interface RunReport {
@@ -462,4 +474,6 @@ export interface RunReport {
   billing: Array<{ harness: HarnessName; mode: BillingMode }>;
   /** Policy verdict totals when the host supplied a policy. */
   policy?: WorkflowPolicyProof["summary"];
+  /** Isolated workspace binding when this run requested a provider capability. */
+  workspaceBinding?: WorkspaceBinding;
 }

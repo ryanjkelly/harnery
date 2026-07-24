@@ -12,8 +12,8 @@ sidebar:
 
 Harnery's identity is multi-agent coordination. But because host CLIs embed it
 (`createHarneryProgram`), the package also exports the utility libraries its
-own commands are built from — `lib/format`, `lib/cookies`, `lib/readability`,
-and so on — and embedding hosts have started leaning on them (the first host
+own commands are built from (`lib/format`, `lib/cookies`, `lib/readability`,
+and so on), and embedding hosts have started leaning on them (the first host
 already imports `lib/format` from ~15 files, and a shared HTTP client for its
 vendor integrations is queued to land in `lib/http`).
 
@@ -25,8 +25,8 @@ Without an explicit boundary, three drifts were likely:
 1. The README/docs pitch degrades into "coordination + assorted utilities,"
    which sells neither well.
 2. Utility modules grow casual imports of the coordination core, so pulling
-   `lib/http` starts dragging in heartbeat/hook machinery — making the
-   utilities unusable as plain libraries and entangling the product with them.
+   `lib/http` starts dragging in heartbeat/hook machinery, which makes the
+   utilities unusable as plain libraries and entangles the product with them.
 3. The toolkit accretes speculative helpers ("might be useful") instead of
    growing by demonstrated reuse.
 
@@ -38,18 +38,18 @@ the utility namespace.
 
 - **Split into two npm packages** (`harnery` + a `@harnery/toolkit`). Cleanest
   marketing story, but real ongoing cost: two publishes, cross-package version
-  management, and harnery depending on its own sibling — for a package with a
+  management, and harnery depending on its own sibling, for a package with a
   handful of consumers, all currently controlled by the same owner. Rejected
   as premature; the door stays open (the layering rule below is exactly the
   precondition a future split would need).
 - **Rename `src/lib/` directories to mirror the tiers** (e.g. `src/toolkit/`).
   Rejected: the tier boundary is the *public exports map*, not the source
-  layout — `src/lib/` legitimately hosts internal coordination libraries
+  layout. `src/lib/` legitimately hosts internal coordination libraries
   (council, decision, identities) that are not exported at all. Moving
   directories churns every import for zero enforcement value.
 - **Document the tiers but don't enforce them.** Rejected: soft rules about
   what may import what don't survive contact with future contributors (or
-  future agents). The project already learned this with portability — the
+  future agents). The project already learned this with portability: the
   written rule got a scanner, and the scanner is what actually holds the line.
 - **Do nothing.** Rejected: drift #2 in particular is one convenient import
   away at any time, and it is much cheaper to forbid before it exists than to
@@ -58,8 +58,8 @@ the utility namespace.
 ## Decision
 
 1. **The exports map is the tier boundary.** Product tier: `.`,
-   `./commander`, `./core/*` — the coordination layer, the reason to install
-   harnery, full semver discipline. Toolkit tier: every `./lib/*` subpath —
+   `./commander`, `./core/*`, the coordination layer, the reason to install
+   harnery, full semver discipline. Toolkit tier: every `./lib/*` subpath, the
    supporting utilities for embedding hosts, supported but secondary, may
    evolve faster. Anything unexported is internal regardless of directory.
 2. **`./lib/scratch` becomes `./core/scratch`** (source physically moved to
@@ -69,7 +69,7 @@ the utility namespace.
 3. **Layering guard:** `scripts/check-layering.ts` + `tests/unit/layering.test.ts`
    walk the transitive relative-import graph of every `./lib/*` export and
    fail CI if any path reaches `src/core/` (or self-imports `harnery/core...`).
-   No per-line waiver — a toolkit module that needs the core is reclassified,
+   No per-line waiver: a toolkit module that needs the core is reclassified,
    not excused. Product → toolkit imports remain free (that's the direction
    the toolkit exists for).
 4. **Promotion rule:** utilities are born in a host CLI and get promoted into
@@ -87,11 +87,11 @@ the utility namespace.
   guard was negative-tested (an injected `core/agents` import into
   `lib/machine` was caught with a readable import chain).
 - The guard derives its scan roots from the exports map itself, so a future
-  toolkit export is covered automatically — and a future coordination-flavored
+  toolkit export is covered automatically, and a future coordination-flavored
   export accidentally placed under `./lib/*` fails CI, which is the fence
   working as intended.
 - The `bun` condition of each export points at `src/*.ts`, so the guard walks
-  source, not `dist/` — it runs without a build.
+  source, not `dist/`, and runs without a build.
 - Gotcha discovered during the scratch move: the first embedding host's CLI
   runs harnery from workspace source, so breaking harnery imports mid-refactor
   breaks that host's tooling *while you're using it to do the refactor*. Use
@@ -100,7 +100,7 @@ the utility namespace.
 - Adoption also surfaced a self-hosting leak: running `init` from the
   embedding host's CLI stamped the *host's* bin name into harnery's own
   `.harnery/config.jsonc` and rendered it into the committed AGENTS.md block
-  and skills — host tokens headed for a public repo. Two fixes shipped with
+  and skills. Those were host tokens headed for a public repo. Two fixes shipped with
   this ADR: `init` now honors a binName already pinned in `config.jsonc`
   over the invoking CLI's name (`pinnedBinName()`), and the portability
   scanner grew the agent-facing surfaces (`AGENTS.md`, `CLAUDE.md`,

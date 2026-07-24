@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
+import { writeWorkflowRunManifest } from "harnery/core/workflow";
 import { readWorkflowRun } from "./workflow-reader";
 
 let root: string;
@@ -73,7 +74,52 @@ describe("workflow proof reader", () => {
     );
     expect(readWorkflowRun(root, "wf-reader")?.proof).toBeUndefined();
   });
+
+  test("attaches the validated workspace projection and preserves invalid authority", () => {
+    writeSharedManifest();
+    writeFileSync(join(runDir, "proof.json"), JSON.stringify(sampleProof()), "utf8");
+    expect(readWorkflowRun(root, "wf-reader")?.workspace).toMatchObject({
+      ok: true,
+      value: {
+        selection: "shared",
+        requested_isolation: "shared",
+        effective_isolation: "shared",
+      },
+    });
+
+    writeFileSync(join(runDir, "proof.json"), "{bad", "utf8");
+    expect(readWorkflowRun(root, "wf-reader")?.workspace).toMatchObject({
+      ok: false,
+      run_id: "wf-reader",
+    });
+  });
 });
+
+function writeSharedManifest(): void {
+  writeWorkflowRunManifest({
+    coordRoot: root,
+    manifest: {
+      schema_version: 1,
+      run_id: "wf-reader",
+      name: "reader",
+      started_at: "2026-07-21T12:00:00.000Z",
+      script: { path: join(root, "workflow.mjs"), sha256: "b".repeat(64) },
+      repository_before: { cwd: root, dirty_paths: [] },
+      execution: {
+        cwd: root,
+        default_harness: "claude-code",
+        max_agents: 1,
+        concurrency: 1,
+        subscription_only: false,
+        allow_api_billing: false,
+        approval_mode: "deny",
+        approval_addressee: "operator",
+        isolation: "shared",
+        network_access: "unknown",
+      },
+    },
+  });
+}
 
 function sampleProof(): WorkflowProof {
   return {

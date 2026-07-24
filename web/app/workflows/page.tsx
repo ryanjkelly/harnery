@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { NavBar } from "@/components/NavBar";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
+import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
 import { readWorkflowRuns } from "@/lib/workflow-reader";
 
@@ -41,6 +42,7 @@ export default function WorkflowsPage() {
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <WorkflowStatusBadge status={run.status} />
+                    {run.workspace ? <WorkspaceStateBadge inspection={run.workspace} /> : null}
                     <span className="font-medium">{run.name}</span>
                     <span className="text-xs text-muted-foreground">{run.runId}</span>
                   </div>

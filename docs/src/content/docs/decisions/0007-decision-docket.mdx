@@ -10,8 +10,8 @@ sidebar:
 
 ## Context
 
-Councils give harnery a deliberation *engine* — a multi-round debate among
-agents — but a human spins each one up by hand, one topic at a time. There is
+Councils give harnery a deliberation *engine* (a multi-round debate among
+agents), but a human spins each one up by hand, one topic at a time. There is
 no persistent place for the decisions an agent hits mid-task and would
 otherwise route to a human ("which approach", "what default", "is there a
 gotcha"). Those escalations block synchronously, get answered off the cuff, and
@@ -52,7 +52,7 @@ Add a generic decision docket to harnery:
 
 - **State** at `.harnery/decisions/<id>.json` (manifest) + `<id>/` (long-form
   bodies) + `archive/` (terminal/graduated), mirroring councils. One file per
-  decision — no shared index — so concurrent filers never contend; writes are
+  decision, with no shared index, so concurrent filers never contend; writes are
   atomic (temp → rename); `claim` is last-writer-wins.
 - **Lifecycle** `filed → triaged → deliberating → resolved → enacted →
   reviewed → archived`, with `superseded`/`wontfix` as escape hatches and a
@@ -64,8 +64,8 @@ Add a generic decision docket to harnery:
   resolution is structurally incomplete and bounced.
 - **`decision.filed|resolved|reviewed`** canonical events feed the metrics
   (interrupt rate, override rate) with no new telemetry.
-- **Dispatch stays out of the engine.** How a decision gets deliberated —
-  inline, a background sweeper, a workflow fan-out, or an escalated council —
+- **Dispatch stays out of the engine.** How a decision gets deliberated
+  (inline, a background sweeper, a workflow fan-out, or an escalated council)
   is the host's concern. `escalateToCouncil` links a decision to a council id
   and nothing more.
 
@@ -84,6 +84,6 @@ skill on top.
   emitted). 37 unit tests cover the state machine, enum validation, archive
   move, list filters, and search.
 - The web UI (queue + review feed) and a background sweeper are intentionally
-  **not** in this ADR — the engine ships first, surfaces follow.
+  **not** in this ADR. The engine ships first; surfaces follow.
 - Portability watch: any host name or rubric text leaking into `src/` breaks
   the npm story. Tier *numbers* are engine; tier *criteria* are host policy.

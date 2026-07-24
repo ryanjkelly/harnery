@@ -12,18 +12,18 @@ harn completion install [--shell bash|zsh|fish] [--path <file>] [--dynamic] [--p
 
 Generates shell tab-completion from the live command tree. The bin name is the
 host CLI's (`harn`, or whatever the host registers), so the examples below use
-`harn` — substitute your bin.
+`harn`; substitute your bin.
 
 ## Two modes
 
-**Static** (default) bakes the entire command tree — subcommands, options, enum
-choices — into the generated script. Fast (no process per `<Tab>`), but it's a
+**Static** (default) bakes the entire command tree (subcommands, options, enum
+choices) into the generated script. Fast (no process per `<Tab>`), but it's a
 point-in-time snapshot: add a command or flag and you must regenerate and
 reinstall. Dynamic *values* (e.g. IDs that vary per run) are still resolved live.
 
 **Dynamic** (`--dynamic`) installs a thin shim that asks the binary for
 candidates on every `<Tab>`. Because the binary always knows its current tree,
-the shim **never goes stale** — install once and new commands/flags just work,
+the shim **never goes stale**: install once and new commands/flags just work,
 including after a `git pull` or a locally-added command. Cost: one subprocess
 per `<Tab>` (the model `gh`/`kubectl`/`npm` use). Recommended unless you need
 zero tab latency.
@@ -50,8 +50,8 @@ chosen shell.
 - **Descriptions** show in zsh and fish; bash shows values only (a shell
   limitation).
 - **Fish + `--dynamic`:** file completion on a path-valued positional doesn't
-  work (fish's declarative `complete` can't switch to files from the helper) —
-  use static fish completion there. bash and zsh honor file fallback.
+  work (fish's declarative `complete` can't switch to files from the helper),
+  so use static fish completion there. bash and zsh honor file fallback.
 - Dynamic completion is delegated through a hidden `__complete-line` entry
   point; the legacy `__complete <provider>` callback (used by static scripts for
   dynamic values) is unchanged, so old installed scripts keep working.

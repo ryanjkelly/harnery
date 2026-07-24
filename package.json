@@ -148,7 +148,7 @@
     "agent-coord": "./bin/agent-coord",
     "agent-hook": "./bin/agent-hook"
   },
-  "//files": "src ships as TS so the `bun` export condition resolves to source; negate co-located tests so they don't ride into the tarball (a .npmignore is inert for paths already inside the files allowlist).",
+  "//files": "src ships as TS so the `bun` export condition resolves to source; negate co-located tests and their shared fixture helper so they don't ride into the tarball (a .npmignore is inert for paths already inside the files allowlist).",
   "files": [
     "bin",
     "src",
@@ -157,7 +157,9 @@
     "README.md",
     "LICENSE",
     "!src/**/*.test.ts",
-    "!src/**/*.test.tsx"
+    "!src/**/*.test.tsx",
+    "!dist/**/test-helpers.*",
+    "!src/**/test-helpers.ts"
   ],
   "engines": {
     "node": ">=20.19.0"

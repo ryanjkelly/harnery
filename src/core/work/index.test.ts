@@ -456,6 +456,55 @@ describe("durable work ledger", () => {
     });
   });
 
+  test("cancelling a parked attempt records authority without consuming another attempt", async () => {
+    const host = mkdtempSync(join("/tmp", "harnery-work-cancel-"));
+    roots.push(host);
+    const workflowPath = join(host, "workflow.mjs");
+    writeFileSync(
+      workflowPath,
+      `
+        export default async ({ agent }) => agent("needs approval");
+      `,
+    );
+    createWorkItem({
+      coordRoot: host,
+      id: "cancel-parked",
+      title: "Cancel parked",
+      objective: "Park then cancel",
+      workflowPath,
+    });
+
+    await expect(
+      runWorkItem({
+        coordRoot: host,
+        workId: "cancel-parked",
+        engine: {
+          spawners: {
+            "claude-code": async () => ({ ok: true, text: "unused", durationMs: 1 }),
+          },
+          policy: { network: "ask" },
+          networkAccess: "enabled",
+          approvalMode: "park",
+          cwd: host,
+        },
+      }),
+    ).rejects.toThrow(WorkflowParkedError);
+
+    const parked = readWorkItem(host, "cancel-parked");
+    expect(parked.projection.state).toBe("awaiting_approval");
+    const cancelled = cancelWorkItem(host, "cancel-parked", {
+      actor: "operator",
+      reason: "no longer needed",
+    });
+    expect(cancelled.projection.state).toBe("cancelled");
+    expect(cancelled.projection.attempts_used).toBe(1);
+    expect(cancelled.events.find((event) => event.event === "work.cancelled")).toMatchObject({
+      event: "work.cancelled",
+      actor: "operator",
+      reason: "no longer needed",
+    });
+  });
+
   test("reconciliation is a no-op over unchanged evidence", () => {
     const { root, workflowPath } = fixture();
     createWorkItem({

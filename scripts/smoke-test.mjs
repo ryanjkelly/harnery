@@ -102,6 +102,13 @@ try {
   }
   log("workflow approvals CLI OK");
 
+  log("checking workflow workspace CLI boots ...");
+  const workspacesOut = run(["workflow", "workspaces"]);
+  if (!/no isolated or shared-compatibility workspace runs/.test(workspacesOut)) {
+    fail("workflow workspaces did not render an empty validated list");
+  }
+  log("workflow workspace CLI OK");
+
   // Durable work must boot through the packed Node CLI and preserve a record.
   log("checking durable work CLI boots ...");
   const workWorkflow = join(workdir, "work-smoke.mjs");
@@ -247,12 +254,15 @@ try {
   writeFileSync(
     workflowProbe,
     [
-      'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, readWorkflowProof, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
+      'import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION, WORKFLOW_PROOF_SCHEMA_VERSION, WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION, WORKSPACE_BINDING_SCHEMA_VERSION, WORKSPACE_RECEIPT_SCHEMA_VERSION, createLocalGitWorktreeProvider, deriveWorkspaceLifecycle, inspectWorkflowWorkspace, isWorkspaceLifecycleState, listWorkflowWorkspaceInspections, prepareIntegration, readWorkflowProof, readWorkflowWorkspaceStatus, renderWorkflowWorkspaceStatus, runWorkflow, WorkflowRunError } from "harnery/core/workflow";',
       'if (WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow attempt-context schema version");',
       'if (WORKFLOW_PROOF_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow proof schema version");',
       'if (WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION !== 1) throw new Error("unexpected workflow work-context schema version");',
+      'if (WORKSPACE_BINDING_SCHEMA_VERSION !== 1 || WORKSPACE_RECEIPT_SCHEMA_VERSION !== 1) throw new Error("unexpected workspace schema version");',
       'if (typeof readWorkflowProof !== "function" || typeof runWorkflow !== "function") throw new Error("workflow functions missing");',
       'if (typeof WorkflowRunError !== "function") throw new Error("WorkflowRunError missing");',
+      'if (typeof createLocalGitWorktreeProvider !== "function" || typeof prepareIntegration !== "function") throw new Error("workspace provider functions missing");',
+      'if (typeof deriveWorkspaceLifecycle !== "function" || !isWorkspaceLifecycleState("bound") || isWorkspaceLifecycleState("cancelled")) throw new Error("workspace lifecycle contract missing");',
       `const workflowPath = ${JSON.stringify(join(workdir, "work-context-probe.mjs"))};`,
       'const fs = await import("node:fs");',
       'fs.writeFileSync(workflowPath, "export default async ({ work }) => ({ work, frozen: Object.isFrozen(work), acceptanceFrozen: Object.isFrozen(work.acceptance) });\\n");',
@@ -260,10 +270,21 @@ try {
       'if (report.result.work.id !== "smoke" || !report.result.frozen || !report.result.acceptanceFrozen) throw new Error("workflow work context invalid");',
       "const proof = readWorkflowProof(process.cwd(), report.runId);",
       'if (proof.run.work_context?.objective !== "Verify packaged work context") throw new Error("workflow proof lost work context");',
+      "const workspaceStatus = readWorkflowWorkspaceStatus(process.cwd(), report.runId);",
+      'if (workspaceStatus.selection !== "shared" || workspaceStatus.integrity.status !== "verified") throw new Error("workspace inspection invalid");',
+      'if (!inspectWorkflowWorkspace(process.cwd(), report.runId).ok || listWorkflowWorkspaceInspections(process.cwd()).length < 1 || !/shared/.test(renderWorkflowWorkspaceStatus(workspaceStatus))) throw new Error("workspace inspection surface missing");',
       'const durable = await import("harnery/core/workflow");',
       'for (const name of ["createWorkflowApproval", "resolveWorkflowApproval", "readWorkflowApproval", "acquireWorkflowResumeLease"]) {',
       '  if (typeof durable[name] !== "function") throw new Error(name + " missing");',
       "}",
+      "const savedPath = process.env.PATH;",
+      'const emptyPath = workflowPath + ".no-git"; fs.mkdirSync(emptyPath); process.env.PATH = emptyPath;',
+      "const provider = createLocalGitWorktreeProvider({ coordRoot: process.cwd() });",
+      'if (typeof provider.previewIntegration !== "function" || typeof provider.applyAuthorizedIntegration !== "function") throw new Error("workspace provider integration methods missing");',
+      "const capabilities = await provider.probe({ requested_cwd: process.cwd(), writable_roots: [process.cwd()] });",
+      "process.env.PATH = savedPath;",
+      'if (!capabilities.unsupported.some((item) => item.code === "git_unavailable")) throw new Error("missing-Git probe did not fail closed");',
+      'if (capabilities.capabilities.provider_version !== "1") throw new Error("unexpected local provider version");',
     ].join("\n"),
   );
   execFileSync(nodePath, [workflowProbe], {

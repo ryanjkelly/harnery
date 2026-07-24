@@ -11,40 +11,40 @@ Harnery's coordination layer is machine-local. Heartbeats live in the host repo'
 
 Constraints on any fix:
 
-- **Zero-friction setup.** Harnery is a generic npm package. A presence backend that requires a cloud database, a service account, or per-install credential provisioning is a non-starter — a hosted datastore requirement was explicitly rejected by the first embedding host before this design.
+- **Zero-friction setup.** Harnery is a generic npm package. A presence backend that requires a cloud database, a service account, or per-install credential provisioning is a non-starter. A hosted datastore requirement was explicitly rejected by the first embedding host before this design.
 - **Portability.** Nothing host-specific may land in harnery (ADR 0010 / the portability gate). Whatever rendezvous the transport uses must be something every install already has.
 - **Privacy.** Presence beacons carry task lines and file paths. Any third-party hop must be unable to read them.
-- **Liveness target.** "Something like a live socket between all the installs" — seconds, not minutes, when possible; but never at the cost of a hard dependency on a service.
+- **Liveness target.** "Something like a live socket between all the installs": seconds, not minutes when possible, but never at the cost of a hard dependency on a service.
 
 ## Decision
 
 Presence becomes a pluggable transport interface with two implementations, layered:
 
-**1. git-refs transport (default, zero config).** The repo's own `origin` remote is the one rendezvous every install already shares, and repo access is already the trust boundary. Each machine serializes a small presence blob (machine label, agent name, task, files held, last-tool timestamp) and force-pushes it to `refs/harnery/presence/<machine>` — custom non-branch refs, invisible to branch tooling, no history accumulation. Peers fetch `refs/harnery/presence/*` on a throttled hook cadence and render remote sessions in `agents list` / the status box, labeled by machine, advisory-only (no cross-machine claim blocking in v1). Pushes are batched: only when the blob materially changed, with a max-silence keepalive, so git hosting isn't spammed. Latency floor: one to two minutes.
+**1. git-refs transport (default, zero config).** The repo's own `origin` remote is the one rendezvous every install already shares, and repo access is already the trust boundary. Each machine serializes a small presence blob (machine label, agent name, task, files held, last-tool timestamp) and force-pushes it to `refs/harnery/presence/<machine>`, custom non-branch refs that are invisible to branch tooling and accumulate no history. Peers fetch `refs/harnery/presence/*` on a throttled hook cadence and render remote sessions in `agents list` / the status box, labeled by machine, advisory-only (no cross-machine claim blocking in v1). Pushes are batched: only when the blob materially changed, with a max-silence keepalive, so git hosting isn't spammed. Latency floor: one to two minutes.
 
 **2. Relay transport (optional, live).** A dumb WebSocket fan-out relay, configured by one line in the host's `.harnery/config.jsonc` (`presence: { relay: "wss://…" }`).
 
 - **Capability-based rooms:** the room id and an E2E symmetric key are derived client-side via HKDF from (repo root-commit SHA, normalized origin URL, a rotatable salt committed in `.harnery/`). Anyone who can read the repo can derive both; nobody else can. Rotating the salt rotates the room. There are no accounts and no server-side registration.
-- **E2E encryption:** payloads are AES-GCM-encrypted before leaving the machine. The relay sees only ciphertext in opaquely-named rooms — the operator of a public relay learns nothing about tasks, paths, or identities.
+- **E2E encryption:** payloads are AES-GCM-encrypted before leaving the machine. The relay sees only ciphertext in opaquely-named rooms. The operator of a public relay learns nothing about tasks, paths, or identities.
 - **Protocol:** join room → receive last-message-per-sender cache (warm join) → broadcast ~1KB beacons on heartbeat and on task/claim change. Per-sender rate limits.
 - **Graceful degradation:** relay unreachable → silently fall back to git-refs. The relay is an upgrade, never a dependency.
 
-**Ship shape:** the protocol logic (derivation, envelope, encrypt/decrypt, join/cache semantics, rate limits) lives once as a shared host-agnostic module. Two thin hosts wrap it: `harn relay serve` (Bun, for self-hosters) and `relay/worker/` (a Cloudflare Workers target using one Durable Object per room via `idFromName`, with the WebSocket Hibernation API so idle sockets cost nothing). The reference public deployment is `relay.harnery.com`, run by the project on a personal Cloudflare account — viable on the free plan (SQLite-backed DOs, 100K requests/day, hibernated messages counted 20:1; presence traffic for tens of machines uses under 1% of that). Harnery ships with `relay` unset — no default relay URL is baked in; hosts opt in.
+**Ship shape:** the protocol logic (derivation, envelope, encrypt/decrypt, join/cache semantics, rate limits) lives once as a shared host-agnostic module. Two thin hosts wrap it: `harn relay serve` (Bun, for self-hosters) and `relay/worker/` (a Cloudflare Workers target using one Durable Object per room via `idFromName`, with the WebSocket Hibernation API so idle sockets cost nothing). The reference public deployment is `relay.harnery.com`, run by the project on a personal Cloudflare account, viable on the free plan (SQLite-backed DOs, 100K requests/day, hibernated messages counted 20:1; presence traffic for tens of machines uses under 1% of that). Harnery ships with `relay` unset: no default relay URL is baked in, and hosts opt in.
 
 ## Alternatives considered
 
 - **Hosted datastore presence (Firestore/BigQuery/Postgres).** Rejected: per-install cloud credentials and project setup kill adoption for a generic package; also violates the privacy constraint unless separately encrypted.
-- **Direct peer-to-peer sockets.** Rejected: machines sit behind NAT/firewalls, so P2P needs a rendezvous (STUN/signaling) anyway — at which point the minimal rendezvous *is* a relay, without P2P's connectivity failure modes.
+- **Direct peer-to-peer sockets.** Rejected: machines sit behind NAT/firewalls, so P2P needs a rendezvous (STUN/signaling) anyway, at which point the minimal rendezvous *is* a relay, without P2P's connectivity failure modes.
 - **Relay-only (skip the git-refs floor).** Rejected: makes a network service a hard dependency of a coordination feature, and loses the zero-config story. The floor also covers relay outages and hosts that forbid third-party services.
 - **VM-hosted relay as the reference deployment.** Rejected: patching, uptime, TLS lifecycle, and idle cost for a personal project; Durable Objects give the single-instance-per-room property natively and `wrangler deploy` is the whole release process. Self-hosters who want their own box get `harn relay serve`.
-- **Cloudflare Pub/Sub (MQTT), Queues, Realtime/Calls.** Rejected respectively: never GA'd; batch semantics rather than real-time fan-out; a WebRTC media SFU — the wrong shape for 1KB JSON beacons.
+- **Cloudflare Pub/Sub (MQTT), Queues, Realtime/Calls.** Rejected respectively: never GA'd; batch semantics rather than real-time fan-out; a WebRTC media SFU, the wrong shape for 1KB JSON beacons.
 - **Presence over the events ledger (replicate `events.ndjson`).** Rejected for v1: presence needs the *latest state per sender*, not history; full ledger sync is a much bigger consistency problem and unnecessary for the peer table.
 
 ## Consequences
 
-- Origin remotes accumulate `refs/harnery/presence/*` refs. They're tiny and force-pushed in place, but some hosts' rulesets may block non-branch ref pushes — the transport must fail silent (degrade to local-only) and a doctor check should surface it.
+- Origin remotes accumulate `refs/harnery/presence/*` refs. They're tiny and force-pushed in place, but some hosts' rulesets may block non-branch ref pushes. The transport must fail silent (degrade to local-only) and a doctor check should surface it.
 - The committed salt will look like a leaked secret to future audits. It is not one: the salt alone derives nothing without repo read access (root-commit SHA + origin URL), and repo access is already the ACL. This must stay loudly documented at the definition site.
-- The publisher must be structurally unable to touch `refs/heads/*` — the `refs/harnery/presence/` prefix is hardcoded, never interpolated from config.
+- The publisher must be structurally unable to touch `refs/heads/*`. The `refs/harnery/presence/` prefix is hardcoded, never interpolated from config.
 - Remote peers are advisory in v1. Cross-machine claim *enforcement* (blocking a commit because a remote agent holds the file) is deferred until presence data proves reliable; enforcing on minute-stale data would produce false blocks.
-- The project takes on operating a public relay (`relay.harnery.com`). The E2E design keeps that burden low — no user data visible, no accounts, no persistence — and abuse is bounded by per-room/per-sender rate limits and unguessable HKDF room names. If it ever outgrows the free plan, the paid Workers plan is a dashboard toggle.
+- The project takes on operating a public relay (`relay.harnery.com`). The E2E design keeps that burden low (no user data visible, no accounts, no persistence), and abuse is bounded by per-room/per-sender rate limits and unguessable HKDF room names. If it ever outgrows the free plan, the paid Workers plan is a dashboard toggle.
 - Clock skew across machines affects staleness rendering; beacons carry their own timestamps and the renderer tolerates a couple of minutes before flagging.

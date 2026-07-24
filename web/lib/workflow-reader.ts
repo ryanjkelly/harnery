@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
+import {
+  inspectWorkflowWorkspace,
+  type WorkflowWorkspaceInspection,
+} from "harnery/core/workflow/workspaces/inspect";
 
 /**
  * Journal-driven reader for workflow runs (`.harnery/workflows/<run-id>/
@@ -37,6 +41,8 @@ export interface WorkflowRunSummary {
   billing: string[];
   /** Terminal proof packet, absent for live and pre-proof runs. */
   proof?: WorkflowProof;
+  /** Validated workspace projection, including an explicit error on bad authority. */
+  workspace?: WorkflowWorkspaceInspection;
   /** Journal mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
 }
@@ -126,6 +132,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
   let costUsd = 0;
   const billing: string[] = [];
   const proof = readProof(root, runId);
+  const workspace = readWorkspaceInspection(root, runId);
 
   for (const line of readFileSync(journalPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
@@ -226,6 +233,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
     costUsd: Math.round(costUsd * 10_000) / 10_000,
     billing,
     proof,
+    workspace,
     lastActivityAt: mtimeIso,
   };
 }
@@ -239,4 +247,12 @@ function readProof(root: string, runId: string): WorkflowProof | undefined {
   } catch {
     return undefined;
   }
+}
+
+function readWorkspaceInspection(
+  root: string,
+  runId: string,
+): WorkflowWorkspaceInspection | undefined {
+  const path = join(root, ".harnery", "workflows", runId, "run.json");
+  return existsSync(path) ? inspectWorkflowWorkspace(root, runId) : undefined;
 }

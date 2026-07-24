@@ -17,7 +17,7 @@ half of this page covers mobile/office; cross-machine presence is
 
 Records a single bit of context an agent can adapt to: is the human at a
 desktop (`office`) or on a phone (`mobile`)? On mobile the human can't see
-files, editor state, or local paths — only the chat thread — so an agent that
+files, editor state, or local paths, only the chat thread, so an agent that
 reads presence can shorten replies and hand over links instead of file paths.
 State lives in one small JSON file at `~/.claude/presence`; the default when the
 file is absent is `office`.
@@ -45,10 +45,10 @@ harn presence detect          # internal: infer state from prompt text on stdin 
 
 Two sources write the file, and the `source` field records which:
 
-- **`cli`** — an explicit `harn presence set mobile` / `office`. Deliberate and
+- **`cli`**: an explicit `harn presence set mobile` / `office`. Deliberate and
   authoritative for that moment, but not sticky: a later detection can still
   overwrite it.
-- **`hook`** — `harn presence detect` reads a prompt on stdin and infers the
+- **`hook`**: `harn presence detect` reads a prompt on stdin and infers the
   state. It's meant to be wired into a prompt-submit hook so presence tracks the
   human automatically. Detection only writes when the signal is unambiguous;
   a mixed or absent signal leaves the current state untouched.
@@ -81,7 +81,7 @@ harn presence clear
 ## Notes
 
 - The file path (`~/.claude/presence`) is a Claude Code convention, but the
-  read/set/clear logic is generic — any agent harness can adopt the same file.
+  read/set/clear logic is generic, so any agent harness can adopt the same file.
 - Writes are atomic (temp file + rename), so a concurrent read never sees a
   half-written record.
 - A malformed or unreadable file falls back to the default `office` rather than
@@ -97,7 +97,7 @@ names, tasks, files held) as a parentless commit force-pushed to
 `refs/harnery/presence/<machine>` on the repo's own `origin`, and fetches the
 other machines' refs on a throttled hook cadence. Remote sessions then appear
 in `agents list`, the `agents status` peers line, and the per-prompt peer
-table, labeled `@<machine>` — advisory only (they don't block local file
+table, labeled `@<machine>`, advisory only (they don't block local file
 claims). Repo push/fetch access is the only credential; there is no service.
 
 The hooks drive everything automatically (publish on session start/end and
@@ -122,10 +122,10 @@ Git refs give minute-scale latency. For seconds-scale, configure a relay in
 
 With a relay set, the hooks keep a small per-machine daemon alive that holds a
 WebSocket to the relay, publishes on every heartbeat change, and caches
-received peer blobs locally — `presence peers` and all the render surfaces
-merge both transports, freshest per machine. The relay sees only opaque room
+received peer blobs locally. Both `presence peers` and all the render surfaces
+merge the two transports, freshest per machine. The relay sees only opaque room
 ids and end-to-end-encrypted payloads (room id and key derive from the repo
-identity — root-commit SHA + origin URL + optional committed
+identity: root-commit SHA + origin URL + optional committed
 `.harnery/presence-salt`), so the public relay learns nothing about your
 sessions. The daemon exits when the machine goes idle and reconnects with
 backoff; if the relay is unreachable, presence silently rides the git-refs
@@ -144,7 +144,7 @@ Opt out per repo with `.harnery/config.jsonc`:
 
 or per process with `HARNERY_PRESENCE=0`. Everything is fail-silent: no origin
 remote, no network, or a host that rejects custom refs simply means no remote
-peers — never a broken hook.
+peers, not a broken hook.
 
 Design + rationale (including the planned optional live relay): decision
 record 0016.

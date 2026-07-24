@@ -1,0 +1,245 @@
+---
+title: "0034: Isolated workspace providers bind to durable workflow attempts"
+description: "ADR: add an optional workspace-provider contract without replacing durable work, proof, policy, approval, or supervisor authority."
+---
+
+**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/workflow`, `core/work`, `core/policy`, `core/supervisor`)
+
+## Context
+
+Harnery already has durable work items, bounded attempts, workflow proof,
+policy checks, approvals, and supervisor projections. Those records decide
+what was requested, which attempt ran, whether verification passed, and what
+requires review.
+
+Some workflows should execute outside the shared checkout. A local worktree,
+sandbox, or remote workspace can isolate intermediate edits, but it must not
+become a second scheduler or a hidden acceptance authority. Shared checkout
+execution must remain the default and must not require Git or a provider.
+
+## Decision
+
+Add an optional `WorkspaceProvider` contract under workflow core. A provider
+reports capabilities and facts, allocates or reattaches an exact workspace,
+attests its current identity, previews and applies an authorized integration,
+and cleans up only resources tied to its ownership claim. The first provider
+uses local Git worktrees and reports unsupported capability when its Git,
+repository, path, or filesystem requirements are unavailable.
+
+Bindings are immutable. Lifecycle changes are append-only provider events,
+not fields rewritten inside a binding. A binding includes the run and work
+attempt owner (or an explicit standalone owner), provider and capability
+identity, configured and resolved writable-root identity, workspace paths,
+recovery token, request digest, generation, and frozen repository identity.
+
+Record ownership is physically separated:
+
+```text
+.harnery/
+  work/...                                  durable work authority
+  supervisors/...                           supervisor projections
+  approvals/...                             approval authority
+  workflows/<run-id>/
+    workspace-request.json                  immutable workflow request
+    run.json                                immutable run manifest
+    journal.jsonl                           append-only workflow journal
+    proof.json                              immutable terminal proof
+    integration/
+      review.json                           immutable standalone review
+      plan.json
+      authorization.json
+      attempts.jsonl
+      receipt.json
+    cleanup/
+      intent.json
+      attempts.jsonl
+      receipt.json
+  workspaces/<provider-id>/<binding-id>/
+    claim.json                              immutable provider ownership
+    binding.json                            immutable provider binding
+    events.jsonl                            append-only provider lifecycle
+    operation.lease/
+      owner-<id>.json                      immutable lease owner
+      current                              hard link to the active owner
+      recovery/
+        claim.json                         immutable recovery claimant
+        stale-pin                          hard link to the observed stale owner
+```
+
+Providers do not write work, attempt, proof, review, approval, integration
+receipt, supervisor, or budget records. Workflow core does not infer a
+provider or writable root. A new non-shared isolation declaration without a
+provider records an explicit compatibility selection: the requested
+isolation, effective shared execution, and `provider_not_configured` reason.
+It creates no provider records. Allocation requires an explicitly supplied
+provider and writable root. A configured but unsupported provider can fall
+back to the shared checkout only when the frozen host policy explicitly
+allows shared execution. Workflow core writes
+the immutable request and allocation-start journal record before invoking a
+supported provider. The provider creates its ownership claim before changing
+a branch, ref, directory, or worktree. Workflow core compares the returned
+binding with the provider's immutable binding record and reattaches before
+workflow module initialization. The host validates the request, binding, and
+manifest as one authority set: run, owner, attempt, isolation, network mode,
+provider, source cwd, active cwd, writable root, script, policy, and request
+digest must agree. Allowed and writable roots are frozen as configured paths,
+realpaths, and filesystem identities rather than lexical policy strings.
+Workspace and active-root device and inode identities are frozen in the
+binding alongside their paths. The manifest containing that binding is durable before
+isolated module import or child spawn. Import, metadata, and post-import
+reattachment failures still produce a durable manifest, terminal journal,
+attestation, and proof.
+
+Resume reads the frozen manifest before considering current provider
+configuration. A historical non-shared manifest without a binding remains a
+declaration-only run at its frozen shared-checkout path. Once a binding
+exists, the exact provider and explicit writable-root authority are mandatory.
+Missing provider configuration, ownership claim, immutable provider binding,
+capability equality, path identity, or successful reattachment produces
+blocked or lost terminal evidence. A bound run never falls back to shared
+execution.
+
+The local provider serializes binding and repository mutations with immutable
+owner records and atomic hard links. A stale contender atomically installs one
+recovery-claim directory. Only that claimant may pin the observed `current`
+inode, remove it, link a new owner, and verify the new owner before returning.
+Other contenders fail while recovery is in progress, even when they observed
+the same stale inode. An abandoned claim is reclaimed by atomically renaming
+that exact directory to a unique quarantine path. Recovery reconciles crashes
+after claim creation, stale pinning, `current` removal, and new-owner linking.
+Release removes `current` only while it remains linked to the caller's
+immutable owner inode. The provider creates refs with compare-and-swap transactions
+and passes an inherited, no-follow directory descriptor to Git. A host without
+descriptor-backed paths reports the provider unsupported instead of falling
+back to a lexical path. Reattachment checks the claim, recovery token, request
+and capability digests, run and attempt owner, writable-root identity,
+source-checkout path and filesystem identity, Git common directory and gitdir
+identities, branch/ref ownership, registration, ancestry, dirty state,
+conflicts, and Git operation state. Repository inspection never continues
+through a source path whose frozen filesystem identity no longer matches, even
+when the Git common directory is unchanged. Cleanup has one immutable intent,
+a digest-chained
+attempt log whose `started` record precedes provider mutation, and a terminal
+receipt written only after both worktree
+registration and provider ref absence are reattested. Dirty, blocked,
+unsupported, and partial outcomes remain retryable. A crash after worktree
+removal resumes compare-and-swap ref deletion. Normal cleanup blocks live or
+ambiguous execution, preserves dirty work, and retains a branch when ancestry
+cannot justify deletion.
+
+Path authority is based on absolute configured roots, realpaths, and
+filesystem identities. Candidate names are validated single segments.
+Containment uses `path.relative`; symlinks, sibling prefixes, parent
+traversal, absolute overrides, control characters, ambiguous normalization,
+missing roots, and changed component identities fail closed. Allocation,
+integration, and cleanup validate their targets independently.
+
+Integration remains core authority. Preparation requires succeeded proof,
+satisfied acceptance, matching binding and terminal attestation, explicit
+review tied to the exact proof, a current provider reattachment, a clean and
+non-divergent target, and a non-mutating provider preview. The exact plan is
+routed through workflow policy and durable approval as an
+`external_mutation`; authorization is a separate immutable record.
+Application rereads those records and revalidates source and target state
+before checking for a prior receipt. Provider inputs contain frozen repository
+facts and durable authority digests, and the provider rereads the durable plan
+and authorization before mutation. The initial provider implements only a
+fast-forward. An integration `started` attempt precedes that mutation. Exact
+replay returns the existing receipt; changed authority,
+corruption, target movement, dirty state, overwrite risk, an in-progress Git
+operation, or divergent history blocks without conflict resolution.
+
+Workflow proof version 1 gains an optional execution section with its own
+schema marker. It contains the binding, terminal attestation, workflow
+outcome, drift, unsupported facts, unknowns, and stable supplement locations.
+Workflow outcome is limited to `completed_unintegrated`, `failed_retained`,
+`blocked`, or `lost`; a shared compatibility selection remains a separate
+evidence variant and does not project as provider unsupported. Proof reads
+always cross-check the manifest: bound and compatibility evidence must match
+its exact authority, while a manifest with neither requires proof execution
+to be absent. A healthy resource attestation cannot turn a failed workflow into
+`completed_unintegrated`. Provider resource state is a separate
+`active`, `preserved_dirty`, `released`, `blocked`, or `lost` axis.
+Integration state is derived from plans, attempts, and receipts. Drift,
+unsupported facts, and unknowns must exactly equal the terminal attestation.
+Cleanup and integration records supplement immutable proof and never rewrite
+it. Resource projection uses the latest authoritative supplement in order:
+a valid cleanup receipt, the latest cleanup attempt, a post-binding terminal
+provider event, the terminal proof attestation, then binding presence.
+Contradictory supplement evidence fails closed.
+
+Provider cleanup and cancellation use a shared workflow-liveness reader. A
+terminal proof counts only after the normal proof reader validates it against
+the frozen manifest. When proof has not been written yet, journal recovery
+requires a boolean `run.end` outcome and treats a durable
+`workspace.reattach.failed` record as terminal. Lifecycle projection also
+fails closed during the gap between `run.end` and proof persistence. It does
+not project integration from file presence: the plan, authorization,
+digest-chained attempts, receipt, bound proof digest, and binding must agree.
+
+An `ok` attestation for a Git binding must include complete repository
+observations rather than provider-computed identity-match flags. It records
+the currently configured and resolved source root, common directory, active
+gitdir when present, registration, refs, commits, ancestry, dirty paths,
+conflicts, and operations in progress. Host validation compares those
+observations with the immutable binding. Active success requires exact
+source-root, common-dir, gitdir, registration, ref ownership, commit, and
+ancestry agreement. Released success retains source-root and common-dir
+authority while proving the worktree, gitdir, registration, and provider ref
+are absent. Integration and cleanup receipts supplement proof without
+rewriting it.
+
+## Compatibility
+
+- `isolation: "shared"` remains the default and performs no provider probe.
+- A new non-shared declaration without `EngineOpts.workspace` records an
+  explicit shared compatibility selection and performs no provider probe.
+- Unsupported-provider fallback requires a frozen policy that explicitly
+  includes shared execution.
+- Version-1 manifests and proofs without provider fields remain valid.
+- A historical non-shared declaration without a binding retains its frozen
+  checkout path on resume and is never retroactively allocated.
+- A non-shared manifest with a binding cannot resume without its exact
+  provider and writable-root authority.
+- Missing Git affects only the local Git provider.
+- Provider recovery, cancellation, cleanup, integration, and replay do not
+  append `attempt.started` or reset cumulative budgets.
+- The supervisor remains a projection over work and proof; it gains no
+  workspace queue, scheduler, lease, or cleanup loop.
+- Named provider APIs extend only the existing `harnery/core/workflow`
+  subpath.
+
+## Alternatives
+
+- **Require isolated workspaces.** Rejected because shared execution is a
+  portable first-class mode.
+- **Put mutable lifecycle state in the binding.** Rejected because replay
+  needs a stable identity and an auditable event history.
+- **Let providers update host authority.** Rejected because work, proof,
+  review, approval, and policy already own those decisions.
+- **Treat provider success as integration authority.** Rejected because an
+  external mutation needs exact review and policy authorization.
+- **Automatically resolve Git conflicts.** Rejected; divergence is structured
+  blocked evidence.
+
+## Consequences
+
+Isolation can be added without changing supervisor scheduling or shared
+checkout behavior. Recovery and cleanup are conservative and may preserve a
+workspace for operator action. Integration requires more durable records, but
+those records make authorization loss, replay drift, and crash-after-apply
+detectable without rewriting terminal proof.
+
+## Result
+
+The product-tier `harnery/core/workflow` surface now includes the local Git
+provider, integration and cleanup operations, and a validated read model for
+workspace state. The standalone CLI creates the local provider only when
+`--isolation worktree` is paired with an explicit `--workspace-root`.
+Approval resume reconstructs that provider from the frozen binding.
+
+`harn workflow workspace` and `harn workflow workspaces` expose the read model.
+The dashboard consumes the same projection rather than inferring state from
+file presence. Both surfaces keep allocation, workflow verification,
+integration, repository conflicts, and cleanup separate. Invalid evidence is
+reported as invalid.
