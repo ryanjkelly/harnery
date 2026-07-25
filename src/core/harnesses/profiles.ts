@@ -43,7 +43,7 @@ export const BUILTIN_HARNESS_PROFILES = {
     authModel: "own-auth",
     modelFamily: "claude",
     effortValues: ["low", "medium", "high", "xhigh", "max"],
-    verified: { date: "2026-07-24", version: "2.1.197 (Claude Code)" },
+    verified: { date: "2026-07-25", version: "2.1.197 (Claude Code)" },
     capabilities: capabilities({
       effortSelection: supported("Mapped to `--effort <level>`."),
       maxTurns: supported("Mapped to `--max-turns <n>`."),
@@ -69,7 +69,7 @@ export const BUILTIN_HARNESS_PROFILES = {
     authModel: "own-auth",
     modelFamily: "gpt",
     effortValues: ["none", "minimal", "low", "medium", "high", "xhigh"],
-    verified: { date: "2026-07-21", version: "codex-cli 0.145.0-alpha.18" },
+    verified: { date: "2026-07-25", version: "codex-cli 0.144.5" },
     capabilities: capabilities({
       effortSelection: supported('Mapped to `-c model_reasoning_effort="<level>"`.'),
       maxTurns: unsupported("codex exec exposes no turn-ceiling flag."),
@@ -95,7 +95,7 @@ export const BUILTIN_HARNESS_PROFILES = {
     authModel: "own-auth",
     modelFamily: "multi",
     effortValues: [],
-    verified: { date: "2026-07-24", version: "2026.07.23-e383d2b" },
+    verified: { date: "2026-07-25", version: "2026.07.23-e383d2b" },
     capabilities: capabilities({
       effortSelection: unsupported(
         "Cursor embeds effort in some parameterized model ids; Harnery does not rewrite model ids.",

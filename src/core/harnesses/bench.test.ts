@@ -143,10 +143,27 @@ describe("vendor contract attestation (ADR 0037)", () => {
   const contractOf = (report: ReturnType<typeof runHarnessBench>) =>
     report.results.find((row) => row.dimension === "contract");
 
+  /** A registry holding one profile whose recorded contract is pinned by the
+   * test. These cases are about the reconciliation rule, so they must not move
+   * when `bun run verify:contracts` legitimately updates the real catalogue. */
+  function pinned(version: string | undefined) {
+    const base = createBuiltinHarnessRegistry().require("codex");
+    return new HarnessRegistry([
+      {
+        ...base,
+        profile: {
+          ...base.profile,
+          id: "pinned-contract",
+          verified: version ? { date: "2026-07-21", version } : undefined,
+        },
+      },
+    ]);
+  }
+
   test("an installed version matching the recorded contract is attested", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
-      versionProbe: () => registry.require("codex").profile.verified?.version ?? "",
+    const report = runHarnessBench(pinned("codex-cli 0.145.0-alpha.18"), {
+      versionProbe: () => "codex-cli 0.145.0-alpha.18",
+      attestationReader: () => null,
     });
     expect(contractOf(report)?.verdict).toBe("supported");
     expect(contractOf(report)?.basis).toBe("attested");
@@ -154,19 +171,19 @@ describe("vendor contract attestation (ADR 0037)", () => {
   });
 
   test("a vendor version prefix does not defeat the match", () => {
-    // The recorded contract is `codex-cli 0.145.0-alpha.18`; a CLI that prints
-    // its version bare must still reconcile.
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    // A CLI that prints its version bare must reconcile against a recorded
+    // contract that carries the vendor prefix.
+    const report = runHarnessBench(pinned("codex-cli 0.145.0-alpha.18"), {
       versionProbe: () => "0.145.0-alpha.18",
+      attestationReader: () => null,
     });
     expect(contractOf(report)?.verdict).toBe("supported");
   });
 
   test("an installed version that differs from the recorded contract is drift", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    const report = runHarnessBench(pinned("codex-cli 0.145.0-alpha.18"), {
       versionProbe: () => "codex-cli 0.144.5",
+      attestationReader: () => null,
     });
     expect(contractOf(report)?.verdict).toBe("drift");
     expect(contractOf(report)?.basis).toBe("attested");
