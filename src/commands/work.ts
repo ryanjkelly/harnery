@@ -19,6 +19,7 @@ import {
   reconcileWorkItem,
   reopenWorkItem,
   runWorkItem,
+  type WorkAttempt,
   type WorkRecord,
 } from "../core/work/index.ts";
 import { WorkflowParkedError } from "../core/workflow/index.ts";
@@ -55,6 +56,8 @@ interface GovernanceOpts {
   finding?: string[];
   dispose?: string[];
 }
+
+const MAX_ATTEMPT_JOURNAL_ERROR_RENDER = 240;
 
 export function registerWorkCommand(program: Command, emit: EmitContext): void {
   const registry = createBuiltinHarnessRegistry();
@@ -351,16 +354,26 @@ function emitWork(
     lines.push("acceptance:", ...record.intent.acceptance.map((item) => `  - ${item}`));
   }
   if (projection.attempts.length) {
-    lines.push(
-      "attempts:",
-      ...projection.attempts.map(
-        (attempt) => `  ${attempt.number}. ${attempt.run_id}  ${attempt.status}`,
-      ),
-    );
+    lines.push("attempts:", ...projection.attempts.map(renderAttemptRow));
   }
   if (projection.approval_id) lines.push(`approval: ${projection.approval_id}`);
   if (projection.proof_path) lines.push(`proof: ${projection.proof_path}`);
   emit.text(`${lines.join("\n")}\n`);
+}
+
+export function renderAttemptRow(attempt: WorkAttempt): string {
+  const statusDetail =
+    attempt.status === "journal_unreadable"
+      ? `: ${renderAttemptJournalError(attempt.journal_error)}`
+      : "";
+  return `  ${attempt.number}. ${attempt.run_id}  ${attempt.status}${statusDetail}`;
+}
+
+function renderAttemptJournalError(error: string | undefined): string {
+  const normalized = (error ?? "").replace(/\s+/g, " ").trim();
+  const value = normalized || "unknown journal read error";
+  if (value.length <= MAX_ATTEMPT_JOURNAL_ERROR_RENDER) return value;
+  return `${value.slice(0, MAX_ATTEMPT_JOURNAL_ERROR_RENDER - 3).trimEnd()}...`;
 }
 
 function renderWorkRow(record: WorkRecord): string {
