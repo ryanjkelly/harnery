@@ -923,6 +923,7 @@ async function runTrioMode(
   let pngBytes: number | undefined;
   let captureEvalResult: unknown;
   let captureViewport: { width: number; height: number } | undefined;
+  let captureEvidence: unknown;
   if (!skipScreenshot) {
     pngPath = `${prefix}.png`;
     if (opts.captureEvaluate) {
@@ -932,6 +933,7 @@ async function runTrioMode(
       pngBytes = captured.bytes;
       captureEvalResult = captured.evaluation;
       captureViewport = captured.viewport;
+      captureEvidence = captured.evidence;
     } else {
       pngBytes = await browser.screenshot(pngPath, { fullPage: opts.fullPage !== false });
     }
@@ -965,6 +967,7 @@ async function runTrioMode(
   if (opts.captureEvaluate) {
     envelope.captureEval = captureEvalResult;
     envelope.captureViewport = captureViewport;
+    envelope.captureEvidence = captureEvidence;
   }
   if (opts.networkHar) envelope.har = resolve(opts.networkHar);
   if (visibility) envelope.visibility = visibility;

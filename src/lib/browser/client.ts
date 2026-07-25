@@ -306,37 +306,114 @@ export class Browser {
     path: string,
     evaluation: string,
     opts: { fullPage?: boolean } = {},
-  ): Promise<{ bytes: number; evaluation: T; viewport: { width: number; height: number } }> {
+  ): Promise<{
+    bytes: number;
+    evaluation: T;
+    viewport: { width: number; height: number };
+    evidence: {
+      converged: boolean;
+      reason: string;
+      passes: number;
+      max_passes: number;
+      max_dimension: number;
+      max_pixels: number;
+      original_viewport: { width: number; height: number };
+      evaluated_viewport: { width: number; height: number };
+      document_extent_before_evaluation: { width: number; height: number };
+      document_extent_after_evaluation: { width: number; height: number };
+      document_extent_after_screenshot: { width: number; height: number };
+      screenshot: { width: number; height: number; bytes: number };
+    };
+  }> {
     const page = this.currentPage;
     const fullPage = opts.fullPage ?? true;
+    const maxPasses = 4;
+    const maxDimension = 32_000;
+    const maxPixels = 128_000_000;
+    const documentExtent = () =>
+      page.evaluate(() => ({
+        width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+        height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+      }));
     const originalViewport = page.viewportSize();
     if (!originalViewport) {
       throw new Error("Capture-state evaluation requires a page with an explicit viewport.");
     }
     let captureViewport = originalViewport;
+    let passes = fullPage ? 0 : 1;
+    let extentBeforeEvaluation = await documentExtent();
+    let bounded = true;
     if (fullPage) {
-      for (let pass = 0; pass < 3; pass += 1) {
-        const documentHeight = await page.evaluate(() =>
-          Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
-        );
+      for (let pass = 0; pass < maxPasses; pass += 1) {
+        passes = pass + 1;
         const nextViewport = {
           width: originalViewport.width,
-          height: Math.max(originalViewport.height, Math.ceil(documentHeight)),
+          height: Math.max(originalViewport.height, Math.ceil(extentBeforeEvaluation.height)),
         };
+        bounded =
+          nextViewport.width <= maxDimension &&
+          nextViewport.height <= maxDimension &&
+          nextViewport.width * nextViewport.height <= maxPixels;
+        if (!bounded) break;
         if (
           nextViewport.width === captureViewport.width &&
-          nextViewport.height === captureViewport.height
+          nextViewport.height === captureViewport.height &&
+          extentBeforeEvaluation.width <= captureViewport.width &&
+          extentBeforeEvaluation.height === captureViewport.height
         ) {
           break;
         }
         captureViewport = nextViewport;
         await page.setViewportSize(captureViewport);
+        extentBeforeEvaluation = await documentExtent();
       }
     }
     try {
       const evaluationResult = await page.evaluate<T>(evaluation);
-      const buf = await page.screenshot({ path, fullPage, type: "png" });
-      return { bytes: buf.length, evaluation: evaluationResult, viewport: captureViewport };
+      const extentAfterEvaluation = await documentExtent();
+      const buf = await page.screenshot({ path, fullPage: fullPage && bounded, type: "png" });
+      const extentAfterScreenshot = await documentExtent();
+      const screenshot = {
+        width: buf.readUInt32BE(16),
+        height: buf.readUInt32BE(20),
+        bytes: buf.length,
+      };
+      const exact = fullPage
+        ? bounded &&
+          captureViewport.width === extentBeforeEvaluation.width &&
+          captureViewport.height === extentBeforeEvaluation.height &&
+          captureViewport.width === extentAfterEvaluation.width &&
+          captureViewport.height === extentAfterEvaluation.height &&
+          captureViewport.width === extentAfterScreenshot.width &&
+          captureViewport.height === extentAfterScreenshot.height &&
+          captureViewport.width === screenshot.width &&
+          captureViewport.height === screenshot.height
+        : captureViewport.width === screenshot.width &&
+          captureViewport.height === screenshot.height;
+      const reason = !bounded
+        ? "capture_bounds_exceeded"
+        : exact
+          ? "capture_viewport_converged"
+          : "capture_viewport_non_convergent";
+      return {
+        bytes: buf.length,
+        evaluation: evaluationResult,
+        viewport: captureViewport,
+        evidence: {
+          converged: exact,
+          reason,
+          passes,
+          max_passes: maxPasses,
+          max_dimension: maxDimension,
+          max_pixels: maxPixels,
+          original_viewport: originalViewport,
+          evaluated_viewport: captureViewport,
+          document_extent_before_evaluation: extentBeforeEvaluation,
+          document_extent_after_evaluation: extentAfterEvaluation,
+          document_extent_after_screenshot: extentAfterScreenshot,
+          screenshot,
+        },
+      };
     } finally {
       if (
         captureViewport.width !== originalViewport.width ||

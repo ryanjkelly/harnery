@@ -8,6 +8,9 @@ import { Browser } from "../../src/lib/browser/client.ts";
 const fixtureUrl = pathToFileURL(
   resolve(import.meta.dir, "../fixtures/layout-lint/index.html"),
 ).href;
+const nonConvergentFixtureUrl = pathToFileURL(
+  resolve(import.meta.dir, "../fixtures/capture-viewport/non-convergent.html"),
+).href;
 const profiles: string[] = [];
 
 function profile(): string {
@@ -143,5 +146,83 @@ describe("browse layout lint", () => {
     });
     expect(envelope.captureViewport.width).toBe(800);
     expect(envelope.captureViewport.height).toBeGreaterThanOrEqual(900);
+    expect(envelope.captureEvidence).toMatchObject({
+      converged: true,
+      reason: "capture_viewport_converged",
+      evaluated_viewport: envelope.captureViewport,
+      document_extent_before_evaluation: envelope.captureViewport,
+      document_extent_after_evaluation: envelope.captureViewport,
+      document_extent_after_screenshot: envelope.captureViewport,
+      screenshot: {
+        width: envelope.captureViewport.width,
+        height: envelope.captureViewport.height,
+        bytes: envelope.screenshotBytes,
+      },
+    });
+  });
+
+  test("CLI records viewport-relative full-page non-convergence instead of mismatched green evidence", () => {
+    const outputDir = profile();
+    const output = join(outputDir, "capture-non-convergent");
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        nonConvergentFixtureUrl,
+        "--no-cookies",
+        "--profile",
+        profile(),
+        "--viewport",
+        "800x900",
+        "--out",
+        output,
+        "--capture-evaluate",
+        "({ width: innerWidth, height: innerHeight, scrollHeight: document.documentElement.scrollHeight })",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(readFileSync(`${output}.json`, "utf8"));
+    expect(envelope.captureEvidence).toMatchObject({
+      converged: false,
+      reason: "capture_viewport_non_convergent",
+      passes: 4,
+      max_passes: 4,
+      evaluated_viewport: envelope.captureViewport,
+      screenshot: {
+        width: 800,
+        bytes: envelope.screenshotBytes,
+      },
+    });
+    expect(envelope.captureEval.height).toBe(envelope.captureViewport.height);
+    expect(envelope.captureEval.scrollHeight).toBeGreaterThan(envelope.captureEval.height);
+    expect(envelope.captureEvidence.screenshot.height).toBeGreaterThan(
+      envelope.captureViewport.height,
+    );
+    expect(envelope.captureEvidence.converged).toBe(false);
+  });
+
+  test("restores the original viewport when capture-state evaluation throws", async () => {
+    const browser = new Browser({
+      profileDir: profile(),
+      viewport: { width: 800, height: 900 },
+    });
+    try {
+      await browser.open();
+      await browser.navigate(nonConvergentFixtureUrl);
+      await expect(
+        browser.screenshotWithEvaluation(
+          join(profile(), "capture-evaluation-error.png"),
+          '(() => { throw new Error("capture-finalizer-failed"); })()',
+        ),
+      ).rejects.toThrow("capture-finalizer-failed");
+      expect(browser.currentPage.viewportSize()).toEqual({ width: 800, height: 900 });
+    } finally {
+      await browser.close();
+    }
   });
 });
