@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import { writeWorkflowRunManifest } from "harnery/core/workflow";
-import { readWorkflowRun } from "./workflow-reader";
+import { readWorkflowChildSessions, readWorkflowRun } from "./workflow-reader";
 
 let root: string;
 let runDir: string;
@@ -75,6 +75,82 @@ describe("workflow proof reader", () => {
     expect(readWorkflowRun(root, "wf-reader")?.proof).toBeUndefined();
   });
 
+  test("keeps a run with a live child running however long the journal stays quiet", () => {
+    // The failure this locks: liveness read from journal mtime alone, so an
+    // agent working longer than STALE_MS badged the run STALE. The quiet is the
+    // work, not a dead orchestrator.
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "slow" })}\n`,
+      "utf8",
+    );
+    // Journal untouched for an hour, well past STALE_MS.
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(join(runDir, "journal.jsonl"), hourAgo, hourAgo);
+    expect(readWorkflowRun(root, "wf-reader")?.status).toBe("stale");
+
+    writeHeartbeat("child-live", { workflow_run_id: "wf-reader", session_id: "s-live" });
+    expect(readWorkflowRun(root, "wf-reader")?.status).toBe("running");
+
+    // An ended child stops vouching for the run.
+    writeHeartbeat("child-live", {
+      workflow_run_id: "wf-reader",
+      session_id: "s-live",
+      ended_at: "2026-07-21T12:30:00.000Z",
+    });
+    expect(readWorkflowRun(root, "wf-reader")?.status).toBe("stale");
+  });
+
+  test("records the agent start and end timestamps a live elapsed timer needs", () => {
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "one" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.200Z", event: "agent.start", id: "a2", label: "two" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:09.000Z", event: "agent.failed", id: "a2", error: "boom" })}\n`,
+      "utf8",
+    );
+    const agents = readWorkflowRun(root, "wf-reader")?.agents ?? [];
+    expect(agents[0]).toMatchObject({
+      id: "a1",
+      status: "running",
+      startedAt: "2026-07-21T12:00:00.100Z",
+    });
+    expect(agents[0]?.endedAt).toBeUndefined();
+    expect(agents[1]).toMatchObject({
+      id: "a2",
+      status: "failed",
+      startedAt: "2026-07-21T12:00:00.200Z",
+      endedAt: "2026-07-21T12:00:09.000Z",
+    });
+  });
+
+  test("unions live child heartbeats with journaled sessions and lets the journal name the agent", () => {
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "done-one" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "agent.end", id: "a1", session_id: "s-ended" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:01.100Z", event: "agent.start", id: "a2", label: "in-flight" })}\n`,
+      "utf8",
+    );
+    // A live child with no agent stamp, an unrelated run's child, and a live
+    // heartbeat for the session the journal already closed.
+    writeHeartbeat("live", { workflow_run_id: "wf-reader", session_id: "s-live" });
+    writeHeartbeat("other", { workflow_run_id: "wf-other", session_id: "s-other" });
+    writeHeartbeat("ended-but-warm", { workflow_run_id: "wf-reader", session_id: "s-ended" });
+
+    const children = readWorkflowChildSessions(root, "wf-reader").sort((a, b) =>
+      a.sessionId.localeCompare(b.sessionId),
+    );
+    expect(children).toEqual([
+      // Journal names the agent; the heartbeat still says it is running.
+      { sessionId: "s-ended", agentId: "a1", live: true },
+      { sessionId: "s-live", agentId: undefined, live: true },
+    ]);
+  });
+
   test("attaches the validated workspace projection and preserves invalid authority", () => {
     writeSharedManifest();
     writeFileSync(join(runDir, "proof.json"), JSON.stringify(sampleProof()), "utf8");
@@ -94,6 +170,17 @@ describe("workflow proof reader", () => {
     });
   });
 });
+
+/** One `.harnery/active/` heartbeat file, the shape the reader's child-session
+ * scan consumes. */
+function writeHeartbeat(
+  name: string,
+  hb: { workflow_run_id: string; session_id: string; workflow_agent_id?: string; ended_at?: string },
+): void {
+  const dir = join(root, ".harnery", "active");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${name}.json`), JSON.stringify(hb), "utf8");
+}
 
 function writeSharedManifest(): void {
   writeWorkflowRunManifest({
