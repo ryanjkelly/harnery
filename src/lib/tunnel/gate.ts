@@ -9,6 +9,8 @@
 // available; stdout/stderr is captured into .cache/tunnel/gate.log by the
 // spawner.
 
+import { renderTunnelErrorPage } from "./error-page";
+
 // `--port`/`--name` are also passed on argv (not just env) so the gate's port
 // and instance name show up in its process command line. That's what lets
 // `tunnel down` scope its stray-process sweep to a single instance via
@@ -30,12 +32,34 @@ const TARGET = process.env.HARNERY_TUNNEL_TARGET ?? "127.0.0.1:8001";
 const VHOST = process.env.HARNERY_TUNNEL_VHOST ?? "localhost";
 const PORT = Number(process.env.HARNERY_TUNNEL_PORT ?? argvFlag("--port") ?? "9001");
 const ACCESS = process.env.HARNERY_TUNNEL_ACCESS ?? "cloudflare-allowlist";
+const NAME = argvFlag("--name") ?? "default";
 
 const UPSTREAM_HTTP = `http://${TARGET}`;
 const UPSTREAM_WS = `ws://${TARGET}`;
 
 interface WsData {
   path: string;
+}
+
+function requestDetails(req: Request, url: URL) {
+  return {
+    incidentId: crypto.randomUUID().slice(0, 8),
+    timestamp: new Date().toISOString(),
+    tunnelName: NAME,
+    method: req.method,
+    path: url.pathname + url.search,
+    clientIp: req.headers.get("cf-connecting-ip") ?? "",
+    cloudflareRay: req.headers.get("cf-ray") ?? "",
+  };
+}
+
+function errorDetails(error: unknown): { code: string; message: string } {
+  if (!(error instanceof Error)) {
+    return { code: "UnknownError", message: String(error) };
+  }
+  const code =
+    "code" in error && typeof error.code === "string" ? error.code : error.name || "Error";
+  return { code, message: error.message || "The upstream request failed." };
 }
 
 const server = Bun.serve<WsData, never>({
@@ -51,13 +75,21 @@ const server = Bun.serve<WsData, never>({
     if (ACCESS === "cloudflare-allowlist") {
       const ip = req.headers.get("cf-connecting-ip") ?? "";
       if (!ALLOW.has(ip)) {
+        const details = requestDetails(req, url);
         // Log denials so operators can whitelist a phone/laptop that just
         // hit 403 without asking the human to dig up their public IP.
         console.log(
           // lint-ok-emission: detached worker, see file note above
-          `deny: ${ip || "(missing-cf-connecting-ip)"} ${req.method} ${url.pathname}`,
+          `deny: incident=${details.incidentId} ip=${ip || "(missing-cf-connecting-ip)"} ray=${details.cloudflareRay || "(missing)"} ${req.method} ${details.path}`,
         );
-        return new Response("403 Forbidden\n", { status: 403 });
+        return new Response(renderTunnelErrorPage({ ...details, kind: "access-denied" }), {
+          status: 403,
+          headers: {
+            "cache-control": "no-store",
+            "content-type": "text/html; charset=utf-8",
+            "x-harnery-tunnel-incident": details.incidentId,
+          },
+        });
       }
     }
 
@@ -81,7 +113,38 @@ const server = Bun.serve<WsData, never>({
     if (!["GET", "HEAD"].includes(req.method)) {
       init.body = await req.arrayBuffer();
     }
-    const resp = await fetch(UPSTREAM_HTTP + url.pathname + url.search, init);
+    let resp: Response;
+    try {
+      resp = await fetch(UPSTREAM_HTTP + url.pathname + url.search, init);
+    } catch (error) {
+      const details = requestDetails(req, url);
+      const failure = errorDetails(error);
+      console.log(
+        // lint-ok-emission: detached worker, see file note above
+        `upstream-error: incident=${details.incidentId} ip=${details.clientIp || "(missing-cf-connecting-ip)"} ray=${details.cloudflareRay || "(missing)"} code=${failure.code} ${req.method} ${details.path}`,
+      );
+      return new Response(
+        renderTunnelErrorPage({
+          ...details,
+          kind: "upstream-unavailable",
+          target: UPSTREAM_HTTP,
+          errorCode: failure.code,
+          errorMessage: failure.message,
+        }),
+        {
+          // Cloudflare replaces 502 response bodies with its own generic error
+          // page. Return the diagnostic as a successful document and preserve
+          // the semantic status in a header so the human can actually see it.
+          status: 200,
+          headers: {
+            "cache-control": "no-store",
+            "content-type": "text/html; charset=utf-8",
+            "x-harnery-tunnel-incident": details.incidentId,
+            "x-harnery-tunnel-status": "502",
+          },
+        },
+      );
+    }
     const respHeaders = new Headers(resp.headers);
     respHeaders.delete("content-encoding");
     respHeaders.delete("content-length");
