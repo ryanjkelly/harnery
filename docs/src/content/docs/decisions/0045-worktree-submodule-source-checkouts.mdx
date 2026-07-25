@@ -1,0 +1,135 @@
+---
+title: "0045: Serve worktree and submodule source checkouts"
+description: "ADR: the local Git provider allocates from linked worktrees and submodule checkouts by proving the Git authority it writes to, instead of refusing any checkout whose .git is not a real directory."
+---
+
+**Status:** accepted (2026-07-25) · **Scope:** product tier (`core/workflow` local Git workspace provider)
+
+## Context
+
+The local Git provider allocates an isolated workspace with `git worktree add`,
+which writes not only the new working directory but the repository's
+administrative area: `$COMMON/worktrees/<id>/` for the add, refs and packed-refs
+and logs under `$COMMON` for the branch, `$COMMON/config` when the first linked
+worktree migrates `core.worktree` to `extensions.worktreeConfig`, and an implicit
+`worktree prune` that can delete other agents' admin dirs. Two guards make that
+safe: an `allowed_paths` authority check on the administrative directory, and a
+containment check requiring it to sit inside the declared writable root.
+
+`inspectSourceRepository` refused any checkout whose `.git` was not a real
+directory:
+
+```
+throw new Error("linked worktree and submodule source repositories are unsupported");
+```
+
+That refused a linked worktree, a submodule checkout, a worktree of a submodule,
+and the real submodule this package is embedded as. Every one of those keeps a
+`gitdir:` pointer file where a plain checkout keeps a `.git` directory. Git
+supports `git worktree add` from all of them; the refusal was ours. It bit hardest
+where isolation matters most: worktrees are how parallel agents avoid sharing one
+checkout, and a submodule is how a host monorepo embeds this package.
+
+The directory check was a proxy for a property, not the property itself. Where the
+administrative directory lives depends on layout:
+
+```
+plain      source /repo        git dir /repo/.git                       common /repo/.git
+submodule  source /super/sub   git dir /super/.git/modules/sub          common same
+worktree   source /lw          git dir /super/.git/worktrees/lw         common /super/.git
+wt of sub  source /wt          git dir /super/.git/modules/sub/wt/…      common /super/.git/modules/sub
+```
+
+In the plain layout the authority sits inside the checkout, so containment and
+`allowed_paths` pass for free. In every other layout it sits outside, so those
+guards become load-bearing. They can genuinely fail, and they should, because git
+really will write somewhere the caller may never have declared. The old code
+proved the authority was genuine by requiring
+`realpath(source/.git) === git-dir === git-common-dir`, an equality that holds
+only in the plain layout, and so it never had to trust containment.
+
+## Decision
+
+Accept a `.git` that is a directory **or** a `gitdir:` pointer file, and generalize
+the resolution proof so containment and `allowed_paths` become the real authority
+checks rather than a formality. Calling that proof "anti-spoofing" would overstate
+it: Git honours a `gitdir:` pointer wherever it aims, so a pointer at an unrelated
+repository agrees with `rev-parse` and is accepted. A doctored pointer and a
+submodule's pointer are the same construct, and no equality can separate them.
+`repository-layouts.test.ts` pins that behaviour so the limit stays visible.
+
+1. **Resolve `.git` without trusting the environment.** A directory resolves to its
+   realpath; a pointer file is parsed (trim, require the `gitdir:` prefix, resolve
+   the target relative to the source root, which is relative for submodules and
+   absolute for linked worktrees) and realpath'd. A symlink is still refused: the identity model
+   pins a path to a device and inode, and a symlink lets the target move under a
+   pinned pointer. A `--separate-git-dir` layout is now served too, uniformly.
+
+2. **Prove the resolved directory is the one git uses.** Require the resolved
+   pointer to equal `rev-parse --git-dir`. The on-disk pointer is the
+   environment-independent oracle; `rev-parse` is the environment-influenced
+   answer; requiring equality catches an ambient `GIT_DIR` redirect. The provider's
+   git calls already clear `GIT_*`, so this is defense-in-depth on that stripping,
+   not a substitute for it.
+
+3. **Require the git dir to sit inside or equal the common dir.** Asserted, not
+   assumed: this is structurally true by git's construction, but a symlinked
+   `worktrees/` component could make the realpaths diverge. Because it holds, one
+   containment and `allowed_paths` check on the common directory provably covers
+   every path the add will write.
+
+4. **Leave the containment and `allowed_paths` checks alone.** They stop being
+   trivial and start working.
+
+Three consequences outside `inspectSourceRepository` follow, because "the authority
+is colocated with the checkout" was baked in elsewhere:
+
+- **The repository lease keys on the common directory alone.** It previously keyed
+  on `{common_dir, writable_root}`. Once worktrees are allowed, several distinct
+  source checkouts share one common directory under different writable roots, some
+  of them nested inside others, so two agents could pass containment with different
+  roots yet write to the same admin area under different lease keys, racing `worktree
+  add`/`prune`/shared-`config`. Keying on the common directory alone serializes
+  them; the writable root stays in the lease metadata, not the exclusion key.
+
+- **`probe` refuses the uncoverable layout, not just `allocate`.** The common-dir
+  containment lived only in `allocate`, so a submodule user who declared only the
+  submodule as writable root got `probe → supported`, then a late `allocate` throw.
+  `probe` now runs the same coverage check against the root allocation will select
+  and reports `repository_authority_outside_writable_root`, naming the common
+  directory and why it is outside so the caller knows to widen the root. A
+  confusing refusal is worse than the old blanket one.
+
+- **Integration apply re-authorizes the common directory against `allowed_paths`.**
+  The fast-forward moves the target branch ref, which for a submodule or linked
+  worktree lives in the common directory outside the checkout tree. `allowed_paths`
+  is the real write authority, and allocate and cleanup already gate the common
+  directory on it, so apply does too, rather than trusting containment alone. This
+  was invisible while the common directory was always inside the source tree.
+
+## Alternatives
+
+- **Keep refusing non-directory `.git`.** Rejected: it refuses the embedding shape
+  this package ships as and the isolation topology parallel agents depend on, for a
+  property git itself does not require.
+- **Accept the pointer but keep `git-dir === common-dir`.** Rejected: that equality
+  is exactly what the worktree and worktree-of-submodule layouts break, so it would
+  re-refuse two of the four shapes.
+- **Grant a scoped write to only the worktree's private `gitdir`.** Rejected on the
+  same measurement as [ADR 0040](/decisions/0040-git-administrative-grant/):
+  staging fails without the shared half, so a scoped grant does not work.
+- **Leave the writable root in the lease key.** Rejected: it is the race. Two
+  legitimate nested roots would hand racing agents different locks on one admin
+  area.
+
+## Verification
+
+- Executable fixtures build each layout with real `git` commands (plain,
+  submodule, linked worktree, worktree of a submodule) and assert `probe`
+  supports each. The worktree-of-submodule fixture exercises the git-dir ⊊
+  common-dir nesting, so the containment assertion is proven on a non-equal case.
+- A refusal fixture confirms a symlink `.git` is rejected, and a submodule declared
+  with only itself writable is refused with a message naming the common directory.
+- An end-to-end fixture allocates an isolated worktree from a submodule source with
+  the enclosing repository declared writable, and attests the result `ok`, proving
+  the load-bearing containment and `allowed_paths` checks pass for a real embedding.

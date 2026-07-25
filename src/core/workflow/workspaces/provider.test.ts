@@ -508,7 +508,7 @@ describe("shared and explicit-provider compatibility", () => {
         ...quiet,
       }),
     ).rejects.toThrow(
-      /writable-root authority|inside the writable root|escapes|immutable provider binding/,
+      /writable-root authority|(in|out)side the writable root|escapes|immutable provider binding/,
     );
   });
 
@@ -1309,7 +1309,7 @@ exec "$HARNERY_REAL_GIT" "$@"
     }
   });
 
-  test("rejects bare, detached, and linked-worktree source repositories", async () => {
+  test("rejects bare and detached source repositories, accepts a linked worktree", async () => {
     if (!hasGit()) return;
     const fixture = gitFixture("workspace-repository-shapes");
     tracked(fixture.host);
@@ -1334,14 +1334,16 @@ exec "$HARNERY_REAL_GIT" "$@"
     expect(detachedProbe.unsupported.map((item) => item.code)).toContain("repository_unsupported");
     git(fixture.repo, "checkout", sourceBranch);
 
+    // A linked worktree keeps its Git authority in the parent repository's common
+    // directory (fixture.repo/.git). With the whole host declared writable that
+    // authority is covered, so the layout is supported rather than refused wholesale.
     const linked = join(fixture.host, "linked-source");
     git(fixture.repo, "worktree", "add", "-b", "linked-source", linked);
     const linkedProbe = await provider.probe({
       requested_cwd: linked,
       writable_roots: [fixture.host],
     });
-    expect(linkedProbe.supported).toBe(false);
-    expect(linkedProbe.unsupported.map((item) => item.code)).toContain("repository_unsupported");
+    expect(linkedProbe.supported).toBe(true);
   });
 
   test("ignores inherited Git repository authority overrides", async () => {

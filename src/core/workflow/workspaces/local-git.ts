@@ -123,16 +123,26 @@ export async function probe(
   if (input.writable_roots.length === 0) {
     unsupported.push(reason("writable_roots_required", "explicit writable roots are required"));
   }
-  for (const root of input.writable_roots) {
+  // Allocation always selects writable_roots[0] (validateRequest pins the selected root
+  // to it), so probe's authority-coverage verdict must be judged against that same root.
+  let selectedRoot: ValidatedRoot | undefined;
+  input.writable_roots.forEach((root, index) => {
     try {
-      validateConfiguredRoot(root);
+      const validated = validateConfiguredRoot(root);
+      if (index === 0) selectedRoot = validated;
     } catch (error) {
       unsupported.push(reason("writable_root_invalid", (error as Error).message));
     }
-  }
+  });
   if (version.ok) {
     try {
-      inspectSourceRepository(input.requested_cwd);
+      const repo = inspectSourceRepository(input.requested_cwd);
+      if (selectedRoot) {
+        const outside = describeAuthorityOutsideRoot(repo, selectedRoot.realpath);
+        if (outside) {
+          unsupported.push(reason("repository_authority_outside_writable_root", outside));
+        }
+      }
     } catch (error) {
       unsupported.push(reason("repository_unsupported", (error as Error).message));
     }
@@ -209,12 +219,8 @@ async function allocate(
     repo.commonDir.realpath,
     "Git common directory",
   );
-  if (
-    !containsPath(root.realpath, repo.sourceRoot.realpath) ||
-    !containsPath(root.realpath, repo.commonDir.realpath)
-  ) {
-    throw new Error("source repository and Git common dir must be inside the writable root");
-  }
+  const authorityOutside = describeAuthorityOutsideRoot(repo, root.realpath);
+  if (authorityOutside) throw new Error(authorityOutside);
   const workspaceRoot = candidateUnderRoot(root, ["harnery-workspaces", bindingId]);
   const activeRoot = resolve(workspaceRoot, repo.requestedRelativePath);
   if (!containsPath(workspaceRoot, activeRoot)) {
@@ -1192,6 +1198,25 @@ async function applyIntegrationUnderLease(
   }
   revalidateClaimResources(claim, validateConfiguredRoot(plan.binding.writable_root.configured));
   inspectIntegrationTarget(current.target_root, plan.binding);
+  // The fast-forward moves the target branch ref, which for a submodule or linked
+  // worktree lives in the common directory outside the checkout tree. allowed_paths is
+  // the real write authority (allocate and cleanup already gate the common directory on
+  // it), so re-authorize both the target checkout and its common directory here rather
+  // than trusting containment alone.
+  const applyCommonDir = plan.binding.repository?.common_dir.realpath;
+  if (!applyCommonDir) {
+    throw new Error("integration binding is missing Git common-dir authority");
+  }
+  assertAllowedPathAuthority(
+    claim.request.allowed_paths,
+    current.target_root,
+    "integration target path",
+  );
+  assertAllowedPathAuthority(
+    claim.request.allowed_paths,
+    applyCommonDir,
+    "integration Git common directory",
+  );
   git(current.target_root, ["merge", "--ff-only", expected.source_commit]);
   const finalCommit = git(current.target_root, ["rev-parse", "HEAD"]);
   const finalTree = git(current.target_root, ["rev-parse", "HEAD^{tree}"]);
@@ -1287,19 +1312,16 @@ function inspectSourceRepository(cwd: string): {
   if (!containsPath(sourceRoot, requestedCwd.realpath)) {
     throw new Error("requested working directory is outside the resolved Git worktree");
   }
-  if (lstatSync(join(sourceRoot, ".git")).isSymbolicLink()) {
-    throw new Error("symlink Git directories are unsupported");
-  }
-  if (!lstatSync(join(sourceRoot, ".git")).isDirectory()) {
-    throw new Error("linked worktree and submodule source repositories are unsupported");
-  }
-  const requestedGitDir = realpathSync(join(sourceRoot, ".git"));
+  const pointedGitDir = resolveGitDirPointer(sourceRoot);
   const gitDir = realpathSync(resolve(sourceRoot, git(sourceRoot, ["rev-parse", "--git-dir"])));
   const commonDir = realpathSync(
     resolve(sourceRoot, git(sourceRoot, ["rev-parse", "--git-common-dir"])),
   );
-  if (gitDir !== requestedGitDir || commonDir !== requestedGitDir) {
+  if (pointedGitDir !== gitDir) {
     throw new Error("resolved Git authority does not match the requested checkout");
+  }
+  if (!containsPath(commonDir, gitDir)) {
+    throw new Error("resolved Git directory is not inside its common directory");
   }
   const branch = gitMaybe(sourceRoot, ["symbolic-ref", "-q", "--short", "HEAD"]);
   if (!branch.ok || !branch.out) throw new Error("detached integration targets are unsupported");
@@ -1319,6 +1341,47 @@ function inspectSourceRepository(cwd: string): {
     targetRef,
     requestedRelativePath: relative(sourceRoot, requestedCwd.realpath),
   };
+}
+
+// Resolve the `.git` entry at a checkout root to the real Git directory it names,
+// without trusting the ambient environment. `.git` is a real directory in a plain
+// checkout, and a `gitdir:` pointer file in a linked worktree, submodule, or
+// worktree-of-a-submodule. A symlink is refused: the identity model pins a path to a
+// device and inode, and a symlink lets the target move under a pinned pointer.
+//
+// The caller cross-checks the result against `rev-parse --git-dir`. That is a
+// consistency assertion, not spoof detection: Git honours a `gitdir:` pointer, so a
+// pointer aimed at an unrelated repository agrees with `rev-parse` and is accepted.
+// It cannot be otherwise, because a doctored pointer and a submodule's pointer are
+// the same construct. What the equality buys is that this resolution and Git's own
+// never silently diverge, which is defence in depth over the `GIT_*` stripping in
+// `isolatedGitEnvironment`. The real authority check is containment plus
+// `allowed_paths` on the resolved common directory.
+function resolveGitDirPointer(sourceRoot: string): string {
+  const dotGit = join(sourceRoot, ".git");
+  let stats: ReturnType<typeof lstatSync>;
+  try {
+    stats = lstatSync(dotGit);
+  } catch {
+    throw new Error("requested checkout has no .git entry");
+  }
+  if (stats.isSymbolicLink()) {
+    throw new Error("symlink Git directories are unsupported");
+  }
+  if (stats.isDirectory()) {
+    return realpathSync(dotGit);
+  }
+  if (!stats.isFile()) {
+    throw new Error(".git must be a directory or a gitdir pointer file");
+  }
+  const pointer = readFileSync(dotGit, "utf8").split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const prefix = "gitdir:";
+  if (!pointer.startsWith(prefix)) {
+    throw new Error(".git file is not a gitdir pointer");
+  }
+  const target = pointer.slice(prefix.length).trim();
+  if (!target) throw new Error(".git gitdir pointer is empty");
+  return realpathSync(resolve(sourceRoot, target));
 }
 
 function inspectFrozenSourceAuthority(
@@ -1680,6 +1743,28 @@ function validFrozenFilesystemPath(
   );
 }
 
+// Explain, in the caller's terms, why a checkout's Git authority falls outside a
+// writable root — naming the offending path so a submodule or linked-worktree user
+// who declared only the inner checkout knows exactly what to widen. Returns undefined
+// when both the source checkout and its common directory are inside the root.
+function describeAuthorityOutsideRoot(
+  repo: ReturnType<typeof inspectSourceRepository>,
+  rootRealpath: string,
+): string | undefined {
+  if (!containsPath(rootRealpath, repo.commonDir.realpath)) {
+    return (
+      `Git keeps this checkout's administrative files in ${repo.commonDir.realpath}, ` +
+      `which is outside the writable root ${rootRealpath}. Linked-worktree and submodule ` +
+      `checkouts keep their Git authority in the enclosing repository, and allocating a ` +
+      `worktree writes there; declare that repository (or a parent of it) as the writable root.`
+    );
+  }
+  if (!containsPath(rootRealpath, repo.sourceRoot.realpath)) {
+    return `the source checkout ${repo.sourceRoot.realpath} is outside the writable root ${rootRealpath}`;
+  }
+  return undefined;
+}
+
 function assertAllowedPathAuthority(
   allowedPaths: WorkspaceAllocationRequest["allowed_paths"],
   candidate: string,
@@ -1783,10 +1868,15 @@ function capabilityDigestForClaim(claim: WorkspaceClaim): string {
 function acquireRepositoryLease(coordRoot: string, claim: WorkspaceClaim): () => void {
   const leaseDir = join(resolve(coordRoot), ".harnery", "workspaces", PROVIDER_ID, ".leases");
   mkdirSync(leaseDir, { recursive: true, mode: 0o700 });
-  const key = stableDigest({
-    common: claim.repository.common_dir.identity,
-    root: claim.writable_root.identity,
-  });
+  // Mutual exclusion keys on the Git common directory alone. `git worktree add`,
+  // `prune`, and the shared-`config` migration all write to the common directory's
+  // administrative area, and once worktrees and submodules are allowed, several
+  // distinct source checkouts (a superproject and its linked worktrees; a submodule
+  // and a worktree of it) share one common directory under different — possibly
+  // nested — writable roots. Including the writable root in the key would hand those
+  // agents different locks and let their admin-area writes race. The writable root
+  // stays in the lease metadata for diagnostics, not in the exclusion key.
+  const key = stableDigest({ common: claim.repository.common_dir.identity });
   return acquireLease(coordRoot, join(leaseDir, `repository-${key}.lock`), claim, "repository");
 }
 
