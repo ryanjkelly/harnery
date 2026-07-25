@@ -67,6 +67,7 @@ interface BrowseOpts {
   press?: string;
   waitFor?: string;
   evaluate?: string;
+  captureEvaluate?: string;
   batch?: string;
   networkHar?: string;
   login?: boolean;
@@ -178,6 +179,10 @@ export function registerBrowseCommand(
     .option(
       "--evaluate <js>",
       "Run JS in the page context after navigation; result printed to stdout",
+    )
+    .option(
+      "--capture-evaluate <js>",
+      "In trio mode, evaluate JS inside the exact screenshot viewport immediately before capture; result is written as captureEval",
     )
     .option(
       "--batch <steps>",
@@ -601,6 +606,11 @@ async function runBrowse(
     }
 
     if (printMode) {
+      if (opts.captureEvaluate) {
+        throw new Error(
+          "--capture-evaluate requires trio mode so its result can be bound to a screenshot.",
+        );
+      }
       if (opts.baseline || opts.diff) {
         throw new Error(
           "--baseline / --diff require trio mode (screenshot file). Remove --snapshot/--html/--json or capture the screenshot first.",
@@ -911,10 +921,25 @@ async function runTrioMode(
   const skipScreenshot = opts.screenshot === false || opts.domOnly === true;
   let pngPath: string | undefined;
   let pngBytes: number | undefined;
+  let captureEvalResult: unknown;
+  let captureViewport: { width: number; height: number } | undefined;
   if (!skipScreenshot) {
     pngPath = `${prefix}.png`;
-    pngBytes = await browser.screenshot(pngPath, { fullPage: opts.fullPage !== false });
+    if (opts.captureEvaluate) {
+      const captured = await browser.screenshotWithEvaluation(pngPath, opts.captureEvaluate, {
+        fullPage: opts.fullPage !== false,
+      });
+      pngBytes = captured.bytes;
+      captureEvalResult = captured.evaluation;
+      captureViewport = captured.viewport;
+    } else {
+      pngBytes = await browser.screenshot(pngPath, { fullPage: opts.fullPage !== false });
+    }
     written.push(pngPath);
+  } else if (opts.captureEvaluate) {
+    throw new Error(
+      "--capture-evaluate requires a screenshot; remove --no-screenshot / --dom-only.",
+    );
   }
 
   const htmlPath = `${prefix}.html`;
@@ -937,6 +962,10 @@ async function runTrioMode(
   };
   if (pngBytes !== undefined) envelope.screenshotBytes = pngBytes;
   if (opts.evaluate) envelope.eval = evalResult;
+  if (opts.captureEvaluate) {
+    envelope.captureEval = captureEvalResult;
+    envelope.captureViewport = captureViewport;
+  }
   if (opts.networkHar) envelope.har = resolve(opts.networkHar);
   if (visibility) envelope.visibility = visibility;
   if (widths) envelope.width = widths;

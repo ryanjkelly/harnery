@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -104,5 +104,44 @@ describe("browse layout lint", () => {
     expect(stdout).toContain('"clip"');
     expect(stdout).toContain('"overlap"');
     expect(stdout).toContain('"hit"');
+  });
+
+  test("CLI binds captureEval to the explicit full-page screenshot viewport", () => {
+    const outputDir = profile();
+    const output = join(outputDir, "capture-state");
+    const browserProfile = profile();
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--no-cookies",
+        "--profile",
+        browserProfile,
+        "--viewport",
+        "800x900",
+        "--out",
+        output,
+        "--evaluate",
+        '({ phase: "initial", height: innerHeight })',
+        "--capture-evaluate",
+        '({ phase: "capture", height: innerHeight, scrollHeight: document.documentElement.scrollHeight })',
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const envelope = JSON.parse(readFileSync(`${output}.json`, "utf8"));
+    expect(envelope.eval).toEqual({ phase: "initial", height: 900 });
+    expect(envelope.captureEval).toMatchObject({
+      phase: "capture",
+      height: envelope.captureViewport.height,
+      scrollHeight: envelope.captureViewport.height,
+    });
+    expect(envelope.captureViewport.width).toBe(800);
+    expect(envelope.captureViewport.height).toBeGreaterThanOrEqual(900);
   });
 });

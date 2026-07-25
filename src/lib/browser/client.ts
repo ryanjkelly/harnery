@@ -296,6 +296,58 @@ export class Browser {
   }
 
   /**
+   * Capture a full-page screenshot from an explicit capture viewport and
+   * evaluate the caller's final evidence expression immediately before the
+   * pixels are written. Playwright normally manages the full-page viewport
+   * internally, which leaves callers unable to inspect fixed/sticky geometry
+   * in the state the PNG actually renders.
+   */
+  async screenshotWithEvaluation<T = unknown>(
+    path: string,
+    evaluation: string,
+    opts: { fullPage?: boolean } = {},
+  ): Promise<{ bytes: number; evaluation: T; viewport: { width: number; height: number } }> {
+    const page = this.currentPage;
+    const fullPage = opts.fullPage ?? true;
+    const originalViewport = page.viewportSize();
+    if (!originalViewport) {
+      throw new Error("Capture-state evaluation requires a page with an explicit viewport.");
+    }
+    let captureViewport = originalViewport;
+    if (fullPage) {
+      for (let pass = 0; pass < 3; pass += 1) {
+        const documentHeight = await page.evaluate(() =>
+          Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+        );
+        const nextViewport = {
+          width: originalViewport.width,
+          height: Math.max(originalViewport.height, Math.ceil(documentHeight)),
+        };
+        if (
+          nextViewport.width === captureViewport.width &&
+          nextViewport.height === captureViewport.height
+        ) {
+          break;
+        }
+        captureViewport = nextViewport;
+        await page.setViewportSize(captureViewport);
+      }
+    }
+    try {
+      const evaluationResult = await page.evaluate<T>(evaluation);
+      const buf = await page.screenshot({ path, fullPage, type: "png" });
+      return { bytes: buf.length, evaluation: evaluationResult, viewport: captureViewport };
+    } finally {
+      if (
+        captureViewport.width !== originalViewport.width ||
+        captureViewport.height !== originalViewport.height
+      ) {
+        await page.setViewportSize(originalViewport);
+      }
+    }
+  }
+
+  /**
    * Plain-text snapshot of the document body. Suitable as a coarse "what's
    * on screen" signal for LLM iteration loops. For richer extraction, use
    * `htmlContent()` and pipe through a readability filter.
