@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { coordRoot, eventsPath, type EventRow } from "@/lib/coord-reader";
+import { coordRoot, eventsPath, type EventRow, readEvents } from "@/lib/coord-reader";
 import { readWorkflowChildSessions } from "@/lib/workflow-reader";
 
 export const dynamic = "force-dynamic";
@@ -39,10 +39,10 @@ export async function GET(request: Request): Promise<Response> {
    * Session-id allowlist for `?run=<runId>`: the run's child harness sessions.
    *
    * Re-resolved on every drain rather than pinned at connect, because a run
-   * spawns children over its whole life — a stage-3 agent that starts twenty
+   * spawns children over its whole life. A stage-3 agent that starts twenty
    * minutes in would be invisible to a set captured at page load, and pushing
-   * the set through the query string instead would reconnect the stream (and
-   * re-snapshot) every time an agent started or ended.
+   * the set through the query string instead would reconnect the stream, and
+   * re-snapshot, every time an agent started or ended.
    */
   let runSessions: Set<string> | undefined;
   function resolveRunSessions(): Set<string> | undefined {
@@ -111,13 +111,23 @@ export async function GET(request: Request): Promise<Response> {
       }
 
       // 1. Snapshot: last N rows, applying server-side filters if present.
+      //
+      // A run filter takes the budgeted scanner rather than the byte-window tail
+      // below. The tail reads a fixed slice off the end of the file, which is
+      // fine for an unfiltered feed but starves a narrow filter: on a 200MB
+      // event log, a run that finished an hour ago sits far outside the window,
+      // so the snapshot came back empty and replaced the page's server-rendered
+      // rows with nothing. `readEvents` walks backward on a byte budget and
+      // continues into rotated archives, so it finds the run wherever it is.
       try {
-        const snapshot = await readEventsTail({
-          lines: initialLines,
-          instanceId: instanceFilter,
-          type: typeFilter,
-          sessions: resolveRunSessions(),
-        });
+        const sessions = resolveRunSessions();
+        const snapshot = sessions
+          ? readEvents({ limit: initialLines, sessions, type: typeFilter }).rows
+          : await readEventsTail({
+              lines: initialLines,
+              instanceId: instanceFilter,
+              type: typeFilter,
+            });
         send("snapshot", { events: snapshot });
       } catch {
         send("snapshot", { events: [] });
