@@ -427,6 +427,18 @@ export interface WorkflowAttemptContext {
   readonly number: number;
   readonly trigger: "initial" | "retry";
   readonly prior?: Readonly<WorkflowAttemptPriorContext>;
+  /** Open findings an operator raised against a prior attempt. Present on any
+   * trigger, because a reopen with findings starts a fresh initial attempt.
+   * Distinct from `prior`, which is evidence the run itself produced. */
+  readonly findings?: readonly Readonly<WorkflowOperatorFinding>[];
+}
+
+/** One correction an operator raised against work they judged wrong. Authored
+ * by a human, not derived from proof, and carried until explicitly disposed. */
+export interface WorkflowOperatorFinding {
+  readonly id: string;
+  readonly actor: string;
+  readonly statement: string;
 }
 
 export interface EngineOpts {

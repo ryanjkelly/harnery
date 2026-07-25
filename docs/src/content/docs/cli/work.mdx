@@ -16,6 +16,8 @@ harn work run <work-id> [workflow options] [--json]
 harn work retry <work-id> [workflow options] [--json]
 harn work reconcile [work-id] [--actor <name>] [--json]
 harn work accept|cancel|reopen <work-id> [--actor <name>] [--reason <text>] [--json]
+harn work reopen <work-id> [--finding <text> ...]
+harn work accept <work-id> [--dispose <id>=fixed|deferred:<reason> ...]
 ```
 
 A work item is a durable objective. A workflow run is one bounded attempt to
@@ -112,3 +114,39 @@ A passing workflow proof derives `in_review`. It does not derive `succeeded`.
 
 The local dashboard exposes the same projection at `/work`, with links to each
 attempt's workflow journal and current approval or proof.
+
+## Sending a correction back
+
+Reviewers miss things. When you look at work sitting in `in_review` and find a
+defect the workflow's own review passed, reopen it with a finding rather than
+accepting it or throwing the work away:
+
+```bash
+harn work reopen <work-id> --actor reviewer \
+  --finding "The bounded writer throws on a large result instead of truncating it."
+```
+
+`--finding` is repeatable. Each finding gets a stable id and is carried into the
+next attempt's frozen context as `attempt.findings`, alongside the actor who
+raised it, so a workflow can read it and act on it:
+
+```js
+export default async ({ agent, attempt }) => {
+  const corrections = (attempt?.findings ?? [])
+    .map((finding) => `- ${finding.statement}`)
+    .join("\n");
+  return await agent(`Address these operator findings first:\n${corrections}`);
+};
+```
+
+Acceptance then fails closed until you say what happened to each one:
+
+```bash
+harn work accept <work-id> --dispose f1=fixed
+harn work accept <work-id> --dispose f1=deferred:tracked separately, out of scope
+```
+
+Deferring requires a reason, and both the finding and its disposition stay in the
+event log. The team that missed a defect does not get to certify that it was
+fixed; that judgement stays with the operator who raised it. See
+[ADR 0043](/decisions/0043-operator-findings/).

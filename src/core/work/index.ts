@@ -7,6 +7,7 @@ export {
   createWorkItem,
   listWorkItems,
   newWorkId,
+  openOperatorFindings,
   readWorkItem,
   reconcileAllWorkItems,
   reconcileWorkItem,

@@ -18,6 +18,7 @@ import {
   assertWorkflowUnchanged,
   boundedActor,
   newWorkflowRunId,
+  openOperatorFindings,
   readWorkItemIgnoringLease,
   type WorkAttempt,
 } from "./state.ts";
@@ -81,11 +82,18 @@ export async function runWorkItem(input: RunWorkItemInput): Promise<RunReport> {
       }
       prior = priorContext(coordRoot, latest);
     }
+    const open = openOperatorFindings(coordRoot, input.workId);
+    const findings = open.findings.map((finding) => ({
+      id: finding.id,
+      actor: open.actor,
+      statement: finding.statement,
+    }));
     const attemptContext: WorkflowAttemptContext = {
       schema_version: WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION,
       number: attempt,
       trigger,
       ...(prior ? { prior } : {}),
+      ...(findings.length === 0 ? {} : { findings }),
     };
     const runId = newWorkflowRunId();
     appendWorkEvent(coordRoot, input.workId, {

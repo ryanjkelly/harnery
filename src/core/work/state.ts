@@ -98,8 +98,24 @@ export interface WorkEvent {
   proof_sha256?: string;
   terminal_attestation_sha256?: string;
   accepted_unknowns?: string[];
+  /** Operator corrections raised with a reopen. Authored by a human against a
+   * prior attempt, carried into the next attempt, and open until disposed. */
+  findings?: WorkOperatorFinding[];
+  /** How an operator disposed of each open finding at acceptance. */
+  dispositions?: WorkFindingDisposition[];
   state?: WorkState;
   next_action?: WorkNextAction;
+}
+
+export interface WorkOperatorFinding {
+  id: string;
+  statement: string;
+}
+
+export interface WorkFindingDisposition {
+  id: string;
+  outcome: "fixed" | "deferred";
+  reason?: string;
 }
 
 export interface WorkAttempt {
@@ -270,7 +286,12 @@ export function reconcileAllWorkItems(coordRoot: string, actor?: string): WorkRe
 export function acceptWorkItem(
   coordRoot: string,
   workId: string,
-  input: { actor?: string; reason?: string; acceptedUnknowns?: readonly string[] } = {},
+  input: {
+    actor?: string;
+    reason?: string;
+    acceptedUnknowns?: readonly string[];
+    dispositions?: readonly WorkFindingDisposition[];
+  } = {},
 ): WorkRecord {
   return appendGovernanceEvent(coordRoot, workId, "work.accepted", ["in_review"], input);
 }
@@ -292,7 +313,7 @@ export function cancelWorkItem(
 export function reopenWorkItem(
   coordRoot: string,
   workId: string,
-  input: { actor?: string; reason?: string } = {},
+  input: { actor?: string; reason?: string; findings?: readonly string[] } = {},
 ): WorkRecord {
   return appendGovernanceEvent(
     coordRoot,
@@ -301,6 +322,28 @@ export function reopenWorkItem(
     ["blocked", "in_review", "succeeded", "cancelled"],
     input,
   );
+}
+
+/** Findings raised by the most recent reopen that no later acceptance disposed
+ * of. Empty when the work was never reopened with findings. */
+export function openOperatorFindings(
+  coordRoot: string,
+  workId: string,
+): { actor: string; findings: WorkOperatorFinding[] } {
+  const events = readWorkEvents(coordRoot, workId);
+  let actor = "operator";
+  let open: WorkOperatorFinding[] = [];
+  for (const event of events) {
+    if (event.event === "work.reopened" && event.findings?.length) {
+      actor = event.actor;
+      open = event.findings.map((finding) => ({ ...finding }));
+    }
+    if (event.event === "work.accepted" && event.dispositions?.length) {
+      const disposed = new Set(event.dispositions.map((entry) => entry.id));
+      open = open.filter((finding) => !disposed.has(finding.id));
+    }
+  }
+  return { actor, findings: open };
 }
 
 export function assertWorkId(workId: string): void {
@@ -537,7 +580,13 @@ function appendGovernanceEvent(
   workId: string,
   event: "work.accepted" | "work.cancelled" | "work.reopened",
   allowed: WorkState[],
-  input: { actor?: string; reason?: string; acceptedUnknowns?: readonly string[] },
+  input: {
+    actor?: string;
+    reason?: string;
+    acceptedUnknowns?: readonly string[];
+    findings?: readonly string[];
+    dispositions?: readonly WorkFindingDisposition[];
+  },
 ): WorkRecord {
   const releaseWork = event === "work.cancelled" ? undefined : acquireWorkLease(coordRoot, workId);
   const releaseEvent = acquireWorkEventLease(coordRoot, workId);
@@ -554,17 +603,78 @@ function appendGovernanceEvent(
       event === "work.accepted"
         ? acceptanceAuthority(coordRoot, current, input.acceptedUnknowns ?? [])
         : undefined;
+    const dispositions =
+      event === "work.accepted"
+        ? findingAuthority(coordRoot, workId, input.dispositions ?? [])
+        : undefined;
+    const findings =
+      event === "work.reopened" ? normalizeRaisedFindings(input.findings) : undefined;
     appendWorkEventUnderLease(coordRoot, workId, {
       event,
       actor: boundedActor(input.actor),
       reason: boundedOptional(input.reason, "work reason", MAX_REASON),
       ...acceptance,
+      ...(findings ? { findings } : {}),
+      ...(dispositions ? { dispositions } : {}),
     });
   } finally {
     releaseEvent();
     releaseWork?.();
   }
   return reconcileWorkItem(coordRoot, workId, input.actor);
+}
+
+/** Acceptance fails closed while an operator finding is open. The operator who
+ * raised it decides whether it was addressed; the team cannot mark its own. */
+function findingAuthority(
+  coordRoot: string,
+  workId: string,
+  dispositions: readonly WorkFindingDisposition[],
+): WorkFindingDisposition[] {
+  const open = openOperatorFindings(coordRoot, workId).findings;
+  if (open.length === 0) {
+    if (dispositions.length > 0) {
+      throw new Error(`work item ${workId} has no open operator finding to dispose`);
+    }
+    return [];
+  }
+  const byId = new Map(dispositions.map((entry) => [entry.id, entry]));
+  const undisposed = open.filter((finding) => !byId.has(finding.id));
+  if (undisposed.length > 0) {
+    throw new Error(
+      `work item ${workId} cannot be accepted while operator findings are undisposed: ${undisposed
+        .map((finding) => finding.id)
+        .join(", ")}`,
+    );
+  }
+  const known = new Set(open.map((finding) => finding.id));
+  return dispositions.map((entry) => {
+    if (!known.has(entry.id)) {
+      throw new Error(`work item ${workId} has no open operator finding ${entry.id}`);
+    }
+    if (entry.outcome !== "fixed" && entry.outcome !== "deferred") {
+      throw new Error(`operator finding ${entry.id} disposition must be fixed or deferred`);
+    }
+    if (entry.outcome === "deferred" && !entry.reason?.trim()) {
+      throw new Error(`deferring operator finding ${entry.id} requires a reason`);
+    }
+    return {
+      id: entry.id,
+      outcome: entry.outcome,
+      ...(entry.reason ? { reason: boundedString(entry.reason, "disposition reason", 500) } : {}),
+    };
+  });
+}
+
+function normalizeRaisedFindings(
+  statements: readonly string[] | undefined,
+): WorkOperatorFinding[] | undefined {
+  if (!statements || statements.length === 0) return undefined;
+  if (statements.length > 20) throw new Error("a reopen may raise at most 20 findings");
+  return statements.map((statement, index) => ({
+    id: `f${index + 1}`,
+    statement: boundedString(statement, `finding[${index}] statement`, 1_000),
+  }));
 }
 
 function acceptanceAuthority(

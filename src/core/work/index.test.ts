@@ -14,6 +14,7 @@ import {
   cancelWorkItem,
   createWorkItem,
   listWorkItems,
+  openOperatorFindings,
   readWorkItem,
   reconcileWorkItem,
   reopenWorkItem,
@@ -320,6 +321,82 @@ describe("durable work ledger", () => {
       engine: { spawners: {} },
     });
     expect(second.result).toEqual({ schema_version: 1, number: 2, trigger: "initial" });
+  });
+
+  test("an operator finding raised on reopen reaches the next attempt's agents", async () => {
+    const { root, workflowPath } = fixture(`
+      export default async ({ attempt }) => attempt;
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "finding-reaches",
+      title: "Finding reaches the team",
+      objective: "Carry an operator correction into the next attempt",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    const first = await runWorkItem({
+      coordRoot: root,
+      workId: "finding-reaches",
+      engine: { spawners: {} },
+    });
+    expect((first.result as { findings?: unknown }).findings).toBeUndefined();
+
+    reopenWorkItem(root, "finding-reaches", {
+      actor: "operator",
+      reason: "the reviewer missed a regression",
+      findings: ["The bounded writer throws on a large result instead of truncating it."],
+    });
+
+    const second = await runWorkItem({
+      coordRoot: root,
+      workId: "finding-reaches",
+      engine: { spawners: {} },
+    });
+    expect((second.result as { findings: unknown }).findings).toEqual([
+      {
+        id: "f1",
+        actor: "operator",
+        statement: "The bounded writer throws on a large result instead of truncating it.",
+      },
+    ]);
+  });
+
+  test("acceptance fails closed while an operator finding is undisposed", async () => {
+    const { root, workflowPath } = fixture(`
+      export default async () => 'ok';
+    `);
+    createWorkItem({
+      coordRoot: root,
+      id: "finding-gates",
+      title: "Finding gates acceptance",
+      objective: "Refuse acceptance while a correction is open",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    await runWorkItem({ coordRoot: root, workId: "finding-gates", engine: { spawners: {} } });
+    reopenWorkItem(root, "finding-gates", {
+      actor: "operator",
+      findings: ["Still wrong in the same way."],
+    });
+    await runWorkItem({ coordRoot: root, workId: "finding-gates", engine: { spawners: {} } });
+
+    expect(() => acceptWorkItem(root, "finding-gates", { actor: "operator" })).toThrow(
+      /operator findings are undisposed: f1/,
+    );
+    expect(() =>
+      acceptWorkItem(root, "finding-gates", {
+        actor: "operator",
+        dispositions: [{ id: "f1", outcome: "deferred" }],
+      }),
+    ).toThrow(/requires a reason/);
+
+    const accepted = acceptWorkItem(root, "finding-gates", {
+      actor: "operator",
+      dispositions: [{ id: "f1", outcome: "fixed" }],
+    });
+    expect(accepted.projection.state).toBe("succeeded");
+    expect(openOperatorFindings(root, "finding-gates").findings).toEqual([]);
   });
 
   test("fails closed when proof work context no longer matches its manifest", async () => {

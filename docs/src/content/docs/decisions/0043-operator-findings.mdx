@@ -1,0 +1,100 @@
+---
+title: "0043: Send a correction back to the team"
+description: A correction an operator raises against reviewed work travels into the next attempt and blocks acceptance until it is explicitly disposed.
+---
+
+**Status:** accepted · **Date:** 2026-07-25
+
+## Context
+
+Durable work reaches `in_review` when an attempt produces passing proof. From
+there an operator has three verbs: `accept`, `cancel`, and `reopen`. None of
+them expresses the ordinary outcome of a review, which is "this is wrong, here
+is why, try again."
+
+`reopen` comes closest. It returns the work to `ready` and records the
+operator's reason in the durable event log. But the reason went nowhere. The
+frozen work context handed to the next attempt is a closed field set of
+`schema_version`, `id`, `title`, `objective`, and `acceptance`, and any other
+key throws. So the correction was written down and read by nobody.
+
+There was already a channel for prior evidence, on the wrong branch.
+`WorkflowAttemptContext.prior` carries a bounded synopsis of terminal evidence,
+and it is populated only on `retry`, which requires a **blocked** run. `reopen`
+starts a fresh initial attempt, which by construction has no `prior`.
+
+The result is a lopsided one:
+
+> A run that fails carries its evidence forward. A run that passes wrongly does
+> not.
+
+A dogfood mission made this concrete. Two independent teams of three agents each
+worked the same objective. Both produced competent work, both introduced the
+same defect, and both reviewers passed it clean. The second team could see the
+first team's code and improved its structure without noticing the flaw, because
+nothing in its brief pointed at the flaw. The correction existed in writing, in
+the durable record, the entire time.
+
+## Alternatives considered
+
+**Widen the frozen work context.** Rejected. The closed field set exists so a
+work *definition* cannot be silently mutated between attempts. Title, objective,
+and acceptance are the contract, and `isCanonicalWorkflowWorkContext` must keep
+rejecting a mutated one.
+
+**Populate `prior` on reopen.** Rejected. `prior` describes a failure the proof
+itself recorded, including causes, acceptance counts, and unresolved criteria. A
+reopened run did not fail. Forcing an operator's prose into that shape would
+either corrupt its invariants or require inventing a failure that never
+happened.
+
+**Let the workflow dispose of its own findings.** Rejected. The team that missed
+a defect is not the party best placed to certify that it is fixed. Marking your
+own homework is the failure mode this decision exists to close.
+
+**A new state between `in_review` and `ready`.** Rejected as unnecessary. The
+two existing states already model "waiting on a human" and "dispatchable"
+correctly. The gap was payload, not lifecycle.
+
+## Decision
+
+An **operator finding** is an addressable correction attached to a reopen, carried into the next attempt, and open until explicitly disposed.
+
+1. `reopen` accepts one or more findings. Each is stored on the `work.reopened`
+   event with a stable id and the actor who raised it.
+2. `WorkflowAttemptContext` gains an optional `findings` array, valid on either
+   trigger, holding every open finding. It sits beside `prior` rather than
+   inside it, because a finding is authored by a human about the work, while
+   `prior` is derived by the machine from its own proof.
+3. Acceptance fails closed while any finding is open. `accept` requires an
+   explicit disposition for each: `fixed`, or `deferred` **with a reason**.
+   Silence is not a disposition and a lapsed finding cannot pass as a decision.
+4. Dispositions are recorded on the `work.accepted` event, so who deferred what
+   and why stays in the durable record.
+
+Findings and reviewer verdicts remain distinguishable: a verdict lives in
+workflow proof, a finding lives in the work event log with a human actor.
+
+## Result
+
+```
+harn work reopen <id> --actor <name> \
+  --finding "The bounded writer throws on a large result instead of truncating it."
+
+harn work accept <id> --dispose f1=fixed
+harn work accept <id> --dispose f1=deferred:tracked separately, out of scope here
+```
+
+The next attempt's agents receive the finding in `attempt.findings` and can act
+on it. Acceptance refuses until the operator says what happened to it.
+
+Gotchas worth knowing:
+
+- **Findings are additive and optional.** A context without them stays
+  canonical, so historical manifests and proofs are unaffected.
+- **A later reopen replaces the open set** rather than accumulating across
+  rounds. Corrections describe the attempt in front of you; carrying stale ones
+  forward would make the gate impossible to clear honestly.
+- **Deferring is a real outcome, not an escape hatch.** It requires a reason and
+  stays visible in the event log. Use it when a finding is genuine but out of
+  scope; do not use it to clear the gate.

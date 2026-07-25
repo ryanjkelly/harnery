@@ -52,6 +52,8 @@ interface GovernanceOpts {
   actor?: string;
   reason?: string;
   json?: boolean;
+  finding?: string[];
+  dispose?: string[];
 }
 
 export function registerWorkCommand(program: Command, emit: EmitContext): void {
@@ -257,14 +259,66 @@ function registerGovernanceCommand(
     )
     .option("--actor <name>", "Actor recorded in the governance receipt")
     .option("--reason <text>", "Bounded decision reason")
-    .option("--json", "Emit the complete work record as JSON")
-    .action((workId: string, opts: GovernanceOpts) => {
-      withWorkRoot(emit, (coordRoot) => {
-        const fn =
-          name === "accept" ? acceptWorkItem : name === "cancel" ? cancelWorkItem : reopenWorkItem;
-        emitWork(fn(coordRoot, workId, opts), opts.json, emit, true);
-      });
+    .option("--json", "Emit the complete work record as JSON");
+  const command = work.commands.at(-1) as Command;
+  if (name === "reopen") {
+    command.option(
+      "--finding <text>",
+      "Correction the next attempt must address (repeatable)",
+      collectValue,
+      [] as string[],
+    );
+  }
+  if (name === "accept") {
+    command.option(
+      "--dispose <id=outcome[:reason]>",
+      "Dispose of an open finding: fixed, or deferred:<reason> (repeatable)",
+      collectValue,
+      [] as string[],
+    );
+  }
+  command.action((workId: string, opts: GovernanceOpts) => {
+    withWorkRoot(emit, (coordRoot) => {
+      const fn =
+        name === "accept" ? acceptWorkItem : name === "cancel" ? cancelWorkItem : reopenWorkItem;
+      emitWork(
+        fn(coordRoot, workId, {
+          ...opts,
+          ...(opts.finding?.length ? { findings: opts.finding } : {}),
+          ...(opts.dispose?.length ? { dispositions: opts.dispose.map(parseDisposition) } : {}),
+        }),
+        opts.json,
+        emit,
+        true,
+      );
     });
+  });
+}
+
+function collectValue(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+/** `<id>=fixed` or `<id>=deferred:<reason>`. Deferring without a reason is
+ * rejected downstream, so a lapsed finding cannot look like a decision. */
+function parseDisposition(input: string): {
+  id: string;
+  outcome: "fixed" | "deferred";
+  reason?: string;
+} {
+  const split = input.indexOf("=");
+  if (split <= 0)
+    throw new Error(`invalid --dispose ${JSON.stringify(input)}; expected <id>=<outcome>`);
+  const id = input.slice(0, split).trim();
+  const rest = input.slice(split + 1).trim();
+  const [outcome, ...reasonParts] = rest.split(":");
+  if (outcome !== "fixed" && outcome !== "deferred") {
+    throw new Error(
+      `invalid --dispose outcome ${JSON.stringify(outcome)}; expected fixed or deferred`,
+    );
+  }
+  const reason = reasonParts.join(":").trim();
+  return { id, outcome, ...(reason ? { reason } : {}) };
 }
 
 function emitWork(

@@ -4,6 +4,7 @@ import type {
   WorkflowAttemptFailureCause,
   WorkflowAttemptPriorContext,
   WorkflowAttemptUnresolvedCriterion,
+  WorkflowOperatorFinding,
 } from "./types.ts";
 import { WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION } from "./types.ts";
 
@@ -13,7 +14,12 @@ const MAX_ATTEMPTS = 100;
 const MAX_ERROR = 2_000;
 const MAX_CRITERIA = 50;
 const MAX_STATEMENT = 500;
-const CONTEXT_FIELDS = new Set(["schema_version", "number", "trigger", "prior"]);
+const MAX_FINDINGS = 20;
+const MAX_FINDING_STATEMENT = 1_000;
+const MAX_FINDING_ACTOR = 100;
+const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const CONTEXT_FIELDS = new Set(["schema_version", "number", "trigger", "prior", "findings"]);
+const FINDING_FIELDS = new Set(["id", "actor", "statement"]);
 const PRIOR_FIELDS = new Set(["run_id", "causes", "error", "acceptance", "unresolved"]);
 const SUMMARY_FIELDS = new Set(["satisfied", "unsatisfied", "unknown", "total"]);
 const CRITERION_FIELDS = new Set(["id", "statement", "status"]);
@@ -34,6 +40,7 @@ export function normalizeWorkflowAttemptContext(value: unknown): WorkflowAttempt
   if (input.trigger !== "initial" && input.trigger !== "retry") {
     throw new Error('workflow attempt context trigger must be "initial" or "retry"');
   }
+  const findings = normalizeFindings(input.findings);
   if (input.trigger === "initial") {
     if (input.prior !== undefined) {
       throw new Error("initial workflow attempt context cannot contain prior evidence");
@@ -42,6 +49,7 @@ export function normalizeWorkflowAttemptContext(value: unknown): WorkflowAttempt
       schema_version: WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION,
       number,
       trigger: "initial",
+      ...(findings.length === 0 ? {} : { findings }),
     };
   }
   if (number < 2) throw new Error("retry workflow attempt context number must be at least 2");
@@ -53,7 +61,41 @@ export function normalizeWorkflowAttemptContext(value: unknown): WorkflowAttempt
     number,
     trigger: "retry",
     prior: normalizePrior(input.prior),
+    ...(findings.length === 0 ? {} : { findings }),
   };
+}
+
+function normalizeFindings(value: unknown): WorkflowOperatorFinding[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_FINDINGS) {
+    throw new Error(
+      `workflow attempt findings must contain 1 to ${MAX_FINDINGS} entries when present`,
+    );
+  }
+  const ids = new Set<string>();
+  return value.map((candidate, index) => {
+    const input = objectValue(candidate, `workflow attempt finding[${index}]`);
+    rejectExtraFields(input, FINDING_FIELDS, `workflow attempt finding[${index}]`);
+    const id = requiredString(input.id, `workflow attempt finding[${index}].id`, 64);
+    if (!FINDING_ID.test(id)) {
+      throw new Error(`invalid workflow attempt finding id ${JSON.stringify(id)}`);
+    }
+    if (ids.has(id)) throw new Error(`duplicate workflow attempt finding id ${JSON.stringify(id)}`);
+    ids.add(id);
+    return {
+      id,
+      actor: requiredString(
+        input.actor,
+        `workflow attempt finding[${index}].actor`,
+        MAX_FINDING_ACTOR,
+      ),
+      statement: requiredString(
+        input.statement,
+        `workflow attempt finding[${index}].statement`,
+        MAX_FINDING_STATEMENT,
+      ),
+    };
+  });
 }
 
 export function freezeWorkflowAttemptContext(value: unknown): Readonly<WorkflowAttemptContext> {
@@ -64,6 +106,10 @@ export function freezeWorkflowAttemptContext(value: unknown): Readonly<WorkflowA
     Object.freeze(normalized.prior.acceptance);
     Object.freeze(normalized.prior.unresolved);
     Object.freeze(normalized.prior);
+  }
+  if (normalized.findings) {
+    for (const finding of normalized.findings) Object.freeze(finding);
+    Object.freeze(normalized.findings);
   }
   return Object.freeze(normalized);
 }
