@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.28.0
+
+### Minor Changes
+
+- f0ca84d: Add `browse --capture-evaluate <js>` for trio mode: evaluate JavaScript inside the
+  exact viewport used for the screenshot, immediately before capture, and write the
+  result alongside it as `captureEval`. Full-page capture now converges its
+  evaluation viewport under explicit pass, dimension, and pixel limits, records the
+  final document and PNG dimensions, reports nonconvergence rather than emitting
+  mismatched evidence, and restores the original viewport on every exit path.
+- 6331dcf: Stop an oversized workflow journal record from breaking work listing or the run
+  that writes it.
+
+  The writer and the reader disagreed on size, and nothing kept them in agreement:
+  records were written up to 32 KiB while the reader refused anything over 16 KiB,
+  so a single large agent result made `work list` fail for every work item at once.
+  The engine also bypassed the bounded writer entirely with a raw append.
+
+  Both sides now hold. `appendWorkflowJournalEvent` is the only writer, and instead
+  of refusing an oversized record it drops the largest fields for a digest and byte
+  count, names them under `omitted_fields`, and always writes. Refusing was not an
+  option: `run.start` carries workflow metadata and frozen work context that
+  Harnery's own validators permit to exceed the limit, so a valid run could fail on
+  its opening line. On the read side, a journal that still cannot be parsed marks
+  that attempt `journal_unreadable` and blocks it with the reason, leaving every
+  other work item listable.
+
+- b5308b4: Add operator findings at the durable-work review gate. `work reopen` now accepts
+  `--finding <text>` (repeatable); each finding is recorded on the reopen event and
+  carried into the next attempt's frozen context as `attempt.findings`, so the team
+  can act on a correction the reviewer missed. Acceptance fails closed while a
+  finding is open: `work accept` requires `--dispose <id>=fixed` or
+  `--dispose <id>=deferred:<reason>` for each one, and the dispositions are recorded
+  on the acceptance event. Existing attempt contexts without findings stay canonical.
+
+### Patch Changes
+
+- 71b4cca: Tell an operator _why_ an attempt's journal could not be read. `work show` now
+  renders the recorded reason next to a `journal_unreadable` attempt instead of the
+  bare status. The reason is whitespace-normalised and truncated for the human
+  render so a long or multi-line error cannot break the one-line-per-attempt shape
+  of the `attempts:` block; `--json` still carries the full value.
+- bf5f313: Classify a workflow child killed for exceeding its timeout as failed, whatever it
+  exits with. `exec()` now reports `timedOut` when it fired the kill, and every
+  harness adapter checks that before any exit-code branch. Previously a vendor CLI
+  that handled the signal cleanly exited 0 and wrote no result, which was
+  indistinguishable from a successful empty reply: the run recorded `agent.end` with
+  no error, passed an empty string downstream, and surfaced the failure as a schema
+  error on whichever agent consumed it next.
+
 ## 0.27.0
 
 ### Minor Changes
