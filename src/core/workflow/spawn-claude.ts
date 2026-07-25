@@ -24,7 +24,7 @@ import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts"
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
 import { resolveSandboxProjection } from "./sandbox-projection.ts";
-import { vendorFailureText } from "./spawn-failure.ts";
+import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 interface ClaudeEnvelope {
@@ -70,7 +70,20 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
       error: `claude timed out after ${raw.durationMs}ms and was killed`,
     };
   }
+  // Structural environment signal: the binary was never there (spawned directly,
+  // so a missing binary surfaces as ENOENT). Uncharged and not retried.
+  if (raw.spawnErrno === "ENOENT") {
+    return {
+      ok: false,
+      text: "",
+      durationMs: raw.durationMs,
+      error: notFoundError("claude-code"),
+      class: "environment",
+    };
+  }
   if (raw.exitCode === 127) {
+    // A bare 127 with no errno is a shell/vendor 127, indistinguishable from a
+    // legitimate one — charged as work rather than classed environment.
     return {
       ok: false,
       text: "",
@@ -79,11 +92,13 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
     };
   }
   if (raw.exitCode !== 0) {
+    const failureText = vendorFailureText(raw);
     return {
       ok: false,
       text: "",
       durationMs: raw.durationMs,
-      error: `claude exited ${raw.exitCode}: ${vendorFailureText(raw)}`,
+      error: `claude exited ${raw.exitCode}: ${failureText}`,
+      ...(isUpstreamFailureText(failureText) ? { class: "upstream" as const } : {}),
     };
   }
 
@@ -100,6 +115,9 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
   }
 
   if (envelope.is_error) {
+    const envelopeError = `${envelope.subtype ?? ""} ${(envelope.errors ?? []).join("; ")} ${String(
+      envelope.result ?? "",
+    )}`;
     return {
       ok: false,
       text: String(envelope.result ?? ""),
@@ -107,6 +125,7 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
       costUsd: envelope.total_cost_usd,
       durationMs: raw.durationMs,
       error: `harness error (${envelope.subtype ?? "unknown"}): ${(envelope.errors ?? []).join("; ") || "see envelope"}`,
+      ...(isUpstreamFailureText(envelopeError) ? { class: "upstream" as const } : {}),
     };
   }
 

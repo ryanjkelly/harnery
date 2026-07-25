@@ -164,6 +164,16 @@ Mission, recovery, and completion requests all share `max_replans`; for an
 objective-first mission that bound must be greater than `max_milestones` so a
 final boundary decision remains possible.
 
+A planner run that **never touched the plan** does not consume `max_replans`
+(ADR 0046). If the planner binary is absent, the goal stops immediately with a
+`blocked` state naming the missing precondition, rather than replanning an
+unchanged environment to budget exhaustion. If the vendor was reached and refused
+(a 5xx or 429 status, or a circuit-open message), the replan is uncharged and
+stays available, bounded by a small consecutive limit; at that limit the goal
+stops and reports it is blocked waiting on an outside service. A planner run that
+produced a proposal, even one you reject, is informative and charges the budget
+as before.
+
 ## Bounded dynamic replanning
 
 Replanning is opt-in at goal creation. Pass a JSON policy that names one frozen

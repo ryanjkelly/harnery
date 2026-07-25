@@ -5,13 +5,14 @@ import { join } from "node:path";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
+  deriveRunFailureClass,
   normalizeWorkflowMeta,
   readWorkflowProof,
   renderWorkflowProof,
   rollupAcceptance,
   writeWorkflowProof,
 } from "./proof.ts";
-import type { WorkflowProof } from "./types.ts";
+import type { WorkflowAgentProof, WorkflowProof } from "./types.ts";
 
 let root: string;
 
@@ -302,5 +303,138 @@ describe("sandbox projection evidence (ADR 0039)", () => {
   test("no projection leaves the field absent rather than empty", () => {
     const proof = buildWorkflowProof({ ...input, journalPath: journalFile() });
     expect(proof.sandbox_projection).toBeUndefined();
+  });
+});
+
+describe("run failure class derivation (ADR 0046)", () => {
+  function agent(
+    status: WorkflowAgentProof["status"],
+    cls?: "environment" | "upstream",
+  ): WorkflowAgentProof {
+    return {
+      id: "a",
+      label: "worker",
+      harness: "codex",
+      status,
+      attempts: 1,
+      duration_ms: 1,
+      ...(cls ? { class: cls } : {}),
+    };
+  }
+
+  test("a succeeded run is never classed", () => {
+    expect(deriveRunFailureClass("succeeded", [agent("failed", "environment")])).toBeUndefined();
+  });
+
+  test("all agents failed on a missing binary -> environment", () => {
+    expect(deriveRunFailureClass("failed", [agent("failed", "environment")])).toBe("environment");
+  });
+
+  test("a failed run whose agents refused upstream -> upstream", () => {
+    expect(deriveRunFailureClass("failed", [agent("failed", "upstream")])).toBe("upstream");
+  });
+
+  test("environment wins over upstream when both are present", () => {
+    // A missing binary means nothing ran at all; it is the operator-chosen hard
+    // stop, so it takes precedence over a co-occurring upstream refusal.
+    expect(
+      deriveRunFailureClass("failed", [
+        agent("failed", "upstream"),
+        agent("failed", "environment"),
+      ]),
+    ).toBe("environment");
+  });
+
+  test("any productive segment charges the attempt (resumed-run protection)", () => {
+    // If any agent produced a result the attempt WAS informative about the work,
+    // even if a later agent hit a missing binary. Charge it — default-to-charging.
+    expect(
+      deriveRunFailureClass("failed", [agent("succeeded"), agent("failed", "environment")]),
+    ).toBeUndefined();
+    expect(
+      deriveRunFailureClass("failed", [agent("cached"), agent("failed", "upstream")]),
+    ).toBeUndefined();
+  });
+
+  test("an unclassed failure defaults to charged", () => {
+    // The safety property: anything not positively environment/upstream charges.
+    expect(deriveRunFailureClass("failed", [agent("failed")])).toBeUndefined();
+    expect(deriveRunFailureClass("failed", [])).toBeUndefined();
+  });
+});
+
+describe("run-level class in the proof packet (ADR 0046)", () => {
+  const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
+  function journalFile(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+    writeFileSync(path, "{}\n");
+    return path;
+  }
+  const failing = {
+    runId: "wf-class",
+    meta: { name: "classed", acceptance: [] },
+    status: "failed" as const,
+    startedAt: "2026-07-25T00:00:00.000Z",
+    endedAt: "2026-07-25T00:00:01.000Z",
+    durationMs: 1_000,
+    before: snapshot,
+    after: snapshot,
+    evidence: [],
+    error: "agent worker: codex not found on PATH",
+  };
+
+  test("a failed run whose only agent hit a missing binary records run.class environment", () => {
+    const proof = buildWorkflowProof({
+      ...failing,
+      journalPath: journalFile(),
+      agents: [
+        {
+          id: "a1",
+          label: "worker",
+          harness: "codex",
+          status: "failed",
+          attempts: 1,
+          duration_ms: 1,
+          class: "environment",
+        },
+      ],
+    });
+    expect(proof.run.class).toBe("environment");
+  });
+
+  test("a failed run with no classifiable agent leaves run.class absent (charged)", () => {
+    const proof = buildWorkflowProof({
+      ...failing,
+      journalPath: journalFile(),
+      agents: [
+        {
+          id: "a1",
+          label: "worker",
+          harness: "codex",
+          status: "failed",
+          attempts: 1,
+          duration_ms: 1,
+        },
+      ],
+    });
+    expect(proof.run.class).toBeUndefined();
+  });
+
+  test("readWorkflowProof rejects a proof carrying an unknown run.class", () => {
+    const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
+    const proof = sampleProof();
+    (proof.run as Record<string, unknown>).class = "bogus";
+    writeFileSync(path, `${JSON.stringify(proof)}\n`, "utf8");
+    expect(() => readWorkflowProof(root, "wf-test")).toThrow(/schema/);
+  });
+
+  test("a pre-ADR-0046 proof with no run.class still reads (back-compat)", () => {
+    // The live coord root holds proofs written before the field existed; they
+    // must load unchanged and read as charged.
+    const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
+    const proof = sampleProof();
+    expect("class" in proof.run).toBe(false);
+    writeFileSync(path, `${JSON.stringify(proof)}\n`, "utf8");
+    expect(readWorkflowProof(root, "wf-test").run.class).toBeUndefined();
   });
 });

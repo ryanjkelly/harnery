@@ -1,3 +1,5 @@
+import type { SpawnFailureClass } from "../workflow/types.ts";
+
 export const SUPERVISOR_PLAN_SCHEMA_VERSION = 1 as const;
 export const MAX_SUPERVISOR_PLAN_REVIEWERS = 5 as const;
 export const MAX_SUPERVISOR_PLAN_REVISION_ROUNDS = 3 as const;
@@ -145,6 +147,11 @@ export interface SupervisorPlanEvent {
   approval_id?: string;
   root_work_id?: string;
   work_ids?: string[];
+  /** Set on a `plan.failed` event whose planner workflow was uninformative about
+   * the plan (ADR 0046): environment (the planner binary was absent) or upstream
+   * (the vendor refused). Read from the planner run's `run.class`. Absent ⇒ a
+   * charged replan, exactly as before. */
+  class?: SpawnFailureClass;
 }
 
 export type SupervisorPlanStatus =
@@ -169,6 +176,10 @@ export interface SupervisorPlanRecord {
   root_work_id?: string;
   work_ids: string[];
   reason?: string;
+  /** Set on a `failed` plan the planner run classified as uninformative about the
+   * plan (ADR 0046). Drives the projection's do-not-charge / stop handling and
+   * the consecutive-uncharged bound. Absent ⇒ a charged replan. */
+  class?: SpawnFailureClass;
 }
 
 export interface SupervisorPlanHistory {

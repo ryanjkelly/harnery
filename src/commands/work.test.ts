@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
-import { createWorkItem, type WorkAttempt } from "../core/work/index.ts";
-import { renderAttemptRow } from "./work.ts";
+import { createWorkItem, type WorkAttempt, type WorkRecord } from "../core/work/index.ts";
+import { renderAttemptBudget, renderAttemptRow } from "./work.ts";
 
 const roots: string[] = [];
 
@@ -102,6 +102,24 @@ describe("work command", () => {
       "  1. wf-unreadable  journal_unreadable: cannot parse workflow run wf-unreadable journal: expected object",
     );
     expect(text).toContain("  2. wf-lost  lost");
+  });
+
+  test("the attempt budget shows charged/max, surfacing uncharged attempts separately (ADR 0046)", () => {
+    // `max_attempts` budgets CHARGED attempts, so the denominator is the budget
+    // and the numerator must be charged, not the raw count — otherwise an
+    // uncharged upstream attempt reads as spent budget the item still has.
+    const record = (charged: number, used: number, max: number): WorkRecord =>
+      ({
+        intent: { max_attempts: max },
+        projection: { charged_attempts: charged, attempts_used: used },
+      }) as unknown as WorkRecord;
+
+    // No uncharged attempts: identical to the pre-ADR display.
+    expect(renderAttemptBudget(record(1, 1, 3))).toBe("1/3");
+    // One charged, two uncharged: budget shows 1/3, not a misleading 3/3.
+    expect(renderAttemptBudget(record(1, 3, 3))).toBe("1/3 (+2 uncharged)");
+    // All uncharged: no budget spent at all.
+    expect(renderAttemptBudget(record(0, 2, 3))).toBe("0/3 (+2 uncharged)");
   });
 
   test("work show keeps multiline journal errors on one attempt row", () => {

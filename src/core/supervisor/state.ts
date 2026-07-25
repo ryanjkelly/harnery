@@ -38,6 +38,13 @@ const MAX_INTENT_BYTES = 256 * 1024;
 const MAX_TEMPLATES = 20;
 const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
+/** Ceiling on CONSECUTIVE uncharged (upstream) replans (ADR 0046). Because an
+ * uncharged replan does not spend `max_replans`, an unending vendor outage would
+ * otherwise replan forever; this bound stops it and names the outside service.
+ * Kept low — each replan is a real planner round-trip — and a module constant
+ * rather than a policy field to keep the frozen replanning schema unchanged; an
+ * environment failure self-bounds at one because it stops immediately. */
+const MAX_UNCHARGED_REPLANS = 3;
 
 export interface SupervisorLimits {
   max_cycles: number;
@@ -322,6 +329,18 @@ function deriveProjection(
 ): SupervisorProjection {
   const root = work.find((record) => record.intent.id === plans.active_root_work_id);
   const attemptsUsed = governed.reduce((sum, record) => sum + record.projection.attempts_used, 0);
+  // The goal budget, like the per-item budget, counts only charged attempts
+  // (ADR 0046): an uncharged environment/upstream attempt on any child does not
+  // spend the goal's total. attempts_used stays the raw count for display.
+  const chargedUsed = governed.reduce((sum, record) => sum + record.projection.charged_attempts, 0);
+  // Replans, like per-item attempts (ADR 0046), are budgeted by the CHARGED
+  // count: an uncharged planner failure (environment/upstream) does not spend
+  // max_replans. replans_used stays the raw count for display.
+  const unchargedReplans = plans.plans.filter(
+    (plan) =>
+      plan.status === "failed" && (plan.class === "environment" || plan.class === "upstream"),
+  ).length;
+  const chargedReplans = plans.plans.length - unchargedReplans;
   const readyWork = work
     .filter((record) => record.projection.state === "ready")
     .map((record) => record.intent.id);
@@ -382,11 +401,11 @@ function deriveProjection(
     retryable_work: retryableWork,
     attention_work: attentionWork,
     attempts_used: attemptsUsed,
-    attempts_remaining: Math.max(0, intent.limits.max_total_attempts - attemptsUsed),
+    attempts_remaining: Math.max(0, intent.limits.max_total_attempts - chargedUsed),
     specialists: Object.keys(intent.specialists),
     plan_generation: plans.generation,
     replans_used: plans.plans.length,
-    replans_remaining: Math.max(0, (intent.replanning?.max_replans ?? 0) - plans.plans.length),
+    replans_remaining: Math.max(0, (intent.replanning?.max_replans ?? 0) - chargedReplans),
     milestones_completed: milestonesCompleted,
     milestones_remaining: Math.max(0, (intent.mission?.max_milestones ?? 0) - milestonesCompleted),
     pending_plan_id: plans.latest?.status === "proposed" ? plans.latest.request.id : undefined,
@@ -433,6 +452,46 @@ function deriveProjection(
       next_action: "replan",
     };
   }
+  // ADR 0046: a planner failure that never touched the plan is handled before
+  // the replan path. Otherwise a "failed" plan falls through to canReplan and
+  // the runner replans an unchanged environment on every tick — the failure mode
+  // that burned the measured 19 "codex not found" replans.
+  if (plans.latest?.status === "failed" && plans.latest.class === "environment") {
+    // A missing precondition (the planner binary was absent). Retrying an
+    // unchanged environment cannot help, so the goal STOPS and names it. A human
+    // who installs the binary can re-run; the failure was uncharged, so the
+    // replan budget is intact.
+    return {
+      ...base,
+      state: "blocked",
+      reason: `planning could not start; a required precondition is missing: ${plans.latest.reason ?? "the planner binary was absent"}`,
+      next_action: "none",
+    };
+  }
+  if (plans.latest?.status === "failed" && plans.latest.class === "upstream") {
+    // The vendor refused. Uncharged replans do not spend max_replans, so the
+    // only brake on an unending outage is this consecutive bound; at the limit
+    // the goal stops and names the outside service, distinct from work-blocked.
+    let trailingUncharged = 0;
+    for (let index = plans.plans.length - 1; index >= 0; index--) {
+      const plan = plans.plans[index]!;
+      if (plan.status !== "failed" || (plan.class !== "environment" && plan.class !== "upstream")) {
+        break;
+      }
+      trailingUncharged++;
+    }
+    if (trailingUncharged >= MAX_UNCHARGED_REPLANS) {
+      return {
+        ...base,
+        state: "blocked",
+        reason: `planning is blocked waiting on an outside service after ${trailingUncharged} consecutive uncharged attempt(s): ${plans.latest.reason ?? "the vendor refused"}`,
+        next_action: "none",
+      };
+    }
+    // Under the bound: fall through so the goal replans when nothing else is
+    // dispatchable — the vendor may have recovered. canReplan reads
+    // chargedReplans, so these uncharged attempts do not exhaust max_replans.
+  }
   const triggerFingerprint = supervisorGraphFingerprint({
     rootWorkId: plans.active_root_work_id,
     generation: plans.generation,
@@ -449,13 +508,11 @@ function deriveProjection(
       reason: plans.latest.reason ?? `plan ${plans.latest.request.id} requires attention`,
       attention_plan_id: plans.latest.request.id,
       next_action:
-        intent.replanning && plans.plans.length < intent.replanning.max_replans
-          ? "retry_plan"
-          : "none",
+        intent.replanning && chargedReplans < intent.replanning.max_replans ? "retry_plan" : "none",
     };
   }
   if (!root && intent.mission) {
-    if (!intent.replanning || plans.plans.length >= intent.replanning.max_replans) {
+    if (!intent.replanning || chargedReplans >= intent.replanning.max_replans) {
       return {
         ...base,
         state: "budget_exhausted",
@@ -472,7 +529,7 @@ function deriveProjection(
   }
   if (!root) throw new Error(`supervisor ${intent.id} root work is missing`);
   if (root.projection.state === "succeeded" && intent.mission) {
-    if (!intent.replanning || plans.plans.length >= intent.replanning.max_replans) {
+    if (!intent.replanning || chargedReplans >= intent.replanning.max_replans) {
       return {
         ...base,
         state: "budget_exhausted",
@@ -517,7 +574,7 @@ function deriveProjection(
       next_action: "run",
     };
   }
-  if (attemptsUsed >= intent.limits.max_total_attempts && attemptDispatchable.length > 0) {
+  if (chargedUsed >= intent.limits.max_total_attempts && attemptDispatchable.length > 0) {
     return {
       ...base,
       state: "budget_exhausted",
@@ -565,7 +622,7 @@ function deriveProjection(
       next_action: "retry",
     };
   }
-  if (attemptsUsed >= intent.limits.max_total_attempts && cancelled.length === 0) {
+  if (chargedUsed >= intent.limits.max_total_attempts && cancelled.length === 0) {
     return {
       ...base,
       state: "budget_exhausted",
@@ -575,7 +632,7 @@ function deriveProjection(
   }
   const canReplan =
     intent.replanning !== undefined &&
-    plans.plans.length < intent.replanning.max_replans &&
+    chargedReplans < intent.replanning.max_replans &&
     cancelled.length === 0 &&
     !latestHandledSameGraph;
   if (canReplan) {
@@ -590,7 +647,7 @@ function deriveProjection(
   }
   if (
     intent.replanning &&
-    plans.plans.length >= intent.replanning.max_replans &&
+    chargedReplans >= intent.replanning.max_replans &&
     cancelled.length === 0
   ) {
     return {

@@ -247,12 +247,33 @@ export async function runSupervisorPlanner(
       });
       return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
     }
+    // ADR 0046: a planner workflow that never touched the plan (its binary was
+    // absent, or the vendor refused) writes a proof carrying run.class. Stamp it
+    // on the failure so the projection can stop an environment failure and bound
+    // consecutive upstream ones, instead of replanning an unchanged environment
+    // to budget exhaustion — the failure mode that burned the measured 19.
+    const failureClass = plannerFailureClass(coordRoot, request.workflow_run_id);
     appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
       event: "plan.failed",
       actor: input.actor,
       reason: bounded((error as Error).message, "plan failure", MAX_REASON),
+      ...(failureClass ? { class: failureClass } : {}),
     });
     throw error;
+  }
+}
+
+/** The failure class (ADR 0046) of a planner workflow run, read from its proof.
+ * Undefined when no proof was written, the proof is unreadable, or the run was
+ * informative about the plan — all of which default to a charged replan. */
+function plannerFailureClass(
+  coordRoot: string,
+  workflowRunId: string,
+): SupervisorPlanEvent["class"] {
+  try {
+    return readWorkflowProof(coordRoot, workflowRunId).run.class;
+  } catch {
+    return undefined;
   }
 }
 

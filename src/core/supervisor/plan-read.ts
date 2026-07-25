@@ -171,7 +171,10 @@ function deriveStatus(
   coordRoot: string,
   events: SupervisorPlanEvent[],
   proposal: SupervisorPlanProposal | undefined,
-): Pick<SupervisorPlanRecord, "status" | "approval_id" | "root_work_id" | "work_ids" | "reason"> {
+): Pick<
+  SupervisorPlanRecord,
+  "status" | "approval_id" | "root_work_id" | "work_ids" | "reason" | "class"
+> {
   const latest = events.at(-1);
   const completed = [...events].reverse().find((event) => event.event === "plan.completed");
   if (completed) {
@@ -196,7 +199,10 @@ function deriveStatus(
     return { status: "attention", work_ids: [], reason: latest.reason };
   }
   if (latest?.event === "plan.failed") {
-    return { status: "failed", work_ids: [], reason: latest.reason };
+    // ADR 0046: carry the planner run's failure class so the projection can stop
+    // an environment failure and bound consecutive upstream ones, rather than
+    // replanning an unchanged environment to budget exhaustion.
+    return { status: "failed", work_ids: [], reason: latest.reason, class: latest.class };
   }
   const parked = [...events].reverse().find((event) => event.event === "plan.awaiting_approval");
   const resumedAfterPark =
@@ -551,6 +557,9 @@ function validateEvent(event: SupervisorPlanEvent, planId: string, sequence: num
     if (!Array.isArray(event.work_ids) || event.work_ids.some((id) => !WORK_ID.test(id))) {
       throw new Error(`supervisor plan ${planId} event ${sequence} has invalid work ids`);
     }
+  }
+  if (event.class !== undefined && event.class !== "environment" && event.class !== "upstream") {
+    throw new Error(`supervisor plan ${planId} event ${sequence} has an unknown failure class`);
   }
 }
 

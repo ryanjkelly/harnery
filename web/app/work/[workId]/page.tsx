@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
@@ -124,7 +125,7 @@ export default async function WorkItemPage({ params }: PageProps) {
                 <span className="font-mono">
                   {event.seq}. {event.event}
                 </span>{" "}
-                · {event.actor} · {new Date(event.ts).toLocaleString()}
+                · {event.actor} · <FormattedDateTime iso={event.ts} />
                 {event.reason ? (
                   <span className="block pt-1 text-muted-foreground">{event.reason}</span>
                 ) : null}

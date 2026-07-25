@@ -39,6 +39,12 @@ const MAX_EVENTS_BYTES = 4 * 1024 * 1024;
 const MAX_EVENT_BYTES = 16 * 1024;
 const MAX_EVENTS = 1_000;
 const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
+/** Default ceiling on consecutive uncharged attempts (ADR 0046). Kept low: each
+ * one is a real vendor round-trip, so a handful gives a transient outage room
+ * to recover before the item stops and names the outside service. There is no
+ * backoff between them beyond the cadence of the supervisor and the vendor's own
+ * responses, which is why the bound stays small. */
+const DEFAULT_MAX_UNCHARGED_ATTEMPTS = 3;
 
 export type WorkState =
   | "waiting"
@@ -71,6 +77,12 @@ export interface WorkIntent {
   dependencies: string[];
   workflow: { path: string; sha256: string };
   max_attempts: number;
+  /** Ceiling on CONSECUTIVE uncharged attempts (ADR 0046), separate from
+   * max_attempts. An upstream outage produces uncharged attempt after uncharged
+   * attempt; without a bound it would retry forever. At the bound the item stops
+   * and reports it is blocked on an outside service. Optional for back-compat:
+   * an intent written before ADR 0046 has none and falls back to the default. */
+  max_uncharged_attempts?: number;
   source?: { kind: "human" | "workflow" | "external"; ref?: string };
   created_at: string;
 }
@@ -128,6 +140,10 @@ export interface WorkAttempt {
   approval_id?: string;
   proof_path?: string;
   journal_error?: string;
+  /** Why this failed attempt was uninformative about the work (ADR 0046), read
+   * from the proof's run.class. Absent ⇒ the attempt is charged, exactly as
+   * before ADR 0046 (which is also how a proof without a class reads). */
+  uncharged?: "environment" | "upstream";
 }
 
 export interface WorkProjection {
@@ -138,7 +154,13 @@ export interface WorkProjection {
   next_action: WorkNextAction;
   unresolved_dependencies: string[];
   attempts: WorkAttempt[];
+  /** Every attempt started, charged or not. Drives the next attempt number and
+   * history ordering, so it counts uncharged attempts too. */
   attempts_used: number;
+  /** Attempts that were informative about the work (ADR 0046). This — not
+   * attempts_used — is what max_attempts budgets, so an uncharged environment or
+   * upstream attempt does not consume the retry budget. */
+  charged_attempts: number;
   attempts_remaining: number;
   latest_run_id?: string;
   approval_id?: string;
@@ -160,6 +182,7 @@ export interface CreateWorkItemInput {
   acceptance?: string[];
   dependencies?: string[];
   maxAttempts?: number;
+  maxUnchargedAttempts?: number;
   source?: WorkIntent["source"];
   id?: string;
   actor?: string;
@@ -188,6 +211,14 @@ export function createWorkItem(input: CreateWorkItemInput): WorkRecord {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
     throw new Error("work maxAttempts must be an integer from 1 to 100");
   }
+  const maxUnchargedAttempts = input.maxUnchargedAttempts ?? DEFAULT_MAX_UNCHARGED_ATTEMPTS;
+  if (
+    !Number.isSafeInteger(maxUnchargedAttempts) ||
+    maxUnchargedAttempts < 1 ||
+    maxUnchargedAttempts > 100
+  ) {
+    throw new Error("work maxUnchargedAttempts must be an integer from 1 to 100");
+  }
   const acceptance = (input.acceptance ?? []).map((value, index) =>
     boundedString(value, `work acceptance[${index}]`, MAX_ACCEPTANCE_ITEM),
   );
@@ -204,6 +235,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkRecord {
     dependencies,
     workflow: { path: workflowPath, sha256: workflowScriptDigest(workflowPath) },
     max_attempts: maxAttempts,
+    max_uncharged_attempts: maxUnchargedAttempts,
     source,
     created_at: new Date().toISOString(),
   };
@@ -375,13 +407,18 @@ function deriveWorkProjection(
   const attempts = attemptEvents.map((event, index) =>
     inspectAttempt(coordRoot, event, intent, attemptEvents[index - 1]?.run_id),
   );
+  // Charged attempts — not the raw count — are what max_attempts budgets
+  // (ADR 0046). An uncharged environment/upstream attempt still increments
+  // attempts_used (ordering + next number) but not the budget.
+  const chargedAttempts = attempts.filter((attempt) => attempt.uncharged === undefined).length;
   const base = {
     id: intent.id,
     title: intent.title,
     unresolved_dependencies: [] as string[],
     attempts,
     attempts_used: attempts.length,
-    attempts_remaining: Math.max(0, intent.max_attempts - attempts.length),
+    charged_attempts: chargedAttempts,
+    attempts_remaining: Math.max(0, intent.max_attempts - chargedAttempts),
     latest_run_id: attempts.at(-1)?.run_id,
     approval_id: attempts.at(-1)?.approval_id,
     proof_path: attempts.at(-1)?.proof_path,
@@ -462,7 +499,7 @@ function deriveWorkProjection(
       next_action: "review",
     };
   }
-  const attemptsRemaining = intent.max_attempts - attempts.length;
+  const attemptsRemaining = intent.max_attempts - chargedAttempts;
   if (latest.status === "journal_unreadable") {
     return {
       ...base,
@@ -471,6 +508,49 @@ function deriveWorkProjection(
         latest.journal_error ?? "unknown journal read error"
       }`,
       next_action: attemptsRemaining > 0 ? "retry" : "none",
+    };
+  }
+  // Uncharged failures (ADR 0046) are handled before the ordinary work-failure
+  // path: they did not touch the work, so they neither spent the budget nor
+  // signal that retrying the work would help.
+  if (latest.status === "failed" && latest.uncharged === "environment") {
+    // A missing precondition. The operator chose to STOP the item immediately
+    // rather than retry an unchanged environment (ADR 0046); next_action "none"
+    // stops the supervisor. A human who fixes the environment can still force a
+    // retry — the attempt was uncharged, so the budget is intact.
+    return {
+      ...base,
+      state: "blocked",
+      reason: environmentBlockedReason(latest),
+      next_action: "none",
+    };
+  }
+  if (latest.status === "failed" && latest.uncharged === "upstream") {
+    // Count trailing consecutive uncharged attempts in the current window. The
+    // bound is the only brake on an outage that never ends, so at the limit the
+    // item stops and names the outside service — distinct from work-blocked.
+    const maxUncharged = intent.max_uncharged_attempts ?? DEFAULT_MAX_UNCHARGED_ATTEMPTS;
+    let trailingUncharged = 0;
+    for (let index = currentAttempts.length - 1; index >= 0; index--) {
+      if (currentAttempts[index]!.uncharged === undefined) break;
+      trailingUncharged++;
+    }
+    if (trailingUncharged >= maxUncharged || attemptsRemaining <= 0) {
+      return {
+        ...base,
+        state: "blocked",
+        reason:
+          trailingUncharged >= maxUncharged
+            ? `blocked waiting on an outside service after ${trailingUncharged} consecutive uncharged attempt(s): ${upstreamReason(latest)}`
+            : `workflow attempt ${latest.number} was uncharged (${upstreamReason(latest)}) but the work attempt budget is exhausted`,
+        next_action: "none",
+      };
+    }
+    return {
+      ...base,
+      state: "blocked",
+      reason: `workflow attempt ${latest.number} did not touch the work; an outside service refused: ${upstreamReason(latest)}`,
+      next_action: "retry",
     };
   }
   return {
@@ -482,6 +562,33 @@ function deriveWorkProjection(
         : `workflow attempt ${latest.number} ended without terminal evidence`,
     next_action: attemptsRemaining > 0 ? "retry" : "none",
   };
+}
+
+/** The failure reason for an uncharged attempt, read from the proof when
+ * present. Bounded so a verbose vendor transcript cannot bloat the projection
+ * reason (which is persisted verbatim into the reconciliation event). */
+function unchargedProofError(attempt: WorkAttempt): string | undefined {
+  if (!attempt.proof_path) return undefined;
+  try {
+    const proof = parseObject(readFileSync(attempt.proof_path, "utf8"), "workflow proof");
+    const run = proof.run;
+    const error =
+      run && typeof run === "object" ? (run as Record<string, unknown>).error : undefined;
+    return typeof error === "string" && error.trim() ? boundedJournalError(error) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function environmentBlockedReason(attempt: WorkAttempt): string {
+  const detail = unchargedProofError(attempt);
+  return detail
+    ? `workflow attempt ${attempt.number} could not start; a required precondition is missing: ${detail}`
+    : `workflow attempt ${attempt.number} could not start; a required precondition is missing`;
+}
+
+function upstreamReason(attempt: WorkAttempt): string {
+  return unchargedProofError(attempt) ?? "the vendor was reached and refused";
 }
 
 function inspectAttempt(
@@ -547,6 +654,15 @@ function inspectAttempt(
       proof.acceptance.summary.unknown === 0
         ? "succeeded"
         : "failed";
+    // A failed attempt the run classified as uninformative about the work is
+    // uncharged (ADR 0046). Absent class ⇒ charged, as before. Read only for a
+    // failed attempt: a succeeded run never carries a class.
+    if (
+      attempt.status === "failed" &&
+      (proof.run.class === "environment" || proof.run.class === "upstream")
+    ) {
+      attempt.uncharged = proof.run.class;
+    }
     return attempt;
   }
   const journalPath = workflowJournalPath(coordRoot, runId);
@@ -882,7 +998,13 @@ function validateWorkIntent(intent: WorkIntent, workId: string): void {
     !/^[a-f0-9]{64}$/.test(intent.workflow.sha256) ||
     !Number.isSafeInteger(intent.max_attempts) ||
     intent.max_attempts < 1 ||
-    intent.max_attempts > 100
+    intent.max_attempts > 100 ||
+    // Optional for back-compat: absent on pre-ADR-0046 intents. When present it
+    // must be a valid bound.
+    (intent.max_uncharged_attempts !== undefined &&
+      (!Number.isSafeInteger(intent.max_uncharged_attempts) ||
+        intent.max_uncharged_attempts < 1 ||
+        intent.max_uncharged_attempts > 100))
   ) {
     throw new Error(`work intent ${workId} has an unsupported or mismatched schema`);
   }

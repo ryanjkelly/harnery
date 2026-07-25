@@ -17,6 +17,13 @@ export interface ExecResult {
    * child that handles the signal cleanly still exits 0, so the exit code alone
    * cannot distinguish a kill from an ordinary finish. */
   timedOut?: boolean;
+  /** The `code` from a spawn-level failure (`proc` "error" event), e.g.
+   * "ENOENT" when the binary is absent. Absent for an ordinary process exit.
+   * We collapse such failures to exitCode 127 so callers' exit-code branches
+   * still fire, but a shell can legitimately exit 127 too; only this field
+   * distinguishes "the binary was never there" from "the process ran and exited
+   * 127". The process that knows reports it (as ADR 0044 did for `timedOut`). */
+  spawnErrno?: string;
 }
 
 export interface ExecOpts {
@@ -56,7 +63,7 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
       proc.kill();
     }, timeout);
 
-    const finish = (exitCode: number, errOverride?: string): void => {
+    const finish = (exitCode: number, errOverride?: string, spawnErrno?: string): void => {
       clearTimeout(timer);
       const stdout = Buffer.concat(out).toString("utf-8");
       const stderr = errOverride ?? Buffer.concat(err).toString("utf-8");
@@ -66,13 +73,16 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
         stderr: shouldTrim ? stderr.trim() : stderr.replace(/\n$/, ""),
         exitCode,
         ...(timedOut ? { timedOut: true } : {}),
+        ...(spawnErrno ? { spawnErrno } : {}),
       });
     };
 
     // ENOENT (binary not found) and similar spawn failures surface here rather
     // than throwing: resolve with 127 + the message so callers' exitCode
-    // branches handle it instead of crashing on an unhandled rejection.
-    proc.on("error", (e: Error) => finish(127, e.message));
+    // branches handle it instead of crashing on an unhandled rejection. The
+    // errno (e.g. "ENOENT") is carried through so a real missing binary is
+    // distinguishable from a shell that merely exited 127.
+    proc.on("error", (e: Error) => finish(127, e.message, (e as NodeJS.ErrnoException).code));
     proc.on("close", (code) => finish(code ?? 1));
   });
 }

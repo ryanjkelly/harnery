@@ -911,6 +911,11 @@ async function executeWorkflow(
 
         if (!last.ok) {
           journal("agent.attempt_failed", { id, attempt, error: last.error });
+          // ADR 0046: an environment failure (the binary was absent) cannot be
+          // helped by retrying an unchanged environment, so stop the in-agent
+          // retry too — not just the outer attempt/replan budget. An upstream
+          // refusal keeps retrying here: the vendor may recover mid-loop.
+          if (last.class === "environment") break;
           continue; // spawn-level failure: retry with the original prompt
         }
         if (!agentOpts.schema) {
@@ -982,6 +987,12 @@ async function executeWorkflow(
         agentCostUsd > 0 || last?.costUsd !== undefined ? agentCostUsd : undefined;
       agentProof.session_id = last?.sessionId;
       agentProof.error = reason;
+      // Carry the spawn class (environment/upstream) onto the proof only when the
+      // final outcome was a spawn failure. A schema failure after a spawn that
+      // reached the model is a work failure — left unclassed (charged). An
+      // earlier attempt that transiently failed and then succeeded returned
+      // above, so this only fires when the agent genuinely failed.
+      if (last && !last.ok && last.class) agentProof.class = last.class;
       journal("agent.failed", { id, error: reason });
       throw new Error(`agent ${proofLabel}: ${reason}`);
     } catch (error) {

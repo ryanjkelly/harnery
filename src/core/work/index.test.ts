@@ -646,6 +646,158 @@ describe("durable work ledger", () => {
     });
   });
 
+  // ADR 0046: an attempt is charged only when it produced information about the
+  // work. environment and upstream failures did not, and they need OPPOSITE
+  // handling — so these run through the real engine with a classed spawner,
+  // never a mock, to prove the class survives the whole per-agent → per-run →
+  // proof → projection thread.
+  const agentWorkflow = `export default async ({ agent }) => agent("do the work");\n`;
+  function classedSpawner(cls: "environment" | "upstream", error: string): Spawner {
+    return async () => ({ ok: false, text: "", durationMs: 1, error, class: cls });
+  }
+
+  test("an environment failure stops immediately and spends no attempt (ADR 0046)", async () => {
+    const { root, workflowPath } = fixture(agentWorkflow);
+    createWorkItem({
+      coordRoot: root,
+      id: "env-stop",
+      title: "Env stop",
+      objective: "Run against a missing binary",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    await expect(
+      runWorkItem({
+        coordRoot: root,
+        workId: "env-stop",
+        engine: {
+          spawners: { "claude-code": classedSpawner("environment", "codex not found on PATH") },
+        },
+      }),
+    ).rejects.toThrow();
+
+    const record = readWorkItem(root, "env-stop");
+    // Blocked and STOPPED — the operator's chosen hard stop, not a retry.
+    expect(record.projection.state).toBe("blocked");
+    expect(record.projection.next_action).toBe("none");
+    expect(record.projection.reason).toMatch(/precondition is missing/);
+    // The attempt was recorded (ordering) but not charged; budget is intact.
+    expect(record.projection.attempts_used).toBe(1);
+    expect(record.projection.charged_attempts).toBe(0);
+    expect(record.projection.attempts_remaining).toBe(3);
+    expect(record.projection.attempts[0]?.uncharged).toBe("environment");
+  });
+
+  test("an upstream failure is uncharged but stays retryable (ADR 0046)", async () => {
+    const { root, workflowPath } = fixture(agentWorkflow);
+    createWorkItem({
+      coordRoot: root,
+      id: "upstream-retry",
+      title: "Upstream retry",
+      objective: "Vendor refused",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    await expect(
+      runWorkItem({
+        coordRoot: root,
+        workId: "upstream-retry",
+        engine: {
+          spawners: {
+            "claude-code": classedSpawner("upstream", "503 service unavailable: circuit_open"),
+          },
+        },
+      }),
+    ).rejects.toThrow();
+
+    const record = readWorkItem(root, "upstream-retry");
+    expect(record.projection.state).toBe("blocked");
+    // Retry stays available — the vendor may recover — and no budget was spent.
+    expect(record.projection.next_action).toBe("retry");
+    expect(record.projection.reason).toMatch(/outside service refused/);
+    expect(record.projection.charged_attempts).toBe(0);
+    expect(record.projection.attempts_remaining).toBe(3);
+    expect(record.projection.attempts[0]?.uncharged).toBe("upstream");
+  });
+
+  test("consecutive upstream failures are bounded and name the outside service (ADR 0046)", async () => {
+    const { root, workflowPath } = fixture(agentWorkflow);
+    createWorkItem({
+      coordRoot: root,
+      id: "upstream-bound",
+      title: "Upstream bound",
+      objective: "Outage that never ends",
+      workflowPath,
+      maxAttempts: 5,
+      // Bound consecutive uncharged attempts below the work budget so it is the
+      // brake that fires, not budget exhaustion.
+      maxUnchargedAttempts: 2,
+    });
+    const engine = {
+      spawners: {
+        "claude-code": classedSpawner("upstream", "503 service unavailable: circuit_open"),
+      },
+    };
+
+    // First upstream failure: uncharged, still retryable.
+    await expect(
+      runWorkItem({ coordRoot: root, workId: "upstream-bound", engine }),
+    ).rejects.toThrow();
+    expect(readWorkItem(root, "upstream-bound").projection.next_action).toBe("retry");
+
+    // Second consecutive uncharged failure hits the bound.
+    await expect(
+      runWorkItem({ coordRoot: root, workId: "upstream-bound", retry: true, engine }),
+    ).rejects.toThrow();
+
+    const bounded = readWorkItem(root, "upstream-bound");
+    expect(bounded.projection.state).toBe("blocked");
+    expect(bounded.projection.next_action).toBe("none");
+    expect(bounded.projection.reason).toMatch(/outside service/);
+    // Budget was never spent even though the item stopped: it is blocked on the
+    // vendor, not on the work.
+    expect(bounded.projection.charged_attempts).toBe(0);
+    expect(bounded.projection.attempts_remaining).toBe(5);
+    expect(bounded.projection.attempts_used).toBe(2);
+  });
+
+  test("an unclassed spawn failure charges the attempt exactly as before (ADR 0046 default)", async () => {
+    const { root, workflowPath } = fixture(agentWorkflow);
+    createWorkItem({
+      coordRoot: root,
+      id: "charged-default",
+      title: "Charged default",
+      objective: "Ordinary work failure",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    await expect(
+      runWorkItem({
+        coordRoot: root,
+        workId: "charged-default",
+        // No class on the spawn result: an ordinary work failure.
+        engine: {
+          spawners: {
+            "claude-code": async () => ({
+              ok: false,
+              text: "",
+              durationMs: 1,
+              error: "the model produced nothing usable",
+            }),
+          },
+        },
+      }),
+    ).rejects.toThrow();
+
+    const record = readWorkItem(root, "charged-default");
+    expect(record.projection.state).toBe("blocked");
+    // Charged and retryable — the status quo for anything not positively classed.
+    expect(record.projection.next_action).toBe("retry");
+    expect(record.projection.charged_attempts).toBe(1);
+    expect(record.projection.attempts_remaining).toBe(2);
+    expect(record.projection.attempts[0]?.uncharged).toBeUndefined();
+  });
+
   test("reconciliation is a no-op over unchanged evidence", () => {
     const { root, workflowPath } = fixture();
     createWorkItem({

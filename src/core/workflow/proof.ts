@@ -20,6 +20,7 @@ import type {
   HarnessEvidenceCapability,
   HarnessEvidenceCoverage,
   ResultDigest,
+  SpawnFailureClass,
   WorkflowAgentProof,
   WorkflowAttemptContext,
   WorkflowEvidenceInput,
@@ -218,6 +219,36 @@ export function digestResult(value: unknown, kind?: "text" | "json"): ResultDige
   };
 }
 
+/**
+ * The run-level failure class (ADR 0046), derived from the agents rather than a
+ * single terminal throw so it survives a script's `parallel()` swallowing the
+ * rejection — a swallowed agent's proof is still recorded with its class.
+ *
+ * Rules, in order, all in service of "default to charging":
+ * 1. A succeeded run is never classed (there is nothing uncharged about it).
+ * 2. If ANY agent produced a result (succeeded or replayed from cache) the
+ *    attempt was informative about the work — charge it. This also keeps a
+ *    resumed run whose earlier segment did real work from being written off by
+ *    a later environment failure.
+ * 3. Otherwise, among the failed agents, environment wins over upstream: a
+ *    missing binary means nothing ran at all, and it is the operator-chosen
+ *    hard stop.
+ * 4. Anything else is undefined ⇒ a charged work failure, exactly as today.
+ */
+export function deriveRunFailureClass(
+  status: "succeeded" | "failed",
+  agents: readonly Pick<WorkflowAgentProof, "status" | "class">[],
+): SpawnFailureClass | undefined {
+  if (status !== "failed") return undefined;
+  if (agents.some((agent) => agent.status === "succeeded" || agent.status === "cached")) {
+    return undefined;
+  }
+  const failed = agents.filter((agent) => agent.status === "failed");
+  if (failed.some((agent) => agent.class === "environment")) return "environment";
+  if (failed.some((agent) => agent.class === "upstream")) return "upstream";
+  return undefined;
+}
+
 export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProof {
   const acceptance = rollupAcceptance(input.meta.acceptance, input.evidence);
   const repository = buildRepoEvidence(input.before, input.after);
@@ -231,6 +262,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
   }));
   const harnesses = buildHarnessCoverage(agents, input.harnessEvidence, input.harnessAttestations);
   const unknowns = buildUnknowns(agents, harnesses, repository);
+  const runClass = deriveRunFailureClass(input.status, agents);
   const journal = readFileSync(input.journalPath);
   return {
     schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
@@ -247,6 +279,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
       objective: input.meta.objective,
       error: clippedOptional(input.error, MAX_SUMMARY_CHARS),
       result: input.result === undefined ? undefined : digestResult(input.result),
+      ...(runClass ? { class: runClass } : {}),
     },
     acceptance,
     agents,
@@ -326,6 +359,9 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
   if (
     proof.schema_version !== WORKFLOW_PROOF_SCHEMA_VERSION ||
     proof.run?.id !== runId ||
+    (proof.run.class !== undefined &&
+      proof.run.class !== "environment" &&
+      proof.run.class !== "upstream") ||
     (proof.run.work_context !== undefined &&
       (!proof.run.work_item_id ||
         proof.run.work_context.id !== proof.run.work_item_id ||

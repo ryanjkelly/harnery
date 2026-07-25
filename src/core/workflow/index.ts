@@ -25,6 +25,7 @@ export { runWorkflow, WorkflowParkedError, WorkflowRunError } from "./engine.ts"
 export {
   buildWorkflowProof,
   createEvidenceRecord,
+  deriveRunFailureClass,
   digestResult,
   normalizeWorkflowMeta,
   readWorkflowProof,
@@ -43,6 +44,7 @@ export {
   workflowScriptDigest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
+export { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 export type {
   AcceptanceCriterion,
   AcceptanceResult,
@@ -59,6 +61,7 @@ export type {
   ResultDigest,
   RunReport,
   Spawner,
+  SpawnFailureClass,
   SpawnRequest,
   SpawnResult,
   StageSchema,

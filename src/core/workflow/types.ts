@@ -99,6 +99,11 @@ export interface WorkflowAgentProof {
   session_id?: string;
   result?: ResultDigest;
   error?: string;
+  /** Set on a failed agent whose spawn was classified uninformative about the
+   * work (ADR 0046): environment (binary absent) or upstream (vendor refused).
+   * Absent ⇒ a work failure. Recorded even when a script's parallel() swallows
+   * the rejection, so the run-level class can still be derived from proof. */
+  class?: SpawnFailureClass;
 }
 
 export interface WorkflowRepoSnapshot {
@@ -186,6 +191,12 @@ export interface WorkflowProof {
     objective?: string;
     error?: string;
     result?: ResultDigest;
+    /** Set on a failed run that was uninformative about the work (ADR 0046):
+     * environment or upstream. Derived from the agents' classes when no agent
+     * produced a result; absent ⇒ the attempt is charged as before. The durable
+     * work projection reads this to decide charging, stopping, and the
+     * uncharged-attempt bound. */
+    class?: SpawnFailureClass;
   };
   acceptance: {
     criteria: AcceptanceResult[];
@@ -298,6 +309,19 @@ export interface WorkflowSpecialistProfile {
   maxTurns?: number;
 }
 
+/**
+ * Why a failed run was uninformative about the work (ADR 0046). Absent means
+ * the attempt produced information about the work (or succeeded), which is the
+ * default and is charged against the attempt budget exactly as before.
+ *
+ * - `environment`: the run never started — a precondition was missing (the
+ *   vendor binary was absent). Uncharged AND not retried: retrying an unchanged
+ *   environment cannot help, so the work item stops and names the precondition.
+ * - `upstream`: the vendor was reached and refused (5xx, 429, circuit open).
+ *   Uncharged, but retry stays available (bounded by max_uncharged_attempts).
+ */
+export type SpawnFailureClass = "environment" | "upstream";
+
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
   ok: boolean;
@@ -309,6 +333,9 @@ export interface SpawnResult {
   durationMs: number;
   /** Populated when ok=false. */
   error?: string;
+  /** Set when ok=false and the failure was positively identified as
+   * uninformative about the work. Absent ⇒ a work failure (charged). */
+  class?: SpawnFailureClass;
 }
 
 export interface SpawnRequest {

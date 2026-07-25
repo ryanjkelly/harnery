@@ -86,3 +86,90 @@ describe("registered workflow adapter contracts", () => {
     expect(cursor).toMatchObject({ ok: true, text: "done", sessionId: "s2" });
   });
 });
+
+describe("spawn failure classification (ADR 0046)", () => {
+  const normalizers = [
+    ["claude", normalizeClaudeResult],
+    ["codex", normalizeCodexResult],
+    ["cursor", normalizeCursorResult],
+  ] as const;
+
+  test("a missing binary (ENOENT) classes environment for every adapter", () => {
+    // The structural signal: the binary was never there. exec collapses it to
+    // 127 but carries the errno, and the adapter promotes it to environment.
+    for (const [, normalize] of normalizers) {
+      const result = normalize({
+        stdout: "",
+        stderr: "",
+        exitCode: 127,
+        durationMs: 1,
+        spawnErrno: "ENOENT",
+      });
+      expect(result.ok).toBe(false);
+      expect(result.class).toBe("environment");
+    }
+  });
+
+  test("a bare 127 with no errno is NOT environment — it stays a charged work failure", () => {
+    // A shell 127 is indistinguishable from a legitimate one; without the errno
+    // it must default to charging, never silently grant an uncharged retry.
+    for (const [, normalize] of normalizers) {
+      const result = normalize({ stdout: "", stderr: "", exitCode: 127, durationMs: 1 });
+      expect(result.ok).toBe(false);
+      expect(result.class).toBeUndefined();
+    }
+  });
+
+  test("a 5xx/circuit-open failure classes upstream", () => {
+    for (const [, normalize] of normalizers) {
+      const result = normalize({
+        stdout: "",
+        stderr: "upstream refused: 503 service unavailable (circuit_open)",
+        exitCode: 1,
+        durationMs: 1,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.class).toBe("upstream");
+    }
+  });
+
+  test("an ordinary non-zero exit stays unclassed (charged work failure)", () => {
+    for (const [, normalize] of normalizers) {
+      const result = normalize({
+        stdout: "",
+        stderr: "your workspace is out of credits",
+        exitCode: 1,
+        durationMs: 1,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.class).toBeUndefined();
+    }
+  });
+
+  test("a Claude harness envelope that carries an overloaded error classes upstream", () => {
+    const result = normalizeClaudeResult({
+      stdout: JSON.stringify({
+        is_error: true,
+        subtype: "api_error",
+        errors: ["the model provider is overloaded"],
+        result: "",
+      }),
+      stderr: "",
+      exitCode: 0,
+      durationMs: 5,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.class).toBe("upstream");
+  });
+
+  test("a Cursor is_error result carrying a 429 classes upstream", () => {
+    const result = normalizeCursorResult({
+      stdout: JSON.stringify({ is_error: true, result: "429 too many requests", session_id: "s3" }),
+      stderr: "",
+      exitCode: 0,
+      durationMs: 5,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.class).toBe("upstream");
+  });
+});

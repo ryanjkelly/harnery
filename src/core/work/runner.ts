@@ -68,7 +68,11 @@ export async function runWorkItem(input: RunWorkItemInput): Promise<RunReport> {
     if (!(record.projection.state === "ready" || record.projection.state === "blocked")) {
       throw new Error(`work item ${input.workId} cannot run from state ${record.projection.state}`);
     }
-    if (record.projection.attempts_used >= record.intent.max_attempts) {
+    // Budget is spent by CHARGED attempts (ADR 0046); uncharged environment or
+    // upstream attempts don't count against it. The attempt NUMBER still comes
+    // from attempts_used so the history stays a gapless 1..N and the validator
+    // is satisfied.
+    if (record.projection.charged_attempts >= record.intent.max_attempts) {
       throw new Error(
         `work item ${input.workId} exhausted its ${record.intent.max_attempts} attempts`,
       );
@@ -132,7 +136,12 @@ function priorContext(
   coordRoot: string,
   prior: WorkAttempt,
 ): NonNullable<WorkflowAttemptContext["prior"]> {
-  if (!prior.proof_path) {
+  // An uncharged attempt (ADR 0046) produced no information about the work, so
+  // it is presented to the retry the same way a lost attempt is — carrying no
+  // proof-derived cause. Reporting its 5xx/circuit-open text as a
+  // "workflow_error" would tell the model "your code errored" for something that
+  // never ran the work.
+  if (prior.uncharged || !prior.proof_path) {
     return {
       run_id: prior.run_id,
       causes: ["lost"],

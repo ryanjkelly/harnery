@@ -88,6 +88,11 @@ export interface HarnessRawResult {
    * kill from a finish; without this a timed-out child reads as a success with
    * an empty answer. */
   timedOut?: boolean;
+  /** The `code` from a spawn-level failure, e.g. "ENOENT" when the vendor
+   * binary is absent. Adapters spawn the binary directly, so a missing binary
+   * surfaces here; a normalizer can then classify it as an environment failure
+   * (run never started) rather than a work failure. Absent on ordinary exit. */
+  spawnErrno?: string;
 }
 
 export interface HarnessBenchFixture {

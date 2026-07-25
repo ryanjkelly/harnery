@@ -120,6 +120,33 @@ explicit `retry` command creates a new attempt, and the immutable attempt
 ceiling still applies. The retry's `ctx.attempt.prior` is derived from the
 preceding proof. Missing proof is reported as `lost` without guessing a cause.
 
+### Attempts that never touched the work
+
+`--max-attempts` budgets attempts that **produced information about the work**
+(ADR 0046). An attempt that never touched the work does not spend the budget, and
+the two ways that can happen get opposite handling:
+
+- **Environment.** The vendor binary was absent, so the run never started.
+  Retrying an unchanged environment cannot help, so the item **stops
+  immediately**: `state: blocked`, `next: none`, with a reason naming the missing
+  precondition. Fix the precondition, then `harn work retry`, since the attempt was
+  uncharged, so the budget is intact.
+- **Upstream.** The vendor was reached and refused (a 5xx or 429 status, or a
+  circuit-open message). The attempt is uncharged and stays retryable, because the
+  vendor may recover. Consecutive uncharged attempts are bounded by
+  `--max-uncharged-attempts` (default 3); at the bound the item stops with a reason
+  saying it is blocked **waiting on an outside service**, distinct from blocked on
+  the work.
+
+Anything not positively identified as environment or upstream is charged exactly
+as before. The `attempts:` line in `harn work show` reads `charged/max`, and
+appends `(+N uncharged)` when uncharged attempts have happened, so an uncharged
+retry never reads as spent budget:
+
+```
+attempts: 1/3 (+2 uncharged)
+```
+
 ## Reconcile and close
 
 ```bash

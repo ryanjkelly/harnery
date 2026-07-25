@@ -25,7 +25,7 @@ import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts"
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
 import { resolveSandboxProjection } from "./sandbox-projection.ts";
-import { vendorFailureText } from "./spawn-failure.ts";
+import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): HarnessInvocation {
@@ -69,15 +69,30 @@ export function normalizeCodexResult(raw: HarnessRawResult): SpawnResult {
       error: `codex timed out after ${raw.durationMs}ms and was killed`,
     };
   }
-  if (raw.exitCode === 127) {
-    return { ok: false, text: "", durationMs: raw.durationMs, error: notFoundError("codex") };
-  }
-  if (raw.exitCode !== 0) {
+  // Structural environment signal: the binary was never there (spawned directly,
+  // so a missing binary surfaces as ENOENT). Uncharged and not retried.
+  if (raw.spawnErrno === "ENOENT") {
     return {
       ok: false,
       text: "",
       durationMs: raw.durationMs,
-      error: `codex exited ${raw.exitCode}: ${vendorFailureText(raw)}`,
+      error: notFoundError("codex"),
+      class: "environment",
+    };
+  }
+  if (raw.exitCode === 127) {
+    // A bare 127 with no errno is a shell/vendor 127, indistinguishable from a
+    // legitimate one — charged as work rather than classed environment.
+    return { ok: false, text: "", durationMs: raw.durationMs, error: notFoundError("codex") };
+  }
+  if (raw.exitCode !== 0) {
+    const failureText = vendorFailureText(raw);
+    return {
+      ok: false,
+      text: "",
+      durationMs: raw.durationMs,
+      error: `codex exited ${raw.exitCode}: ${failureText}`,
+      ...(isUpstreamFailureText(failureText) ? { class: "upstream" as const } : {}),
     };
   }
   return {

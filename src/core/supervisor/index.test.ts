@@ -2311,6 +2311,148 @@ describe("durable goal supervisor", () => {
       readSupervisor(root, "goal-mission-loop").plans.map((plan) => plan.request.trigger),
     ).toEqual(["initial", "milestone"]);
   });
+
+  // ADR 0046 (scope correction): the measured 19 "codex not found" retries were
+  // spent on PLANNER replans, not durable-work attempts. A planner failure that
+  // never touched the plan must not drive the replan loop — environment stops it,
+  // upstream is bounded — mirroring the durable-work charging rules.
+  describe("uncharged planner failures do not drive the replan loop (ADR 0046)", () => {
+    function replanGoal(root: string, id: string) {
+      createWorkItem({
+        coordRoot: root,
+        id: `${id}-root`,
+        title: "Root",
+        objective: "Complete the goal despite a terminal approach",
+        workflowPath: join(root, "failing.mjs"),
+        maxAttempts: 1,
+      });
+      createSupervisor({
+        coordRoot: root,
+        id,
+        rootWorkId: `${id}-root`,
+        specialists: { planner: { instructions: "Plan a recovery", harness: "codex" } },
+        replanning: {
+          plannerSpecialist: "planner",
+          templates: { repair: { workflowPath: join(root, "passing.mjs"), root: true } },
+        },
+      });
+    }
+
+    test("an environment planner failure stops the goal and names the precondition", async () => {
+      const { root } = fixture();
+      replanGoal(root, "goal-plan-env");
+      let plannerCalls = 0;
+      const engine = {
+        spawners: {
+          codex: async () => {
+            plannerCalls++;
+            return {
+              ok: false as const,
+              text: "",
+              durationMs: 1,
+              error: "codex not found on PATH",
+              class: "environment" as const,
+            };
+          },
+        },
+        probeBilling,
+      };
+      // The runner rethrows the planner failure after recording plan.failed, just
+      // as it does live; the operator (or the next tick) re-runs.
+      await expect(
+        runSupervisor({ coordRoot: root, goalId: "goal-plan-env", engine }),
+      ).rejects.toThrow();
+
+      const stopped = readSupervisor(root, "goal-plan-env");
+      expect(stopped.projection.state).toBe("blocked");
+      expect(stopped.projection.next_action).toBe("none");
+      expect(stopped.projection.reason).toContain("required precondition is missing");
+      // The failed replan was uncharged: it did not spend the replan budget.
+      expect(stopped.projection.replans_used).toBe(1);
+      expect(stopped.projection.replans_remaining).toBe(
+        stopped.intent.replanning?.max_replans ?? 0,
+      );
+      expect(stopped.plans.at(-1)?.class).toBe("environment");
+
+      // Re-running does NOT replan an unchanged environment — the loop is broken.
+      const rerun = await runSupervisor({ coordRoot: root, goalId: "goal-plan-env", engine });
+      expect(rerun.stop_reason).toBe("blocked");
+      expect(plannerCalls).toBe(1);
+    });
+
+    test("upstream planner failures are uncharged, stay retryable, and are bounded", async () => {
+      const { root } = fixture();
+      replanGoal(root, "goal-plan-upstream");
+      const engine = {
+        spawners: {
+          codex: async () => ({
+            ok: false as const,
+            text: "",
+            durationMs: 1,
+            error: "503 service unavailable: circuit_open",
+            class: "upstream" as const,
+          }),
+        },
+        probeBilling,
+      };
+      // The consecutive-uncharged bound is 3 REPLANS (each replan may retry the
+      // vendor in-agent). Each run records one failed replan and rethrows; below
+      // the bound the goal stays retryable (next: replan).
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await expect(
+          runSupervisor({ coordRoot: root, goalId: "goal-plan-upstream", engine }),
+        ).rejects.toThrow();
+        const between = readSupervisor(root, "goal-plan-upstream");
+        expect(between.plans.length).toBe(attempt);
+        expect(between.plans.at(-1)?.class).toBe("upstream");
+        // None of the upstream failures charged the replan budget.
+        expect(between.projection.replans_remaining).toBe(
+          between.intent.replanning?.max_replans ?? 0,
+        );
+        if (attempt < 3) {
+          expect(between.projection.next_action).toBe("replan");
+        }
+      }
+      const bounded = readSupervisor(root, "goal-plan-upstream");
+      expect(bounded.projection.state).toBe("blocked");
+      expect(bounded.projection.next_action).toBe("none");
+      expect(bounded.projection.reason).toContain("waiting on an outside service");
+      expect(bounded.plans.length).toBe(3);
+
+      // At the bound the goal stops rather than retrying the outage forever — no
+      // fourth replan is created.
+      const halted = await runSupervisor({ coordRoot: root, goalId: "goal-plan-upstream", engine });
+      expect(halted.stop_reason).toBe("blocked");
+      expect(readSupervisor(root, "goal-plan-upstream").plans.length).toBe(3);
+    });
+
+    test("an unclassed planner failure still charges the replan, exactly as before", async () => {
+      const { root } = fixture();
+      replanGoal(root, "goal-plan-charged");
+      const engine = {
+        spawners: {
+          codex: async () => ({
+            ok: false as const,
+            text: "",
+            durationMs: 1,
+            error: "codex exited 1: the model produced nothing usable",
+          }),
+        },
+        probeBilling,
+      };
+      await expect(
+        runSupervisor({ coordRoot: root, goalId: "goal-plan-charged", engine }),
+      ).rejects.toThrow();
+      const charged = readSupervisor(root, "goal-plan-charged");
+      // No class ⇒ a charged replan: replans_used and replans_remaining move
+      // together, the pre-ADR-0046 behaviour.
+      expect(charged.plans.at(-1)?.class).toBeUndefined();
+      expect(charged.projection.replans_used).toBe(1);
+      expect(charged.projection.replans_remaining).toBe(
+        (charged.intent.replanning?.max_replans ?? 0) - 1,
+      );
+    });
+  });
 });
 
 function replacementProposal(

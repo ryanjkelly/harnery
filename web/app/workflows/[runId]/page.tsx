@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AgentChipProvider } from "@/components/AgentChip";
+import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
+import { Tooltip } from "@/components/ui/tooltip";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
 import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
 import { AgentElapsed } from "@/components/workflow/AgentElapsed";
@@ -178,13 +180,39 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           {run.workspace ? <WorkspaceStateBadge inspection={run.workspace} /> : null}
           <h1 className="text-xl font-semibold">{run.name}</h1>
         </div>
-        <p className="mb-6 text-xs text-muted-foreground">
-          {run.runId}
-          {run.startedAt ? ` · started ${new Date(run.startedAt).toLocaleString()}` : ""}
-          {run.endedAt ? ` · ended ${new Date(run.endedAt).toLocaleString()}` : ""}
-          {` · $${run.costUsd.toFixed(4)}`}
-          {run.agentsCached > 0 ? ` · ${run.agentsCached} cached` : ""}
-          {run.billing.length > 0 ? ` · billing: ${run.billing.join(", ")}` : ""}
+        <p className="mb-6 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+          <Tooltip content="Run id. Its journal lives at .harnery/workflows/<run-id>/journal.jsonl, and `workflow proof <run-id>` prints the terminal proof packet.">
+            <span className="cursor-help font-mono">{run.runId}</span>
+          </Tooltip>
+          {run.startedAt ? (
+            <Tooltip content="When the orchestrator wrote run.start.">
+              <span className="cursor-help">
+                {"· started "}
+                <FormattedDateTime iso={run.startedAt} />
+              </span>
+            </Tooltip>
+          ) : null}
+          {run.endedAt ? (
+            <Tooltip content="When the orchestrator wrote run.end. Absent while a run is still in flight.">
+              <span className="cursor-help">
+                {"· ended "}
+                <FormattedDateTime iso={run.endedAt} />
+              </span>
+            </Tooltip>
+          ) : null}
+          <Tooltip content="Total cost of every agent in this run, summed from agent.end. It reads $0.0000 mid-run, because cost is only reported when an agent finishes.">
+            <span className="cursor-help">{`· $${run.costUsd.toFixed(4)}`}</span>
+          </Tooltip>
+          {run.agentsCached > 0 ? (
+            <Tooltip content="Agents skipped because an identical call in a prior run already produced a result. Cached agents cost nothing and spawn no child.">
+              <span className="cursor-help">{`· ${run.agentsCached} cached`}</span>
+            </Tooltip>
+          ) : null}
+          {run.billing.length > 0 ? (
+            <Tooltip content="How each harness authenticated. `subscription` means a stored login paid for it; `api` means an API key did.">
+              <span className="cursor-help">{`· billing: ${run.billing.join(", ")}`}</span>
+            </Tooltip>
+          ) : null}
         </p>
 
         {run.status === "parked" && run.parkedApprovalId ? (

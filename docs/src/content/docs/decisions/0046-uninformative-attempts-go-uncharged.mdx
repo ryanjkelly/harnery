@@ -1,0 +1,161 @@
+---
+title: "0046: An attempt that never touched the work is not charged"
+description: A durable-work attempt spends its budget only when it produced information about the work; an absent binary (environment) or a refused vendor (upstream) go uncharged, with opposite handling, bounded so an outage cannot retry forever.
+---
+
+**Status:** accepted · **Date:** 2026-07-25
+
+## Context
+
+Every durable-work item has a fixed attempt budget (`max_attempts`, default 3).
+Every failure spent one, including failures that never touched the work at all.
+
+Re-counted from every supervisor plan record on one host (32 failures):
+
+- **19 (59%)** `codex CLI not found on PATH`, retried against an unchanged
+  `PATH` until the budget ran out.
+- **8 (25%)** `codex exited 1: …`, head-truncated and unclassifiable.
+- **5 (16%)** planner schema/output errors, genuine model failures where retry
+  legitimately helps.
+
+And observed live: an upstream 503 (a vendor circuit opening) burned one attempt
+of three; the service recovered in minutes, and the work was never touched.
+
+Retrying a missing binary cannot help, because the environment is unchanged
+between attempts. Retrying a 503 usually can, because the vendor recovers. Charging either one
+is wrong, but they are not the same kind of wrong.
+
+The tempting frame is *transient vs permanent*. We reject it: that is a property
+of the outside world, which we cannot observe from inside a single run. The
+observable question is narrower and answerable:
+
+> **Did this attempt produce information about the work?**
+
+- **work.** Agents ran and produced a result; it was wrong or incomplete.
+  Retry may help. This is the default and stays exactly as before.
+- **environment.** The run never started because a precondition was missing (the
+  vendor binary was absent). Retrying an unchanged environment is what burned the 19.
+- **upstream.** The vendor was reached and refused (5xx, 429, circuit open).
+  Retry stays available, because the vendor may recover.
+
+`environment` and `upstream` need **opposite** handling, so a single `retryable`
+boolean will not do. They share only that the attempt was uninformative about the
+work, which is what "uncharged" names.
+
+## Alternatives considered
+
+**A single `retryable` flag.** Rejected. Environment must *stop* and upstream must
+*stay retryable*; one boolean cannot express opposite next actions.
+
+**Text-match the failure to decide charging.** Rejected for `environment`. A
+missing binary has a *structural* signal, verified on the machine: a binary
+spawned directly that is absent arrives as close code −2 / errno `ENOENT`, while a
+shell exiting 127 and a shell running a missing command both give code 127 with no
+errno. The errno is the durable signal; matching `"not found"` in text is not.
+`src/lib/exec.ts` had been discarding the errno (collapsing it to `127` plus a
+message), so the first move is to surface it, exactly what ADR 0044 did for
+`timedOut`: the process that knows, reports.
+
+**Exclude uncharged attempts from the attempt *number*.** Rejected, because it breaks
+the ledger. The attempt number and history ordering must stay a gapless `1..N`
+tied to `attempts.started` events, or the history validator rejects the item.
+Charging is a *separate* counter from the attempt number.
+
+**Leave upstream unbounded because it is "transient".** Rejected. An outage that
+never ends would produce uncharged attempt after uncharged attempt forever. The
+operator's stated top concern is that nothing retries without end.
+
+## Decision
+
+An attempt is charged against `max_attempts` **only when it produced information
+about the work**. Two classes are recognised as uninformative, carried on the
+proof (`run.class`) and read by the durable-work projection:
+
+- **environment** stops the item **immediately**: `state: blocked`,
+  `next_action: none`, naming the missing precondition. Ryan chose the hard stop
+  on 2026-07-25 knowing the cost, which is that a job will occasionally halt that a
+  concurrent install would have rescued, because retrying an unchanged environment is
+  precisely the failure mode that burned 19 attempts. A human who fixes the
+  environment can still force a retry; the attempt was uncharged, so the budget
+  is intact.
+- **upstream** goes uncharged but stays retryable, bounded by a **separate**
+  ceiling, `max_uncharged_attempts` (default 3). At the bound the item stops and
+  reports it is blocked **waiting on an outside service**, which is distinct from
+  blocked on the work.
+
+The same rule governs the supervisor's **replan** budget. The 59% "not found"
+bleed in the measured data came from the planner replanning an unchanged
+environment, so the charging logic lands there too, not only in durable work: an
+`environment` planner failure stops the goal and names the precondition, and
+consecutive `upstream` planner failures go uncharged against `max_replans`,
+bounded by a small consecutive limit (`MAX_UNCHARGED_REPLANS`, 3) so an outage
+cannot replan without end. A charged-replan count sits alongside `replans_used`
+exactly as `charged_attempts` sits alongside `attempts_used`.
+
+Two safety properties, both required and both enforced by tests:
+
+1. **Default to charging.** Anything not *positively* identified as environment or
+   upstream is work and costs an attempt, exactly as before. A proof or attempt
+   with no class behaves as it did before this ADR. A misclassification may waste
+   budget (the status quo) but must never silently grant unlimited retries.
+2. **Bound the uncharged.** Consecutive uncharged (upstream) attempts have their
+   own limit, separate from `max_attempts`. Environment self-bounds at one (it
+   stops immediately). Nothing retries without end.
+
+### Detection, in order of durability
+
+- **environment is structural.** `exec()` surfaces `spawnErrno`;
+  `HarnessRawResult` carries it; each adapter maps `ENOENT` to
+  `class: "environment"`. A bare 127 with no errno is *not* classed, because it is
+  indistinguishable from a legitimate shell 127, so it stays a charged work
+  failure.
+- **upstream needs a text signal**, because there is no structural one. A short,
+  documented list over the tail-preserving failure text: HTTP status ≥ 500, 429,
+  and explicit circuit-open / overloaded / service-unavailable wording. It stays
+  tight on purpose: a false positive wrongly withholds a charge, and a per-vendor
+  regex zoo would rot.
+
+### Threading the class
+
+The class is born on a `SpawnResult`, recorded on the agent's proof
+(`WorkflowAgentProof.class`) *before* the throw, and promoted to a run-level
+`run.class` derived from the agents rather than a single terminal error string.
+Deriving from the agents means a script's `parallel()` swallowing the rejection
+cannot erase the class, because the swallowed agent's proof still carries it. Two rules
+keep the default-to-charging property intact: a succeeded run is never classed,
+and **any** productive agent segment (a succeeded or cached agent) charges the
+attempt even if a later agent hit a missing binary, so a resumed run that did
+real work before an environment failure is not written off.
+
+## Result
+
+- A missing binary stops the item once and names the precondition, instead of
+  retrying an unchanged `PATH` to budget exhaustion.
+- A vendor 503 goes uncharged and retries a bounded number of times; if the outage
+  persists, the item stops and says it is waiting on the vendor, not the work.
+- `max_attempts` now means **charged** attempts, the ones that were informative
+  about the work. `attempts_used` still counts every attempt for ordering and the
+  next attempt number; `charged_attempts` is what the budget spends.
+
+Gotchas worth knowing:
+
+- **Scope: both budgets.** This changes durable work (`src/core/work/`) **and**
+  the supervisor replan budget (`src/core/supervisor/`). The 59% "not found"
+  bleed came from the planner replanning an unchanged environment, so the
+  charging/stopping logic had to land there too, and the shared errno/class
+  plumbing serves both. The planner classifies its own failure by reading its workflow
+  run's `run.class` and stamps it on the `plan.failed` event; the goal projection
+  then stops an `environment` replan and bounds consecutive `upstream` ones. The
+  one asymmetry: durable work exposes `max_uncharged_attempts` as a per-item
+  field, while the replan bound is a module constant (`MAX_UNCHARGED_REPLANS`) to
+  leave the frozen replanning-policy schema untouched.
+- **The in-agent retry also stops on environment.** `agent()` retries a
+  spawn-level failure up to its own `max_attempts`; an `environment` class now
+  breaks that inner loop too, so a missing binary is not re-spawned within a
+  single run. `upstream` keeps retrying in-agent, since the vendor may recover
+  mid-loop.
+- **Back-compat.** A proof or attempt with no class behaves exactly as before
+  (charged, retryable). This ships into a live coord root with existing records.
+- **A retry sees an uncharged prior as `lost`, not `workflow_error`.** Reporting a
+  503's text as "your code errored" would feed the next attempt a false story, so
+  an uncharged prior carries no proof-derived cause.
