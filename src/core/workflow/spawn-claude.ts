@@ -62,6 +62,14 @@ export function buildClaudeInvocation(req: SpawnRequest): HarnessInvocation {
 }
 
 export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
+  if (raw.timedOut) {
+    return {
+      ok: false,
+      text: "",
+      durationMs: raw.durationMs,
+      error: `claude timed out after ${raw.durationMs}ms and was killed`,
+    };
+  }
   if (raw.exitCode === 127) {
     return {
       ok: false,

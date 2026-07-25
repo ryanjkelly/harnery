@@ -74,6 +74,14 @@ export function buildCursorInvocation(req: SpawnRequest): HarnessInvocation {
 }
 
 export function normalizeCursorResult(raw: HarnessRawResult): SpawnResult {
+  if (raw.timedOut) {
+    return {
+      ok: false,
+      text: "",
+      durationMs: raw.durationMs,
+      error: `cursor timed out after ${raw.durationMs}ms and was killed`,
+    };
+  }
   if (raw.exitCode === 127) {
     return { ok: false, text: "", durationMs: raw.durationMs, error: notFoundError("cursor") };
   }

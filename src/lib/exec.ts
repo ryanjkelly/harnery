@@ -13,6 +13,10 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** True when this process killed the child for exceeding `opts.timeout`. A
+   * child that handles the signal cleanly still exits 0, so the exit code alone
+   * cannot distinguish a kill from an ordinary finish. */
+  timedOut?: boolean;
 }
 
 export interface ExecOpts {
@@ -46,7 +50,11 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
     proc.stderr?.on("data", (d: Buffer) => err.push(d));
 
     const timeout = opts.timeout ?? 30_000;
-    const timer = setTimeout(() => proc.kill(), timeout);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeout);
 
     const finish = (exitCode: number, errOverride?: string): void => {
       clearTimeout(timer);
@@ -57,6 +65,7 @@ export function exec(cmd: string[], opts: ExecOpts = {}): Promise<ExecResult> {
         stdout: shouldTrim ? stdout.trim() : stdout.replace(/\n$/, ""),
         stderr: shouldTrim ? stderr.trim() : stderr.replace(/\n$/, ""),
         exitCode,
+        ...(timedOut ? { timedOut: true } : {}),
       });
     };
 

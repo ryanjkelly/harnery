@@ -13,6 +13,19 @@ const request: SpawnRequest = {
 };
 
 describe("registered workflow adapter contracts", () => {
+  test("a child killed for exceeding its timeout is a failure, not an empty success", () => {
+    // A vendor CLI that handles the kill signal cleanly exits 0 and writes no
+    // result. Without the explicit flag that reads as "finished, had nothing to
+    // say", which hides the failure and blames whatever consumes the empty text.
+    const killed = { stdout: "", stderr: "", exitCode: 0, durationMs: 300_031, timedOut: true };
+    for (const normalize of [normalizeClaudeResult, normalizeCodexResult, normalizeCursorResult]) {
+      const result = normalize(killed);
+      expect(result.ok).toBe(false);
+      expect(result.text).toBe("");
+      expect(result.error).toMatch(/timed out after 300031ms/);
+    }
+  });
+
   test("Claude maps model, effort, and turn ceiling", () => {
     const plan = buildClaudeInvocation({ ...request, effort: "high" });
     expect(plan.argv).toEqual([

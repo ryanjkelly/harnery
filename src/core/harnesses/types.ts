@@ -83,6 +83,11 @@ export interface HarnessRawResult {
   exitCode: number;
   durationMs: number;
   resultFileText?: string;
+  /** The host killed this child for exceeding its timeout. A vendor CLI that
+   * handles the signal cleanly still exits 0, so exit code alone cannot tell a
+   * kill from a finish; without this a timed-out child reads as a success with
+   * an empty answer. */
+  timedOut?: boolean;
 }
 
 export interface HarnessBenchFixture {

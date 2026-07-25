@@ -61,6 +61,14 @@ export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): Ha
 }
 
 export function normalizeCodexResult(raw: HarnessRawResult): SpawnResult {
+  if (raw.timedOut) {
+    return {
+      ok: false,
+      text: "",
+      durationMs: raw.durationMs,
+      error: `codex timed out after ${raw.durationMs}ms and was killed`,
+    };
+  }
   if (raw.exitCode === 127) {
     return { ok: false, text: "", durationMs: raw.durationMs, error: notFoundError("codex") };
   }

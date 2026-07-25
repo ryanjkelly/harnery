@@ -1,0 +1,83 @@
+---
+title: "0044: A killed child is a failure, whatever it exits with"
+description: A child process killed for exceeding its timeout is classified as failed regardless of exit code, because a clean signal handler makes exit status useless for telling a kill from a finish.
+---
+
+**Status:** accepted · **Date:** 2026-07-25
+
+## Context
+
+A workflow child that ran past its timeout was being recorded as a **successful
+agent with an empty answer**.
+
+The path: `exec()` enforces the timeout with `proc.kill()`, which sends SIGTERM.
+Every adapter's result normalizer branched only on exit code. A vendor CLI that
+traps SIGTERM and shuts down cleanly exits **0** and writes nothing to its result
+file, which is byte-for-byte identical to a run that finished with nothing to
+say. Verified against a real vendor CLI by reproducing the spawn-and-kill path:
+
+```
+close code = 0 | signal = null
+output file exists = false
+=> normalizeResult would return ok: true
+```
+
+This surfaced during a real run. The failure reported was:
+
+```
+agent Review journal bound v2: schema validation failed after 2 attempt(s)
+```
+
+Wrong agent and wrong cause. The reviewer failed only because it was handed an
+empty string, and it was handed an empty string because the *implementer* before
+it had been killed at `dur_ms = 300031` against a 300,000 ms timeout, and logged
+as `agent.end` with no error.
+
+Three harms, in increasing order of cost:
+
+1. The failure is silent. A killed child looks like a finished one.
+2. The diagnosis is destroyed. No error, no signal, nothing but a duration that
+   happens to equal the timeout.
+3. Blame lands on the wrong agent, so an operator debugs a component that
+   behaved correctly.
+
+## Alternatives considered
+
+**Treat an empty result as a failure.** Rejected. An empty answer is a legitimate
+outcome for some prompts, and conflating "said nothing" with "was killed" trades
+one wrong inference for another.
+
+**Infer from duration.** Rejected. Comparing elapsed time against the configured
+timeout is a heuristic that goes wrong at the boundary and silently stops working
+if either value is computed differently.
+
+**Kill with SIGKILL instead.** Rejected. It would make the exit status legible at
+the cost of denying the child any chance to flush partial output or clean up, and
+it still relies on reading intent out of an exit code.
+
+## Decision
+
+The process that fires the timer is the one that knows. `exec()` records that it
+killed the child and reports `timedOut: true` on its result. `HarnessRawResult`
+carries the same flag, and every adapter's normalizer checks it **before** any
+exit-code branch, returning a failure with the elapsed time in the message.
+
+The flag is optional and additive, so a raw result without it behaves exactly as
+before.
+
+## Result
+
+A timed-out child now fails loudly and names itself:
+
+```
+codex timed out after 300031ms and was killed
+```
+
+Gotchas worth knowing:
+
+- **Exit code is not evidence of completion** for any child this project kills.
+  A new adapter must check `timedOut` first; the shared test covers all three
+  current adapters and should grow with them.
+- **Partial stdout is still discarded.** The child may have produced useful text
+  before the kill. Preserving it would mean deciding whether a truncated answer
+  is usable, which is a larger question than this decision settles.
