@@ -573,7 +573,14 @@ export function scanEventsTail(
 }
 
 export function readEvents(
-  opts: { limit?: number; instanceId?: string; type?: string } = {},
+  opts: {
+    limit?: number;
+    instanceId?: string;
+    type?: string;
+    /** Session-id allowlist. A main harness session carries the same id in
+     * `session_id` and `instance_id`, so either matching is a hit. */
+    sessions?: Set<string>;
+  } = {},
 ): EventsResponse {
   const p = eventsPath();
   const limit = opts.limit ?? 200;
@@ -581,6 +588,15 @@ export function readEvents(
   const { linesScanned } = scanEventsTail((row) => {
     if (opts.instanceId && row.instance_id !== opts.instanceId) return;
     if (opts.type && row.event_type !== opts.type) return;
+    if (
+      opts.sessions &&
+      !(
+        (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
+        (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
+      )
+    ) {
+      return;
+    }
     out.push(row);
     if (out.length >= limit) return false;
   });

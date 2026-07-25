@@ -1,10 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { AgentChipProvider } from "@/components/AgentChip";
 import { NavBar } from "@/components/NavBar";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
 import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
-import { coordRoot } from "@/lib/coord-reader";
-import { readLiveChildSessions, readWorkflowRun } from "@/lib/workflow-reader";
+import { AgentElapsed } from "@/components/workflow/AgentElapsed";
+import { WorkflowActivityLog } from "@/components/workflow/WorkflowActivityLog";
+import { buildAgentSummaryMap, buildEndedAgentSummaries } from "@/lib/agent-summary";
+import { coordRoot, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
+import { readWorkflowChildSessions, readWorkflowRun } from "@/lib/workflow-reader";
+
+/** Rows of child activity pre-rendered for first paint; the SSE snapshot
+ * replaces them on connect. */
+const INITIAL_ACTIVITY_ROWS = 400;
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -21,7 +29,55 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   const { runId } = await params;
   const run = readWorkflowRun(coordRoot(), decodeURIComponent(runId));
   if (!run) notFound();
-  const liveChildren = readLiveChildSessions(coordRoot(), run.runId);
+
+  // Child sessions are the join key for everything live on this page: the
+  // activity feed filters on them, and their heartbeats are what separate a
+  // working agent from a dead orchestrator.
+  const childSessions = readWorkflowChildSessions(coordRoot(), run.runId);
+  const sessionIds = new Set(childSessions.map((c) => c.sessionId));
+  const activityRows =
+    sessionIds.size > 0
+      ? readEvents({ limit: INITIAL_ACTIVITY_ROWS, sessions: sessionIds }).rows
+      : [];
+
+  // Child harness sessions are main sessions, so instance_id === session_id and
+  // the durable identity log names them even after they exit.
+  const identities = readInstanceIdentities();
+  const instanceToName: Record<string, string> = {};
+  for (const c of childSessions) {
+    const identity = identities[c.sessionId];
+    if (identity) instanceToName[c.sessionId] = identity.name;
+  }
+  const childNames = Array.from(new Set(Object.values(instanceToName))).sort();
+  const summaries = {
+    ...buildEndedAgentSummaries(identities),
+    ...buildAgentSummaryMap(childNames, identities),
+  };
+
+  /*
+   * Which agent rows have a live child behind them.
+   *
+   * An exact answer needs the agent id stamped into the child env; until then
+   * a live child's heartbeat identifies its run but not which agent row it is
+   * running. So: honour exact matches when present, then hand the remaining
+   * live sessions to journaled-running rows in order. This can attribute to the
+   * wrong row when several agents run concurrently, but it can never claim more
+   * live agents than there are live sessions, which is the part that would
+   * mislead.
+   */
+  const liveAgentIds = new Set<string>();
+  let unattributedLive = 0;
+  for (const c of childSessions) {
+    if (!c.live) continue;
+    if (c.agentId) liveAgentIds.add(c.agentId);
+    else unattributedLive++;
+  }
+  for (const a of run.agents) {
+    if (unattributedLive <= 0) break;
+    if (a.status !== "running" || liveAgentIds.has(a.id)) continue;
+    liveAgentIds.add(a.id);
+    unattributedLive--;
+  }
 
   const byStage = new Map<string, typeof run.agents>();
   for (const a of run.agents) {
@@ -33,6 +89,80 @@ export default async function WorkflowRunPage({ params }: PageProps) {
     ...run.stages.filter((s) => byStage.has(s)),
     ...Array.from(byStage.keys()).filter((s) => !run.stages.includes(s)),
   ];
+
+  const stageTree =
+    orderedStages.length === 0 ? (
+      <p className="mb-8 text-sm text-muted-foreground">No agents journaled yet.</p>
+    ) : (
+      <div className="mb-8 space-y-6">
+        {orderedStages.map((stageTitle) => (
+          <section key={stageTitle}>
+            <h2 className="mb-2 text-sm font-medium text-muted-foreground">── {stageTitle}</h2>
+            <ul className="space-y-1">
+              {(byStage.get(stageTitle) ?? []).map((a) => (
+                <li
+                  key={a.id}
+                  className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm"
+                >
+                  <WorkflowStatusBadge status={a.status} />
+                  <span className="font-mono text-xs text-muted-foreground">{a.id}</span>
+                  {a.harness ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      {a.harness}
+                    </span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate">{a.label}</span>
+                  {a.status === "running" && a.startedAt ? (
+                    <AgentElapsed startedAt={a.startedAt} live={liveAgentIds.has(a.id)} />
+                  ) : null}
+                  <span className="text-xs text-muted-foreground">
+                    {a.attempts !== undefined
+                      ? `${a.attempts} attempt${a.attempts === 1 ? "" : "s"}`
+                      : ""}
+                    {a.durationMs !== undefined ? ` · ${Math.round(a.durationMs / 1000)}s` : ""}
+                    {a.costUsd !== undefined ? ` · $${a.costUsd.toFixed(4)}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+    );
+
+  /*
+   * The activity panel owns its own scroll, and the page keeps owning the
+   * document scroll.
+   *
+   * `/live` and `/events` can use a `fixed inset-0` shell because a log is the
+   * whole page there. Here the run also has to show the workspace and proof
+   * cards, which that shell would fight, so the log gets a bounded height
+   * instead. `overscroll-contain` on the table's own scroller is what keeps the
+   * two surfaces from chaining: without it, reaching the end of the log starts
+   * scrolling the document underneath it.
+   */
+  const activitySection =
+    sessionIds.size === 0 ? null : (
+      <section className="mb-8">
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold">Activity</h2>
+          <span className="text-xs text-muted-foreground">
+            {childSessions.length} child session{childSessions.length === 1 ? "" : "s"} ·{" "}
+            {childSessions.filter((c) => c.live).length} live · newest first
+          </span>
+        </div>
+        <div className="flex h-[32rem] flex-col [&_.overflow-y-auto]:overscroll-contain">
+          <AgentChipProvider summaries={summaries}>
+            <WorkflowActivityLog
+              runId={run.runId}
+              initialRows={activityRows}
+              agentNames={childNames}
+              instanceToName={instanceToName}
+            />
+          </AgentChipProvider>
+        </div>
+      </section>
+    );
 
   return (
     <div className="min-h-screen">
@@ -70,6 +200,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             </code>
           </section>
         ) : null}
+
+        {/* Where the run is, then what it is doing. Both above the workspace and
+            proof cards, which matter most once the run is over. */}
+        {stageTree}
+        {activitySection}
 
         {run.workspace ? (
           !run.workspace.ok ? (
@@ -283,43 +418,6 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           </section>
         ) : null}
 
-        {orderedStages.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No agents journaled yet.</p>
-        ) : (
-          <div className="space-y-6">
-            {orderedStages.map((stageTitle) => (
-              <section key={stageTitle}>
-                <h2 className="mb-2 text-sm font-medium text-muted-foreground">── {stageTitle}</h2>
-                <ul className="space-y-1">
-                  {(byStage.get(stageTitle) ?? []).map((a) => (
-                    <li
-                      key={a.id}
-                      className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm"
-                    >
-                      <WorkflowStatusBadge
-                        status={a.sessionId && liveChildren.has(a.sessionId) ? "running" : a.status}
-                      />
-                      <span className="font-mono text-xs text-muted-foreground">{a.id}</span>
-                      {a.harness ? (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                          {a.harness}
-                        </span>
-                      ) : null}
-                      <span className="min-w-0 flex-1 truncate">{a.label}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {a.attempts !== undefined
-                          ? `${a.attempts} attempt${a.attempts === 1 ? "" : "s"}`
-                          : ""}
-                        {a.durationMs !== undefined ? ` · ${Math.round(a.durationMs / 1000)}s` : ""}
-                        {a.costUsd !== undefined ? ` · $${a.costUsd.toFixed(4)}` : ""}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))}
-          </div>
-        )}
       </main>
     </div>
   );

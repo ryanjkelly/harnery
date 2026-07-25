@@ -23,6 +23,12 @@ export interface WorkflowAgentRow {
   costUsd?: number;
   durationMs?: number;
   sessionId?: string;
+  /** `agent.start` ts. The anchor for a live elapsed timer, which is the only
+   * thing distinguishing a working agent from a hung one mid-run: a child that
+   * works for 18 minutes writes nothing to the journal between its two ends. */
+  startedAt?: string;
+  /** `agent.end` / `agent.failed` ts. Absent while the agent is in flight. */
+  endedAt?: string;
 }
 
 export interface WorkflowRunSummary {
@@ -72,37 +78,93 @@ interface JournalLine {
  * (orchestrator likely killed) rather than "running". */
 const STALE_MS = 10 * 60 * 1000;
 
-/** Live workflow children for a run: heartbeats in `.harnery/active/` whose
- * `workflow_run_id` matches. Session-id keyed so the detail page can badge
- * journal rows whose child session is still alive. */
-export function readLiveChildSessions(root: string, runId: string): Set<string> {
+/** One child harness session belonging to a workflow run. */
+export interface WorkflowChildSession {
+  sessionId: string;
+  /** The agent row this session ran, when known: from the heartbeat's
+   * `workflow_agent_id` while live, or the journal's `agent.end` once ended. */
+  agentId?: string;
+  /** A heartbeat for this session is present and unterminated. */
+  live: boolean;
+}
+
+interface ChildHeartbeat {
+  workflow_run_id?: string;
+  workflow_agent_id?: string;
+  session_id?: string;
+  ended_at?: string;
+}
+
+/**
+ * Workflow-child heartbeats in `.harnery/active/`, indexed by run id.
+ *
+ * Read once per page render and shared across runs: the directory holds one
+ * file per *active agent in the repo*, so re-scanning it inside a per-run loop
+ * turned one cheap directory read into a quadratic one.
+ */
+export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHeartbeat[]> {
   const dir = join(root, ".harnery", "active");
-  const live = new Set<string>();
-  if (!existsSync(dir)) return live;
+  const byRun = new Map<string, ChildHeartbeat[]>();
+  if (!existsSync(dir)) return byRun;
   for (const f of readdirSync(dir)) {
     if (!f.endsWith(".json")) continue;
     try {
-      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as {
-        workflow_run_id?: string;
-        session_id?: string;
-        ended_at?: string;
-      };
-      if (hb.workflow_run_id === runId && hb.session_id && !hb.ended_at) {
-        live.add(hb.session_id);
-      }
+      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as ChildHeartbeat;
+      if (!hb.workflow_run_id || !hb.session_id) continue;
+      byRun.set(hb.workflow_run_id, [...(byRun.get(hb.workflow_run_id) ?? []), hb]);
     } catch {
       /* skip */
     }
   }
-  return live;
+  return byRun;
+}
+
+/**
+ * Every child harness session of a run — live and finished.
+ *
+ * The two sources are complementary rather than redundant, and the union has no
+ * gap: a live child is only in `.harnery/active/` (the journal does not learn
+ * its session id until `agent.end`, because the harness mints the id and only
+ * reports it in the result envelope), and a finished child is only in the
+ * journal (its heartbeat is deleted on session end).
+ *
+ * This is the join key for run-scoped activity: child sessions write ordinary
+ * `tool.pre_use` / `tool.post_use` events to the run's coord root, so filtering
+ * `events.ndjson` to these session ids yields the run's real activity.
+ */
+export function readWorkflowChildSessions(root: string, runId: string): WorkflowChildSession[] {
+  const byId = new Map<string, WorkflowChildSession>();
+  const heartbeats = readWorkflowChildHeartbeats(root);
+  for (const hb of heartbeats.get(runId) ?? []) {
+    if (!hb.session_id) continue;
+    byId.set(hb.session_id, {
+      sessionId: hb.session_id,
+      agentId: hb.workflow_agent_id,
+      live: !hb.ended_at,
+    });
+  }
+  const run = readWorkflowRun(root, runId, heartbeats);
+  for (const agent of run?.agents ?? []) {
+    if (!agent.sessionId) continue;
+    const existing = byId.get(agent.sessionId);
+    // The journal is authoritative for which agent ran a session; the heartbeat
+    // is authoritative for whether it is still running.
+    byId.set(agent.sessionId, {
+      sessionId: agent.sessionId,
+      agentId: agent.id,
+      live: existing?.live ?? false,
+    });
+  }
+  return Array.from(byId.values());
 }
 
 export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
   const dir = join(root, ".harnery", "workflows");
   if (!existsSync(dir)) return [];
   const runs: WorkflowRunSummary[] = [];
+  const heartbeats = readWorkflowChildHeartbeats(root);
   for (const runId of readdirSync(dir)) {
-    const run = readWorkflowRun(root, runId);
+    const run = readWorkflowRun(root, runId, heartbeats);
     if (run) runs.push(run);
   }
   // Newest first (run ids embed an ISO timestamp, but sort on startedAt to be safe).
@@ -110,7 +172,13 @@ export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
   return runs;
 }
 
-export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary | null {
+export function readWorkflowRun(
+  root: string,
+  runId: string,
+  /** Pre-read heartbeat index, so a list page scans `.harnery/active/` once
+   * instead of once per run. Read on demand when omitted. */
+  heartbeats?: Map<string, ChildHeartbeat[]>,
+): WorkflowRunSummary | null {
   const journalPath = join(root, ".harnery", "workflows", runId, "journal.jsonl");
   if (!existsSync(journalPath)) return null;
 
@@ -168,6 +236,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
             harness: e.harness,
             model: e.model ?? null,
             status: "running",
+            startedAt: e.ts,
           });
         }
         break;
@@ -180,6 +249,7 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
             row.costUsd = e.total_cost_usd ?? e.cost_usd;
             row.durationMs = e.duration_ms;
             row.sessionId = e.session_id;
+            row.endedAt = e.ts;
           }
           costUsd += e.total_cost_usd ?? e.cost_usd ?? 0;
         }
@@ -187,7 +257,10 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
       case "agent.failed":
         if (e.id) {
           const row = agents.get(e.id);
-          if (row) row.status = "failed";
+          if (row) {
+            row.status = "failed";
+            row.endedAt = e.ts;
+          }
         }
         break;
       case "agent.cached":
@@ -210,15 +283,22 @@ export function readWorkflowRun(root: string, runId: string): WorkflowRunSummary
     }
   }
 
+  // A live child heartbeat outranks journal quiet. Journal mtime alone reported
+  // a healthy run as STALE, because an agent that works for longer than
+  // STALE_MS writes nothing between `agent.start` and `agent.end` — the quiet
+  // is the work, not a dead orchestrator.
+  const hbIndex = heartbeats ?? readWorkflowChildHeartbeats(root);
+  const hasLiveChild = (hbIndex.get(runId) ?? []).some((hb) => !hb.ended_at);
+
   const status: WorkflowRunSummary["status"] = endedAt
     ? runOk
       ? "done"
       : "failed"
     : parkedApprovalId
       ? "parked"
-      : Date.now() - Date.parse(mtimeIso) > STALE_MS
-        ? "stale"
-        : "running";
+      : hasLiveChild || Date.now() - Date.parse(mtimeIso) <= STALE_MS
+        ? "running"
+        : "stale";
 
   return {
     runId,

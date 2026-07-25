@@ -15,7 +15,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { eventsPath, type EventRow } from "@/lib/coord-reader";
+import { coordRoot, eventsPath, type EventRow } from "@/lib/coord-reader";
+import { readWorkflowChildSessions } from "@/lib/workflow-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -31,7 +32,31 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const instanceFilter = url.searchParams.get("instance") || undefined;
   const typeFilter = url.searchParams.get("type") || undefined;
+  const runFilter = url.searchParams.get("run") || undefined;
   const initialLines = Number(url.searchParams.get("initial") ?? 500);
+
+  /**
+   * Session-id allowlist for `?run=<runId>`: the run's child harness sessions.
+   *
+   * Re-resolved on every drain rather than pinned at connect, because a run
+   * spawns children over its whole life — a stage-3 agent that starts twenty
+   * minutes in would be invisible to a set captured at page load, and pushing
+   * the set through the query string instead would reconnect the stream (and
+   * re-snapshot) every time an agent started or ended.
+   */
+  let runSessions: Set<string> | undefined;
+  function resolveRunSessions(): Set<string> | undefined {
+    if (!runFilter) return undefined;
+    try {
+      runSessions = new Set(
+        readWorkflowChildSessions(coordRoot(), runFilter).map((c) => c.sessionId),
+      );
+    } catch {
+      // Keep the previous allowlist on a transient read failure; an empty set
+      // would silently read as "this run has no activity".
+    }
+    return runSessions;
+  }
 
   const encoder = new TextEncoder();
   const filePath = eventsPath();
@@ -91,6 +116,7 @@ export async function GET(request: Request): Promise<Response> {
           lines: initialLines,
           instanceId: instanceFilter,
           type: typeFilter,
+          sessions: resolveRunSessions(),
         });
         send("snapshot", { events: snapshot });
       } catch {
@@ -111,7 +137,11 @@ export async function GET(request: Request): Promise<Response> {
             const { events, newOffset } = await readEventsAfter(
               filePath,
               offset,
-              { instanceId: instanceFilter, type: typeFilter },
+              {
+                instanceId: instanceFilter,
+                type: typeFilter,
+                sessions: resolveRunSessions(),
+              },
             );
             offset = newOffset;
             for (const ev of events) send("event", ev);
@@ -198,6 +228,18 @@ interface TailOpts {
   lines: number;
   instanceId?: string;
   type?: string;
+  sessions?: Set<string>;
+}
+
+/** A workflow child is a main harness session, so its rows carry the same id in
+ * `session_id` and `instance_id`; accept either so the filter does not depend on
+ * which one a given producer stamped. */
+function inSessions(ev: EventRow, sessions?: Set<string>): boolean {
+  if (!sessions) return true;
+  return (
+    (ev.session_id !== undefined && sessions.has(ev.session_id)) ||
+    (ev.instance_id !== undefined && sessions.has(ev.instance_id))
+  );
 }
 
 async function readEventsTail(opts: TailOpts): Promise<EventRow[]> {
@@ -233,6 +275,7 @@ async function readEventsTail(opts: TailOpts): Promise<EventRow[]> {
         const ev = JSON.parse(raw) as EventRow;
         if (opts.instanceId && ev.instance_id !== opts.instanceId) continue;
         if (opts.type && ev.event_type !== opts.type) continue;
+        if (!inSessions(ev, opts.sessions)) continue;
         out.push(ev);
       } catch {
         // skip malformed
@@ -248,7 +291,7 @@ async function readEventsTail(opts: TailOpts): Promise<EventRow[]> {
 async function readEventsAfter(
   filePath: string,
   offset: number,
-  opts: { instanceId?: string; type?: string },
+  opts: { instanceId?: string; type?: string; sessions?: Set<string> },
 ): Promise<{ events: EventRow[]; newOffset: number }> {
   try {
     const stat = await fs.promises.stat(filePath);
@@ -269,6 +312,7 @@ async function readEventsAfter(
           const ev = JSON.parse(raw) as EventRow;
           if (opts.instanceId && ev.instance_id !== opts.instanceId) continue;
           if (opts.type && ev.event_type !== opts.type) continue;
+          if (!inSessions(ev, opts.sessions)) continue;
           events.push(ev);
         } catch {
           // skip
