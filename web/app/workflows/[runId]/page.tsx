@@ -99,7 +99,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
       <div className="mb-8 space-y-6">
         {orderedStages.map((stageTitle) => (
           <section key={stageTitle}>
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">── {stageTitle}</h2>
+            <Tooltip content="A stage groups the agents dispatched together. Stages run in the order the script declares them; agents inside one stage can run concurrently.">
+              <h2 className="mb-2 inline-block cursor-help text-sm font-medium text-muted-foreground">
+                ── {stageTitle}
+              </h2>
+            </Tooltip>
             <ul className="space-y-1">
               {(byStage.get(stageTitle) ?? []).map((a) => (
                 <li
@@ -107,23 +111,53 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                   className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm"
                 >
                   <WorkflowStatusBadge status={a.status} />
-                  <span className="font-mono text-xs text-muted-foreground">{a.id}</span>
-                  {a.harness ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                      {a.harness}
+                  <Tooltip content="Agent id within this run, assigned in dispatch order. It is the key the journal uses for this agent's start, retries, and end.">
+                    <span className="cursor-help font-mono text-xs text-muted-foreground">
+                      {a.id}
                     </span>
+                  </Tooltip>
+                  {a.harness ? (
+                    <Tooltip
+                      content={`Harness that ran this agent. It was spawned as a headless ${a.harness} subprocess${a.model ? `, model ${a.model}` : ""}.`}
+                    >
+                      <span className="cursor-help rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                        {a.harness}
+                      </span>
+                    </Tooltip>
                   ) : null}
-                  <span className="min-w-0 flex-1 truncate">{a.label}</span>
+                  <Tooltip content="The agent's label from the workflow script. Hover the row's right-hand figures for attempts, duration, and cost.">
+                    <span className="min-w-0 flex-1 cursor-help truncate">{a.label}</span>
+                  </Tooltip>
                   {a.status === "running" && a.startedAt ? (
                     <AgentElapsed startedAt={a.startedAt} live={liveAgentIds.has(a.id)} />
                   ) : null}
-                  <span className="text-xs text-muted-foreground">
-                    {a.attempts !== undefined
-                      ? `${a.attempts} attempt${a.attempts === 1 ? "" : "s"}`
-                      : ""}
-                    {a.durationMs !== undefined ? ` · ${Math.round(a.durationMs / 1000)}s` : ""}
-                    {a.costUsd !== undefined ? ` · $${a.costUsd.toFixed(4)}` : ""}
-                  </span>
+                  {a.attempts !== undefined ||
+                  a.durationMs !== undefined ||
+                  a.costUsd !== undefined ? (
+                    <Tooltip
+                      content={`${
+                        a.attempts !== undefined
+                          ? `${a.attempts} attempt${a.attempts === 1 ? "" : "s"} (a retry costs extra and is counted here). `
+                          : ""
+                      }${
+                        a.durationMs !== undefined
+                          ? `Ran for ${Math.round(a.durationMs / 1000)} seconds. `
+                          : ""
+                      }${
+                        a.costUsd !== undefined
+                          ? `Cost $${a.costUsd.toFixed(4)} across every attempt.`
+                          : ""
+                      }`.trim()}
+                    >
+                      <span className="cursor-help text-xs text-muted-foreground">
+                        {a.attempts !== undefined
+                          ? `${a.attempts} attempt${a.attempts === 1 ? "" : "s"}`
+                          : ""}
+                        {a.durationMs !== undefined ? ` · ${Math.round(a.durationMs / 1000)}s` : ""}
+                        {a.costUsd !== undefined ? ` · $${a.costUsd.toFixed(4)}` : ""}
+                      </span>
+                    </Tooltip>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -147,11 +181,15 @@ export default async function WorkflowRunPage({ params }: PageProps) {
     sessionIds.size === 0 ? null : (
       <section className="mb-8">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold">Activity</h2>
-          <span className="text-xs text-muted-foreground">
-            {childSessions.length} child session{childSessions.length === 1 ? "" : "s"} ·{" "}
-            {childSessions.filter((c) => c.live).length} live · newest first
-          </span>
+          <Tooltip content="Everything this run's child agents actually did: each shell command with its declared intent, each file read or edit, and each turn boundary. The run journal only records agent starts and ends, so this is the only place the work itself shows up.">
+            <h2 className="cursor-help text-sm font-semibold">Activity</h2>
+          </Tooltip>
+          <Tooltip content="One child session per agent the run spawned. `live` counts the ones still running, from their coordination heartbeats. Rows are newest-first, the same direction the Live page reads.">
+            <span className="cursor-help text-xs text-muted-foreground">
+              {childSessions.length} child session{childSessions.length === 1 ? "" : "s"} ·{" "}
+              {childSessions.filter((c) => c.live).length} live · newest first
+            </span>
+          </Tooltip>
         </div>
         <div className="flex h-[32rem] flex-col [&_.overflow-y-auto]:overscroll-contain">
           <AgentChipProvider summaries={summaries}>
@@ -243,28 +281,36 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           ) : (
             <section className="mb-8 rounded-lg border border-border bg-card p-4">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold">Workspace</h2>
+                <Tooltip content="Which checkout the run's agents edited. A shared workspace means they worked directly in this repo; an isolated one means they worked in a separate checkout that has to be integrated before the changes land here.">
+                  <h2 className="cursor-help text-sm font-semibold">Workspace</h2>
+                </Tooltip>
                 <WorkspaceStateBadge inspection={run.workspace} />
               </div>
               <dl className="grid gap-3 text-sm sm:grid-cols-2">
                 <div>
-                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                    Allocation
-                  </dt>
+                  <Tooltip content="What the run asked for versus what it got. These differ when isolation was requested but could not be honoured, in which case the run fell back to the shared checkout and says so below.">
+                    <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
+                      Allocation
+                    </dt>
+                  </Tooltip>
                   <dd className="mt-1">
                     {run.workspace.value.requested_isolation} requested ·{" "}
                     {run.workspace.value.effective_isolation} effective
                   </dd>
                   {run.workspace.value.provider ? (
-                    <dd className="mt-1 font-mono text-xs text-muted-foreground">
-                      {run.workspace.value.provider.id}@{run.workspace.value.provider.version}
-                    </dd>
+                    <Tooltip content="The workspace provider that allocated the checkout, and its version.">
+                      <dd className="mt-1 cursor-help font-mono text-xs text-muted-foreground">
+                        {run.workspace.value.provider.id}@{run.workspace.value.provider.version}
+                      </dd>
+                    </Tooltip>
                   ) : null}
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                    Verification
-                  </dt>
+                  <Tooltip content="Whether the workspace was still what the run claimed it was when it finished. `drift` counts things that changed underneath it; `unknown` counts things the check could not determine either way, which is reported rather than assumed benign.">
+                    <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
+                      Verification
+                    </dt>
+                  </Tooltip>
                   <dd className="mt-1">{run.workspace.value.verification.status}</dd>
                   <dd className="mt-1 text-xs text-muted-foreground">
                     {run.workspace.value.verification.drift.length} drift ·{" "}
@@ -272,9 +318,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">
-                    Integration
-                  </dt>
+                  <Tooltip content="Whether work done in an isolated workspace has been brought back into this checkout yet. `none` means there was nothing to integrate, which is the normal reading for a shared-workspace run.">
+                    <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
+                      Integration
+                    </dt>
+                  </Tooltip>
                   <dd className="mt-1">{run.workspace.value.integration.state}</dd>
                   <dd className="mt-1 text-xs text-muted-foreground">
                     {run.workspace.value.integration.changed_paths.length} changed path
@@ -282,7 +330,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-wide text-muted-foreground">Cleanup</dt>
+                  <Tooltip content="Whether the isolated checkout has been released. Cleanup is deliberately conservative: a workspace with uncommitted changes is preserved rather than deleted, so nothing is thrown away silently.">
+                    <dt className="cursor-help text-xs uppercase tracking-wide text-muted-foreground">
+                      Cleanup
+                    </dt>
+                  </Tooltip>
                   <dd className="mt-1">{run.workspace.value.cleanup.state.replaceAll("_", " ")}</dd>
                   <dd className="mt-1 text-xs text-muted-foreground">
                     {run.workspace.value.cleanup.attempts} attempt
@@ -321,12 +373,16 @@ export default async function WorkflowRunPage({ params }: PageProps) {
         {run.proof ? (
           <section className="mb-8 rounded-lg border border-border bg-card p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Run proof</h2>
-              <span className="text-xs text-muted-foreground">
-                {run.proof.acceptance.summary.satisfied} satisfied ·{" "}
-                {run.proof.acceptance.summary.unsatisfied} unsatisfied ·{" "}
-                {run.proof.acceptance.summary.unknown} unknown
-              </span>
+              <Tooltip content="The bounded record of what the run proved, written when it ended. `workflow proof <run-id>` prints the same packet on the command line.">
+                <h2 className="cursor-help text-sm font-semibold">Run proof</h2>
+              </Tooltip>
+              <Tooltip content="How the run scored against the acceptance criteria it was given. `unknown` is a real verdict rather than a rounding error: it means the evidence did not settle the question, and it is reported instead of being counted as a pass.">
+                <span className="cursor-help text-xs text-muted-foreground">
+                  {run.proof.acceptance.summary.satisfied} satisfied ·{" "}
+                  {run.proof.acceptance.summary.unsatisfied} unsatisfied ·{" "}
+                  {run.proof.acceptance.summary.unknown} unknown
+                </span>
+              </Tooltip>
             </div>
             {run.proof.run.objective ? (
               <p className="mb-4 text-sm">{run.proof.run.objective}</p>
@@ -334,14 +390,20 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             {run.proof.policy ? (
               <div className="mb-4 rounded-md border border-border px-3 py-2 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">Policy: {run.proof.policy.name}</span>
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                    {run.proof.policy.summary.allowed} allowed · {run.proof.policy.summary.denied}{" "}
-                    denied · {run.proof.policy.summary.asked} asked
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {run.proof.policy.isolation} · network {run.proof.policy.network_access}
-                  </span>
+                  <Tooltip content="The policy the run was launched under. It decides what the agents were allowed to do before they tried it, rather than after.">
+                    <span className="cursor-help font-medium">Policy: {run.proof.policy.name}</span>
+                  </Tooltip>
+                  <Tooltip content="Policy decisions made during the run. `asked` counts requests that needed an explicit approval, which park the run until someone resolves them.">
+                    <span className="cursor-help rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      {run.proof.policy.summary.allowed} allowed · {run.proof.policy.summary.denied}{" "}
+                      denied · {run.proof.policy.summary.asked} asked
+                    </span>
+                  </Tooltip>
+                  <Tooltip content="The isolation and network posture the policy granted this run.">
+                    <span className="cursor-help text-xs text-muted-foreground">
+                      {run.proof.policy.isolation} · network {run.proof.policy.network_access}
+                    </span>
+                  </Tooltip>
                 </div>
                 {run.proof.policy.decisions.length > 0 ? (
                   <details className="mt-2 text-xs text-muted-foreground">
@@ -379,12 +441,18 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                             : "stale"
                       }
                     />
-                    <span className="font-mono text-xs text-muted-foreground">{criterion.id}</span>
+                    <Tooltip content="Criterion id. The evidence entries below cite these ids, which is how a claim is tied to the thing that backs it.">
+                      <span className="cursor-help font-mono text-xs text-muted-foreground">
+                        {criterion.id}
+                      </span>
+                    </Tooltip>
                     <span className="min-w-0 flex-1">{criterion.statement}</span>
                     {criterion.evidence_ids.length > 0 ? (
-                      <span className="text-xs text-muted-foreground">
-                        {criterion.evidence_ids.join(", ")}
-                      </span>
+                      <Tooltip content="Evidence backing this criterion. A criterion with no evidence cannot be marked satisfied.">
+                        <span className="cursor-help text-xs text-muted-foreground">
+                          {criterion.evidence_ids.join(", ")}
+                        </span>
+                      </Tooltip>
                     ) : null}
                   </li>
                 ))}
@@ -392,9 +460,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             ) : null}
             {run.proof.evidence.length > 0 ? (
               <div className="mb-4">
-                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Evidence
-                </h3>
+                <Tooltip content="What the run actually produced to back its claims: command output, file diffs, test results. Each entry carries where it came from and whether it held up.">
+                  <h3 className="mb-2 inline-block cursor-help text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Evidence
+                  </h3>
+                </Tooltip>
                 <ul className="space-y-1">
                   {run.proof.evidence.map((evidence) => (
                     <li
@@ -402,12 +472,16 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                       className="rounded-md border border-border px-3 py-2 text-sm"
                     >
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {evidence.id}
-                        </span>
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                          {evidence.kind} · {evidence.status} · {evidence.source}
-                        </span>
+                        <Tooltip content="Evidence id, cited by the acceptance criteria above.">
+                          <span className="cursor-help font-mono text-xs text-muted-foreground">
+                            {evidence.id}
+                          </span>
+                        </Tooltip>
+                        <Tooltip content="Kind of evidence, whether it held up, and who recorded it. Evidence recorded by the agent doing the work is weaker than evidence from an independent check, so the source is kept rather than flattened away.">
+                          <span className="cursor-help rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {evidence.kind} · {evidence.status} · {evidence.source}
+                          </span>
+                        </Tooltip>
                         <span>{evidence.label}</span>
                       </div>
                       {evidence.summary ? (
@@ -423,17 +497,27 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                 </ul>
               </div>
             ) : null}
-            <p className="text-xs text-muted-foreground">
-              Repository: {run.proof.repository.before.branch ?? "unknown"} →{" "}
-              {run.proof.repository.after.branch ?? "unknown"} · HEAD{" "}
-              {run.proof.repository.before.head?.slice(0, 8) ?? "unknown"} →{" "}
-              {run.proof.repository.after.head?.slice(0, 8) ?? "unknown"} ·{" "}
-              {run.proof.repository.drift.dirty_paths_added.length} dirty added ·{" "}
-              {run.proof.repository.drift.dirty_paths_cleared.length} cleared
-            </p>
+            <Tooltip content="The repository before and after the run: which branch it was on, which commit HEAD pointed at, and how many uncommitted paths the run added or cleared. This is what lets you tell a run that changed the checkout from one that only read it.">
+              <p className="cursor-help text-xs text-muted-foreground">
+                Repository: {run.proof.repository.before.branch ?? "unknown"} →{" "}
+                {run.proof.repository.after.branch ?? "unknown"} · HEAD{" "}
+                {run.proof.repository.before.head?.slice(0, 8) ?? "unknown"} →{" "}
+                {run.proof.repository.after.head?.slice(0, 8) ?? "unknown"} ·{" "}
+                {run.proof.repository.drift.dirty_paths_added.length} dirty added ·{" "}
+                {run.proof.repository.drift.dirty_paths_cleared.length} cleared
+              </p>
+            </Tooltip>
             {run.proof.unknowns.length > 0 ? (
               <details className="mt-3 text-xs text-muted-foreground">
-                <summary className="cursor-pointer">{run.proof.unknowns.length} unknowns</summary>
+                {/* The tooltip goes INSIDE the summary. Wrapping the summary
+                    itself puts an element between it and its <details> parent,
+                    which makes the browser stop treating it as the disclosure
+                    label and fall back to rendering "Details". */}
+                <summary className="cursor-pointer">
+                  <Tooltip content="Things the run could not determine. They are surfaced rather than dropped, because a check that could not run is not the same as a check that passed.">
+                    <span>{run.proof.unknowns.length} unknowns</span>
+                  </Tooltip>
+                </summary>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
                   {run.proof.unknowns.map((unknown, index) => (
                     <li key={`${unknown.code}-${unknown.agent_id ?? unknown.harness ?? index}`}>

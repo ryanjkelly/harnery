@@ -17,17 +17,17 @@ interface Props {
 /**
  * Run-scoped activity log for `/workflows/[runId]`.
  *
- * The run journal is a poor activity feed by construction — an agent that works
+ * The run journal is a poor activity feed by construction. An agent that works
  * for eighteen minutes writes exactly two lines to it, one at each end. The
- * activity is in the coordination stream instead: workflow children run with
+ * activity lives in the coordination stream instead: workflow children run with
  * hooks on, so each one emits ordinary `tool.pre_use` / `tool.post_use` rows to
  * the run's coord root, tagged with its own session id. `?run=` on the events
  * endpoints filters `events.ndjson` down to this run's child sessions, which is
- * what makes the page worth watching at all.
+ * what gives this page anything to show.
  *
  * Autoscroll, pause-on-scroll-away, search, and row expansion all come from the
- * shared <LogTable> unchanged; this binding only supplies the scope. Note the
- * house convention is newest-at-top, the same direction `/live` reads.
+ * shared <LogTable> unchanged; this binding only supplies the scope. The house
+ * convention is newest-at-top, the same direction `/live` reads.
  */
 export function WorkflowActivityLog({ runId, initialRows, agentNames, instanceToName }: Props) {
   const { repoRoot } = useHostInfo();

@@ -120,17 +120,17 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
 }
 
 /**
- * Every child harness session of a run — live and finished.
+ * Every child harness session of a run, live and finished.
  *
- * The two sources are complementary rather than redundant, and the union has no
- * gap: a live child is only in `.harnery/active/` (the journal does not learn
- * its session id until `agent.end`, because the harness mints the id and only
- * reports it in the result envelope), and a finished child is only in the
- * journal (its heartbeat is deleted on session end).
+ * Both sources are needed, and together they leave no gap: a live child appears
+ * only in `.harnery/active/` (the journal does not learn its session id until
+ * `agent.end`, because the harness mints the id and only reports it in the
+ * result envelope), and a finished child appears only in the journal (its
+ * heartbeat is deleted on session end).
  *
  * This is the join key for run-scoped activity: child sessions write ordinary
  * `tool.pre_use` / `tool.post_use` events to the run's coord root, so filtering
- * `events.ndjson` to these session ids yields the run's real activity.
+ * `events.ndjson` to these session ids yields what the run actually did.
  */
 export function readWorkflowChildSessions(root: string, runId: string): WorkflowChildSession[] {
   const byId = new Map<string, WorkflowChildSession>();
@@ -285,7 +285,7 @@ export function readWorkflowRun(
 
   // A live child heartbeat outranks journal quiet. Journal mtime alone reported
   // a healthy run as STALE, because an agent that works for longer than
-  // STALE_MS writes nothing between `agent.start` and `agent.end` — the quiet
+  // STALE_MS writes nothing between `agent.start` and `agent.end`. The quiet
   // is the work, not a dead orchestrator.
   const hbIndex = heartbeats ?? readWorkflowChildHeartbeats(root);
   const hasLiveChild = (hbIndex.get(runId) ?? []).some((hb) => !hb.ended_at);

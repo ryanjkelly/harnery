@@ -11,7 +11,14 @@ export function WorkspaceStateBadge({ inspection }: { inspection: WorkflowWorksp
   }
   const status = inspection.value;
   if (status.selection === "shared") {
-    return <Badge variant="muted">shared workspace</Badge>;
+    return (
+      <Badge
+        variant="muted"
+        title="The run's agents worked directly in this checkout, alongside you. Nothing needs integrating, and nothing needs cleaning up."
+      >
+        shared workspace
+      </Badge>
+    );
   }
   if (status.selection === "compatibility") {
     return (

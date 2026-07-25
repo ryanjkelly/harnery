@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { useFormatDateTime } from "@/components/FormattedDateTime";
 import { Tooltip } from "@/components/ui/tooltip";
 
 interface Props {
@@ -25,22 +26,24 @@ function formatElapsed(ms: number): string {
 /**
  * Ticking elapsed time for an agent that is still in flight.
  *
- * The point is negative information: a run journal records nothing between an
- * agent's start and end, so a page built only from journal writes shows a
- * twenty-minute agent and a dead orchestrator identically. A clock that visibly
- * advances says "this is work"; a clock next to `no live session` says the
- * opposite.
+ * This exists to show the absence of trouble. A run journal records nothing
+ * between an agent's start and end, so a page built only from journal writes
+ * draws a twenty-minute agent and a dead orchestrator exactly the same way. A
+ * clock that visibly advances says the agent is working. A clock sitting next to
+ * `no live session` says it is not.
  *
- * The clock starts on mount, not on render, and that is load-bearing rather than
- * stylistic. Reading the wall clock during render makes the server's HTML and
- * the client's first pass disagree by however long the response took, which
- * React reports as a hydration mismatch and repairs by throwing the subtree
- * away. Both passes therefore render the same placeholder, and only the effect
- * introduces time. The tooltip avoids locale formatting for the same reason: the
- * server's timezone need not be the reader's.
+ * The clock starts on mount rather than during render, and that part matters.
+ * Reading the wall clock while rendering makes the server's HTML and the
+ * client's first pass disagree by however long the response took, which React
+ * treats as a hydration mismatch and repairs by throwing the subtree away. Both
+ * passes render the same placeholder, and only the effect introduces time.
+ *
+ * The start time in the tooltip goes through the operator's own datetime
+ * preference and timezone, like every other timestamp in the dashboard.
  */
 export function AgentElapsed({ startedAt, live }: Props) {
   const started = Date.parse(startedAt);
+  const formatDateTime = useFormatDateTime();
   const [now, setNow] = useState<number | null>(null);
 
   useEffect(() => {
@@ -57,8 +60,10 @@ export function AgentElapsed({ startedAt, live }: Props) {
 
   if (!live) {
     return (
-      <Tooltip content="Journaled as running, but no live child session is registered for this run. Either the agent is between attempts, or the orchestrator exited without writing agent.end.">
-        <span className="text-xs text-muted-foreground">
+      <Tooltip
+        content={`Started ${formatDateTime(startedAt)} and journaled as running, but no live child session is registered for this run. Either the agent is between attempts, or the orchestrator exited without writing agent.end.`}
+      >
+        <span className="cursor-help text-xs text-muted-foreground">
           <span className="font-mono tabular-nums">{elapsed}</span>
           <span className="text-amber-600 dark:text-amber-400">{" no live session"}</span>
         </span>
@@ -67,8 +72,10 @@ export function AgentElapsed({ startedAt, live }: Props) {
   }
 
   return (
-    <Tooltip content={`Working since ${startedAt.slice(11, 19)} UTC`}>
-      <span className="inline-flex items-center gap-1 text-xs text-sky-600 dark:text-sky-400">
+    <Tooltip
+      content={`Working since ${formatDateTime(startedAt)}. The clock advances while the agent's child session stays alive, so a long quiet stretch here is work rather than a hang.`}
+    >
+      <span className="inline-flex cursor-help items-center gap-1 text-xs text-sky-600 dark:text-sky-400">
         <span className="live-dot" />
         <span className="font-mono tabular-nums">{elapsed}</span>
       </span>
