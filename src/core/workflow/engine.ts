@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { snapshotRepo } from "../context/index.ts";
@@ -39,6 +39,7 @@ import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
+import { appendWorkflowJournalEvent } from "./journal.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -73,7 +74,6 @@ import type {
   WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
-import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 import { freezeWorkflowWorkContext } from "./work-context.ts";
 import {
@@ -81,7 +81,6 @@ import {
   attestWorkspaceFailure,
   resolveWorkspaceBinding,
 } from "./workspaces/execution.ts";
-import { appendWorkflowJournalEvent } from "./workspaces/state.ts";
 import type {
   WorkspaceAttestation,
   WorkspaceBinding,
@@ -526,15 +525,22 @@ async function executeWorkflow(
   const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
 
   const journal = (event: string, data: Record<string, unknown>): void => {
-    const line = JSON.stringify({
-      schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
-      run_id: runId,
-      ts: new Date().toISOString(),
-      event,
-      stage: currentStage,
+    appendWorkflowJournalEvent(opts.coordRoot, runId, event, { stage: currentStage, ...data });
+  };
+  const journalAgentEnd = (
+    data: Record<string, unknown>,
+    resultKind: "text" | "json",
+    result: unknown,
+  ): void => {
+    // The writer shrinks an oversized record itself and names what it dropped,
+    // so no per-call fallback is needed here. A digest rides along regardless so
+    // a shrunk record can still be tied back to the exact result.
+    journal("agent.end", {
       ...data,
+      result_kind: resultKind,
+      result_digest: digestResult(result, resultKind),
+      result,
     });
-    appendFileSync(journalPath, `${line}\n`, "utf8");
   };
 
   // Bounded concurrency gate shared by every spawn in the run — direct
@@ -913,17 +919,19 @@ async function executeWorkflow(
             agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
           agentProof.session_id = last.sessionId;
           agentProof.result = digestResult(last.text, "text");
-          journal("agent.end", {
-            id,
-            key,
-            attempts: attempt,
-            cost_usd: last.costUsd,
-            total_cost_usd: agentCostUsd,
-            duration_ms: last.durationMs,
-            session_id: last.sessionId,
-            result_kind: "text",
-            result: last.text,
-          });
+          journalAgentEnd(
+            {
+              id,
+              key,
+              attempts: attempt,
+              cost_usd: last.costUsd,
+              total_cost_usd: agentCostUsd,
+              duration_ms: last.durationMs,
+              session_id: last.sessionId,
+            },
+            "text",
+            last.text,
+          );
           return last.text;
         }
 
@@ -938,17 +946,19 @@ async function executeWorkflow(
             agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
           agentProof.session_id = last.sessionId;
           agentProof.result = digestResult(parsed.value, "json");
-          journal("agent.end", {
-            id,
-            key,
-            attempts: attempt,
-            cost_usd: last.costUsd,
-            total_cost_usd: agentCostUsd,
-            duration_ms: last.durationMs,
-            session_id: last.sessionId,
-            result_kind: "json",
-            result: parsed.value,
-          });
+          journalAgentEnd(
+            {
+              id,
+              key,
+              attempts: attempt,
+              cost_usd: last.costUsd,
+              total_cost_usd: agentCostUsd,
+              duration_ms: last.durationMs,
+              session_id: last.sessionId,
+            },
+            "json",
+            parsed.value,
+          );
           return parsed.value;
         }
 
@@ -1296,7 +1306,12 @@ function loadResumeCache(
         result_kind?: "json" | "text";
         result?: unknown;
       };
-      if (e.event === "agent.end" && e.key && e.result_kind !== undefined) {
+      if (
+        e.event === "agent.end" &&
+        e.key &&
+        (e.result_kind === "json" || e.result_kind === "text") &&
+        "result" in e
+      ) {
         cache.set(e.key, { kind: e.result_kind, value: e.result });
       }
     } catch {

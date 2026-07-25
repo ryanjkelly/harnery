@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { runWorkflow } from "./engine.ts";
+import { WORKFLOW_JOURNAL_EVENT_BYTES } from "./journal.ts";
 import type { Spawner, SpawnRequest, SpawnResult, WorkflowProof } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 
@@ -422,6 +423,66 @@ describe("runWorkflow", () => {
     const end = journal.find((e) => e.event === "agent.end");
     expect(end?.stage).toBe("explore");
     expect(end?.session_id).toBe("child-s");
+  });
+
+  test("journals a digest for an oversized agent result without failing the run", async () => {
+    const largeResult = "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES + 1024);
+    const spawner: Spawner = async () => okSpawn(largeResult);
+    const script = writeScript(`
+      export default async ({ agent }) => agent("produce a large result");
+    `);
+
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
+
+    expect(report.result).toBe(largeResult);
+    const lines = readFileSync(report.journalPath, "utf8").split("\n").filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => Buffer.byteLength(line) <= WORKFLOW_JOURNAL_EVENT_BYTES)).toBe(
+      true,
+    );
+    const journal = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const end = journal.find((event) => event.event === "agent.end");
+    const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
+    expect(end?.result).toBeUndefined();
+    expect(end?.result_digest).toEqual(proof.agents[0]?.result);
+    expect(proof.agents[0]?.result?.bytes).toBe(Buffer.byteLength(largeResult));
+    const omitted = end?.omitted_fields as Array<Record<string, unknown>>;
+    expect(omitted.map((entry) => entry.field)).toContain("result");
+  });
+
+  test("omits oversized agent metadata when journaling a large result digest", async () => {
+    const largeResult = "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES + 1024);
+    const spawner: Spawner = async () =>
+      okSpawn(largeResult, { sessionId: "s".repeat(WORKFLOW_JOURNAL_EVENT_BYTES) });
+    const script = writeScript(`
+      export default async ({ agent }) => agent("produce a large result with large metadata");
+    `);
+
+    const report = await runWorkflow(script, {
+      coordRoot: root,
+      spawners: { "claude-code": spawner },
+      ...quiet,
+    });
+
+    expect(report.result).toBe(largeResult);
+    const lines = readFileSync(report.journalPath, "utf8").split("\n").filter(Boolean);
+    expect(lines.every((line) => Buffer.byteLength(line) <= WORKFLOW_JOURNAL_EVENT_BYTES)).toBe(
+      true,
+    );
+    const journal = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const end = journal.find((event) => event.event === "agent.end");
+    expect(end?.session_id).toBeUndefined();
+    const dropped = (end?.omitted_fields as Array<Record<string, unknown>>).map((e) => e.field);
+    expect(dropped).toContain("result");
+    expect(dropped).toContain("session_id");
+    const digest = end?.result_digest as Record<string, unknown> | undefined;
+    expect(digest?.kind).toBe("text");
+    expect(typeof digest?.sha256).toBe("string");
+    expect(digest?.bytes).toBe(Buffer.byteLength(largeResult));
   });
 
   test("effort reaches the adapter and participates in resume identity", async () => {

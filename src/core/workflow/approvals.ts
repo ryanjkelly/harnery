@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PolicyEvaluation, PolicyRequestSummary, PolicyVerdict } from "../policy/index.ts";
+import { appendWorkflowJournalEvent } from "./journal.ts";
 
 export const WORKFLOW_APPROVAL_SCHEMA_VERSION = 1 as const;
 
@@ -222,19 +223,15 @@ function appendResolutionJournal(coordRoot: string, approval: WorkflowApproval):
     "journal.jsonl",
   );
   if (!existsSync(journalPath) || !approval.decision) return;
-  const event = {
-    schema_version: 1,
-    run_id: approval.request.run_id,
+  appendWorkflowJournalEvent(coordRoot, approval.request.run_id, "approval.resolved", {
     ts: approval.decision.decided_at,
-    event: "approval.resolved",
     stage: "",
     approval_id: approval.request.id,
     decision_id: approval.request.decision_id,
     verdict: approval.decision.verdict,
     actor: approval.decision.actor,
     reason: approval.decision.reason ?? null,
-  };
-  writeFileSync(journalPath, `${JSON.stringify(event)}\n`, { encoding: "utf8", flag: "a" });
+  });
 }
 
 function approvalRequestDigest(

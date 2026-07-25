@@ -16,6 +16,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { readWorkflowApproval } from "../workflow/approvals.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
+import { WORKFLOW_JOURNAL_EVENT_BYTES, workflowJournalPath } from "../workflow/journal.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
 import { readWorkflowRunManifest, workflowScriptDigest } from "../workflow/run-state.ts";
 import { isWorkspaceBoundExecutionEvidence } from "../workflow/workspaces/validate.ts";
@@ -123,9 +124,10 @@ export interface WorkAttempt {
   run_id: string;
   started_at: string;
   trigger?: WorkAttemptTrigger;
-  status: "running" | "parked" | "succeeded" | "failed" | "lost";
+  status: "running" | "parked" | "succeeded" | "failed" | "lost" | "journal_unreadable";
   approval_id?: string;
   proof_path?: string;
+  journal_error?: string;
 }
 
 export interface WorkProjection {
@@ -461,6 +463,16 @@ function deriveWorkProjection(
     };
   }
   const attemptsRemaining = intent.max_attempts - attempts.length;
+  if (latest.status === "journal_unreadable") {
+    return {
+      ...base,
+      state: "blocked",
+      reason: `workflow attempt ${latest.number} journal is unreadable: ${
+        latest.journal_error ?? "unknown journal read error"
+      }`,
+      next_action: attemptsRemaining > 0 ? "retry" : "none",
+    };
+  }
   return {
     ...base,
     state: "blocked",
@@ -537,21 +549,36 @@ function inspectAttempt(
         : "failed";
     return attempt;
   }
-  const journalPath = join(coordRoot, ".harnery", "workflows", runId, "journal.jsonl");
+  const journalPath = workflowJournalPath(coordRoot, runId);
   if (existsSync(journalPath)) {
     let parked: string | undefined;
     let resumed = false;
-    for (const line of readBoundedLines(journalPath, MAX_EVENTS_BYTES, "workflow journal")) {
-      const value = parseObject(line, `workflow run ${runId} journal`);
-      if (value.event === "run.parked" && typeof value.approval_id === "string") {
-        parked = value.approval_id;
-        resumed = false;
+    try {
+      for (const line of readBoundedLines(
+        journalPath,
+        MAX_EVENTS_BYTES,
+        WORKFLOW_JOURNAL_EVENT_BYTES,
+        "workflow journal",
+      )) {
+        const value = parseObject(line, `workflow run ${runId} journal`);
+        if (value.event === "run.parked" && typeof value.approval_id === "string") {
+          parked = value.approval_id;
+          resumed = false;
+        }
+        if (value.event === "run.resume") resumed = true;
       }
-      if (value.event === "run.resume") resumed = true;
-    }
-    if (parked && !resumed) {
-      attempt.status = "parked";
-      attempt.approval_id = parked;
+      if (parked && !resumed) {
+        attempt.status = "parked";
+        attempt.approval_id = parked;
+        return attempt;
+      }
+    } catch (error) {
+      if (workflowResumeLeaseIsLive(coordRoot, runId)) {
+        attempt.status = "running";
+      } else {
+        attempt.status = "journal_unreadable";
+        attempt.journal_error = boundedJournalError((error as Error).message);
+      }
       return attempt;
     }
   }
@@ -822,16 +849,19 @@ function readWorkEvents(coordRoot: string, workId: string): WorkEvent[] {
   assertWorkId(workId);
   const path = join(workDir(coordRoot, workId), "events.jsonl");
   if (!existsSync(path)) return [];
-  const events = readBoundedLines(path, MAX_EVENTS_BYTES, `work item ${workId} events`).map(
-    (line, index) => {
-      const event = parseObject(
-        line,
-        `work item ${workId} event ${index + 1}`,
-      ) as unknown as WorkEvent;
-      validateWorkEvent(event, workId, index + 1);
-      return event;
-    },
-  );
+  const events = readBoundedLines(
+    path,
+    MAX_EVENTS_BYTES,
+    MAX_EVENT_BYTES,
+    `work item ${workId} events`,
+  ).map((line, index) => {
+    const event = parseObject(
+      line,
+      `work item ${workId} event ${index + 1}`,
+    ) as unknown as WorkEvent;
+    validateWorkEvent(event, workId, index + 1);
+    return event;
+  });
   validateWorkHistory(events, workId);
   return events;
 }
@@ -1136,7 +1166,12 @@ function writePrivateJson(path: string, value: unknown, maxBytes: number): void 
   chmodSync(path, 0o600);
 }
 
-function readBoundedLines(path: string, maxBytes: number, field: string): string[] {
+function readBoundedLines(
+  path: string,
+  maxBytes: number,
+  maxRecordBytes: number,
+  field: string,
+): string[] {
   const size = statSync(path).size;
   if (size > maxBytes) throw new Error(`${field} exceeds ${maxBytes} bytes`);
   const body = readFileSync(path, "utf8");
@@ -1145,10 +1180,15 @@ function readBoundedLines(path: string, maxBytes: number, field: string): string
   const lines = body.split("\n").filter(Boolean);
   if (lines.length > MAX_EVENTS) throw new Error(`${field} exceeds ${MAX_EVENTS} records`);
   for (const line of lines) {
-    if (Buffer.byteLength(line) > MAX_EVENT_BYTES)
+    if (Buffer.byteLength(line) > maxRecordBytes)
       throw new Error(`${field} contains an oversized record`);
   }
   return lines;
+}
+
+function boundedJournalError(message: string): string {
+  const normalized = message.trim() || "unknown journal read error";
+  return normalized.length > MAX_REASON ? normalized.slice(0, MAX_REASON) : normalized;
 }
 
 function parseObject(input: string, field: string): Record<string, unknown> {

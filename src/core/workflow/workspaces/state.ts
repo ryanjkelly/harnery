@@ -17,6 +17,9 @@ import {
   stableDigest,
   writeImmutableJson,
 } from "../durable-record.ts";
+
+export { appendWorkflowJournalEvent } from "../journal.ts";
+
 import type {
   GitRepositoryBinding,
   IntegrationApplyAttempt,
@@ -34,7 +37,7 @@ import type {
 } from "./types.ts";
 
 const JSON_LIMIT = 512 * 1024;
-const EVENT_LIMIT = 32 * 1024;
+const WORKSPACE_EVENT_BYTES = 32 * 1024;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 export interface WorkspaceClaim {
@@ -181,7 +184,11 @@ export function appendWorkspaceEvent(
   event: string,
   data: Record<string, unknown> = {},
 ): WorkspaceProviderEvent {
-  if (!event || event.length > 100 || Buffer.byteLength(JSON.stringify(data)) > EVENT_LIMIT / 2) {
+  if (
+    !event ||
+    event.length > 100 ||
+    Buffer.byteLength(JSON.stringify(data)) > WORKSPACE_EVENT_BYTES / 2
+  ) {
     throw new Error("workspace provider event is invalid or too large");
   }
   const path = workspaceEventsPath(coordRoot, claim.provider_id, claim.binding_id);
@@ -204,7 +211,7 @@ export function appendWorkspaceEvent(
     record_sha256: stableDigest(basis),
   };
   const line = `${canonicalJson(record)}\n`;
-  if (Buffer.byteLength(line) > EVENT_LIMIT)
+  if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES)
     throw new Error("workspace provider event is too large");
   const fd = openSync(path, "a", 0o600);
   try {
@@ -232,7 +239,7 @@ export function readWorkspaceEvents(
     .split("\n")
     .filter(Boolean)
     .map((line, index) => {
-      if (Buffer.byteLength(line) > EVENT_LIMIT) {
+      if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES) {
         throw new Error(`workspace event ${index + 1} is too large`);
       }
       let record: WorkspaceProviderEvent;
@@ -270,33 +277,6 @@ function recordsDigestPlaceholder(): null {
   return null;
 }
 
-export function appendWorkflowJournalEvent(
-  coordRoot: string,
-  runId: string,
-  event: string,
-  data: Record<string, unknown>,
-): void {
-  const path = join(workflowRunDir(coordRoot, runId), "journal.jsonl");
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const existed = existsSync(path);
-  const line = `${JSON.stringify({
-    schema_version: 1,
-    run_id: runId,
-    ts: new Date().toISOString(),
-    event,
-    ...data,
-  })}\n`;
-  if (Buffer.byteLength(line) > EVENT_LIMIT) throw new Error("workflow journal event is too large");
-  const fd = openSync(path, "a", 0o600);
-  try {
-    writeFileSync(fd, line, "utf8");
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  if (!existed) fsyncParentDirectory(path);
-}
-
 export type WorkflowSupplement =
   | WorkspaceBinding
   | IntegrationReviewRecord
@@ -327,7 +307,7 @@ export function appendCleanupAttempt(
     record_sha256: stableDigest(basis),
   };
   const line = `${canonicalJson(attempt)}\n`;
-  if (Buffer.byteLength(line) > EVENT_LIMIT) {
+  if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES) {
     throw new Error("workspace cleanup attempt is too large");
   }
   const fd = openSync(path, "a", 0o600);
@@ -388,7 +368,7 @@ function appendChainedRecord(
   label: string,
 ): void {
   const line = `${canonicalJson(record)}\n`;
-  if (Buffer.byteLength(line) > EVENT_LIMIT) {
+  if (Buffer.byteLength(line) > WORKSPACE_EVENT_BYTES) {
     throw new Error(`${label} is too large`);
   }
   const fd = openSync(path, "a", 0o600);

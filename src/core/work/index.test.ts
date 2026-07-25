@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   appendFileSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -9,6 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { resolveWorkflowApproval, type Spawner, WorkflowParkedError } from "../workflow/index.ts";
+import { WORKFLOW_JOURNAL_EVENT_BYTES } from "../workflow/journal.ts";
 import {
   acceptWorkItem,
   cancelWorkItem,
@@ -294,6 +296,68 @@ describe("durable work ledger", () => {
       trigger: "retry",
       prior: { run_id: "wf-lost", causes: ["lost"], unresolved: [] },
     });
+  });
+
+  test("lists work when a legacy workflow journal record exceeds the reader bound", () => {
+    const { root, workflowPath } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "unaffected",
+      title: "Unaffected",
+      objective: "Remain listable",
+      workflowPath,
+    });
+    createWorkItem({
+      coordRoot: root,
+      id: "oversized-journal",
+      title: "Oversized journal",
+      objective: "Surface the unreadable attempt",
+      workflowPath,
+      maxAttempts: 2,
+    });
+    appendFileSync(
+      join(root, ".harnery", "work", "oversized-journal", "events.jsonl"),
+      `${JSON.stringify({
+        schema_version: 1,
+        work_id: "oversized-journal",
+        seq: 2,
+        ts: new Date().toISOString(),
+        event: "attempt.started",
+        actor: "legacy-runner",
+        reason: "workflow attempt started",
+        run_id: "wf-oversized-journal",
+        attempt: 1,
+        trigger: "initial",
+      })}\n`,
+    );
+    const runDir = join(root, ".harnery", "workflows", "wf-oversized-journal");
+    mkdirSync(runDir, { recursive: true });
+    const oversizedLine = `${JSON.stringify({
+      schema_version: 1,
+      run_id: "wf-oversized-journal",
+      ts: new Date().toISOString(),
+      event: "agent.end",
+      stage: "",
+      result: "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES),
+    })}\n`;
+    expect(Buffer.byteLength(oversizedLine.trimEnd())).toBeGreaterThan(
+      WORKFLOW_JOURNAL_EVENT_BYTES,
+    );
+    writeFileSync(join(runDir, "journal.jsonl"), oversizedLine, "utf8");
+
+    const records = listWorkItems(root);
+    expect(records.map((record) => record.intent.id).sort()).toEqual([
+      "oversized-journal",
+      "unaffected",
+    ]);
+    const affected = records.find((record) => record.intent.id === "oversized-journal");
+    const unaffected = records.find((record) => record.intent.id === "unaffected");
+    expect(unaffected?.projection.state).toBe("ready");
+    expect(affected?.projection.state).toBe("blocked");
+    expect(affected?.projection.next_action).toBe("retry");
+    expect(affected?.projection.attempts.at(-1)?.status).toBe("journal_unreadable");
+    expect(affected?.projection.reason).toContain("journal is unreadable");
+    expect(affected?.projection.reason).toContain("oversized record");
   });
 
   test("governed reopen starts a fresh initial attempt instead of a retry", async () => {
