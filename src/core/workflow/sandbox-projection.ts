@@ -19,7 +19,11 @@ import type { SpawnFilesystemPolicy } from "./types.ts";
 
 export class SandboxProjectionError extends Error {
   readonly harness: string;
-  readonly reason: "mode_unrepresentable" | "writable_roots_unrepresentable" | "no_projection";
+  readonly reason:
+    | "mode_unrepresentable"
+    | "writable_roots_unrepresentable"
+    | "no_projection"
+    | "writable_root_escapes_workspace";
 
   constructor(harness: string, reason: SandboxProjectionError["reason"], message: string) {
     super(message);
@@ -79,4 +83,35 @@ export function resolveSandboxProjection(
     }
   }
   return { nativeMode, writableRoots };
+}
+
+/** True when `candidate` is `root` or lies beneath it, comparing whole path
+ * segments so `/a/bc` is not treated as inside `/a/b`. */
+function isWithin(root: string, candidate: string): boolean {
+  const normalizedRoot = root.endsWith("/") ? root.slice(0, -1) : root;
+  return candidate === normalizedRoot || candidate.startsWith(`${normalizedRoot}/`);
+}
+
+/**
+ * Refuse a projection that would grant write access outside the root the
+ * workspace provider already validated (ADR 0039).
+ *
+ * The renderer alone cannot do this: it never sees the binding. Granting a path
+ * the provider never sanctioned would let a projection quietly widen the blast
+ * radius of a run that the workspace lifecycle believes it has contained.
+ */
+export function assertProjectionWithinWorkspace(
+  harness: string,
+  allowedRootRealpath: string,
+  writableRoots: readonly string[],
+): void {
+  for (const root of writableRoots) {
+    if (!isWithin(allowedRootRealpath, root)) {
+      throw new SandboxProjectionError(
+        harness,
+        "writable_root_escapes_workspace",
+        `writable root ${JSON.stringify(root)} is outside the workspace root ${JSON.stringify(allowedRootRealpath)} the provider validated`,
+      );
+    }
+  }
 }

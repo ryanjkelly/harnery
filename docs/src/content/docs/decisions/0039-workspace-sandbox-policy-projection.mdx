@@ -103,18 +103,22 @@ Write access to a repository's administrative directory is the power to rewrite
 history. It is granted only when the run's contract expects the child to commit,
 never as a convenience default.
 
-Two related guarantees are **deferred and not yet in place**, so a reader should
-not assume them:
+Two guarantees back that grant:
 
-- The resolver validates that a writable root is an absolute path. It does
-  **not** yet validate containment within the provider's own validated roots.
-  That check needs the binding, so it belongs where the engine builds the
-  request, not in the renderer.
-- The applied projection is **not** yet recorded in run proof, so a completed
-  run cannot currently be audited for what its child was permitted to write.
+- **Containment.** The engine validates every requested writable root against
+  the root the workspace provider already validated, once, before the first
+  child launches. A path outside it fails the run. A policy with writable roots
+  and no isolated workspace also fails, because there is no validated root to
+  check against. Containment lives at the engine seam rather than in the
+  renderer, which never sees the binding.
+- **Auditability.** The applied projection is recorded in run proof as
+  `sandbox_projection`, so a completed run states exactly what its children were
+  permitted to write. Absent means no projection was applied.
 
-Both are required before a projection is granted automatically rather than
-passed explicitly by a caller.
+One step remains deliberately manual: the provider does not yet supply the Git
+administrative directory automatically for runs whose contract expects a commit.
+A caller passes it explicitly. Automating the grant is a separate decision,
+because it changes a run's default write surface.
 
 ## Alternatives
 
@@ -153,6 +157,10 @@ passed explicitly by a caller.
   the Git administrative directory as a writable root, committed successfully.
   That check spends vendor tokens, so it is a recorded live verification rather
   than an automated test; the argv it depends on is covered by unit tests.
+- Containment tests cover a path inside the root, the root itself, a trailing
+  slash, a path outside, a sibling sharing a prefix (`/srv/wsX` is not inside
+  `/srv/ws`), one bad path refusing a whole set, and an empty set.
+- Proof tests cover a recorded projection and its absence.
 - Negative tests assert that a refusal never falls back to a laxer mode, and
   that an adapter which declares a projection unrepresentable throws instead of
   dropping it.

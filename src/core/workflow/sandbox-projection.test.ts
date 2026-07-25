@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { HarnessSandboxProjection } from "../harnesses/types.ts";
-import { resolveSandboxProjection, SandboxProjectionError } from "./sandbox-projection.ts";
+import {
+  assertProjectionWithinWorkspace,
+  resolveSandboxProjection,
+  SandboxProjectionError,
+} from "./sandbox-projection.ts";
 import { buildClaudeInvocation } from "./spawn-claude.ts";
 import { buildCodexInvocation } from "./spawn-codex.ts";
 import { buildCursorInvocation } from "./spawn-cursor.ts";
@@ -125,5 +129,50 @@ describe("adapter projection rendering (ADR 0039)", () => {
   test("claude and cursor are unchanged when no policy is supplied", () => {
     expect(() => buildClaudeInvocation(base)).not.toThrow();
     expect(() => buildCursorInvocation(base)).not.toThrow();
+  });
+});
+
+describe("assertProjectionWithinWorkspace", () => {
+  const root = "/srv/ws";
+
+  test("a path inside the validated root is allowed", () => {
+    expect(() =>
+      assertProjectionWithinWorkspace("codex", root, ["/srv/ws/repo/.git"]),
+    ).not.toThrow();
+  });
+
+  test("the root itself is allowed", () => {
+    expect(() => assertProjectionWithinWorkspace("codex", root, [root])).not.toThrow();
+  });
+
+  test("a trailing slash on the validated root does not change the answer", () => {
+    expect(() => assertProjectionWithinWorkspace("codex", "/srv/ws/", [root])).not.toThrow();
+  });
+
+  test("a path outside the validated root is refused", () => {
+    let caught: SandboxProjectionError | undefined;
+    try {
+      assertProjectionWithinWorkspace("codex", root, ["/etc"]);
+    } catch (error) {
+      caught = error as SandboxProjectionError;
+    }
+    expect(caught?.reason).toBe("writable_root_escapes_workspace");
+  });
+
+  test("a sibling with a shared prefix is refused, not treated as inside", () => {
+    // The trap: naive startsWith would accept /srv/wsX as inside /srv/ws.
+    expect(() => assertProjectionWithinWorkspace("codex", root, ["/srv/wsX/.git"])).toThrow(
+      /outside the workspace root/,
+    );
+  });
+
+  test("one bad path in a set refuses the whole set", () => {
+    expect(() =>
+      assertProjectionWithinWorkspace("codex", root, ["/srv/ws/ok", "/srv/elsewhere"]),
+    ).toThrow(SandboxProjectionError);
+  });
+
+  test("an empty set is trivially contained", () => {
+    expect(() => assertProjectionWithinWorkspace("codex", root, [])).not.toThrow();
   });
 });

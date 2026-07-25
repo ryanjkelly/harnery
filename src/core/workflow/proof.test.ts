@@ -261,3 +261,41 @@ describe("harness attestation citation (ADR 0038)", () => {
     expect(proof.harnesses[0]?.attestation).toBeUndefined();
   });
 });
+
+describe("sandbox projection evidence (ADR 0039)", () => {
+  const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
+  function journalFile(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+    writeFileSync(path, "{}\n");
+    return path;
+  }
+  const input = {
+    runId: "wf-projection",
+    meta: { name: "projection", acceptance: [] },
+    status: "succeeded" as const,
+    startedAt: "2026-07-25T00:00:00.000Z",
+    endedAt: "2026-07-25T00:00:01.000Z",
+    durationMs: 1_000,
+    before: snapshot,
+    after: snapshot,
+    evidence: [],
+    agents: [],
+  };
+
+  test("an applied projection is recorded so the run can be audited", () => {
+    const proof = buildWorkflowProof({
+      ...input,
+      journalPath: journalFile(),
+      sandboxProjection: { mode: "workspace-write", writable_roots: ["/srv/ws/repo/.git"] },
+    });
+    expect(proof.sandbox_projection).toEqual({
+      mode: "workspace-write",
+      writable_roots: ["/srv/ws/repo/.git"],
+    });
+  });
+
+  test("no projection leaves the field absent rather than empty", () => {
+    const proof = buildWorkflowProof({ ...input, journalPath: journalFile() });
+    expect(proof.sandbox_projection).toBeUndefined();
+  });
+});

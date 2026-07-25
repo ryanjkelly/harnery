@@ -151,6 +151,11 @@ export interface HarnessEvidenceCoverage {
   attestation?: HarnessAttestationCitation;
 }
 
+export interface WorkflowSandboxProjectionEvidence {
+  mode: SpawnFilesystemPolicy["mode"];
+  writable_roots: string[];
+}
+
 export interface WorkflowProofUnknown {
   code:
     | "tool_evidence_unavailable"
@@ -190,6 +195,10 @@ export interface WorkflowProof {
   /** Immutable terminal provider evidence for isolated execution. */
   execution?: WorkspaceExecutionEvidence;
   repository: WorkflowRepoEvidence;
+  /** Filesystem policy projected into every child's vendor sandbox (ADR 0039).
+   * Absent means no projection was applied, which is the default. Present means
+   * the run can be audited for exactly what its children could write. */
+  sandbox_projection?: WorkflowSandboxProjectionEvidence;
   harnesses: HarnessEvidenceCoverage[];
   unknowns: WorkflowProofUnknown[];
   integrity: {
@@ -459,6 +468,10 @@ export interface EngineOpts {
   /** Live attestations backing each harness's claims (ADR 0038). Read once by
    * the host and injected, so the engine performs no capability lookups. */
   harnessAttestations?: Readonly<Record<HarnessName, HarnessAttestationCitation | undefined>>;
+  /** Filesystem policy projected into every child's own vendor sandbox
+   * (ADR 0039). Validated against the workspace binding before the first spawn,
+   * and recorded in proof. Absent leaves every adapter invocation unchanged. */
+  filesystemPolicy?: SpawnFilesystemPolicy;
   /** Immutable host policy. Workflow scripts and model prompts cannot replace it. */
   policy?: PolicySpec | NormalizedPolicy;
   /** Host callback for ASK. Missing, invalid, throwing, or timed-out resolution denies. */

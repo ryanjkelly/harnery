@@ -53,6 +53,7 @@ import {
   workflowScriptDigest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
+import { assertProjectionWithinWorkspace } from "./sandbox-projection.ts";
 import { normalizeWorkflowSpecialists, resolveSpecialistAssignment } from "./specialists.ts";
 import type {
   AgentOpts,
@@ -317,6 +318,12 @@ async function executeWorkflow(
         evidence: [],
         harnessEvidence: opts.harnessEvidence,
         harnessAttestations: opts.harnessAttestations,
+        sandboxProjection: opts.filesystemPolicy
+          ? {
+              mode: opts.filesystemPolicy.mode,
+              writable_roots: [...(opts.filesystemPolicy.writableRoots ?? [])],
+            }
+          : undefined,
         policy: policy
           ? {
               config: policy,
@@ -342,6 +349,22 @@ async function executeWorkflow(
   }
   const effectiveIsolation = workspaceFallback?.effective_isolation ?? isolation;
   const executionCwd = workspaceBinding?.active_root ?? cwd;
+  // Validate the projection once, before any child launches, so a policy that
+  // would reach outside the provider's validated root fails the run rather than
+  // silently widening one child's write access (ADR 0039).
+  const filesystemPolicy = opts.filesystemPolicy;
+  if (filesystemPolicy?.writableRoots?.length) {
+    if (!workspaceBinding) {
+      throw new Error(
+        "a filesystem policy with writable roots requires an isolated workspace; none is bound to this run",
+      );
+    }
+    assertProjectionWithinWorkspace(
+      "workflow",
+      workspaceBinding.writable_root.realpath,
+      filesystemPolicy.writableRoots,
+    );
+  }
   const executionRepoBefore = resumeState?.manifest.repository_before ?? snapshotRepo(executionCwd);
   if (!resumeState) {
     writeWorkflowRunManifest({
@@ -841,6 +864,7 @@ async function executeWorkflow(
           cwd: executionCwd,
           runId,
           subscriptionOnly,
+          filesystemPolicy,
         });
         agentProof.attempts = attempt;
         agentProof.duration_ms += last.durationMs;
@@ -1056,6 +1080,12 @@ async function executeWorkflow(
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
         harnessAttestations: opts.harnessAttestations,
+        sandboxProjection: opts.filesystemPolicy
+          ? {
+              mode: opts.filesystemPolicy.mode,
+              writable_roots: [...(opts.filesystemPolicy.writableRoots ?? [])],
+            }
+          : undefined,
         policy: policy
           ? {
               config: policy,
@@ -1136,6 +1166,12 @@ async function executeWorkflow(
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
         harnessAttestations: opts.harnessAttestations,
+        sandboxProjection: opts.filesystemPolicy
+          ? {
+              mode: opts.filesystemPolicy.mode,
+              writable_roots: [...(opts.filesystemPolicy.writableRoots ?? [])],
+            }
+          : undefined,
         policy: policy
           ? {
               config: policy,

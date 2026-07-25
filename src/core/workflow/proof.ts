@@ -30,6 +30,7 @@ import type {
   WorkflowProofUnknown,
   WorkflowRepoEvidence,
   WorkflowRepoSnapshot,
+  WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
 import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
@@ -82,6 +83,8 @@ export interface BuildWorkflowProofInput {
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
   harnessEvidence?: Readonly<Record<string, HarnessEvidenceCapability | undefined>>;
+  /** Filesystem policy actually projected into children (ADR 0039). */
+  sandboxProjection?: WorkflowSandboxProjectionEvidence;
   /** Live attestations backing each harness's claims (ADR 0038). Injected by
    * the caller so proof stays free of filesystem lookups. */
   harnessAttestations?: Readonly<Record<string, HarnessAttestationCitation | undefined>>;
@@ -254,6 +257,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
         ? buildExecutionEvidence(input.status, input.workspaceBinding, input.workspaceAttestation)
         : input.workspaceFallback,
     repository,
+    ...(input.sandboxProjection ? { sandbox_projection: input.sandboxProjection } : {}),
     harnesses,
     unknowns,
     integrity: {

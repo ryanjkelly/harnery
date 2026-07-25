@@ -16,6 +16,10 @@ directory from its writable set by policy rather than by path, so no repository
 topology avoids it; naming the directory as a writable root does. Verified end
 to end against the real CLI.
 
+The engine validates every requested writable root against the root the
+workspace provider validated, before the first child launches, and records the
+applied projection in run proof as `sandbox_projection`.
+
 Of the three built-in adapters, only `codex` can carry a projection today.
 `claude-code` and `cursor` declare it unrepresentable and refuse. Requests
 without a `filesystemPolicy` are unchanged, so shared-checkout runs behave
