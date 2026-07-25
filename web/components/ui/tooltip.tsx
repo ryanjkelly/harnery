@@ -112,14 +112,29 @@ export function Tooltip({
 
   const onEnter = React.useCallback(() => {
     cancel();
-    openTimer.current = setTimeout(() => {
-      setOpen(true);
-      // First reposition; popup width unknown until mount → reposition again
-      // on next frame once layout settles.
-      requestAnimationFrame(reposition);
-      requestAnimationFrame(() => requestAnimationFrame(reposition));
-    }, delay);
-  }, [cancel, delay, reposition]);
+    openTimer.current = setTimeout(() => setOpen(true), delay);
+  }, [cancel, delay]);
+
+  /*
+   * Place the popup before the browser paints it.
+   *
+   * This used to open first and correct itself on the next animation frame,
+   * which the operator could see: `reposition` falls back to a 200px guess when
+   * the popup has not mounted yet, so a 320px tooltip centred on its trigger
+   * painted 60px right of where it belonged and then snapped left. Short
+   * tooltips measured under 200px and snapped the other way, which is why the
+   * jump ran left-to-right on some triggers and right-to-left on others. Only
+   * the first hover showed it, because later hovers still had usable
+   * coordinates in state from the previous open.
+   *
+   * A layout effect runs after the popup is in the DOM but before paint, so
+   * measuring here and revealing it in the same commit leaves nothing to snap.
+   * The popup renders hidden until coordinates exist, which is what makes it
+   * measurable on that first pass.
+   */
+  React.useLayoutEffect(() => {
+    if (open) reposition();
+  }, [open, reposition]);
 
   const onLeave = React.useCallback(() => {
     cancel();
@@ -152,7 +167,7 @@ export function Tooltip({
       >
         {children}
       </span>
-      {open && coords && (
+      {open && (
         <div
           ref={popupRef}
           role="tooltip"
@@ -160,9 +175,13 @@ export function Tooltip({
           onMouseLeave={onLeave}
           style={{
             position: "fixed",
-            top: coords.top,
-            left: coords.left,
+            top: coords?.top ?? 0,
+            left: coords?.left ?? 0,
             zIndex: 200,
+            // Hidden rather than unmounted so the layout effect above can
+            // measure it. `visibility` keeps the layout box that `display: none`
+            // would throw away, and the effect reveals it before paint.
+            visibility: coords ? "visible" : "hidden",
           }}
           className={`pointer-events-auto rounded-md border border-border bg-popover px-2 py-1.5 text-[11px] leading-relaxed text-popover-foreground shadow-lg max-w-xs whitespace-normal ${className}`}
         >
