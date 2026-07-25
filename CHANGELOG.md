@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.26.0
+
+### Minor Changes
+
+- 830ae2a: Record the billing mode an attestation ran under, and stop truncating vendor
+  failures from the wrong end.
+
+  `harn harness attest` gains `--subscription-only`, matching
+  `workflow run --subscription-only` and the repo default in `config.jsonc`. The
+  mode is stored on the record and invalidates it when it differs, because a child
+  that may fall back to an API key can succeed where one restricted to its stored
+  login fails. Attestation records move to schema version 2; existing records are
+  rejected and should be re-recorded.
+
+  All three spawn adapters previously reported the FIRST 500 characters of a
+  failed child's output. A vendor CLI prints its banner and resolved config first
+  and the reason it failed last, so that reliably preserved the banner and
+  discarded the cause: a child that died with "your workspace is out of credits"
+  reported a cosmetic startup warning instead. Failure text is now tail-preserving
+  and includes both streams, since which one carries the reason varies by vendor.
+
+### Patch Changes
+
+- 03929da: Correct the recorded vendor contracts for the `claude-code` and `cursor`
+  profiles from live attestations.
+
+  `claude-code` recorded the placeholder string `"current CLI contract"`, which is
+  not a version, so its `contract` bench row could only ever report `unknown`. It
+  now records the version its declaration was actually validated against.
+  `cursor` recorded a version several releases behind the one it was validated on.
+
+  `codex` recorded a prerelease it was not running either, and is corrected to
+  `codex-cli 0.144.5`.
+
+  All three are now written from an attestation rather than by hand, and all three
+  `contract` rows reconcile.
+
 ## 0.25.0
 
 ### Minor Changes
