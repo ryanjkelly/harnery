@@ -16,6 +16,7 @@ export const HARNESS_CAPABILITY_DIMENSIONS = [
   "cost",
   "toolEvidence",
   "policyMapping",
+  "filesystemPolicyProjection",
   "interruption",
   "streaming",
   "steering",

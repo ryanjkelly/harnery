@@ -30,7 +30,13 @@ export const ATTESTATION_SCHEMA_VERSION = 2;
 /** Dimensions one minimal live turn can honestly establish. Everything else
  * needs a purpose-built scenario and stays outside the record rather than
  * being guessed at. */
-export const ATTESTABLE_DIMENSIONS = ["invocation", "finalResult", "sessionId", "cost"] as const;
+export const ATTESTABLE_DIMENSIONS = [
+  "invocation",
+  "finalResult",
+  "sessionId",
+  "cost",
+  "filesystemPolicyProjection",
+] as const;
 
 export type AttestableDimension = (typeof ATTESTABLE_DIMENSIONS)[number];
 

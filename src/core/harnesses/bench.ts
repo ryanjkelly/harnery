@@ -285,6 +285,21 @@ function observeAdapter(
     planningFailed = true;
   }
 
+  // Plan a second invocation carrying a filesystem policy. Offline this can only
+  // show whether the adapter *renders* the projection, never whether the vendor
+  // enforces it; enforcement needs the live probe (ADR 0041). An adapter that
+  // declares no projection throws here, which is the correct rendering.
+  let projectionRendered = false;
+  try {
+    const projected = adapter.buildInvocation(
+      { ...request, filesystemPolicy: { mode: "read-only" } },
+      "/harnery-bench/final.txt",
+    ).argv;
+    projectionRendered = projected.join(" ") !== argv.join(" ");
+  } catch {
+    projectionRendered = false;
+  }
+
   let normalized: SpawnResult | null = null;
   try {
     normalized = adapter.normalizeResult(adapter.fixture.raw);
@@ -336,6 +351,7 @@ function observeAdapter(
       normalized && "toolEvidence" in normalized ? "supported" : "unsupported",
     ),
     policyMapping: NOT_CHECKED,
+    filesystemPolicyProjection: fromAdapter(projectionRendered ? "supported" : "unsupported"),
     interruption: NOT_CHECKED,
     streaming: NOT_CHECKED,
     steering: NOT_CHECKED,

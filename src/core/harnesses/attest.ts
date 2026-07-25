@@ -7,6 +7,7 @@
  */
 
 import type { SpawnResult } from "../workflow/types.ts";
+import { probeFilesystemProjection } from "./attest-projection.ts";
 import type { AttestableDimension, HarnessAttestation } from "./attestation.ts";
 import {
   ATTESTATION_SCHEMA_VERSION,
@@ -80,6 +81,14 @@ export interface RunHarnessAttestationOptions {
   spawn?: (harness: HarnessId, prompt: string, timeoutMs: number) => Promise<SpawnResult>;
   /** Test seam. Defaults to writing under the coord root. */
   persist?: (record: HarnessAttestation) => void;
+  /**
+   * Also probe `filesystemPolicyProjection` (ADR 0041). Off by default because
+   * it costs two extra turns per capable harness, against one for everything
+   * else: the observation needs a control run to be readable at all.
+   */
+  projection?: boolean;
+  /** Test seam for the projection probe. */
+  probeProjection?: typeof probeFilesystemProjection;
   now?: () => Date;
 }
 
@@ -148,6 +157,19 @@ export async function runHarnessAttestation(
       cost: result.costUsd !== undefined ? "supported" : "unsupported",
     };
 
+    let projectionNote = "";
+    if (opts.projection) {
+      const probe = opts.probeProjection ?? probeFilesystemProjection;
+      const outcome = await probe(adapter, { timeoutMs, subscriptionOnly });
+      // An inconclusive probe records nothing for the dimension, leaving the
+      // declaration to stand on its own rather than dressing a non-observation
+      // as an observation.
+      if (outcome.observation !== "inconclusive") {
+        observations.filesystemPolicyProjection = outcome.observation;
+      }
+      projectionNote = `; projection ${outcome.observation}: ${outcome.detail}`;
+    }
+
     const record = sealAttestation({
       schema_version: ATTESTATION_SCHEMA_VERSION,
       harness: id,
@@ -167,7 +189,7 @@ export async function runHarnessAttestation(
       binaryVersion,
       observations,
       durationMs: result.durationMs,
-      note: `observed on ${binaryVersion}`,
+      note: `observed on ${binaryVersion}${projectionNote}`,
     });
   }
 

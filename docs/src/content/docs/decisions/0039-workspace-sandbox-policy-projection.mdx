@@ -43,8 +43,11 @@ Naming the directory does fix it. The same run, with that one path declared as a
 writable root, commits successfully. Harnery already knows the path: the
 provider resolves it. The missing piece is a way to say so.
 
-This also gives the blanket `policyMapping: unsupported` claim on every profile
-its first real content. That claim was accurate; this is the seam it described.
+**Corrected.** This ADR originally said the projection gave the blanket
+`policyMapping: unsupported` claim its first real content. It does not:
+`policyMapping` is about ALLOW/DENY/ASK translation, which is a different fact.
+[ADR 0041](/decisions/0041-filesystem-projection-capability/) gives projection
+its own capability claim and leaves `policyMapping` alone.
 
 ## Decision
 
@@ -167,7 +170,8 @@ rather than the worktree's private one.
 - Negative tests assert that a refusal never falls back to a laxer mode, and
   that an adapter which declares a projection unrepresentable throws instead of
   dropping it.
-- The `policyMapping` capability claim moves off `unsupported` for an adapter
-  only when a live attestation supports it
-  ([ADR 0038](/decisions/0038-live-harness-attestation/)), never from the
+- The capability claim for this behaviour is `filesystemPolicyProjection`, not
+  `policyMapping`, and it reaches an `attested` basis only from a live
+  observation that an adapter's declared sandbox is actually enforced
+  ([ADR 0041](/decisions/0041-filesystem-projection-capability/)), never from the
   declaration alone.

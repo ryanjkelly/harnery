@@ -1,0 +1,103 @@
+---
+title: "0041: Filesystem projection is its own claim, proved by a control"
+description: "ADR: separate sandbox projection from policy mapping as a capability dimension, and attest it with a control/treatment probe rather than a flag check."
+---
+
+**Status:** accepted (2026-07-25) · **Scope:** product tier (`core/harnesses` capabilities, profiles, bench, attestation)
+
+## Context
+
+[ADR 0039](/decisions/0039-workspace-sandbox-policy-projection/) claimed that
+projecting a filesystem policy gave the blanket `policyMapping: unsupported`
+claim "its first real content". That was wrong, and the claim's own note says so:
+
+> No ALLOW/DENY/ASK translation at the workflow boundary.
+
+`policyMapping` describes whether the policy engine's verdicts reach inside a
+subprocess harness, which the [policy reference](/cli/policy/) states plainly:
+policy "does not intercept arbitrary tools inside a subprocess harness".
+Projecting a sandbox mode and a writable-root set is a different fact.
+Both are host policy reaching a harness, and there the resemblance ends.
+
+Moving `policyMapping` off `unsupported` on the strength of a sandbox projection
+would have made one claim cover two independent capabilities. A consumer reading
+`supported` could no longer tell whether ALLOW/DENY/ASK works, whether filesystem
+modes work, or one of each. A capability model whose values are ambiguous is
+worse than one with a gap in it.
+
+## Decision
+
+Add `filesystemPolicyProjection` as its own capability dimension. `policyMapping`
+keeps its meaning and stays `unsupported` everywhere, because it is accurate.
+
+Declared support follows the adapter: `supported` for the one adapter with a
+sandbox projection, `unsupported` for the two that refuse one.
+
+### Why this dimension needs a different kind of probe
+
+Every other attested dimension is legible in a single successful turn. A result
+either carries a session id or it does not. Projection is not like that. **A
+sandbox that is declared but never enforced is indistinguishable from an enforced
+one at the CLI boundary**: both accept the flag and exit zero. Checking that the
+argv contains `--sandbox` proves only that Harnery wrote a flag, which is a fact
+about Harnery.
+
+So the live probe ([ADR 0038](/decisions/0038-live-harness-attestation/)) gives a
+child something to write and then looks at the filesystem.
+
+That has its own confound, and it is the interesting part. If the child under a
+read-only sandbox simply never attempts the write, the file is absent for a
+reason unrelated to enforcement, and the probe would read a lazy child as a
+secure one. **Absence of evidence is not evidence of enforcement.**
+
+The probe therefore runs a control first:
+
+| Run | Mode | Reading |
+| --- | --- | --- |
+| Control | `workspace-write` | Did this child write a file when permitted? |
+| Treatment | `read-only` | Did the same child write when forbidden? |
+
+Only a control that actually produced its file licenses any reading of the
+treatment run. A control that completes without writing yields `inconclusive`,
+the probe stops before spending the treatment turn, and nothing is recorded.
+That is the same prerequisite rule the main attestation applies to a failed turn.
+
+One asymmetry is deliberate: a **failed treatment turn is still evidence**. A
+child refusing a write may well end its turn unhappily, and that refusal is the
+observation. Only the filesystem decides the verdict.
+
+The probe is opt-in behind `--projection`, because it costs two extra turns
+against one for everything else. An adapter that declares no projection spends no
+vendor turn at all: its refusal happens in Harnery's own code, is already covered
+by unit tests, and attesting it live would buy nothing.
+
+## Alternatives
+
+- **Redefine `policyMapping` to cover any host policy reaching a harness.**
+  Rejected. One claim would answer two independent questions, so `supported`
+  would tell a consumer nothing actionable.
+- **Attest projection by inspecting the rendered argv.** Rejected. That observes
+  Harnery, not the vendor, and would report `supported` for a CLI that accepts
+  the flag and ignores it. The bench still does exactly this check offline, and
+  reports it with an `adapter` basis rather than an `attested` one, which is the
+  honest label for it.
+- **Run only the read-only treatment.** Rejected on the confound above. It is the
+  cheaper probe and it silently converts an uncooperative child into a passing
+  security result.
+- **Declare `supported` for the capable adapter and skip the probe.** Rejected.
+  Adding a declared-only dimension would reintroduce exactly the gap ADRs 0037
+  and 0038 closed.
+
+## Verification
+
+- Probe tests cover an enforced sandbox, a sandbox that accepts the flag without
+  enforcing it, a control child that never writes, a failed treatment turn with
+  an absent file, a failed control turn, a throwing spawn, and an adapter with no
+  declared projection spending no turn.
+- Live attestation on the capable adapter recorded `supported` from a control
+  that wrote its file and a treatment run that did not, so the bench row carries
+  an `attested` basis rather than a declared one.
+- The two adapters that refuse a projection were re-attested after the dimension
+  landed; neither recorded an observation for it, and both bench rows read
+  `unsupported` with an `adapter` basis.
+- Bench reports zero drift across all three harnesses.

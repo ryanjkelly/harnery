@@ -16,6 +16,7 @@ function capabilities(overrides: Partial<HarnessCapabilities>): HarnessCapabilit
     cost: unsupported(),
     toolEvidence: unsupported("The final-result adapter does not retain tool events."),
     policyMapping: unsupported("No ALLOW/DENY/ASK translation at the workflow boundary."),
+    filesystemPolicyProjection: unsupported("The adapter declares no sandbox projection."),
     interruption: partial("Timeout kills the subprocess; no caller-driven interrupt handle."),
     streaming: unsupported("Workflow children return one normalized final result."),
     steering: unsupported("One prompt is fixed at subprocess launch."),
@@ -79,6 +80,9 @@ export const BUILTIN_HARNESS_PROFILES = {
     },
     capabilities: capabilities({
       effortSelection: supported('Mapped to `-c model_reasoning_effort="<level>"`.'),
+      filesystemPolicyProjection: supported(
+        "Mode renders to --sandbox; writable roots to sandbox_workspace_write.writable_roots.",
+      ),
       maxTurns: unsupported("codex exec exposes no turn-ceiling flag."),
       sessionId: unsupported("--output-last-message carries no session id."),
       cost: unsupported("The final-message path carries no usage or cost."),

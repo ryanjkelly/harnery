@@ -24,6 +24,7 @@ interface AttestOpts extends FormatOpts {
   timeout?: string;
   yes?: boolean;
   subscriptionOnly?: boolean;
+  projection?: boolean;
 }
 
 const registry = createBuiltinHarnessRegistry();
@@ -101,6 +102,10 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
       "Scrub API-key vars so the child uses its stored login (repo default via config.jsonc workflow.subscriptionOnly)",
     )
     .option("--timeout <ms>", "Per-harness probe timeout in milliseconds")
+    .option(
+      "--projection",
+      "Also probe whether a declared sandbox is enforced; costs two extra turns per capable harness",
+    )
     .option("--json", "Machine-readable attestation report")
     .action(async (harnesses: string[], opts: AttestOpts) => {
       if (!opts.yes) {
@@ -127,6 +132,7 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
           harnesses,
           timeoutMs,
           subscriptionOnly,
+          projection: opts.projection === true,
         });
         if (opts.json) {
           emit.config({ format: "json" });
