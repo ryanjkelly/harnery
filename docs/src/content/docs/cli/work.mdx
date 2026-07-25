@@ -58,8 +58,32 @@ harn work retry <work-id>
 `run` starts ready work. It records an attempt and stable workflow run ID
 before loading the workflow script. Standard workflow options are available:
 `--harness`, `--max-agents`, `--concurrency`, `--cwd`,
-`--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
-`--approval-to`.
+`--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`,
+`--workspace-root`, and `--approval-to`.
+
+### Running an attempt in an isolated workspace
+
+`--isolation worktree` needs somewhere to put the workspace, so pass
+`--workspace-root` with a directory that contains both the checkout and its Git
+administrative directory. For a submodule or a linked worktree that means the
+enclosing repository, not the checkout itself:
+
+```bash
+harn work run <work-id> --isolation worktree --workspace-root /path/to/repo
+```
+
+The attempt then owns a real workspace binding, recorded in the run's proof under
+`execution.binding` with `owner.kind: "work_attempt"`.
+
+Asking for isolation without a writable root does not fail the run. The attempt
+falls back to shared and says so:
+
+```
+note: ran shared; worktree isolation was requested but not allocated (no --workspace-root given)
+```
+
+`--workspace-root` without `--isolation worktree` is refused, since the engine
+only honours a writable root under worktree isolation.
 
 The workflow receives the immutable assignment as `ctx.work` and its attempt
 identity as `ctx.attempt`:

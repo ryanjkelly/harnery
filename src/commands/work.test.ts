@@ -29,6 +29,42 @@ describe("work command", () => {
     ]);
   });
 
+  test("run and retry both accept a workspace root, so isolation is reachable", () => {
+    const program = createHarneryProgram();
+    const work = program.commands.find((candidate) => candidate.name() === "work");
+    // Both entry points into an attempt must offer it. `retry` starting a fresh
+    // attempt without a root would silently drop back to shared after a blocked
+    // isolated run, which is the surprise this flag exists to remove.
+    for (const name of ["run", "retry"]) {
+      const command = work?.commands.find((candidate) => candidate.name() === name);
+      const flags = command?.options.map((option) => option.long);
+      expect(flags).toContain("--workspace-root");
+      expect(flags).toContain("--isolation");
+    }
+  });
+
+  test("a workspace root without worktree isolation is refused, not quietly ignored", async () => {
+    const root = mkdtempSync(join("/tmp", "harnery-work-wsroot-"));
+    roots.push(root);
+    // The engine only honours a writable root under worktree isolation, so the
+    // combination is a mistake worth naming rather than a silent no-op. The
+    // refusal lands before any work item is read, so none needs to exist.
+    const previousOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    let failure = "";
+    try {
+      await createHarneryProgram({ emit: captureText([]) })
+        .parseAsync(["work", "run", "absent-work-id", "--workspace-root", root], { from: "user" })
+        .catch((error: unknown) => {
+          failure = error instanceof Error ? error.message : String(error);
+        });
+    } finally {
+      if (previousOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+      else process.env.HARNERY_COORD_ROOT_OVERRIDE = previousOverride;
+    }
+    expect(failure).toContain("--workspace-root requires --isolation worktree");
+  });
+
   test("work show explains why an attempt journal is unreadable", async () => {
     const root = mkdtempSync(join("/tmp", "harnery-work-command-"));
     roots.push(root);

@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
@@ -44,6 +45,7 @@ interface WorkRunOpts {
   allowApiBilling?: boolean;
   policy?: string;
   isolation?: PolicyIsolation;
+  workspaceRoot?: string;
   approvalTo?: string;
   actor?: string;
   json?: boolean;
@@ -178,6 +180,7 @@ function registerRunCommand(
     .option("--allow-api-billing", "Permit API-key override billing")
     .option("--policy <file>", "Host policy JSON/JSONC")
     .option("--isolation <mode>", "shared | worktree | sandbox | remote")
+    .option("--workspace-root <dir>", "Writable root the isolated workspace is allocated under")
     .option("--approval-to <address>", "Address durable ASK requests")
     .option("--actor <name>", "Actor recorded in attempt receipts")
     .option("--json", "Emit the workflow report or parked result as JSON")
@@ -186,7 +189,21 @@ function registerRunCommand(
         if (opts.harness && !registry.get(opts.harness)) {
           throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
         }
+        if (opts.workspaceRoot && opts.isolation !== "worktree") {
+          throw new Error("--workspace-root requires --isolation worktree");
+        }
         try {
+          // An isolated attempt needs a provider AND the writable root it may
+          // allocate under; the engine refuses to guess either. Without them a
+          // worktree request degrades to shared, which the proof records as
+          // requested vs effective isolation and the reporting below surfaces.
+          const { createLocalGitWorktreeProvider } = await import("../core/workflow/index.ts");
+          const workspace = opts.workspaceRoot
+            ? {
+                provider: createLocalGitWorktreeProvider({ coordRoot }),
+                writableRoots: [resolve(opts.workspaceRoot)],
+              }
+            : undefined;
           const report = await runWorkItem({
             coordRoot,
             workId,
@@ -209,6 +226,7 @@ function registerRunCommand(
               approvalMode: "park",
               approvalAddressee: opts.approvalTo,
               isolation: opts.isolation,
+              workspace,
               networkAccess: "enabled",
             },
           });
@@ -216,8 +234,18 @@ function registerRunCommand(
             emit.config({ format: "json" });
             emit.data(report);
           } else {
+            // A requested isolation the run could not honour is recorded in the
+            // proof as requested vs effective, which nobody reads on a green run.
+            // Say it here instead, so a silent downgrade to shared cannot pass for
+            // an isolated attempt.
+            const degraded =
+              opts.isolation && opts.isolation !== "shared" && !report.workspaceBinding
+                ? `note: ran shared; ${opts.isolation} isolation was requested but not allocated` +
+                  `${opts.workspaceRoot ? "" : " (no --workspace-root given)"}\n`
+                : "";
             emit.text(
-              `work ${workId}: run ${report.runId} finished\nproof: ${report.proofPath}\n` +
+              `work ${workId}: run ${report.runId} finished\n${degraded}` +
+                `proof: ${report.proofPath}\n` +
                 `next: harn work reconcile ${workId}\n`,
             );
           }
