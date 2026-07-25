@@ -154,6 +154,7 @@ export {
   isWorkspaceLifecycleState,
   listWorkflowWorkspaceInspections,
   prepareIntegration,
+  prepareReclaim,
   probeLocalGitWorktreeProvider,
   readWorkflowWorkspaceStatus,
   renderWorkflowWorkspaceStatus,

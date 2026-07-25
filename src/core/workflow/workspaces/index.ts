@@ -35,6 +35,8 @@ export {
   createLocalGitWorktreeProvider,
   probe as probeLocalGitWorktreeProvider,
 } from "./local-git.ts";
+export type { PrepareReclaimInput, ReclaimMode, ReclaimPreparation } from "./reclaim.ts";
+export { prepareReclaim } from "./reclaim.ts";
 export type {
   AuthorizedIntegrationPlan,
   AuthorizedProviderIntegrationInput,

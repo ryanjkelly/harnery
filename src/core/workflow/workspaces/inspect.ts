@@ -337,8 +337,23 @@ export function renderWorkflowWorkspaceStatus(status: WorkflowWorkspaceStatus): 
     `cleanup: ${status.cleanup.state}; ${status.cleanup.attempts} attempt`,
   );
   if (status.cleanup.reason) lines.push(`cleanup reason: ${status.cleanup.reason}`);
+  // A count alone cannot be acted on: an operator deciding whether to salvage or
+  // discard has to know what is actually uncommitted, and leaving Harnery to run
+  // `git status` is the gap `reclaim` exists to close (ADR 0042). Bounded,
+  // because a dirty tree can be arbitrarily large.
+  if (status.repository.dirty_paths.length > 0) {
+    // Entries arrive in porcelain form (` M path`), so the status code is worth
+    // keeping and the leading pad is not.
+    const shown = status.repository.dirty_paths
+      .slice(0, MAX_LISTED_DIRTY_PATHS)
+      .map((path) => path.trim());
+    const remainder = status.repository.dirty_paths.length - shown.length;
+    lines.push(`dirty paths: ${shown.join(", ")}${remainder > 0 ? ` (+${remainder} more)` : ""}`);
+  }
   return `${lines.join("\n")}\n`;
 }
+
+const MAX_LISTED_DIRTY_PATHS = 12;
 
 function readWorkspaceJournal(runDir: string, runId: string): WorkflowJournalProjectionEvent[] {
   const path = join(runDir, "journal.jsonl");

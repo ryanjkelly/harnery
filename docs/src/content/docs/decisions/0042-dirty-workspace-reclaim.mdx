@@ -1,0 +1,141 @@
+---
+title: "0042: Give a preserved workspace a way out"
+description: "ADR: reclaim a workspace stuck at preserved_dirty by salvaging its work to a durable branch, then releasing it through the ordinary cleanup path."
+---
+
+**Status:** accepted (2026-07-25) · **Scope:** product tier (`core/workflow/workspaces`, `workflow` CLI)
+
+## Context
+
+When a run ends with uncommitted work, the local Git provider preserves the
+worktree instead of destroying the only copy. That decision is right. Until now
+it was also permanent.
+
+Six workspaces on the development host made this concrete. Three were `released`
+and gone; three sat at `preserved_dirty`, still on disk, each holding
+uncommitted changes to the same six files and **zero commits**. That is not a
+coincidence. It is the residue of the commit gap
+[ADR 0040](/decisions/0040-git-administrative-grant/) closed: children edited
+files, could not commit, and their work existed only in a working tree.
+
+Running cleanup again did not help:
+
+```
+$ harn workflow cleanup <run-id> --yes
+workspace cleanup preserved_dirty: ws-8ce84b96a5ba4ba7a2b42f09
+reason: dirty workspace was preserved
+```
+
+The attempt counter incremented and nothing else changed. The only exit was to
+leave Harnery entirely: inspect by hand, salvage by hand, remove the directory,
+prune, delete the branch. Harnery's records would then describe a workspace that
+no longer existed.
+
+Three things were missing: a way to see the work (status printed
+`10 dirty` as a bare count), a terminal transition, and any way to keep the work
+while reclaiming the disk.
+
+## Decision
+
+Add `harn workflow reclaim <run-id>`, which resolves a preserved workspace and
+then releases it.
+
+### Neither mode deletes anything
+
+Both modes bring the working tree to a **clean** state by an explicit named act,
+then hand off to the ordinary cleanup path, which releases a clean workspace
+exactly as it always has.
+
+| Mode | Act | Default |
+| --- | --- | --- |
+| Salvage | Commit the work to a durable branch | yes |
+| Discard | `reset --hard` then `clean -fd` | no, requires `--discard` |
+
+So reclaim introduces no second removal path that could drift from the audited
+one, and no force-delete of live work exists anywhere in the codebase. Cleanup
+remains the only thing that removes a worktree.
+
+### Salvage commits, then rewinds
+
+The obvious implementation commits the work onto the provider's workspace branch,
+which is already checked out. That is wrong twice over, and both failures showed
+up only when the command was run against a real preserved workspace:
+
+1. **Cleanup deletes the workspace branch.** Salvaging there parks the work on a
+   ref the very next step removes, leaving the commit unreachable and eventually
+   collectable. The work would appear saved and quietly rot.
+2. **Cleanup pins the workspace ref's OID in a frozen intent** and refuses when
+   it moves. Advancing that branch turned every reclaim into
+   `cleanup blocked: workspace ref changed from the frozen intent`.
+
+Both are good behaviours, so salvage accommodates them rather than working around
+them. It commits, points a separate `harnery/salvage/<run-id>` branch at the new
+commit, and rewinds the checked-out branch to where it was. The tree ends clean,
+the workspace ref ends untouched, and the work lives on a ref cleanup has no
+reason to touch. The salvage branch is named for the **run**, because a run id is
+what an operator has in hand when they come looking later.
+
+The salvage commit uses `--no-verify`. That is not a shortcut: a repository hook
+that rejects work in progress would otherwise turn "preserve the work" into
+"cannot preserve the work", which is the failure this path exists to prevent.
+
+### Already gone counts as reclaimed
+
+A workspace whose directory has been removed out from under Harnery reports
+`already_gone` rather than erroring. Treating a workspace nothing can advance as
+a failure is what produced an attempt counter that only ever went up.
+
+### Seeing the work
+
+Status now lists the dirty paths, bounded, alongside the count it already
+printed. An operator deciding between salvage and discard needs to know what is
+uncommitted, and leaving Harnery to run `git status` was part of the gap.
+
+## The boundary against provider-owned commit finalization
+
+Reclaim commits on the operator's behalf, which resembles the "provider-owned
+commit finalization" that
+[ADR 0039](/decisions/0039-workspace-sandbox-policy-projection/) rejected. The
+distinction is worth stating rather than leaving for a reader to infer:
+
+- What 0039 rejected is the host committing **during a run**, as a default. That
+  moves commit authority away from the agent that made the change and adds a
+  second actor to every run.
+- Reclaim acts **after the run is over**, on an **abandoned** workspace, only
+  when an operator explicitly asks. No agent is left to hold the authority, and
+  the alternative on the table is destroying the work.
+
+## Alternatives
+
+- **Force-delete the dirty worktree.** Rejected as a default. It is what the
+  wider ecosystem does, and it is safe there because those systems commit on the
+  agent's behalf after every turn, so their worktrees are never meaningfully
+  dirty. Harnery lets the agent own its commit, which makes a dirty worktree a
+  real and recurring outcome rather than an anomaly. `--discard` keeps the
+  behaviour available for work that is genuinely garbage.
+- **Let reclaim perform its own release.** Rejected. It would duplicate the
+  removal path and let it drift from the audited one, and it would bypass the
+  frozen-intent guard rather than satisfying it.
+- **Salvage onto the workspace branch.** Rejected on evidence, above.
+- **Salvage to a patch file instead of a branch.** Rejected. A loose file has no
+  owner and no lifecycle; a branch lives in the repository's own object store and
+  is recoverable by name.
+- **Sweep preserved workspaces automatically.** Rejected. Choosing between
+  keeping and discarding an agent's unfinished work is a decision, not a chore.
+- **Push the salvage branch.** Out of scope. Reclaim is a local operation and
+  should not reach a remote.
+
+## Verification
+
+- Unit tests cover salvage across modified and untracked files, salvage under a
+  repository hook that rejects commits, discard including a staged deletion that
+  `clean` alone would miss, a clean worktree producing no empty commit, and a
+  missing worktree reporting `already_gone`.
+- One test removes both the worktree **and** the workspace branch the way cleanup
+  does, then asserts the work is still reachable. That is the test the first
+  implementation would have failed.
+- End to end against the three real preserved workspaces on the development host:
+  each salvaged to its own branch and reached `released`, with the work still
+  present after the directory was gone. All six workspaces now read `released`.
+- Reclaiming an already-released workspace reports `already_gone` and does not
+  fail.

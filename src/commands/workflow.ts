@@ -70,6 +70,10 @@ interface WorkflowConfirmedMutationOpts {
   json?: boolean;
 }
 
+interface WorkflowReclaimOpts extends WorkflowConfirmedMutationOpts {
+  discard?: boolean;
+}
+
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
   const registry = createBuiltinHarnessRegistry();
   const harnesses = registry.ids();
@@ -588,6 +592,76 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       } catch (error) {
         emit.error({
           code: "workflow_cleanup_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.exit(1);
+      }
+    });
+
+  workflow
+    .command("reclaim <run-id>")
+    .description(
+      "Resolve a workspace preserved because it was dirty: salvage the work to its branch, then release.",
+    )
+    .option("--yes", "Confirm that this commits or discards uncommitted work, then releases")
+    .option("--discard", "Throw the uncommitted work away instead of salvaging it")
+    .option("--json", "Emit the reclaim preparation and cleanup result as JSON")
+    .action(async (runId: string, opts: WorkflowReclaimOpts) => {
+      const coordRoot = findCoordRoot();
+      if (!coordRoot) {
+        emit.error({
+          code: "no_coord_root",
+          message: "no .harnery/ coordination root found; run `init` first",
+        });
+        process.exit(1);
+      }
+      if (!opts.yes) {
+        emit.error({
+          code: "reclaim_confirmation_required",
+          message: opts.discard
+            ? "reclaim --discard permanently destroys uncommitted work; pass --yes to confirm"
+            : "workspace reclaim commits uncommitted work to its branch and then releases the worktree; pass --yes to confirm",
+        });
+        process.exit(1);
+      }
+      try {
+        const { inspectWorkflowWorkspace, prepareReclaim, cleanupWorkspace } = await import(
+          "../core/workflow/index.ts"
+        );
+        const inspection = inspectWorkflowWorkspace(coordRoot, runId);
+        if (!inspection.ok) {
+          emit.error({ code: "workflow_reclaim_failed", message: inspection.error });
+          process.exit(1);
+        }
+        const allocation = inspection.value.allocation;
+        if (!allocation) {
+          emit.error({
+            code: "workflow_reclaim_unavailable",
+            message: `run ${runId} has no provider-owned Git workspace to reclaim`,
+          });
+          process.exit(1);
+        }
+        const preparation = prepareReclaim({
+          worktreePath: allocation.active_root,
+          mode: opts.discard ? "discard" : "salvage",
+          runId,
+        });
+        // Cleanup still owns removal. Reclaim only changes whether the tree it
+        // finds is dirty, so there is one audited release path, not two.
+        const provider = await builtInProviderForRun(coordRoot, runId);
+        const cleanup = await cleanupWorkspace({ coordRoot, runId, provider });
+        if (opts.json) {
+          emit.config({ format: "json" });
+          emit.data({ preparation, cleanup });
+          return;
+        }
+        emit.text(
+          `reclaim ${preparation.action}: ${preparation.detail}\n` +
+            `workspace cleanup ${cleanup.status}: ${cleanup.binding_id}\n`,
+        );
+      } catch (error) {
+        emit.error({
+          code: "workflow_reclaim_failed",
           message: error instanceof Error ? error.message : String(error),
         });
         process.exit(1);

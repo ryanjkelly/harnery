@@ -19,6 +19,7 @@ harn workflow integration prepare <run-id> --policy <file> [--reviewer <name>]
                                     [--accept-unknown <code>] [--approval-to <address>] [--json]
 harn workflow integration apply <run-id> --yes [--json]
 harn workflow cleanup <run-id> --yes [--json]
+harn workflow reclaim <run-id> --yes [--discard] [--json]
 harn workflow approvals list [--status pending|approved|denied] [--json]
 harn workflow approvals show <approval-id> [--json]
 harn workflow approvals approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
@@ -406,6 +407,30 @@ binding and cleanup intent. A clean unintegrated branch that is not reachable
 from the target is preserved, as is dirty or ambiguous work. The CLI supports
 the built-in local Git provider. Embedding hosts use `prepareIntegration()`,
 `applyIntegration()`, and `cleanupWorkspace()` for other providers.
+
+### Reclaiming a preserved workspace
+
+Preserving dirty work is correct, but a preserved workspace needs a way out.
+Cleanup will keep finding the same dirty tree and preserving it again, so
+`reclaim` resolves the work first and then releases
+([ADR 0042](/decisions/0042-dirty-workspace-reclaim/)):
+
+```bash
+harn workflow reclaim <run-id> --yes             # salvage the work, then release
+harn workflow reclaim <run-id> --discard --yes   # throw the work away, then release
+```
+
+Salvage commits the uncommitted work to a durable `harnery/salvage/<run-id>`
+branch, so it stays recoverable by name after the worktree directory is gone.
+Discard is never the default.
+
+Neither mode removes anything itself. Each makes the working tree clean and then
+hands off to the ordinary cleanup path, so cleanup stays the only thing that
+removes a worktree. A workspace whose directory is already gone reports
+`already_gone` instead of failing.
+
+`harn workflow workspace <run-id>` lists the dirty paths, so the choice between
+salvaging and discarding can be made without leaving Harnery.
 
 ## Resume
 
