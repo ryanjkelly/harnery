@@ -154,6 +154,8 @@ export interface HarnessEvidenceCoverage {
 export interface WorkflowSandboxProjectionEvidence {
   mode: SpawnFilesystemPolicy["mode"];
   writable_roots: string[];
+  /** Which Git administrative grant the run asked for (ADR 0040). */
+  git_grant: GitAdministrativeGrant;
 }
 
 export interface WorkflowProofUnknown {
@@ -329,6 +331,18 @@ export interface SpawnRequest {
   filesystemPolicy?: SpawnFilesystemPolicy;
 }
 
+/**
+ * Whether a run may write the Git administrative directory (ADR 0040).
+ *
+ * There is no middle setting, and the reason is a property of Git rather than a
+ * design choice. A linked worktree has a private administrative directory and a
+ * shared one, but object writes and branch refs live in the shared half, so even
+ * `git add` fails without it. A grant that enables a commit is therefore always
+ * a grant on the repository every worktree shares, including the operator's own
+ * checkout. That is why it has to be asked for by name.
+ */
+export type GitAdministrativeGrant = "none" | "shared-repository";
+
 /** What the host has decided the child may write. `full-access` is deliberately
  * not a mode: Harnery does not project a no-sandbox state into a vendor CLI. */
 export interface SpawnFilesystemPolicy {
@@ -472,6 +486,18 @@ export interface EngineOpts {
    * (ADR 0039). Validated against the workspace binding before the first spawn,
    * and recorded in proof. Absent leaves every adapter invocation unchanged. */
   filesystemPolicy?: SpawnFilesystemPolicy;
+  /**
+   * Whether children may write the repository's administrative directory
+   * (ADR 0040). Defaults to `"none"`.
+   *
+   * The caller asks for the grant by name and never supplies the path: the
+   * engine resolves it from the workspace binding the provider already
+   * verified. That asymmetry is deliberate. `filesystemPolicy.writableRoots` is
+   * caller-supplied and must stay inside the workspace, so a caller cannot use
+   * it to reach the source repository; this grant can, which is exactly why it
+   * is a named capability rather than another path.
+   */
+  gitWrite?: GitAdministrativeGrant;
   /** Immutable host policy. Workflow scripts and model prompts cannot replace it. */
   policy?: PolicySpec | NormalizedPolicy;
   /** Host callback for ASK. Missing, invalid, throwing, or timed-out resolution denies. */

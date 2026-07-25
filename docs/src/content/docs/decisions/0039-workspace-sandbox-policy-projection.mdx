@@ -115,10 +115,13 @@ Two guarantees back that grant:
   `sandbox_projection`, so a completed run states exactly what its children were
   permitted to write. Absent means no projection was applied.
 
-One step remains deliberately manual: the provider does not yet supply the Git
-administrative directory automatically for runs whose contract expects a commit.
-A caller passes it explicitly. Automating the grant is a separate decision,
-because it changes a run's default write surface.
+**Superseded in part.** This ADR said a caller passes the administrative
+directory explicitly. The containment rule above makes that impossible: in a
+linked worktree the directory lies outside the workspace root, so containment
+refuses it. [ADR 0040](/decisions/0040-git-administrative-grant/) replaces the
+caller-supplied path with a named grant resolved from the binding, and records
+the measurement showing that a commit needs the *shared* half of the directory
+rather than the worktree's private one.
 
 ## Alternatives
 

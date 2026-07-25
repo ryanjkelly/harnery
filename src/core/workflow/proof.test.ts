@@ -286,11 +286,16 @@ describe("sandbox projection evidence (ADR 0039)", () => {
     const proof = buildWorkflowProof({
       ...input,
       journalPath: journalFile(),
-      sandboxProjection: { mode: "workspace-write", writable_roots: ["/srv/ws/repo/.git"] },
+      sandboxProjection: {
+        mode: "workspace-write",
+        writable_roots: ["/srv/ws/repo/.git"],
+        git_grant: "shared-repository",
+      },
     });
     expect(proof.sandbox_projection).toEqual({
       mode: "workspace-write",
       writable_roots: ["/srv/ws/repo/.git"],
+      git_grant: "shared-repository",
     });
   });
 

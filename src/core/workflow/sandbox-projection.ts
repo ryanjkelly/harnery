@@ -15,7 +15,8 @@
  */
 
 import type { HarnessSandboxProjection } from "../harnesses/types.ts";
-import type { SpawnFilesystemPolicy } from "./types.ts";
+import type { GitAdministrativeGrant, SpawnFilesystemPolicy } from "./types.ts";
+import type { WorkspaceBinding } from "./workspaces/types.ts";
 
 export class SandboxProjectionError extends Error {
   readonly harness: string;
@@ -23,7 +24,8 @@ export class SandboxProjectionError extends Error {
     | "mode_unrepresentable"
     | "writable_roots_unrepresentable"
     | "no_projection"
-    | "writable_root_escapes_workspace";
+    | "writable_root_escapes_workspace"
+    | "git_grant_unavailable";
 
   constructor(harness: string, reason: SandboxProjectionError["reason"], message: string) {
     super(message);
@@ -114,4 +116,35 @@ export function assertProjectionWithinWorkspace(
       );
     }
   }
+}
+
+/**
+ * Resolve a named Git administrative grant into concrete writable roots
+ * (ADR 0040).
+ *
+ * These are the only paths a run may write outside its workspace, and the
+ * caller never names them: they come from the binding the provider verified.
+ * A caller-supplied path is checked by `assertProjectionWithinWorkspace` and can
+ * never reach here, so asking for the grant is the whole of the widening.
+ *
+ * In a linked worktree both halves of the administrative directory live under
+ * the source repository, and a commit needs the shared half regardless, so the
+ * grant returns both rather than pretending the private half is useful alone.
+ */
+export function resolveGitGrantRoots(
+  grant: GitAdministrativeGrant,
+  binding: WorkspaceBinding | undefined,
+): readonly string[] {
+  if (grant === "none") return [];
+  const repository = binding?.repository;
+  if (!repository) {
+    throw new SandboxProjectionError(
+      "workflow",
+      "git_grant_unavailable",
+      `gitWrite "${grant}" needs a Git repository binding; this run has ${binding ? "a workspace with no repository" : "no isolated workspace"}`,
+    );
+  }
+  // Deduplicated: a full-clone topology reports the same path for both, and a
+  // repeated writable root is noise in the rendered argv and in proof.
+  return [...new Set([repository.gitdir.realpath, repository.common_dir.realpath])];
 }

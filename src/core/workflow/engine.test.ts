@@ -174,6 +174,22 @@ describe("runWorkflow", () => {
     );
   });
 
+  test("a Git write grant on a run with no isolated workspace fails the run (ADR 0040)", async () => {
+    // Proves the engine actually consults the grant resolver, which the
+    // resolver's own unit tests cannot show. The grant reaches outside the
+    // workspace, so a run with no workspace has nothing to resolve it from and
+    // must fail rather than proceed without the capability it asked for.
+    const script = writeScript(`export default async () => "unreachable";`);
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        spawners: {},
+        gitWrite: "shared-repository",
+        ...quiet,
+      }),
+    ).rejects.toThrow(/no isolated workspace/);
+  });
+
   test("keeps standalone context absent and rejects invalid work bindings", async () => {
     const script = writeScript(`export default async ({ work }) => work ?? null;`);
     const standalone = await runWorkflow(script, {

@@ -1,0 +1,131 @@
+---
+title: "0040: Ask for Git write by name, not by path"
+description: "ADR: a run gains write access to the repository's administrative directory through a named grant resolved from the workspace binding, never through a caller-supplied path."
+---
+
+**Status:** accepted (2026-07-25) · **Scope:** product tier (`core/workflow` engine, sandbox projection, workflow proof)
+
+## Context
+
+[ADR 0039](/decisions/0039-workspace-sandbox-policy-projection/) let a run declare
+writable roots and project them into the child's vendor sandbox. It closed the
+case where a child in a provider-owned worktree could edit files but not commit,
+by naming the repository's administrative directory as a writable root.
+
+It then added a containment rule: every requested writable root must lie inside
+the root the workspace provider validated. That rule is correct, and it made the
+original remedy impossible. Measuring a linked worktree shows why:
+
+```
+workspace root : …/ws/wt
+gitdir         : …/src/.git/worktrees/wt
+common_dir     : …/src/.git
+```
+
+Both halves of the administrative directory live under the *source* repository,
+outside the worktree entirely. Containment refuses both, so the one path that
+made commits work could no longer be passed. ADR 0039 said a caller supplies it
+explicitly; after containment, no caller can.
+
+A second measurement removes the obvious escape. Leaving the worktree's private
+`gitdir` writable while making the shared `objects` and `refs` read-only does not
+merely block `git commit`, it blocks staging:
+
+```
+error: f.txt: failed to insert into database
+error: unable to index file 'f.txt'
+```
+
+Objects and branch refs live in the shared half. So there is no scoped version of
+this grant to offer. **Any grant that enables a commit in a linked worktree is a
+grant on the repository that every worktree and the operator's own checkout
+share.** That is a property of Git's layout, not a design choice, and it is a
+materially larger grant than "let this run commit" suggests.
+
+Harnery has no clone isolation today; `worktree` is the only local isolated
+topology, so there is no alternative shape that keeps the grant inside the run.
+
+## Decision
+
+A run asks for the grant **by name**. The caller never supplies the path.
+
+`EngineOpts.gitWrite` takes `"none"` (the default) or `"shared-repository"`. When
+set, the engine resolves the concrete paths from the workspace binding the
+provider already verified, and appends them to the policy projected into every
+child.
+
+The asymmetry with `filesystemPolicy.writableRoots` is the point:
+
+| | Source | Containment |
+| --- | --- | --- |
+| `writableRoots` | caller-supplied | must be inside the workspace |
+| `gitWrite` | resolved from the binding | the sanctioned way outside it |
+
+A caller cannot reach the source repository by passing a path, because
+containment still refuses every caller-supplied root that leaves the workspace.
+It can only ask for a capability whose paths Harnery resolves itself. Asking is
+therefore the whole of the widening, which is what makes the grant auditable.
+
+The name says what it costs. `"shared-repository"` is not a description of a
+directory; it is a statement that the write reaches something shared. There is no
+middle value, because the measurement above shows a scoped one would not work.
+
+Two supporting rules:
+
+- The grant requires a repository binding. A run with no isolated workspace, or a
+  workspace with no repository, fails before the first child rather than
+  proceeding with an unenforced expectation.
+- The grant needs a filesystem policy to travel in. Setting `gitWrite` without
+  one fails loudly instead of being silently inert, since a caller who asked for
+  commit capability and received none has been misled.
+
+Proof records the grant alongside the projection, so a completed run states not
+only which paths its children could write but whether it held this capability at
+all.
+
+## Alternatives
+
+- **Grant it automatically when the run's contract expects a commit.** Rejected.
+  The grant reaches outside the run's workspace, so inferring it from an expected
+  output would widen the blast radius of a run without anyone saying so. Runs
+  that commit are common; that is an argument for making the grant easy to
+  request, not for making it implicit.
+- **Grant only the worktree's private `gitdir`.** Rejected on measurement. Staging
+  fails without the shared half, so this would offer a capability that does not
+  work while reading as though it were the safer option. A grant that appears
+  scoped and is not is worse than an honest broad one.
+- **Let callers keep passing the path and exempt the administrative directory
+  from containment.** Rejected. An exemption keyed on a path shape is an
+  exemption an arbitrary caller-supplied string can satisfy. Resolving from the
+  binding means the engine, not the caller, decides which paths the exemption
+  covers.
+- **Relocate the administrative directory inside the workspace.** Rejected on the
+  evidence already recorded in ADR 0039: the vendor excludes the directory by
+  policy rather than by path, so the exclusion follows the relocation.
+- **Add clone isolation so the grant stays inside the workspace.** Not rejected,
+  deferred. In a full clone the two halves coincide inside the working directory,
+  and this grant would be self-contained. That is a workspace-provider decision
+  with its own cost, and the resolver already collapses the duplicate path so it
+  will work unchanged if clone isolation lands.
+- **Have the host commit on the child's behalf.** Still available, and still not
+  the default, for the reason ADR 0039 gave: it moves commit authority away from
+  the agent that made the change. It remains the answer for a harness that can
+  accept no projection at all.
+
+## Verification
+
+- Containment tests assert that both halves of a linked worktree's administrative
+  directory are refused as caller-supplied roots, pinning the constraint that
+  motivates the grant.
+- Resolver tests cover the default granting nothing, a linked worktree granting
+  both halves, a coincident topology granting one path rather than a duplicate,
+  and refusal when the binding carries no repository or no workspace exists.
+- The paths in those tests come from a measured worktree, not from an assumed
+  layout.
+- An engine test asks for the grant on a run with no isolated workspace and
+  expects the run to fail, which shows the engine consults the resolver at all.
+  A resolver unit test cannot establish that.
+- Proof tests cover the recorded grant.
+- Not covered by an automated test: a live commit through the grant. The vendor
+  argv it produces is the same one ADR 0039 verified end to end against the real
+  CLI; only the source of the path changed.

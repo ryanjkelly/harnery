@@ -53,13 +53,15 @@ import {
   workflowScriptDigest,
   writeWorkflowRunManifest,
 } from "./run-state.ts";
-import { assertProjectionWithinWorkspace } from "./sandbox-projection.ts";
+import { assertProjectionWithinWorkspace, resolveGitGrantRoots } from "./sandbox-projection.ts";
 import { normalizeWorkflowSpecialists, resolveSpecialistAssignment } from "./specialists.ts";
 import type {
   AgentOpts,
   EngineOpts,
+  GitAdministrativeGrant,
   HarnessName,
   RunReport,
+  SpawnFilesystemPolicy,
   SpawnResult,
   StageSchema,
   WorkflowAgentProof,
@@ -68,6 +70,7 @@ import type {
   WorkflowEvidenceRecord,
   WorkflowModule,
   WorkflowProof,
+  WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
 import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
@@ -85,6 +88,21 @@ import type {
   WorkspaceUnsupportedExecutionEvidence,
 } from "./workspaces/types.ts";
 import { isWorkspaceAttestation } from "./workspaces/validate.ts";
+
+/** Proof record of the filesystem projection a run applied (ADR 0039/0040).
+ * Absent when no policy was in force, which reads as "no projection applied"
+ * rather than "an empty one". */
+function sandboxProjectionEvidence(
+  policy: SpawnFilesystemPolicy | undefined,
+  gitWrite: GitAdministrativeGrant,
+): WorkflowSandboxProjectionEvidence | undefined {
+  if (!policy) return undefined;
+  return {
+    mode: policy.mode,
+    writable_roots: [...(policy.writableRoots ?? [])],
+    git_grant: gitWrite,
+  };
+}
 
 const DEFAULT_MAX_AGENTS = 50;
 const DEFAULT_CONCURRENCY = 4;
@@ -318,12 +336,10 @@ async function executeWorkflow(
         evidence: [],
         harnessEvidence: opts.harnessEvidence,
         harnessAttestations: opts.harnessAttestations,
-        sandboxProjection: opts.filesystemPolicy
-          ? {
-              mode: opts.filesystemPolicy.mode,
-              writable_roots: [...(opts.filesystemPolicy.writableRoots ?? [])],
-            }
-          : undefined,
+        sandboxProjection: sandboxProjectionEvidence(
+          opts.filesystemPolicy,
+          opts.gitWrite ?? "none",
+        ),
         policy: policy
           ? {
               config: policy,
@@ -352,8 +368,8 @@ async function executeWorkflow(
   // Validate the projection once, before any child launches, so a policy that
   // would reach outside the provider's validated root fails the run rather than
   // silently widening one child's write access (ADR 0039).
-  const filesystemPolicy = opts.filesystemPolicy;
-  if (filesystemPolicy?.writableRoots?.length) {
+  const requestedPolicy = opts.filesystemPolicy;
+  if (requestedPolicy?.writableRoots?.length) {
     if (!workspaceBinding) {
       throw new Error(
         "a filesystem policy with writable roots requires an isolated workspace; none is bound to this run",
@@ -362,9 +378,25 @@ async function executeWorkflow(
     assertProjectionWithinWorkspace(
       "workflow",
       workspaceBinding.writable_root.realpath,
-      filesystemPolicy.writableRoots,
+      requestedPolicy.writableRoots,
     );
   }
+  // The Git grant is resolved after containment on purpose: caller-supplied
+  // roots must stay inside the workspace, while these come from the verified
+  // binding and are the one sanctioned way out of it (ADR 0040).
+  const gitWrite = opts.gitWrite ?? "none";
+  const gitGrantRoots = resolveGitGrantRoots(gitWrite, workspaceBinding);
+  if (gitGrantRoots.length > 0 && !requestedPolicy) {
+    throw new Error(
+      `gitWrite "${gitWrite}" has no effect without a filesystem policy to carry it; set filesystemPolicy or drop the grant`,
+    );
+  }
+  const filesystemPolicy: SpawnFilesystemPolicy | undefined = requestedPolicy
+    ? {
+        ...requestedPolicy,
+        writableRoots: [...(requestedPolicy.writableRoots ?? []), ...gitGrantRoots],
+      }
+    : undefined;
   const executionRepoBefore = resumeState?.manifest.repository_before ?? snapshotRepo(executionCwd);
   if (!resumeState) {
     writeWorkflowRunManifest({
@@ -1080,12 +1112,7 @@ async function executeWorkflow(
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
         harnessAttestations: opts.harnessAttestations,
-        sandboxProjection: opts.filesystemPolicy
-          ? {
-              mode: opts.filesystemPolicy.mode,
-              writable_roots: [...(opts.filesystemPolicy.writableRoots ?? [])],
-            }
-          : undefined,
+        sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
         policy: policy
           ? {
               config: policy,
@@ -1166,12 +1193,7 @@ async function executeWorkflow(
         evidence: evidenceRecords,
         harnessEvidence: opts.harnessEvidence,
         harnessAttestations: opts.harnessAttestations,
-        sandboxProjection: opts.filesystemPolicy
-          ? {
-              mode: opts.filesystemPolicy.mode,
-              writable_roots: [...(opts.filesystemPolicy.writableRoots ?? [])],
-            }
-          : undefined,
+        sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
         policy: policy
           ? {
               config: policy,
