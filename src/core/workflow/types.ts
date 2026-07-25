@@ -313,6 +313,21 @@ export interface SpawnRequest {
   /** Scrub all API-key vars from the child env so it can only authenticate
    * via its stored (subscription) login. See billing.ts. */
   subscriptionOnly?: boolean;
+  /** Filesystem policy to project into the child's own vendor sandbox
+   * (ADR 0039). Absent leaves the adapter's default invocation untouched, which
+   * is what shared-checkout runs use. An adapter that cannot represent the
+   * requested projection refuses before launch rather than downgrading. */
+  filesystemPolicy?: SpawnFilesystemPolicy;
+}
+
+/** What the host has decided the child may write. `full-access` is deliberately
+ * not a mode: Harnery does not project a no-sandbox state into a vendor CLI. */
+export interface SpawnFilesystemPolicy {
+  mode: "read-only" | "workspace-write";
+  /** Explicit absolute paths the child may write, declared rather than derived
+   * from `cwd`. The path that needs writing (a repository's administrative
+   * directory, for instance) is routinely outside the working directory. */
+  writableRoots?: readonly string[];
 }
 
 /** One headless-subagent runner. The engine is adapter-agnostic; claude-code

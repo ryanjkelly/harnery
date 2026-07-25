@@ -70,6 +70,13 @@ export const BUILTIN_HARNESS_PROFILES = {
     modelFamily: "gpt",
     effortValues: ["none", "minimal", "low", "medium", "high", "xhigh"],
     verified: { date: "2026-07-25", version: "codex-cli 0.144.5" },
+    // Verified against codex-cli 0.144.5: `--sandbox <mode>` plus
+    // `sandbox_workspace_write.writable_roots`. Without the writable-root entry
+    // a workspace-write child still cannot write a repository's .git directory.
+    sandboxProjection: {
+      modes: { "read-only": "read-only", "workspace-write": "workspace-write" },
+      writableRoots: true,
+    },
     capabilities: capabilities({
       effortSelection: supported('Mapped to `-c model_reasoning_effort="<level>"`.'),
       maxTurns: unsupported("codex exec exposes no turn-ceiling flag."),

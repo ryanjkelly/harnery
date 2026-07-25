@@ -20,10 +20,11 @@
  */
 
 import { exec } from "../../lib/exec.ts";
-import { validateHarnessEffort } from "../harnesses/profiles.ts";
+import { builtinHarnessProfile, validateHarnessEffort } from "../harnesses/profiles.ts";
 import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
+import { resolveSandboxProjection } from "./sandbox-projection.ts";
 import { vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
@@ -54,6 +55,14 @@ export function parseCursorOutput(stdout: string): {
 
 export function buildCursorInvocation(req: SpawnRequest): HarnessInvocation {
   validateHarnessEffort("cursor", req.effort);
+  if (req.filesystemPolicy) {
+    // Declared unrepresentable: refuse rather than drop it silently (ADR 0039).
+    resolveSandboxProjection(
+      "cursor",
+      builtinHarnessProfile("cursor")?.sandboxProjection,
+      req.filesystemPolicy,
+    );
+  }
   // --trust: headless cursor-agent refuses untrusted workspaces (exit 1,
   // "Workspace Trust Required"). --force: a print-mode child has no interactive
   // approval channel, so host-authorized workflow dispatch must let it run

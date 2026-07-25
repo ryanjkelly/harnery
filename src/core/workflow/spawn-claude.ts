@@ -19,10 +19,11 @@
  */
 
 import { exec } from "../../lib/exec.ts";
-import { validateHarnessEffort } from "../harnesses/profiles.ts";
+import { builtinHarnessProfile, validateHarnessEffort } from "../harnesses/profiles.ts";
 import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
+import { resolveSandboxProjection } from "./sandbox-projection.ts";
 import { vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
@@ -38,6 +39,14 @@ interface ClaudeEnvelope {
 
 export function buildClaudeInvocation(req: SpawnRequest): HarnessInvocation {
   validateHarnessEffort("claude-code", req.effort);
+  if (req.filesystemPolicy) {
+    // Declared unrepresentable: refuse rather than drop it silently (ADR 0039).
+    resolveSandboxProjection(
+      "claude-code",
+      builtinHarnessProfile("claude-code")?.sandboxProjection,
+      req.filesystemPolicy,
+    );
+  }
   const argv = [
     "claude",
     "-p",

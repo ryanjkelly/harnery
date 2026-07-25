@@ -20,16 +20,25 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exec } from "../../lib/exec.ts";
-import { validateHarnessEffort } from "../harnesses/profiles.ts";
+import { builtinHarnessProfile, validateHarnessEffort } from "../harnesses/profiles.ts";
 import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
 import { buildChildEnv } from "./child-env.ts";
 import { notFoundError } from "./harnesses.ts";
+import { resolveSandboxProjection } from "./sandbox-projection.ts";
 import { vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
 export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): HarnessInvocation {
   validateHarnessEffort("codex", req.effort);
   if (!resultFile) throw new Error("codex adapter requires a final-message result file");
+  // Default stays workspace-write so an unprojected request is unchanged.
+  const projection = req.filesystemPolicy
+    ? resolveSandboxProjection(
+        "codex",
+        builtinHarnessProfile("codex")?.sandboxProjection,
+        req.filesystemPolicy,
+      )
+    : undefined;
   const argv = [
     "codex",
     "exec",
@@ -38,8 +47,14 @@ export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): Ha
     resultFile,
     "--skip-git-repo-check",
     "--sandbox",
-    "workspace-write",
+    projection?.nativeMode ?? "workspace-write",
   ];
+  if (projection && projection.writableRoots.length > 0) {
+    argv.push(
+      "-c",
+      `sandbox_workspace_write.writable_roots=${JSON.stringify(projection.writableRoots)}`,
+    );
+  }
   if (req.model) argv.push("--model", req.model);
   if (req.effort) argv.push("-c", `model_reasoning_effort=${JSON.stringify(req.effort)}`);
   return { argv, resultFile };

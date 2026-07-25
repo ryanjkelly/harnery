@@ -38,6 +38,17 @@ export interface CapabilityClaim {
 
 export type HarnessCapabilities = Record<HarnessCapabilityDimension, CapabilityClaim>;
 
+/** What one harness can represent of a filesystem-policy projection
+ * (ADR 0039). `null` means the harness does not distinguish that, which is a
+ * fact about the harness rather than something to paper over: a projection the
+ * adapter would silently drop must be refused instead. */
+export interface HarnessSandboxProjection {
+  /** Native representation per canonical mode, or null when unrepresentable. */
+  modes: Record<"read-only" | "workspace-write", string | null>;
+  /** Whether the harness accepts an explicit writable-root set. */
+  writableRoots: boolean;
+}
+
 export interface HarnessProfile {
   id: HarnessId;
   displayName: string;
@@ -52,6 +63,9 @@ export interface HarnessProfile {
   capabilities: HarnessCapabilities;
   /** The last real vendor CLI contract used to validate this declaration. */
   verified?: { date: string; version: string };
+  /** How this adapter projects host filesystem policy into the vendor's own
+   * sandbox (ADR 0039). Absent means it cannot project any of it. */
+  sandboxProjection?: HarnessSandboxProjection;
 }
 
 /** Fully planned child invocation. `resultFile` is used by adapters such as
