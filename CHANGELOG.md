@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.27.0
+
+### Minor Changes
+
+- 771e87b: Add `harn workflow reclaim <run-id>`, which resolves a workspace stuck at `preserved_dirty`.
+
+  Preserving a dirty worktree was already correct, and it was also permanent: cleanup re-attempted, found the tree still dirty, preserved again, and incremented a counter. The only exit was to leave Harnery and remove the directory by hand.
+
+  Reclaim salvages the uncommitted work to a durable `harnery/salvage/<run-id>` branch, then hands off to the ordinary cleanup path to release the now-clean workspace. `--discard` throws the work away instead, and is never the default. Neither mode deletes anything itself, so cleanup remains the only path that removes a worktree.
+
+  Salvage commits and then rewinds the checked-out branch, because cleanup deletes the workspace branch and pins its OID in a frozen intent. A workspace whose directory is already gone reports `already_gone` rather than incrementing attempts forever.
+
+  `harn workflow workspace <run-id>` now lists the dirty paths alongside the count it already printed.
+
+- 620fc0f: Add `filesystemPolicyProjection` as its own harness capability dimension, with a live probe that proves enforcement rather than flag acceptance.
+
+  Sandbox projection was previously conflated with `policyMapping`, which is about ALLOW/DENY/ASK translation and is a different fact. Folding both into one claim would have made `supported` ambiguous, so projection now has its own dimension and `policyMapping` keeps its meaning.
+
+  `harn harness attest --projection` attests the new dimension. A declared-but-unenforced sandbox is indistinguishable from an enforced one at the CLI boundary, so the probe gives a child a file to write and checks the filesystem. It runs a control turn under a permissive mode first: without it, a child that ignored the instruction would read as a working sandbox. An inconclusive control records nothing. The flag is opt-in because it costs two extra turns per capable harness.
+
+  Offline, `harn harness bench` checks only whether the adapter renders the projection, and labels that with an `adapter` basis rather than an `attested` one.
+
+- a3809e2: Add `EngineOpts.gitWrite`, a named grant for write access to a repository's Git administrative directory.
+
+  A workflow run that needs its children to commit can now set `gitWrite: "shared-repository"`. The engine resolves the concrete paths from the workspace binding the provider verified, appends them to the projected filesystem policy, and records the grant in run proof. The default is `"none"`.
+
+  The caller asks by name and never supplies the path. Caller-supplied `writableRoots` must still lie inside the workspace, so this grant is the only sanctioned way for a run to write outside it.
+
+  Two measurements shaped the design and are recorded in ADR 0040: in a linked worktree both halves of the administrative directory live outside the workspace root, and a commit needs the shared half, so no scoped version of the grant exists.
+
+- 7064efe: Project the host's filesystem policy into a harness's own vendor sandbox.
+
+  `SpawnRequest` gains an optional `filesystemPolicy` carrying a mode
+  (`read-only` or `workspace-write`) and an explicit set of writable roots. Each
+  harness profile declares what it can represent, and an adapter that cannot
+  represent a requested projection refuses before launch rather than silently
+  falling back to the vendor default.
+
+  This closes a gap where a child in a provider-owned Git worktree could edit
+  files but not commit. The vendor excludes a repository's administrative
+  directory from its writable set by policy rather than by path, so no repository
+  topology avoids it; naming the directory as a writable root does. Verified end
+  to end against the real CLI.
+
+  The engine validates every requested writable root against the root the
+  workspace provider validated, before the first child launches, and records the
+  applied projection in run proof as `sandbox_projection`.
+
+  Of the three built-in adapters, only `codex` can carry a projection today.
+  `claude-code` and `cursor` declare it unrepresentable and refuse. Requests
+  without a `filesystemPolicy` are unchanged, so shared-checkout runs behave
+  exactly as before.
+
+### Patch Changes
+
+- 51f1607: Add copyable diagnostic pages for tunnel access and upstream failures.
+
 ## 0.26.0
 
 ### Minor Changes
