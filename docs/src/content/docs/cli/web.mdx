@@ -18,9 +18,9 @@ The dashboard is not bundled in the npm package (which is the CLI + coord engine
 ## Subcommands
 
 ```
-harn web up [--port 9000] [--coord-root <dir>] [--prod] [--no-fetch]
+harn web up [--port 9000] [--coord-root <dir>] [--prod] [--no-fetch] [--max-old-space <mb>]
 harn web build [--no-fetch]
-harn web start [--port 9000] [--coord-root <dir>] [--no-fetch]
+harn web start [--port 9000] [--coord-root <dir>] [--no-fetch] [--max-old-space <mb>]
 ```
 
 ## `up`
@@ -52,6 +52,24 @@ Start the production server (requires prior `build`):
 ```bash
 harn web build && harn web start
 ```
+
+## Memory
+
+`up` and `start` pin a V8 old-space ceiling of **2048 MB** by default.
+
+Without it, Next picks its own ceiling at roughly half of system RAM. On a large machine that is a limit a dashboard will never reach, so V8 never feels enough pressure to run a major GC, and a server left up for days settles at a multi-gigabyte working set that is mostly collectable garbage. On one 32 GB machine a dev server sat at 7.9 GB after three days; the same server under the default ceiling held at 1.7 GB, and the production build held at 0.4 GB.
+
+Raise it, lower it, or opt out entirely:
+
+```bash
+harn web up --max-old-space 4096      # roomier ceiling
+HARNERY_WEB_MAX_OLD_SPACE=1024 harn web up
+harn web up --max-old-space 0         # opt out; Next sizes it again
+```
+
+Precedence is flag, then `HARNERY_WEB_MAX_OLD_SPACE`, then the default. A ceiling you set yourself in `NODE_OPTIONS` is always left alone.
+
+For a dashboard that stays up, prefer `build` + `start` over `up`: the production server carries no bundler state, no source maps, and no HMR machinery, which is most of the difference.
 
 ## First-run fetch (npm installs)
 
