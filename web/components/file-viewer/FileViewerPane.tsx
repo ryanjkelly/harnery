@@ -15,7 +15,7 @@ import {
   fetchMeta,
   isHtmlPreviewPath,
   rawUrl,
-  viewUrl,
+  renderUrl,
 } from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
@@ -61,11 +61,7 @@ export function FileViewerPane({ path }: { path: string | null }) {
         )}
         <div className="ml-auto flex items-center gap-1">
           {isHtmlPreviewPath(path) && (
-            <IconLink
-              href={viewUrl(path, { mode: "preview" })}
-              target="_blank"
-              title="Open preview in new tab"
-            >
+            <IconLink href={renderUrl(path)} target="_blank" title="Open rendered page in new tab">
               <Eye className="size-4" />
             </IconLink>
           )}

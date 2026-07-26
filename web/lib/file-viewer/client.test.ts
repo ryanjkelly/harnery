@@ -1,13 +1,14 @@
 /**
  * Locks the pure URL-building in the file-viewer client. `rawUrl` feeds
  * <img>/<audio>/<video>/<iframe> src and the download/open-raw header actions;
- * `viewUrl` feeds HTML "open preview in new tab". A path or download name that
- * isn't encoded would break on slashes, spaces, `#`, `?`, `&`, or `%`, or let a
- * crafted name smuggle extra query params.
+ * `renderUrl` opens HTML as a real browser document under CSP sandbox;
+ * `viewUrl` opens the dashboard Source|Preview chrome. A path or download name
+ * that isn't encoded would break on slashes, spaces, `#`, `?`, `&`, or `%`, or
+ * let a crafted name smuggle extra query params.
  */
 
 import { describe, expect, test } from "bun:test";
-import { isHtmlPreviewPath, rawUrl, viewUrl } from "./client.ts";
+import { isHtmlPreviewPath, rawUrl, renderUrl, viewUrl } from "./client.ts";
 
 describe("rawUrl", () => {
   test("encodes the path so slashes/spaces/specials survive as one param value", () => {
@@ -29,6 +30,12 @@ describe("rawUrl", () => {
   test("omitting download leaves no download param", () => {
     expect(rawUrl("a.ts")).toBe("/api/file?path=a.ts");
     expect(rawUrl("a.ts").includes("download")).toBe(false);
+  });
+});
+
+describe("renderUrl", () => {
+  test("encodes the path and appends render=1", () => {
+    expect(renderUrl("docs/a plan.html")).toBe("/api/file?path=docs%2Fa%20plan.html&render=1");
   });
 });
 

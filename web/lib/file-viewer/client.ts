@@ -84,18 +84,22 @@ export function rawUrl(path: string, opts: { download?: string } = {}): string {
   return url;
 }
 
-/** Standalone viewer URL (`/files/view`). Used for HTML "open preview in new
- * tab" so the rendered page never depends on `/api/file` serving text/html
- * (that route stays text/plain + CSP sandbox on purpose). `mode` is honored by
- * HtmlRenderer; other categories ignore it. */
+/** Browser-rendered HTML document: `/api/file?path=…&render=1`.
+ * Opt-in text/html under CSP `sandbox` (unique origin, scripts disabled).
+ * Default `/api/file` without `render` stays text/plain on purpose. */
+export function renderUrl(path: string): string {
+  return `/api/file?${qs(path)}&render=1`;
+}
+
+/** Dashboard chrome viewer (`/files/view`) with Source | Preview. Prefer
+ * `renderUrl` for a real browser tab of just the HTML page. */
 export function viewUrl(path: string, opts: { mode?: "source" | "preview" } = {}): string {
   let url = `/files/view?${qs(path)}`;
   if (opts.mode) url += `&mode=${opts.mode}`;
   return url;
 }
 
-/** True when a path should offer the HTML preview open-in-tab (category html
- * covers .html/.htm/.xml; Xml has source only in HtmlRenderer). */
+/** True when a path should offer the HTML render open-in-tab (.html / .htm). */
 export function isHtmlPreviewPath(path: string): boolean {
   const lower = path.toLowerCase();
   return lower.endsWith(".html") || lower.endsWith(".htm");

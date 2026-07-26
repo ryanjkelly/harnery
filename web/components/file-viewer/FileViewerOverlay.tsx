@@ -16,7 +16,7 @@ import {
   fetchMeta,
   isHtmlPreviewPath,
   rawUrl,
-  viewUrl,
+  renderUrl,
 } from "@/lib/file-viewer/client";
 import type { FileMeta, FileViewerState } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
@@ -207,10 +207,10 @@ export default function FileViewerOverlay({
           <div className={`flex items-center gap-1 ${inSequence ? "" : "ml-auto"}`}>
             {isHtmlPreviewPath(path) && (
               <IconLink
-                href={viewUrl(path, { mode: "preview" })}
+                href={renderUrl(path)}
                 target="_blank"
-                title="Open preview in new tab"
-                label={`Open ${filename} preview in new tab`}
+                title="Open rendered page in new tab"
+                label={`Open ${filename} rendered in new tab`}
               >
                 <Eye className="size-4" />
               </IconLink>

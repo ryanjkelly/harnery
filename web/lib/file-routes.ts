@@ -1,9 +1,11 @@
 /**
  * Route logic for the universal-file-viewer API surface:
  *
- *   GET /api/file?path=<rel>        raw bytes (Range/206, ETag/304, ?download=)
- *   GET /api/file/meta?path=<rel>   JSON metadata for renderer dispatch
- *   GET /api/file/text?path=<rel>   capped UTF-8 body for text-family renderers
+ *   GET /api/file?path=<rel>           raw bytes (Range/206, ETag/304, ?download=)
+ *   GET /api/file?path=<rel>&render=1  HTML only: text/html + CSP sandbox (browser-rendered
+ *                                      document; unique origin, scripts disabled)
+ *   GET /api/file/meta?path=<rel>      JSON metadata for renderer dispatch
+ *   GET /api/file/text?path=<rel>      capped UTF-8 body for text-family renderers
  *
  * All three reuse `resolveFile` and READ FROM THE FD IT RETURNS, never a
  * second path-open (TOCTOU; a path-reopen passes every functional test and
@@ -15,14 +17,14 @@ import { closeSync, createReadStream, readSync } from "node:fs";
 import { Readable } from "node:stream";
 import { type ArchiveListing, listArchive } from "./file-viewer/archive";
 import {
-  type ResolveReject,
+  isTextCategory,
   type ResolvedFile,
+  type ResolveReject,
+  resolveFile,
+  scanChunk,
   TEXT_ENDPOINT_MAX_BYTES,
   TEXT_ENDPOINT_MAX_LINES,
   TEXT_INLINE_CAP_BYTES,
-  isTextCategory,
-  resolveFile,
-  scanChunk,
 } from "./files";
 
 /** Cap the archive bytes read into memory for listing (zip-bomb / OOM guard). */
@@ -33,6 +35,12 @@ const ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 const NOSNIFF = "nosniff";
+
+/** .html / .htm only — category "html" also covers .xml, which stays source-only. */
+function isRenderableHtmlPath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return lower.endsWith(".html") || lower.endsWith(".htm");
+}
 
 export function fileErrorResponse(r: ResolveReject): Response {
   return Response.json(
@@ -188,6 +196,29 @@ function serveRawResolved(
 ): Response {
   const headers = baseHeaders(r);
   const download = url.searchParams.get("download");
+  const wantRender = url.searchParams.get("render") === "1";
+
+  // Opt-in browser document for self-contained HTML. Default stays text/plain
+  // so a bare /api/file link can never become a same-origin navigable page.
+  // CSP sandbox (already on baseHeaders) gives the response a unique opaque
+  // origin with scripts disabled — same isolation as the overlay iframe.
+  if (wantRender && download === null) {
+    if (r.category !== "html" || !isRenderableHtmlPath(r.relPath)) {
+      closeSync(r.fd);
+      return Response.json(
+        {
+          error: "render_not_allowed",
+          detail: "?render=1 is only for .html / .htm files",
+        },
+        {
+          status: 400,
+          headers: { "x-content-type-options": NOSNIFF, "cache-control": "no-store" },
+        },
+      );
+    }
+    headers["content-type"] = "text/html; charset=utf-8";
+  }
+
   if (download !== null) {
     headers["content-disposition"] = contentDisposition(
       download,
