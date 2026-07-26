@@ -31,7 +31,12 @@ import {
   makeEntry,
   type SettingsFile,
 } from "../core/hooks/harness/wiring.ts";
-import { applyInstructions, checkInstructions } from "../lib/instructions/apply.ts";
+import {
+  type ApplyResult,
+  applyInstructions,
+  checkInstructions,
+} from "../lib/instructions/apply.ts";
+import { HostAddendumError } from "../lib/instructions/host-addendum.ts";
 
 // Re-exported for back-compat: callers (deinit, tests) import these names
 // from init.ts. The definitions now live in core/hooks/harness/wiring.ts.
@@ -171,7 +176,18 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       }
 
       // ── 3. agent-facing instructions block + skills ────────────────────────
-      const applied = applyInstructions(projectRoot, { binName: bin, harness, dryRun });
+      // A misconfigured host addendum aborts here rather than half-writing: the
+      // apply step validates the configured source before it touches a file, so
+      // a bad path leaves the repo exactly as it found it.
+      let applied: ApplyResult;
+      try {
+        applied = applyInstructions(projectRoot, { binName: bin, harness, dryRun });
+      } catch (err) {
+        if (!(err instanceof HostAddendumError)) throw err;
+        emit.text(`${bin} init: ${err.message}`);
+        emit.setExitCode(1);
+        return;
+      }
       actions.push(...applied.actions);
 
       emit.text(render(projectRoot, dryRun, actions, applied.warnings));

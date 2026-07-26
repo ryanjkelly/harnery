@@ -17,6 +17,24 @@ One command to make a project harnery-ready. It does the setup steps that are ot
    - A machine-owned **instructions block** spliced into `AGENTS.md` (a hash-versioned `<!-- harnery:begin instructions -->` region; everything outside the markers is untouched). Every command in it renders in *your* bin name.
    - The generic **skills** `harn-decide` and `harn-council` written to `.claude/skills/` (claude-code only; Cursor and Codex read `AGENTS.md` natively). Suppress one with `skills.exclude` in `.harnery/config.jsonc` when you ship your own richer version. The block is **exclusion-aware**: it only points at a skill it actually wrote, so an excluded skill (or a harness with no skill files, like Cursor/Codex) gets a `<bin> decision --help` / `<bin> council --help` pointer instead of a dangling reference.
    - A `CLAUDE.md` `@AGENTS.md` import shim when `CLAUDE.md` is absent (Claude Code reads `CLAUDE.md`, not `AGENTS.md`). A `CLAUDE.md` that already imports `AGENTS.md`, or already carries the block, is left alone.
+   - Your **own coordination policy**, if you name a file in `instructions.hostAddendumFile`. See below.
+
+## Your own policy, on the same lifecycle
+
+Harnery's block is deliberately generic: it ships to every consumer, so it carries engine mechanics and no house rules. A project with real coordination policy of its own (commit conventions, escalation targets, a triage rubric) used to have nowhere machine-managed to put it, and hand-maintained it beside the block where nothing kept the two in step.
+
+Name a file instead:
+
+```jsonc
+// .harnery/config.jsonc
+{ "instructions": { "hostAddendumFile": ".agents/host-instructions.md" } }
+```
+
+`init` splices that file's contents into a second managed region (`<!-- harnery:begin host-addendum -->`) right after its own block. From then on your policy gets the same treatment harnery's does: refreshed when the file changes, reported by `init --check`, removed by [`deinit`](/cli/deinit/) or by deleting the config key and re-running `init`.
+
+Harnery never parses or renders what the file says. It is your content, placed and versioned by harnery, which is what lets one generic mechanism serve consumers whose policies have nothing in common.
+
+The path must be repo-relative and inside the project, and the file must exist and be non-empty. Anything else fails the run **before** the first write, so a mistyped path leaves your `AGENTS.md` exactly as it found it rather than silently dropping a section you believe is still there.
 
 When you run `init` through a host CLI that composes Harnery under its own bin name (e.g. `mycli init`), it also **stamps `binName` into `.harnery/config.jsonc`** so Harnery's coord binaries and web UI tell agents to run *your* command (`mycli agents status`, …) rather than the `harn` default. The stamp is comment-preserving and idempotent. Standalone `harn` needs no stamp; it's the resolver's default. See [the config reference](/reference/config-schema/#binname).
 

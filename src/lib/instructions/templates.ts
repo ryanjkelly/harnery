@@ -18,6 +18,13 @@ import { buildOwnedSkill } from "./splice.ts";
 export const INSTRUCTIONS_REGION = "instructions";
 /** Managed-region name for the CLAUDE.md `@AGENTS.md` import shim. */
 export const IMPORT_REGION = "import";
+/**
+ * Managed-region name for the consumer's own coordination policy, spliced from
+ * the file named by `instructions.hostAddendumFile`. Harnery places and
+ * versions the region; the content is the host's and is never rendered here.
+ * See `host-addendum.ts`.
+ */
+export const HOST_ADDENDUM_REGION = "host-addendum";
 
 /** Which shipped skills exist in the project the block is rendered for. */
 export interface BlockSkills {

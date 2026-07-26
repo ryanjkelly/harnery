@@ -113,6 +113,17 @@
         }
       }
     },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agent-facing instructions harnery manages in AGENTS.md.",
+      "properties": {
+        "hostAddendumFile": {
+          "type": "string",
+          "description": "Repo-relative path to a markdown file holding this project's own coordination policy. `harn init` splices its contents into a second managed region in AGENTS.md, `init --check` reports drift against it, and `deinit` (or removing this key) takes the region back out. Harnery never parses the content. Must resolve inside the project and be non-empty."
+        }
+      }
+    },
     "presence": {
       "type": "object",
       "additionalProperties": false,

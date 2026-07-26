@@ -184,3 +184,135 @@ describe("removeInstructions", () => {
     expect(has(".claude/skills/harn-decide/SKILL.md")).toBe(true);
   });
 });
+
+/**
+ * The host addendum: policy the host owns, spliced by harnery.
+ *
+ * Harnery's own block is deliberately generic, so a consumer with real
+ * coordination policy of its own had nowhere machine-managed to put it and
+ * hand-maintained it beside the block instead. Pointing `.harnery/config.jsonc`
+ * at a file gives that content the same lifecycle as the block: applied,
+ * refreshed, drift-checked, and removed, with harnery never reading what it
+ * says.
+ */
+describe("host addendum", () => {
+  const config = (value: unknown) => {
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ instructions: { hostAddendumFile: value } }),
+    );
+  };
+  const source = (rel: string, body: string) => {
+    mkdirSync(join(root, rel, ".."), { recursive: true });
+    writeFileSync(join(root, rel), body);
+  };
+  const apply = (dryRun = false) =>
+    applyInstructions(root, { binName: BIN, harness: "claude-code", dryRun });
+
+  test("splices the configured file verbatim into its own region", () => {
+    source(".agents/host.md", "## House rules\n\nCommit by pathspec.\n");
+    config(".agents/host.md");
+    apply();
+
+    const agents = read("AGENTS.md");
+    expect(agents).toContain("harnery:begin host-addendum");
+    expect(agents).toContain("Commit by pathspec.");
+    // Its own region, so refreshing one never disturbs the other.
+    expect(agents).toContain("harnery:begin instructions");
+  });
+
+  test("refreshes the region when the source file changes", () => {
+    source(".agents/host.md", "first\n");
+    config(".agents/host.md");
+    apply();
+    source(".agents/host.md", "second\n");
+    const r = apply();
+
+    expect(read("AGENTS.md")).toContain("second");
+    expect(read("AGENTS.md")).not.toContain("first");
+    expect(r.actions.some((a) => a.includes("host addendum"))).toBe(true);
+  });
+
+  test("is idempotent, like the block", () => {
+    source(".agents/host.md", "stable\n");
+    config(".agents/host.md");
+    apply();
+    expect(apply().actions.every((a) => a.startsWith("·"))).toBe(true);
+  });
+
+  test("removes the region when the config entry goes away", () => {
+    source(".agents/host.md", "temporary policy\n");
+    config(".agents/host.md");
+    apply();
+    writeFileSync(join(root, ".harnery", "config.jsonc"), "{}");
+    apply();
+
+    expect(read("AGENTS.md")).not.toContain("host-addendum");
+    expect(read("AGENTS.md")).not.toContain("temporary policy");
+    // The block itself is untouched by the addendum's departure.
+    expect(read("AGENTS.md")).toContain("harnery:begin instructions");
+  });
+
+  test("deinit takes the addendum with it", () => {
+    source(".agents/host.md", "policy\n");
+    config(".agents/host.md");
+    apply();
+    removeInstructions(root, { harness: "claude-code", dryRun: false });
+    expect(has("AGENTS.md")).toBe(false);
+  });
+
+  test("--check calls a stale, missing, or unconfigured region drift", () => {
+    source(".agents/host.md", "policy\n");
+    config(".agents/host.md");
+    apply();
+    const opts = { binName: BIN, harness: "claude-code" };
+    expect(checkInstructions(root, opts).status).toBe("fresh");
+
+    source(".agents/host.md", "policy, revised\n");
+    expect(checkInstructions(root, opts).status).toBe("drift");
+
+    apply();
+    // Region still in the file, config entry gone: also drift, since init would
+    // remove it.
+    writeFileSync(join(root, ".harnery", "config.jsonc"), "{}");
+    const orphan = checkInstructions(root, opts);
+    expect(orphan.status).toBe("drift");
+    expect(orphan.issues.join(" ")).toContain("no longer configured");
+  });
+
+  test("refuses a source outside the repo, before writing anything", () => {
+    config("../escape.md");
+    expect(() => apply()).toThrow(/outside the project/);
+    // Nothing half-written: the validation runs before the first write.
+    expect(has("AGENTS.md")).toBe(false);
+  });
+
+  test("refuses an absolute path, which would not survive a fresh clone", () => {
+    config("/etc/hosts");
+    expect(() => apply()).toThrow(/repo-relative/);
+  });
+
+  test("refuses a missing source rather than silently skipping it", () => {
+    config(".agents/nope.md");
+    expect(() => apply()).toThrow(/not found/);
+    expect(has("AGENTS.md")).toBe(false);
+  });
+
+  test("refuses an empty source, which is always a mistake", () => {
+    source(".agents/host.md", "   \n");
+    config(".agents/host.md");
+    expect(() => apply()).toThrow(/empty/);
+  });
+
+  test("dry-run validates too, and still writes nothing", () => {
+    config(".agents/nope.md");
+    expect(() => apply(true)).toThrow(/not found/);
+  });
+
+  test("--check reports a bad configuration as an error, not drift", () => {
+    config("../escape.md");
+    const r = checkInstructions(root, { binName: BIN, harness: "claude-code" });
+    expect(r.status).toBe("error");
+  });
+});

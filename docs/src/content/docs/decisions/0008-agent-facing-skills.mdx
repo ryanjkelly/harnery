@@ -172,3 +172,45 @@ skill files, leave everything else. `--purge-state` semantics are unchanged.
 - Not decided here: runtime *enforcement* of any ritual the block describes
   (host hook policy), web-UI surfacing of drift, and auto-refresh on version
   bump (re-running `init` stays manual).
+
+## Addendum: where a consumer's own policy lives (2026-07-26)
+
+The block is generic by design, and the ~80-line budget above is a ceiling on
+*engine* content. That left a gap this ADR did not answer: a consumer with real
+coordination policy of its own has nowhere machine-managed to put it. In
+practice it lands next to the block, hand-maintained, with nothing keeping the
+two in step and nothing reporting when the hand-written half goes stale.
+
+Two shapes were considered.
+
+Exporting `spliceRegion` as a public primitive looks smaller, and it is not.
+`init` and `deinit` are registered inside harnery, so a host that wanted a
+managed region of its own would have to wrap or replace both commands and
+reimplement apply, refresh, drift-check, and remove. Every consumer would write
+that lifecycle again, slightly differently.
+
+The chosen shape is declarative. A consumer names a file:
+
+```jsonc
+{ "instructions": { "hostAddendumFile": ".agents/host-instructions.md" } }
+```
+
+and harnery splices that file's contents into a second managed region,
+`host-addendum`, with the same lifecycle as its own block. One implementation of
+apply, check, and remove serves every consumer.
+
+This keeps the boundary this ADR already draws. Host policy stays outside
+harnery's templates: harnery never parses, renders, or reasons about the
+content, so nothing host-specific enters the package and the portability guard
+has nothing new to catch. What harnery owns is what it already owned, region
+placement, hash versioning, drift detection, and deinit symmetry.
+
+Two properties are load-bearing. Validation runs before the first write, so a
+mistyped or escaping path aborts the run rather than leaving `AGENTS.md`
+half-updated and quietly missing a section the host believes is there. And an
+unconfigured region is drift, not a no-op: deleting the config key and re-running
+`init` is how a consumer removes the addendum, so `--check` has to notice a
+region whose config entry is gone.
+
+`spliceRegion` stays internal. It gets exported if a second, genuinely
+independent consumer needs it, not before.
