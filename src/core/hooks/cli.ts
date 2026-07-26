@@ -271,7 +271,15 @@ function buildEventData(
         // env (spawn adapters set it via buildChildEnv), so their sessions and
         // heartbeats join back to the run journal + /workflows web view.
         ...(coordEnv("WORKFLOW_CHILD") === "1" && coordEnv("WORKFLOW_RUN_ID")
-          ? { workflow_run_id: coordEnv("WORKFLOW_RUN_ID") }
+          ? {
+              workflow_run_id: coordEnv("WORKFLOW_RUN_ID"),
+              // Which agent row of that run this session is. The orchestrator
+              // stamps it on the way in, because the harness does not report a
+              // session id until the agent has already finished.
+              ...(coordEnv("WORKFLOW_AGENT_ID")
+                ? { workflow_agent_id: coordEnv("WORKFLOW_AGENT_ID") }
+                : {}),
+            }
           : {}),
       };
     }

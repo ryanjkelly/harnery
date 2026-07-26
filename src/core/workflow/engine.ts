@@ -901,6 +901,7 @@ async function executeWorkflow(
           maxTurns: agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,
           cwd: executionCwd,
           runId,
+          agentId: id,
           subscriptionOnly,
           filesystemPolicy,
         });

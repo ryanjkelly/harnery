@@ -118,7 +118,10 @@ export const codexSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRes
     }
     const r = await exec(invocation.argv, {
       cwd: req.cwd,
-      env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
+      env: buildChildEnv(req.runId, {
+        subscriptionOnly: req.subscriptionOnly,
+        agentId: req.agentId,
+      }),
       timeout: req.timeoutMs,
     });
     return normalizeCodexResult({

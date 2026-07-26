@@ -26,6 +26,7 @@ export interface V2Heartbeat {
   parent_session_id?: string;
   /** Set iff this owner is a `workflow run` child (joins to the run journal). */
   workflow_run_id?: string;
+  workflow_agent_id?: string;
   started_at?: string;
   last_heartbeat: string;
   last_tool?: string;
@@ -189,6 +190,8 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
         if (parentSession) hb.parent_session_id = parentSession;
         const workflowRunId = pickStr(d, "workflow_run_id");
         if (workflowRunId) hb.workflow_run_id = workflowRunId;
+        const workflowAgentId = pickStr(d, "workflow_agent_id");
+        if (workflowAgentId) hb.workflow_agent_id = workflowAgentId;
         if (!hb.files_touched) hb.files_touched = [];
       }
       break;
@@ -458,6 +461,7 @@ function writeHeartbeat(coordRoot: string, instanceId: string, hb: V2Heartbeat):
     setIfDefined(merged, "agent_id", hb.agent_id);
     setIfDefined(merged, "subagent_call_id", hb.subagent_call_id);
     setIfDefined(merged, "workflow_run_id", hb.workflow_run_id);
+    setIfDefined(merged, "workflow_agent_id", hb.workflow_agent_id);
     setIfDefined(merged, "model", hb.model);
     setIfDefined(merged, "platform", hb.platform);
     setIfDefined(merged, "started_at", hb.started_at);

@@ -59,13 +59,13 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   /*
    * Which agent rows have a live child behind them.
    *
-   * An exact answer needs the agent id stamped into the child env; until then
-   * a live child's heartbeat identifies its run but not which agent row it is
-   * running. So: honour exact matches when present, then hand the remaining
-   * live sessions to journaled-running rows in order. This can attribute to the
-   * wrong row when several agents run concurrently, but it can never claim more
-   * live agents than there are live sessions, which is the part that would
-   * mislead.
+   * Children now report the agent id the orchestrator stamped into their env, so
+   * a live heartbeat says which row it is running and this is exact. The
+   * fallback below covers a run started before that stamp existed, or a harness
+   * whose session never reported: unclaimed live sessions go to journaled-running
+   * rows in order. That can pick the wrong row among concurrent agents, but it
+   * can never claim more live agents than there are live sessions, which is the
+   * part that would mislead.
    */
   const liveAgentIds = new Set<string>();
   let unattributedLive = 0;

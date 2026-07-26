@@ -348,6 +348,10 @@ export interface SpawnRequest {
   /** Run id, stamped into the child env (HARNERY_WORKFLOW_RUN_ID) so the
    * coord layer can associate child sessions with their workflow run. */
   runId?: string;
+  /** Journal agent id (`a1`, `a2`, …), stamped into the child env
+   * (HARNERY_WORKFLOW_AGENT_ID) so in-flight child activity attributes to one
+   * agent row rather than only to the run. */
+  agentId?: string;
   /** Scrub all API-key vars from the child env so it can only authenticate
    * via its stored (subscription) login. See billing.ts. */
   subscriptionOnly?: boolean;

@@ -25,6 +25,12 @@
  *    hooks stay on, keeping heartbeat + event capture.
  * 5. **Stamp the run id** (HARNERY_WORKFLOW_RUN_ID) so the coord layer and
  *    web UI can associate child sessions with their workflow run.
+ * 6. **Stamp the agent id** (HARNERY_WORKFLOW_AGENT_ID) so that association is
+ *    per-agent rather than only per-run. The orchestrator cannot use the child's
+ *    session id for this: the harness mints that id and reports it back only in
+ *    the result envelope, which is to say only once the work being watched is
+ *    over. Passing in the id the orchestrator already owns is the only way to
+ *    attribute in-flight activity to a particular agent.
  */
 
 import { API_KEY_VARS } from "./billing.ts";
@@ -35,6 +41,8 @@ const PRESERVED_HARNESS_VARS = new Set(["CODEX_HOME"]);
 export interface ChildEnvOpts {
   /** Delete all API-key vars so children can only use stored logins. */
   subscriptionOnly?: boolean;
+  /** Journal agent id (`a1`, `a2`, …) this child is running. */
+  agentId?: string;
 }
 
 export function buildChildEnv(runId?: string, opts: ChildEnvOpts = {}): Record<string, string> {
@@ -54,5 +62,6 @@ export function buildChildEnv(runId?: string, opts: ChildEnvOpts = {}): Record<s
   }
   env.HARNERY_WORKFLOW_CHILD = "1";
   if (runId) env.HARNERY_WORKFLOW_RUN_ID = runId;
+  if (opts.agentId) env.HARNERY_WORKFLOW_AGENT_ID = opts.agentId;
   return env;
 }
