@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { useFormatDateTime } from "@/components/FormattedDateTime";
 import { Tooltip } from "@/components/ui/tooltip";
+import { agentLiveness, HEARTBEAT_GRACE_MS } from "@/lib/agent-liveness";
 
 interface Props {
   /** `agent.start` ts. */
@@ -48,20 +49,43 @@ export function AgentElapsed({ startedAt, live }: Props) {
 
   useEffect(() => {
     setNow(Date.now());
-    // Only a live agent needs a ticking clock; a stalled row is frozen by
-    // definition, so leave its last value alone rather than animating a lie.
-    if (!live) return;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [live]);
+    if (live) {
+      const id = window.setInterval(() => setNow(Date.now()), 1000);
+      return () => window.clearInterval(id);
+    }
+    // A row that is not live yet may just be young. Tick once more when the
+    // grace window closes so it can move from starting to a real warning on its
+    // own. After that, stop: a settled stall is frozen by definition, and
+    // animating its clock would be a lie.
+    const remaining = HEARTBEAT_GRACE_MS - (Date.now() - started);
+    if (remaining <= 0) return;
+    const id = window.setTimeout(() => setNow(Date.now()), remaining + 250);
+    return () => window.clearTimeout(id);
+  }, [live, started]);
 
   if (Number.isNaN(started)) return null;
   const elapsed = now === null ? "" : formatElapsed(now - started);
 
   if (!live) {
+    // Before the first tick the elapsed time is unknown on both the server and
+    // the client's first pass, so say nothing rather than guessing which of the
+    // two states this is. The effect resolves it a frame later.
+    const state = agentLiveness({ startedAt, live, now });
+    if (state !== "stalled") {
+      return (
+        <Tooltip
+          content={`Started ${formatDateTime(startedAt)}. A child session registers its heartbeat a beat after the agent starts, so a row this young has no live session yet without anything being wrong.`}
+        >
+          <span className="cursor-help text-xs text-muted-foreground">
+            <span className="font-mono tabular-nums">{elapsed}</span>
+            {state === "starting" && <span>{" starting…"}</span>}
+          </span>
+        </Tooltip>
+      );
+    }
     return (
       <Tooltip
-        content={`Started ${formatDateTime(startedAt)} and journaled as running, but no live child session is registered for this run. Either the agent is between attempts, or the orchestrator exited without writing agent.end.`}
+        content={`Started ${formatDateTime(startedAt)} and journaled as running, but no live child session has been registered for over ${Math.round(HEARTBEAT_GRACE_MS / 1000)}s. Either the agent is between attempts, or the orchestrator exited without writing agent.end.`}
       >
         <span className="cursor-help text-xs text-muted-foreground">
           <span className="font-mono tabular-nums">{elapsed}</span>
