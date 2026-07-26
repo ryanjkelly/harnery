@@ -21,13 +21,44 @@ Supply both the isolation mode and an explicit writable parent:
 ```bash
 harn workflow run ./workflow.mjs \
   --isolation worktree \
-  --workspace-root ../workflow-workspaces \
+  --workspace-root . \
   --policy ./workflow-policy.json
 ```
 
 The explicit root is part of the authority record. Harnery resolves it, records
 its filesystem identity, and refuses a later resume if the path or identity no
 longer matches.
+
+### The writable root must contain the repository's Git directory
+
+Allocating a worktree makes Git write to the repository's administrative
+directory as well as to the new checkout, so that directory has to sit inside
+the root you declared. A sibling directory does not qualify, however tidy it
+looks:
+
+```
+repository_authority_outside_writable_root:
+  Git keeps this checkout's administrative files in /repo/.git,
+  which is outside the declared writable root
+```
+
+For an ordinary repository, the repository itself is the right answer, and its
+parent also works. For a **submodule**, Git keeps the administrative files in
+the superproject's `.git/modules/…`, so the writable root must be the
+**superproject**, not the submodule. The same applies to a linked worktree,
+whose common directory belongs to the repository it was created from.
+
+Workspaces are allocated under `<workspace-root>/harnery-workspaces/<binding-id>`.
+That directory holds real checkouts and is not written by `harn init`, so add it
+to the project's ignore rules yourself:
+
+```bash
+echo 'harnery-workspaces/' >> .gitignore
+```
+
+You do not need to clone a repository by hand to get an isolated run. If you
+find yourself making a scratch copy so agents have somewhere safe to write, the
+provider is what you actually want.
 
 When Git or the required filesystem behavior is unavailable, the provider
 reports an unsupported capability. Shared fallback happens only when the
