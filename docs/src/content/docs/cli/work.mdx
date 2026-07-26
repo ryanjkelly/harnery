@@ -201,3 +201,20 @@ Deferring requires a reason, and both the finding and its disposition stay in th
 event log. The team that missed a defect does not get to certify that it was
 fixed; that judgement stays with the operator who raised it. See
 [ADR 0043](/decisions/0043-operator-findings/).
+
+### Correcting work under a finished mission
+
+A mission that reached `succeeded` is where you are most likely to read the output
+and find something, so reopening work beneath one is the ordinary case rather than
+an edge. It reopens the mission along with the item:
+
+```bash
+harn work reopen <work-id> --actor reviewer --finding "..."
+# mission goal-ship-it had completed; its completion was reopened so <work-id>
+# can be dispatched
+```
+
+The accepted completion stays in the plan log. A superseding `plan.reopened` event
+is appended beside it, the goal returns to `ready`, and `harn supervisor run`
+dispatches the reopened item ahead of any milestone reassessment. Run it twice and
+nothing further happens. See [ADR 0050](/decisions/0050-reopening-a-completed-mission/).

@@ -409,6 +409,12 @@ function deriveProjection(
         record.intent.id === intent.root_work_id && record.projection.state === "succeeded",
     );
   const milestonesCompleted = plans.milestones_completed + (initialRootAccepted ? 1 : 0);
+  const resumableDispatchable = intent.automation.resume_approved ? resumableWork : [];
+  const attemptDispatchable = [
+    ...readyWork,
+    ...(intent.automation.retry_blocked ? retryableWork : []),
+  ];
+  const dispatchable = [...resumableDispatchable, ...attemptDispatchable];
   const base = {
     id: intent.id,
     title: intent.title,
@@ -446,6 +452,19 @@ function deriveProjection(
       state: "succeeded",
       reason: "mission completion was explicitly accepted",
       next_action: "none",
+    };
+  }
+  // ADR 0050: a mission whose completion was reopened dispatches the reopened work
+  // before anything else. Without this the goal falls through to the milestone
+  // branch below, which still sees a succeeded root when the reopened item is one
+  // of its children, and would spend a replan reassessing a mission whose real
+  // remaining work is already sitting in ready_work.
+  if (intent.mission && plans.latest?.status === "reopened" && dispatchable.length > 0) {
+    return {
+      ...base,
+      state: "ready",
+      reason: `mission completion was reopened; ${dispatchable.length} work item${dispatchable.length === 1 ? " is" : "s are"} dispatchable`,
+      next_action: "run",
     };
   }
   if (plans.latest?.status === "proposed") {
@@ -581,12 +600,6 @@ function deriveProjection(
       next_action: "none",
     };
   }
-  const resumableDispatchable = intent.automation.resume_approved ? resumableWork : [];
-  const attemptDispatchable = [
-    ...readyWork,
-    ...(intent.automation.retry_blocked ? retryableWork : []),
-  ];
-  const dispatchable = [...resumableDispatchable, ...attemptDispatchable];
   if (intent.automation.accept_passing_proof && reviews.length > 0) {
     return {
       ...base,

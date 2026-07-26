@@ -2,14 +2,16 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cancelWorkItem, createWorkItem, readWorkItem } from "../work/index.ts";
+import { cancelWorkItem, createWorkItem, readWorkItem, reopenWorkItem } from "../work/index.ts";
 import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
 import {
   approveSupervisorPlan,
   createSupervisor,
+  findCompletedMissionGoverning,
   readSupervisor,
   readSupervisorPlan,
   rejectSupervisorPlan,
+  reopenSupervisorMission,
   retrySupervisorPlan,
   runSupervisor,
 } from "./index.ts";
@@ -2310,6 +2312,133 @@ describe("durable goal supervisor", () => {
     expect(
       readSupervisor(root, "goal-mission-loop").plans.map((plan) => plan.request.trigger),
     ).toEqual(["initial", "milestone"]);
+  });
+
+  // ADR 0050: a mission that completes is the strongest "passed while possibly
+  // wrong" state, and it is exactly where an operator reviews the output and finds
+  // something. Before this, `work reopen` reported the item ready and the goal
+  // reported succeeded at the same time, so the supervisor never dispatched it.
+  test("an operator finding under a completed mission reopens the mission and dispatches", async () => {
+    const { root, passing } = fixture();
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reopen-mission",
+      specialists: {
+        planner: { instructions: "Plan one milestone", harness: "codex" },
+        implementer: { instructions: "Execute the milestone", harness: "codex" },
+      },
+      mission: {
+        objective: "Ship one verified milestone",
+        acceptance: ["The milestone proof is accepted"],
+        maxMilestones: 2,
+      },
+      automation: { accept_passing_proof: true },
+      replanning: {
+        plannerSpecialist: "planner",
+        autoApply: true,
+        maxReplans: 3,
+        templates: { delivery: { workflowPath: passing, maxAttempts: 2, root: true } },
+      },
+    });
+    let plannerCalls = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("bounded replacement plan")) {
+        plannerCalls++;
+        return {
+          ok: true,
+          text:
+            plannerCalls === 1
+              ? missionMilestoneProposal()
+              : JSON.stringify({
+                  decision: "complete",
+                  rationale: "The accepted milestone satisfies mission acceptance",
+                  root: "",
+                  work: [],
+                }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: "milestone delivered", durationMs: 1 };
+    };
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reopen-mission",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(report.stop_reason).toBe("succeeded");
+    const rootWorkId = report.projection.root_work_id;
+    const completedPlanId = report.plan_outcomes.at(-1)!.plan_id;
+
+    // The scan is what lets `work reopen` know it is standing under a finished
+    // mission rather than an unwatched work item.
+    expect(findCompletedMissionGoverning(root, rootWorkId)).toBe("goal-reopen-mission");
+
+    reopenWorkItem(root, rootWorkId, {
+      actor: "operator",
+      reason: "the delivered fix regressed the stopping reason",
+      findings: ["the stopping reason still reads succeeded on a blocked goal"],
+    });
+
+    // The defect: the item is ready and the goal is finished, simultaneously.
+    const stranded = readSupervisor(root, "goal-reopen-mission").projection;
+    expect(stranded.ready_work).toContain(rootWorkId);
+    expect(stranded.state).toBe("succeeded");
+    expect(stranded.next_action).toBe("none");
+
+    reopenSupervisorMission({
+      coordRoot: root,
+      goalId: "goal-reopen-mission",
+      actor: "operator",
+      reason: "an operator finding must be addressed before the mission is done",
+    });
+
+    const resumed = readSupervisor(root, "goal-reopen-mission").projection;
+    expect(resumed.state).toBe("ready");
+    expect(resumed.next_action).toBe("run");
+    expect(resumed.reason).toContain("mission completion was reopened");
+    expect(resumed.ready_work).toContain(rootWorkId);
+
+    // Append-only: the accepted completion is still in the log, with the reopen
+    // recorded after it rather than in place of it.
+    const plan = readSupervisorPlan(root, "goal-reopen-mission", completedPlanId);
+    expect(plan.status).toBe("reopened");
+    const kinds = plan.events.map((event) => event.event);
+    expect(kinds).toContain("plan.completed");
+    expect(kinds.indexOf("plan.reopened")).toBeGreaterThan(kinds.indexOf("plan.completed"));
+
+    // Reopening twice is idempotent, not a second event.
+    reopenSupervisorMission({
+      coordRoot: root,
+      goalId: "goal-reopen-mission",
+      reason: "same finding, run again",
+    });
+    expect(
+      readSupervisorPlan(root, "goal-reopen-mission", completedPlanId).events.filter(
+        (event) => event.event === "plan.reopened",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("a mission that never completed refuses to be reopened", async () => {
+    const { root, passing } = fixture();
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reopen-refuses",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      mission: { objective: "Ship", acceptance: ["Accepted"], maxMilestones: 2 },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 3,
+        templates: { delivery: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    expect(() =>
+      reopenSupervisorMission({
+        coordRoot: root,
+        goalId: "goal-reopen-refuses",
+        reason: "nothing to reopen",
+      }),
+    ).toThrow(/no plan to reopen/);
   });
 
   // ADR 0046 (scope correction): the measured 19 "codex not found" retries were

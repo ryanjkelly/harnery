@@ -1,6 +1,8 @@
 export {
   approveSupervisorPlan,
+  findCompletedMissionGoverning,
   rejectSupervisorPlan,
+  reopenSupervisorMission,
   retrySupervisorPlan,
 } from "./plan-api.ts";
 export {

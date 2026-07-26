@@ -11,6 +11,10 @@ import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
 import {
+  findCompletedMissionGoverning,
+  reopenSupervisorMission,
+} from "../core/supervisor/index.ts";
+import {
   acceptWorkItem,
   cancelWorkItem,
   createWorkItem,
@@ -320,16 +324,30 @@ function registerGovernanceCommand(
     withWorkRoot(emit, (coordRoot) => {
       const fn =
         name === "accept" ? acceptWorkItem : name === "cancel" ? cancelWorkItem : reopenWorkItem;
-      emitWork(
-        fn(coordRoot, workId, {
-          ...opts,
-          ...(opts.finding?.length ? { findings: opts.finding } : {}),
-          ...(opts.dispose?.length ? { dispositions: opts.dispose.map(parseDisposition) } : {}),
-        }),
-        opts.json,
-        emit,
-        true,
-      );
+      // ADR 0050: a reopen under a mission that already succeeded has to reopen the
+      // mission too, or the item lands in ready_work that the supervisor will never
+      // dispatch. Resolve the goal BEFORE touching the work item so a refusal leaves
+      // nothing half-done.
+      const goalId =
+        name === "reopen" ? findCompletedMissionGoverning(coordRoot, workId) : undefined;
+      const record = fn(coordRoot, workId, {
+        ...opts,
+        ...(opts.finding?.length ? { findings: opts.finding } : {}),
+        ...(opts.dispose?.length ? { dispositions: opts.dispose.map(parseDisposition) } : {}),
+      });
+      if (goalId) {
+        reopenSupervisorMission({
+          coordRoot,
+          goalId,
+          actor: opts.actor,
+          reason: opts.reason?.trim() || `work ${workId} was reopened after mission completion`,
+        });
+        emit.log(
+          `mission ${goalId} had completed; its completion was reopened so ${workId} can be dispatched`,
+          "warn",
+        );
+      }
+      emitWork(record, opts.json, emit, true);
     });
   });
 }

@@ -42,6 +42,7 @@ const EVENT_TYPES = new Set<SupervisorPlanEventType>([
   "plan.retry_requested",
   "plan.attention",
   "plan.failed",
+  "plan.reopened",
 ]);
 
 export function readSupervisorPlans(
@@ -178,6 +179,16 @@ function deriveStatus(
   const latest = events.at(-1);
   const completed = [...events].reverse().find((event) => event.event === "plan.completed");
   if (completed) {
+    // ADR 0050: an operator finding on work beneath a completed mission reopens
+    // the mission by APPENDING, never by rewriting. The accepted completion stays
+    // in the log verbatim; a later `plan.reopened` supersedes it, which is what
+    // drops `plans.completed` and lets the projection dispatch again.
+    const reopened = [...events]
+      .reverse()
+      .find((event) => event.event === "plan.reopened" && event.seq > completed.seq);
+    if (reopened) {
+      return { status: "reopened", work_ids: [], reason: reopened.reason };
+    }
     return { status: "completed", work_ids: [], reason: completed.reason };
   }
   const applied = [...events].reverse().find((event) => event.event === "plan.applied");

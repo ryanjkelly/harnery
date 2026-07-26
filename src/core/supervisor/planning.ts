@@ -604,6 +604,42 @@ export function rejectSupervisorPlanProposal(input: {
   return outcome(readSupervisorPlan(input.coordRoot, input.goalId, input.planId));
 }
 
+/** ADR 0050: reopen a mission whose completion was already accepted, so an operator
+ * finding on work beneath it can be dispatched through the normal supervisor rather
+ * than only by running the work item by hand.
+ *
+ * The accepted `plan.completed` event is never rewritten. This appends a superseding
+ * `plan.reopened` alongside it, which is why the prior completion survives as history
+ * and why a reader that cannot understand the new event still sees a completed plan
+ * rather than a silently altered one. Refuses when the mission is not complete, so a
+ * caller cannot use it to skip the ordinary completion path. */
+export function reopenSupervisorMissionPlan(input: {
+  coordRoot: string;
+  record: SupervisorRecord;
+  actor: string;
+  reason: string;
+}): SupervisorPlanOutcome {
+  const goalId = input.record.intent.id;
+  if (!input.record.intent.mission) {
+    throw new Error(`supervisor ${goalId} is not a mission`);
+  }
+  const history = readSupervisorPlans(input.coordRoot, goalId, input.record.intent.root_work_id);
+  const latest = history.latest;
+  if (!latest) {
+    throw new Error(`supervisor ${goalId} has no plan to reopen`);
+  }
+  if (latest.status === "reopened") return outcome(latest);
+  if (!history.completed || latest.status !== "completed") {
+    throw new Error(`supervisor ${goalId} mission is not complete, so there is nothing to reopen`);
+  }
+  appendPlanEvent(input.coordRoot, goalId, latest.request.id, {
+    event: "plan.reopened",
+    actor: input.actor,
+    reason: bounded(input.reason, "mission reopen reason", MAX_REASON),
+  });
+  return outcome(readSupervisorPlan(input.coordRoot, goalId, latest.request.id));
+}
+
 export function retrySupervisorPlanProposal(input: {
   coordRoot: string;
   record: SupervisorRecord;
