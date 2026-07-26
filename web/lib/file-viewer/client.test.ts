@@ -1,13 +1,12 @@
 /**
  * Locks the pure URL-building in the file-viewer client. `rawUrl` feeds
  * <img>/<audio>/<video>/<iframe> src and the download/open-raw header actions;
- * `renderUrl` opens HTML as a real browser document under CSP sandbox;
- * `viewUrl` opens the dashboard Source|Preview chrome. A path or download name
- * that isn't encoded would break on slashes, spaces, `#`, `?`, `&`, or `%`, or
- * let a crafted name smuggle extra query params.
+ * `renderUrl` opens HTML on the isolated files origin; `viewUrl` opens the
+ * dashboard Source|Preview chrome.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { FILES_ORIGIN_HOST, filesOriginUrl, isFilesOriginHost } from "../files-origin.ts";
 import { isHtmlPreviewPath, rawUrl, renderUrl, viewUrl } from "./client.ts";
 
 describe("rawUrl", () => {
@@ -21,7 +20,6 @@ describe("rawUrl", () => {
     expect(rawUrl("docs/x.md", { download: "x.md" })).toBe(
       "/api/file?path=docs%2Fx.md&download=x.md",
     );
-    // A download name carrying & / = can't inject a new param.
     expect(rawUrl("docs/x.md", { download: "a&b=c.md" })).toBe(
       "/api/file?path=docs%2Fx.md&download=a%26b%3Dc.md",
     );
@@ -33,9 +31,30 @@ describe("rawUrl", () => {
   });
 });
 
-describe("renderUrl", () => {
-  test("encodes the path and appends render=1", () => {
-    expect(renderUrl("docs/a plan.html")).toBe("/api/file?path=docs%2Fa%20plan.html&render=1");
+describe("files origin helpers", () => {
+  const prevPort = process.env.HARNERY_WEB_PORT;
+  afterEach(() => {
+    if (prevPort === undefined) {
+      delete process.env.HARNERY_WEB_PORT;
+    } else {
+      process.env.HARNERY_WEB_PORT = prevPort;
+    }
+  });
+
+  test("isFilesOriginHost ignores port and case", () => {
+    expect(isFilesOriginHost("harnery-files.localhost:9000")).toBe(true);
+    expect(isFilesOriginHost("Harnery-Files.Localhost")).toBe(true);
+    expect(isFilesOriginHost("localhost:9000")).toBe(false);
+    expect(isFilesOriginHost(null)).toBe(false);
+  });
+
+  test("filesOriginUrl / renderUrl use the isolated host + encoded segments", () => {
+    process.env.HARNERY_WEB_PORT = "9000";
+    expect(FILES_ORIGIN_HOST).toBe("harnery-files.localhost");
+    expect(filesOriginUrl("docs/a plan.html")).toBe(
+      "http://harnery-files.localhost:9000/docs/a%20plan.html",
+    );
+    expect(renderUrl("docs/x.html")).toBe("http://harnery-files.localhost:9000/docs/x.html");
   });
 });
 

@@ -61,7 +61,7 @@ export function FileViewerPane({ path }: { path: string | null }) {
         )}
         <div className="ml-auto flex items-center gap-1">
           {isHtmlPreviewPath(path) && (
-            <IconLink href={renderUrl(path)} target="_blank" title="Open rendered page in new tab">
+            <IconLink href={renderUrl(path)} target="_blank" title="Open on files origin (HTML with scripts)">
               <Eye className="size-4" />
             </IconLink>
           )}

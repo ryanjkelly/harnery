@@ -46,9 +46,9 @@ import {
   constants as fsConstants,
   fstatSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
-  readdirSync,
   realpathSync,
   statSync,
 } from "node:fs";
@@ -180,7 +180,9 @@ const EXT_TO_CATEGORY: Record<string, FileCategory> = {
 
 /** MIME by category. Text-family categories are served as text/plain so a repo
  * HTML/JS file can never become a same-origin navigable document; the
- * HTML preview path builds its own sandboxed-iframe blob client-side. */
+ * HTML preview path builds its own sandboxed-iframe blob client-side.
+ * The isolated files origin (`harnery-files.localhost`) uses
+ * {@link navigableMimeFor} instead. */
 function mimeFor(category: FileCategory, ext: string): string {
   switch (category) {
     case "json":
@@ -224,6 +226,19 @@ function mimeFor(category: FileCategory, ext: string): string {
       // markdown / code / yaml / html / csv / text: never navigable.
       return "text/plain; charset=utf-8";
   }
+}
+
+/**
+ * Browser-correct MIME for the isolated files origin, where HTML may run
+ * scripts and relative `.js` / `.css` assets must load as their real types.
+ */
+export function navigableMimeFor(category: FileCategory, ext: string): string {
+  const e = ext.toLowerCase();
+  if (e === "html" || e === "htm") return "text/html; charset=utf-8";
+  if (e === "css") return "text/css; charset=utf-8";
+  if (e === "js" || e === "mjs" || e === "cjs") return "text/javascript; charset=utf-8";
+  if (e === "wasm") return "application/wasm";
+  return mimeFor(category, e);
 }
 
 // ---------------------------------------------------------------------------

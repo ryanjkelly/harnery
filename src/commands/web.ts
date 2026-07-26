@@ -102,6 +102,7 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       }
 
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
+      emit.log(`files origin · http://harnery-files.localhost:${port}`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
 
       const child = spawn(webRunner(), ["run", mode], {

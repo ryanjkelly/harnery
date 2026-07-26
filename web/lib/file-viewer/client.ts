@@ -84,12 +84,12 @@ export function rawUrl(path: string, opts: { download?: string } = {}): string {
   return url;
 }
 
-/** Browser-rendered HTML document: `/api/file?path=…&render=1`.
- * Opt-in text/html under CSP `sandbox` (unique origin, scripts disabled).
- * Default `/api/file` without `render` stays text/plain on purpose. */
-export function renderUrl(path: string): string {
-  return `/api/file?${qs(path)}&render=1`;
-}
+/**
+ * Open on the isolated files origin (`harnery-files.localhost`) so HTML/JS run
+ * in a real browser document without sharing the dashboard cookie jar.
+ * Same allowlisted tree; relative asset URLs resolve on that host.
+ */
+export { filesOriginUrl as renderUrl } from "../files-origin";
 
 /** Dashboard chrome viewer (`/files/view`) with Source | Preview. Prefer
  * `renderUrl` for a real browser tab of just the HTML page. */

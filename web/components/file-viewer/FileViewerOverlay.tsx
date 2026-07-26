@@ -209,8 +209,8 @@ export default function FileViewerOverlay({
               <IconLink
                 href={renderUrl(path)}
                 target="_blank"
-                title="Open rendered page in new tab"
-                label={`Open ${filename} rendered in new tab`}
+                title="Open on files origin (HTML with scripts)"
+                label={`Open ${filename} on files origin`}
               >
                 <Eye className="size-4" />
               </IconLink>

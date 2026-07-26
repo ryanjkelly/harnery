@@ -7,10 +7,10 @@ export const revalidate = 0;
 export const metadata = { title: "File · Harnery" };
 
 /**
- * `/files/view?path=<rel>&mode=source|preview`: full-page standalone viewer.
- * Distinct from `/files?path=` (modal overlay on the landing page) so "Open
- * preview in new tab" can render HTML without making `/api/file` navigable as
- * text/html. The root FileViewerProvider skips auto-open on this pathname.
+ * `/files/view?path=<rel>&mode=source|preview`: full-page standalone viewer
+ * with dashboard chrome (Source | Preview). For a real browser document with
+ * scripts enabled, open the isolated files origin instead
+ * (`http://harnery-files.localhost:<port>/<path>` via the Eye action).
  */
 export default async function FilesViewPage({
   searchParams,
