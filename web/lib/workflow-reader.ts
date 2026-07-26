@@ -51,6 +51,11 @@ export interface WorkflowRunSummary {
   workspace?: WorkflowWorkspaceInspection;
   /** Journal mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
+  /** Durable work item this run is an attempt at, from `run.json`. Absent for a
+   * run launched directly from a script rather than against a work item. */
+  workItemId?: string;
+  /** Which attempt at that work item this run is, and what triggered it. */
+  attempt?: { number?: number; trigger?: string };
 }
 
 interface JournalLine {
@@ -201,6 +206,7 @@ export function readWorkflowRun(
   const billing: string[] = [];
   const proof = readProof(root, runId);
   const workspace = readWorkspaceInspection(root, runId);
+  const manifest = readRunManifestFacts(root, runId);
 
   for (const line of readFileSync(journalPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
@@ -315,6 +321,8 @@ export function readWorkflowRun(
     proof,
     workspace,
     lastActivityAt: mtimeIso,
+    workItemId: manifest.workItemId,
+    attempt: manifest.attempt,
   };
 }
 
@@ -326,6 +334,39 @@ function readProof(root: string, runId: string): WorkflowProof | undefined {
     return proof.schema_version === 1 && proof.run?.id === runId ? proof : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Work item + attempt facts from the run manifest.
+ *
+ * Kept separate from the workspace inspection, which reads the same file for a
+ * different purpose: these are plain identity fields, and a manifest that fails
+ * workspace validation should still be able to say which attempt it was.
+ */
+function readRunManifestFacts(
+  root: string,
+  runId: string,
+): { workItemId?: string; attempt?: { number?: number; trigger?: string } } {
+  const path = join(root, ".harnery", "workflows", runId, "run.json");
+  if (!existsSync(path)) return {};
+  try {
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+      work_item_id?: string;
+      attempt_context?: { number?: number; trigger?: string };
+    };
+    const attempt = manifest.attempt_context;
+    return {
+      workItemId: manifest.work_item_id,
+      // Only surface an attempt when it says something; early manifests carry
+      // a work item with no attempt context at all.
+      attempt:
+        attempt && (attempt.number !== undefined || attempt.trigger !== undefined)
+          ? { number: attempt.number, trigger: attempt.trigger }
+          : undefined,
+    };
+  } catch {
+    return {};
   }
 }
 

@@ -20,6 +20,25 @@ export const metadata = { title: "Workflows · Harnery" };
 export default function WorkflowsPage() {
   const runs = readWorkflowRuns(coordRoot());
 
+  /*
+   * Repeat attempts at the same work item look identical in this list: same
+   * name, different timestamp and run id. One work item in this repo has five,
+   * and telling them apart meant reading run ids. Runs arrive newest-first, so
+   * the first occurrence of a work item is its latest attempt.
+   */
+  const attemptsPerItem = new Map<string, number>();
+  for (const r of runs) {
+    if (!r.workItemId) continue;
+    attemptsPerItem.set(r.workItemId, (attemptsPerItem.get(r.workItemId) ?? 0) + 1);
+  }
+  const latestSeen = new Set<string>();
+  const isLatestAttempt = new Map<string, boolean>();
+  for (const r of runs) {
+    if (!r.workItemId) continue;
+    isLatestAttempt.set(r.runId, !latestSeen.has(r.workItemId));
+    latestSeen.add(r.workItemId);
+  }
+
   return (
     <div className="min-h-screen">
       <NavBar scannedDir={coordRoot()} />
@@ -47,6 +66,34 @@ export default function WorkflowsPage() {
                     <WorkflowStatusBadge status={run.status} />
                     {run.workspace ? <WorkspaceStateBadge inspection={run.workspace} /> : null}
                     <span className="font-medium">{run.name}</span>
+                    {run.workItemId && (attemptsPerItem.get(run.workItemId) ?? 0) > 1 ? (
+                      <Tooltip
+                        content={`${
+                          run.attempt?.number !== undefined
+                            ? `Attempt ${run.attempt.number} of ${attemptsPerItem.get(run.workItemId)}`
+                            : `One of ${attemptsPerItem.get(run.workItemId)} attempts, in a manifest written before attempts were numbered`
+                        } at work item ${run.workItemId}${
+                          run.attempt?.trigger ? `, triggered by ${run.attempt.trigger}` : ""
+                        }.${
+                          isLatestAttempt.get(run.runId)
+                            ? " This is the most recent attempt."
+                            : " A later attempt exists, so this one is history."
+                        }`}
+                      >
+                        <span
+                          className={
+                            isLatestAttempt.get(run.runId)
+                              ? "cursor-help rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-400"
+                              : "cursor-help rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                          }
+                        >
+                          {run.attempt?.number !== undefined
+                            ? `attempt ${run.attempt.number}/${attemptsPerItem.get(run.workItemId)}`
+                            : `one of ${attemptsPerItem.get(run.workItemId)} attempts`}
+                          {isLatestAttempt.get(run.runId) ? " · latest" : ""}
+                        </span>
+                      </Tooltip>
+                    ) : null}
                     <Tooltip content="Run id. Two runs of the same work item share a name, so this is what tells them apart.">
                       <span className="cursor-help font-mono text-xs text-muted-foreground">
                         {run.runId}
