@@ -3,27 +3,49 @@
 /**
  * HTML / XML renderer: Shiki-highlighted SOURCE by default, plus a
  * Preview toggle that renders the HTML in a `sandbox`ed `<iframe>` from a blob
- * URL. Source is the default (source is default, preview opt-in). The
- * iframe sandbox has NO allow-same-origin, so the previewed document gets a
- * unique opaque origin and can never touch the dashboard. The blob: URL is
- * created from the file text only when the user opts into Preview.
+ * URL. Source is the default in the overlay (preview opt-in); `/files/view`
+ * may seed Preview via `initialMode`. The iframe sandbox has NO
+ * allow-same-origin, so the previewed document gets a unique opaque origin and
+ * can never touch the dashboard. The blob: URL is created only in Preview.
  */
 
-import type { FileText } from "@/lib/file-viewer/types";
 import { Code2, Eye } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { FileText } from "@/lib/file-viewer/types";
 import CodeRenderer from "./CodeRenderer";
 
-export default function HtmlRenderer({ file }: { file: FileText }) {
-  const [mode, setMode] = useState<"source" | "preview">("source");
+export default function HtmlRenderer({
+  file,
+  initialMode = "source",
+}: {
+  file: FileText;
+  initialMode?: "source" | "preview";
+}) {
   const isXml = file.relPath.toLowerCase().endsWith(".xml");
+  const seed: "source" | "preview" = isXml ? "source" : initialMode;
+  const [mode, setMode] = useState<"source" | "preview">(seed);
+
+  // Path / deep-link mode changes (standalone replaceState, sequence nav).
+  useEffect(() => {
+    setMode(file.relPath.toLowerCase().endsWith(".xml") ? "source" : initialMode);
+  }, [file.relPath, initialMode]);
+
+  const setModeAndUrl = (next: "source" | "preview") => {
+    setMode(next);
+    // Keep /files/view shareable when the user toggles Source | Preview.
+    if (typeof window === "undefined") return;
+    if (!window.location.pathname.startsWith("/files/view")) return;
+    const u = new URL(window.location.href);
+    u.searchParams.set("mode", next);
+    window.history.replaceState(window.history.state, "", `${u.pathname}${u.search}${u.hash}`);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-1.5">
         <ModeButton
           active={mode === "source"}
-          onClick={() => setMode("source")}
+          onClick={() => setModeAndUrl("source")}
           icon={<Code2 className="size-3.5" />}
         >
           Source
@@ -31,7 +53,7 @@ export default function HtmlRenderer({ file }: { file: FileText }) {
         {!isXml && (
           <ModeButton
             active={mode === "preview"}
-            onClick={() => setMode("preview")}
+            onClick={() => setModeAndUrl("preview")}
             icon={<Eye className="size-3.5" />}
           >
             Preview

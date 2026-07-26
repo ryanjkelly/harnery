@@ -9,10 +9,16 @@
  * RendererRegistry.
  */
 
-import { type FetchResult, fetchMeta, rawUrl } from "@/lib/file-viewer/client";
-import type { FileMeta, FileViewerState } from "@/lib/file-viewer/types";
-import { Check, Copy, Download, ExternalLink, Maximize2, Minimize2, X } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Eye, Maximize2, Minimize2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type FetchResult,
+  fetchMeta,
+  isHtmlPreviewPath,
+  rawUrl,
+  viewUrl,
+} from "@/lib/file-viewer/client";
+import type { FileMeta, FileViewerState } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
 import {
   DeniedState,
@@ -199,6 +205,16 @@ export default function FileViewerOverlay({
             </span>
           )}
           <div className={`flex items-center gap-1 ${inSequence ? "" : "ml-auto"}`}>
+            {isHtmlPreviewPath(path) && (
+              <IconLink
+                href={viewUrl(path, { mode: "preview" })}
+                target="_blank"
+                title="Open preview in new tab"
+                label={`Open ${filename} preview in new tab`}
+              >
+                <Eye className="size-4" />
+              </IconLink>
+            )}
             <IconLink
               href={rawUrl(path)}
               target="_blank"

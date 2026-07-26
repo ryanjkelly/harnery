@@ -9,9 +9,9 @@
  * binary degrade to a download card.
  */
 
+import { Component, lazy, type ReactNode, Suspense, useCallback, useEffect, useState } from "react";
 import { type FetchResult, fetchText, rawUrl } from "@/lib/file-viewer/client";
 import type { FileMeta, FileText } from "@/lib/file-viewer/types";
-import { Component, type ReactNode, Suspense, lazy, useCallback, useEffect, useState } from "react";
 import {
   DownloadCard,
   LoadingState,
@@ -56,7 +56,15 @@ const PATH_RENDERERS: Record<string, React.ComponentType<{ meta: FileMeta; path:
  * instead of the plain text fallback. */
 const TEXT_FAMILY = new Set(["markdown", "code", "json", "yaml", "text", "csv", "html"]);
 
-function TextFamily({ meta, path }: { meta: FileMeta; path: string }) {
+function TextFamily({
+  meta,
+  path,
+  htmlInitialMode,
+}: {
+  meta: FileMeta;
+  path: string;
+  htmlInitialMode?: "source" | "preview";
+}) {
   const [res, setRes] = useState<FetchResult<FileText> | null>(null);
   const load = useCallback(() => {
     setRes(null);
@@ -106,11 +114,9 @@ function TextFamily({ meta, path }: { meta: FileMeta; path: string }) {
           ? YamlRenderer
           : meta.category === "csv"
             ? CsvRenderer
-            : meta.category === "html"
-              ? HtmlRenderer
-              : meta.category === "code"
-                ? CodeRenderer
-                : TextRenderer;
+            : meta.category === "code"
+              ? CodeRenderer
+              : TextRenderer;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -118,7 +124,11 @@ function TextFamily({ meta, path }: { meta: FileMeta; path: string }) {
       <div className={`min-h-0 flex-1 ${selfScrolls ? "flex flex-col" : "overflow-auto"}`}>
         <RenderErrorBoundary key={path} relPath={meta.relPath}>
           <Suspense fallback={<LoadingState path={meta.relPath} />}>
-            <Renderer file={file} />
+            {meta.category === "html" ? (
+              <HtmlRenderer file={file} initialMode={htmlInitialMode} />
+            ) : (
+              <Renderer file={file} />
+            )}
           </Suspense>
         </RenderErrorBoundary>
       </div>
@@ -126,9 +136,18 @@ function TextFamily({ meta, path }: { meta: FileMeta; path: string }) {
   );
 }
 
-export function RendererRegistry({ meta, path }: { meta: FileMeta; path: string }) {
+export function RendererRegistry({
+  meta,
+  path,
+  htmlInitialMode,
+}: {
+  meta: FileMeta;
+  path: string;
+  /** Seed HtmlRenderer's Source | Preview toggle (standalone /files/view). */
+  htmlInitialMode?: "source" | "preview";
+}) {
   if (TEXT_FAMILY.has(meta.category)) {
-    return <TextFamily meta={meta} path={path} />;
+    return <TextFamily meta={meta} path={path} htmlInitialMode={htmlInitialMode} />;
   }
   const PathRenderer = PATH_RENDERERS[meta.category];
   if (PathRenderer) {

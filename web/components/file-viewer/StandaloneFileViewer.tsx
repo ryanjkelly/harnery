@@ -1,22 +1,14 @@
 "use client";
 
 /**
- * Inline file-viewer pane: the same meta-fetch → renderer-dispatch the modal
- * overlay (FileViewerOverlay) runs, but rendered as a flex pane (no backdrop,
- * focus-trap, gestures, or maximize). Used as the right half of /browse beside
- * the directory tree. Reuses the shared RendererRegistry + ViewerStates so every
- * file type renders identically to the overlay.
+ * Full-page file viewer for `/files/view?path=…` — same meta → registry path as
+ * the overlay/pane, without the modal chrome. Lets HTML open in a real browser
+ * tab with Source | Preview while `/api/file` stays non-navigable text/plain.
  */
 
-import { Check, Copy, Download, ExternalLink, Eye, FileText } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, FileText } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import {
-  type FetchResult,
-  fetchMeta,
-  isHtmlPreviewPath,
-  rawUrl,
-  viewUrl,
-} from "@/lib/file-viewer/client";
+import { type FetchResult, fetchMeta, rawUrl } from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
 import {
@@ -27,7 +19,14 @@ import {
   UnresolvableState,
 } from "./ViewerStates";
 
-export function FileViewerPane({ path }: { path: string | null }) {
+export function StandaloneFileViewer({
+  path,
+  initialMode,
+}: {
+  path: string | null;
+  /** Seed for HtmlRenderer's Source | Preview toggle. */
+  initialMode: "source" | "preview";
+}) {
   const [meta, setMeta] = useState<FetchResult<FileMeta> | null>(null);
   const load = useCallback(() => {
     if (path === null) {
@@ -41,7 +40,7 @@ export function FileViewerPane({ path }: { path: string | null }) {
     load();
   }, [load]);
 
-  if (path === null) return <EmptyPane />;
+  if (path === null) return <MissingPath />;
 
   const filename = path.split("/").pop() ?? path;
   const m = meta?.ok ? meta.data : null;
@@ -60,15 +59,6 @@ export function FileViewerPane({ path }: { path: string | null }) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
-          {isHtmlPreviewPath(path) && (
-            <IconLink
-              href={viewUrl(path, { mode: "preview" })}
-              target="_blank"
-              title="Open preview in new tab"
-            >
-              <Eye className="size-4" />
-            </IconLink>
-          )}
           <IconLink href={rawUrl(path)} target="_blank" title="Open raw in new tab">
             <ExternalLink className="size-4" />
           </IconLink>
@@ -82,20 +72,22 @@ export function FileViewerPane({ path }: { path: string | null }) {
         </div>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col bg-background/40">
-        <PaneBody path={path} meta={meta} onRetry={load} />
+        <Body path={path} meta={meta} onRetry={load} initialMode={initialMode} />
       </div>
     </div>
   );
 }
 
-function PaneBody({
+function Body({
   path,
   meta,
   onRetry,
+  initialMode,
 }: {
   path: string;
   meta: FetchResult<FileMeta> | null;
   onRetry: () => void;
+  initialMode: "source" | "preview";
 }) {
   if (meta === null) return <LoadingState path={path} />;
   if (!meta.ok) {
@@ -114,19 +106,24 @@ function PaneBody({
         return <TransportErrorState onRetry={onRetry} />;
     }
   }
-  return <RendererRegistry meta={meta.data} path={path} />;
+  return <RendererRegistry meta={meta.data} path={path} htmlInitialMode={initialMode} />;
 }
 
-function EmptyPane() {
+function MissingPath() {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
       <FileText className="size-8 text-muted-foreground/40" />
-      <p className="text-sm text-muted-foreground">Select a file from the tree to view it here.</p>
+      <p className="text-sm text-muted-foreground">
+        Missing <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-xs">?path=</code>.
+        Deep-link a file with{" "}
+        <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-xs">
+          /files/view?path=…
+        </code>
+        .
+      </p>
     </div>
   );
 }
-
-/* ── small shared pieces (mirror FileViewerOverlay's local helpers) ────────── */
 
 function IconLink({
   href,

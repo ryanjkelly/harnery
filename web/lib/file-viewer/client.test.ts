@@ -1,12 +1,13 @@
 /**
  * Locks the pure URL-building in the file-viewer client. `rawUrl` feeds
  * <img>/<audio>/<video>/<iframe> src and the download/open-raw header actions;
- * a path or download name that isn't encoded would break on slashes, spaces,
- * `#`, `?`, `&`, or `%`, or let a crafted name smuggle extra query params.
+ * `viewUrl` feeds HTML "open preview in new tab". A path or download name that
+ * isn't encoded would break on slashes, spaces, `#`, `?`, `&`, or `%`, or let a
+ * crafted name smuggle extra query params.
  */
 
 import { describe, expect, test } from "bun:test";
-import { rawUrl } from "./client.ts";
+import { isHtmlPreviewPath, rawUrl, viewUrl } from "./client.ts";
 
 describe("rawUrl", () => {
   test("encodes the path so slashes/spaces/specials survive as one param value", () => {
@@ -28,5 +29,25 @@ describe("rawUrl", () => {
   test("omitting download leaves no download param", () => {
     expect(rawUrl("a.ts")).toBe("/api/file?path=a.ts");
     expect(rawUrl("a.ts").includes("download")).toBe(false);
+  });
+});
+
+describe("viewUrl", () => {
+  test("encodes the path and defaults to no mode param", () => {
+    expect(viewUrl("docs/a plan.html")).toBe("/files/view?path=docs%2Fa%20plan.html");
+  });
+
+  test("mode is appended as its own param", () => {
+    expect(viewUrl("x.html", { mode: "preview" })).toBe("/files/view?path=x.html&mode=preview");
+    expect(viewUrl("x.html", { mode: "source" })).toBe("/files/view?path=x.html&mode=source");
+  });
+});
+
+describe("isHtmlPreviewPath", () => {
+  test("true for .html / .htm only", () => {
+    expect(isHtmlPreviewPath("docs/page.html")).toBe(true);
+    expect(isHtmlPreviewPath("docs/PAGE.HTM")).toBe(true);
+    expect(isHtmlPreviewPath("docs/config.xml")).toBe(false);
+    expect(isHtmlPreviewPath("docs/readme.md")).toBe(false);
   });
 });
