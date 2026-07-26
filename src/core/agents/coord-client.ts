@@ -167,32 +167,72 @@ export function parsePidmapRowStartToken(row: string): string | undefined {
  *
  * Deliberately inlined rather than imported from `state/proc-start.ts`: this
  * file is vendored verbatim into a downstream consumer and stays on node
- * builtins only. Keep the two in step.
+ * builtins only. The token is a wire format shared with that module and with
+ * the host's commit guard, so the copies must agree byte for byte; exported so
+ * a test can hold this one against `processStartToken` and fail on drift.
  */
+export function pidStartToken(pid: number): string | null {
+  const forced = process.env.HARNERY_PID_PROBE;
+  const useProcfs = forced === "procfs" || (forced !== "ps" && existsSync("/proc/self/stat"));
+  // One machine, one probe. Falling back to the other on a read failure would
+  // answer in the wrong dialect and read as a recycled pid.
+  if (useProcfs) {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const afterComm = stat.slice(stat.lastIndexOf(") ") + 2);
+      // Fields after comm, 0-based: 0 is state (field 3), starttime (22) is 19.
+      const ticks = afterComm.split(" ")[19];
+      if (!ticks || !/^\d+$/.test(ticks)) return null;
+      // Ticks count from boot, so they repeat across reboots; the boot id scopes
+      // them. Rows written before it carry ticks alone and still compare.
+      let boot = "";
+      try {
+        const raw = readFileSync("/proc/sys/kernel/random/boot_id", "utf8")
+          .trim()
+          .replace(/-/g, "");
+        if (/^[0-9a-f]{8,}$/.test(raw)) boot = `${raw.slice(0, 8)}.`;
+      } catch {
+        /* unnamed boot: fall back to the tick-only shape */
+      }
+      return `l${boot}${ticks}`;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    // TZ and locale are pinned because `ps` renders the date through them, and
+    // two callers with different environments must not disagree about one
+    // process.
+    const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 2000,
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
+    });
+    if (out.status !== 0) return null;
+    const lstart = (out.stdout ?? "").split("\n")[0]?.trim().replace(/\s+/g, " ");
+    return lstart ? `p${lstart}` : null;
+  } catch {
+    return null;
+  }
+}
+
 function pidWasRecycled(pid: number, row: string): boolean {
   const recorded = parsePidmapRowStartToken(row);
   if (!recorded) return false; // pre-token row: unverifiable, behave as before
-  let current: string | null = null;
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const afterComm = stat.slice(stat.lastIndexOf(") ") + 2);
-    // Fields after comm, 0-based: 0 is state (field 3), starttime (22) is 19.
-    const starttime = afterComm.split(" ")[19];
-    if (starttime && /^\d+$/.test(starttime)) current = `l${starttime}`;
-  } catch {
-    try {
-      const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-        encoding: "utf8",
-        timeout: 2000,
-      });
-      const lstart = out.status === 0 ? out.stdout.trim() : "";
-      if (lstart) current = `p${lstart.replace(/\s+/g, " ")}`;
-    } catch {
-      /* unverifiable */
-    }
-  }
+  const current = pidStartToken(pid);
   if (!current) return false;
-  return current !== recorded;
+  if (current === recorded) return false;
+  // A row predating the boot segment recorded ticks alone; compare it on what
+  // it recorded rather than pruning every live row on the first upgraded run.
+  if (
+    recorded[0] === "l" &&
+    current[0] === "l" &&
+    recorded.includes(".") !== current.includes(".")
+  ) {
+    const ticks = (t: string) => (t.includes(".") ? t.slice(t.indexOf(".") + 1) : t.slice(1));
+    return ticks(recorded) !== ticks(current);
+  }
+  return true;
 }
 
 function readPidmapRow(pidmapDir: string, pid: number): string | null {

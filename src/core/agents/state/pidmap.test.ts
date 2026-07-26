@@ -128,10 +128,11 @@ describe("writePidmapRow", () => {
 
     expect(parsed.instanceId).toBe("live-instance");
     expect(parsed.platform).toBe("claude_code");
-    // Linux stamps ticks-since-boot; anywhere the platform will not say, the
-    // field is empty and the row reads as unverifiable rather than wrong.
+    // Linux stamps ticks-since-boot, scoped to the boot they are counted from;
+    // anywhere the platform will not say, the field is absent and the row reads
+    // as unverifiable rather than wrong.
     if (existsSync("/proc/self/stat")) {
-      expect(parsed.startToken).toMatch(/^l\d+$/);
+      expect(parsed.startToken).toMatch(/^l[0-9a-f]{8}\.\d+$/);
     }
   });
 
@@ -142,6 +143,55 @@ describe("writePidmapRow", () => {
       platform: "claude_code",
       startToken: undefined,
     });
+  });
+});
+
+/**
+ * The whole map lifecycle on a machine with no procfs.
+ *
+ * A BSD host reaches every one of these functions through the `ps` probe, and
+ * the only honest way to know that path works is to run it. It is the same code
+ * on either OS, so forcing the probe exercises it here rather than leaving it to
+ * be discovered on somebody's laptop.
+ */
+describe("the ps probe (a machine with no procfs)", () => {
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env.HARNERY_PID_PROBE;
+    process.env.HARNERY_PID_PROBE = "ps";
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.HARNERY_PID_PROBE;
+    else process.env.HARNERY_PID_PROBE = saved;
+  });
+
+  test("writes a token, keeps the row, and still sees the instance", () => {
+    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    const parsed = parsePidmapRow(readFileSync(join(pidmapDir, String(process.pid)), "utf8"));
+
+    expect(parsed.startToken).toMatch(/^p\S/);
+    expect(prunePidmapDeadRows(root)).toBe(0);
+    expect(instanceHasLivePid(root, "live-instance")).toBe(true);
+  });
+
+  test("still catches a re-issued pid", () => {
+    writeFileSync(
+      join(pidmapDir, String(process.pid)),
+      "ghost-instance\tclaude_code\tpWed Jan  1 00:00:00 2020",
+      "utf8",
+    );
+    expect(instanceHasLivePid(root, "ghost-instance")).toBe(false);
+    expect(prunePidmapDeadRows(root)).toBe(1);
+  });
+
+  test("distrusts a row written in the other probe's dialect", () => {
+    // A machine does not change probes, so this only happens if one somehow
+    // did. Dropping the row costs one rewrite; believing it across dialects
+    // would mean comparing a tick count against a date.
+    writeFileSync(join(pidmapDir, String(process.pid)), "x\tclaude_code\tl12345", "utf8");
+    expect(prunePidmapDeadRows(root)).toBe(1);
   });
 });
 

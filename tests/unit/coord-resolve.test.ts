@@ -13,10 +13,12 @@ import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts"
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import {
   parsePidmapRowPlatform,
+  pidStartToken,
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
   resolveSingleActiveOwner,
 } from "../../src/core/agents/coord-client.ts";
+import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
 
 // Mirror of the source's SESSION_ID_ENV_VARS (kept unexported there); used here
 // only to save/restore env across tests.
@@ -408,5 +410,49 @@ describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)",
       owner: "agent-current",
       source: "session_env",
     });
+  });
+});
+
+/**
+ * The start token is a wire format: `state/proc-start.ts` writes rows,
+ * `coord-client.ts` reads them during the ppid walk, and the host's commit
+ * guard reimplements it again in bash. The first two copies exist because
+ * coord-client is vendored downstream and may not import; nothing but a test
+ * stops them drifting, and a drift is silent — one side simply starts calling
+ * the other's live rows recycled.
+ */
+describe("start-token parity between the two implementations", () => {
+  let savedProbe: string | undefined;
+
+  beforeEach(() => {
+    savedProbe = process.env.HARNERY_PID_PROBE;
+  });
+
+  afterEach(() => {
+    if (savedProbe === undefined) delete process.env.HARNERY_PID_PROBE;
+    else process.env.HARNERY_PID_PROBE = savedProbe;
+  });
+
+  test("both read the same token for one live process, in either dialect", () => {
+    for (const probe of ["procfs", "ps"] as const) {
+      process.env.HARNERY_PID_PROBE = probe;
+      const canonical = processStartToken(process.pid);
+      if (canonical === null) continue; // no procfs on this machine
+      expect(pidStartToken(process.pid)).toBe(canonical);
+    }
+  });
+
+  test("both decline for a pid that is not running", () => {
+    let dead = 30000;
+    while (dead < 40000) {
+      try {
+        process.kill(dead, 0);
+        dead += 1;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
+        dead += 1;
+      }
+    }
+    expect(pidStartToken(dead)).toBe(processStartToken(dead) as string | null);
   });
 });
