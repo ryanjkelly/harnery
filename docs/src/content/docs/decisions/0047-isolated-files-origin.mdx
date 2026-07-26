@@ -1,0 +1,71 @@
+---
+title: "0047: Isolated files origin on harnery-files.localhost"
+description: Serve allowlisted repo files on a Host-split origin (same port as the dashboard) so HTML/JS can run without becoming same-origin to localhost, without a second process.
+---
+
+**Status:** accepted · **Date:** 2026-07-25
+
+## Context
+
+The dashboard file viewer (`/api/file` on `localhost`) deliberately serves
+HTML, JS, and other text-family files as `text/plain` plus
+`Content-Security-Policy: sandbox`. That stops a repo HTML file from becoming a
+same-origin navigable document that can read dashboard storage or call dashboard
+APIs.
+
+Operators still need a real browser tab for standalone HTML (theme pages,
+explainers) where scripts and relative assets work. A sandboxed `?render=1`
+path on the dashboard origin can paint HTML but never runs JS. That is the wrong
+trade for pages that filter, search, or otherwise depend on script.
+
+## Alternatives considered
+
+**Serve `text/html` from `/api/file` on `localhost`.** Rejected. Same-origin
+XSS into the dashboard for any allowlisted HTML in the tree.
+
+**`?render=1` with CSP `sandbox` (no `allow-scripts`).** Kept as a secondary
+path for inert previews on the dashboard origin. Rejected as the primary "open
+in a new tab" for HTML, because scripts stay disabled by design.
+
+**Separate process / port for a file server.** Rejected for v1. Extra lifecycle,
+port allocation, and `harn web up` wiring for no security gain beyond what a
+different *host* already provides.
+
+**Different port only (`localhost:9001`).** Rejected. Cookies are host-scoped,
+not port-scoped; `localhost:9000` and `localhost:9001` share the `localhost`
+cookie jar.
+
+**Bare hostname (`harnery-files`).** Rejected. Needs a hosts-file entry (on WSL,
+the Windows hosts file via UAC). `*.localhost` resolves to loopback per
+RFC 6761 with no edit.
+
+**HTML-only on the files origin.** Rejected. Relative `./x.js` / `../img.png`
+URLs must resolve on the same origin as the HTML document.
+
+## Decision
+
+One Next.js process, two origins via `Host`:
+
+- `http://localhost:<port>`: dashboard; `/api/file` stays non-navigable
+  (`text/plain` + CSP sandbox for text-family).
+- `http://harnery-files.localhost:<port>/<repo-path>`: allowlisted file bytes
+  with real browser MIME types (`text/html`, `text/javascript`, `text/css`, …)
+  and **no** CSP sandbox, so scripts run.
+
+Middleware (`web/middleware.ts`) rewrites the files host to `/api/file` and
+carries the path in `x-harnery-files-path` (rewritten query strings are
+unreliable in the App Router). Navigable MIME is keyed **only** off
+`Host === harnery-files.localhost`. A client on `localhost` cannot opt in by
+query or header smuggle.
+
+The Eye action in the file viewer opens `filesOriginUrl(path)`
+(`web/lib/files-origin.ts`). `/files/view` remains for dashboard Source |
+Preview chrome.
+
+## Result
+
+Verified: `Host: harnery-files.localhost` returns `content-type: text/html`
+with no `content-security-policy` sandbox; the same path on `localhost` stays
+`text/plain` + sandbox. Relative assets resolve because the path *is* the URL
+path on the files host. Cookie isolation follows from the host split, not from
+a second server.
