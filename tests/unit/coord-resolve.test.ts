@@ -331,6 +331,39 @@ describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)",
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
   });
 
+  test("Claude Code session env wins over a recycled pid-map row", () => {
+    // The row names this pid, but the pid was recycled: it now belongs to us,
+    // and the agent that wrote the row is long gone. The walk cannot tell,
+    // and the pruner cannot help, since the pid is alive. The env var can.
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    writeHeartbeat("agent-current", "sess-current", 30_000);
+    writeHeartbeat("agent-recycled", "sess-recycled", 30_000);
+    writePidmapRow(root, process.pid, "agent-recycled", "claude_code");
+
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-current";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "agent-current",
+      source: "session_env",
+    });
+  });
+
+  test("pid-map still resolves when the session env names no live heartbeat", () => {
+    // Preferring the env must not cost us the walk: an env session id with no
+    // matching heartbeat has to fall through, not resolve to nothing.
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    writePidmapRow(root, process.pid, "agent-from-row", "claude_code");
+
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-with-no-heartbeat";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "agent-from-row",
+      source: "pidmap",
+    });
+  });
+
   test("Cursor session env wins over a shared cursor pid-map row", () => {
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
     writeHeartbeat("agent-current", "sess-current", 30_000);

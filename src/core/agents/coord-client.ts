@@ -197,9 +197,14 @@ export function resolveOwnerWithSource(): {
   const root = monorepoRoot();
   if (!root) return { owner: null, source: "none" };
 
-  // Cursor's Glass/Agents UI can run several chats under one long-lived node
-  // process, so the pid-map row for that shared ancestor is last-writer-wins.
-  // Prefer the per-chat session id when Cursor exposes one in the tool env.
+  // Every supported harness exports its session id into the env of the
+  // subprocess it spawns for a tool call, and each heartbeat records the
+  // session id it was minted under. Matching the two names us outright, even
+  // with many live agents, so it goes ahead of the ppid walk rather than
+  // catching what the walk drops. Cursor needed this first because its
+  // Glass/Agents UI runs several chats under one node ancestor, making that row
+  // last-writer-wins; pid recycling generalises the same hazard to every
+  // harness.
   if (shouldPreferSessionEnv()) {
     const bySession = resolveOwnerBySessionEnv(root);
     if (bySession) {
@@ -229,18 +234,6 @@ export function resolveOwnerWithSource(): {
   }
   if (fallbackOwner) {
     return { owner: fallbackOwner, source: "pidmap_fallback" };
-  }
-
-  // The ppid walk found nothing (e.g. a Bash-tool subshell whose process tree
-  // doesn't climb back to the harness anchor). Before guessing, try the
-  // harness-provided session id from the environment: every supported harness
-  // exports its session id into the tool subprocess env, and each heartbeat
-  // records the `session_id` it was minted under. Matching the two resolves us
-  // unambiguously even with multiple live agents, which is the case the
-  // singleton fallback below cannot handle.
-  const bySession = resolveOwnerBySessionEnv(root);
-  if (bySession) {
-    return { owner: bySession, source: "session_env" };
   }
 
   // Last resort: if exactly one agent is live in this coord root, it's
@@ -292,10 +285,24 @@ function sessionIdFromEnv(): string | null {
   return sessionIdsFromEnv()[0] ?? null;
 }
 
+/**
+ * Should the harness-exported session id be consulted before the ppid walk?
+ *
+ * Yes, whenever one is exported. The env var is the harness stating its own
+ * identity; the walk is a guess over a namespace the OS recycles. On a box with
+ * `pid_max` of 99999 and ~100 pids allocated per second the whole pid space
+ * turns over about every quarter hour, so a row written before that can name a
+ * pid some unrelated process now holds. Pruning cannot save the walk here:
+ * it removes rows whose pid is dead, and a recycled pid is alive. Letting a
+ * guess outrank a statement of fact is what made `agents whoami` report another
+ * agent's name and file list.
+ *
+ * This only reorders the two. Session-env resolution still requires a live
+ * heartbeat carrying that session id, so when it does not match, the walk runs
+ * exactly as before.
+ */
 function shouldPreferSessionEnv(): boolean {
-  if (!sessionIdFromEnv()) return false;
-  const platform = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim();
-  return process.env.CURSOR_AGENT === "1" || platform === "cursor";
+  return sessionIdFromEnv() !== null;
 }
 
 /**
