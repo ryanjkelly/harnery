@@ -26,6 +26,7 @@ import { replayCodexJsonl } from "../agents/codex-replay.ts";
 import { consumeSince, writeCursor } from "../agents/events/consume.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
+import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
 import {
   checkpointContext,
@@ -182,9 +183,15 @@ function assignNameViaAgentCoord(
 }
 
 /**
- * Direct (in-process) pidmap write, avoids the spawn overhead of going via
- * the agent-coord CLI for every session.start / subagent.start. Pid-map
- * rows are essential for `harn agents whoami` ppid resolution.
+ * Direct (in-process) pidmap write, avoiding the spawn overhead of going via
+ * the agent-coord CLI for every session.start / subagent.start. Pid-map rows
+ * are essential for `harn agents whoami` ppid resolution.
+ *
+ * This used to inline its own copy of the write to keep this module's
+ * dependencies narrow, which quietly mattered: the shared writer is where row
+ * hygiene lives, so the duplicate meant the only hot write path in the system
+ * never swept dead rows, and the map grew unbounded. It calls the shared writer
+ * now, and this module already imports from that directory anyway.
  */
 function writePidmapViaAgentCoord(
   coordRoot: string,
@@ -193,24 +200,7 @@ function writePidmapViaAgentCoord(
   platform: string,
 ): void {
   try {
-    // Inline write: same atomic temp+rename pattern as
-    // agent-coord/src/state/pidmap.ts but skips importing across module
-    // boundaries to keep agent-hooks's deps explicit.
-    const dir = join(coordRoot, ".harnery", "pid-map");
-    const path = join(dir, String(pid));
-    const row = `${instanceId}\t${platform}`;
-    if (existsSync(path)) {
-      try {
-        const current = require("node:fs").readFileSync(path, "utf8");
-        if (current === row) return;
-      } catch {
-        /* fall through */
-      }
-    }
-    mkdirSync(dir, { recursive: true });
-    const tmp = `${path}.tmp.${process.pid}`;
-    require("node:fs").writeFileSync(tmp, row, "utf8");
-    require("node:fs").renameSync(tmp, path);
+    writePidmapRow(coordRoot, pid, instanceId, platform);
   } catch {
     /* never break the harness flow */
   }
