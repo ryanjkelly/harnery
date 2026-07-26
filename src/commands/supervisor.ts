@@ -751,6 +751,11 @@ function emitSupervisor(
     if (projection.attention_plan_id) {
       lines.push(`attention plan: ${projection.attention_plan_id}`);
     }
+    if (projection.replan_consumption && projection.replan_consumption.planner_no_proposal > 0) {
+      lines.push(
+        `replan consumption: planner no-proposal=${projection.replan_consumption.planner_no_proposal}, reviewer rejection=${projection.replan_consumption.reviewer_rejection}`,
+      );
+    }
   }
   if (record.intent.mission) {
     lines.push(`mission: ${record.intent.mission.objective}`);
@@ -786,7 +791,12 @@ function emitSupervisorReport(
 
 function renderSupervisorRow(record: SupervisorRecord): string {
   const projection = record.projection;
-  return `${record.intent.id}  ${projection.state.padEnd(20)}  ${projection.attempts_used}/${record.intent.limits.max_total_attempts}  ${projection.next_action.padEnd(18)}  ${record.intent.title}`;
+  const row = `${record.intent.id}  ${projection.state.padEnd(20)}  ${projection.attempts_used}/${record.intent.limits.max_total_attempts}  ${projection.next_action.padEnd(18)}  ${record.intent.title}`;
+  const consumption = projection.replan_consumption;
+  if (consumption && consumption.planner_no_proposal > 0) {
+    return `${row}  [planner no-proposal x${consumption.planner_no_proposal}]`;
+  }
+  return row;
 }
 
 function integer(value: string | undefined): number | undefined {

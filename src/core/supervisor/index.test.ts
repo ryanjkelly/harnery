@@ -2453,6 +2453,205 @@ describe("durable goal supervisor", () => {
       );
     });
   });
+
+  test("attributes replan exhaustion by planner no-proposal to the planner, not review", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "no-proposal-root",
+      title: "No proposal root",
+      objective: "Exhaust the replan budget without any proposal",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-no-proposal",
+      rootWorkId: "no-proposal-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-no-proposal",
+      engine: {
+        spawners: {
+          codex: async () => ({
+            ok: true,
+            text: JSON.stringify({
+              decision: "attention",
+              rationale: "The goal needs an operator decision",
+              root: "",
+              work: [],
+            }),
+            durationMs: 1,
+          }),
+        },
+        probeBilling,
+      },
+    });
+    expect(report.stop_reason).toBe("awaiting_attention");
+    const projection = readSupervisor(root, "goal-no-proposal").projection;
+    expect(projection.next_action).toBe("none");
+    // The single consumed replan is a planner no-proposal outcome, not a
+    // reviewer rejection, and must never read as review-round exhaustion.
+    expect(projection.replan_consumption).toEqual({
+      reviewer_rejection: 0,
+      planner_no_proposal: 1,
+    });
+    expect(projection.reason).toContain("no proposal");
+    expect(projection.reason).not.toContain("review");
+  });
+
+  test("attributes replan exhaustion by reviewer rejection to review, unchanged", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "reviewer-rejection-root",
+      title: "Reviewer rejection root",
+      objective: "Exhaust the replan budget through review rejection",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-reviewer-rejection",
+      rootWorkId: "reviewer-rejection-root",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 0 },
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    const report = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-reviewer-rejection",
+      engine: {
+        spawners: {
+          codex: async (request) => {
+            if (request.prompt.includes("Review this bounded")) {
+              return {
+                ok: true,
+                text: reviewVerdict("revise", [
+                  {
+                    severity: "blocking",
+                    summary: "The candidate still misses acceptance evidence",
+                  },
+                ]),
+                durationMs: 1,
+              };
+            }
+            return { ok: true, text: replacementProposal(), durationMs: 1 };
+          },
+        },
+        probeBilling,
+      },
+    });
+    expect(report.stop_reason).toBe("awaiting_attention");
+    const projection = readSupervisor(root, "goal-reviewer-rejection").projection;
+    expect(projection.next_action).toBe("none");
+    // A reviewer rejection has no planner no-proposal history, so the projection
+    // is byte-for-byte the pre-change output: no attribution field and the
+    // review-derived reason verbatim.
+    expect(projection.replan_consumption).toBeUndefined();
+    expect(projection.reason).toBe("plan review exhausted its bounded revision rounds");
+  });
+
+  test("names the planner no-proposal mix in the reason when the latest plan is a reviewer rejection", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "mixed-consumption-root",
+      title: "Mixed consumption root",
+      objective: "Spend the replan budget on a planner no-proposal then a review rejection",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-mixed-consumption",
+      rootWorkId: "mixed-consumption-root",
+      specialists: {
+        planner: { instructions: "Plan", harness: "codex" },
+        reviewer: { instructions: "Review", harness: "codex" },
+      },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 2,
+        review: { reviewerSpecialists: ["reviewer"], maxRevisionRounds: 0 },
+        templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    let plannerRuns = 0;
+    const spawner: Spawner = async (request) => {
+      if (request.prompt.includes("Review this bounded")) {
+        return {
+          ok: true,
+          text: reviewVerdict("revise", [
+            { severity: "blocking", summary: "The candidate still misses acceptance evidence" },
+          ]),
+          durationMs: 1,
+        };
+      }
+      plannerRuns++;
+      // First replan produces no proposal; the second produces a reviewable
+      // proposal that review then rejects, so the LATEST consumed replan is a
+      // reviewer rejection while an earlier one is a planner no-proposal.
+      if (plannerRuns === 1) {
+        return {
+          ok: true,
+          text: JSON.stringify({
+            decision: "attention",
+            rationale: "The goal needs an operator decision",
+            root: "",
+            work: [],
+          }),
+          durationMs: 1,
+        };
+      }
+      return { ok: true, text: replacementProposal(), durationMs: 1 };
+    };
+    const first = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mixed-consumption",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(first.projection.next_action).toBe("retry_plan");
+    retrySupervisorPlan({
+      coordRoot: root,
+      goalId: "goal-mixed-consumption",
+      planId: first.projection.attention_plan_id!,
+      actor: "operator",
+      reason: "Operator addressed the judgment; replan once more",
+    });
+    const second = await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-mixed-consumption",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    expect(second.stop_reason).toBe("awaiting_attention");
+    const projection = readSupervisor(root, "goal-mixed-consumption").projection;
+    expect(projection.next_action).toBe("none");
+    expect(projection.replan_consumption).toEqual({
+      reviewer_rejection: 1,
+      planner_no_proposal: 1,
+    });
+    // The projection.reason field itself — not only the rendered row — must name
+    // the planner no-proposal share while preserving the latest plan's own
+    // per-plan reason. This assertion fails if the attribution is reverted to
+    // returning the review reason verbatim.
+    expect(projection.reason).toContain("plan review exhausted its bounded revision rounds");
+    expect(projection.reason).toContain("no proposal");
+  });
 });
 
 function replacementProposal(

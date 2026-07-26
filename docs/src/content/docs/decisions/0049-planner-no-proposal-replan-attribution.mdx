@@ -1,0 +1,88 @@
+---
+title: "0049: Replan exhaustion is attributed to its cause"
+description: "ADR: distinguish a replan spent by a planner that produced no proposal from one spent by reviewer rejection, using the existing plan seams."
+---
+
+**Status:** accepted (2026-07-26) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, public package APIs)
+
+## Context
+
+A bounded goal spends its frozen replan budget on planner attempts. Two of those
+attempts fail in ways that look identical once the budget is gone. In one, the
+planner produces no proposal at all: it returns an `attention` decision, or its run is
+interrupted before any candidate exists. In the other, the planner produces a
+proposal and independent review rejects it across its bounded revision rounds.
+
+Both outcomes leave the goal quiescent, and both consume a charged replan. The
+projection reported the exhausted goal with a single undifferentiated reason
+(`goal exhausted its N replans`, or the latest attention plan's own text). An
+operator reading that could not tell a planner that never proposed anything from
+review-round exhaustion, even though the two call for different responses: the
+first points at the planner or the goal framing, the second at the reviewers or
+the acceptance bar. Misreading a no-proposal streak as review-round exhaustion
+sends the operator to the wrong place.
+
+The distinction was already latent in durable state. A plan carries a review
+receipt exactly when a proposal was produced and independently reviewed, so the
+receipt's presence separates the two causes. Nothing surfaced it.
+
+## Decision
+
+Attribute each consumed replan through the existing plan record, with no new
+record field, event, or planner mechanism:
+
+- A plan with a review receipt whose status is not `passed` is a **reviewer
+  rejection**, meaning a proposal existed and review rejected it (revision-round
+  exhaustion, reviewer attention, or review failure).
+- A charged plan with no review receipt that ended in `attention`, `interrupted`,
+  `failed`, or `retry_requested` is a **planner no-proposal** outcome: the run
+  consumed a replan slot without producing a reviewable proposal. `retry_requested`
+  is a no-proposal `attention` the operator asked to replan: the original run still
+  produced no proposal and still spent a charged replan, so it counts here even
+  though a later plan superseded it.
+- Uncharged environment/upstream planner failures (ADR 0046) do not spend the
+  replan budget and are attributed to their outside precondition, not here.
+
+Projection exposes an optional `replan_consumption` breakdown
+(`{ reviewer_rejection, planner_no_proposal }`), present only when at least one
+consumed replan was a planner no-proposal outcome. When present, the exhausted-goal
+`projection.reason` (the field itself, not only the rendered row) names the
+planner no-proposal share, and `harn supervisor list` / `harn supervisor show`
+surface the breakdown. The latest plan's own per-plan reason still leads: a
+reviewed-and-rejected latest plan reports its review-round exhaustion first, then
+the reason names the planner no-proposal share of the budget. This is deliberate:
+a goal whose budget was mostly spent by planners that never proposed must not read
+as pure review exhaustion just because its final, reviewed plan was rejected. The
+projected reason a programmatic consumer reads and the operator-visible row must
+tell the same truth.
+
+A goal with no planner no-proposal history omits the field, keeps the reason it
+had before, and renders identically in `list` and `show`. Budget accounting,
+cumulative counters, and append-only record authority are unchanged; the
+attribution is a read-time projection over records that already exist.
+
+## Alternatives considered
+
+- **Add a new plan event or record field marking the cause.** Rejected because
+  the review receipt already distinguishes the two outcomes, and a new field
+  would leave records written before it ambiguous.
+- **Run a separate planner or reviewer path for the no-proposal case.** Rejected
+  because a parallel mechanism duplicates the frozen planner contract and can
+  drift from it; the distinction is an observation, not a new behavior.
+- **Charge the two causes differently.** Rejected because budget semantics are a
+  frozen bound; attribution must not change what a replan costs.
+- **Infer the cause from the replanning policy** (treat any review-configured
+  goal's exhaustion as review-round exhaustion). Rejected because a
+  review-configured goal can burn its whole budget on planners that never reach
+  review, which is exactly the case this ADR must not mislabel.
+
+## Result and gotchas
+
+- Exhaustion by planner no-proposal is never displayed as review-round
+  exhaustion; the reason and the CLI both name the planner.
+- The breakdown counts only non-advancing consumed replans. Applied plans that
+  advanced the graph are not counted as either cause.
+- The field is additive and optional. Consumers that never read it are
+  unaffected, and goals without planner no-proposal history project unchanged.
+- Attribution is derived at read time from durable plan records, so it stays
+  correct after process loss with no migration.

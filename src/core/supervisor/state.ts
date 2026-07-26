@@ -131,6 +131,20 @@ export interface SupervisorProjection {
   pending_plan_id?: string;
   attention_plan_id?: string;
   latest_plan_status?: SupervisorPlanRecord["status"];
+  /**
+   * How consumed (charged) replans that did not advance the graph broke down,
+   * present only when at least one replan was spent by a planner run that
+   * produced no proposal. `reviewer_rejection` counts replans where a proposal
+   * was produced and independent review rejected it (review-round exhaustion,
+   * reviewer attention, or review failure); `planner_no_proposal` counts replans
+   * where the planner run produced no reviewable proposal at all. Absent when a
+   * goal has no planner no-proposal history, so goals that only ever reached
+   * review project exactly as before this field existed.
+   */
+  replan_consumption?: {
+    reviewer_rejection: number;
+    planner_no_proposal: number;
+  };
   governed_work_ids: string[];
 }
 
@@ -341,6 +355,11 @@ function deriveProjection(
       plan.status === "failed" && (plan.class === "environment" || plan.class === "upstream"),
   ).length;
   const chargedReplans = plans.plans.length - unchargedReplans;
+  // Attribute the consumed replans that did not advance the graph so the
+  // projection can distinguish planner no-proposal exhaustion from reviewer
+  // rejection through existing plan seams (review receipt presence), rather than
+  // reporting both as a single undifferentiated replan exhaustion.
+  const replanConsumption = classifyReplanConsumption(plans);
   const readyWork = work
     .filter((record) => record.projection.state === "ready")
     .map((record) => record.intent.id);
@@ -410,6 +429,7 @@ function deriveProjection(
     milestones_remaining: Math.max(0, (intent.mission?.max_milestones ?? 0) - milestonesCompleted),
     pending_plan_id: plans.latest?.status === "proposed" ? plans.latest.request.id : undefined,
     latest_plan_status: plans.latest?.status,
+    ...(replanConsumption.planner_no_proposal > 0 ? { replan_consumption: replanConsumption } : {}),
     governed_work_ids: governed.map((record) => record.intent.id),
   };
   if (!ignoreLease && supervisorLeaseIsLive(coordRoot, intent.id)) {
@@ -502,13 +522,16 @@ function deriveProjection(
     plans.latest.request.prior_root_work_id === plans.active_root_work_id &&
     plans.latest.status === "attention";
   if (latestHandledSameGraph && plans.latest) {
+    const canRetry =
+      intent.replanning !== undefined && chargedReplans < intent.replanning.max_replans;
     return {
       ...base,
       state: "awaiting_attention",
-      reason: plans.latest.reason ?? `plan ${plans.latest.request.id} requires attention`,
+      reason: canRetry
+        ? (plans.latest.reason ?? `plan ${plans.latest.request.id} requires attention`)
+        : exhaustedAttentionReason(plans.latest, replanConsumption),
       attention_plan_id: plans.latest.request.id,
-      next_action:
-        intent.replanning && chargedReplans < intent.replanning.max_replans ? "retry_plan" : "none",
+      next_action: canRetry ? "retry_plan" : "none",
     };
   }
   if (!root && intent.mission) {
@@ -516,7 +539,10 @@ function deriveProjection(
       return {
         ...base,
         state: "budget_exhausted",
-        reason: "mission exhausted its planning budget before creating an initial milestone",
+        reason: replanBudgetReason(
+          "mission exhausted its planning budget before creating an initial milestone",
+          replanConsumption,
+        ),
         next_action: "none",
       };
     }
@@ -533,7 +559,10 @@ function deriveProjection(
       return {
         ...base,
         state: "budget_exhausted",
-        reason: "mission exhausted its planning budget at a milestone boundary",
+        reason: replanBudgetReason(
+          "mission exhausted its planning budget at a milestone boundary",
+          replanConsumption,
+        ),
         next_action: "none",
       };
     }
@@ -653,7 +682,10 @@ function deriveProjection(
     return {
       ...base,
       state: "budget_exhausted",
-      reason: `goal exhausted its ${intent.replanning.max_replans} replans`,
+      reason: replanBudgetReason(
+        `goal exhausted its ${intent.replanning.max_replans} replans`,
+        replanConsumption,
+      ),
       next_action: "none",
     };
   }
@@ -666,6 +698,75 @@ function deriveProjection(
         : "goal graph has no legal progress action",
     next_action: "none",
   };
+}
+
+interface ReplanConsumption {
+  reviewer_rejection: number;
+  planner_no_proposal: number;
+}
+
+/**
+ * Classify each consumed replan that did not advance the graph, using existing
+ * plan seams only. A plan carries a review receipt exactly when a proposal was
+ * produced and independently reviewed, so its presence separates a reviewer
+ * rejection from a planner run that produced no reviewable proposal. Uncharged
+ * environment/upstream planner failures (ADR 0046) do not spend the replan
+ * budget and are attributed to their outside precondition, not counted here.
+ */
+function classifyReplanConsumption(plans: SupervisorPlanHistory): ReplanConsumption {
+  let reviewerRejection = 0;
+  let plannerNoProposal = 0;
+  for (const plan of plans.plans) {
+    if (plan.status === "failed" && (plan.class === "environment" || plan.class === "upstream")) {
+      continue;
+    }
+    if (plan.review && plan.review.status !== "passed") {
+      reviewerRejection++;
+    } else if (
+      !plan.review &&
+      (plan.status === "attention" ||
+        plan.status === "interrupted" ||
+        plan.status === "failed" ||
+        plan.status === "retry_requested")
+    ) {
+      // `retry_requested` is a planner no-proposal attention the operator asked to
+      // replan: the original run still produced no reviewable proposal and still
+      // spent a charged replan, so it belongs in this bucket even though a later
+      // plan superseded it. Omitting it would misattribute a retried no-proposal
+      // to nothing and let the reason read as pure review exhaustion.
+      plannerNoProposal++;
+    }
+  }
+  return { reviewer_rejection: reviewerRejection, planner_no_proposal: plannerNoProposal };
+}
+
+/**
+ * Reason for a goal held at `awaiting_attention/none` because its latest plan is
+ * an unresolved attention and no replan slot remains. The latest plan's own
+ * per-plan reason always leads (a reviewed-and-rejected latest reports its
+ * review-round exhaustion verbatim), then `replanBudgetReason` names the planner
+ * no-proposal share of the consumed budget. This keeps the `projection.reason`
+ * field carrying the same truth the operator-visible row does: a goal whose
+ * budget was mostly spent by planner no-proposal runs is not attributed wholesale
+ * to review just because its final, reviewed plan happened to be rejected.
+ */
+function exhaustedAttentionReason(
+  latest: SupervisorPlanRecord,
+  consumption: ReplanConsumption,
+): string {
+  const fallback = latest.reason ?? `plan ${latest.request.id} requires attention`;
+  return replanBudgetReason(fallback, consumption);
+}
+
+/**
+ * Append planner no-proposal attribution to a replan-exhaustion reason. Returns
+ * the base reason unchanged when no consumed replan was a planner no-proposal
+ * outcome, so goals without that history project exactly as before.
+ */
+function replanBudgetReason(base: string, consumption: ReplanConsumption): string {
+  if (consumption.planner_no_proposal <= 0) return base;
+  const count = consumption.planner_no_proposal;
+  return `${base}; ${count} replan${count === 1 ? "" : "s"} ended with the planner producing no proposal`;
 }
 
 function readSupervisorIntent(coordRoot: string, goalId: string): SupervisorIntent {

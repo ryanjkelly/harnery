@@ -1,5 +1,43 @@
-import { describe, expect, test } from "bun:test";
-import { createHarneryProgram } from "../commander.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createHarneryProgram, type EmitContext } from "../commander.ts";
+import { createSupervisor, runSupervisor } from "../core/supervisor/index.ts";
+import { createWorkItem } from "../core/work/index.ts";
+
+const roots: string[] = [];
+let cwd: string | undefined;
+
+afterEach(() => {
+  if (cwd) {
+    process.chdir(cwd);
+    cwd = undefined;
+  }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function captureEmit(): { emit: EmitContext; text: () => string } {
+  let buffer = "";
+  const emit: EmitContext = {
+    config: () => {},
+    data: (payload) => {
+      buffer += `${JSON.stringify(payload)}\n`;
+    },
+    rows: (values) => {
+      buffer += `${JSON.stringify(values)}\n`;
+    },
+    text: (value) => {
+      buffer += value;
+    },
+    file: () => {},
+    error: (payload) => {
+      buffer += `ERROR ${JSON.stringify(payload)}\n`;
+    },
+    log: () => {},
+    setExitCode: () => {},
+  };
+  return { emit, text: () => buffer };
+}
 
 describe("supervisor command", () => {
   test("registers the durable goal lifecycle", () => {
@@ -35,5 +73,95 @@ describe("supervisor command", () => {
     const create = command?.commands.find((candidate) => candidate.name() === "create");
     expect(create?.registeredArguments[0]?.required).toBe(false);
     expect(create?.options.map((option) => option.long)).toContain("--mission");
+  });
+
+  test("list and show expose planner no-proposal replan exhaustion", async () => {
+    cwd = process.cwd();
+    const root = mkdtempSync(join("/tmp", "harnery-supervisor-cli-"));
+    roots.push(root);
+    const passing = join(root, "passing.mjs");
+    writeFileSync(
+      passing,
+      `export const meta = { name: "passing", acceptance: [{ id: "done", statement: "done" }] };
+       export default async ({ agent, evidence }) => {
+         const result = await agent("go", { specialist: "planner" });
+         evidence({ kind: "review", status: "passed", label: "ok", acceptanceIds: ["done"] });
+         return result;
+       };\n`,
+    );
+    const failing = join(root, "failing.mjs");
+    writeFileSync(failing, `export default async () => { throw new Error("fail"); };\n`);
+    createWorkItem({
+      coordRoot: root,
+      id: "cli-no-proposal-root",
+      title: "CLI no proposal root",
+      objective: "Exhaust the replan budget without any proposal",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createSupervisor({
+      coordRoot: root,
+      id: "goal-cli-no-proposal",
+      rootWorkId: "cli-no-proposal-root",
+      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: { repair: { workflowPath: passing, root: true } },
+      },
+    });
+    await runSupervisor({
+      coordRoot: root,
+      goalId: "goal-cli-no-proposal",
+      engine: {
+        spawners: {
+          codex: async () => ({
+            ok: true,
+            text: JSON.stringify({
+              decision: "attention",
+              rationale: "The goal needs an operator decision",
+              root: "",
+              work: [],
+            }),
+            durationMs: 1,
+          }),
+        },
+        probeBilling: (harness: string) => ({
+          harness,
+          apiKeySource: null,
+          apiKeyPresent: false,
+          login: "present" as const,
+          mode: "subscription" as const,
+        }),
+      },
+    });
+    process.chdir(root);
+
+    const listed = captureEmit();
+    await createHarneryProgram({ emit: listed.emit }).parseAsync([
+      "node",
+      "harn",
+      "supervisor",
+      "list",
+    ]);
+    expect(listed.text()).toContain("[planner no-proposal x1]");
+
+    const shown = captureEmit();
+    await createHarneryProgram({ emit: shown.emit }).parseAsync([
+      "node",
+      "harn",
+      "supervisor",
+      "show",
+      "goal-cli-no-proposal",
+    ]);
+    expect(shown.text()).toContain(
+      "replan consumption: planner no-proposal=1, reviewer rejection=0",
+    );
+    // The distinction must reach the projection.reason field too, not only the
+    // consumption line and the list-row suffix: `show` renders `reason:`, so a
+    // reader (human or programmatic) is told the planner produced no proposal
+    // rather than that review was exhausted.
+    expect(shown.text()).toContain("reason: ");
+    expect(shown.text()).toContain("producing no proposal");
   });
 });
