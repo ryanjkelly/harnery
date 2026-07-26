@@ -58,13 +58,13 @@ export function renderInstructionsBlock(
   const deeper =
     named.length > 0
       ? `Procedures for the deeper flows live in the ${named.join(" and ")} skill${named.length > 1 ? "s" : ""}.`
-      : `See \`${b} decision --help\` and \`${b} council --help\` for the deeper procedures.`;
+      : `See \`${b} decision --help\` and \`${b} agents council --help\` for the deeper procedures.`;
   const decidePointer = skills.decide
     ? "The `harn-decide` skill has the file / claim / resolve-with-evidence procedure."
     : `See \`${b} decision --help\` for the file / claim / resolve-with-evidence procedure.`;
   const councilPointer = skills.council
     ? "The `harn-council` skill has the steward and member flow."
-    : `See \`${b} council --help\` for the steward and member flow.`;
+    : `See \`${b} agents council --help\` for the steward and member flow.`;
   // Render the scratch categories from the canonical enum so this prose can
   // never drift from what `scratch add` actually accepts (the "note, plan…" list
   // silently lagged the tool by two categories before this).

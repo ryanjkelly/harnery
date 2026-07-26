@@ -61,7 +61,7 @@ describe("renderInstructionsBlock", () => {
     expect(block).not.toContain("`harn-decide` skill");
     expect(block).not.toContain("`harn-council` skill");
     expect(block).toContain("acme decision --help");
-    expect(block).toContain("acme council --help");
+    expect(block).toContain("acme agents council --help");
   });
 
   test("mixed availability names only the present skill", () => {
