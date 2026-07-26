@@ -34,7 +34,7 @@ import type {
   WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
-import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
+import { EVIDENCE_KINDS, WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAttestation,
@@ -167,11 +167,7 @@ export function createEvidenceRecord(input: {
     id: `e${input.sequence}`,
     source: "workflow",
     recorded_at: input.recordedAt ?? new Date().toISOString(),
-    kind: enumValue(
-      value.kind,
-      ["test", "command", "artifact", "change", "review", "observation"],
-      "evidence kind",
-    ),
+    kind: enumValue(value.kind, EVIDENCE_KINDS, "evidence kind"),
     status: enumValue(value.status, ["passed", "failed", "observed", "unknown"], "evidence status"),
     label: boundedRequired(value.label, "evidence label", MAX_LABEL_CHARS),
     summary: boundedOptional(value.summary, "evidence summary", MAX_SUMMARY_CHARS),

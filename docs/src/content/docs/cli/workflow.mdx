@@ -258,6 +258,13 @@ prompt.
 | `evidence(input)` | Attach a bounded receipt to the run and optional acceptance IDs. Returns a stable ID such as `e1`. Kinds: `test`, `command`, `artifact`, `change`, `review`, `observation`. Statuses: `passed`, `failed`, `observed`, `unknown`. |
 | `authorize(input)` | Authorize one host-mediated external mutation before performing it. Input includes a short `action` plus optional `path`, `network`, `service`, and bounded `target`. Returns the final allow decision; denial or missing host policy throws before control returns. |
 
+An evidence kind outside that set is caught before the run starts. `evidence()`
+sits near the end of a workflow by construction, so an invalid kind used to throw
+after every agent had finished and take the whole run's work with it. Harnery now
+reads the script first and refuses any literal `kind` it will not accept, naming
+the line, before a single agent is spawned. A kind computed at runtime is still
+only checked when the call executes.
+
 `effort` is validated and mapped per registered adapter: Claude Code accepts
 `low | medium | high | xhigh | max`; Codex accepts
 `none | minimal | low | medium | high | xhigh`. Cursor does not accept a

@@ -28,7 +28,18 @@ export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION = 1 as const;
 
-export type EvidenceKind = "test" | "command" | "artifact" | "change" | "review" | "observation";
+/** The evidence vocabulary, as a value so the runtime validator and the
+ * pre-flight source scan cannot drift from the type or from each other. */
+export const EVIDENCE_KINDS = [
+  "test",
+  "command",
+  "artifact",
+  "change",
+  "review",
+  "observation",
+] as const;
+
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 export type EvidenceStatus = "passed" | "failed" | "observed" | "unknown";
 export type EvidenceSource = "workflow" | "engine";
 export type AcceptanceStatus = "satisfied" | "unsatisfied" | "unknown";

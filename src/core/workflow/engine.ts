@@ -39,6 +39,7 @@ import { assertWorkflowRunId, createWorkflowApproval } from "./approvals.ts";
 import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
+import { evidencePreflightError } from "./evidence-preflight.ts";
 import { appendWorkflowJournalEvent } from "./journal.ts";
 import {
   buildWorkflowProof,
@@ -216,6 +217,20 @@ export async function runWorkflow(scriptPath: string, opts: EngineOpts): Promise
   }
 }
 
+/** Throws when the script names an evidence kind the proof layer will refuse.
+ * Silent when the file cannot be read: the import a moment later will produce a
+ * better error than a guess from here would. */
+function assertEvidenceKindsAreUsable(scriptPath: string, absScript: string): void {
+  let source: string;
+  try {
+    source = readFileSync(absScript, "utf8");
+  } catch {
+    return;
+  }
+  const message = evidencePreflightError(source, scriptPath);
+  if (message) throw new Error(message);
+}
+
 async function executeWorkflow(
   scriptPath: string,
   absScript: string,
@@ -226,6 +241,10 @@ async function executeWorkflow(
 ): Promise<RunReport> {
   const frozen = resumeState?.manifest.execution;
   const isolation = frozen?.isolation ?? opts.isolation ?? "shared";
+  // Before anything is spawned, and before either import path below: an evidence
+  // kind the proof will reject is fatal at the END of a workflow, which is the
+  // most expensive place to learn it. Reading the file is the cheapest moment.
+  assertEvidenceKindsAreUsable(scriptPath, absScript);
   let sharedWorkflow: WorkflowModule["default"] | undefined;
   let sharedMeta: ReturnType<typeof normalizeWorkflowMeta> | undefined;
   if (isolation === "shared") {
