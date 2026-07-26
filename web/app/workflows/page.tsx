@@ -5,6 +5,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { WorkflowStatusBadge } from "@/components/WorkflowStatusBadge";
 import { WorkspaceStateBadge } from "@/components/WorkspaceStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
+import { describeRunCost } from "@/lib/workflow-cost";
 import { readWorkflowRuns } from "@/lib/workflow-reader";
 
 export const dynamic = "force-dynamic";
@@ -59,8 +60,8 @@ export default function WorkflowsPage() {
                         {run.agentsCached > 0 ? ` (${run.agentsCached} cached)` : ""}
                       </span>
                     </Tooltip>
-                    <Tooltip content="Total cost of every agent in the run. It stays at $0.0000 until the first agent finishes, because cost is only reported on completion.">
-                      <span className="cursor-help">${run.costUsd.toFixed(4)}</span>
+                    <Tooltip content={describeRunCost(run).hint}>
+                      <span className="cursor-help">{describeRunCost(run).label}</span>
                     </Tooltip>
                     <Tooltip content="Stages in declared order. `no stages` means the script never reached a stage boundary.">
                       <span className="cursor-help">{run.stages.join(" → ") || "no stages"}</span>

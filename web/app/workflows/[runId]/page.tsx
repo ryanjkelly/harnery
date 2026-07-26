@@ -10,6 +10,7 @@ import { AgentElapsed } from "@/components/workflow/AgentElapsed";
 import { WorkflowActivityLog } from "@/components/workflow/WorkflowActivityLog";
 import { buildAgentSummaryMap, buildEndedAgentSummaries } from "@/lib/agent-summary";
 import { coordRoot, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
+import { describeRunCost } from "@/lib/workflow-cost";
 import { readWorkflowChildSessions, readWorkflowRun } from "@/lib/workflow-reader";
 
 /** Rows of child activity pre-rendered for first paint; the SSE snapshot
@@ -35,6 +36,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   // Child sessions are the join key for everything live on this page: the
   // activity feed filters on them, and their heartbeats are what separate a
   // working agent from a dead orchestrator.
+  const cost = describeRunCost(run);
   const childSessions = readWorkflowChildSessions(coordRoot(), run.runId);
   const sessionIds = new Set(childSessions.map((c) => c.sessionId));
   const activityRows =
@@ -238,8 +240,8 @@ export default async function WorkflowRunPage({ params }: PageProps) {
               </span>
             </Tooltip>
           ) : null}
-          <Tooltip content="Total cost of every agent in this run, summed from agent.end. It reads $0.0000 mid-run, because cost is only reported when an agent finishes.">
-            <span className="cursor-help">{`· $${run.costUsd.toFixed(4)}`}</span>
+          <Tooltip content={cost.hint}>
+            <span className="cursor-help">{`· ${cost.label}`}</span>
           </Tooltip>
           {run.agentsCached > 0 ? (
             <Tooltip content="Agents skipped because an identical call in a prior run already produced a result. Cached agents cost nothing and spawn no child.">
