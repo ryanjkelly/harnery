@@ -6,8 +6,12 @@
  * from docs/api/cursor-hooks/samples/{sessionStart,postToolUse-shell}.json.
  */
 
-import { describe, expect, test } from "bun:test";
-import { parsePsChainLine, selectAnchorPid } from "../../src/core/hooks/resolve/anchor.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  harnessPidFromEnv,
+  parsePsChainLine,
+  selectAnchorPid,
+} from "../../src/core/hooks/resolve/anchor.ts";
 
 // Phase 0 probe: Cursor's chain has no `cursor`-named process; the stable
 // anchors are the `node` ancestors (70826 nearest, then 45290).
@@ -65,6 +69,72 @@ describe("selectAnchorPid", () => {
 
   test("empty chain → undefined", () => {
     expect(selectAnchorPid([], "cursor")).toBeUndefined();
+  });
+
+  test("claude-code: matches a version-named binary by its install path", () => {
+    // The chain this repo actually runs on. The harness binary's comm is the
+    // release version, so comm matching finds nothing and the caller anchors on
+    // the hook's own shell, which exits seconds later. The install directory is
+    // what identifies it.
+    const versionNamedChain = [
+      { pid: 86434, comm: "bash", exe: "/bin/bash" },
+      {
+        pid: 71258,
+        comm: "2.1.219",
+        exe: "/home/user/.claude/remote/ccd-cli/2.1.219",
+      },
+      { pid: 76612, comm: "server", exe: "/home/user/.claude/remote/srv/abc123/server" },
+    ];
+    expect(selectAnchorPid(versionNamedChain, "claude-code")).toBe(71258);
+  });
+
+  test("a comm match still beats a path match further down", () => {
+    const both = [
+      { pid: 30, comm: "bash", exe: "/home/user/.claude/plugins/thing" },
+      { pid: 20, comm: "claude", exe: "/usr/local/bin/claude" },
+    ];
+    expect(selectAnchorPid(both, "claude-code")).toBe(20);
+  });
+
+  test("path matching reads whole segments, not substrings", () => {
+    const lookalikes = [
+      { pid: 12, comm: "bash", exe: "/home/user/claude-notes/bin/run" },
+      { pid: 11, comm: "node", exe: "/opt/cursory/server" },
+      { pid: 10, comm: "sh", exe: "/home/user/codex-backup.sh" },
+    ];
+    expect(selectAnchorPid(lookalikes, "claude-code")).toBeUndefined();
+  });
+
+  test("no executable paths at all behaves exactly as before", () => {
+    expect(selectAnchorPid(CLAUDE_CHAIN, "claude-code")).toBe(4900);
+    expect(selectAnchorPid(CURSOR_POST_TOOL_USE_CHAIN, "claude-code")).toBeUndefined();
+  });
+});
+
+describe("harnessPidFromEnv", () => {
+  const saved = process.env.CLAUDE_PID;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLAUDE_PID;
+    else process.env.CLAUDE_PID = saved;
+  });
+
+  test("reads the harness pid the harness exported", () => {
+    process.env.CLAUDE_PID = "71258";
+    expect(harnessPidFromEnv()).toBe(71258);
+  });
+
+  test("ignores our own pid, which would anchor on the hook shell", () => {
+    process.env.CLAUDE_PID = String(process.pid);
+    expect(harnessPidFromEnv()).toBeUndefined();
+  });
+
+  test("ignores unset, empty, non-numeric, and out-of-range values", () => {
+    delete process.env.CLAUDE_PID;
+    expect(harnessPidFromEnv()).toBeUndefined();
+    for (const bad of ["", "  ", "not-a-pid", "0", "1", "-4", "12.5"]) {
+      process.env.CLAUDE_PID = bad;
+      expect(harnessPidFromEnv()).toBeUndefined();
+    }
   });
 });
 

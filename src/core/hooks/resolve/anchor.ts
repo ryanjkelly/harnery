@@ -30,17 +30,72 @@
 const PRIMARY_COMM_TOKENS = new Set(["claude", "claude-code", "cursor", "codex"]);
 
 /**
+ * Harness-exported pid environment variables, in precedence order.
+ *
+ * A harness that names its own process spares us the guessing entirely, and the
+ * guess is the part that breaks: comm matching only recognises a binary called
+ * by its harness name, and at least one Claude Code build installs its CLI
+ * under a version-numbered filename, whose comm is a bare version string. The
+ * walk then finds nothing, falls back to the ephemeral hook shell, and writes a
+ * row that is dead within seconds.
+ *
+ * Only Claude Code is known to export one today. Absent variables cost a lookup.
+ */
+const HARNESS_PID_ENV_VARS = ["CLAUDE_PID"] as const;
+
+/**
+ * The harness pid as stated by the harness itself, or undefined.
+ *
+ * Sanity-checked against our own pid: a variable naming this process would
+ * anchor the row to whatever short-lived thing is running the hook, which is
+ * the failure it exists to avoid.
+ */
+export function harnessPidFromEnv(): number | undefined {
+  for (const key of HARNESS_PID_ENV_VARS) {
+    const raw = process.env[key]?.trim();
+    if (!raw) continue;
+    const pid = Number(raw);
+    if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+    return pid;
+  }
+  return undefined;
+}
+
+/**
+ * Does an executable path belong to a harness?
+ *
+ * Read as path segments rather than substrings, so a token has to be a whole
+ * directory or file name. The leading dot is optional because harnesses install
+ * under a dotted home directory, and that directory is what identifies the
+ * binary when the binary's own name is a version number.
+ */
+function pathNamesAHarness(exePath: string | undefined): boolean {
+  if (!exePath) return false;
+  for (const raw of exePath.split("/")) {
+    const segment = raw.startsWith(".") ? raw.slice(1) : raw;
+    if (PRIMARY_COMM_TOKENS.has(segment)) return true;
+  }
+  return false;
+}
+
+/**
  * Pick the anchor PID from a ppid chain ordered nearest-first (the resolving
  * process at index 0, walking up toward init). Returns the first ancestor
  * matching a harness comm token; for cursor, falls back to the first `node`
  * ancestor; otherwise undefined (caller falls back to process.ppid).
  */
 export function selectAnchorPid(
-  chain: ReadonlyArray<{ pid: number; comm: string }>,
+  chain: ReadonlyArray<{ pid: number; comm: string; exe?: string }>,
   harness?: string,
 ): number | undefined {
   for (const hop of chain) {
     if (PRIMARY_COMM_TOKENS.has(hop.comm)) return hop.pid;
+  }
+  // Second pass on the executable path, for a harness whose binary is not named
+  // after itself. Kept behind the comm pass so an exactly-named ancestor still
+  // wins, and so this only ever adds matches.
+  for (const hop of chain) {
+    if (pathNamesAHarness(hop.exe)) return hop.pid;
   }
   if (harness === "cursor") {
     for (const hop of chain) {

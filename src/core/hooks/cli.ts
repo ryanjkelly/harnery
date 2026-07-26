@@ -64,7 +64,7 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./harness/parse.ts";
-import { parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
+import { harnessPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
@@ -1174,20 +1174,41 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
     const n = Number(override);
     if (Number.isFinite(n) && n > 0) return n;
   }
+  // A harness that states its own pid ends the search. Nothing inferred from the
+  // process tree beats the harness naming itself, and the inference is the part
+  // that has been failing: comm matching wants a binary called after its
+  // harness, and one Claude Code build ships its CLI under a version-numbered
+  // filename, so the walk found nothing and the caller fell back to the hook's
+  // own shell. That row was dead within seconds, leaving every session in this
+  // environment unattributed.
+  const fromEnv = harnessPidFromEnv();
+  if (fromEnv) return fromEnv;
   // Build the ppid chain (nearest → root, up to 20 hops), then hand it to the
   // pure selector. Linux/WSL reads /proc; macOS/BSD (no /proc) falls back to
   // `ps -o ppid=,comm=` parsed by the unit-tested `parsePsChainLine`. Splitting
-  // the walk (untestable off a live box) from the comm-matching keeps the
-  // cursor `node`-fallback logic verifiable.
-  const chain: Array<{ pid: number; comm: string }> = [];
+  // the walk (untestable off a live box) from the matching keeps the selector
+  // logic verifiable.
+  //
+  // Only the /proc branch carries an executable path for the selector's
+  // path-based pass. Asking `ps` for one means either a second spawn per hop or
+  // splitting `comm` from `args` on a line where comm may itself contain spaces,
+  // and the harness that needs the path pass states its pid in the env anyway.
+  const chain: Array<{ pid: number; comm: string; exe?: string }> = [];
   let pid = process.pid;
   for (let hops = 0; hops < 20; hops++) {
-    let hop: { comm: string; ppid: number } | null = null;
+    let hop: { comm: string; ppid: number; exe?: string } | null = null;
     try {
       const comm = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const m = status.match(/^PPid:\s+(\d+)/m);
-      hop = { comm, ppid: m ? Number(m[1]) : 0 };
+      // argv[0], for the path-based second pass. cmdline is NUL-separated.
+      let exe: string | undefined;
+      try {
+        exe = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")[0] || undefined;
+      } catch {
+        /* exe is optional */
+      }
+      hop = { comm, ppid: m ? Number(m[1]) : 0, exe };
     } catch {
       // no /proc (macOS/BSD) — fall through to ps
     }
@@ -1196,7 +1217,7 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
       if (out.status === 0) hop = parsePsChainLine(out.stdout);
     }
     if (!hop) break;
-    chain.push({ pid, comm: hop.comm });
+    chain.push({ pid, comm: hop.comm, exe: hop.exe });
     if (!Number.isFinite(hop.ppid) || hop.ppid === 0 || hop.ppid === 1) break;
     pid = hop.ppid;
   }
