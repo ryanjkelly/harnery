@@ -13,3 +13,5 @@ The Linux token counted ticks from boot, and pid-map rows live in the working tr
 The two probes could also mix: a procfs read that failed fell through to `ps` and answered in the other dialect. The probe is now chosen once per machine and never fallen back from.
 
 The `ps` path is the same code wherever `ps` exists, so `HARNERY_PID_PROBE` forces it and the tests exercise the whole pid-map lifecycle through it rather than leaving that branch to be discovered on somebody's laptop. A parity test holds `coord-client`'s inlined copy of the probe against the canonical one, so the two cannot drift apart in silence.
+
+One upgrade note for machines without procfs: rows already holding a `ps` token written in the local timezone read as mismatches once, since a shifted date cannot be told from a different one without parsing it. Those rows are pruned and rewritten on the next hook, costing one invocation that resolves identity through the session environment instead of the pid walk. Every failure path in the probe still ends in "unverifiable", which trusts a live pid exactly as it did before tokens existed, so no platform ends up worse off than it started.
