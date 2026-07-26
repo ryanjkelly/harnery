@@ -115,6 +115,7 @@ export function createArtifact(
   const now = input.now ?? new Date();
   assertValidDate(now, "now");
   const slug = normalizeSlug(input.slug);
+  if (!slug) throw new Error("slug must contain at least one ASCII letter or digit");
   const purpose = input.purpose.trim();
   if (!purpose) throw new Error("purpose must not be empty");
   const retentionDays = positiveDays(input.retentionDays);
@@ -252,17 +253,26 @@ export function cleanArtifacts(
     // heartbeat, symlink swap, or tracked file added since inventory must win.
     const current = classifyArtifactPath(repoRoot, entry.path, now, freshnessSeconds);
     if (current.classification !== "managed-expired") return current;
-    const top = lstatSync(current.path);
-    if (!top.isDirectory() || top.isSymbolicLink()) {
+    try {
+      const top = lstatSync(current.path);
+      if (!top.isDirectory() || top.isSymbolicLink()) {
+        return {
+          ...current,
+          classification: "unknown",
+          reason: "entry changed before deletion",
+          action: "keep",
+        };
+      }
+      rmSync(current.path, { recursive: true, force: false });
+      return { ...current, action: "deleted" };
+    } catch (error) {
       return {
         ...current,
         classification: "unknown",
-        reason: "entry changed before deletion",
+        reason: errorMessage("entry changed or could not be deleted", error),
         action: "keep",
       };
     }
-    rmSync(current.path, { recursive: true, force: false });
-    return { ...current, action: "deleted" };
   });
 }
 
@@ -316,9 +326,9 @@ function classifyArtifactPath(
     return rowFor(path, name, repoRoot, classification, parsed.reason);
   }
   const manifest = parsed.manifest;
-  const base = rowFor(path, name, repoRoot, "managed-current", "retention has not expired");
+  const bytes = safeTreeSize(path);
+  const base = rowFor(path, name, repoRoot, "managed-current", "retention has not expired", bytes);
   Object.assign(base, {
-    bytes: safeTreeSize(path),
     artifact_id: manifest.artifact_id,
     slug: manifest.slug,
     created_at: manifest.created_at,
@@ -389,7 +399,7 @@ function readManifest(path: string): ParsedManifest | ManifestError {
     return { ok: false, reason: `unsupported schema_version ${String(m.schema_version)}` };
   }
   if (!isSafeId(m.artifact_id)) return { ok: false, reason: "invalid artifact_id" };
-  if (typeof m.slug !== "string" || normalizeSlug(m.slug) !== m.slug) {
+  if (typeof m.slug !== "string" || !m.slug || normalizeSlug(m.slug) !== m.slug) {
     return { ok: false, reason: "invalid slug" };
   }
   if (typeof m.purpose !== "string" || !m.purpose.trim()) {
@@ -475,6 +485,7 @@ function rowFor(
   repoRoot: string,
   classification: ArtifactClassification,
   reason: string,
+  bytes: number | null = safeTreeSize(path),
 ): ArtifactInventoryEntry {
   return {
     name,
@@ -483,7 +494,7 @@ function rowFor(
     classification,
     reason,
     action: classification === "managed-expired" ? "would-delete" : "keep",
-    bytes: safeTreeSize(path),
+    bytes,
     artifact_id: null,
     slug: null,
     created_at: null,
@@ -502,7 +513,7 @@ function normalizeSlug(value: string): string {
 }
 
 function positiveDays(value: number): number {
-  if (!Number.isFinite(value) || value <= 0 || value > 3650) {
+  if (!Number.isInteger(value) || value <= 0 || value > 3650) {
     throw new Error("retention days must be between 1 and 3650");
   }
   return value;

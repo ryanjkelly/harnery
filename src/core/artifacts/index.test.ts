@@ -44,6 +44,30 @@ describe("managed artifacts", () => {
     expect(created.manifest.retention.expires_at).toBe("2026-07-29T12:00:00.000Z");
   });
 
+  test("rejects slugs that normalize to empty", () => {
+    const repo = root();
+    expect(() =>
+      createArtifact(repo, {
+        slug: "!!!",
+        purpose: "Invalid workspace name",
+        retentionDays: 3,
+        now,
+      }),
+    ).toThrow("slug must contain at least one ASCII letter or digit");
+  });
+
+  test("requires retention to use whole days", () => {
+    const repo = root();
+    expect(() =>
+      createArtifact(repo, {
+        slug: "fractional",
+        purpose: "Invalid retention",
+        retentionDays: 0.5,
+        now,
+      }),
+    ).toThrow("retention days must be between 1 and 3650");
+  });
+
   test("keeps an expired artifact while its owner heartbeat is fresh", () => {
     const repo = root();
     createArtifact(repo, {

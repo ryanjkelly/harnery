@@ -136,7 +136,7 @@ function requireRepoRoot(context?: HarneryProgramContext): string {
 
 function parseDays(value: string): number {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 3650) {
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3650) {
     throw new Error("--days must be between 1 and 3650");
   }
   return parsed;
