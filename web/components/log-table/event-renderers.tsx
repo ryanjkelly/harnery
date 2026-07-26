@@ -126,7 +126,7 @@ function HookEventSummary({
     );
   }
   return (
-    <span className="text-muted-foreground/70 font-mono">
+    <span className="text-muted-foreground/70 font-mono break-all">
       {truncate(JSON.stringify(data), 300)}
     </span>
   );

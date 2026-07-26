@@ -898,7 +898,12 @@ function LogRowInner<E>({
             <span className="text-muted-foreground/40">{NO_DATA}</span>
           )}
         </td>
-        <td className="py-1.5 px-3 text-muted-foreground whitespace-pre-wrap wrap-break-word">
+        {/* `wrap-anywhere`, not `wrap-break-word`: only `anywhere` counts
+            toward min-content, and this table sizes its columns from content.
+            With `break-word` a single long unbroken token (a JSON payload, a
+            URL) inflated the summary column's min-content past the container
+            and the whole table grew a horizontal scrollbar. */}
+        <td className="py-1.5 px-3 text-muted-foreground whitespace-pre-wrap wrap-anywhere">
           {renderer.renderSummary(row)}
         </td>
       </tr>
