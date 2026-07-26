@@ -13,8 +13,8 @@ other harness a pid-map row outranked it.
 Rows name pids, and pids get recycled. Measured on one development machine:
 `pid_max` of 99999 against roughly 100 new processes a second, so the whole pid
 space turns over about every quarter hour. A row older than that can name a pid
-some unrelated process now holds, and the walk resolves to whoever wrote it —
-which is how `agents whoami` came to report another agent's name and file list.
+some unrelated process now holds, and the walk resolves to whoever wrote it. That
+is how `agents whoami` came to report another agent's name and file list.
 Sweeping dead rows does not address this: it removes rows whose pid has exited,
 and a recycled pid is alive.
 

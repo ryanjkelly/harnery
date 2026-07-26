@@ -146,9 +146,53 @@ export function parsePidmapRowOwner(row: string): string {
 
 /** Parse platform from a pid-map row; legacy rows default to `claude_code`. */
 export function parsePidmapRowPlatform(row: string): string {
-  const trimmed = row.trim();
-  const tab = trimmed.indexOf("\t");
-  return tab >= 0 ? trimmed.slice(tab + 1).trim() : "claude_code";
+  const platform = row.trim().split("\t")[1]?.trim();
+  return platform || "claude_code";
+}
+
+/** Parse the start token from a pid-map row; rows written before it carry none. */
+export function parsePidmapRowStartToken(row: string): string | undefined {
+  return row.trim().split("\t")[2]?.trim() || undefined;
+}
+
+/**
+ * Is the process now holding `pid` the one this row was written for?
+ *
+ * A pid is a number the OS re-issues, and quickly: a `pid_max` of 99999 against
+ * ~100 new processes a second recycles the whole space about every quarter
+ * hour. Believing a row past that point resolves this session to whichever
+ * agent last held the number — which is what made `whoami` report a stranger's
+ * name and files. The start token settles it, since two processes may share a
+ * pid but never a pid and a start instant.
+ *
+ * Deliberately inlined rather than imported from `state/proc-start.ts`: this
+ * file is vendored verbatim into a downstream consumer and stays on node
+ * builtins only. Keep the two in step.
+ */
+function pidWasRecycled(pid: number, row: string): boolean {
+  const recorded = parsePidmapRowStartToken(row);
+  if (!recorded) return false; // pre-token row: unverifiable, behave as before
+  let current: string | null = null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const afterComm = stat.slice(stat.lastIndexOf(") ") + 2);
+    // Fields after comm, 0-based: 0 is state (field 3), starttime (22) is 19.
+    const starttime = afterComm.split(" ")[19];
+    if (starttime && /^\d+$/.test(starttime)) current = `l${starttime}`;
+  } catch {
+    try {
+      const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 2000,
+      });
+      const lstart = out.status === 0 ? out.stdout.trim() : "";
+      if (lstart) current = `p${lstart.replace(/\s+/g, " ")}`;
+    } catch {
+      /* unverifiable */
+    }
+  }
+  if (!current) return false;
+  return current !== recorded;
 }
 
 function readPidmapRow(pidmapDir: string, pid: number): string | null {
@@ -222,7 +266,7 @@ export function resolveOwnerWithSource(): {
   for (let hop = 0; hop < 20; hop++) {
     if (pid === null) break;
     const row = readPidmapRow(pidmapDir, pid);
-    if (row) {
+    if (row && !pidWasRecycled(pid, row)) {
       const rowOwner = parsePidmapRowOwner(row);
       const rowPlat = parsePidmapRowPlatform(row);
       if (rowPlat === prefer) {

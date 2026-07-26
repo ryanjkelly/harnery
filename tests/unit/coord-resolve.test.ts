@@ -12,6 +12,7 @@ import { detectHarness } from "../../src/core/hooks/harness/detect.ts";
 import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import {
+  parsePidmapRowPlatform,
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
   resolveSingleActiveOwner,
@@ -163,6 +164,35 @@ describe("pid-map row format + resolveOwner", () => {
       coordRoot: root,
     });
     expect(got?.instance_id).toBe("agent-x");
+  });
+
+  test("resolveOwner walks past a row whose pid was re-issued", () => {
+    // A row naming our own live pid on behalf of a departed agent. Without the
+    // start-token check this resolves the current session to that agent's
+    // identity, which is what `whoami` was seen doing.
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", String(process.pid)),
+      "ghost-agent\tclaude_code\tl1",
+      "utf8",
+    );
+    expect(resolveOwner({ payload: null, coordRoot: root })).toBeNull();
+  });
+
+  test("resolveOwner still trusts a live row written before start tokens existed", () => {
+    writeFileSync(
+      path.join(root, ".harnery", "pid-map", String(process.pid)),
+      "legacy-agent\tclaude_code",
+      "utf8",
+    );
+    expect(resolveOwner({ payload: null, coordRoot: root })?.instance_id).toBe("legacy-agent");
+  });
+
+  test("platform parses out of a row that also carries a start token", () => {
+    // The third field must not leak into the platform, or the walk stops
+    // preferring the harness row and silently downgrades to a fallback match.
+    expect(parsePidmapRowPlatform("sess-abc\tcursor\tl12345")).toBe("cursor");
+    expect(parsePidmapRowPlatform("sess-abc\tcursor")).toBe("cursor");
+    expect(parsePidmapRowPlatform("sess-abc")).toBe("claude_code");
   });
 
   test("resolveOwner returns null when env unset, no payload, no pid-map hit", () => {

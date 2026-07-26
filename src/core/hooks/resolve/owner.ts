@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
+import { checkPidToken } from "../../agents/state/proc-start.ts";
 
 /**
  * Resolve the canonical `instance_id` for the current hook invocation.
@@ -51,9 +52,14 @@ export function resolveOwner(opts: {
       if (existsSync(file)) {
         try {
           const row = readFileSync(file, "utf8").trim();
-          // Row shape: "<instance_id>" or "<instance_id>\t<platform>"
-          const owner = row.split("\t")[0];
-          if (owner && owner.length > 0) {
+          // Row shape: "<instance_id>", "<instance_id>\t<platform>", or
+          // "<instance_id>\t<platform>\t<start_token>".
+          const [owner, , startToken] = row.split("\t");
+          // A row whose start token disagrees with the process now holding this
+          // pid is about a different, earlier process. Believing it hands this
+          // session another agent's identity, so walk past it.
+          const recycled = checkPidToken(pid, startToken || undefined) === "mismatch";
+          if (owner && owner.length > 0 && !recycled) {
             return {
               instance_id: owner,
               source: hops === 0 ? "pidmap-self" : "pidmap-ancestor",
