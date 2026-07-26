@@ -11,7 +11,11 @@ import { WorkflowActivityLog } from "@/components/workflow/WorkflowActivityLog";
 import { buildAgentSummaryMap, buildEndedAgentSummaries } from "@/lib/agent-summary";
 import { coordRoot, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
 import { describeRunCost } from "@/lib/workflow-cost";
-import { readWorkflowChildSessions, readWorkflowRun } from "@/lib/workflow-reader";
+import {
+  readWorkflowChildSessions,
+  readWorkflowRun,
+  resolveRunCoordRoot,
+} from "@/lib/workflow-reader";
 
 /** Rows of child activity pre-rendered for first paint; the SSE snapshot
  * replaces them on connect. */
@@ -37,11 +41,19 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   // activity feed filters on them, and their heartbeats are what separate a
   // working agent from a dead orchestrator.
   const cost = describeRunCost(run);
-  const childSessions = readWorkflowChildSessions(coordRoot(), run.runId);
+  // A child emits to the coord root it ran in, which is not always this one.
+  const runRoot = resolveRunCoordRoot(coordRoot(), run.runId);
+  const childSessions = readWorkflowChildSessions(coordRoot(), run.runId, {
+    heartbeatRoot: runRoot.root,
+  });
   const sessionIds = new Set(childSessions.map((c) => c.sessionId));
   const activityRows =
     sessionIds.size > 0
-      ? readEvents({ limit: INITIAL_ACTIVITY_ROWS, sessions: sessionIds }).rows
+      ? readEvents({
+          limit: INITIAL_ACTIVITY_ROWS,
+          sessions: sessionIds,
+          root: runRoot.foreign ? runRoot.root : undefined,
+        }).rows
       : [];
 
   // Child harness sessions are main sessions, so instance_id === session_id and
@@ -179,8 +191,30 @@ export default async function WorkflowRunPage({ params }: PageProps) {
    * two surfaces from chaining: without it, reaching the end of the log starts
    * scrolling the document underneath it.
    */
+  /*
+   * A run with no child sessions has no feed to draw, and usually nothing worth
+   * saying either. The exception is a run whose checkout has since been deleted:
+   * there the silence has a cause, and an operator looking for the work deserves
+   * to be told it is gone rather than left to conclude the run did nothing.
+   */
+  const missingWorkspaceNote =
+    runRoot.fallback === "cwd-missing" ? (
+      <section className="mb-8">
+        <Tooltip content="A workflow child writes its events to the coordination stream of the checkout it runs in. This run ran in a temporary workspace that has since been removed, so that stream went with it. The journal below is what survives.">
+          <h2 className="mb-1 inline-block cursor-help text-sm font-semibold">Activity</h2>
+        </Tooltip>
+        <p className="text-sm text-muted-foreground">
+          Unavailable. This run executed in{" "}
+          <code className="break-all text-xs">{runRoot.recordedCwd}</code>, which no longer exists,
+          so the coordination stream holding its activity is gone too.
+        </p>
+      </section>
+    ) : null;
+
   const activitySection =
-    sessionIds.size === 0 ? null : (
+    sessionIds.size === 0 ? (
+      missingWorkspaceNote
+    ) : (
       <section className="mb-8">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
           <Tooltip content="Everything this run's child agents actually did: each shell command with its declared intent, each file read or edit, and each turn boundary. The run journal only records agent starts and ends, so this is the only place the work itself shows up.">
@@ -193,6 +227,16 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             </span>
           </Tooltip>
         </div>
+        {runRoot.foreign ? (
+          <p className="mb-2 text-xs text-muted-foreground">
+            <Tooltip content="This run executed in another checkout, so its agents wrote their events to that checkout's coordination stream instead of this one. The page reads them from there. The run journal is still local, which is why the run appears in this list at all.">
+              <span className="cursor-help">
+                {"read from "}
+                <code className="text-[11px]">{runRoot.root}</code>
+              </span>
+            </Tooltip>
+          </p>
+        ) : null}
         <div className="flex h-[32rem] flex-col [&_.overflow-y-auto]:overscroll-contain">
           <AgentChipProvider summaries={summaries}>
             <WorkflowActivityLog
@@ -200,6 +244,11 @@ export default async function WorkflowRunPage({ params }: PageProps) {
               initialRows={activityRows}
               agentNames={childNames}
               instanceToName={instanceToName}
+              emptyStateHint={
+                runRoot.fallback === "cwd-missing"
+                  ? `No activity to read. This run executed in ${runRoot.recordedCwd}, which is no longer on this machine, so its coordination stream went with it.`
+                  : undefined
+              }
             />
           </AgentChipProvider>
         </div>

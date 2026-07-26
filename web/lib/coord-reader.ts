@@ -449,8 +449,7 @@ const EVENTS_MAX_SCAN_BYTES = 64_000_000;
  * boundary. Sorted by mtime (not filename) so the manual `events-legacy.ndjson`
  * and same-day `.N` dedupe suffixes order correctly. The naming convention is
  * produced by src/core/hooks/events/rotate.ts — kept in sync with it. */
-function archiveFilesNewestFirst(): string[] {
-  const dir = harneryDir();
+function archiveFilesNewestFirst(dir: string = harneryDir()): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -553,14 +552,22 @@ function scanFileBackward(
  */
 export function scanEventsTail(
   onRow: (row: EventRow) => boolean | void,
-  opts: { chunkBytes?: number; maxScanBytes?: number } = {},
+  opts: {
+    chunkBytes?: number;
+    maxScanBytes?: number;
+    /** Repo root to read from, when it is not the one being scanned. A workflow
+     * child emits to the coord root it runs in, which for a run driven from a
+     * sibling checkout is not this one. */
+    root?: string;
+  } = {},
 ): { linesScanned: number } {
   const chunkBytes = opts.chunkBytes ?? EVENTS_CHUNK_BYTES;
   const maxScanBytes = opts.maxScanBytes ?? EVENTS_MAX_SCAN_BYTES;
   let linesScanned = 0;
   let bytesConsumed = 0;
 
-  const files = [eventsPath(), ...archiveFilesNewestFirst()];
+  const dir = opts.root ? path.join(opts.root, ".harnery") : harneryDir();
+  const files = [path.join(dir, "events.ndjson"), ...archiveFilesNewestFirst(dir)];
   for (const p of files) {
     if (bytesConsumed >= maxScanBytes) break;
     if (!existsSync(p)) continue;
@@ -580,26 +587,31 @@ export function readEvents(
     /** Session-id allowlist. A main harness session carries the same id in
      * `session_id` and `instance_id`, so either matching is a hit. */
     sessions?: Set<string>;
+    /** Read another checkout's stream (see `scanEventsTail`). */
+    root?: string;
   } = {},
 ): EventsResponse {
-  const p = eventsPath();
+  const p = opts.root ? path.join(opts.root, ".harnery", "events.ndjson") : eventsPath();
   const limit = opts.limit ?? 200;
   const out: EventRow[] = [];
-  const { linesScanned } = scanEventsTail((row) => {
-    if (opts.instanceId && row.instance_id !== opts.instanceId) return;
-    if (opts.type && row.event_type !== opts.type) return;
-    if (
-      opts.sessions &&
-      !(
-        (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
-        (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
-      )
-    ) {
-      return;
-    }
-    out.push(row);
-    if (out.length >= limit) return false;
-  });
+  const { linesScanned } = scanEventsTail(
+    (row) => {
+      if (opts.instanceId && row.instance_id !== opts.instanceId) return;
+      if (opts.type && row.event_type !== opts.type) return;
+      if (
+        opts.sessions &&
+        !(
+          (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
+          (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
+        )
+      ) {
+        return;
+      }
+      out.push(row);
+      if (out.length >= limit) return false;
+    },
+    { root: opts.root },
+  );
   return { rows: out, meta: { path: p, total_lines: linesScanned, returned: out.length } };
 }
 

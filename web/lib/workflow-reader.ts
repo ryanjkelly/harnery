@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import {
   inspectWorkflowWorkspace,
@@ -137,9 +137,15 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
  * `tool.pre_use` / `tool.post_use` events to the run's coord root, so filtering
  * `events.ndjson` to these session ids yields what the run actually did.
  */
-export function readWorkflowChildSessions(root: string, runId: string): WorkflowChildSession[] {
+export function readWorkflowChildSessions(
+  root: string,
+  runId: string,
+  /** Root holding the children's heartbeats, when the run executed in another
+   * checkout. The journal stays in `root`; only `.harnery/active/` moves. */
+  opts: { heartbeatRoot?: string } = {},
+): WorkflowChildSession[] {
   const byId = new Map<string, WorkflowChildSession>();
-  const heartbeats = readWorkflowChildHeartbeats(root);
+  const heartbeats = readWorkflowChildHeartbeats(opts.heartbeatRoot ?? root);
   for (const hb of heartbeats.get(runId) ?? []) {
     if (!hb.session_id) continue;
     byId.set(hb.session_id, {
@@ -167,9 +173,20 @@ export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
   const dir = join(root, ".harnery", "workflows");
   if (!existsSync(dir)) return [];
   const runs: WorkflowRunSummary[] = [];
-  const heartbeats = readWorkflowChildHeartbeats(root);
+  // Liveness comes from the heartbeats in the root a run actually executed in,
+  // so a run driven from a sibling checkout is judged against its own children
+  // rather than being called stale for the absence of local ones. Roots are
+  // scanned once each: a repo has a handful of them across many runs.
+  const heartbeatsByRoot = new Map<string, Map<string, ChildHeartbeat[]>>();
+  const heartbeatsFor = (r: string): Map<string, ChildHeartbeat[]> => {
+    const cached = heartbeatsByRoot.get(r);
+    if (cached) return cached;
+    const fresh = readWorkflowChildHeartbeats(r);
+    heartbeatsByRoot.set(r, fresh);
+    return fresh;
+  };
   for (const runId of readdirSync(dir)) {
-    const run = readWorkflowRun(root, runId, heartbeats);
+    const run = readWorkflowRun(root, runId, heartbeatsFor(resolveRunCoordRoot(root, runId).root));
     if (run) runs.push(run);
   }
   // Newest first (run ids embed an ISO timestamp, but sort on startedAt to be safe).
@@ -368,6 +385,69 @@ function readRunManifestFacts(
   } catch {
     return {};
   }
+}
+
+/** Where a run's child activity lives, and how confidently we know it. */
+export interface RunCoordRoot {
+  /** Repo root whose `.harnery/` holds this run's child events. */
+  root: string;
+  /** The resolved root is not the one the dashboard is scanning. */
+  foreign: boolean;
+  /** `execution.cwd` from the manifest, when it recorded one. */
+  recordedCwd?: string;
+  /**
+   * Why the local root was used instead of the recorded one.
+   *
+   * `cwd-missing` is the one worth showing an operator: the run really did
+   * execute somewhere else and that somewhere is gone, so its activity is
+   * unrecoverable rather than merely elsewhere. The other two are ordinary.
+   */
+  fallback?: "no-cwd" | "cwd-missing" | "no-coord-root";
+}
+
+/** How far up from the run's cwd to look for an enclosing `.harnery/`. Matches
+ * the depth `coordRoot()` walks. */
+const COORD_ROOT_WALK_LIMIT = 8;
+
+/**
+ * Resolve the coord root that holds a run's child events.
+ *
+ * A workflow child writes its events to whichever coord root it runs in, which
+ * is not always the root holding the run journal: a run driven from a sibling
+ * checkout, a submodule, or a temporary workspace journals here and emits
+ * there. Reading the local stream for such a run finds nothing, which the page
+ * used to present as "this run did nothing".
+ *
+ * The recorded cwd is a directory, not a coord root, so this walks up from it
+ * the same way `coordRoot()` does. When that walk comes up empty the local root
+ * is the right answer and not a consolation prize: a run whose cwd sits outside
+ * any checkout was journaled here because the orchestrator's own root was here.
+ */
+export function resolveRunCoordRoot(localRoot: string, runId: string): RunCoordRoot {
+  const manifestPath = join(localRoot, ".harnery", "workflows", runId, "run.json");
+  let cwd: string | undefined;
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      execution?: { cwd?: string };
+    };
+    cwd = manifest.execution?.cwd?.trim() || undefined;
+  } catch {
+    // No manifest, or unreadable. Local root, no explanation owed.
+  }
+  if (!cwd) return { root: localRoot, foreign: false, fallback: "no-cwd" };
+  if (!existsSync(cwd)) {
+    return { root: localRoot, foreign: false, recordedCwd: cwd, fallback: "cwd-missing" };
+  }
+  let dir = cwd;
+  for (let i = 0; i < COORD_ROOT_WALK_LIMIT; i++) {
+    if (existsSync(join(dir, ".harnery"))) {
+      return { root: dir, foreign: dir !== localRoot, recordedCwd: cwd };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return { root: localRoot, foreign: false, recordedCwd: cwd, fallback: "no-coord-root" };
 }
 
 function readWorkspaceInspection(

@@ -16,7 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { coordRoot, eventsPath, type EventRow, readEvents } from "@/lib/coord-reader";
-import { readWorkflowChildSessions } from "@/lib/workflow-reader";
+import { readWorkflowChildSessions, resolveRunCoordRoot } from "@/lib/workflow-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -49,7 +49,9 @@ export async function GET(request: Request): Promise<Response> {
     if (!runFilter) return undefined;
     try {
       runSessions = new Set(
-        readWorkflowChildSessions(coordRoot(), runFilter).map((c) => c.sessionId),
+        readWorkflowChildSessions(coordRoot(), runFilter, {
+          heartbeatRoot: runRoot?.root,
+        }).map((c) => c.sessionId),
       );
     } catch {
       // Keep the previous allowlist on a transient read failure; an empty set
@@ -59,7 +61,18 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   const encoder = new TextEncoder();
-  const filePath = eventsPath();
+  /*
+   * Which stream to tail. A workflow child writes to the coord root it runs in,
+   * so a run driven from a sibling checkout, a submodule, or a temporary
+   * workspace journals here and emits there. Tailing the local file for such a
+   * run yields nothing forever, which reads as an idle run rather than as a
+   * stream being watched in the wrong place. Everything downstream (offset pin,
+   * watcher, filesize poll, drain) already takes the path as a parameter.
+   */
+  const runRoot = runFilter ? resolveRunCoordRoot(coordRoot(), runFilter) : undefined;
+  const filePath = runRoot?.foreign
+    ? path.join(runRoot.root, ".harnery", "events.ndjson")
+    : eventsPath();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -122,8 +135,14 @@ export async function GET(request: Request): Promise<Response> {
       try {
         const sessions = resolveRunSessions();
         const snapshot = sessions
-          ? readEvents({ limit: initialLines, sessions, type: typeFilter }).rows
+          ? readEvents({
+              limit: initialLines,
+              sessions,
+              type: typeFilter,
+              root: runRoot?.foreign ? runRoot.root : undefined,
+            }).rows
           : await readEventsTail({
+              filePath,
               lines: initialLines,
               instanceId: instanceFilter,
               type: typeFilter,
@@ -235,6 +254,9 @@ export async function GET(request: Request): Promise<Response> {
 /* ────────────────────────────────────────────────────────────────────── */
 
 interface TailOpts {
+  /** Stream to tail. Not always this checkout's, for a run that executed in
+   * another one. */
+  filePath: string;
   lines: number;
   instanceId?: string;
   type?: string;
@@ -253,7 +275,7 @@ function inSessions(ev: EventRow, sessions?: Set<string>): boolean {
 }
 
 async function readEventsTail(opts: TailOpts): Promise<EventRow[]> {
-  const filePath = eventsPath();
+  const { filePath } = opts;
   try {
     const stat = await fs.promises.stat(filePath);
     let text: string;
@@ -338,7 +360,6 @@ async function readEventsAfter(
 }
 
 async function currentFileSize(filePath: string): Promise<number> {
-  void path;
   try {
     const stat = await fs.promises.stat(filePath);
     return stat.size;

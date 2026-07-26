@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import { writeWorkflowRunManifest } from "harnery/core/workflow";
-import { readWorkflowChildSessions, readWorkflowRun } from "./workflow-reader";
+import {
+  readWorkflowChildSessions,
+  readWorkflowRun,
+  readWorkflowRuns,
+  resolveRunCoordRoot,
+} from "./workflow-reader";
 
 let root: string;
 let runDir: string;
@@ -170,6 +175,125 @@ describe("workflow proof reader", () => {
     });
   });
 });
+
+describe("run coord-root resolution", () => {
+  test("follows the manifest cwd to the checkout that holds the child events", () => {
+    // The sibling is a real checkout: it has its own `.harnery/`.
+    const sibling = join(root, "..", `${basename(root)}-sibling`);
+    mkdirSync(join(sibling, ".harnery"), { recursive: true });
+    try {
+      writeManifestWithCwd(join(sibling, "packages", "inner"));
+      mkdirSync(join(sibling, "packages", "inner"), { recursive: true });
+
+      // Resolution walks up from the cwd, so a subdirectory of the checkout
+      // resolves to the checkout, not to itself.
+      const resolved = resolveRunCoordRoot(root, "wf-reader");
+      expect(resolved.foreign).toBe(true);
+      expect(resolved.root).toBe(sibling);
+      expect(resolved.fallback).toBeUndefined();
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test("stays local when the run ran here", () => {
+    writeSharedManifest();
+    const resolved = resolveRunCoordRoot(root, "wf-reader");
+    expect(resolved).toMatchObject({ root, foreign: false });
+    expect(resolved.fallback).toBeUndefined();
+  });
+
+  test("stays local when no checkout encloses the cwd within the walk limit", () => {
+    // A cwd with no `.harnery/` above it is not a lost root: the run was
+    // journaled here because the orchestrator's own root was here. The walk is
+    // bounded, so a cwd buried deeper than the limit reads the same way, which
+    // is what this fixture exercises (a shallower one would find the temp root).
+    const deep = join(root, "a", "b", "c", "d", "e", "f", "g", "h", "i");
+    mkdirSync(deep, { recursive: true });
+    writeManifestWithCwd(deep);
+    expect(resolveRunCoordRoot(root, "wf-reader")).toMatchObject({
+      root,
+      foreign: false,
+      fallback: "no-coord-root",
+    });
+  });
+
+  test("reports a deleted workspace distinctly, since its activity is unrecoverable", () => {
+    writeManifestWithCwd(join(root, "workspaces", "ws-deleted"));
+    expect(resolveRunCoordRoot(root, "wf-reader")).toMatchObject({
+      root,
+      foreign: false,
+      fallback: "cwd-missing",
+      recordedCwd: join(root, "workspaces", "ws-deleted"),
+    });
+  });
+
+  test("falls back quietly when there is no manifest at all", () => {
+    expect(resolveRunCoordRoot(root, "wf-reader")).toMatchObject({
+      root,
+      foreign: false,
+      fallback: "no-cwd",
+    });
+  });
+
+  test("the list judges liveness against the root a run executed in", () => {
+    // Same defect as the STALE fix above, one checkout over: a run driven from a
+    // sibling repo has no heartbeat here, so scanning only this root called a
+    // working run dead.
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "slow" })}\n`,
+      "utf8",
+    );
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(join(runDir, "journal.jsonl"), hourAgo, hourAgo);
+
+    const sibling = join(root, "..", `${basename(root)}-live`);
+    mkdirSync(join(sibling, ".harnery", "active"), { recursive: true });
+    try {
+      writeManifestWithCwd(sibling);
+      expect(readWorkflowRuns(root)[0]?.status).toBe("stale");
+
+      writeFileSync(
+        join(sibling, ".harnery", "active", "child.json"),
+        JSON.stringify({ workflow_run_id: "wf-reader", session_id: "s-remote" }),
+        "utf8",
+      );
+      expect(readWorkflowRuns(root)[0]?.status).toBe("running");
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test("reads child heartbeats from the run's own root", () => {
+    const sibling = join(root, "..", `${basename(root)}-hb`);
+    mkdirSync(join(sibling, ".harnery", "active"), { recursive: true });
+    try {
+      writeFileSync(
+        join(sibling, ".harnery", "active", "child.json"),
+        JSON.stringify({
+          workflow_run_id: "wf-reader",
+          workflow_agent_id: "a1",
+          session_id: "s-remote",
+        }),
+        "utf8",
+      );
+      // Local scan sees nothing; pointed at the run's root it sees the child.
+      expect(readWorkflowChildSessions(root, "wf-reader")).toEqual([]);
+      expect(readWorkflowChildSessions(root, "wf-reader", { heartbeatRoot: sibling })).toEqual([
+        { sessionId: "s-remote", agentId: "a1", live: true },
+      ]);
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A manifest whose recorded execution cwd is `cwd`, everything else minimal. */
+function writeManifestWithCwd(cwd: string): void {
+  writeFileSync(join(runDir, "run.json"), JSON.stringify({ execution: { cwd } }), "utf8");
+}
 
 /** One `.harnery/active/` heartbeat file, the shape the reader's child-session
  * scan consumes. */
