@@ -1,8 +1,23 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateCommit } from "./commit-conflict.ts";
+
+/** Init a throwaway repo with identity + hooks off, and return its path. */
+function gitInit(dir: string): string {
+  spawnSync("git", ["init", "--quiet"], { cwd: dir });
+  spawnSync("git", ["config", "user.email", "test@example.invalid"], { cwd: dir });
+  spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
+  spawnSync("git", ["config", "core.hooksPath", "/dev/null"], { cwd: dir });
+  return dir;
+}
+
+function gitCommitAll(dir: string, message: string): void {
+  spawnSync("git", ["add", "-A"], { cwd: dir });
+  spawnSync("git", ["commit", "--quiet", "--no-verify", "-m", message], { cwd: dir });
+}
 
 let root: string;
 let activeDir: string;
@@ -128,6 +143,155 @@ describe("evaluateCommit", () => {
     expect(v.allow).toBe(true);
     expect(v.rule).toBe("commit.bypass");
     expect(v.conflicts.length).toBe(1);
+  });
+
+  test("self-attribution: a held-but-unstaged path inside a submodule counts as clean", () => {
+    // The shape that defeated Fix #2 in practice. A session commits inside a
+    // submodule while its own heartbeat also still holds a path in that
+    // submodule that it edited and reverted. That path is committed and clean,
+    // so Gate A should accept it, but the check used to ask the SUPERPROJECT
+    // whether it was tracked. Superprojects do not track submodule contents, so
+    // the answer was always "no", Gate A always failed, and every submodule
+    // commit demanded HARNERY_AGENT_COORD_BYPASS=1.
+    const outer = gitInit(root);
+    writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
+    gitCommitAll(outer, "outer");
+
+    const subDir = join(root, "sub");
+    mkdirSync(subDir, { recursive: true });
+    gitInit(subDir);
+    writeFileSync(join(subDir, "inner.md"), "inner\n", "utf8");
+    gitCommitAll(subDir, "inner");
+
+    seedPeer("self", { name: "Maya" });
+    seedPeer("peer", { name: "Maya-transient", files: ["outer.md", "sub/inner.md"] });
+
+    const v = evaluateCommit(root, {
+      instance_id: "self",
+      session_id: "self",
+      staged_paths: ["outer.md"],
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("commit.suppressed");
+  });
+
+  test("self-attribution still refuses a submodule path with uncommitted changes", () => {
+    // The guard rail on the fix above: clean-in-its-own-HEAD is the thing that
+    // makes a held path safe to ignore. A dirty one is real work someone could
+    // lose, so it must keep blocking.
+    const outer = gitInit(root);
+    writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
+    gitCommitAll(outer, "outer");
+
+    const subDir = join(root, "sub");
+    mkdirSync(subDir, { recursive: true });
+    gitInit(subDir);
+    writeFileSync(join(subDir, "inner.md"), "inner\n", "utf8");
+    gitCommitAll(subDir, "inner");
+    writeFileSync(join(subDir, "inner.md"), "inner edited\n", "utf8");
+
+    seedPeer("self", { name: "Maya" });
+    seedPeer("peer", { name: "Adelaide", files: ["outer.md", "sub/inner.md"] });
+
+    const v = evaluateCommit(root, {
+      instance_id: "self",
+      session_id: "self",
+      staged_paths: ["outer.md"],
+    });
+    expect(v.allow).toBe(false);
+    expect(v.rule).toBe("commit.conflict");
+  });
+
+  test("self-attribution: a held git-ignored scratch path does not defeat suppression", () => {
+    // Agents write scratch files into an ignored directory constantly, and every
+    // one of those became a permanent claim git could not vouch for: not staged,
+    // not tracked, so Gate A failed for the rest of the session and every commit
+    // wanted a bypass. An ignored path cannot appear in anybody's commit, so it
+    // cannot be work this commit might clobber.
+    const outer = gitInit(root);
+    writeFileSync(join(root, ".gitignore"), "scratch/\n", "utf8");
+    writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
+    gitCommitAll(outer, "outer");
+
+    mkdirSync(join(root, "scratch"), { recursive: true });
+    writeFileSync(join(root, "scratch", "notes.txt"), "scratch\n", "utf8");
+
+    seedPeer("self", { name: "Maya" });
+    seedPeer("peer", { name: "Maya-transient", files: ["outer.md", "scratch/notes.txt"] });
+
+    const v = evaluateCommit(root, {
+      instance_id: "self",
+      session_id: "self",
+      staged_paths: ["outer.md"],
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("commit.suppressed");
+  });
+
+  test("self-attribution still refuses an untracked path git does not ignore", () => {
+    // The line between the two: an ignored file can never be committed, but a
+    // plain untracked one can be added by anyone, so it stays a real unknown.
+    const outer = gitInit(root);
+    writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
+    gitCommitAll(outer, "outer");
+    writeFileSync(join(root, "newfile.md"), "new\n", "utf8");
+
+    seedPeer("self", { name: "Maya" });
+    seedPeer("peer", { name: "Adelaide", files: ["outer.md", "newfile.md"] });
+
+    const v = evaluateCommit(root, {
+      instance_id: "self",
+      session_id: "self",
+      staged_paths: ["outer.md"],
+    });
+    expect(v.allow).toBe(false);
+    expect(v.rule).toBe("commit.conflict");
+  });
+
+  test("self-attribution survives the GIT_DIR a git hook exports", () => {
+    // The reason the two fixes above were not enough on their own. A hook runs
+    // with GIT_DIR already pointing at the repository being committed, children
+    // inherit it, and it outranks cwd. Every probe therefore questioned the
+    // hook's repository instead of the one owning the path, and the gates read
+    // "unverifiable". This test pins the scrubbing by polluting the environment
+    // the way git does.
+    const outer = gitInit(root);
+    writeFileSync(join(root, ".gitignore"), "scratch/\n", "utf8");
+    writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
+    writeFileSync(join(root, "held.md"), "held\n", "utf8");
+    gitCommitAll(outer, "outer");
+    mkdirSync(join(root, "scratch"), { recursive: true });
+    writeFileSync(join(root, "scratch", "notes.txt"), "scratch\n", "utf8");
+
+    const otherRepo = join(root, "elsewhere");
+    mkdirSync(otherRepo, { recursive: true });
+    gitInit(otherRepo);
+    writeFileSync(join(otherRepo, "unrelated.md"), "x\n", "utf8");
+    gitCommitAll(otherRepo, "unrelated");
+
+    seedPeer("self", { name: "Maya" });
+    seedPeer("peer", {
+      name: "Maya-transient",
+      files: ["outer.md", "held.md", "scratch/notes.txt"],
+    });
+
+    const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE };
+    process.env.GIT_DIR = join(otherRepo, ".git");
+    process.env.GIT_WORK_TREE = otherRepo;
+    try {
+      const v = evaluateCommit(root, {
+        instance_id: "self",
+        session_id: "self",
+        staged_paths: ["outer.md"],
+      });
+      expect(v.allow).toBe(true);
+      expect(v.rule).toBe("commit.suppressed");
+    } finally {
+      if (saved.dir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved.dir;
+      if (saved.tree === undefined) delete process.env.GIT_WORK_TREE;
+      else process.env.GIT_WORK_TREE = saved.tree;
+    }
   });
 
   test("gitlink discrimination: staging bare submodule path doesn't conflict with inner-file claim", () => {
