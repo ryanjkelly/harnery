@@ -137,9 +137,8 @@ describe("planMirror + applyMirror", () => {
 
 describe("entryMatchesSelector", () => {
   test("matches sessionId, cliSessionId, and case-insensitive title substring", () => {
-    const [account] = listAccounts(
-      (writeEntry(ACCT_A, "sel", { title: "My Great Session" }), dataDir),
-    );
+    writeEntry(ACCT_A, "sel", { title: "My Great Session" });
+    const [account] = listAccounts(dataDir);
     const entry = account?.entries[0];
     if (!entry) throw new Error("fixture entry missing");
     expect(entryMatchesSelector(entry, "cli-sel")).toBe(true);

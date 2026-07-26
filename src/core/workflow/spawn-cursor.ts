@@ -140,9 +140,9 @@ export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRe
   const r = await exec(invocation.argv, {
     cwd: req.cwd,
     env: buildChildEnv(req.runId, {
-        subscriptionOnly: req.subscriptionOnly,
-        agentId: req.agentId,
-      }),
+      subscriptionOnly: req.subscriptionOnly,
+      agentId: req.agentId,
+    }),
     timeout: req.timeoutMs,
   });
   return normalizeCursorResult({ ...r, durationMs: Date.now() - t0 });

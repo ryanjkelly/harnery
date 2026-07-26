@@ -149,9 +149,9 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
   const r = await exec(invocation.argv, {
     cwd: req.cwd,
     env: buildChildEnv(req.runId, {
-        subscriptionOnly: req.subscriptionOnly,
-        agentId: req.agentId,
-      }),
+      subscriptionOnly: req.subscriptionOnly,
+      agentId: req.agentId,
+    }),
     timeout: req.timeoutMs,
   });
   return normalizeClaudeResult({ ...r, durationMs: Date.now() - t0 });
