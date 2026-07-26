@@ -47,6 +47,11 @@
       "types": "./dist/core/agents/session-events.d.ts",
       "import": "./dist/core/agents/session-events.js"
     },
+    "./core/artifacts": {
+      "bun": "./src/core/artifacts/index.ts",
+      "types": "./dist/core/artifacts/index.d.ts",
+      "import": "./dist/core/artifacts/index.js"
+    },
     "./core/hooks": {
       "bun": "./src/core/hooks/index.ts",
       "types": "./dist/core/hooks/index.d.ts",

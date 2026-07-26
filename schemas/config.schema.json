@@ -35,6 +35,20 @@
         }
       }
     },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Defaults for repository-local working artifacts under .harnery/artifacts/.",
+      "properties": {
+        "default_retention_days": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 3650,
+          "default": 3,
+          "description": "Retention for `harn artifacts create` when --days is absent. Env override: HARNERY_ARTIFACT_RETENTION_DAYS."
+        }
+      }
+    },
     "web": {
       "type": "object",
       "additionalProperties": false,

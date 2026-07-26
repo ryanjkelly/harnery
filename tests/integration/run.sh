@@ -14,6 +14,7 @@ TMPDIR_TEST=$(mktemp -d -t harn-it-XXXXXX)
 export HARNERY_COORD_ROOT_OVERRIDE="$TMPDIR_TEST"
 export HARN_COORD_ROOT="$TMPDIR_TEST"
 mkdir -p "$TMPDIR_TEST/.harnery/active"
+git -C "$TMPDIR_TEST" init -q
 
 cleanup() {
   rm -rf "$TMPDIR_TEST"
@@ -60,6 +61,7 @@ check "harn --help mentions agents" "$HARN --help" "agents"
 check "harn --help mentions harness" "$HARN --help" "harness"
 check "harn --help mentions durable work" "$HARN --help" "work"
 check "harn --help mentions supervisor" "$HARN --help" "supervisor"
+check "harn --help mentions artifacts" "$HARN --help" "artifacts"
 
 # 2. harn doctor
 check "harn doctor reports node check" "$HARN doctor" "node"
@@ -73,7 +75,16 @@ printf "hello world\n" > "$TOKENS_TMP"
 check "harn tokens counts a small file" "$HARN tokens '$TOKENS_TMP'" "tokens"
 rm -f "$TOKENS_TMP"
 
-# 4. harn harness catalog + offline bench
+# 4. harn artifacts manages a complete preview-before-delete lifecycle
+check "harn artifacts creates a managed workspace" \
+  "$HARN artifacts create integration-artifact --purpose 'integration smoke' --days 0.00000001" \
+  '"artifact_id"'
+check "harn artifacts cleanup previews an expired unit" \
+  "$HARN artifacts clean" '"managed-expired"'
+check "harn artifacts cleanup deletes only with confirmation" \
+  "$HARN artifacts clean --yes" '"deleted"'
+
+# 5. harn harness catalog + offline bench
 check "harn harness list includes all built-ins" \
   "$HARN harness list" "cursor-agent"
 # Drift is a legitimate result and exits non-zero, so these assert on output.
@@ -84,7 +95,7 @@ check "harn harness bench makes no model calls" \
 check "harn harness bench reports the basis of each result" \
   "$HARN harness bench" "basis:" 1
 
-# 5. harn workflow --help exposes proof and durable approval operations
+# 6. harn workflow --help exposes proof and durable approval operations
 check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"
 check "harn workflow --help mentions resume" "$HARN workflow --help" "resume"
 check "harn workflow --help mentions approvals" "$HARN workflow --help" "approvals"
@@ -101,7 +112,7 @@ check "harn workflow approvals --help exposes resolution" \
 check "harn workflow approvals list starts with an empty inbox" \
   "$HARN workflow approvals list" "no workflow approvals"
 
-# 6. harn work exposes the complete daemonless lifecycle
+# 7. harn work exposes the complete daemonless lifecycle
 check "harn work --help mentions reconcile" "$HARN work --help" "reconcile"
 check "harn work --help mentions explicit retry" "$HARN work --help" "retry"
 check "harn work list starts empty" "$HARN work list" "no durable work"
@@ -123,7 +134,7 @@ check "harn workflow proof preserves the attempt context" \
   "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
   '"attempt_context"'
 
-# 7. harn supervisor exposes bounded goal execution
+# 8. harn supervisor exposes bounded goal execution
 check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"
 check "harn supervisor --help mentions run" "$HARN supervisor --help" "run"
 check "harn supervisor exposes replanning review" "$HARN supervisor plan --help" "approve"
@@ -154,20 +165,20 @@ check "harn supervisor shows frozen mission progress" \
 check "harn supervisor json freezes reviewed planning policy" \
   "$HARN supervisor show goal-integration-mission --json" '"max_revision_rounds":1'
 
-# 8. harn web --help mentions all subcommands
+# 9. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"
 check "harn web --help mentions build" "$HARN web --help" "build"
 check "harn web --help mentions start" "$HARN web --help" "start"
 
-# 9. harn backup --help mentions subcommands
+# 10. harn backup --help mentions subcommands
 check "harn backup --help mentions snapshot" "$HARN backup --help" "snapshot"
 check "harn backup --help mentions restore" "$HARN backup --help" "restore"
 
-# 10. harn sync --help mentions subcommands
+# 11. harn sync --help mentions subcommands
 check "harn sync --help mentions push" "$HARN sync --help" "push"
 check "harn sync --help mentions pull" "$HARN sync --help" "pull"
 
-# 11. Error path: harn backup init without restic surfaces a structured error
+# 12. Error path: harn backup init without restic surfaces a structured error
 if ! command -v restic >/dev/null 2>&1; then
   check "harn backup init without restic emits restic_missing" \
     "$HARN backup init 2>&1" "restic_missing" 1

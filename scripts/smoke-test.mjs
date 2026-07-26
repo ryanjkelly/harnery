@@ -260,6 +260,24 @@ try {
   // Public subpaths must resolve from the packed artifact, not just from the
   // source checkout. Keep this focused on the newest product-tier export so a
   // missing dist file or exports-map mismatch fails before publish.
+  log("checking public `harnery/core/artifacts` import ...");
+  const artifactsProbe = join(workdir, "artifacts-import.mjs");
+  writeFileSync(
+    artifactsProbe,
+    [
+      'import { ARTIFACT_SCHEMA_VERSION, createArtifact } from "harnery/core/artifacts";',
+      'if (ARTIFACT_SCHEMA_VERSION !== 1) throw new Error("unexpected artifact schema version");',
+      'const created = createArtifact(process.cwd(), { slug: "packed-smoke", purpose: "Verify the packed artifacts API", retentionDays: 1, id: "artifact_packed_smoke" });',
+      'if (created.manifest.schema_version !== 1 || !created.path.includes(".harnery")) throw new Error("artifact creation failed");',
+    ].join("\n"),
+  );
+  execFileSync(nodePath, [artifactsProbe], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
+  log("harnery/core/artifacts import OK");
+
   log("checking public `harnery/core/workflow` import ...");
   const workflowProbe = join(workdir, "workflow-import.mjs");
   writeFileSync(

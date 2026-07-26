@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  artifactDefaultRetentionDays,
   backupConfig,
   coordFreshnessSeconds,
   DEFAULT_BIN_NAME,
@@ -117,8 +118,7 @@ describe("stripJsonComments", () => {
   });
 });
 
-// The tunable coord/backup/sync accessors — the config keys the schema declares
-// and that (post-A) src/core/config.ts actually honors.
+// The tunable coord/artifact/backup/sync accessors and the config keys they honor.
 
 describe("coordFreshnessSeconds", () => {
   const roots: string[] = [];
@@ -171,6 +171,37 @@ describe("coordFreshnessSeconds", () => {
     const root = makeRoot(`{ "coord": { "freshness_seconds": -5 } }`);
     roots.push(root);
     expect(coordFreshnessSeconds(root)).toBe(DEFAULT_FRESHNESS_SECS);
+  });
+});
+
+describe("artifactDefaultRetentionDays", () => {
+  const roots: string[] = [];
+  const saved = process.env.HARNERY_ARTIFACT_RETENTION_DAYS;
+
+  beforeEach(() => {
+    delete process.env.HARNERY_ARTIFACT_RETENTION_DAYS;
+  });
+  afterEach(() => {
+    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    if (saved === undefined) delete process.env.HARNERY_ARTIFACT_RETENTION_DAYS;
+    else process.env.HARNERY_ARTIFACT_RETENTION_DAYS = saved;
+  });
+
+  test("defaults to three days and reads project config", () => {
+    const empty = makeRoot(`{}`);
+    const configured = makeRoot(`{ "artifacts": { "default_retention_days": 7 } }`);
+    roots.push(empty, configured);
+    expect(artifactDefaultRetentionDays(empty)).toBe(3);
+    expect(artifactDefaultRetentionDays(configured)).toBe(7);
+  });
+
+  test("environment override wins and invalid values fail closed to config", () => {
+    const root = makeRoot(`{ "artifacts": { "default_retention_days": 5 } }`);
+    roots.push(root);
+    process.env.HARNERY_ARTIFACT_RETENTION_DAYS = "9";
+    expect(artifactDefaultRetentionDays(root)).toBe(9);
+    process.env.HARNERY_ARTIFACT_RETENTION_DAYS = "-1";
+    expect(artifactDefaultRetentionDays(root)).toBe(5);
   });
 });
 

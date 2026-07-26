@@ -102,6 +102,13 @@ leaves breadcrumbs that survive context compaction;
 \`${b} scratch read\` reads yours, \`${b} scratch read --name <peer>\` reads a peer's.
 Use it for anything future-you or a peer will need to pick up your thread.
 
+**Working artifacts.** For screenshots, exports, audit dumps, rollback inputs,
+and other untracked files that must survive a session, create a managed workspace
+with \`${b} artifacts create <slug> --purpose "<why>"\`. Write files under the
+returned path, then run \`${b} artifacts release <id>\` when active work is done.
+Do not create a repo-root temp directory; \`${b} artifacts clean\` previews
+expired cleanup and requires \`--yes\` to delete anything.
+
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`
 records it and lets you proceed on a stated default; \`${b} decision search "<terms>"\`

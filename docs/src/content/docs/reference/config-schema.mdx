@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -33,6 +33,7 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `project_name` | string  | repo basename    | Display name surfaced in log lines and to peers |
 | `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
 | `coord`        | object  | see below        | Coord-layer settings |
+| `artifacts`    | object  | see below        | Working-artifact retention |
 | `tools`        | object  | see below        | Managed-tool provisioning consent (`tools.ripgrep.autoInstall`) |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
 | `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
@@ -54,6 +55,15 @@ The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) 
 | `freshness_seconds`   | number  | `600`   | Heartbeat age (seconds) above which the sweeper prunes an agent (10 min) |
 
 Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env (canonical; `HARNERY_AGENT_FRESHNESS` is a legacy alias) → this `config.jsonc` key → `600`.
+
+## `artifacts`
+
+| Field                    | Type   | Default | Description |
+| ------------------------ | ------ | ------- | ----------- |
+| `default_retention_days` | number | `3`     | Retention used by `harn artifacts create` when `--days` is absent |
+
+Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key →
+`3`. See [`harn artifacts`](/cli/artifacts/) for cleanup behavior.
 
 ## `workflow`
 
@@ -146,6 +156,7 @@ Every section above is read from `config.jsonc` (both the user-global and projec
 | Section | Config keys | Env override | Other |
 | --- | --- | --- | --- |
 | `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` (alias `HARNERY_AGENT_FRESHNESS`) | — |
+| `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
 | `files` | `deny_globs`, `allow_overrides` | — | read by the web layer, not the core reader |
@@ -162,6 +173,10 @@ Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env �
 
   "coord": {
     "freshness_seconds": 900
+  },
+
+  "artifacts": {
+    "default_retention_days": 3
   },
 
   "web": {

@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { registerAgentsCommand } from "./commands/agents.ts";
+import { registerArtifactsCommand } from "./commands/artifacts.ts";
 import { registerBackupCommand } from "./commands/backup.ts";
 import { registerBrowseCommand } from "./commands/browse.ts";
 import { registerBrowseAiCommand } from "./commands/browse-ai.ts";
@@ -277,6 +278,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCompletionCommand(program, emit, opts.context);
   registerContextCommand(program, emit, opts.context);
   registerScratchCommand(program, emit);
+  registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);
   registerDevtoolsCommand(program, emit);
   registerTunnelCommand(program, emit, opts.context);

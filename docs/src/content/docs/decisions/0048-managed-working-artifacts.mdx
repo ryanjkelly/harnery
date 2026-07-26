@@ -1,0 +1,72 @@
+---
+title: "0048: Harnery manages short-lived working artifacts"
+description: Store agent-generated working files in manifest-backed units under .harnery/artifacts, with conservative cleanup tied to retention and agent liveness.
+---
+
+**Status:** accepted · **Date:** 2026-07-26
+
+## Context
+
+Agents create screenshots, exports, audit dumps, browser captures, and rollback
+inputs while they work. These files often need to survive a session, but they
+do not belong in Git. A dated repository temp directory makes the files easy to
+find, but the directory name cannot say whether an agent still uses them or
+whether someone deliberately extended their lifetime.
+
+Harnery already owns repository-local agent identity and liveness. It can give
+these files a lifecycle without turning them into scratch-journal entries or
+durable workflow evidence.
+
+## Alternatives considered
+
+**Keep a dated repo-root temp directory.** Rejected. Cleanup would still infer
+intent from a filename and could not protect work owned by a live agent.
+
+**Store working files in `.harnery/scratch/`.** Rejected. Scratch is a bounded
+markdown journal for context recovery and peer handoff. Binary files and large
+exports have a different lifecycle.
+
+**Use an operating-system cache directory.** Rejected. It keeps the checkout
+tidy but makes artifacts harder to discover, inspect, and hand off.
+
+**Delete unmanaged and malformed entries during cleanup.** Rejected. Harnery
+cannot establish ownership or retention for those entries. A public cleanup
+command must fail closed.
+
+**Automatically clean at session start or exit.** Rejected for the first
+version. Implicit deletion would add hook latency and make mistakes harder to
+diagnose. Cleanup remains a deliberate command.
+
+## Decision
+
+Harnery stores working artifacts as direct children of
+`.harnery/artifacts/`. `harn artifacts create` creates a readable,
+collision-safe directory name and writes `.harnery-artifact.json` atomically.
+The schema records the artifact ID, purpose, creation time, optional agent
+owner, and an explicit UTC expiration.
+
+The default retention is three days. A host can set
+`artifacts.default_retention_days` in `.harnery/config.jsonc` or use
+`HARNERY_ARTIFACT_RETENTION_DAYS`. `renew` sets a new expiration and requires a
+reason. `release` removes live-owner protection without shortening the
+retention window.
+
+Inventory classifies every direct child. Cleanup deletes only
+`managed-expired`: a directory with a valid v1 manifest whose retention has
+expired, whose owner has no fresh heartbeat (or released it), and whose tree
+contains no tracked Git path. Symlinks, unknown schemas, unreadable manifests,
+unmanaged entries, current units, active units, and tracked units stay put.
+`clean` is preview-only unless the caller passes `--yes`, and it rechecks the
+classification immediately before each deletion.
+
+Managed artifacts are local working state. `harn backup snapshot` and
+`harn sync` exclude them by default. An agent that needs durable evidence must
+copy it into a tracked project path and add enough context for a later reader.
+
+## Result
+
+The product surface is `harn artifacts create|list|show|renew|release|clean`
+plus the `harnery/core/artifacts` API for embedding hosts. The old temp-folder
+convention is not a compatibility format. Hosts may migrate or remove their
+old trees separately, but Harnery never guesses that unmanaged content is safe
+to delete.
