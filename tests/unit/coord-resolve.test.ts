@@ -75,13 +75,15 @@ describe("findCoordRoot (hooks-side)", () => {
   });
 
   test("falls back to the cwd walk when CLAUDE_PROJECT_DIR has no coord root above it", () => {
-    const bare = mkdtempSync(path.join(os.tmpdir(), "harn-bare-"));
-    try {
-      process.env.CLAUDE_PROJECT_DIR = bare;
-      expect(findCoordRoot(nested)).toBe(nested);
-    } finally {
-      rmSync(bare, { recursive: true, force: true });
-    }
+    // The project dir must have no coord root anywhere above it, so it cannot
+    // sit under the system temp dir: anything that leaves a `.harnery` in /tmp
+    // would resolve at step 2 and quietly mask the fallback this test covers.
+    // A nonexistent path one level below the filesystem root has exactly one
+    // ancestor, and the assertion below proves the premise before relying on it.
+    const bare = path.join(path.parse(process.cwd()).root, `harn-absent-${process.pid}`);
+    expect(findCoordRoot(bare)).toBe(null);
+    process.env.CLAUDE_PROJECT_DIR = bare;
+    expect(findCoordRoot(nested)).toBe(nested);
   });
 
   test("HARNERY_COORD_ROOT_OVERRIDE beats CLAUDE_PROJECT_DIR", () => {
