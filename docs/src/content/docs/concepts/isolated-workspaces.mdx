@@ -48,13 +48,20 @@ the superproject's `.git/modules/…`, so the writable root must be the
 **superproject**, not the submodule. The same applies to a linked worktree,
 whose common directory belongs to the repository it was created from.
 
-Workspaces are allocated under `<workspace-root>/harnery-workspaces/<binding-id>`.
-That directory holds real checkouts and is not written by `harn init`, so add it
-to the project's ignore rules yourself:
+Workspaces are allocated under `<workspace-root>/.harnery-workspaces/<binding-id>`.
+That directory holds real checkouts rather than coordination state, so it is a
+sibling of `.harnery/` and never a child of it. `harn deinit --purge-state`
+deletes `.harnery/` outright, and a preserved worktree carrying unintegrated work
+has no business somewhere a purge is allowed to reach.
 
-```bash
-echo 'harnery-workspaces/' >> .gitignore
-```
+The provider writes a `.gitignore` containing `*` into that parent the first time
+it allocates. The rule covers the ignore file itself, so the directory stays out
+of `git status` in whatever repository happens to contain it, and you never have
+to maintain an ignore rule of your own.
+
+Workspaces allocated by an earlier version live under `harnery-workspaces/`,
+without the leading dot. Those paths are frozen in their bindings and keep
+working, so nothing has to move. Only new allocations use the hidden parent.
 
 You do not need to clone a repository by hand to get an isolated run. If you
 find yourself making a scratch copy so agents have somewhere safe to write, the
