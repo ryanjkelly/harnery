@@ -532,7 +532,7 @@ describe("shared and explicit-provider compatibility", () => {
         ...quiet,
       }),
     ).rejects.toThrow(/writable root.*outside frozen path authority/);
-    expect(existsSync(join(host, "harnery-workspaces"))).toBe(false);
+    expect(existsSync(join(host, ".harnery-workspaces"))).toBe(false);
   });
 
   test("revalidates frozen policy path authority before workspace cleanup", async () => {
@@ -2250,7 +2250,7 @@ exec "$HARNERY_REAL_GIT" "$@"
     const oldPath = process.env.PATH;
     process.env.HARNERY_REAL_GIT = findGitBinary();
     process.env.HARNERY_TEST_MARKER = marker;
-    process.env.HARNERY_TEST_PARENT = join(host, "harnery-workspaces");
+    process.env.HARNERY_TEST_PARENT = join(host, ".harnery-workspaces");
     process.env.HARNERY_TEST_FOREIGN = foreign;
     process.env.PATH = `${wrapperDir}${delimiter}${oldPath}`;
     try {
@@ -2430,6 +2430,44 @@ exec "$HARNERY_REAL_GIT" "$@"
       ).toBe(true);
     }
   });
+
+  test("allocates under a hidden parent that ignores itself", async () => {
+    if (!hasGit()) return;
+    const { host, repo } = gitFixture("workspace-hidden-parent");
+    tracked(host);
+    const script = writeScript(repo, "export default async () => 'hidden';\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-qm", "workflow");
+    const provider = createLocalGitWorktreeProvider({ coordRoot: repo });
+    // The repository is its own writable root here, which is the layout where a
+    // visible parent used to leave real checkouts sitting in `git status`.
+    await runWorkflow(script, {
+      coordRoot: repo,
+      cwd: repo,
+      spawners: {},
+      isolation: "worktree",
+      workspace: { provider, writableRoots: [repo] },
+      ...quiet,
+    });
+    expect(existsSync(join(repo, "harnery-workspaces"))).toBe(false);
+    const parent = join(repo, ".harnery-workspaces");
+    expect(existsSync(parent)).toBe(true);
+    expect(readFileSync(join(parent, ".gitignore"), "utf8")).toBe("*\n");
+    expect(git(repo, "status", "--porcelain", "--untracked-files=all")).toBe("");
+  });
+
+  test("keeps reconciling an allocation frozen under the legacy parent", async () => {
+    if (!hasGit()) return;
+    for (const state of ["claim_only", "worktree_registered"] as const) {
+      const fixture = await allocationCrashFixture(state, "harnery-workspaces");
+      const binding = await fixture.provider.allocate(fixture.request);
+      expect(binding.workspace_root).toBe(
+        join(fixture.host, "harnery-workspaces", binding.binding_id),
+      );
+      expect((await fixture.provider.reattach(binding)).status).toBe("ok");
+      expect(existsSync(join(fixture.host, ".harnery-workspaces"))).toBe(false);
+    }
+  });
 });
 
 function boundExecution(proof: WorkflowProof): WorkspaceBoundExecutionEvidence {
@@ -2487,13 +2525,17 @@ async function allocationCrashFixture(
     | "worktree_registered"
     | "worktree_event_recorded"
     | "stale_registration",
+  parentSegment = ".harnery-workspaces",
 ): Promise<{
   repo: string;
+  host: string;
   provider: ReturnType<typeof createLocalGitWorktreeProvider>;
   request: WorkspaceAllocationRequest;
   claim: WorkspaceClaim;
 }> {
-  const { host, repo } = gitFixture(`workspace-crash-${state}`);
+  const { host, repo } = gitFixture(
+    `workspace-crash-${state}${parentSegment.startsWith(".") ? "" : "-legacy"}`,
+  );
   tracked(host);
   const script = writeScript(repo, "export default async () => 'recovered';\n");
   git(repo, "add", ".");
@@ -2529,7 +2571,7 @@ async function allocationCrashFixture(
   const requestSha256 = stableDigest(request);
   const bindingId = `ws-${stableDigest(request.idempotency_key).slice(0, 24)}`;
   const workspaceId = `local-${stableDigest({ bindingId, requestSha256 }).slice(0, 24)}`;
-  const workspaceRoot = join(host, "harnery-workspaces", bindingId);
+  const workspaceRoot = join(host, parentSegment, bindingId);
   const commonDir = resolve(repo, git(repo, "rev-parse", "--git-common-dir"));
   const branch = git(repo, "branch", "--show-current");
   const head = git(repo, "rev-parse", "HEAD");
@@ -2577,7 +2619,7 @@ async function allocationCrashFixture(
     state === "worktree_event_recorded" ||
     state === "stale_registration"
   ) {
-    mkdirSync(join(host, "harnery-workspaces"));
+    mkdirSync(join(host, parentSegment));
     git(repo, "worktree", "add", workspaceRoot, claim.repository.workspace_branch);
   }
   if (state === "worktree_event_recorded") {
@@ -2589,5 +2631,5 @@ async function allocationCrashFixture(
   if (state === "stale_registration") {
     rmSync(workspaceRoot, { recursive: true });
   }
-  return { repo, provider, request, claim };
+  return { repo, host, provider, request, claim };
 }

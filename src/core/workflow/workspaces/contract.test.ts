@@ -106,10 +106,10 @@ describe("workspace path authority", () => {
     mkdirSync(allowed);
     mkdirSync(outside);
     const root = validateConfiguredRoot(allowed);
-    createContainedDirectories(root, ["harnery-workspaces"]);
-    renameSync(join(allowed, "harnery-workspaces"), join(allowed, "prior-parent"));
-    symlinkSync(outside, join(allowed, "harnery-workspaces"));
-    expect(() => createContainedDirectories(root, ["harnery-workspaces"])).toThrow(
+    createContainedDirectories(root, [".harnery-workspaces"]);
+    renameSync(join(allowed, ".harnery-workspaces"), join(allowed, "prior-parent"));
+    symlinkSync(outside, join(allowed, ".harnery-workspaces"));
+    expect(() => createContainedDirectories(root, [".harnery-workspaces"])).toThrow(
       /not an owned directory/,
     );
   });

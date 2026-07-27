@@ -1,6 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { WorkspaceAttestationError } from "./attestation-error.ts";
 import {
   git,
@@ -68,6 +75,8 @@ import { isWorkspaceAttestation } from "./validate.ts";
 
 const PROVIDER_ID = "local-git-worktree";
 const PROVIDER_VERSION = "1";
+const WORKSPACE_PARENT_SEGMENT = ".harnery-workspaces";
+const LEGACY_WORKSPACE_PARENT_SEGMENT = "harnery-workspaces";
 const LOCK_STALE_MS = 5 * 60 * 1_000;
 const OBJECT_FORMAT = /^[a-f0-9]{40,64}$/;
 const REF_FORMAT = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
@@ -221,7 +230,11 @@ async function allocate(
   );
   const authorityOutside = describeAuthorityOutsideRoot(repo, root.realpath);
   if (authorityOutside) throw new Error(authorityOutside);
-  const workspaceRoot = candidateUnderRoot(root, ["harnery-workspaces", bindingId]);
+  // Claims are immutable, so a retry must reproduce the path the first attempt
+  // froze. Only a genuinely new allocation picks the current parent.
+  const priorClaim = readWorkspaceClaim(coordRoot, PROVIDER_ID, bindingId);
+  const parentSegment = priorClaim ? claimedParentSegment(priorClaim) : WORKSPACE_PARENT_SEGMENT;
+  const workspaceRoot = candidateUnderRoot(root, [parentSegment, bindingId]);
   const activeRoot = resolve(workspaceRoot, repo.requestedRelativePath);
   if (!containsPath(workspaceRoot, activeRoot)) {
     throw new Error("requested working directory escapes the isolated workspace");
@@ -287,6 +300,33 @@ async function allocate(
   }
 }
 
+/**
+ * A claim freezes its workspace path at allocation time, so reconciliation must
+ * follow the parent recorded there rather than the parent this version would
+ * choose. Only the names this provider has ever allocated under are accepted, so
+ * a tampered claim cannot redirect creation into an unrelated directory.
+ */
+function claimedParentSegment(claim: WorkspaceClaim): string {
+  const segment = basename(dirname(claim.workspace_root));
+  if (segment !== WORKSPACE_PARENT_SEGMENT && segment !== LEGACY_WORKSPACE_PARENT_SEGMENT) {
+    throw new Error("claimed workspace path is not under a provider-owned workspace parent");
+  }
+  return segment;
+}
+
+/**
+ * The parent holds real checkouts that would otherwise surface as untracked
+ * content in the surrounding repository. A directory whose every entry is
+ * ignored, including the ignore file itself, does not appear in `git status` at
+ * all, which keeps the guarantee with the provider instead of asking each
+ * consumer to maintain a rule.
+ */
+function hideWorkspaceParentFromGit(parent: string): void {
+  const ignoreFile = join(parent, ".gitignore");
+  if (existsSync(ignoreFile)) return;
+  writeFileSync(ignoreFile, "*\n", { mode: 0o600 });
+}
+
 function reconcileAllocation(
   coordRoot: string,
   claim: WorkspaceClaim,
@@ -328,7 +368,9 @@ function reconcileAllocation(
     throw new Error("provider-owned workspace branch no longer matches its frozen base");
   }
 
-  const workspaceParent = createContainedDirectories(root, ["harnery-workspaces"]);
+  const parentSegment = claimedParentSegment(claim);
+  const workspaceParent = createContainedDirectories(root, [parentSegment]);
+  hideWorkspaceParentFromGit(workspaceParent);
   const workspaceParentIdentity = filesystemIdentity(workspaceParent);
   const registered = worktreeInventory(claim.repository.source_root.realpath);
   const exact = registered.find((item) => resolve(item.path) === claim.workspace_root);
@@ -385,7 +427,7 @@ function reconcileAllocation(
         parent_identity: workspaceParentIdentity,
       });
     }
-    const openedWorkspace = openContainedDirectory(root, ["harnery-workspaces", claim.binding_id]);
+    const openedWorkspace = openContainedDirectory(root, [parentSegment, claim.binding_id]);
     if (openedWorkspace.path !== claim.workspace_root) {
       openedWorkspace.close();
       throw new Error("descriptor-backed workspace directory differs from the claim");
