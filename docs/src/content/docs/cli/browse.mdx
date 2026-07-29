@@ -101,6 +101,10 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-overlap-threshold <px>` | Allowed overlap depth on either axis. Default `0`. |
 | `--check-overlap-fail` | Exit 2 when an overlap target fails or is missing. |
 | `--no-check-overlap-annotate` | Skip overlap annotations. |
+| `--check-crowd <selector>` | Flag adjacent card panels (a full border, a modest corner radius, or a box-shadow) that touch or nearly touch. Walks the whole subtree, so one selector catches nested cases. Repeatable. |
+| `--check-crowd-min <px>` | Minimum acceptable edge gap between adjacent panels. Default `6`. Negative separation (overlap) always flags. |
+| `--check-crowd-fail` | Exit 2 when a crowd target fails or is missing. |
+| `--no-check-crowd-annotate` | Skip crowd annotations. |
 | `--check-hit [selector]` | Check interactive target size and spacing in the document or optional scope. Repeatable. |
 | `--check-hit-profile <profile>` | `wcag-aa` uses 24px; `comfortable` uses 44px as a product-quality policy. Default `wcag-aa`. |
 | `--check-hit-fail` | Exit 2 on target-size `fail`, `unknown`, or a missing scope. |
@@ -115,6 +119,17 @@ Clipping is deliberately rectangular. Border radius, arbitrary `clip-path`,
 non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
 are reported as `unknown`, not certified. Overlap covers sibling geometry;
 paint-order and sticky-layer obstruction remain `--check-visible` concerns.
+
+Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
+flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd
+targets exactly that — distinct panels with no breathing room. It only counts
+card-like panels (a full border, a modest corner radius, or a box-shadow), so it
+does not fire on things that are flush by design: table cells, list and
+definition rows, and divided segments carry no card boundary of their own and are
+skipped, as are pills, chips, and badges (corner radius at least half their
+shorter side). Per-pair results carry the two panels, the edge `separationPx`,
+the `axis` (`x` side-by-side, `y` stacked, `overlap` intersecting), and the shared
+`parentLabel`.
 
 All requested checks run before one screenshot is captured. Fail gates are
 evaluated only after JSON and screenshot evidence is complete. Missing selectors

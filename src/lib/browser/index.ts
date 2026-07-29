@@ -18,6 +18,8 @@ export type {
   AlignResult,
   ClipIssue,
   ClipResult,
+  CrowdPair,
+  CrowdResult,
   GapCluster,
   GapPair,
   GapResult,

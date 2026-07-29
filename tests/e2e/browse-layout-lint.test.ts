@@ -47,6 +47,11 @@ describe("browse layout lint", () => {
           { selector: ".overlap-good", tolerancePx: 0 },
           { selector: ".overlap-bad", tolerancePx: 0 },
         ],
+        crowd: [
+          { selector: ".crowd-good", minGapPx: 6 },
+          { selector: ".crowd-bad", minGapPx: 6 },
+          { selector: ".crowd-plain", minGapPx: 6 },
+        ],
       });
 
       expect(result.align.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
@@ -54,6 +59,11 @@ describe("browse layout lint", () => {
       expect(result.gap.map((entry) => entry.outcome)).toEqual(["pass", "fail", "unknown"]);
       expect(result.clip.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
       expect(result.overlap.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
+      // crowd-good: panels 16px apart pass. crowd-bad: flush panels fail.
+      // crowd-plain: flush but non-panel paragraphs must NOT flag (panel gate).
+      expect(result.crowd.map((entry) => entry.outcome)).toEqual(["pass", "fail", "pass"]);
+      expect(result.crowd[1]?.issues[0]?.axis).toBe("y");
+      expect(result.crowd[1]?.issues[0]?.separationPx ?? 99).toBeLessThan(6);
     } finally {
       await browser.close();
     }
@@ -92,6 +102,8 @@ describe("browse layout lint", () => {
         ".clip-good",
         "--check-overlap",
         ".overlap-good",
+        "--check-crowd",
+        ".crowd-bad",
         "--check-hit",
         ".hit-good",
       ],
@@ -106,6 +118,7 @@ describe("browse layout lint", () => {
     expect(stdout).toContain('"gap"');
     expect(stdout).toContain('"clip"');
     expect(stdout).toContain('"overlap"');
+    expect(stdout).toContain('"crowd"');
     expect(stdout).toContain('"hit"');
   });
 

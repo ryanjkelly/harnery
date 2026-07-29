@@ -115,6 +115,28 @@ export interface OverlapResult {
   truncated: boolean;
 }
 
+export interface CrowdPair {
+  before: LayoutElementMeasurement;
+  after: LayoutElementMeasurement;
+  /** Edge separation along `axis` in CSS px; negative means the panels overlap. */
+  separationPx: number;
+  /** "y" = stacked, "x" = side by side, "overlap" = they intersect in 2D. */
+  axis: "x" | "y" | "overlap";
+  minGapPx: number;
+  /** DOM label of the shared parent, so the fix location is obvious. */
+  parentLabel: string;
+}
+
+export interface CrowdResult {
+  rule: "crowd";
+  selector: string;
+  found: boolean;
+  outcome: LayoutOutcome;
+  minGapPx: number;
+  issues: CrowdPair[];
+  truncated: boolean;
+}
+
 export interface LayoutLintRequest {
   align: Array<{ selector: string; axis: LayoutAxis; tolerancePx: number }>;
   gap: Array<{
@@ -125,6 +147,7 @@ export interface LayoutLintRequest {
   }>;
   clip: Array<{ selector: string; tolerancePx: number }>;
   overlap: Array<{ selector: string; tolerancePx: number }>;
+  crowd: Array<{ selector: string; minGapPx: number }>;
 }
 
 export interface LayoutLintResult {
@@ -132,6 +155,7 @@ export interface LayoutLintResult {
   gap: GapResult[];
   clip: ClipResult[];
   overlap: OverlapResult[];
+  crowd: CrowdResult[];
 }
 
 export function median(values: number[]): number {
@@ -631,7 +655,169 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       };
     });
 
-    return { align, gap, clip, overlap };
+    // A "panel" here means a card-like callout — a block that reads as its own
+    // standalone box: a full (4-side) border, a modest corner radius, or a
+    // box-shadow. Two flush cards read as one merged block, which `overlap`
+    // (needs a 2D intersection) and `gap` (flags uneven spacing, so a
+    // uniformly-flush stack passes) both miss.
+    //
+    // Deliberately NOT flagged: structural elements that are flush BY DESIGN —
+    // table cells, list/definition rows, and divided segments (a bg-only cell
+    // in a `gap:1px` strip). Those have no card boundary of their own, so the
+    // test below excludes them without a special-case allowlist. Pills, chips,
+    // and badges (radius ≥ half their smaller side) are inline controls, not
+    // layout cards, and are excluded too.
+    const PARENT_LIMIT = 2000;
+    const OVERLAP_EPS = 1;
+    const STRUCTURAL_TAGS = new Set([
+      "TD",
+      "TH",
+      "TR",
+      "THEAD",
+      "TBODY",
+      "TFOOT",
+      "COL",
+      "COLGROUP",
+    ]);
+
+    const maxCornerRadiusPx = (style: CSSStyleDeclaration, minDim: number): number => {
+      const corners = [
+        "border-top-left-radius",
+        "border-top-right-radius",
+        "border-bottom-right-radius",
+        "border-bottom-left-radius",
+      ];
+      let max = 0;
+      for (const corner of corners) {
+        const token = (style.getPropertyValue(corner) || "").trim().split(/\s+/)[0] ?? "";
+        const value = token.endsWith("%")
+          ? (Number.parseFloat(token) / 100) * minDim
+          : Number.parseFloat(token) || 0;
+        if (value > max) max = value;
+      }
+      return max;
+    };
+
+    const isPanel = (element: Element): boolean => {
+      if (STRUCTURAL_TAGS.has(element.tagName)) return false;
+      const style = getComputedStyle(element);
+      if (style.display.startsWith("table") || style.display.startsWith("inline")) return false;
+      if (style.boxShadow && style.boxShadow !== "none") return true;
+      const sides = ["top", "right", "bottom", "left"];
+      const fullBorder = sides.every((side) => {
+        const width = Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) || 0;
+        const lineStyle = style.getPropertyValue(`border-${side}-style`);
+        return width > 0 && lineStyle !== "none" && lineStyle !== "";
+      });
+      if (fullBorder) return true;
+      const rect = element.getBoundingClientRect();
+      const minDim = Math.min(rect.width, rect.height);
+      const radius = maxCornerRadiusPx(style, minDim);
+      // A card has a modest radius; a pill/circle (radius ≥ half its short side)
+      // is a control, not a card.
+      return radius >= 3 && radius < minDim / 2 - 1;
+    };
+
+    // In-flow, visible, non-zero-area direct children of one parent, in DOM
+    // order, tagged with panel-ness. Mirrors collectChildren's flow filtering.
+    const collectPanelChildren = (
+      parent: Element,
+    ): Array<{ measurement: LayoutElementMeasurement; panel: boolean }> => {
+      const out: Array<{ measurement: LayoutElementMeasurement; panel: boolean }> = [];
+      const children = [...parent.children];
+      for (let index = 0; index < children.length && index < CHILD_LIMIT; index++) {
+        const element = children[index];
+        if (!element) continue;
+        if (isHidden(element)) continue;
+        const style = getComputedStyle(element);
+        if (style.position === "absolute" || style.position === "fixed") continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        out.push({ measurement: measure(element, index, false), panel: isPanel(element) });
+      }
+      return out;
+    };
+
+    const separationOf = (
+      a: LayoutElementMeasurement,
+      b: LayoutElementMeasurement,
+    ): { axis: "x" | "y" | "overlap" | "none"; sep: number } => {
+      const ra = a.rect;
+      const rb = b.rect;
+      const yOverlap = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+      const xOverlap = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+      const sharesY = yOverlap > OVERLAP_EPS;
+      const sharesX = xOverlap > OVERLAP_EPS;
+      if (sharesX && sharesY) return { axis: "overlap", sep: -Math.min(xOverlap, yOverlap) };
+      if (sharesX) {
+        const [upper, lower] = ra.top <= rb.top ? [ra, rb] : [rb, ra];
+        return { axis: "y", sep: lower.top - upper.bottom };
+      }
+      if (sharesY) {
+        const [left, right] = ra.left <= rb.left ? [ra, rb] : [rb, ra];
+        return { axis: "x", sep: right.left - left.right };
+      }
+      // Diagonal (e.g. a grid row wrap): not edge-adjacent, so never crowded.
+      const vGap = Math.max(ra.top, rb.top) - Math.min(ra.bottom, rb.bottom);
+      const hGap = Math.max(ra.left, rb.left) - Math.min(ra.right, rb.right);
+      return { axis: "none", sep: Math.max(vGap, hGap) };
+    };
+
+    const crowd = request.crowd.map(({ selector, minGapPx }): CrowdResult => {
+      const container = document.querySelector(selector);
+      if (!(container instanceof Element)) {
+        return {
+          rule: "crowd" as const,
+          selector,
+          found: false,
+          outcome: "fail" as const,
+          minGapPx,
+          issues: [],
+          truncated: false,
+        };
+      }
+      const parents: Element[] = [container, ...container.querySelectorAll("*")];
+      const issues: CrowdPair[] = [];
+      let truncated = parents.length > PARENT_LIMIT;
+      const limit = Math.min(parents.length, PARENT_LIMIT);
+      for (let p = 0; p < limit; p++) {
+        const parent = parents[p]!;
+        const kids = collectPanelChildren(parent);
+        for (let i = 1; i < kids.length; i++) {
+          const before = kids[i - 1]!;
+          const after = kids[i]!;
+          if (!before.panel || !after.panel) continue;
+          const { axis, sep } = separationOf(before.measurement, after.measurement);
+          if (axis === "none") continue;
+          if (sep < minGapPx) {
+            issues.push({
+              before: before.measurement,
+              after: after.measurement,
+              separationPx: sep,
+              axis,
+              minGapPx,
+              parentLabel: labelOf(parent),
+            });
+            if (issues.length >= ISSUE_LIMIT) {
+              truncated = true;
+              break;
+            }
+          }
+        }
+        if (issues.length >= ISSUE_LIMIT) break;
+      }
+      return {
+        rule: "crowd" as const,
+        selector,
+        found: true,
+        outcome: issues.length > 0 ? ("fail" as const) : ("pass" as const),
+        minGapPx,
+        issues,
+        truncated,
+      };
+    });
+
+    return { align, gap, clip, overlap, crowd };
   };
 }
 
@@ -683,6 +869,37 @@ export function buildLayoutLintAnnotateScript(): (result: LayoutLintResult) => v
     for (const check of result.overlap) {
       for (const issue of check.issues) {
         box(issue.intersection, "#e11d48", `overlap ${issue.areaPx.toFixed(0)}px²`);
+      }
+    }
+    for (const check of result.crowd) {
+      for (const issue of check.issues) {
+        // Draw the touching seam: a thin strip along the edge the two panels
+        // share, so "no space here" is visible even at zero separation.
+        const a = issue.before.rect;
+        const b = issue.after.rect;
+        const seam: LayoutRect =
+          issue.axis === "x"
+            ? {
+                x: Math.min(a.right, b.right),
+                y: Math.max(a.top, b.top),
+                width: Math.max(2, Math.abs(issue.separationPx)),
+                height: Math.max(1, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)),
+                top: Math.max(a.top, b.top),
+                right: 0,
+                bottom: 0,
+                left: Math.min(a.right, b.right),
+              }
+            : {
+                x: Math.max(a.left, b.left),
+                y: Math.min(a.bottom, b.bottom),
+                width: Math.max(1, Math.min(a.right, b.right) - Math.max(a.left, b.left)),
+                height: Math.max(2, Math.abs(issue.separationPx)),
+                top: Math.min(a.bottom, b.bottom),
+                right: 0,
+                bottom: 0,
+                left: Math.max(a.left, b.left),
+              };
+        box(seam, "#14b8a6", `crowd ${issue.separationPx.toFixed(1)}px`);
       }
     }
   };

@@ -121,6 +121,10 @@ interface BrowseOpts {
   checkOverlapThreshold?: string;
   checkOverlapFail?: boolean;
   checkOverlapAnnotate?: boolean;
+  checkCrowd?: string[];
+  checkCrowdMin?: string;
+  checkCrowdFail?: boolean;
+  checkCrowdAnnotate?: boolean;
   // Optional selector; null means the full document. Repeatable.
   checkHit?: Array<string | null>;
   checkHitProfile?: string;
@@ -358,6 +362,25 @@ export function registerBrowseCommand(
     .option("--check-overlap-fail", "Exit 2 when an overlap target fails or is missing.")
     .option("--no-check-overlap-annotate", "Skip overlap screenshot annotations.")
     .option(
+      "--check-crowd <selector>",
+      "Flag adjacent panel siblings (blocks with a border, box-shadow, or a " +
+        "background distinct from their parent) that touch or nearly touch. " +
+        "Walks the whole subtree under the selector, so one --check-crowd .wrap " +
+        "catches nested cases. Fills the gap between --check-overlap (needs a 2D " +
+        "intersection) and --check-gap (flags uneven spacing, so a uniformly-flush " +
+        "stack passes). Repeatable.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--check-crowd-min <px>",
+      "Minimum acceptable edge gap between adjacent panels in CSS px (default 6). " +
+        "Pairs closer than this are flagged; negative separation (overlap) always flags.",
+      "6",
+    )
+    .option("--check-crowd-fail", "Exit 2 when a crowd target fails or is missing.")
+    .option("--no-check-crowd-annotate", "Skip crowd screenshot annotations.")
+    .option(
       "--check-hit [selector]",
       "Check pointer-target size and spacing in the document or optional scope (repeatable).",
       (value: string | boolean, previous: Array<string | null> = []) => [
@@ -437,6 +460,7 @@ async function runBrowse(
     opts.checkOverlapThreshold ?? "0",
     "--check-overlap-threshold",
   );
+  const crowdMin = parseNonNegativeNumber(opts.checkCrowdMin ?? "6", "--check-crowd-min");
   const hitProfile = parseTargetSizeProfile(opts.checkHitProfile ?? "wcag-aa");
 
   // Commander: `--no-cookies` turns `opts.cookies` into `false`. Default is `true`.
@@ -523,7 +547,8 @@ async function runBrowse(
       (opts.checkAlign?.length ?? 0) > 0 ||
       (opts.checkGap?.length ?? 0) > 0 ||
       (opts.checkClip?.length ?? 0) > 0 ||
-      (opts.checkOverlap?.length ?? 0) > 0;
+      (opts.checkOverlap?.length ?? 0) > 0 ||
+      (opts.checkCrowd?.length ?? 0) > 0;
     let layoutLint: LayoutLintResult | undefined;
     if (hasLayoutLint) {
       layoutLint = await browser.checkLayoutLint({
@@ -545,6 +570,10 @@ async function runBrowse(
         overlap: (opts.checkOverlap ?? []).map((selector) => ({
           selector,
           tolerancePx: overlapThreshold,
+        })),
+        crowd: (opts.checkCrowd ?? []).map((selector) => ({
+          selector,
+          minGapPx: crowdMin,
         })),
       });
     }
@@ -572,6 +601,7 @@ async function runBrowse(
           gap: opts.checkGapAnnotate === false ? [] : layoutLint.gap,
           clip: opts.checkClipAnnotate === false ? [] : layoutLint.clip,
           overlap: opts.checkOverlapAnnotate === false ? [] : layoutLint.overlap,
+          crowd: opts.checkCrowdAnnotate === false ? [] : layoutLint.crowd,
         }
       : undefined;
     if (
@@ -579,7 +609,8 @@ async function runBrowse(
       (annotateLayoutLint.align.length > 0 ||
         annotateLayoutLint.gap.length > 0 ||
         annotateLayoutLint.clip.length > 0 ||
-        annotateLayoutLint.overlap.length > 0)
+        annotateLayoutLint.overlap.length > 0 ||
+        annotateLayoutLint.crowd.length > 0)
     ) {
       await browser.annotateLayoutLint(annotateLayoutLint);
     }
@@ -876,6 +907,7 @@ async function runPrintMode(
       result.gap = layoutLint.gap;
       result.clip = layoutLint.clip;
       result.overlap = layoutLint.overlap;
+      result.crowd = layoutLint.crowd;
     }
     if (hit) result.hit = hit;
     if (devOverlay) result.devOverlay = devOverlay;
@@ -979,6 +1011,7 @@ async function runTrioMode(
     envelope.gap = layoutLint.gap;
     envelope.clip = layoutLint.clip;
     envelope.overlap = layoutLint.overlap;
+    envelope.crowd = layoutLint.crowd;
   }
   if (hit) envelope.hit = hit;
   if (devOverlay) envelope.devOverlay = devOverlay;
@@ -1185,6 +1218,15 @@ function logLayoutLintSummary(result: LayoutLintResult): void {
       `  [${check.outcome.toUpperCase()}] overlap ${check.selector}: ${check.issues.length} collisions, worst ${worst.toFixed(0)}px²`,
     );
   }
+  for (const check of result.crowd) {
+    const tightest =
+      check.issues.length > 0
+        ? Math.min(...check.issues.map((issue) => issue.separationPx))
+        : check.minGapPx;
+    lines.push(
+      `  [${check.outcome.toUpperCase()}] crowd ${check.selector}: ${check.issues.length} tight pair${check.issues.length === 1 ? "" : "s"} (min gap ${check.minGapPx}px, tightest ${tightest.toFixed(1)}px)`,
+    );
+  }
   if (lines.length > 0) emit.log(`layout-lint:\n${lines.join("\n")}`, "info");
 }
 
@@ -1213,6 +1255,7 @@ function applyLayoutLintFailGates(
   gate(opts.checkGapFail, "gap", layoutLint?.gap);
   gate(opts.checkClipFail, "clip", layoutLint?.clip);
   gate(opts.checkOverlapFail, "overlap", layoutLint?.overlap);
+  gate(opts.checkCrowdFail, "crowd", layoutLint?.crowd);
 
   if (opts.checkHitFail && hit) {
     const failed = hit.filter(
