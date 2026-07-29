@@ -101,8 +101,8 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-overlap-threshold <px>` | Allowed overlap depth on either axis. Default `0`. |
 | `--check-overlap-fail` | Exit 2 when an overlap target fails or is missing. |
 | `--no-check-overlap-annotate` | Skip overlap annotations. |
-| `--check-crowd <selector>` | Flag adjacent card panels (a full border, a modest corner radius, or a box-shadow) that touch or nearly touch. Walks the whole subtree, so one selector catches nested cases. Repeatable. |
-| `--check-crowd-min <px>` | Minimum acceptable edge gap between adjacent panels. Default `6`. Negative separation (overlap) always flags. |
+| `--check-crowd <selector>` | Flag adjacent card panels (a full border, a modest corner radius, or a box-shadow) that touch or nearly touch. Wrappers that contain panels count as peers too; separation uses the nearest face panels inside them. Walks the whole subtree, so one selector catches nested cases. Repeatable. |
+| `--check-crowd-min <px>` | Minimum acceptable edge gap between adjacent panel faces. Default `6`. Negative separation (overlap) always flags. |
 | `--check-crowd-fail` | Exit 2 when a crowd target fails or is missing. |
 | `--no-check-crowd-annotate` | Skip crowd annotations. |
 | `--check-hit [selector]` | Check interactive target size and spacing in the document or optional scope. Repeatable. |
@@ -122,14 +122,18 @@ paint-order and sticky-layer obstruction remain `--check-visible` concerns.
 
 Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
 flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd
-targets exactly that — distinct panels with no breathing room. It only counts
-card-like panels (a full border, a modest corner radius, or a box-shadow), so it
-does not fire on things that are flush by design: table cells, list and
-definition rows, and divided segments carry no card boundary of their own and are
-skipped, as are pills, chips, and badges (corner radius at least half their
-shorter side). Per-pair results carry the two panels, the edge `separationPx`,
-the `axis` (`x` side-by-side, `y` stacked, `overlap` intersecting), and the shared
-`parentLabel`.
+targets exactly that — distinct panels with no breathing room. Peers are
+card-like panels (a full border, a modest corner radius, or a box-shadow) **or
+wrappers that contain at least one panel**. Separation is measured between the
+nearest face panels inside each peer, not the wrapper boxes, so a tall section
+with a card near the top and prose below does not false-fail against the next
+sibling, while a card-grid flush against the next card still fails. Plain blocks
+with no panel chrome stay out of the peer list. Table cells, list and definition
+rows, and divided segments carry no card boundary of their own and are skipped,
+as are pills, chips, and badges (corner radius at least half their shorter side).
+Per-pair results carry the two face panels, `beforeKind` / `afterKind`
+(`panel` or `composite`), the edge `separationPx`, the `axis` (`x` side-by-side,
+`y` stacked, `overlap` intersecting), and the shared `parentLabel`.
 
 All requested checks run before one screenshot is captured. Fail gates are
 evaluated only after JSON and screenshot evidence is complete. Missing selectors

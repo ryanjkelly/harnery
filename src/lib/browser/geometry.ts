@@ -125,6 +125,13 @@ export interface CrowdPair {
   minGapPx: number;
   /** DOM label of the shared parent, so the fix location is obvious. */
   parentLabel: string;
+  /**
+   * Whether each consecutive sibling peer was a leaf panel or a wrapper that
+   * contains panels. `before`/`after` always measure the nearest face panels
+   * (a descendant when the peer is composite).
+   */
+  beforeKind: "panel" | "composite";
+  afterKind: "panel" | "composite";
 }
 
 export interface CrowdResult {
@@ -661,13 +668,23 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     // (needs a 2D intersection) and `gap` (flags uneven spacing, so a
     // uniformly-flush stack passes) both miss.
     //
+    // Crowd peers are also *composites*: in-flow siblings that are not panels
+    // themselves but contain at least one panel descendant (a card grid, a
+    // flow of cards, etc.). Comparing only leaf panels missed the common case
+    // where a wrapper-of-cards sits flush against the next card. Separation is
+    // measured between the nearest face panels inside each peer, not the
+    // wrapper boxes, so a tall section with a card near the top and prose
+    // below does not false-fail against the next sibling.
+    //
     // Deliberately NOT flagged: structural elements that are flush BY DESIGN —
     // table cells, list/definition rows, and divided segments (a bg-only cell
     // in a `gap:1px` strip). Those have no card boundary of their own, so the
     // test below excludes them without a special-case allowlist. Pills, chips,
     // and badges (radius ≥ half their smaller side) are inline controls, not
-    // layout cards, and are excluded too.
+    // layout cards, and are excluded too. Plain blocks with no panel chrome
+    // and no panel descendants stay out of the peer list.
     const PARENT_LIMIT = 2000;
+    const PANEL_DESCENDANT_LIMIT = 100;
     const OVERLAP_EPS = 1;
     const STRUCTURAL_TAGS = new Set([
       "TD",
@@ -718,22 +735,55 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       return radius >= 3 && radius < minDim / 2 - 1;
     };
 
-    // In-flow, visible, non-zero-area direct children of one parent, in DOM
-    // order, tagged with panel-ness. Mirrors collectChildren's flow filtering.
-    const collectPanelChildren = (
+    const isInFlowBox = (element: Element): boolean => {
+      if (isHidden(element)) return false;
+      const style = getComputedStyle(element);
+      if (style.position === "absolute" || style.position === "fixed") return false;
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    /** Leaf panel faces that represent a crowd peer (self, or descendants). */
+    const collectPanelFaces = (
+      element: Element,
+      selfIsPanel: boolean,
+    ): LayoutElementMeasurement[] => {
+      if (selfIsPanel) return [measure(element, 0, false)];
+      const faces: LayoutElementMeasurement[] = [];
+      const descendants = element.querySelectorAll("*");
+      for (let i = 0; i < descendants.length && faces.length < PANEL_DESCENDANT_LIMIT; i++) {
+        const child = descendants[i];
+        if (!child || !isInFlowBox(child) || !isPanel(child)) continue;
+        faces.push(measure(child, faces.length, false));
+      }
+      return faces;
+    };
+
+    // In-flow, visible, non-zero-area direct children that are crowd peers:
+    // leaf panels, or composites that wrap at least one panel. Non-peer
+    // siblings (plain prose, arrows, spacers) drop out of the list so two
+    // panels separated only by chrome still get a face-to-face check.
+    const collectCrowdPeers = (
       parent: Element,
-    ): Array<{ measurement: LayoutElementMeasurement; panel: boolean }> => {
-      const out: Array<{ measurement: LayoutElementMeasurement; panel: boolean }> = [];
+    ): Array<{
+      kind: "panel" | "composite";
+      faces: LayoutElementMeasurement[];
+    }> => {
+      const out: Array<{
+        kind: "panel" | "composite";
+        faces: LayoutElementMeasurement[];
+      }> = [];
       const children = [...parent.children];
       for (let index = 0; index < children.length && index < CHILD_LIMIT; index++) {
         const element = children[index];
-        if (!element) continue;
-        if (isHidden(element)) continue;
-        const style = getComputedStyle(element);
-        if (style.position === "absolute" || style.position === "fixed") continue;
-        const rect = element.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) continue;
-        out.push({ measurement: measure(element, index, false), panel: isPanel(element) });
+        if (!element || !isInFlowBox(element)) continue;
+        const selfIsPanel = isPanel(element);
+        const faces = collectPanelFaces(element, selfIsPanel);
+        if (faces.length === 0) continue;
+        out.push({
+          kind: selfIsPanel ? "panel" : "composite",
+          faces,
+        });
       }
       return out;
     };
@@ -763,6 +813,34 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       return { axis: "none", sep: Math.max(vGap, hGap) };
     };
 
+    /** Tightest edge-adjacent face pair across two peers' panel faces. */
+    const nearestCrowdPair = (
+      beforeFaces: LayoutElementMeasurement[],
+      afterFaces: LayoutElementMeasurement[],
+    ): {
+      before: LayoutElementMeasurement;
+      after: LayoutElementMeasurement;
+      axis: "x" | "y" | "overlap";
+      sep: number;
+    } | null => {
+      let best: {
+        before: LayoutElementMeasurement;
+        after: LayoutElementMeasurement;
+        axis: "x" | "y" | "overlap";
+        sep: number;
+      } | null = null;
+      for (const before of beforeFaces) {
+        for (const after of afterFaces) {
+          const { axis, sep } = separationOf(before, after);
+          if (axis === "none") continue;
+          if (best === null || sep < best.sep) {
+            best = { before, after, axis, sep };
+          }
+        }
+      }
+      return best;
+    };
+
     const crowd = request.crowd.map(({ selector, minGapPx }): CrowdResult => {
       const container = document.querySelector(selector);
       if (!(container instanceof Element)) {
@@ -782,21 +860,22 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       const limit = Math.min(parents.length, PARENT_LIMIT);
       for (let p = 0; p < limit; p++) {
         const parent = parents[p]!;
-        const kids = collectPanelChildren(parent);
-        for (let i = 1; i < kids.length; i++) {
-          const before = kids[i - 1]!;
-          const after = kids[i]!;
-          if (!before.panel || !after.panel) continue;
-          const { axis, sep } = separationOf(before.measurement, after.measurement);
-          if (axis === "none") continue;
-          if (sep < minGapPx) {
+        const peers = collectCrowdPeers(parent);
+        for (let i = 1; i < peers.length; i++) {
+          const beforePeer = peers[i - 1]!;
+          const afterPeer = peers[i]!;
+          const best = nearestCrowdPair(beforePeer.faces, afterPeer.faces);
+          if (!best) continue;
+          if (best.sep < minGapPx) {
             issues.push({
-              before: before.measurement,
-              after: after.measurement,
-              separationPx: sep,
-              axis,
+              before: best.before,
+              after: best.after,
+              separationPx: best.sep,
+              axis: best.axis,
               minGapPx,
               parentLabel: labelOf(parent),
+              beforeKind: beforePeer.kind,
+              afterKind: afterPeer.kind,
             });
             if (issues.length >= ISSUE_LIMIT) {
               truncated = true;

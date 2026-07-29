@@ -397,18 +397,19 @@ export function registerBrowseCommand(
     .option("--no-check-overlap-annotate", "Skip overlap screenshot annotations.")
     .option(
       "--check-crowd <selector>",
-      "Flag adjacent panel siblings (blocks with a border, box-shadow, or a " +
-        "background distinct from their parent) that touch or nearly touch. " +
-        "Walks the whole subtree under the selector, so one --check-crowd .wrap " +
-        "catches nested cases. Fills the gap between --check-overlap (needs a 2D " +
-        "intersection) and --check-gap (flags uneven spacing, so a uniformly-flush " +
-        "stack passes). Repeatable.",
+      "Flag adjacent card panels (full border, modest corner radius, or box-shadow) " +
+        "that touch or nearly touch. Also treats wrappers that contain panels as " +
+        "peers, measuring the nearest face panels inside them so a card-grid " +
+        "flush against the next card is caught. Walks the whole subtree under the " +
+        "selector, so one --check-crowd .wrap catches nested cases. Fills the gap " +
+        "between --check-overlap (needs a 2D intersection) and --check-gap (flags " +
+        "uneven spacing, so a uniformly-flush stack passes). Repeatable.",
       (value: string, previous: string[] = []) => [...previous, value],
       [] as string[],
     )
     .option(
       "--check-crowd-min <px>",
-      "Minimum acceptable edge gap between adjacent panels in CSS px (default 6). " +
+      "Minimum acceptable edge gap between adjacent panel faces in CSS px (default 6). " +
         "Pairs closer than this are flagged; negative separation (overlap) always flags.",
       "6",
     )
