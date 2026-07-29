@@ -7,6 +7,20 @@ export {
   type NavigateResult,
   type PageErrorEvent,
 } from "./client.js";
+export type {
+  CheckRect,
+  ContentAnnotationBox,
+  ContentChecksRequest,
+  ContentChecksResult,
+  ContrastHit,
+  ContrastResult,
+  ImageHealthResult,
+  ImageHit,
+  PlaceholderHit,
+  PlaceholderResult,
+  TruncationHit,
+  TruncationResult,
+} from "./content-checks.js";
 export {
   captureDevOverlay,
   type DevOverlayError,

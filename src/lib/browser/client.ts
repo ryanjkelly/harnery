@@ -12,6 +12,14 @@ import {
 } from "playwright";
 import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
 import {
+  buildClearContentAnnotationsScript,
+  buildContentAnnotateScript,
+  buildContentChecks,
+  type ContentAnnotationBox,
+  type ContentChecksRequest,
+  type ContentChecksResult,
+} from "./content-checks.js";
+import {
   buildClearLayoutLintAnnotationsScript,
   buildLayoutLintAnnotateScript,
   buildLayoutLintCheck,
@@ -598,6 +606,21 @@ export class Browser {
   /** Remove rendered-geometry annotations. */
   async clearLayoutLintAnnotations(): Promise<void> {
     await this.currentPage.evaluate(buildClearLayoutLintAnnotationsScript());
+  }
+
+  /** Run the requested content checks (placeholder/image/truncation/contrast) in one evaluation. */
+  async checkContent(request: ContentChecksRequest): Promise<ContentChecksResult> {
+    return await this.currentPage.evaluate(buildContentChecks(), request);
+  }
+
+  /** Draw one document-space annotation layer for content-check hits. */
+  async annotateContent(boxes: ContentAnnotationBox[]): Promise<void> {
+    await this.currentPage.evaluate(buildContentAnnotateScript(), { boxes });
+  }
+
+  /** Remove content-check annotations. */
+  async clearContentAnnotations(): Promise<void> {
+    await this.currentPage.evaluate(buildClearContentAnnotationsScript());
   }
 
   /**

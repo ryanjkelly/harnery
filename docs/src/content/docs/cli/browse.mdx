@@ -137,6 +137,35 @@ always fail their enabled gate. Target-size `unknown` also fails closed; other
 layout `unknown` results stay visible without making common curved containers or
 two-item groups unusable.
 
+### Content checks
+
+These cover failures a human catches at a glance even when the geometry is
+perfect: leaked template tokens, broken images, clipped text, unreadable
+contrast. Each takes an optional selector (default: the whole body).
+
+| Flag | Description |
+| --- | --- |
+| `--check-placeholder [selector]` | Flag unrendered tells in the visible text: `{{x}}` and JS template tokens, `[object Object]`, `Invalid Date`, `NaN`, or an element whose whole text is literally "undefined" / "null". |
+| `--check-placeholder-fail` | Exit 2 if any placeholder tell is found. |
+| `--check-images [selector]` | Audit `<img>` for a failed load (naturalWidth 0), a still-loading image, or a stretched one (rendered aspect far from intrinsic, uncorrected by object-fit). |
+| `--check-images-tolerance <ratio>` | Aspect-ratio deviation above which an image counts as stretched. Default `0.1`. |
+| `--check-images-fail` | Exit 2 if any image failed to load or is stretched. |
+| `--check-truncation [selector]` | Flag text actively cut off by an ellipsis or `-webkit-line-clamp`. Stays quiet on plain `overflow: hidden`. |
+| `--check-truncation-tolerance <px>` | Overflow past the clip box, in px, above which truncation counts. Default `2`. |
+| `--check-truncation-fail` | Exit 2 if any text is actively truncated. |
+| `--check-contrast [selector]` | Flag rendered text below the WCAG AA ratio (4.5:1 normal, 3:1 large) against its effective background. |
+| `--check-contrast-fail` | Exit 2 if any text fails the contrast ratio. |
+| `--no-check-<name>-annotate` | Skip that check's screenshot annotations (JSON still emitted). |
+
+Placeholder is prose-safe: bare "undefined" / "null" only flag when they are an
+element's whole text, not the word inside a sentence. Do not point it at a page
+that documents template syntax. Contrast resolves the effective background by
+walking ancestors to the first opaque color; text over an image or gradient is
+`unknown`, not failed, and the check reads whatever theme the page is in, so
+toggle the theme with `--batch` to cover light and dark. Truncation is
+deliberately narrow — an active ellipsis or line-clamp only — so a decorative
+`overflow: hidden` does not read as a bug.
+
 ### Visual regression
 
 | Flag | Description |

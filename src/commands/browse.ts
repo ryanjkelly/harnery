@@ -6,6 +6,8 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   Browser,
+  type ContentAnnotationBox,
+  type ContentChecksResult,
   captureDevOverlay,
   type DevOverlayResult,
   type Diagnostics,
@@ -125,6 +127,21 @@ interface BrowseOpts {
   checkCrowdMin?: string;
   checkCrowdFail?: boolean;
   checkCrowdAnnotate?: boolean;
+  // Content checks (optional selector scope; true = whole body)
+  checkPlaceholder?: boolean | string;
+  checkPlaceholderFail?: boolean;
+  checkPlaceholderAnnotate?: boolean;
+  checkImages?: boolean | string;
+  checkImagesTolerance?: string;
+  checkImagesFail?: boolean;
+  checkImagesAnnotate?: boolean;
+  checkTruncation?: boolean | string;
+  checkTruncationTolerance?: string;
+  checkTruncationFail?: boolean;
+  checkTruncationAnnotate?: boolean;
+  checkContrast?: boolean | string;
+  checkContrastFail?: boolean;
+  checkContrastAnnotate?: boolean;
   // Optional selector; null means the full document. Repeatable.
   checkHit?: Array<string | null>;
   checkHitProfile?: string;
@@ -381,6 +398,53 @@ export function registerBrowseCommand(
     .option("--check-crowd-fail", "Exit 2 when a crowd target fails or is missing.")
     .option("--no-check-crowd-annotate", "Skip crowd screenshot annotations.")
     .option(
+      "--check-placeholder [selector]",
+      "Scan rendered text for unrendered template tokens and bound-value tells: " +
+        "JS template literals, `{{x}}` handlebars, `[object Object]`, `Invalid Date`, " +
+        "`NaN`, or an element whose whole text is literally 'undefined' / 'null'. Optional selector " +
+        "scopes the sweep (default: whole body). Catches the most common generation " +
+        "bug on funnels and reports. Do not point it at a page that documents template " +
+        "syntax in prose.",
+    )
+    .option("--check-placeholder-fail", "Exit 2 if any placeholder tell is found.")
+    .option("--no-check-placeholder-annotate", "Skip placeholder screenshot annotations.")
+    .option(
+      "--check-images [selector]",
+      "Audit <img> elements for load + aspect health: a failed load (naturalWidth 0), " +
+        "a still-loading image, or a stretched image (rendered aspect ratio far from the " +
+        "intrinsic one, with an object-fit that does not correct it). Optional selector " +
+        "scopes the sweep (default: whole body).",
+    )
+    .option(
+      "--check-images-tolerance <ratio>",
+      "Aspect-ratio deviation above which an image counts as stretched (0–1, default 0.1 = 10%).",
+      "0.1",
+    )
+    .option("--check-images-fail", "Exit 2 if any image failed to load or is stretched.")
+    .option("--no-check-images-annotate", "Skip image screenshot annotations.")
+    .option(
+      "--check-truncation [selector]",
+      "Flag text actively cut off by an ellipsis or -webkit-line-clamp — the author asked " +
+        "to truncate AND the content overflows. High precision: it does not flag plain " +
+        "overflow:hidden clips. Optional selector scopes the sweep (default: whole body).",
+    )
+    .option(
+      "--check-truncation-tolerance <px>",
+      "Overflow past the clip box, in CSS px, above which truncation counts (default 2).",
+      "2",
+    )
+    .option("--check-truncation-fail", "Exit 2 if any text is actively truncated.")
+    .option("--no-check-truncation-annotate", "Skip truncation screenshot annotations.")
+    .option(
+      "--check-contrast [selector]",
+      "Flag rendered text below the WCAG AA contrast ratio (4.5:1 normal, 3:1 large) against " +
+        "its effective background. Runs at whatever theme the page is in, so toggle the theme " +
+        "with --batch to cover light and dark. Text over an image or gradient is reported as " +
+        "`unknown`, not failed. Optional selector scopes the sweep (default: whole body).",
+    )
+    .option("--check-contrast-fail", "Exit 2 if any text fails the contrast ratio.")
+    .option("--no-check-contrast-annotate", "Skip contrast screenshot annotations.")
+    .option(
       "--check-hit [selector]",
       "Check pointer-target size and spacing in the document or optional scope (repeatable).",
       (value: string | boolean, previous: Array<string | null> = []) => [
@@ -581,6 +645,42 @@ async function runBrowse(
     if (opts.checkHit && opts.checkHit.length > 0) {
       hit = await browser.checkTargetSize(opts.checkHit, hitProfile);
     }
+    const hasContentChecks =
+      opts.checkPlaceholder !== undefined ||
+      opts.checkImages !== undefined ||
+      opts.checkTruncation !== undefined ||
+      opts.checkContrast !== undefined;
+    let content: ContentChecksResult | undefined;
+    if (hasContentChecks) {
+      content = await browser.checkContent({
+        placeholder:
+          opts.checkPlaceholder !== undefined
+            ? { scope: contentScope(opts.checkPlaceholder) }
+            : null,
+        image:
+          opts.checkImages !== undefined
+            ? {
+                scope: contentScope(opts.checkImages),
+                tolerance: parseNonNegativeNumber(
+                  opts.checkImagesTolerance ?? "0.1",
+                  "--check-images-tolerance",
+                ),
+              }
+            : null,
+        truncation:
+          opts.checkTruncation !== undefined
+            ? {
+                scope: contentScope(opts.checkTruncation),
+                tolerance: parseNonNegativeNumber(
+                  opts.checkTruncationTolerance ?? "2",
+                  "--check-truncation-tolerance",
+                ),
+              }
+            : null,
+        contrast:
+          opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
+      });
+    }
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
     const annotateWidth = widths && opts.checkWidthAnnotate !== false;
     const annotateOverflow = overflow && opts.checkOverflowAnnotate !== false;
@@ -617,6 +717,10 @@ async function runBrowse(
     const annotateHit = hit && opts.checkHitAnnotate !== false;
     if (annotateHit) {
       await browser.annotateTargetSize(hit!);
+    }
+    const contentBoxes = content ? collectContentBoxes(content, opts) : [];
+    if (contentBoxes.length > 0) {
+      await browser.annotateContent(contentBoxes);
     }
 
     if (opts.login) {
@@ -658,6 +762,7 @@ async function runBrowse(
         runts,
         layoutLint,
         hit,
+        content,
         devOverlay,
         batchResult,
       );
@@ -673,6 +778,7 @@ async function runBrowse(
         runts,
         layoutLint,
         hit,
+        content,
         devOverlay,
         batchResult,
       );
@@ -692,6 +798,9 @@ async function runBrowse(
     }
     if (annotateHit) {
       await browser.clearTargetSizeAnnotations();
+    }
+    if (contentBoxes.length > 0) {
+      await browser.clearContentAnnotations();
     }
 
     if (opts.checkVisibleFail && visibility) {
@@ -754,6 +863,7 @@ async function runBrowse(
     }
 
     applyLayoutLintFailGates(opts, layoutLint, hit);
+    applyContentFailGates(opts, content);
   } finally {
     await browser.close();
   }
@@ -878,6 +988,7 @@ async function runPrintMode(
   runts: RuntsResult | undefined,
   layoutLint: LayoutLintResult | undefined,
   hit: TargetSizeResult[] | undefined,
+  content: ContentChecksResult | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -910,6 +1021,7 @@ async function runPrintMode(
       result.crowd = layoutLint.crowd;
     }
     if (hit) result.hit = hit;
+    if (content) assignContent(result, content);
     if (devOverlay) result.devOverlay = devOverlay;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
@@ -942,6 +1054,7 @@ async function runTrioMode(
   runts: RuntsResult | undefined,
   layoutLint: LayoutLintResult | undefined,
   hit: TargetSizeResult[] | undefined,
+  content: ContentChecksResult | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -1014,6 +1127,7 @@ async function runTrioMode(
     envelope.crowd = layoutLint.crowd;
   }
   if (hit) envelope.hit = hit;
+  if (content) assignContent(envelope, content);
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
@@ -1130,6 +1244,9 @@ async function runTrioMode(
       return `  [${result.outcome.toUpperCase()}] ${result.selector ?? "document"}: ${failed} failed, ${unknown} unknown, ${result.nodes.length} evaluated (${result.minSizePx}px)`;
     });
     emit.log(`check-hit:\n${lines.join("\n")}`, "info");
+  }
+  if (content) {
+    logContentSummary(content);
   }
 
   if (savedBaseline) {
@@ -1269,6 +1386,123 @@ function applyLayoutLintFailGates(
     }
     if (failed.length > 0) process.exitCode = 2;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Content checks (placeholder / image / truncation / contrast)
+// ---------------------------------------------------------------------------
+
+const CONTENT_COLORS = {
+  placeholder: "#dc2626",
+  image: "#f97316",
+  truncation: "#a855f7",
+  contrast: "#0891b2",
+} as const;
+
+// Optional-selector flags resolve to a scope: a string selector, or null for
+// the whole body when the flag was passed bare.
+function contentScope(value: boolean | string): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function assignContent(target: Record<string, unknown>, content: ContentChecksResult): void {
+  if (content.placeholder) target.placeholder = content.placeholder;
+  if (content.image) target.image = content.image;
+  if (content.truncation) target.truncation = content.truncation;
+  if (content.contrast) target.contrast = content.contrast;
+}
+
+function collectContentBoxes(
+  content: ContentChecksResult,
+  opts: BrowseOpts,
+): ContentAnnotationBox[] {
+  const boxes: ContentAnnotationBox[] = [];
+  if (content.placeholder && opts.checkPlaceholderAnnotate !== false) {
+    for (const hit of content.placeholder.hits) {
+      boxes.push({
+        rect: hit.rect,
+        label: `placeholder ${hit.token}`,
+        color: CONTENT_COLORS.placeholder,
+      });
+    }
+  }
+  if (content.image && opts.checkImagesAnnotate !== false) {
+    for (const issue of content.image.issues) {
+      boxes.push({ rect: issue.rect, label: `image ${issue.reason}`, color: CONTENT_COLORS.image });
+    }
+  }
+  if (content.truncation && opts.checkTruncationAnnotate !== false) {
+    for (const hit of content.truncation.hits) {
+      boxes.push({
+        rect: hit.rect,
+        label: `truncated ${hit.how}`,
+        color: CONTENT_COLORS.truncation,
+      });
+    }
+  }
+  if (content.contrast && opts.checkContrastAnnotate !== false) {
+    for (const hit of content.contrast.hits) {
+      if (hit.outcome !== "fail") continue;
+      boxes.push({
+        rect: hit.rect,
+        label: `contrast ${hit.ratio}:1 < ${hit.required}`,
+        color: CONTENT_COLORS.contrast,
+      });
+    }
+  }
+  return boxes;
+}
+
+function logContentSummary(content: ContentChecksResult): void {
+  const lines: string[] = [];
+  if (content.placeholder) {
+    const c = content.placeholder;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] placeholder: ${c.hits.length} tell(s) in ${c.scanned} node(s)`,
+    );
+  }
+  if (content.image) {
+    const c = content.image;
+    const missing = c.issues.filter((i) => i.reason === "missing").length;
+    const stretched = c.issues.filter((i) => i.reason === "stretched").length;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] image: ${missing} missing, ${stretched} stretched of ${c.scanned}`,
+    );
+  }
+  if (content.truncation) {
+    const c = content.truncation;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] truncation: ${c.hits.length} clipped of ${c.scanned}`,
+    );
+  }
+  if (content.contrast) {
+    const c = content.contrast;
+    const fails = c.hits.filter((h) => h.outcome === "fail").length;
+    const unknown = c.hits.filter((h) => h.outcome === "unknown").length;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] contrast: ${fails} fail, ${unknown} unknown of ${c.scanned}`,
+    );
+  }
+  if (lines.length > 0) emit.log(`content-checks:\n${lines.join("\n")}`, "info");
+}
+
+function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | undefined): void {
+  if (!content) return;
+  const gate = (
+    enabled: boolean | undefined,
+    rule: string,
+    result: { found: boolean; outcome: string } | undefined,
+  ): void => {
+    if (!enabled || !result) return;
+    if (!result.found || result.outcome === "fail") {
+      emit.log(`check-${rule} FAIL: ${result.found ? "issues found" : "scope not found"}`, "warn");
+      process.exitCode = 2;
+    }
+  };
+  gate(opts.checkPlaceholderFail, "placeholder", content.placeholder);
+  gate(opts.checkImagesFail, "images", content.image);
+  gate(opts.checkTruncationFail, "truncation", content.truncation);
+  gate(opts.checkContrastFail, "contrast", content.contrast);
 }
 
 function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
