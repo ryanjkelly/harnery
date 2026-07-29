@@ -37,6 +37,7 @@ export {
   DEFAULT_CRITIQUE_RUBRIC,
   normalizeFindings,
   runCritique,
+  tilesFromFullPage,
 } from "./critique.js";
 export {
   captureDevOverlay,

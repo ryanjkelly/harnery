@@ -17,6 +17,8 @@
 //      false pass. That keeps this portable — the tiling, prompt, and
 //      orchestration live here; the model call lives in the host.
 
+import { PNG } from "pngjs";
+
 export interface CritiqueTile {
   index: number;
   /** Section label or "band N", for locating a finding. */
@@ -96,6 +98,62 @@ export function bandRects(
     if (y + height >= pageHeight) break;
   }
   return bands;
+}
+
+/**
+ * Cut tiles out of ONE full-page screenshot with pngjs. Playwright's own
+ * `clip` is viewport-relative, so a band below the fold errors with "clipped
+ * area outside the resulting image" — capturing the whole page once and
+ * cropping in pixel space sidesteps that and keeps every tile at full
+ * resolution. Pass `elementRects` for semantic (per-element) tiling; otherwise
+ * the page is banded from the actual image height. Rects are clamped to the
+ * image so an off-by-one never throws.
+ */
+export function tilesFromFullPage(
+  fullPageBuffer: Buffer,
+  opts: {
+    elementRects?: Array<{ label: string; x: number; y: number; width: number; height: number }>;
+    bandHeight?: number;
+    overlap?: number;
+    maxTiles: number;
+  },
+): CritiqueTile[] {
+  const png = PNG.sync.read(fullPageBuffer);
+  const rects =
+    opts.elementRects && opts.elementRects.length > 0
+      ? opts.elementRects.map((r, index) => ({ index, ...r }))
+      : bandRects(png.height, png.width, opts.bandHeight ?? 1400, opts.overlap ?? 120).map((b) => ({
+          index: b.index,
+          label: `band ${b.index + 1}`,
+          x: b.x,
+          y: b.y,
+          width: b.width,
+          height: b.height,
+        }));
+  const tiles: CritiqueTile[] = [];
+  for (const rect of rects.slice(0, opts.maxTiles)) {
+    const sx = Math.max(0, Math.min(Math.round(rect.x), png.width - 1));
+    const sy = Math.max(0, Math.min(Math.round(rect.y), png.height - 1));
+    const w = Math.max(1, Math.min(Math.round(rect.width), png.width - sx));
+    const h = Math.max(1, Math.min(Math.round(rect.height), png.height - sy));
+    const dst = new PNG({ width: w, height: h });
+    // Manual RGBA row copy — pngjs's bitblt isn't available under every runtime
+    // (missing under Bun's build), so copy the crop window row by row instead.
+    for (let row = 0; row < h; row++) {
+      const srcStart = ((sy + row) * png.width + sx) * 4;
+      const dstStart = row * w * 4;
+      png.data.copy(dst.data, dstStart, srcStart, srcStart + w * 4);
+    }
+    tiles.push({
+      index: rect.index,
+      label: rect.label,
+      scrollY: sy,
+      width: w,
+      height: h,
+      pngBase64: PNG.sync.write(dst).toString("base64"),
+    });
+  }
+  return tiles;
 }
 
 /**

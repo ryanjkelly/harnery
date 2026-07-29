@@ -4,12 +4,21 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Browser } from "../../src/lib/browser/client.ts";
+import { PNG } from "pngjs";
 import {
   bandRects,
   type CritiqueProvider,
   normalizeFindings,
   runCritique,
+  tilesFromFullPage,
 } from "../../src/lib/browser/critique.ts";
+
+/** A solid-color full-page PNG buffer for crop tests. */
+function fakePagePng(width: number, height: number): Buffer {
+  const png = new PNG({ width, height });
+  png.data.fill(200); // opaque gray
+  return PNG.sync.write(png);
+}
 
 const fixtureUrl = pathToFileURL(
   resolve(import.meta.dir, "../fixtures/content-checks/index.html"),
@@ -38,6 +47,35 @@ describe("critique tiling + orchestration", () => {
     for (let i = 1; i < bands.length; i++) {
       expect(bands[i]!.y).toBeLessThan(bands[i - 1]!.y + bands[i - 1]!.height);
     }
+  });
+
+  test("tilesFromFullPage bands a tall page from the image (below-fold safe)", () => {
+    // A 3000px-tall page far exceeds any viewport — the old viewport-relative
+    // clip threw here; cropping from the full-page buffer must not.
+    const buf = fakePagePng(400, 3000);
+    const tiles = tilesFromFullPage(buf, { bandHeight: 1400, overlap: 120, maxTiles: 24 });
+    expect(tiles.length).toBeGreaterThan(1);
+    expect(tiles[0]?.scrollY).toBe(0);
+    // Tiles advance down the page and each crop decodes to its declared size.
+    for (let i = 1; i < tiles.length; i++) {
+      expect(tiles[i]!.scrollY).toBeGreaterThan(tiles[i - 1]!.scrollY);
+    }
+    const decoded = PNG.sync.read(Buffer.from(tiles[0]!.pngBase64, "base64"));
+    expect(decoded.width).toBe(400);
+    expect(decoded.height).toBe(tiles[0]!.height);
+  });
+
+  test("tilesFromFullPage honors elementRects + maxTiles cap", () => {
+    const buf = fakePagePng(400, 3000);
+    const rects = [
+      { label: "div.a", x: 0, y: 10, width: 400, height: 100 },
+      { label: "div.b", x: 0, y: 2500, width: 400, height: 100 }, // below fold
+      { label: "div.c", x: 0, y: 2800, width: 400, height: 100 },
+    ];
+    const tiles = tilesFromFullPage(buf, { elementRects: rects, maxTiles: 2 });
+    expect(tiles).toHaveLength(2); // capped
+    expect(tiles[0]?.label).toBe("div.a");
+    expect(tiles[1]?.scrollY).toBe(2500); // below-fold element cropped fine
   });
 
   test("normalizeFindings tolerates array, wrapper, and junk", () => {

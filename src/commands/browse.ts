@@ -7,7 +7,6 @@ import { resolveBinName } from "../core/config.ts";
 import {
   type AssertResult,
   Browser,
-  bandRects,
   type ContentAnnotationBox,
   type ContentChecksResult,
   type CritiqueResult,
@@ -24,6 +23,7 @@ import {
   runCritique,
   type TargetSizeProfile,
   type TargetSizeResult,
+  tilesFromFullPage,
   type VisibilityResult,
   type WidthResult,
   wslHeadedLaunchArgs,
@@ -1618,70 +1618,33 @@ function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | 
 
 async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise<CritiqueTile[]> {
   const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
-  const tiles: CritiqueTile[] = [];
-  const metrics = await browser.pageMetrics();
-  const width = Math.max(1, Math.round(metrics.scrollWidth));
-
-  if (typeof opts.checkCritique === "string") {
-    // Semantic tiling: one screenshot per matching element.
-    const rects = await browser.elementTiles(opts.checkCritique);
-    for (let i = 0; i < rects.length && i < maxTiles; i++) {
-      const r = rects[i]!;
-      const clip = {
-        x: Math.max(0, Math.round(r.x)),
-        y: Math.max(0, Math.round(r.y)),
-        width: Math.max(1, Math.round(r.width)),
-        height: Math.max(1, Math.round(r.height)),
-      };
-      const pngBase64 = await browser.screenshotClipBase64(clip);
-      tiles.push({
-        index: i,
-        label: r.label,
-        scrollY: clip.y,
-        width: clip.width,
-        height: clip.height,
-        pngBase64,
-      });
-    }
-    if (rects.length > maxTiles) {
-      emit.log(
-        `check-critique: ${rects.length} elements matched, capped to ${maxTiles} tiles`,
-        "warn",
-      );
-    }
-    return tiles;
-  }
-
-  // Default: overlapping vertical bands over the full page height.
   const band = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
   const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));
-  const bands = bandRects(Math.round(metrics.scrollHeight), width, band, overlap);
-  for (let i = 0; i < bands.length && i < maxTiles; i++) {
-    const b = bands[i]!;
-    const pngBase64 = await browser.screenshotClipBase64({
-      x: b.x,
-      y: b.y,
-      width: b.width,
-      height: b.height,
-    });
-    tiles.push({
-      index: b.index,
-      label: `band ${b.index + 1}`,
-      scrollY: b.y,
-      width: b.width,
-      height: b.height,
-      pngBase64,
-    });
-  }
-  if (bands.length > maxTiles) {
+
+  // Capture the whole page ONCE, then crop tiles from the pixels. Playwright's
+  // clip is viewport-relative, so a below-fold band clip throws ("clipped area
+  // outside the resulting image") — cropping the full-page image sidesteps that
+  // and keeps every tile at full resolution.
+  const buffer = await browser.fullPageScreenshotBuffer();
+  const elementRects =
+    typeof opts.checkCritique === "string"
+      ? await browser.elementTiles(opts.checkCritique)
+      : undefined;
+  const tiles = tilesFromFullPage(buffer, { elementRects, bandHeight: band, overlap, maxTiles });
+
+  if (elementRects && elementRects.length > maxTiles) {
     emit.log(
-      `check-critique: page needs ${bands.length} bands, capped to ${maxTiles} (raise --check-critique-max-tiles)`,
+      `check-critique: ${elementRects.length} elements matched, capped to ${maxTiles} tiles`,
+      "warn",
+    );
+  } else if (!elementRects && tiles.length >= maxTiles) {
+    emit.log(
+      `check-critique: page banded to the ${maxTiles}-tile cap (raise --check-critique-max-tiles for full coverage)`,
       "warn",
     );
   }
   return tiles;
 }
-
 function logCritiqueSummary(critique: CritiqueResult): void {
   if (critique.outcome === "skipped") {
     emit.log(`check-critique: SKIPPED (${critique.error ?? "no provider"})`, "warn");

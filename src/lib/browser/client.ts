@@ -409,6 +409,11 @@ export class Browser {
     }));
   }
 
+  /** Full-page PNG as a Buffer, for cropping critique tiles in pixel space. */
+  async fullPageScreenshotBuffer(): Promise<Buffer> {
+    return await this.currentPage.screenshot({ type: "png", fullPage: true });
+  }
+
   /** Base64 PNG of a document-space clip rect. Used to capture one critique tile. */
   async screenshotClipBase64(rect: {
     x: number;
