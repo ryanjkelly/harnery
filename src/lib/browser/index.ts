@@ -22,6 +22,16 @@ export type {
   TruncationResult,
 } from "./content-checks.js";
 export {
+  bandRects,
+  type CritiqueFinding,
+  type CritiqueProvider,
+  type CritiqueResult,
+  type CritiqueTile,
+  DEFAULT_CRITIQUE_RUBRIC,
+  normalizeFindings,
+  runCritique,
+} from "./critique.js";
+export {
   captureDevOverlay,
   type DevOverlayError,
   type DevOverlayResult,

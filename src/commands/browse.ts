@@ -6,15 +6,20 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   Browser,
+  bandRects,
   type ContentAnnotationBox,
   type ContentChecksResult,
+  type CritiqueResult,
+  type CritiqueTile,
   captureDevOverlay,
+  DEFAULT_CRITIQUE_RUBRIC,
   type DevOverlayResult,
   type Diagnostics,
   type LayoutAxis,
   type LayoutLintResult,
   type OverflowResult,
   type RuntsResult,
+  runCritique,
   type TargetSizeProfile,
   type TargetSizeResult,
   type VisibilityResult,
@@ -142,6 +147,13 @@ interface BrowseOpts {
   checkContrast?: boolean | string;
   checkContrastFail?: boolean;
   checkContrastAnnotate?: boolean;
+  // Vision-model critique (optional selector = semantic per-element tiling)
+  checkCritique?: boolean | string;
+  checkCritiqueBand?: string;
+  checkCritiqueOverlap?: string;
+  checkCritiqueMaxTiles?: string;
+  checkCritiqueRubric?: string;
+  checkCritiqueFail?: boolean;
   // Optional selector; null means the full document. Repeatable.
   checkHit?: Array<string | null>;
   checkHitProfile?: string;
@@ -445,6 +457,28 @@ export function registerBrowseCommand(
     .option("--check-contrast-fail", "Exit 2 if any text fails the contrast ratio.")
     .option("--no-check-contrast-annotate", "Skip contrast screenshot annotations.")
     .option(
+      "--check-critique [selector]",
+      "Hand the rendered page to a vision model for a visual-defect review, tile by " +
+        "tile. Catches the long tail heuristic checks can't enumerate. Default tiling " +
+        "cuts the page into overlapping vertical bands; pass a selector to tile one " +
+        "screenshot per matching element (semantic tiling). Requires the host to inject " +
+        "a critiqueProvider (harnery ships no model client) — without one the check " +
+        "reports `skipped`. Findings land under `critique` in the JSON envelope.",
+    )
+    .option("--check-critique-band <px>", "Band height for default tiling (default 1400).", "1400")
+    .option(
+      "--check-critique-overlap <px>",
+      "Vertical overlap between bands so a finding at a seam stays visible (default 120).",
+      "120",
+    )
+    .option(
+      "--check-critique-max-tiles <n>",
+      "Cap on tiles sent to the model, to bound cost (default 24).",
+      "24",
+    )
+    .option("--check-critique-rubric <text>", "Override the default critique rubric.")
+    .option("--check-critique-fail", "Exit 2 if the critique returns any high-severity finding.")
+    .option(
       "--check-hit [selector]",
       "Check pointer-target size and spacing in the document or optional scope (repeatable).",
       (value: string | boolean, previous: Array<string | null> = []) => [
@@ -681,6 +715,18 @@ async function runBrowse(
           opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
       });
     }
+    // Vision critique. Capture tiles BEFORE any annotation overlays are injected
+    // so the model sees the real page, not our boxes.
+    let critique: CritiqueResult | undefined;
+    if (opts.checkCritique !== undefined) {
+      const tiles = await captureCritiqueTiles(browser, opts);
+      critique = await runCritique({
+        url: navResult.url,
+        rubric: opts.checkCritiqueRubric ?? DEFAULT_CRITIQUE_RUBRIC,
+        tiles,
+        provider: context?.critiqueProvider,
+      });
+    }
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
     const annotateWidth = widths && opts.checkWidthAnnotate !== false;
     const annotateOverflow = overflow && opts.checkOverflowAnnotate !== false;
@@ -763,6 +809,7 @@ async function runBrowse(
         layoutLint,
         hit,
         content,
+        critique,
         devOverlay,
         batchResult,
       );
@@ -779,6 +826,7 @@ async function runBrowse(
         layoutLint,
         hit,
         content,
+        critique,
         devOverlay,
         batchResult,
       );
@@ -864,6 +912,11 @@ async function runBrowse(
 
     applyLayoutLintFailGates(opts, layoutLint, hit);
     applyContentFailGates(opts, content);
+    if (opts.checkCritiqueFail && critique && critique.outcome === "fail") {
+      const high = critique.findings.filter((f) => f.severity === "high").length;
+      emit.log(`check-critique FAIL: ${high} high-severity finding(s)`, "warn");
+      process.exitCode = 2;
+    }
   } finally {
     await browser.close();
   }
@@ -989,6 +1042,7 @@ async function runPrintMode(
   layoutLint: LayoutLintResult | undefined,
   hit: TargetSizeResult[] | undefined,
   content: ContentChecksResult | undefined,
+  critique: CritiqueResult | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -1022,6 +1076,7 @@ async function runPrintMode(
     }
     if (hit) result.hit = hit;
     if (content) assignContent(result, content);
+    if (critique) result.critique = critique;
     if (devOverlay) result.devOverlay = devOverlay;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
@@ -1055,6 +1110,7 @@ async function runTrioMode(
   layoutLint: LayoutLintResult | undefined,
   hit: TargetSizeResult[] | undefined,
   content: ContentChecksResult | undefined,
+  critique: CritiqueResult | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -1128,6 +1184,7 @@ async function runTrioMode(
   }
   if (hit) envelope.hit = hit;
   if (content) assignContent(envelope, content);
+  if (critique) envelope.critique = critique;
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
@@ -1247,6 +1304,9 @@ async function runTrioMode(
   }
   if (content) {
     logContentSummary(content);
+  }
+  if (critique) {
+    logCritiqueSummary(critique);
   }
 
   if (savedBaseline) {
@@ -1503,6 +1563,94 @@ function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | 
   gate(opts.checkImagesFail, "images", content.image);
   gate(opts.checkTruncationFail, "truncation", content.truncation);
   gate(opts.checkContrastFail, "contrast", content.contrast);
+}
+
+// ---------------------------------------------------------------------------
+// Vision critique tiling
+// ---------------------------------------------------------------------------
+
+async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise<CritiqueTile[]> {
+  const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
+  const tiles: CritiqueTile[] = [];
+  const metrics = await browser.pageMetrics();
+  const width = Math.max(1, Math.round(metrics.scrollWidth));
+
+  if (typeof opts.checkCritique === "string") {
+    // Semantic tiling: one screenshot per matching element.
+    const rects = await browser.elementTiles(opts.checkCritique);
+    for (let i = 0; i < rects.length && i < maxTiles; i++) {
+      const r = rects[i]!;
+      const clip = {
+        x: Math.max(0, Math.round(r.x)),
+        y: Math.max(0, Math.round(r.y)),
+        width: Math.max(1, Math.round(r.width)),
+        height: Math.max(1, Math.round(r.height)),
+      };
+      const pngBase64 = await browser.screenshotClipBase64(clip);
+      tiles.push({
+        index: i,
+        label: r.label,
+        scrollY: clip.y,
+        width: clip.width,
+        height: clip.height,
+        pngBase64,
+      });
+    }
+    if (rects.length > maxTiles) {
+      emit.log(
+        `check-critique: ${rects.length} elements matched, capped to ${maxTiles} tiles`,
+        "warn",
+      );
+    }
+    return tiles;
+  }
+
+  // Default: overlapping vertical bands over the full page height.
+  const band = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
+  const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));
+  const bands = bandRects(Math.round(metrics.scrollHeight), width, band, overlap);
+  for (let i = 0; i < bands.length && i < maxTiles; i++) {
+    const b = bands[i]!;
+    const pngBase64 = await browser.screenshotClipBase64({
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+    });
+    tiles.push({
+      index: b.index,
+      label: `band ${b.index + 1}`,
+      scrollY: b.y,
+      width: b.width,
+      height: b.height,
+      pngBase64,
+    });
+  }
+  if (bands.length > maxTiles) {
+    emit.log(
+      `check-critique: page needs ${bands.length} bands, capped to ${maxTiles} (raise --check-critique-max-tiles)`,
+      "warn",
+    );
+  }
+  return tiles;
+}
+
+function logCritiqueSummary(critique: CritiqueResult): void {
+  if (critique.outcome === "skipped") {
+    emit.log(`check-critique: SKIPPED (${critique.error ?? "no provider"})`, "warn");
+    return;
+  }
+  const high = critique.findings.filter((f) => f.severity === "high").length;
+  const med = critique.findings.filter((f) => f.severity === "medium").length;
+  const low = critique.findings.filter((f) => f.severity === "low").length;
+  const lines = critique.findings
+    .slice(0, 20)
+    .map((f) => `  [${f.severity}] tile ${f.tile} ${f.category}: ${f.description}`);
+  emit.log(
+    `check-critique [${critique.outcome.toUpperCase()}] ${critique.tiles} tiles → ${high} high / ${med} med / ${low} low` +
+      (lines.length ? `\n${lines.join("\n")}` : ""),
+    critique.outcome === "fail" ? "warn" : "info",
+  );
 }
 
 function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {

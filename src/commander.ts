@@ -145,6 +145,14 @@ export interface HarneryProgramContext {
    */
   extraHeaders?: (url: string) => Record<string, string>;
   /**
+   * Host-injected vision-model call for `browse --check-critique`. harnery
+   * ships no model client or API key; a consumer wires this to its own
+   * multimodal provider (OpenAI/Anthropic/etc). Given one page tile + the
+   * rubric, it returns that tile's findings. When omitted, `--check-critique`
+   * reports `skipped` rather than a false pass.
+   */
+  critiqueProvider?: import("./lib/browser/critique.ts").CritiqueProvider;
+  /**
    * Shell-completion provider-key lookup. Consumers wire this to a function
    * mapping (commandPath, option/positional) to a provider key, so that
    * `--workspace` / `--env` etc. tab-complete dynamically against

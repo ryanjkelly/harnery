@@ -303,6 +303,60 @@ export class Browser {
     return buf.length;
   }
 
+  /** Full document + viewport dimensions, for tiling a page into bands. */
+  async pageMetrics(): Promise<{
+    scrollWidth: number;
+    scrollHeight: number;
+    viewportWidth: number;
+    viewportHeight: number;
+  }> {
+    return await this.currentPage.evaluate(() => ({
+      scrollWidth: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+      scrollHeight: Math.max(
+        document.documentElement.scrollHeight,
+        document.body?.scrollHeight ?? 0,
+      ),
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    }));
+  }
+
+  /** Base64 PNG of a document-space clip rect. Used to capture one critique tile. */
+  async screenshotClipBase64(rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): Promise<string> {
+    const buf = await this.currentPage.screenshot({ type: "png", clip: rect });
+    return buf.toString("base64");
+  }
+
+  /** Document-space rects + labels for each element matching `selector` (semantic tiling). */
+  async elementTiles(
+    selector: string,
+  ): Promise<Array<{ label: string; x: number; y: number; width: number; height: number }>> {
+    return await this.currentPage.evaluate((sel) => {
+      const out: Array<{ label: string; x: number; y: number; width: number; height: number }> = [];
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+      for (const el of Array.from(document.querySelectorAll(sel))) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const tag = el.tagName.toLowerCase();
+        const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/)[0] : "";
+        out.push({
+          label: el.id ? `${tag}#${el.id}` : cls ? `${tag}.${cls}` : tag,
+          x: Math.max(0, r.x + sx),
+          y: Math.max(0, r.y + sy),
+          width: r.width,
+          height: r.height,
+        });
+      }
+      return out;
+    }, selector);
+  }
+
   /**
    * Capture a full-page screenshot from an explicit capture viewport and
    * evaluate the caller's final evidence expression immediately before the

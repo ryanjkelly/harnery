@@ -166,6 +166,30 @@ toggle the theme with `--batch` to cover light and dark. Truncation is
 deliberately narrow — an active ellipsis or line-clamp only — so a decorative
 `overflow: hidden` does not read as a bug.
 
+### Vision critique
+
+Heuristic checks only catch what you can enumerate. `--check-critique` hands the
+rendered page to a vision model for the long tail — the thing that looks off
+without tripping a named rule.
+
+| Flag | Description |
+| --- | --- |
+| `--check-critique [selector]` | Send the page to a vision model, tile by tile. Default tiling cuts overlapping vertical bands; a selector tiles one screenshot per matching element. |
+| `--check-critique-band <px>` | Band height for default tiling. Default `1400`. |
+| `--check-critique-overlap <px>` | Vertical overlap between bands so a seam finding stays visible. Default `120`. |
+| `--check-critique-max-tiles <n>` | Cap on tiles sent to the model, to bound cost. Default `24`. |
+| `--check-critique-rubric <text>` | Override the default rubric. |
+| `--check-critique-fail` | Exit 2 on any high-severity finding. |
+
+The page is tiled because a tall screenshot downscaled to a model's input budget
+loses the detail the critique depends on; each tile is captured at full
+resolution and judged on its own, and findings carry their tile and scroll
+offset for locality. harnery ships no model client, so a host injects a
+`critiqueProvider` into `HarneryProgramContext` (the `extraHeaders` pattern);
+without one the check reports `skipped`, never a false pass. A provider that
+throws becomes a high-severity finding for that tile rather than aborting the
+run.
+
 ### Visual regression
 
 | Flag | Description |
