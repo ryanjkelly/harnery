@@ -150,6 +150,38 @@ export interface Diagnostics {
 
 const DEFAULT_PROFILE = resolve(homedir(), ".cache", "harnery", "browser-profile");
 
+// Bound how many Chromium processes SPAWN at the same moment. When many Browser
+// instances open at once — a full test suite, a fan-out of browse calls — the
+// simultaneous `child_process.spawn`s exhaust the OS's stdio-pipe/socket
+// resources and Chromium launch dies with an unhandled ENOENT that a per-call
+// retry can't catch. Serializing only the brief launch phase (never the
+// browser's lifetime, so N browsers still run concurrently) removes the burst
+// that causes it. Overridable via HARNERY_MAX_BROWSER_LAUNCHES.
+const MAX_CONCURRENT_LAUNCHES = Math.max(
+  1,
+  Number.parseInt(process.env.HARNERY_MAX_BROWSER_LAUNCHES ?? "3", 10) || 3,
+);
+let activeLaunches = 0;
+const launchWaiters: Array<() => void> = [];
+
+async function acquireLaunchSlot(): Promise<void> {
+  if (activeLaunches < MAX_CONCURRENT_LAUNCHES) {
+    activeLaunches++;
+    return;
+  }
+  // Queue; the releaser transfers its slot to us (activeLaunches unchanged).
+  await new Promise<void>((resolve) => launchWaiters.push(resolve));
+}
+
+function releaseLaunchSlot(): void {
+  const next = launchWaiters.shift();
+  if (next) {
+    next();
+  } else {
+    activeLaunches = Math.max(0, activeLaunches - 1);
+  }
+}
+
 export class Browser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
@@ -170,20 +202,27 @@ export class Browser {
     return this.page;
   }
 
-  async open(): Promise<void> {
-    if (this.context) return;
-    mkdirSync(this.profileDir, { recursive: true });
-
-    this.context = await chromium.launchPersistentContext(this.profileDir, {
-      headless: !this.opts.headed,
-      viewport: this.opts.viewport ?? { width: 1280, height: 800 },
-      ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
-        ? { args: this.opts.launchArgs }
-        : {}),
-      ...(this.opts.recordHarPath
-        ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
-        : {}),
-    });
+  /**
+   * Launch the context and wire up the first page. Factored out of `open()` so
+   * the whole sequence — not just the launch — can be retried as a unit.
+   */
+  private async openOnce(): Promise<void> {
+    // Hold a launch slot only across the spawn itself, not the browser's life.
+    await acquireLaunchSlot();
+    try {
+      this.context = await chromium.launchPersistentContext(this.profileDir, {
+        headless: !this.opts.headed,
+        viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+        ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
+          ? { args: this.opts.launchArgs }
+          : {}),
+        ...(this.opts.recordHarPath
+          ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
+          : {}),
+      });
+    } finally {
+      releaseLaunchSlot();
+    }
     this.context.setDefaultNavigationTimeout(this.opts.navigationTimeout ?? 30_000);
 
     if (this.opts.jar) {
@@ -209,6 +248,54 @@ export class Browser {
     const pages = this.context.pages();
     this.page = pages[0] ?? (await this.context.newPage());
     this.attachDiagnosticListeners(this.page);
+  }
+
+  /**
+   * Open the browser, retrying a few times on a transient startup failure.
+   * Chromium occasionally fails to hand off its CDP port ("Failed to connect",
+   * "Target closed") when many instances launch at once — a busy CI box or a
+   * full test suite — and the failure can surface on the launch OR on a
+   * follow-up call (addCookies, newPage) when the process dies right after
+   * spawning. So the entire open sequence retries as a unit, tearing down any
+   * half-built context between attempts. A genuinely broken config fails every
+   * attempt and throws with the underlying message.
+   */
+  async open(): Promise<void> {
+    if (this.context) return;
+    mkdirSync(this.profileDir, { recursive: true });
+
+    const maxAttempts = 3;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.openOnce();
+        return;
+      } catch (err) {
+        lastErr = err;
+        // Tear down a partial context + reset diagnostics collected on the
+        // failed attempt, so the retry starts clean. (openOnce() reassigns
+        // this.context, which TS can't see across the call, so re-widen.)
+        const partial = this.context as BrowserContext | null;
+        if (partial) {
+          try {
+            await partial.close();
+          } catch {
+            // ignore — the process is likely already gone
+          }
+        }
+        this.context = null;
+        this.page = null;
+        this.consoleEvents = [];
+        this.pageErrors = [];
+        this.failedRequests = [];
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+        }
+      }
+    }
+    throw new Error(
+      `Failed to open browser after ${maxAttempts} attempts: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+    );
   }
 
   /**
