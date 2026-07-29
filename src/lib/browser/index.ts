@@ -1,4 +1,11 @@
 export {
+  type AssertOp,
+  type AssertResult,
+  type AssertSpec,
+  buildAssertCheck,
+  parseAssertSpec,
+} from "./asserts.js";
+export {
   Browser,
   type BrowserOptions,
   type ConsoleEvent,

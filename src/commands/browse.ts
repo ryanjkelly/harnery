@@ -5,6 +5,7 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
+  type AssertResult,
   Browser,
   bandRects,
   type ContentAnnotationBox,
@@ -18,6 +19,7 @@ import {
   type LayoutAxis,
   type LayoutLintResult,
   type OverflowResult,
+  parseAssertSpec,
   type RuntsResult,
   runCritique,
   type TargetSizeProfile,
@@ -154,6 +156,9 @@ interface BrowseOpts {
   checkCritiqueMaxTiles?: string;
   checkCritiqueRubric?: string;
   checkCritiqueFail?: boolean;
+  // Value assertions
+  assert?: string[];
+  assertFail?: boolean;
   // Optional selector; null means the full document. Repeatable.
   checkHit?: Array<string | null>;
   checkHitProfile?: string;
@@ -479,6 +484,16 @@ export function registerBrowseCommand(
     .option("--check-critique-rubric <text>", "Override the default critique rubric.")
     .option("--check-critique-fail", "Exit 2 if the critique returns any high-severity finding.")
     .option(
+      "--assert <expr>",
+      "Assert a page value (repeatable). Grammar: '<op> <selector> => <expected>', where op is " +
+        "text (trimmed text equals), contains (text includes), matches (text matches a regex), " +
+        "count (match count vs a number or >=/<=/>/< comparator), exists / absent (no => needed). " +
+        "e.g. --assert 'text h1 => Welcome' --assert 'count .card => >=3' --assert 'absent .error'.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option("--assert-fail", "Exit 2 if any --assert fails.")
+    .option(
       "--check-hit [selector]",
       "Check pointer-target size and spacing in the document or optional scope (repeatable).",
       (value: string | boolean, previous: Array<string | null> = []) => [
@@ -727,6 +742,11 @@ async function runBrowse(
         provider: context?.critiqueProvider,
       });
     }
+    let asserts: AssertResult[] | undefined;
+    if (opts.assert && opts.assert.length > 0) {
+      const specs = opts.assert.map(parseAssertSpec);
+      asserts = await browser.checkAsserts(specs);
+    }
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
     const annotateWidth = widths && opts.checkWidthAnnotate !== false;
     const annotateOverflow = overflow && opts.checkOverflowAnnotate !== false;
@@ -810,6 +830,7 @@ async function runBrowse(
         hit,
         content,
         critique,
+        asserts,
         devOverlay,
         batchResult,
       );
@@ -827,6 +848,7 @@ async function runBrowse(
         hit,
         content,
         critique,
+        asserts,
         devOverlay,
         batchResult,
       );
@@ -916,6 +938,16 @@ async function runBrowse(
       const high = critique.findings.filter((f) => f.severity === "high").length;
       emit.log(`check-critique FAIL: ${high} high-severity finding(s)`, "warn");
       process.exitCode = 2;
+    }
+    if (opts.assertFail && asserts) {
+      const failed = asserts.filter((a) => a.outcome === "fail");
+      for (const a of failed) {
+        emit.log(
+          `assert FAIL: ${a.op} ${a.selector} → "${a.actual}"${a.error ? ` (${a.error})` : ""}`,
+          "warn",
+        );
+      }
+      if (failed.length > 0) process.exitCode = 2;
     }
   } finally {
     await browser.close();
@@ -1043,6 +1075,7 @@ async function runPrintMode(
   hit: TargetSizeResult[] | undefined,
   content: ContentChecksResult | undefined,
   critique: CritiqueResult | undefined,
+  asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -1077,6 +1110,7 @@ async function runPrintMode(
     if (hit) result.hit = hit;
     if (content) assignContent(result, content);
     if (critique) result.critique = critique;
+    if (asserts) result.asserts = asserts;
     if (devOverlay) result.devOverlay = devOverlay;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
@@ -1111,6 +1145,7 @@ async function runTrioMode(
   hit: TargetSizeResult[] | undefined,
   content: ContentChecksResult | undefined,
   critique: CritiqueResult | undefined,
+  asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -1185,6 +1220,7 @@ async function runTrioMode(
   if (hit) envelope.hit = hit;
   if (content) assignContent(envelope, content);
   if (critique) envelope.critique = critique;
+  if (asserts) envelope.asserts = asserts;
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
@@ -1307,6 +1343,17 @@ async function runTrioMode(
   }
   if (critique) {
     logCritiqueSummary(critique);
+  }
+  if (asserts && asserts.length > 0) {
+    const lines = asserts.map((a) => {
+      const detail =
+        a.error ??
+        (a.op === "count" || a.op === "exists" || a.op === "absent"
+          ? `${a.selector} → ${a.actual}${a.expected ? ` (want ${a.expected})` : ""}`
+          : `${a.selector} → "${a.actual.slice(0, 60)}"${a.expected ? ` (want ${a.op} "${a.expected}")` : ""}`);
+      return `  [${a.outcome.toUpperCase()}] ${a.op} ${detail}`;
+    });
+    emit.log(`asserts:\n${lines.join("\n")}`, "info");
   }
 
   if (savedBaseline) {

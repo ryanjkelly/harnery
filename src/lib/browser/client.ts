@@ -11,6 +11,7 @@ import {
   type Request,
 } from "playwright";
 import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
+import { type AssertResult, type AssertSpec, buildAssertCheck } from "./asserts.js";
 import {
   buildClearContentAnnotationsScript,
   buildContentAnnotateScript,
@@ -665,6 +666,11 @@ export class Browser {
   /** Run the requested content checks (placeholder/image/truncation/contrast) in one evaluation. */
   async checkContent(request: ContentChecksRequest): Promise<ContentChecksResult> {
     return await this.currentPage.evaluate(buildContentChecks(), request);
+  }
+
+  /** Evaluate value assertions (text/contains/matches/count/exists/absent) against the page. */
+  async checkAsserts(specs: AssertSpec[]): Promise<AssertResult[]> {
+    return await this.currentPage.evaluate(buildAssertCheck(), specs);
   }
 
   /** Draw one document-space annotation layer for content-check hits. */

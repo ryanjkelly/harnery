@@ -190,6 +190,27 @@ without one the check reports `skipped`, never a false pass. A provider that
 throws becomes a high-severity finding for that tile rather than aborting the
 run.
 
+### Value assertions
+
+The layout and content checks answer "does the page look right"; `--assert`
+answers "does it say the right thing". One repeatable flag,
+`<op> <selector> => <expected>`:
+
+| Op | Passes when |
+| --- | --- |
+| `text` | the first match's trimmed text equals `<expected>` |
+| `contains` | the first match's text includes `<expected>` |
+| `matches` | the first match's text matches the `<expected>` regex |
+| `count` | the match count equals `<expected>`, or satisfies a `>=` / `<=` / `>` / `<` comparator |
+| `exists` / `absent` | at least one / zero matches (no `=> expected`) |
+
+For example `--assert 'text h1 => Welcome'`, `--assert 'count .card => >=3'`,
+`--assert 'absent .error'`. Results land under `asserts` in the JSON envelope
+(each carries the observed `actual`); `--assert-fail` exits 2 on any failure. A
+malformed spec reports an `error` and fails rather than throwing. This is the
+portable primitive a host layers domain assertions on (funnel totals, warehouse
+reconciliation).
+
 ### Visual regression
 
 | Flag | Description |
