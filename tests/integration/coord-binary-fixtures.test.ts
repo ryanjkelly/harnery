@@ -556,9 +556,84 @@ describe("agent-hook user-prompt-submit", () => {
     expect(stdout).toContain("agent-Adelaide");
   });
 
-  test("cursor nudges when task is null", () => {
+  test("every harness gets the first-session naming instructions from the shared hook", () => {
+    const fixtures = [
+      {
+        harness: "claude-code",
+        owner: "claude-name-first",
+        platform: "claude_code",
+        payload: (root: string) => ({
+          session_id: "claude-name-first",
+          cwd: root,
+          hook_event_name: "UserPromptSubmit",
+          prompt: "start work",
+        }),
+        envelope: '"hookEventName":"UserPromptSubmit"',
+      },
+      {
+        harness: "cursor",
+        owner: "cursor-name-first",
+        platform: "cursor",
+        payload: (root: string) => ({
+          conversation_id: "cursor-name-first",
+          session_id: "cursor-name-first",
+          cwd: root,
+          hook_event_name: "beforeSubmitPrompt",
+          cursor_version: "3.5.17",
+          workspace_roots: [root],
+          prompt: "start work",
+        }),
+        envelope: '"additional_context"',
+      },
+      {
+        harness: "codex",
+        owner: "codex-name-first",
+        platform: "codex",
+        payload: (root: string) => ({
+          session_id: "codex-name-first",
+          cwd: root,
+          hook_event_name: "UserPromptSubmit",
+          model: "gpt-5.5",
+          permission_mode: "bypassPermissions",
+          prompt: "start work",
+        }),
+        envelope: '"hookEventName":"UserPromptSubmit"',
+      },
+    ] as const;
+
+    for (const fixture of fixtures) {
+      const root = makeSandbox();
+      writeFileSync(
+        path.join(root, ".harnery", "config.jsonc"),
+        JSON.stringify({ binName: "acme" }),
+      );
+      seedHeartbeat(root, fixture.owner, {
+        name: "Bertha",
+        platform: fixture.platform,
+        extra: { kind: "session" },
+      });
+      const { stdout } = run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--harness", fixture.harness],
+        JSON.stringify(fixture.payload(root)),
+        root,
+        { HARNERY_BIN: "" },
+      );
+      expect(stdout).toContain(fixture.envelope);
+      expect(stdout).toContain('acme agents set-task \\"<2-5 word session topic>\\"');
+      expect(stdout).toContain("first_of_session: true");
+      expect(stdout).toContain("suggested_session_name");
+      expect(stdout).toContain("fenced code block");
+    }
+  });
+
+  test("cursor nudges when task was cleared after the first set-task", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, "cursor-task-null", { name: "Bertha", platform: "cursor" });
+    seedHeartbeat(root, "cursor-task-null", {
+      name: "Bertha",
+      platform: "cursor",
+      extra: { task_updated_at: nowIso() },
+    });
     const payload = JSON.stringify({
       conversation_id: "cursor-task-null",
       session_id: "cursor-task-null",
@@ -610,9 +685,13 @@ describe("agent-hook user-prompt-submit", () => {
     expect(second.stdout).not.toContain("hasn't changed in");
   });
 
-  test("codex nudges when task is null", () => {
+  test("codex nudges when task was cleared after the first set-task", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, "codex-task-null", { name: "Bertha", platform: "codex" });
+    seedHeartbeat(root, "codex-task-null", {
+      name: "Bertha",
+      platform: "codex",
+      extra: { task_updated_at: nowIso() },
+    });
     const payload = JSON.stringify({
       session_id: "codex-task-null",
       cwd: root,

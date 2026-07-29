@@ -1404,9 +1404,10 @@ async function emitUserPromptSubmitSystemMessage(
 
     const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
     if (agentName) args.push("--name", agentName);
-    // Cursor + Codex sessions get the set-task staleness nudge. CC enforces it
-    // via the Stop-hook transcript scan; the nudge replaces that for harnesses
-    // that don't reliably expose a transcript_path during stop.
+    // Every human-facing harness gets the first-session naming reminder from
+    // the shared hook path. Cursor + Codex additionally get ongoing set-task
+    // staleness nudges; Claude Code enforces those via its Stop transcript.
+    args.push("--session-name-nudge");
     if (harness === "cursor" || harness === "codex") args.push("--task-nudge");
     const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
     if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();

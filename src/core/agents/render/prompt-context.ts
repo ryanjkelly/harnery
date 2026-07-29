@@ -1,6 +1,7 @@
 /**
  * UserPromptSubmit UX renderer. Combines the peer-refresh dedup, the
- * council-pending hash-dedup, and the Cursor set-task staleness nudge.
+ * council-pending hash-dedup, the cross-harness first-session naming nudge,
+ * and the Cursor/Codex set-task staleness nudge.
  * agent-hook's user_prompt.submit post-emit handler calls this
  * and forwards the result as the harness-shaped additionalContext payload.
  *
@@ -10,10 +11,11 @@
  *      + sorted(files_touched) + platform, sorted by instance_id).
  *   2. Council pending: pending open-council IDs hashed; re-emits when the
  *      ID set changes.
- *   3. Task staleness nudge (cursor only, since CC enforces via the Stop hook
- *      transcript scan). Fires when `task` is null or `task_updated_at` is
- *      older than HARNERY_TASK_STALE_SECONDS (default 1800 = 30 min). Hash-deduped
- *      against the previous nudge state.
+ *   3. Focus nudge. Before the first set-task in a human-facing session, tells
+ *      every harness to reproduce set-task's suggested session name in a fenced
+ *      code block. Cursor/Codex additionally get the existing unset/stale-task
+ *      reminder because their Stop hooks do not enforce task declarations as
+ *      reliably as Claude Code's.
  *
  * Hash files live at:
  *   .harnery/.last-peer-hash.<instance_id>
@@ -36,6 +38,7 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
+import { resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { formatPendingCouncils } from "./session-context.ts";
 
@@ -51,7 +54,9 @@ interface HeartbeatRow {
   files_touched?: string[];
   platform?: string;
   task?: string;
+  task_updated_at?: string;
   turn_summary?: string;
+  workflow_run_id?: string;
 }
 
 export interface PromptContextOpts {
@@ -59,8 +64,11 @@ export interface PromptContextOpts {
   instanceId: string;
   sessionId: string;
   agentName?: string;
-  /** When true, run the task-staleness nudge check (cursor only; CC has the
-   * Stop-hook transcript-scan enforcement). */
+  /** When true, remind a human-facing session to print the session name before
+   * its first set-task. UserPromptSubmit enables this for every harness. */
+  sessionNameNudge?: boolean;
+  /** When true, run the unset/stale-task check after the first set-task.
+   * Cursor/Codex use this; Claude Code has Stop-hook transcript enforcement. */
   taskNudge?: boolean;
 }
 
@@ -73,7 +81,7 @@ export interface PromptContextOpts {
  * councils are pending, matching the bash behavior).
  */
 export function renderPromptContext(opts: PromptContextOpts): string {
-  const { coordRoot, instanceId, sessionId, agentName, taskNudge } = opts;
+  const { coordRoot, instanceId, sessionId, agentName, sessionNameNudge, taskNudge } = opts;
   const sections: string[] = [];
 
   // 1. Peer table with hash dedup.
@@ -86,62 +94,87 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (councilMsg) sections.push(councilMsg);
   }
 
-  // 3. Task staleness nudge (cursor only).
-  if (taskNudge) {
-    const nudgeMsg = computeTaskNudgeIfChanged(coordRoot, instanceId);
+  // 3. First-session naming for every harness, plus unset/stale-task reminders
+  // for Cursor/Codex. One state machine avoids a second generic "task unset"
+  // reminder immediately after the first-session reminder has been deduped.
+  if (sessionNameNudge || taskNudge) {
+    const nudgeMsg = computeFocusNudgeIfChanged(coordRoot, instanceId, {
+      sessionNameNudge: sessionNameNudge ?? false,
+      taskNudge: taskNudge ?? false,
+    });
     if (nudgeMsg) sections.push(nudgeMsg);
   }
 
   return sections.join("\n\n");
 }
 
-/** The set-task staleness nudge for Cursor.
- * Emits a one-line reminder when `task` is null or `task_updated_at` is older
- * than HARNERY_TASK_STALE_SECONDS (default 1800). Hash-deduped against previous
- * nudge state. */
-function computeTaskNudgeIfChanged(coordRoot: string, selfInstanceId: string): string {
+/**
+ * First-session naming for every harness, followed by Cursor/Codex task
+ * staleness checks. The absence of `task_updated_at` is the same invariant
+ * `agents set-task` uses for `first_of_session`; clears still stamp the field.
+ */
+function computeFocusNudgeIfChanged(
+  coordRoot: string,
+  selfInstanceId: string,
+  opts: { sessionNameNudge: boolean; taskNudge: boolean },
+): string {
   const hbPath = join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`);
   if (!existsSync(hbPath)) return "";
-  let hb: { task?: string; task_updated_at?: string };
+  let hb: HeartbeatRow;
   try {
     hb = JSON.parse(readFileSync(hbPath, "utf8"));
   } catch {
     return "";
   }
 
+  const hashFile = join(coordRoot, ".harnery", `.last-task-nudge-hash.${selfInstanceId}`);
+  // Subagents and workflow children have no human-owned session/tab to rename.
+  if (hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) {
+    clearHashFile(hashFile);
+    return "";
+  }
+
+  const bin = resolveBinName(coordRoot);
   const threshold = Number.parseInt(coordEnv("TASK_STALE_SECONDS") ?? "1800", 10);
   const taskValue = hb.task ?? "";
   let needsNudge = false;
   let message = "";
+  let nudgeKind = "";
 
-  if (!taskValue) {
+  if (opts.sessionNameNudge && !hb.task_updated_at) {
     needsNudge = true;
+    nudgeKind = "session-name";
     message =
-      "Heads up: your `task` field is unset. Run `agents set-task \"<short focus>\"` so peers + the coord dashboard can see what you're working on. (Cursor sessions can't enforce this from the Stop hook the way Claude Code does, so this is a one-time soft reminder per staleness state.)";
-  } else if (hb.task_updated_at) {
+      `New session: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
+      "When it returns `first_of_session: true`, reproduce its `suggested_session_name` value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title. " +
+      "Then continue with the task; that first `set-task` also satisfies this turn's focus declaration.";
+  } else if (opts.taskNudge && !taskValue) {
+    needsNudge = true;
+    nudgeKind = "task-unset";
+    message =
+      `Heads up: your \`task\` field is unset. Run \`${bin} agents set-task "<short focus>"\` so peers + the coord dashboard can see what you're working on. ` +
+      "(This harness cannot enforce the declaration from its Stop hook as reliably as Claude Code, so this is a one-time soft reminder per staleness state.)";
+  } else if (opts.taskNudge && hb.task_updated_at) {
     const updatedSec = Math.floor(Date.parse(hb.task_updated_at) / 1000);
     const nowSec = Math.floor(Date.now() / 1000);
     if (Number.isFinite(updatedSec) && updatedSec > 0) {
       const ageSec = nowSec - updatedSec;
       if (ageSec > threshold) {
         needsNudge = true;
-        message = `Heads up: your \`task\` field hasn't changed in ${ageSec}s (threshold ${threshold}s). If you've moved on from "${taskValue.slice(0, 60)}", update via \`agents set-task "<new focus>"\`. Pass an empty string to clear.`;
+        nudgeKind = "task-stale";
+        message = `Heads up: your \`task\` field hasn't changed in ${ageSec}s (threshold ${threshold}s). If you've moved on from "${taskValue.slice(0, 60)}", update via \`${bin} agents set-task "<new focus>"\`. Pass an empty string to clear.`;
       }
     }
   }
 
-  const hashFile = join(coordRoot, ".harnery", `.last-task-nudge-hash.${selfInstanceId}`);
   if (!needsNudge) {
-    try {
-      if (existsSync(hashFile)) rmSync(hashFile, { force: true });
-    } catch {
-      /* swallow */
-    }
+    clearHashFile(hashFile);
     return "";
   }
 
-  // Dedup on a state-hash (task value + threshold) so same-state turns don't re-nudge.
-  const state = `${taskValue}|stale=1|threshold=${threshold}`;
+  // Dedup on kind + task state so the first-session reminder does not turn into
+  // a generic "task unset" reminder on the next prompt before set-task runs.
+  const state = `${nudgeKind}|task=${taskValue}|updated=${hb.task_updated_at ?? ""}|threshold=${threshold}`;
   const newHash = sha256Hex16(state);
   const oldHash = safeRead(hashFile);
   if (oldHash && oldHash === newHash) return "";
@@ -322,6 +355,14 @@ function safeRead(path: string): string {
     return readFileSync(path, "utf8").trim();
   } catch {
     return "";
+  }
+}
+
+function clearHashFile(path: string): void {
+  try {
+    if (existsSync(path)) rmSync(path, { force: true });
+  } catch {
+    /* swallow */
   }
 }
 

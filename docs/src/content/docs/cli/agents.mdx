@@ -109,6 +109,11 @@ as their harness's session/tab title:
   "suggested_session_name": "Agent Hollis - Auth Refactor", ... }
 ```
 
+With hooks installed, Harnery injects a reminder on the first prompt in Claude
+Code, Cursor, and Codex. It tells the agent to run `set-task` before task work
+and copy the returned name into a fenced code block. The reminder fires once
+and skips subagents and workflow children.
+
 The single focus declaration feeds both the peer-visible task and the tab name,
 so there's one source of truth. Reproduce `suggested_session_name` inside a fenced
 code block in your reply. Chat UIs add a one-click Copy button to code blocks, so
