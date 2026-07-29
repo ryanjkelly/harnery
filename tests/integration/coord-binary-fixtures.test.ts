@@ -703,6 +703,48 @@ describe("agent-hook user-prompt-submit", () => {
     const { stdout } = run(AGENT_HOOK, ["user-prompt-submit", "--harness", "codex"], payload, root);
     expect(stdout).toContain("task` field is unset");
   });
+
+  test("codex gets the safe status-footer reminder on every prompt", () => {
+    const root = makeSandbox();
+    writeFileSync(
+      path.join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ binName: "acme" }),
+    );
+    seedHeartbeat(root, "codex-status-footer", {
+      name: "Bertha",
+      platform: "codex",
+      extra: { kind: "session", task: "active work", task_updated_at: nowIso() },
+    });
+    const payload = (prompt: string) =>
+      JSON.stringify({
+        session_id: "codex-status-footer",
+        cwd: root,
+        hook_event_name: "UserPromptSubmit",
+        model: "gpt-5.5",
+        permission_mode: "bypassPermissions",
+        prompt,
+      });
+
+    const first = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--harness", "codex"],
+      payload("first turn"),
+      root,
+    );
+    const second = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--harness", "codex"],
+      payload("second turn"),
+      root,
+    );
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("acme agents status");
+      expect(result.stdout).toContain("bottom of the same substantive reply");
+      expect(result.stdout).toContain("Stop hook is observe-only");
+    }
+  });
 });
 
 // ── codex: shell-mutation warn + stop verdict ──────────────────────────────

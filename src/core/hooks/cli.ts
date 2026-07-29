@@ -1407,8 +1407,11 @@ async function emitUserPromptSubmitSystemMessage(
     // Every human-facing harness gets the first-session naming reminder from
     // the shared hook path. Cursor + Codex additionally get ongoing set-task
     // staleness nudges; Claude Code enforces those via its Stop transcript.
+    // Codex gets a fresh status-footer reminder on every prompt. Its Stop hook
+    // stays observe-only, so missing the footer never replaces the answer.
     args.push("--session-name-nudge");
     if (harness === "cursor" || harness === "codex") args.push("--task-nudge");
+    if (harness === "codex") args.push("--status-footer-nudge");
     const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
     if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }

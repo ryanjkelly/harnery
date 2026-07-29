@@ -1,0 +1,70 @@
+---
+title: "0052: The Codex status footer is prompted, not enforced"
+description: "ADR: Harnery reminds Codex to append live status to the original answer on every turn, while the Stop hook stays observe-only."
+---
+
+**Status:** accepted (2026-07-29) · **Scope:** product tier (`core/agents`, hooks)
+
+## Context
+
+[ADR 0051](/decisions/0051-codex-stop-checks-are-observe-only/) stopped
+Harnery from replacing Codex answers with coordination retries. It removed the
+visible status box from Codex instructions at the same time. That protected the
+answer, but it also removed a useful view of the agent's current task, context
+usage, file claims, and nearby peers.
+
+A Codex Stop hook cannot safely enforce the box. Blocking Stop creates a model
+continuation, and some clients retain only the last response from that
+continuation chain. A hook also cannot edit the assistant message that already
+exists. The box therefore has to be part of the model's original response.
+
+Static instructions alone are easy to miss late in a long turn. Harnery already
+injects one `UserPromptSubmit` context envelope for peer changes and task
+reminders, which gives it a safe place to put a fresh presentation instruction
+before the model starts work.
+
+## Decision
+
+Human-facing Codex sessions receive a status-footer reminder on every
+`UserPromptSubmit`. The reminder tells the model to:
+
+1. finish the user's request first;
+2. run `<bin> agents status` as its final shell call; and
+3. append the command's stdout verbatim in a fenced block at the bottom of the
+   same substantive reply.
+
+`renderPromptContext` does not hash-deduplicate this section. Peer and task
+sections keep their existing deduplication, but the footer instruction appears
+on every prompt so it remains close to the response being written. Subagents,
+transient sessions, and workflow children do not receive it.
+
+Codex Stop remains observe-only. Missing the footer ends the turn normally.
+`evaluateStopHook` and `emitStopBlock` keep the safeguards from ADR 0051, so
+Harnery cannot create a status-only continuation.
+
+## Alternatives considered
+
+**Leave the status box disabled on Codex.** Safe, but it discards useful
+coordination information that fits naturally after the answer.
+
+**Restore Stop enforcement.** Rejected because it restores the original
+data-loss path. Even enforcing only the status call or task declaration can
+create the same replacement continuation.
+
+**Rely only on the repository instructions.** Rejected because those
+instructions may be far from the response point after a long tool-heavy turn.
+The per-prompt reminder is small and arrives at the right time.
+
+**Have the hook append the box itself.** Not available in the Codex hook
+contract. A Stop hook can allow or continue the turn, but it cannot mutate the
+assistant response.
+
+## Consequences
+
+The footer is reliable guidance rather than a hard guarantee. A model can still
+miss it, but that failure leaves the requested answer untouched. The next prompt
+supplies the reminder again.
+
+The status command adds one short tool call per human-facing Codex turn. Headless
+work avoids that cost. Claude Code and Cursor keep their existing end-of-turn
+behavior.

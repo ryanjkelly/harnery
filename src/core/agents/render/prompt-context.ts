@@ -1,11 +1,12 @@
 /**
  * UserPromptSubmit UX renderer. Combines the peer-refresh dedup, the
  * council-pending hash-dedup, the cross-harness first-session naming nudge,
- * and the Cursor/Codex set-task staleness nudge.
+ * the Cursor/Codex set-task staleness nudge, and the Codex status-footer
+ * reminder.
  * agent-hook's user_prompt.submit post-emit handler calls this
  * and forwards the result as the harness-shaped additionalContext payload.
  *
- * Three hash-dedup'd subsections combined into one additionalContext payload:
+ * Four subsections combined into one additionalContext payload:
  *   1. Peer table: semantically-relevant peer fields hashed; only re-emits
  *      when peers change (name + instance_id + session_id + kind + started_at
  *      + sorted(files_touched) + platform, sorted by instance_id).
@@ -16,6 +17,9 @@
  *      code block. Cursor/Codex additionally get the existing unset/stale-task
  *      reminder because their Stop hooks do not enforce task declarations as
  *      reliably as Claude Code's.
+ *   4. Codex status footer: a non-deduplicated reminder to put the live status
+ *      box after the substantive answer. Stop stays observe-only, so missing the
+ *      footer can never trigger a replacement response.
  *
  * Hash files live at:
  *   .harnery/.last-peer-hash.<instance_id>
@@ -70,6 +74,9 @@ export interface PromptContextOpts {
   /** When true, run the unset/stale-task check after the first set-task.
    * Cursor/Codex use this; Claude Code has Stop-hook transcript enforcement. */
   taskNudge?: boolean;
+  /** When true, append the non-deduplicated Codex status-footer reminder.
+   * The caller enables this only for human-facing Codex sessions. */
+  statusFooterNudge?: boolean;
 }
 
 /**
@@ -81,7 +88,15 @@ export interface PromptContextOpts {
  * councils are pending, matching the bash behavior).
  */
 export function renderPromptContext(opts: PromptContextOpts): string {
-  const { coordRoot, instanceId, sessionId, agentName, sessionNameNudge, taskNudge } = opts;
+  const {
+    coordRoot,
+    instanceId,
+    sessionId,
+    agentName,
+    sessionNameNudge,
+    taskNudge,
+    statusFooterNudge,
+  } = opts;
   const sections: string[] = [];
 
   // 1. Peer table with hash dedup.
@@ -105,7 +120,27 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (nudgeMsg) sections.push(nudgeMsg);
   }
 
+  // 4. Codex gets this on every prompt. It is intentionally not hash-deduped:
+  // the reminder must be fresh in the model's context when it writes the reply.
+  // Missing it is harmless because Codex Stop enforcement remains observe-only.
+  if (statusFooterNudge) {
+    const statusMsg = renderStatusFooterReminder(coordRoot, instanceId);
+    if (statusMsg) sections.push(statusMsg);
+  }
+
   return sections.join("\n\n");
+}
+
+function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): string {
+  const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
+  if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
+
+  const bin = resolveBinName(coordRoot);
+  return (
+    "Codex status footer: complete the user's request first. " +
+    `Then run \`${bin} agents status\` as your final shell call and append its stdout verbatim in a fenced code block at the bottom of the same substantive reply. ` +
+    "Keep the answer intact. If the footer is missed, do not retry or replace the reply; the Stop hook is observe-only."
+  );
 }
 
 /**

@@ -614,9 +614,10 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
   const agentName = args.name;
   const sessionNameNudge = args["session-name-nudge"] === "true";
   const taskNudge = args["task-nudge"] === "true";
+  const statusFooterNudge = args["status-footer-nudge"] === "true";
   if (!instanceId) {
     process.stderr.write(
-      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge]\n",
+      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge] [--status-footer-nudge]\n",
     );
     return 2;
   }
@@ -628,6 +629,7 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     agentName,
     sessionNameNudge,
     taskNudge,
+    statusFooterNudge,
   });
   process.stdout.write(text);
   return 0;

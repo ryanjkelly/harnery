@@ -52,6 +52,55 @@ describe("renderPromptContext", () => {
     expect(out).toBe("");
   });
 
+  test("Codex status footer is fresh on every prompt and preserves the answer", () => {
+    const opts = {
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      statusFooterNudge: true,
+    };
+
+    const first = renderPromptContext(opts);
+    const second = renderPromptContext(opts);
+
+    for (const out of [first, second]) {
+      expect(out).toContain("complete the user's request first");
+      expect(out).toContain("harn agents status");
+      expect(out).toContain("bottom of the same substantive reply");
+      expect(out).toContain("Keep the answer intact");
+      expect(out).toContain("Stop hook is observe-only");
+    }
+  });
+
+  test("Codex status footer skips subagents and workflow children", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
+      writeFileSync(
+        join(activeDir, "self.json"),
+        JSON.stringify({
+          schema_version: 1,
+          instance_id: "self",
+          name: "Maya",
+          session_id: "self",
+          files_touched: [],
+          last_heartbeat: now,
+          started_at: now,
+          ...extra,
+        }),
+        "utf8",
+      );
+      const out = renderPromptContext({
+        coordRoot: root,
+        instanceId: "self",
+        sessionId: "self",
+        agentName: "Maya",
+        statusFooterNudge: true,
+      });
+      expect(out).not.toContain("Codex status footer");
+    }
+  });
+
   test("hash dedup: second call with no changes returns empty", () => {
     // Seed a peer
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
