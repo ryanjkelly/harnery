@@ -1,8 +1,7 @@
 /**
- * Locks the per-harness Stop-block enforcement channel. Claude Code / Codex
- * block via exit-2 + a stderr reason (the harness re-prompts); Cursor ignores
- * stop-hook exit codes (fail-open) and re-prompts ONLY via a `followup_message`
- * in stdout JSON that it auto-submits as the next user message.
+ * Locks the per-harness Stop-block enforcement channel. Claude Code blocks via
+ * exit-2 + a stderr reason; Cursor continues through `followup_message`; Codex
+ * is observe-only because a continuation can replace the completed answer.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -63,15 +62,15 @@ describe("emitStopBlock", () => {
     expect(errChunks.join("")).toContain("rule=stop-hook.rule_1_3");
   });
 
-  test("codex behaves like claude-code (exit 2 + stderr)", () => {
+  test("codex suppresses the block without writing hook output", () => {
     capture();
     const code = emitStopBlock("codex", verdict);
     process.stdout.write = realOut;
     process.stderr.write = realErr;
 
-    expect(code).toBe(2);
+    expect(code).toBe(0);
     expect(outChunks.join("")).toBe("");
-    expect(errChunks.join("")).toContain("rule=stop-hook.rule_1_3");
+    expect(errChunks.join("")).toBe("");
   });
 
   test("cursor falls back to a generic message when reason is absent", () => {

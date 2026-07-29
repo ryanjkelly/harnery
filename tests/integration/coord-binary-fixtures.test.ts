@@ -4,9 +4,9 @@
  * function-level unit tests (names-pool, coord-resolve, claim-conflict,
  * commit-conflict, coord-reader, heartbeat-writer-heal) don't reach: that a real
  * Cursor sessionStart payload routed through the real `agent-hook` binary writes
- * a heartbeat to the override coord-root, that a Codex stop verdict fails when
- * set-task is missing, etc. We spawn the production entry points the way the
- * harnesses' hooks.json / settings.json do.
+ * a heartbeat to the override coord-root, that a Codex Stop remains non-blocking
+ * when ritual signals are missing, etc. We spawn the production entry points the
+ * way the harnesses' hooks.json / settings.json do.
  *
  * Why spawn the real binaries instead of importing the TS: this is the only
  * coverage that exercises the wrapper-script → bun → cli.ts → shelled-out
@@ -764,7 +764,7 @@ describe("codex stop + shell-warn via agent-hook", () => {
     expect(run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root).status).toBe(0);
   });
 
-  test("codex stop FAILS (exit 2, rule 3/3) when set-task missing from JSONL", () => {
+  test("codex stop stays non-blocking when set-task is missing from JSONL", () => {
     const root = makeSandbox();
     const tp = codexTranscript(root, [
       META,
@@ -781,9 +781,15 @@ describe("codex stop + shell-warn via agent-hook", () => {
       transcript_path: tp,
       last_assistant_message: `reply:\n${BOX}`,
     });
-    const { status, stderr } = run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root);
-    expect(status).toBe(2);
-    expect(stderr).toContain("rule (3/3)");
+    const { status, stdout, stderr } = run(
+      AGENT_HOOK,
+      ["stop", "--harness", "codex"],
+      payload,
+      root,
+    );
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
   });
 
   test("codex stop matches wrapped invocations (cd && harn; PATH= harn)", () => {
@@ -807,7 +813,7 @@ describe("codex stop + shell-warn via agent-hook", () => {
     expect(run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root).status).toBe(0);
   });
 
-  test("codex stop passes with the box in last_assistant_message (text-only)", () => {
+  test("codex text-only stop passes without a status box", () => {
     const root = makeSandbox();
     const payload = JSON.stringify({
       session_id: "codex-textonly",
@@ -816,9 +822,17 @@ describe("codex stop + shell-warn via agent-hook", () => {
       model: "gpt-5.5",
       permission_mode: "bypassPermissions",
       stop_hook_active: false,
-      last_assistant_message: `Here is the agent status:\n\n${BOX}`,
+      last_assistant_message: "The requested answer remains visible.",
     });
-    expect(run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root).status).toBe(0);
+    const { status, stdout, stderr } = run(
+      AGENT_HOOK,
+      ["stop", "--harness", "codex"],
+      payload,
+      root,
+    );
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
   });
 });
 

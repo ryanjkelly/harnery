@@ -31,6 +31,54 @@ describe("evaluateStopHook", () => {
     expect(v.rule).toBe("stop-hook.bypass");
   });
 
+  test("codex is observe-only even when every ritual signal is missing", () => {
+    const now = Date.now();
+    const ts = (offset: number) => new Date(now + offset).toISOString();
+    writeEvents([
+      {
+        event_id: "1",
+        event_type: "user_prompt.submit",
+        ts: ts(-10000),
+        instance_id: "codex-agent",
+        session_id: "codex-session",
+        harness: "codex",
+        source: "test",
+        data: {},
+      },
+      {
+        event_id: "2",
+        event_type: "tool.pre_use",
+        ts: ts(-8000),
+        instance_id: "codex-agent",
+        session_id: "codex-session",
+        harness: "codex",
+        source: "test",
+        data: {},
+      },
+      {
+        event_id: "3",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        instance_id: "codex-agent",
+        session_id: "codex-session",
+        harness: "codex",
+        source: "test",
+        data: { status_box_present: false },
+      },
+    ]);
+
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "codex-agent",
+      harness: "codex",
+      now_ms: now,
+    });
+
+    expect(v.allow).toBe(true);
+    expect(v.exit_code).toBe(0);
+    expect(v.rule).toBe("stop-hook.codex_observe_only");
+  });
+
   test("missing events.ndjson → no_history (empty stream allows)", () => {
     // readRecentEvents returns [] when the file doesn't exist; no events for
     // owner → defer-allow under "stop-hook.no_history".

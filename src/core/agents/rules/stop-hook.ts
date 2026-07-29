@@ -2,6 +2,10 @@
  * Stop-hook verdict: rule 1/3, 2/3, 3/3 enforcement evaluated
  * from the canonical event stream alone (no transcript scan).
  *
+ * Codex is observe-only: its Stop continuation can replace the user-facing
+ * answer in clients that retain only the final continuation response.
+ *
+ * Enforced harnesses:
  * Rule 1/3: `state.status_checked` event with matching turn boundary exists.
  * Rule 2/3: latest `turn.stop` event has `status_box_present: true` (or the
  *            stop currently firing carries that field via the in-flight event
@@ -109,6 +113,21 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
       exit_code: 0,
       rule: "stop-hook.workflow_child",
       reason: "HARNERY_WORKFLOW_CHILD=1: headless workflow child; ritual not applicable",
+    };
+  }
+
+  // A blocked Codex Stop does not reject the turn. Codex creates a continuation
+  // prompt and asks the model to answer again. Some clients retain only that
+  // final continuation response, so a coordination reminder can replace a
+  // correct user-facing answer with status output. The Stop path has already
+  // emitted turn.stop and projected the coordination state before this verdict
+  // runs. Keep that telemetry, but never continue a Codex turn for this ritual.
+  if (req.harness === "codex") {
+    return {
+      allow: true,
+      exit_code: 0,
+      rule: "stop-hook.codex_observe_only",
+      reason: "Codex Stop continuations must not replace the user-facing answer",
     };
   }
 

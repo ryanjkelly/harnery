@@ -10,8 +10,9 @@
  *   `{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason}}`.
  * - **Cursor**: `{additional_context, env?}` flat for sessionStart /
  *   beforeSubmitPrompt; deny uses `{permission: "deny", agent_message, user_message}`.
- * - **Codex**: structurally identical to Claude Code (confirmed by Phase 0
- *   probe + the matching shape in the Codex harness adapter).
+ * - **Codex**: structurally identical to Claude Code for context and tool
+ *   denials. Stop blocks are deliberately suppressed because their automatic
+ *   continuation can replace a completed user-facing answer.
  *
  * Every helper writes to process.stdout + newline-terminates so callers can
  * fire-and-forget. Empty text → no-op (no JSON written).
@@ -43,8 +44,13 @@ export function emitDeny(harness: Harness, reason: string): void {
  * agents/rules/stop-hook.ts; this function only shapes *how the block is
  * communicated back*, because each harness has a different mechanism:
  *
- * - **Claude Code / Codex** honor `exit 2` + a stderr reason as a turn block,
- *   and the harness re-prompts the model with the stderr text.
+ * - **Claude Code** honors `exit 2` + a stderr reason as a turn block, and the
+ *   harness re-prompts the model with the stderr text.
+ * - **Codex** also supports that channel, but Harnery must not use it for
+ *   coordination reminders. A Stop continuation can replace the completed
+ *   answer in clients that retain only the final continuation response. Return
+ *   success without output as a defense in depth behind the observe-only
+ *   verdict in `agents/rules/stop-hook.ts`.
  * - **Cursor** ignores stop-hook exit codes (non-zero = fail-open, the turn
  *   proceeds) and re-prompts ONLY via a `followup_message` field in stdout
  *   JSON, which it auto-submits as the next user message: the sanctioned
@@ -53,6 +59,8 @@ export function emitDeny(harness: Harness, reason: string): void {
  *   (Confirmed against cursor.com/docs/agent/hooks.)
  */
 export function emitStopBlock(harness: Harness, verdict: { reason?: string; rule: string }): 0 | 2 {
+  if (harness === "codex") return 0;
+
   const message = `${
     verdict.reason ?? "End-of-turn coordination ritual incomplete."
   }\n[agent-hook stop]: rule=${verdict.rule}`;
