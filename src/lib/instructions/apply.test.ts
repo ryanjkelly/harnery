@@ -223,14 +223,18 @@ describe("host addendum", () => {
   });
 
   test("refreshes the region when the source file changes", () => {
-    source(".agents/host.md", "first\n");
+    // Distinctive sentinels, not ordinary words: the negative assertion below
+    // scans the WHOLE rendered file, so a fixture like "first" also matches any
+    // prose the instructions block happens to contain, and the test fails for a
+    // reason that has nothing to do with region refresh.
+    source(".agents/host.md", "ADDENDUM_REV_ONE\n");
     config(".agents/host.md");
     apply();
-    source(".agents/host.md", "second\n");
+    source(".agents/host.md", "ADDENDUM_REV_TWO\n");
     const r = apply();
 
-    expect(read("AGENTS.md")).toContain("second");
-    expect(read("AGENTS.md")).not.toContain("first");
+    expect(read("AGENTS.md")).toContain("ADDENDUM_REV_TWO");
+    expect(read("AGENTS.md")).not.toContain("ADDENDUM_REV_ONE");
     expect(r.actions.some((a) => a.includes("host addendum"))).toBe(true);
   });
 
