@@ -96,7 +96,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     )
     .option(
       "--resume-from <run-id>",
-      "Reuse completed agent results from a prior run's journal; only changed/failed calls re-run",
+      "Reuse completed agent results from a prior run's transcript; only changed/failed calls re-run",
     )
     .option(
       "--subscription-only",
@@ -214,7 +214,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n${billingPart}` +
             `acceptance: ${report.acceptance.satisfied} satisfied, ${report.acceptance.unsatisfied} unsatisfied, ` +
             `${report.acceptance.unknown} unknown\n` +
-            `journal: ${report.journalPath}\n` +
+            `transcript: ${report.transcriptPath}\n` +
             `proof: ${report.proofPath}\n` +
             `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
         );
@@ -226,12 +226,12 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
               status: "parked",
               runId: err.runId,
               approvalId: err.approvalId,
-              journalPath: err.journalPath,
+              transcriptPath: err.transcriptPath,
             });
           } else {
             emit.text(
               `run ${err.runId} parked\napproval: ${err.approvalId}\n` +
-                `journal: ${err.journalPath}\n` +
+                `transcript: ${err.transcriptPath}\n` +
                 `resume after resolution: ${resolveBinName()} workflow resume ${err.runId}\n`,
             );
           }
@@ -298,7 +298,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
             `$${report.costUsd.toFixed(4)}, ${Math.round(report.durationMs / 1000)}s\n` +
             `acceptance: ${report.acceptance.satisfied} satisfied, ${report.acceptance.unsatisfied} unsatisfied, ` +
             `${report.acceptance.unknown} unknown\n` +
-            `journal: ${report.journalPath}\nproof: ${report.proofPath}\n` +
+            `transcript: ${report.transcriptPath}\nproof: ${report.proofPath}\n` +
             `result: ${typeof report.result === "string" ? report.result : JSON.stringify(report.result, null, 2)}\n`,
         );
       } catch (err) {
@@ -309,12 +309,12 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
               status: "parked",
               runId: err.runId,
               approvalId: err.approvalId,
-              journalPath: err.journalPath,
+              transcriptPath: err.transcriptPath,
             });
           } else {
             emit.text(
               `run ${err.runId} parked again\napproval: ${err.approvalId}\n` +
-                `journal: ${err.journalPath}\n`,
+                `transcript: ${err.transcriptPath}\n`,
             );
           }
           return;

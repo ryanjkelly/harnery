@@ -204,7 +204,7 @@ function captureOne(imagesDir: string, cand: Candidate): CapturedBlob | null {
 /**
  * Prune `.harnery/images/` past a size cap (default 2 GB) and an age cap
  * (default 30 days), oldest-mtime-first. Fired on session.start next to
- * scratchJanitor. Pure-fs, fail-soft. Orphaned `image.captured` events whose
+ * journalJanitor. Pure-fs, fail-soft. Orphaned `image.captured` events whose
  * blob was pruned render as an "expired" placeholder in the gallery.
  */
 export function imageJanitor(coordRoot: string): void {

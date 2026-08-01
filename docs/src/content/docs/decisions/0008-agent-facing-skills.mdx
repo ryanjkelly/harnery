@@ -11,7 +11,7 @@ sidebar:
 ## Context
 
 harnery ships a coordination *engine*: decision docket (ADR 0007), councils,
-scratch journals, agent heartbeats, harness hooks. But it ships no agent-facing
+journals, agent heartbeats, harness hooks. But it ships no agent-facing
 *guidance*. `harn init` wires hooks and creates the coord root, and the runtime
 injects dynamic session context (identity, peer table), yet nothing tells the
 consumer's agent that these surfaces exist or when to reach for them. "Start a
@@ -24,7 +24,7 @@ skill on top") without giving the *generic* half of that layer a vehicle.
 
 Two kinds of guidance want two different lifetimes:
 
-- **Always-on orientation.** An agent must know the docket/councils/scratch
+- **Always-on orientation.** An agent must know the docket/councils/journal
   exist *before* it can decide to use them, so this must sit in the project
   instructions file that loads every session.
 - **On-demand procedure.** How to run a council round, how to resolve a
@@ -98,7 +98,7 @@ Two kinds of guidance want two different lifetimes:
   on its own, and double-injection would duplicate it.
 - **Content budget: orientation, not procedure.** What exists (identity +
   peer awareness via `agents whoami|status|set-task`, intent declaration,
-  scratch journal, decision docket, councils), one line of *when*, and a
+  journal, decision docket, councils), one line of *when*, and a
   pointer to the skill or `--help` for *how*. Target ≤ 80 rendered lines.
   The block costs every agent context on every turn; procedures live in
   skills precisely so it stays small.
@@ -121,7 +121,7 @@ Two kinds of guidance want two different lifetimes:
   natively, so the injected block carries the orientation and the CLI's
   `--help` carries the procedure. Native registration (Codex skill metadata,
   Cursor rules) is a tracked follow-on once those conventions are pinned.
-- Deferred skills: scratch (a block one-liner suffices), handoff and
+- Deferred skills: journal (a block one-liner suffices), handoff and
   docs-sweep (their procedures embed host doc-layout policy the engine
   doesn't own, the same boundary as the triage rubric).
 - `.harnery/config.jsonc` gains `skills.exclude` so a host with its own
@@ -147,11 +147,11 @@ skill files, leave everything else. `--purge-state` semantics are unchanged.
   `--check` wiring, tests, changeset; (2) dry-run against a copy of the first
   host's instructions file and diff which hand-authored sections the block
   subsumes; (3) the first host de-tangles: generic sections (intent capture,
-  command capture, coord surface, scratch journal, docket engine mechanics,
+  command capture, coord surface, journal, docket engine mechanics,
   council procedure) retire in favor of the injected block + shipped skills,
   while host policy (triage rubric, escalation targets, prose gates, the host
   CLI reference) stays hand-authored, gated on its config-sync and
-  `init --check` pre-commit checks; (4) a second host adopts from scratch and
+  `init --check` pre-commit checks; (4) a second host adopts from journal and
   validates the bare-consumer experience end-to-end. Do not start (3) before
   (1) ships and (2) is diffed.
 - The first host keeps its own policy `decide` skill and excludes

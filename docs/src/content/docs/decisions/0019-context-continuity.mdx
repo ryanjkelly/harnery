@@ -9,7 +9,7 @@ description: "ADR: preserve verified work state before native harness compaction
 
 Long agent sessions eventually lose detail through a harness's context
 compaction. Harnery already kept useful pieces outside the model context:
-heartbeats, task summaries, touched files, scratch notes, Git state, and an
+heartbeats, task summaries, touched files, journal notes, Git state, and an
 append-only event stream. Those pieces were not assembled into one bounded,
 session-specific recovery record, and post-compaction orientation still
 depended on the model remembering what to retrieve.

@@ -97,7 +97,7 @@ export type WorkflowWorkspaceInspection =
   | { ok: true; value: WorkflowWorkspaceStatus }
   | { ok: false; run_id: string; error: string };
 
-interface WorkflowJournalProjectionEvent {
+interface WorkflowTranscriptProjectionEvent {
   event: string;
   ok?: boolean;
   status?: "blocked" | "lost" | "cancelled" | "unsupported" | "preserved_dirty";
@@ -119,7 +119,7 @@ export function readWorkflowWorkspaceStatus(
   const root = resolve(coordRoot);
   const runDir = workflowRunDir(root, runId);
   const manifest = readWorkflowRunManifest(root, runId);
-  const journal = readWorkspaceJournal(runDir, runId);
+  const transcript = readWorkspaceTranscript(runDir, runId);
   const proofPath = join(runDir, "proof.json");
   const proof = existsSync(proofPath) ? readWorkflowProof(root, runId) : undefined;
   const proofSha256 = proof ? fileSha256(proofPath) : undefined;
@@ -129,7 +129,7 @@ export function readWorkflowWorkspaceStatus(
   if (!binding) {
     const lifecycle = deriveWorkspaceLifecycle({
       manifest,
-      workflow_journal: journal,
+      workflow_transcript: transcript,
       proof,
       proof_sha256: proofSha256,
       allocation_unsupported: fallback !== undefined,
@@ -212,7 +212,7 @@ export function readWorkflowWorkspaceStatus(
     binding,
     provider_events: providerEvents,
     manifest,
-    workflow_journal: journal,
+    workflow_transcript: transcript,
     proof,
     proof_sha256: proofSha256,
     integration_plan: integrationPlan,
@@ -355,8 +355,11 @@ export function renderWorkflowWorkspaceStatus(status: WorkflowWorkspaceStatus): 
 
 const MAX_LISTED_DIRTY_PATHS = 12;
 
-function readWorkspaceJournal(runDir: string, runId: string): WorkflowJournalProjectionEvent[] {
-  const path = join(runDir, "journal.jsonl");
+function readWorkspaceTranscript(
+  runDir: string,
+  runId: string,
+): WorkflowTranscriptProjectionEvent[] {
+  const path = join(runDir, "transcript.jsonl");
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8")
     .split("\n")
@@ -367,7 +370,7 @@ function readWorkspaceJournal(runDir: string, runId: string): WorkflowJournalPro
         record = JSON.parse(line) as Record<string, unknown>;
       } catch (error) {
         throw new Error(
-          `cannot parse workflow journal event ${index + 1}: ${
+          `cannot parse workflow transcript event ${index + 1}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -376,12 +379,12 @@ function readWorkspaceJournal(runDir: string, runId: string): WorkflowJournalPro
         typeof record.event !== "string" ||
         (record.run_id !== undefined && record.run_id !== runId)
       ) {
-        throw new Error(`workflow journal event ${index + 1} is foreign or unsupported`);
+        throw new Error(`workflow transcript event ${index + 1} is foreign or unsupported`);
       }
       return {
         event: record.event,
         ok: typeof record.ok === "boolean" ? record.ok : undefined,
-        status: journalStatus(record.status),
+        status: transcriptStatus(record.status),
         work_event_seq:
           typeof record.work_event_seq === "number" ? record.work_event_seq : undefined,
         work_event_sha256:
@@ -424,10 +427,10 @@ function cleanupState(
   return intent || attemptStatus ? "pending" : "not_requested";
 }
 
-function journalStatus(value: unknown): WorkflowJournalProjectionEvent["status"] {
+function transcriptStatus(value: unknown): WorkflowTranscriptProjectionEvent["status"] {
   return typeof value === "string" &&
     ["blocked", "lost", "cancelled", "unsupported", "preserved_dirty"].includes(value)
-    ? (value as WorkflowJournalProjectionEvent["status"])
+    ? (value as WorkflowTranscriptProjectionEvent["status"])
     : undefined;
 }
 

@@ -1,23 +1,23 @@
 /**
- * Example: tail a peer agent's scratchpad as they write to it.
+ * Example: tail a peer agent's journal as they write to it.
  *
- * The scratch lib exposes a simple file API. Pick up any peer's
- * instance_id (e.g. via the coord-reader), and watch their scratchpad
+ * The journal lib exposes a simple file API. Pick up any peer's
+ * instance_id (e.g. via the coord-reader), and watch their journal
  * file for changes. Useful for human-in-the-loop sessions where you
  * want to follow a long-running agent's reasoning out of band.
  *
  * Run:
- *   bun run examples/scratchpad-tail.ts <instance-id-or-name>
+ *   bun run examples/journal-tail.ts <instance-id-or-name>
  */
 
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { monorepoRoot } from "../src/core/agents/index.ts";
-import { loadScratch, resolveOwnerByName, scratchDir } from "../src/core/scratch/index.ts";
+import { loadJournal, resolveOwnerByName, journalDir } from "../src/core/journal/index.ts";
 
 const arg = process.argv[2];
 if (!arg) {
-  console.error("usage: scratchpad-tail.ts <instance-id-or-name>");
+  console.error("usage: journal-tail.ts <instance-id-or-name>");
   process.exit(1);
 }
 
@@ -34,14 +34,14 @@ if (!instanceId) {
   process.exit(1);
 }
 
-const path = join(scratchDir(), `${instanceId}.md`);
+const path = join(journalDir(), `${instanceId}.md`);
 if (!existsSync(path)) {
-  console.log(`(no scratchpad yet at ${path}; waiting for first write…)`);
+  console.log(`(no journal yet at ${path}; waiting for first write…)`);
 }
 
 let lastSize = 0;
 const printLatest = (): void => {
-  const doc = loadScratch(instanceId);
+  const doc = loadJournal(instanceId);
   if (!doc || doc.entries.length === 0) return;
   if (doc.bytes === lastSize) return;
   lastSize = doc.bytes;
@@ -52,7 +52,7 @@ const printLatest = (): void => {
 
 printLatest();
 
-watch(scratchDir(), (_evt, fname) => {
+watch(journalDir(), (_evt, fname) => {
   if (fname === `${instanceId}.md`) printLatest();
 });
 

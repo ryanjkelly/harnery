@@ -41,7 +41,7 @@ const PRESERVED_HARNESS_VARS = new Set(["CODEX_HOME"]);
 export interface ChildEnvOpts {
   /** Delete all API-key vars so children can only use stored logins. */
   subscriptionOnly?: boolean;
-  /** Journal agent id (`a1`, `a2`, …) this child is running. */
+  /** Transcript agent id (`a1`, `a2`, …) this child is running. */
   agentId?: string;
 }
 

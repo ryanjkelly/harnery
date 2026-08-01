@@ -6,7 +6,7 @@
  *      (Claude Code `.claude/settings.json`, Cursor `.cursor/hooks.json`, or
  *      Codex `.codex/hooks.json`).
  *   2. Creates the `.harnery/` coord root (runtime state: events, councils,
- *      identities, scratch) and stamps the host bin name into
+ *      identities, journal) and stamps the host bin name into
  *      `.harnery/config.jsonc`.
  *
  * `deinit` undoes (1) by default: it removes only harnery's hook entries from
@@ -143,7 +143,7 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
         if (!coordExists) {
           actions.push("· .harnery/ doesn't exist; nothing to purge");
         } else if (dryRun) {
-          actions.push("+ would delete .harnery/ and all coord state (events, councils, scratch)");
+          actions.push("+ would delete .harnery/ and all coord state (events, councils, journal)");
         } else {
           rmSync(coordDir, { recursive: true, force: true });
           actions.push("+ deleted .harnery/ and all coord state");
@@ -191,7 +191,7 @@ export function engineRemovalHint(): string {
 function confirmDeleteState(coordDir: string): Promise<boolean> {
   process.stdout.write(
     "\nharnery saved this project's coordination history in .harnery/\n" +
-      "(its event log, councils, agent identities, and scratchpads):\n" +
+      "(its event log, councils, agent identities, and journals):\n" +
       `    ${coordDir}\n` +
       "Unwiring leaves that in place. Deleting it can't be undone.\n",
   );

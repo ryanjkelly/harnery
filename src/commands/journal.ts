@@ -6,34 +6,34 @@ import { emitCanonical, normalizeHarness, readHeartbeat } from "../core/agents/i
 import { resolveBinName } from "../core/config.ts";
 import {
   appendEntry,
-  archiveScratch,
+  archiveJournal,
   currentOwnerOrThrow,
-  lintScratch,
+  JOURNAL_CATEGORIES,
+  type JournalCategory,
+  type JournalDoc,
+  journalDir,
+  journalPath,
+  lintJournal,
   listArchives,
-  loadScratch,
-  parseScratch,
+  loadJournal,
+  parseJournal,
   pruneArchives,
   resolveOwnerByName,
-  SCRATCH_CATEGORIES,
-  type ScratchCategory,
-  type ScratchDoc,
-  scratchDir,
-  scratchPath,
-  sweepOrphanScratchpads,
-} from "../core/scratch/index.ts";
+  sweepOrphanJournals,
+} from "../core/journal/index.ts";
 
 /**
- * `harn scratch`: per-agent markdown journal at `.harnery/scratch/<instance_id>.md`.
+ * `harn journal`: per-agent markdown journal at `.harnery/journal/<instance_id>.md`.
  * Used both for self-notes (surviving compaction) and peer coordination (other
  * agents pull-read it on demand). SessionEnd hook archives; SessionStart
  * janitor surfaces the most-recent archive as a recovery cue.
  */
 let emit: EmitContext;
 
-export function registerScratchCommand(program: Command, emitParam: EmitContext): void {
+export function registerJournalCommand(program: Command, emitParam: EmitContext): void {
   emit = emitParam;
   const root = program
-    .command("scratch")
+    .command("journal")
     .description(
       "Per-agent markdown journal: append-only timestamped entries. " +
         "Survives in-session compaction, archived at session end, pruned after 7 days.",
@@ -42,12 +42,12 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── add ───────────────────────────────────────────────────────────────
   root
     .command("add <category> <text...>")
-    .description(`Append an entry to my scratchpad. Category: ${SCRATCH_CATEGORIES.join(" | ")}`)
+    .description(`Append an entry to my journal. Category: ${JOURNAL_CATEGORIES.join(" | ")}`)
     .action((category: string, text: string[]) => {
       const cat = validateCategory(category);
       const body = text.join(" ");
       if (!body.trim()) {
-        emit.error({ code: "empty_body", message: "scratch add: body is empty" });
+        emit.error({ code: "empty_body", message: "journal add: body is empty" });
         process.exit(1);
       }
       try {
@@ -55,7 +55,7 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
         const doc = appendEntry(owner, cat, body);
         const hb = readHeartbeat(owner);
         emitCanonical({
-          type: "state.scratch_append",
+          type: "state.journal_append",
           owner,
           session: hb?.session_id ?? owner,
           harness: normalizeHarness(hb?.platform),
@@ -81,8 +81,8 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── read ──────────────────────────────────────────────────────────────
   root
     .command("read")
-    .description("Render a scratchpad to stdout. No --name: my own. With --name: a peer's.")
-    .option("--name <name>", "Read the named peer's scratchpad (case-insensitive)")
+    .description("Render a journal to stdout. No --name: my own. With --name: a peer's.")
+    .option("--name <name>", "Read the named peer's journal (case-insensitive)")
     .option("--owner <id>", "Read by instance_id directly")
     .option("--archive <basename>", "Read an archive file (e.g. <owner>-<ts>.md)")
     .option("--limit <n>", "Cap entries rendered (newest first)", "50")
@@ -98,8 +98,8 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── list ──────────────────────────────────────────────────────────────
   root
     .command("list")
-    .description("Summarize all active scratchpads + archive count")
-    .option("--archives", "List archive files instead of active scratchpads")
+    .description("Summarize all active journals + archive count")
+    .option("--archives", "List archive files instead of active journals")
     .action((opts: { archives?: boolean }) => {
       try {
         if (opts.archives) {
@@ -120,7 +120,7 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
           emit.data({ rows: items });
           return;
         }
-        const dir = scratchDir();
+        const dir = journalDir();
         const rows: Array<{
           instance_id: string;
           name: string;
@@ -132,7 +132,7 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
         for (const f of readdirSync(dir)) {
           if (!f.endsWith(".md")) continue;
           const instanceId = f.replace(/\.md$/, "");
-          const doc = loadScratch(instanceId);
+          const doc = loadJournal(instanceId);
           if (!doc) continue;
           rows.push({
             instance_id: instanceId,
@@ -154,27 +154,27 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── tail ──────────────────────────────────────────────────────────────
   root
     .command("tail")
-    .description("Follow my scratchpad (or a peer's) for new entries.")
-    .option("--name <name>", "Tail the named peer's scratchpad")
+    .description("Follow my journal (or a peer's) for new entries.")
+    .option("--name <name>", "Tail the named peer's journal")
     .option("--owner <id>", "Tail by instance_id directly")
     .action(async (opts: { name?: string; owner?: string }) => {
       try {
         const owner = resolveTargetOwner(opts);
-        const path = scratchPath(owner);
+        const path = journalPath(owner);
         if (!existsSync(path)) {
-          emit.error({ code: "no_scratchpad", message: `no scratchpad at ${path} yet` });
+          emit.error({ code: "no_journal", message: `no journal at ${path} yet` });
           process.exit(1);
         }
         process.stderr.write(`tailing ${path}\n`); // lint-ok-emission: tail banner, immediate stderr flush before streaming
         let lastSize = statSync(path).size;
         // Print initial render
-        process.stdout.write(`${renderScratch(loadScratch(owner)!, 10)}\n`); // lint-ok-emission: streaming tail body
+        process.stdout.write(`${renderJournal(loadJournal(owner)!, 10)}\n`); // lint-ok-emission: streaming tail body
         const w = watch(path, { persistent: true }, () => {
           try {
             const curr = statSync(path).size;
             if (curr === lastSize) return;
             lastSize = curr;
-            const doc = loadScratch(owner);
+            const doc = loadJournal(owner);
             if (!doc) return;
             const newest = doc.entries[0];
             if (!newest) return;
@@ -201,7 +201,7 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── clear ─────────────────────────────────────────────────────────────
   root
     .command("clear")
-    .description("Delete my scratchpad (rare; mainly for testing)")
+    .description("Delete my journal (rare; mainly for testing)")
     .option("--yes", "Confirm deletion")
     .action((opts: { yes?: boolean }) => {
       if (!opts.yes) {
@@ -210,7 +210,7 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
       }
       try {
         const owner = currentOwnerOrThrow();
-        const path = scratchPath(owner);
+        const path = journalPath(owner);
         if (existsSync(path)) {
           unlinkSync(path);
           emit.data({ cleared: true, path });
@@ -226,9 +226,9 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── lint ──────────────────────────────────────────────────────────────
   root
     .command("lint")
-    .description("Validate scratchpad format + size")
-    .option("--all", "Lint every scratchpad in .harnery/scratch/")
-    .option("--owner <id>", "Lint a specific owner's scratchpad")
+    .description("Validate journal format + size")
+    .option("--all", "Lint every journal in .harnery/journal/")
+    .option("--owner <id>", "Lint a specific owner's journal")
     .action((opts: { all?: boolean; owner?: string }) => {
       try {
         runLint(opts);
@@ -241,12 +241,12 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   // ── archive (manual / hook helper) ────────────────────────────────────
   root
     .command("archive")
-    .description("Archive my scratchpad now (idempotent; fired by SessionEnd hook)")
-    .option("--owner <id>", "Archive a specific owner's scratchpad")
+    .description("Archive my journal now (idempotent; fired by SessionEnd hook)")
+    .option("--owner <id>", "Archive a specific owner's journal")
     .action((opts: { owner?: string }) => {
       try {
         const owner = opts.owner ?? currentOwnerOrThrow();
-        const dest = archiveScratch(owner);
+        const dest = archiveJournal(owner);
         emit.data({ instance_id: owner, archived: !!dest, path: dest });
       } catch (err) {
         emit.error({ code: "archive_failed", message: (err as Error).message });
@@ -279,9 +279,9 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
         const bodyOneLine = last.body.replace(/\s+/g, " ").trim();
         const bodyTrunc = bodyOneLine.length > 100 ? `${bodyOneLine.slice(0, 99)}…` : bodyOneLine;
         const cue =
-          `Recent scratchpad archive (${ageStr} ago): agent-${doc.header.name}: ` +
+          `Recent journal archive (${ageStr} ago): agent-${doc.header.name}: ` +
           `last entry [${last.category}] "${bodyTrunc}". ` +
-          `Read full: \`${resolveBinName()} scratch read --archive ${newest.basename}\`.`;
+          `Read full: \`${resolveBinName()} journal read --archive ${newest.basename}\`.`;
         process.stdout.write(`${cue}\n`); // lint-ok-emission: bash hook reads stdout to compose SessionStart additionalContext
       } catch (_err) {
         // Recovery cue is best-effort; never fail the SessionStart hook.
@@ -292,14 +292,14 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
   root
     .command("janitor")
     .description(
-      "Prune old archives + sweep orphan scratchpads (heartbeat gone). Fired by SessionStart hook.",
+      "Prune old archives + sweep orphan journals (heartbeat gone). Fired by SessionStart hook.",
     )
     .option("--days <n>", "Archive retention in days", "7")
     .option("--quiet", "Suppress stdout output")
     .action((opts: { days: string; quiet?: boolean }) => {
       try {
         const days = Number.parseInt(opts.days, 10);
-        const swept = sweepOrphanScratchpads();
+        const swept = sweepOrphanJournals();
         const pruned = pruneArchives(days);
         if (!opts.quiet) {
           emit.data({
@@ -320,7 +320,7 @@ export function registerScratchCommand(program: Command, emitParam: EmitContext)
 function runRead(opts: { name?: string; owner?: string; archive?: string; limit: string }): void {
   const limit = Number.parseInt(opts.limit, 10);
   if (opts.archive) {
-    const dir = scratchDir();
+    const dir = journalDir();
     const path = resolvePath(dir, "archived", opts.archive);
     if (!existsSync(path)) {
       emit.error({ code: "no_archive", message: `archive not found: ${opts.archive}` });
@@ -332,32 +332,32 @@ function runRead(opts: { name?: string; owner?: string; archive?: string; limit:
   }
 
   const owner = resolveTargetOwner(opts);
-  const doc = loadScratch(owner);
+  const doc = loadJournal(owner);
   if (!doc) {
     emit.error({
-      code: "no_scratchpad",
-      message: `no scratchpad for owner=${owner.slice(0, 8)}… (file not created yet)`,
+      code: "no_journal",
+      message: `no journal for owner=${owner.slice(0, 8)}… (file not created yet)`,
     });
     process.exit(1);
   }
 
   const hb = readHeartbeat(owner);
   const staleBanner = renderStaleBannerIfNeeded(hb?.last_heartbeat);
-  process.stdout.write(`${staleBanner + renderScratch(doc, limit)}\n`); // lint-ok-emission: pretty render, multi-line markdown for direct TTY/pipe consumption
+  process.stdout.write(`${staleBanner + renderJournal(doc, limit)}\n`); // lint-ok-emission: pretty render, multi-line markdown for direct TTY/pipe consumption
 }
 
 function runLint(opts: { all?: boolean; owner?: string }): void {
-  const dir = scratchDir();
+  const dir = journalDir();
   const files: string[] = [];
   if (opts.owner) {
-    files.push(scratchPath(opts.owner));
+    files.push(journalPath(opts.owner));
   } else if (opts.all) {
     for (const f of readdirSync(dir)) {
       if (f.endsWith(".md")) files.push(resolvePath(dir, f));
     }
   } else {
     const owner = currentOwnerOrThrow();
-    files.push(scratchPath(owner));
+    files.push(journalPath(owner));
   }
   let totalIssues = 0;
   const reports: Array<{ path: string; issues: { line: number; message: string }[] }> = [];
@@ -367,7 +367,7 @@ function runLint(opts: { all?: boolean; owner?: string }): void {
       continue;
     }
     const content = readFileSync(path, "utf8");
-    const issues = lintScratch(content);
+    const issues = lintJournal(content);
     if (issues.length > 0) totalIssues += issues.length;
     reports.push({ path, issues });
   }
@@ -377,15 +377,15 @@ function runLint(opts: { all?: boolean; owner?: string }): void {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function validateCategory(c: string): ScratchCategory {
-  if (!(SCRATCH_CATEGORIES as readonly string[]).includes(c)) {
+function validateCategory(c: string): JournalCategory {
+  if (!(JOURNAL_CATEGORIES as readonly string[]).includes(c)) {
     emit.error({
       code: "bad_category",
-      message: `category must be one of: ${SCRATCH_CATEGORIES.join(", ")}`,
+      message: `category must be one of: ${JOURNAL_CATEGORIES.join(", ")}`,
     });
     process.exit(1);
   }
-  return c as ScratchCategory;
+  return c as JournalCategory;
 }
 
 function resolveTargetOwner(opts: { name?: string; owner?: string }): string {
@@ -404,9 +404,9 @@ function resolveTargetOwner(opts: { name?: string; owner?: string }): string {
   return currentOwnerOrThrow();
 }
 
-function renderScratch(doc: ScratchDoc, limit: number): string {
+function renderJournal(doc: JournalDoc, limit: number): string {
   const lines: string[] = [];
-  lines.push(`# Scratchpad: agent-${doc.header.name}`);
+  lines.push(`# Journal: agent-${doc.header.name}`);
   if (doc.header.session_id) lines.push(`session_id: ${doc.header.session_id}`);
   if (doc.header.machine) lines.push(`machine: ${doc.header.machine}`);
   if (doc.header.started) lines.push(`started: ${doc.header.started}`);
@@ -434,11 +434,11 @@ function renderStaleBannerIfNeeded(lastHeartbeat: string | undefined): string {
   return `[STALE: heartbeat ${m}m old, agent may be dead]\n\n`;
 }
 
-function parseSafe(path: string): ScratchDoc | null {
+function parseSafe(path: string): JournalDoc | null {
   try {
     if (!existsSync(path)) return null;
     const content = readFileSync(path, "utf8");
-    return parseScratch(path, content);
+    return parseJournal(path, content);
   } catch {
     return null;
   }

@@ -18,7 +18,7 @@ import {
   writeImmutableJson,
 } from "../durable-record.ts";
 
-export { appendWorkflowJournalEvent } from "../journal.ts";
+export { appendWorkflowTranscriptEvent } from "../transcript.ts";
 
 import type {
   GitRepositoryBinding,
@@ -232,7 +232,8 @@ export function readWorkspaceEvents(
 ): WorkspaceProviderEvent[] {
   const path = workspaceEventsPath(coordRoot, providerId, bindingId);
   if (!existsSync(path)) return [];
-  if (statSync(path).size > JSON_LIMIT * 4) throw new Error("workspace event journal is too large");
+  if (statSync(path).size > JSON_LIMIT * 4)
+    throw new Error("workspace event transcript is too large");
   const claim = readWorkspaceClaim(coordRoot, providerId, bindingId);
   if (!claim) throw new Error("workspace event authority claim is missing");
   const records = readFileSync(path, "utf8")
@@ -391,7 +392,7 @@ function readChainedRecords<
 >(path: string, label: string): T[] {
   if (!existsSync(path)) return [];
   if (statSync(path).size > JSON_LIMIT * 4) {
-    throw new Error(`${label} journal is too large`);
+    throw new Error(`${label} transcript is too large`);
   }
   const records = readFileSync(path, "utf8")
     .split("\n")

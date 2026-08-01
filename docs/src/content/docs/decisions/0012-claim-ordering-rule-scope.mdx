@@ -26,7 +26,7 @@ weakening the deadlock-prevention invariant:
    off a lower-sorted acquisition. Blockers are pruned lazily on the would-block
    path.
 2. **Out-of-repo paths are skipped** (`1b130a9`). `canonicalize` returns null
-   for absolute paths outside the coord root, so a `/tmp` scratchpad write (whose
+   for absolute paths outside the coord root, so a `/tmp` journal write (whose
    `/` sorts before every repo-relative path) can no longer sort-block a held
    repo file.
 3. **Re-editing an already-held path is exempt** (`e41fb65`). Re-acquiring a

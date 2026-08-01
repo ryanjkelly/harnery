@@ -1,4 +1,4 @@
-import { readAgent, readEvents, readScratch } from "@/lib/coord-reader";
+import { readAgent, readEvents, readJournal } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,7 @@ export async function GET(
   if (!agent) {
     return Response.json({ error: "not_found", instance_id: id }, { status: 404 });
   }
-  const scratch = readScratch(id);
+  const journal = readJournal(id);
   const events = readEvents({ instanceId: id, limit: 100 });
-  return Response.json({ agent, scratch, events });
+  return Response.json({ agent, journal, events });
 }

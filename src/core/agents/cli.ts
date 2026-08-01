@@ -324,19 +324,19 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
   }
 }
 
-async function handleScratchAction(root: string, action: string, rest: string[]): Promise<number> {
-  const scratch = await import("./state/scratch.ts");
+async function handleJournalAction(root: string, action: string, rest: string[]): Promise<number> {
+  const journal = await import("./state/journal.ts");
 
-  if (action === "append-scratch") {
+  if (action === "append-journal") {
     const [owner, category, ...bodyParts] = rest;
     const body = bodyParts.join(" ");
     if (!owner || !category || !body) {
-      process.stderr.write("agent-coord append-scratch <instance_id> <category> <body>\n");
+      process.stderr.write("agent-coord append-journal <instance_id> <category> <body>\n");
       return 2;
     }
-    const result = scratch.appendScratch(root, owner, category, body);
+    const result = journal.appendJournal(root, owner, category, body);
     if (!result.ok) {
-      process.stderr.write(`agent-coord append-scratch: ${result.reason}\n`);
+      process.stderr.write(`agent-coord append-journal: ${result.reason}\n`);
       return 1;
     }
     process.stdout.write(
@@ -345,24 +345,22 @@ async function handleScratchAction(root: string, action: string, rest: string[])
     return 0;
   }
 
-  if (action === "edit-scratchpad") {
+  if (action === "edit-journal") {
     const [owner, newBodyFile, ...summaryParts] = rest;
     const summary = summaryParts.join(" ");
     if (!owner || !newBodyFile) {
-      process.stderr.write(
-        "agent-coord edit-scratchpad <instance_id> <new-body-file> [<summary>]\n",
-      );
+      process.stderr.write("agent-coord edit-journal <instance_id> <new-body-file> [<summary>]\n");
       return 2;
     }
     if (!existsSync(newBodyFile)) {
-      process.stderr.write(`agent-coord edit-scratchpad: file not found: ${newBodyFile}\n`);
+      process.stderr.write(`agent-coord edit-journal: file not found: ${newBodyFile}\n`);
       return 2;
     }
     const { readFileSync } = await import("node:fs");
     const newBody = readFileSync(newBodyFile, "utf8");
-    const result = scratch.editScratchpad(root, owner, newBody, summary);
+    const result = journal.editJournal(root, owner, newBody, summary);
     if (!result.ok) {
-      process.stderr.write(`agent-coord edit-scratchpad: ${result.reason}\n`);
+      process.stderr.write(`agent-coord edit-journal: ${result.reason}\n`);
       return 1;
     }
     process.stdout.write(
@@ -371,7 +369,7 @@ async function handleScratchAction(root: string, action: string, rest: string[])
     return 0;
   }
 
-  process.stderr.write(`agent-coord: unknown scratch action ${action}\n`);
+  process.stderr.write(`agent-coord: unknown journal action ${action}\n`);
   return 2;
 }
 
@@ -826,8 +824,8 @@ async function main(): Promise<number> {
     return handleStateAction(root, subcommand, rest);
   }
 
-  if (subcommand === "append-scratch" || subcommand === "edit-scratchpad") {
-    return handleScratchAction(root, subcommand, rest);
+  if (subcommand === "append-journal" || subcommand === "edit-journal") {
+    return handleJournalAction(root, subcommand, rest);
   }
 
   if (

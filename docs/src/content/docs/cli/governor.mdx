@@ -33,7 +33,7 @@ harn governor service logs [--lines <n>]
 A governor is a bounded host above
 [`harn work`](./work/). It reconstructs a root work item's immutable dependency
 closure, selects legal progress actions, dispatches bounded workflow attempts,
-and reconstructs the graph from journals and proof before every new cycle.
+and reconstructs the graph from transcripts and proof before every new cycle.
 
 It does not change reconciliation. Running `harn work reconcile` remains
 observational. Foreground `governor tick` / `governor run` and the optional
@@ -308,7 +308,7 @@ conditions is reconstructed:
 - no legal progress action remains.
 
 Process loss does not erase the goal. Restart `governor run`; work attempt
-receipts, workflow journals, approvals, proofs, and accepted dependencies
+receipts, workflow transcripts, approvals, proofs, and accepted dependencies
 determine where it continues. A private exclusive lease prevents two
 governors from driving the same goal concurrently.
 

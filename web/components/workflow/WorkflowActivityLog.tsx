@@ -20,7 +20,7 @@ interface Props {
 /**
  * Run-scoped activity log for `/workflows/[runId]`.
  *
- * The run journal is a poor activity feed by construction. An agent that works
+ * The run transcript is a poor activity feed by construction. An agent that works
  * for eighteen minutes writes exactly two lines to it, one at each end. The
  * activity lives in the coordination stream instead: workflow children run with
  * hooks on, so each one emits ordinary `tool.pre_use` / `tool.post_use` rows to

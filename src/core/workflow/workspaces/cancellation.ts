@@ -5,7 +5,7 @@ import {
 } from "../../work/state.ts";
 import { readWorkflowRunManifest } from "../run-state.ts";
 import {
-  appendWorkflowJournalEvent,
+  appendWorkflowTranscriptEvent,
   readWorkflowSupplement,
   stableDigest,
   writeWorkflowSupplement,
@@ -72,7 +72,7 @@ export async function cancelWorkspace(
       reason: result.reason,
     };
     writeWorkflowSupplement(input.coordRoot, input.runId, "cancellation/outcome.json", receipt);
-    appendWorkflowJournalEvent(input.coordRoot, input.runId, "workspace.cancel", {
+    appendWorkflowTranscriptEvent(input.coordRoot, input.runId, "workspace.cancel", {
       binding_id: binding.binding_id,
       provider_id: binding.provider.id,
       receipt_id: receipt.receipt_id,

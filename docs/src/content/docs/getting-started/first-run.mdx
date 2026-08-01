@@ -38,8 +38,8 @@ harn agents set-task "rewriting the deploy command"
 # One-screen orientation snapshot (you, the repo, active peers)
 harn context
 
-# Append a note to your own scratchpad (survives in-session compaction)
-harn scratch add note "looking at this from the email angle next"
+# Append a note to your own journal (survives in-session compaction)
+harn journal add note "looking at this from the email angle next"
 ```
 
 ## Web dashboard
@@ -84,7 +84,7 @@ harn backup init
 # Take a snapshot of .harnery/ (events.ndjson + .lock excluded by default)
 harn backup snapshot
 
-# Cross-machine sync of identities + archived scratchpads + councils via rclone
+# Cross-machine sync of identities + archived journals + councils via rclone
 harn sync init           # picks the rclone remote configured via `rclone config`
 harn sync push           # local → remote
 harn sync pull           # remote → local

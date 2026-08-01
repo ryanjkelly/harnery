@@ -10,7 +10,7 @@ import {
   sameFilesystemIdentity,
   validateConfiguredRoot,
 } from "./paths.ts";
-import { appendWorkflowJournalEvent, stableDigest, writeWorkspaceRequest } from "./state.ts";
+import { appendWorkflowTranscriptEvent, stableDigest, writeWorkspaceRequest } from "./state.ts";
 import type {
   WorkspaceAttestation,
   WorkspaceBinding,
@@ -72,7 +72,7 @@ export async function resolveWorkspaceBinding(input: {
       unknowns: [],
       receipts: {},
     };
-    appendWorkflowJournalEvent(input.opts.coordRoot, input.runId, "workspace.compatibility", {
+    appendWorkflowTranscriptEvent(input.opts.coordRoot, input.runId, "workspace.compatibility", {
       requested_isolation: fallback.requested_isolation,
       effective_isolation: fallback.effective_isolation,
       selection_reason: fallback.selection_reason,
@@ -114,7 +114,7 @@ export async function resolveWorkspaceBinding(input: {
       }
       throw new Error(`workflow run ${input.runId} could not reattach its frozen workspace`);
     }
-    appendWorkflowJournalEvent(input.opts.coordRoot, input.runId, "workspace.reattach", {
+    appendWorkflowTranscriptEvent(input.opts.coordRoot, input.runId, "workspace.reattach", {
       binding_id: frozenBinding.binding_id,
       provider_id: frozenBinding.provider.id,
       attestation_sha256: stableDigest(reattached),
@@ -180,7 +180,7 @@ export async function resolveWorkspaceBinding(input: {
         unknowns: [...probe.unknowns],
         receipts: {},
       };
-      appendWorkflowJournalEvent(input.opts.coordRoot, input.runId, "workspace.fallback", {
+      appendWorkflowTranscriptEvent(input.opts.coordRoot, input.runId, "workspace.fallback", {
         requested_isolation: fallback.requested_isolation,
         effective_isolation: fallback.effective_isolation,
         selection_reason: fallback.selection_reason,
@@ -226,7 +226,7 @@ export async function resolveWorkspaceBinding(input: {
     idempotency_key: stableDigest(requestWithoutKey),
   };
   writeWorkspaceRequest(input.opts.coordRoot, request);
-  appendWorkflowJournalEvent(input.opts.coordRoot, input.runId, "execution.allocate.start", {
+  appendWorkflowTranscriptEvent(input.opts.coordRoot, input.runId, "execution.allocate.start", {
     provider_id: probe.capabilities.provider_id,
     request_sha256: stableDigest(request),
   });
@@ -261,7 +261,7 @@ export async function resolveWorkspaceBinding(input: {
     }
     throw new Error("workspace provider returned a binding that failed initial attestation");
   }
-  appendWorkflowJournalEvent(input.opts.coordRoot, input.runId, "execution.allocate.end", {
+  appendWorkflowTranscriptEvent(input.opts.coordRoot, input.runId, "execution.allocate.end", {
     binding_id: binding.binding_id,
     provider_id: binding.provider.id,
     active_root: binding.active_root,

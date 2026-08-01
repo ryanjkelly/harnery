@@ -3,27 +3,27 @@ import { dirname, join, resolve } from "node:path";
 import { fsyncParentDirectory, stableDigest } from "./durable-record.ts";
 
 // Limit for the JSON record body. The trailing newline delimiter is outside the
-// record and is not counted by readers after splitting journal lines.
-export const WORKFLOW_JOURNAL_EVENT_BYTES = 16 * 1024;
+// record and is not counted by readers after splitting transcript lines.
+export const WORKFLOW_TRANSCRIPT_EVENT_BYTES = 16 * 1024;
 
 /** Key under which a shrunk record names the fields it had to drop. */
-export const WORKFLOW_JOURNAL_OMITTED = "omitted_fields";
+export const WORKFLOW_TRANSCRIPT_OMITTED = "omitted_fields";
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
-export interface WorkflowJournalOmission {
+export interface WorkflowTranscriptOmission {
   field: string;
   bytes: number;
   sha256: string;
 }
 
-export function workflowJournalPath(coordRoot: string, runId: string): string {
+export function workflowTranscriptPath(coordRoot: string, runId: string): string {
   if (!RUN_ID.test(runId)) throw new Error(`invalid workflow run id ${JSON.stringify(runId)}`);
-  return join(resolve(coordRoot), ".harnery", "workflows", runId, "journal.jsonl");
+  return join(resolve(coordRoot), ".harnery", "workflows", runId, "transcript.jsonl");
 }
 
 /**
- * Append one journal record, always.
+ * Append one transcript record, always.
  *
  * A record that would exceed what a reader accepts has its largest fields
  * replaced by a digest and a byte count until it fits, and it names what it
@@ -35,14 +35,14 @@ export function workflowJournalPath(coordRoot: string, runId: string): string {
  * this limit by construction. Losing detail from a record is recoverable.
  * Losing the run that was writing it is not.
  */
-export function appendWorkflowJournalEvent(
+export function appendWorkflowTranscriptEvent(
   coordRoot: string,
   runId: string,
   event: string,
   data: Record<string, unknown>,
 ): void {
-  const path = workflowJournalPath(coordRoot, runId);
-  const record = fitWorkflowJournalRecord(
+  const path = workflowTranscriptPath(coordRoot, runId);
+  const record = fitWorkflowTranscriptRecord(
     { schema_version: 1, run_id: runId, ts: new Date().toISOString(), event },
     data,
   );
@@ -64,16 +64,16 @@ export function appendWorkflowJournalEvent(
  * The envelope is never dropped, so a record keeps its run id, timestamp, and
  * event name however much detail it loses. Exported for tests.
  */
-export function fitWorkflowJournalRecord(
+export function fitWorkflowTranscriptRecord(
   envelope: Record<string, unknown>,
   data: Record<string, unknown>,
 ): Record<string, unknown> {
   const candidate = { ...envelope, ...data };
-  if (Buffer.byteLength(JSON.stringify(candidate)) <= WORKFLOW_JOURNAL_EVENT_BYTES) {
+  if (Buffer.byteLength(JSON.stringify(candidate)) <= WORKFLOW_TRANSCRIPT_EVENT_BYTES) {
     return candidate;
   }
   const kept: Record<string, unknown> = { ...data };
-  const omitted: WorkflowJournalOmission[] = [];
+  const omitted: WorkflowTranscriptOmission[] = [];
   const bySize = Object.keys(data)
     .map((field) => ({ field, bytes: Buffer.byteLength(JSON.stringify(data[field]) ?? "") }))
     .sort((a, b) => b.bytes - a.bytes);
@@ -81,10 +81,10 @@ export function fitWorkflowJournalRecord(
   for (const { field, bytes } of bySize) {
     omitted.push({ field, bytes, sha256: stableDigest(data[field]) });
     delete kept[field];
-    const next = { ...envelope, ...kept, [WORKFLOW_JOURNAL_OMITTED]: omitted };
-    if (Buffer.byteLength(JSON.stringify(next)) <= WORKFLOW_JOURNAL_EVENT_BYTES) return next;
+    const next = { ...envelope, ...kept, [WORKFLOW_TRANSCRIPT_OMITTED]: omitted };
+    if (Buffer.byteLength(JSON.stringify(next)) <= WORKFLOW_TRANSCRIPT_EVENT_BYTES) return next;
   }
   // Every field dropped and still over: the omission list is itself the excess.
   // Keep the envelope and a count so the record stays parseable and honest.
-  return { ...envelope, [WORKFLOW_JOURNAL_OMITTED]: omitted.length };
+  return { ...envelope, [WORKFLOW_TRANSCRIPT_OMITTED]: omitted.length };
 }

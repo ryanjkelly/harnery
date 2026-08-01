@@ -1,6 +1,6 @@
 /**
  * Per-agent summary: identity registry entry + current activity state
- * (live heartbeat OR most-recent scratch archive). Server-side helper;
+ * (live heartbeat OR most-recent journal archive). Server-side helper;
  * fed to `<AgentChipProvider>` so AgentChip popovers render with persona
  * metadata baked in (no client-side FS reads).
  */
@@ -159,9 +159,9 @@ export function resolveSubagentLinkage(
   return { parent, agent_type };
 }
 
-function readScratchIndex(): Map<string, ActivityState> {
+function readJournalIndex(): Map<string, ActivityState> {
   const out = new Map<string, ActivityState>();
-  const dir = path.join(coordRoot(), ".harnery", "scratch", "archived");
+  const dir = path.join(coordRoot(), ".harnery", "journal", "archived");
   if (!existsSync(dir)) return out;
   const cutoff = Date.now() - STALE_WINDOW_MS;
   const re = /-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.md$/;
@@ -173,7 +173,7 @@ function readScratchIndex(): Map<string, ActivityState> {
     if (Number.isNaN(ts) || ts < cutoff) continue;
     try {
       const head = readFileSync(path.join(dir, f), "utf-8").slice(0, 200);
-      const nameMatch = head.match(/^#\s+Scratchpad:\s+agent-([A-Za-z][A-Za-z0-9_-]*)/m);
+      const nameMatch = head.match(/^#\s+Journal:\s+agent-([A-Za-z][A-Za-z0-9_-]*)/m);
       if (!nameMatch) continue;
       const bare = nameMatch[1].toLowerCase();
       const prior = out.get(bare);
@@ -198,7 +198,7 @@ export interface SessionMeta {
  * name → {platform, model} fallback from durable `session.start` identities
  * (newest session wins per bare name, as a unit, never mixing fields across
  * sessions). Heartbeats carry both while live, but they die with the heartbeat;
- * scratch-archive stale entries have neither, so "which harness/model was
+ * journal-archive stale entries have neither, so "which harness/model was
  * Celeste on?" goes unanswered exactly when the operator needs it (routing a
  * prompt to a not-currently-running agent). Exported pure for tests.
  */
@@ -229,7 +229,7 @@ export function buildAgentSummaryMap(
   identities?: Record<string, InstanceIdentity>,
 ): Record<string, AgentSummary> {
   const { byName: active, idToName } = readActiveIndex();
-  const stale = readScratchIndex();
+  const stale = readJournalIndex();
   const metaFallback = sessionMetaByName(identities);
   const out: Record<string, AgentSummary> = {};
   for (const raw of names) {
@@ -251,8 +251,8 @@ export function buildAgentSummaryMap(
     // text), so the sentinel carries no information; its only effect was to
     // CLOBBER a richer lower-priority card in a layered merge. The /images feed
     // spreads this map LAST (highest priority) over `buildObservedAgentSummaries`;
-    // an agent that's in the feed but has no live heartbeat / recent scratch /
-    // identity (e.g. un-healed agent-Zoe, scratch since pruned) would otherwise
+    // an agent that's in the feed but has no live heartbeat / recent journal /
+    // identity (e.g. un-healed agent-Zoe, journal since pruned) would otherwise
     // lose its synthesized observed card to this sentinel. Skipping lets the
     // observed/ended/subagent layers survive while still letting real
     // identity/activity data here win when present.
@@ -358,7 +358,7 @@ export function buildSubagentSummaries(
  * `identities` map. Keyed by bare name so AgentChip resolves them like live
  * agents; most-recent session wins per name.
  *
- * These are the lowest-priority summary source: the live/scratch map from
+ * These are the lowest-priority summary source: the live/journal map from
  * `buildAgentSummaryMap` overrides any agent that is still around, so this only
  * fills in agents that have since exited. State is "stale", carrying the durable
  * identity (name, platform, when the session started) without the live-only
@@ -411,7 +411,7 @@ export function buildEndedAgentSummaries(
  * card from whatever the row carries: a resolved display name, the most-recent
  * activity timestamp, and (optionally) instance_id + platform.
  *
- * Layer this LOWEST priority: `buildAgentSummaryMap` (live/scratch) and the
+ * Layer this LOWEST priority: `buildAgentSummaryMap` (live/journal) and the
  * identity-derived builders override it whenever richer data exists. The point
  * is only to guarantee that a name we're already displaying never falls all the
  * way back to plain text with no card.
@@ -459,13 +459,13 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Union of currently-active heartbeats + recently-archived scratchpads,
+ * Union of currently-active heartbeats + recently-archived journals,
  * deduped by name. Used by the steward picker.
  */
 export function listKnownAgents(): KnownAgent[] {
   const root = coordRoot();
   const activeDir = path.join(root, ".harnery", "active");
-  const archiveDir = path.join(root, ".harnery", "scratch", "archived");
+  const archiveDir = path.join(root, ".harnery", "journal", "archived");
   const byName = new Map<string, KnownAgent>();
 
   if (existsSync(activeDir)) {
@@ -500,7 +500,7 @@ export function listKnownAgents(): KnownAgent[] {
       if (Number.isNaN(ts) || ts < cutoff) continue;
       try {
         const head = readFileSync(path.join(archiveDir, f), "utf-8").slice(0, 200);
-        const nameMatch = head.match(/^#\s+Scratchpad:\s+(agent-[A-Za-z][A-Za-z0-9_-]*)/m);
+        const nameMatch = head.match(/^#\s+Journal:\s+(agent-[A-Za-z][A-Za-z0-9_-]*)/m);
         if (!nameMatch) continue;
         const name = nameMatch[1];
         const existing = byName.get(name);

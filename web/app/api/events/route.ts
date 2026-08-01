@@ -11,7 +11,7 @@ export function GET(req: Request): Response {
   // `run` scopes to one workflow run's child sessions. Resolved per request so
   // the SSE polling fallback sees children that started after page load. The
   // run's own coord root comes with it: a run driven from another checkout
-  // journals here but emits its child events there.
+  // transcripts here but emits its child events there.
   const run = url.searchParams.get("run") ?? undefined;
   const runRoot = run ? resolveRunCoordRoot(coordRoot(), run) : undefined;
   const sessions = run

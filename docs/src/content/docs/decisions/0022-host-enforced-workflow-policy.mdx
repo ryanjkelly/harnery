@@ -59,7 +59,7 @@ control returns to the caller. Calling `authorize()` without a host policy also
 throws, avoiding an API whose name implies protection while silently doing
 nothing.
 
-Every check writes `policy.check` and `policy.resolve` journal events. The
+Every check writes `policy.check` and `policy.resolve` transcript events. The
 terminal proof packet includes the normalized policy and digest, host-declared
 isolation and network state, bounded decision receipts, initial and final
 verdicts, resolver ownership, rule codes, and summary counts. Prompts, payloads,
@@ -105,7 +105,7 @@ harness subprocesses network-enabled.
   a boundary it did not create.
 - `allowed_paths` checks lexical containment after absolute normalization. A
   prefix lookalike such as `/repo-copy` does not pass for `/repo`.
-- A policy proves authorization, not completion. The journal records the final
+- A policy proves authorization, not completion. The transcript records the final
   allow decision before the protected operation; later run evidence proves what
   actually happened.
 - `authorize()` is an enforcement seam for cooperative host code. It cannot

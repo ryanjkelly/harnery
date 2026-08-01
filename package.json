@@ -137,10 +137,10 @@
       "types": "./dist/lib/readability/index.d.ts",
       "import": "./dist/lib/readability/index.js"
     },
-    "./core/scratch": {
-      "bun": "./src/core/scratch/index.ts",
-      "types": "./dist/core/scratch/index.d.ts",
-      "import": "./dist/core/scratch/index.js"
+    "./core/journal": {
+      "bun": "./src/core/journal/index.ts",
+      "types": "./dist/core/journal/index.d.ts",
+      "import": "./dist/core/journal/index.js"
     },
     "./lib/tunnel/state": {
       "bun": "./src/lib/tunnel/state.ts",

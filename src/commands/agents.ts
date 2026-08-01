@@ -48,7 +48,7 @@ import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.t
 const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
-import { appendEntry, resolveOwnerByName } from "../core/scratch/index.ts";
+import { appendEntry, resolveOwnerByName } from "../core/journal/index.ts";
 import {
   buildCouncilId,
   buildInviteMarkdown,
@@ -273,7 +273,7 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
   cmd
     .command("ping <name> <message...>")
     .description(
-      "Append a 'handoff' entry to a peer agent's scratchpad. Body prefixed with " +
+      "Append a 'handoff' entry to a peer agent's journal. Body prefixed with " +
         "`from agent-<me>:`. Use to leave actionable coordination notes for peers " +
         "currently holding files you need.",
     )
@@ -685,7 +685,7 @@ function registerCouncilCommands(parent: Command): void {
         "(or omit [steward]) to drop the field and revert to the default " +
         "(the convener). Refuses to mutate archived councils. By default, " +
         "rejects names not in the known-agents list (active heartbeats + " +
-        "scratchpads archived in the last 30 days); pass --allow-unknown " +
+        "journals archived in the last 30 days); pass --allow-unknown " +
         "to bypass when bootstrapping.",
     )
     .option("--clear", "Clear the steward field, reverting to created_by default")
@@ -3405,8 +3405,8 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     peer_instance_id: peerOwner,
     from: fromName,
     body,
-    scratch_path: doc.path,
-    scratch_bytes: doc.bytes,
+    journal_path: doc.path,
+    journal_bytes: doc.bytes,
   };
 
   if (opts.json) {
@@ -3797,7 +3797,7 @@ function runCouncilCreate(
     });
   }
 
-  // Best-effort: ping each currently-active member's scratchpad with a
+  // Best-effort: ping each currently-active member's journal with a
   // handoff entry pointing them at the council. Members not currently active
   // get nothing here; the Phase 2 SessionStart adapter will surface the
   // invite on their next session.
@@ -4269,7 +4269,7 @@ function runCouncilSetSteward(
         const known_names = known.map((a) => a.name).join(", ") || "(none)";
         emit.error({
           code: "steward_not_known",
-          message: `'${steward}' is not a known agent (active heartbeats + scratchpads archived in the last 30 days). Pass --allow-unknown to bootstrap. Known: ${known_names}`,
+          message: `'${steward}' is not a known agent (active heartbeats + journals archived in the last 30 days). Pass --allow-unknown to bootstrap. Known: ${known_names}`,
         });
         process.exit(1);
       }
@@ -4304,7 +4304,7 @@ function runCouncilSetSteward(
   }
 }
 
-/** Build a markdown transcript of every round's contributions on disk. */
+/** Build a markdown journal of every round's contributions on disk. */
 function buildTranscript(manifest: CouncilManifest): {
   markdown: string;
   rounds: Array<{ round: number; contributions: number }>;
@@ -4798,7 +4798,7 @@ function runCouncilAdvance(id: string, opts: { force?: boolean; json?: boolean }
  * Shared advance helper used by both `advance` and auto-advance from
  * `contribute`. Increments current_round, flips round_status back to open,
  * creates the new round directory, writes the manifest, and pings each
- * member's scratchpad with the advance notification.
+ * member's journal with the advance notification.
  */
 function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManifest {
   const nextRound = manifest.current_round + 1;
@@ -4812,7 +4812,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
   if (rd && !existsSync(rd)) mkdirSync(rd, { recursive: true });
   writeManifest(next);
 
-  // Ping each member's scratchpad with the advance notification.
+  // Ping each member's journal with the advance notification.
   // (Convener already knows; we skip pinging them if they convened it from
   // their own session.)
   const myOwner = resolveOwner();
@@ -4829,7 +4829,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
         `from council advance (${manifest.council_id}): round ${nextRound} is now open${force ? " (advanced with --force; some round-N members dropped)" : ""}. Run 'harn agents council show ${manifest.council_id}' to read prior round + 'harn agents council contribute ${manifest.council_id}' to weigh in.`,
       );
     } catch {
-      /* best-effort; member scratchpad may not exist yet */
+      /* best-effort; member journal may not exist yet */
     }
   }
   return next;

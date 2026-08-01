@@ -1,0 +1,103 @@
+---
+title: harn journal
+description: A per-agent, append-only markdown journal that survives context compaction and doubles as a pull-based coordination channel.
+sidebar:
+  order: 5
+---
+
+```
+harn journal <subcommand> [options]
+```
+
+A per-agent markdown journal. Each agent has one journal at
+`.harnery/journal/<instance_id>.md`, and every entry is an append-only,
+timestamped line under a category. It serves two purposes: **self-notes that
+survive in-session compaction** (the file is on disk, not in the conversation
+context, so a note written before a compaction is still readable after), and
+**pull-based peer coordination** — another agent can read your journal on
+demand to pick up where you left off.
+
+The lifecycle is automated by session hooks: the journal is archived at
+session end, the most-recent archive is surfaced as a recovery cue at the next
+session start, and archives older than the retention window are pruned. The
+subcommands below are the same ones those hooks call, plus the everyday `add` /
+`read` you'll use by hand.
+
+## Categories
+
+Every entry carries one category, which describes what kind of breadcrumb it is:
+
+`note` · `plan` · `decision` · `blocker` · `question` · `done` · `handoff`
+
+## Subcommands
+
+```
+harn journal add <category> <text...>   # append a timestamped entry to my journal
+harn journal read                       # render my journal (newest entries first)
+harn journal read --name <peer>         # render a peer's journal instead
+harn journal list                       # summarize every active journal + archive count
+harn journal tail                       # follow my journal (or a peer's) for new entries
+harn journal lint                       # validate journal format + size
+harn journal clear --yes                # delete my journal (rare; mainly for testing)
+harn journal archive                    # archive my journal now (idempotent)
+harn journal recovery-cue               # emit a one-line "previous session was doing X" hint
+harn journal janitor                    # prune old archives + sweep orphaned journals
+```
+
+## Options
+
+Options are per-subcommand:
+
+| Subcommand | Flag | Description |
+| --- | --- | --- |
+| `read` | `--name <name>` | Read the named peer's journal (case-insensitive). |
+| `read` | `--owner <id>` | Read by `instance_id` directly. |
+| `read` | `--archive <basename>` | Read an archived file (e.g. `<owner>-<ts>.md`). |
+| `read` | `--limit <n>` | Cap entries rendered, newest first (default `50`). |
+| `list` | `--archives` | List archive files instead of active journals. |
+| `tail` | `--name <name>` | Tail the named peer's journal. |
+| `tail` | `--owner <id>` | Tail by `instance_id` directly. |
+| `lint` | `--all` | Lint every journal in `.harnery/journal/`. |
+| `lint` | `--owner <id>` | Lint a specific owner's journal. |
+| `clear` | `--yes` | Confirm deletion (required). |
+| `archive` | `--owner <id>` | Archive a specific owner's journal. |
+| `recovery-cue` | `--max-age-hours <n>` | Only surface archives newer than this (default `24`). |
+| `janitor` | `--days <n>` | Archive retention in days (default `7`). |
+| `janitor` | `--quiet` | Suppress stdout output. |
+
+## Examples
+
+```bash
+# Leave a breadcrumb for future-self (surviving a compaction)
+harn journal add plan "refactor the retry loop, then wire up the metrics"
+
+# Record a blocker so a peer can see why you stalled
+harn journal add blocker "waiting on the config change agent-Foo is holding"
+
+# Read your own transcript, most recent first
+harn journal read
+
+# Read a peer's transcript before picking up their thread
+harn journal read --name Foo
+
+# See who has active journals and how big they are
+harn journal list
+
+# Read a specific archived session
+harn journal read --archive 5cc4edab-2026-07-14T10-00-00.md
+```
+
+## Notes
+
+- **50 KB hard cap.** When a journal exceeds the cap, the oldest entries are
+  auto-pruned so appends never fail. Keep entries terse.
+- **Stale-owner banner.** Reading a peer's journal whose heartbeat is older
+  than the freshness window prepends a `[STALE: heartbeat Nm old, agent may be
+  dead]` banner, so you don't act on notes from an agent that has since exited.
+- **Archives** live in `.harnery/journal/archived/`. `archive` moves the live
+  file there; `recovery-cue` reads the newest one to build the session-start
+  hint; `janitor` prunes archives past the retention window and sweeps
+  journals whose owning agent is gone.
+- **Pull-based, not push.** Nothing notifies a peer that you wrote something —
+  they read on demand. To hand someone an actionable note they'll see, use
+  `harn agents ping`, which appends a `handoff` entry to *their* journal.

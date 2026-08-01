@@ -65,7 +65,7 @@ the demo is presentable today.
 
 Adopted the lazy-fetch option. `harn web up` / `build` / `start` detect a missing local `web/` (the npm-install case) and fetch the dashboard on first use: clone the matching version tag into `~/.cache/harnery/web/<ref>/`, install the web app's deps (web/ only), and run it; later runs reuse the cache. Implemented in `src/commands/web-fetch.ts` and `src/commands/web.ts`.
 
-What made this the light option, against the bloat feared above: `web/` reaches into `src/` for exactly one module (`harnery/lib/scratch`), which is dependency-free. So the install is `web/`-only: no root install, no Playwright browser download. The clone is a few MB; `web/node_modules` is hardlinked from the package manager's global cache.
+What made this the light option, against the bloat feared above: `web/` reaches into `src/` for exactly one module (`harnery/lib/journal`), which is dependency-free. So the install is `web/`-only: no root install, no Playwright browser download. The clone is a few MB; `web/node_modules` is hardlinked from the package manager's global cache.
 
 The fetched ref defaults to the installed version's tag (`v<version>`), so the dashboard tracks the coord schema the CLI writes. `HARNERY_WEB_REF` overrides it; `--no-fetch` opts out and prints manual steps (which also satisfies the graceful-degradation follow-up below). Lazy-fetch and the Next 16.2.6 build fix ship in the same release, so any version that has lazy-fetch fetches a dashboard that builds.
 

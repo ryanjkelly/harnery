@@ -11,7 +11,7 @@ import { coordEnv } from "../../../lib/env.ts";
  *   2. The harness's project dir (CLAUDE_PROJECT_DIR) — hook processes
  *      inherit the session's *shell* cwd, which follows `cd` into
  *      subdirectories/submodules that may carry a `.harnery/` of their own
- *      (or none at all, e.g. a scratch dir under /tmp). The session's
+ *      (or none at all, e.g. a journal dir under /tmp). The session's
  *      coordination home is the project the harness opened, not wherever the
  *      shell happens to sit, so a project dir that resolves to a coord root
  *      wins over the cwd walk.

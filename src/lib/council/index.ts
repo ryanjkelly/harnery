@@ -1,7 +1,7 @@
 /**
  * Council manifest helpers: file-based multi-agent coordination primitives.
  *
- * Lives under .harnery/councils/ alongside heartbeats + scratchpads. Council
+ * Lives under .harnery/councils/ alongside heartbeats + journals. Council
  * lifecycle commands serialize manifest mutations through a shared flock;
  * round contribution files are per-member and don't need shared locking.
  */
@@ -242,7 +242,7 @@ export interface KnownAgent {
   /** `agent-<Name>` canonical handle. */
   name: string;
   /** `active` = currently has a heartbeat in `.harnery/active/`. `stale` =
-   * recently ended (scratchpad archived within the lookback window). */
+   * recently ended (journal archived within the lookback window). */
   state: "active" | "stale";
   /** ISO timestamp of the most-recent signal. */
   last_seen: string;
@@ -253,7 +253,7 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Active heartbeats + recently-archived scratchpads, deduped by name.
+ * Active heartbeats + recently-archived journals, deduped by name.
  * Used by `agents council set-steward` to refuse arbitrary names;
  * pass `--allow-unknown` to bypass when bootstrapping a new agent.
  */
@@ -261,7 +261,7 @@ export function listKnownAgents(): KnownAgent[] {
   const root = monorepoRoot();
   if (!root) return [];
   const activeDir = resolve(root, ".harnery", "active");
-  const archiveDir = resolve(root, ".harnery", "scratch", "archived");
+  const archiveDir = resolve(root, ".harnery", "journal", "archived");
   const byName = new Map<string, KnownAgent>();
 
   if (existsSync(activeDir)) {
@@ -296,7 +296,7 @@ export function listKnownAgents(): KnownAgent[] {
       if (Number.isNaN(ts) || ts < cutoff) continue;
       try {
         const head = readFileSync(resolve(archiveDir, f), "utf8").slice(0, 200);
-        const nameMatch = head.match(/^#\s+Scratchpad:\s+(agent-[A-Za-z][A-Za-z0-9_-]*)/m);
+        const nameMatch = head.match(/^#\s+Journal:\s+(agent-[A-Za-z][A-Za-z0-9_-]*)/m);
         if (!nameMatch) continue;
         const name = nameMatch[1]!;
         const existing = byName.get(name);

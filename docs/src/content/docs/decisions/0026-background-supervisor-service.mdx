@@ -15,7 +15,7 @@ durable state changes, and exposes enough liveness state to distinguish active,
 stopped, and crashed execution.
 
 The service must not become a second source of truth. Goal state still belongs
-to immutable governor intent, work events, workflow journals, approvals, and
+to immutable governor intent, work events, workflow transcripts, approvals, and
 proof. The service also must not turn a blocked attempt into an unbounded retry
 loop or silently broaden host policy after a restart.
 

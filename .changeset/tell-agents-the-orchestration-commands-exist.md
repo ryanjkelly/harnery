@@ -4,7 +4,7 @@
 
 Tell agents that the orchestration commands exist.
 
-The block harnery splices into `AGENTS.md` is the only thing every agent in a consuming project is guaranteed to read. It described identity, peers, intent, the scratch journal, artifacts, the decision docket, and councils. It never mentioned `workflow`, `work`, or `governor`.
+The block harnery splices into `AGENTS.md` is the only thing every agent in a consuming project is guaranteed to read. It described identity, peers, intent, the journal journal, artifacts, the decision docket, and councils. It never mentioned `workflow`, `work`, or `governor`.
 
 The effect was not subtle. Ask an agent in a harnery project to put a team together and build something, and it reaches for whatever multi-agent primitive its own harness happens to hand it, because as far as its onboarding is concerned harnery does not have one. The three commands that exist for exactly that job stayed invisible, and no amount of README or docs-site coverage reaches an agent that never reads them.
 

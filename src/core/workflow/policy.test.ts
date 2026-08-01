@@ -179,10 +179,10 @@ describe("workflow policy enforcement", () => {
     expect(proof.policy?.decisions.find((decision) => decision.id === "p2")?.resolved_by).toBe(
       "approval",
     );
-    const journal = readFileSync(report.journalPath, "utf8");
-    expect(journal).toContain('"event":"run.parked"');
-    expect(journal).toContain('"event":"run.resume"');
-    expect(journal).toContain('"event":"approval.consumed"');
+    const transcript = readFileSync(report.transcriptPath, "utf8");
+    expect(transcript).toContain('"event":"run.parked"');
+    expect(transcript).toContain('"event":"run.resume"');
+    expect(transcript).toContain('"event":"approval.consumed"');
   });
 
   test("unknown pricing under a ceiling denies before spawn", async () => {

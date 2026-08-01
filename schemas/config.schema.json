@@ -190,7 +190,7 @@
     "sync": {
       "type": "object",
       "additionalProperties": false,
-      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, scratch/archived/, councils/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
+      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, journal/archived/, councils/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
       "properties": {
         "remote": {
           "type": "string",

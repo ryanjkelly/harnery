@@ -237,7 +237,7 @@ export function useLiveSignal(opts: LiveSignalOptions): LiveStatus {
         teardown();
         setStatus("connecting");
       } else {
-        // Re-probe SSE from scratch on return (network path may have changed).
+        // Re-probe SSE from journal on return (network path may have changed).
         retries = 0;
         teardown();
         setStatus("connecting");

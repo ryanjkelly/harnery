@@ -66,11 +66,11 @@ describe("findCoordRoot (hooks-side)", () => {
 
   test("CLAUDE_PROJECT_DIR beats an off-root cwd with no .harnery anywhere", () => {
     process.env.CLAUDE_PROJECT_DIR = root;
-    const scratch = mkdtempSync(path.join(os.tmpdir(), "harn-scratch-"));
+    const journal = mkdtempSync(path.join(os.tmpdir(), "harn-journal-"));
     try {
-      expect(findCoordRoot(scratch)).toBe(root);
+      expect(findCoordRoot(journal)).toBe(root);
     } finally {
-      rmSync(scratch, { recursive: true, force: true });
+      rmSync(journal, { recursive: true, force: true });
     }
   });
 

@@ -1,6 +1,6 @@
 import {
-  listScratchArchives,
-  readScratchArchive,
+  listJournalArchives,
+  readJournalArchive,
 } from "@/lib/coord-reader";
 import { safeOwnerId } from "@/lib/coord-writer";
 
@@ -8,12 +8,12 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * List or read archived scratchpad snapshots for one owner.
+ * List or read archived journal snapshots for one owner.
  *
- *   GET /api/agents/<id>/scratchpad/archives
+ *   GET /api/agents/<id>/journal/archives
  *     → { archives: [{ filename, bytes, archived_at, is_pre_ui_edit }, ...] }
  *
- *   GET /api/agents/<id>/scratchpad/archives?filename=<name>
+ *   GET /api/agents/<id>/journal/archives?filename=<name>
  *     → { filename, body }
  */
 export async function GET(
@@ -29,7 +29,7 @@ export async function GET(
   const url = new URL(request.url);
   const filename = url.searchParams.get("filename");
   if (filename) {
-    const body = readScratchArchive(instanceId, filename);
+    const body = readJournalArchive(instanceId, filename);
     if (body === null) {
       return Response.json(
         { error: "archive not found" },
@@ -42,7 +42,7 @@ export async function GET(
     );
   }
 
-  const archives = listScratchArchives(instanceId);
+  const archives = listJournalArchives(instanceId);
   return Response.json(
     { archives },
     { headers: { "cache-control": "no-store" } },

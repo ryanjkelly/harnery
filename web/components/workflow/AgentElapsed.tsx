@@ -27,8 +27,8 @@ function formatElapsed(ms: number): string {
 /**
  * Ticking elapsed time for an agent that is still in flight.
  *
- * This exists to show the absence of trouble. A run journal records nothing
- * between an agent's start and end, so a page built only from journal writes
+ * This exists to show the absence of trouble. A run transcript records nothing
+ * between an agent's start and end, so a page built only from transcript writes
  * draws a twenty-minute agent and a dead orchestrator exactly the same way. A
  * clock that visibly advances says the agent is working. A clock sitting next to
  * `no live session` says it is not.
@@ -85,7 +85,7 @@ export function AgentElapsed({ startedAt, live }: Props) {
     }
     return (
       <Tooltip
-        content={`Started ${formatDateTime(startedAt)} and journaled as running, but no live child session has been registered for over ${Math.round(HEARTBEAT_GRACE_MS / 1000)}s. Either the agent is between attempts, or the orchestrator exited without writing agent.end.`}
+        content={`Started ${formatDateTime(startedAt)} and transcripted as running, but no live child session has been registered for over ${Math.round(HEARTBEAT_GRACE_MS / 1000)}s. Either the agent is between attempts, or the orchestrator exited without writing agent.end.`}
       >
         <span className="cursor-help text-xs text-muted-foreground">
           <span className="font-mono tabular-nums">{elapsed}</span>

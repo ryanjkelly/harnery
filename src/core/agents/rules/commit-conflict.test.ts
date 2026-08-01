@@ -202,22 +202,22 @@ describe("evaluateCommit", () => {
     expect(v.rule).toBe("commit.conflict");
   });
 
-  test("self-attribution: a held git-ignored scratch path does not defeat suppression", () => {
-    // Agents write scratch files into an ignored directory constantly, and every
+  test("self-attribution: a held git-ignored journal path does not defeat suppression", () => {
+    // Agents write journal files into an ignored directory constantly, and every
     // one of those became a permanent claim git could not vouch for: not staged,
     // not tracked, so Gate A failed for the rest of the session and every commit
     // wanted a bypass. An ignored path cannot appear in anybody's commit, so it
     // cannot be work this commit might clobber.
     const outer = gitInit(root);
-    writeFileSync(join(root, ".gitignore"), "scratch/\n", "utf8");
+    writeFileSync(join(root, ".gitignore"), "journal/\n", "utf8");
     writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
     gitCommitAll(outer, "outer");
 
-    mkdirSync(join(root, "scratch"), { recursive: true });
-    writeFileSync(join(root, "scratch", "notes.txt"), "scratch\n", "utf8");
+    mkdirSync(join(root, "journal"), { recursive: true });
+    writeFileSync(join(root, "journal", "notes.txt"), "journal\n", "utf8");
 
     seedPeer("self", { name: "Maya" });
-    seedPeer("peer", { name: "Maya-transient", files: ["outer.md", "scratch/notes.txt"] });
+    seedPeer("peer", { name: "Maya-transient", files: ["outer.md", "journal/notes.txt"] });
 
     const v = evaluateCommit(root, {
       instance_id: "self",
@@ -256,12 +256,12 @@ describe("evaluateCommit", () => {
     // "unverifiable". This test pins the scrubbing by polluting the environment
     // the way git does.
     const outer = gitInit(root);
-    writeFileSync(join(root, ".gitignore"), "scratch/\n", "utf8");
+    writeFileSync(join(root, ".gitignore"), "journal/\n", "utf8");
     writeFileSync(join(root, "outer.md"), "outer\n", "utf8");
     writeFileSync(join(root, "held.md"), "held\n", "utf8");
     gitCommitAll(outer, "outer");
-    mkdirSync(join(root, "scratch"), { recursive: true });
-    writeFileSync(join(root, "scratch", "notes.txt"), "scratch\n", "utf8");
+    mkdirSync(join(root, "journal"), { recursive: true });
+    writeFileSync(join(root, "journal", "notes.txt"), "journal\n", "utf8");
 
     const otherRepo = join(root, "elsewhere");
     mkdirSync(otherRepo, { recursive: true });
@@ -272,7 +272,7 @@ describe("evaluateCommit", () => {
     seedPeer("self", { name: "Maya" });
     seedPeer("peer", {
       name: "Maya-transient",
-      files: ["outer.md", "held.md", "scratch/notes.txt"],
+      files: ["outer.md", "held.md", "journal/notes.txt"],
     });
 
     const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE };

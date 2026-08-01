@@ -55,7 +55,7 @@ export interface StopHookRequest {
   bypass?: boolean;
   /** Headless child spawned by `harn workflow` (HARNERY_WORKFLOW_CHILD=1).
    * The end-of-turn ritual exists to surface status to a HUMAN reader; a
-   * workflow child reports to the engine's journal instead, so the ritual is
+   * workflow child reports to the engine's transcript instead, so the ritual is
    * meaningless there — worse, blocking burns the child's turn budget on
    * re-prompts (observed as error_max_turns in the Phase 1 spike). Exempting
    * here, rather than disabling the child's hooks wholesale, keeps heartbeat +

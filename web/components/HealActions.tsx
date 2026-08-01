@@ -46,7 +46,7 @@ const KIND_META: Record<
     variant: "outline",
     title: "Run HEARTBEAT_HEAL?",
     description:
-      "If the heartbeat file is missing (agent was killed, prematurely cleaned up, etc.), recreates it from the session_id + resolved name. No-op when the file already exists; this is recovery, not a timestamp refresh. To bump last_heartbeat on a live agent, use the agent's own next hook (or its `scratch add`) instead.",
+      "If the heartbeat file is missing (agent was killed, prematurely cleaned up, etc.), recreates it from the session_id + resolved name. No-op when the file already exists; this is recovery, not a timestamp refresh. To bump last_heartbeat on a live agent, use the agent's own next hook (or its `journal add`) instead.",
     confirmLabel: "Heal heartbeat",
   },
   kill: {

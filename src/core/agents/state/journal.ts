@@ -1,6 +1,6 @@
 /**
- * Scratchpad mutations: append-only timestamped journal at
- * `.harnery/scratch/<instance_id>.md`.
+ * Journal mutations: append-only timestamped transcript at
+ * `.harnery/journal/<instance_id>.md`.
  *
  * Used by the agents-coord web UI route handlers for both operator-nudge
  * appends and inline edits.
@@ -32,12 +32,12 @@ function nowIsoSeconds(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function scratchPath(coordRoot: string, instanceId: string): string {
-  return join(coordRoot, ".harnery", "scratch", `${instanceId}.md`);
+function journalPath(coordRoot: string, instanceId: string): string {
+  return join(coordRoot, ".harnery", "journal", `${instanceId}.md`);
 }
 
 function archivePath(coordRoot: string, instanceId: string, suffix: string): string {
-  return join(coordRoot, ".harnery", "scratch", "archived", `${instanceId}-${suffix}.md`);
+  return join(coordRoot, ".harnery", "journal", "archived", `${instanceId}-${suffix}.md`);
 }
 
 function atomicWriteText(path: string, content: string): void {
@@ -48,10 +48,10 @@ function atomicWriteText(path: string, content: string): void {
 }
 
 /**
- * Append a timestamped entry to the owner's scratchpad.
+ * Append a timestamped entry to the owner's journal.
  * Returns true on success, false if validation failed.
  */
-export function appendScratch(
+export function appendJournal(
   coordRoot: string,
   instanceId: string,
   category: string,
@@ -66,7 +66,7 @@ export function appendScratch(
 
   const trimmedBody =
     body.length > APPEND_BODY_CAP ? `${body.slice(0, APPEND_BODY_CAP - 3)}...` : body;
-  const target = scratchPath(coordRoot, instanceId);
+  const target = journalPath(coordRoot, instanceId);
   const ts = nowIsoSeconds();
 
   let prior = "";
@@ -80,10 +80,10 @@ export function appendScratch(
 }
 
 /**
- * Replace the scratchpad with new body, archiving prior contents and
+ * Replace the journal with new body, archiving prior contents and
  * appending an "(edited via UI by the operator)" audit-marker note.
  */
-export function editScratchpad(
+export function editJournal(
   coordRoot: string,
   instanceId: string,
   newBody: string,
@@ -92,7 +92,7 @@ export function editScratchpad(
   if (typeof newBody !== "string") {
     return { ok: false, reason: "newBody required" };
   }
-  const target = scratchPath(coordRoot, instanceId);
+  const target = journalPath(coordRoot, instanceId);
   const ts = nowIsoSeconds();
   const archiveSuffix = `pre-ui-${ts.replace(/:/g, "-")}`;
   const archive = archivePath(coordRoot, instanceId, archiveSuffix);
@@ -114,7 +114,7 @@ export function editScratchpad(
   const auditMarker =
     `## [${ts}] note (edited via UI by the operator)\n` +
     `${summaryText}\n` +
-    `Pre-edit archived at .harnery/scratch/archived/${instanceId}-${archiveSuffix}.md\n\n`;
+    `Pre-edit archived at .harnery/journal/archived/${instanceId}-${archiveSuffix}.md\n\n`;
 
   atomicWriteText(target, prior + auditMarker + newBody + (newBody.endsWith("\n") ? "" : "\n"));
   return { ok: true, archivePath: archive, path: target };

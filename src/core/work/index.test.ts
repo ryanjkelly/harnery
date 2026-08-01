@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { resolveWorkflowApproval, type Spawner, WorkflowParkedError } from "../workflow/index.ts";
-import { WORKFLOW_JOURNAL_EVENT_BYTES } from "../workflow/journal.ts";
+import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "../workflow/transcript.ts";
 import {
   acceptWorkItem,
   cancelWorkItem,
@@ -298,7 +298,7 @@ describe("durable work ledger", () => {
     });
   });
 
-  test("lists work when a legacy workflow journal record exceeds the reader bound", () => {
+  test("lists work when a legacy workflow transcript record exceeds the reader bound", () => {
     const { root, workflowPath } = fixture();
     createWorkItem({
       coordRoot: root,
@@ -309,54 +309,54 @@ describe("durable work ledger", () => {
     });
     createWorkItem({
       coordRoot: root,
-      id: "oversized-journal",
-      title: "Oversized journal",
+      id: "oversized-transcript",
+      title: "Oversized transcript",
       objective: "Surface the unreadable attempt",
       workflowPath,
       maxAttempts: 2,
     });
     appendFileSync(
-      join(root, ".harnery", "work", "oversized-journal", "events.jsonl"),
+      join(root, ".harnery", "work", "oversized-transcript", "events.jsonl"),
       `${JSON.stringify({
         schema_version: 1,
-        work_id: "oversized-journal",
+        work_id: "oversized-transcript",
         seq: 2,
         ts: new Date().toISOString(),
         event: "attempt.started",
         actor: "legacy-runner",
         reason: "workflow attempt started",
-        run_id: "wf-oversized-journal",
+        run_id: "wf-oversized-transcript",
         attempt: 1,
         trigger: "initial",
       })}\n`,
     );
-    const runDir = join(root, ".harnery", "workflows", "wf-oversized-journal");
+    const runDir = join(root, ".harnery", "workflows", "wf-oversized-transcript");
     mkdirSync(runDir, { recursive: true });
     const oversizedLine = `${JSON.stringify({
       schema_version: 1,
-      run_id: "wf-oversized-journal",
+      run_id: "wf-oversized-transcript",
       ts: new Date().toISOString(),
       event: "agent.end",
       stage: "",
-      result: "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES),
+      result: "x".repeat(WORKFLOW_TRANSCRIPT_EVENT_BYTES),
     })}\n`;
     expect(Buffer.byteLength(oversizedLine.trimEnd())).toBeGreaterThan(
-      WORKFLOW_JOURNAL_EVENT_BYTES,
+      WORKFLOW_TRANSCRIPT_EVENT_BYTES,
     );
-    writeFileSync(join(runDir, "journal.jsonl"), oversizedLine, "utf8");
+    writeFileSync(join(runDir, "transcript.jsonl"), oversizedLine, "utf8");
 
     const records = listWorkItems(root);
     expect(records.map((record) => record.intent.id).sort()).toEqual([
-      "oversized-journal",
+      "oversized-transcript",
       "unaffected",
     ]);
-    const affected = records.find((record) => record.intent.id === "oversized-journal");
+    const affected = records.find((record) => record.intent.id === "oversized-transcript");
     const unaffected = records.find((record) => record.intent.id === "unaffected");
     expect(unaffected?.projection.state).toBe("ready");
     expect(affected?.projection.state).toBe("blocked");
     expect(affected?.projection.next_action).toBe("retry");
-    expect(affected?.projection.attempts.at(-1)?.status).toBe("journal_unreadable");
-    expect(affected?.projection.reason).toContain("journal is unreadable");
+    expect(affected?.projection.attempts.at(-1)?.status).toBe("transcript_unreadable");
+    expect(affected?.projection.reason).toContain("transcript is unreadable");
     expect(affected?.projection.reason).toContain("oversized record");
   });
 

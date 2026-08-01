@@ -2,12 +2,12 @@
 
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
-import type { ScratchCategory } from "@/lib/coord-writer";
+import type { JournalCategory } from "@/lib/coord-writer";
 
 import { CATEGORY_META } from "./categories";
 
 /**
- * Radio-style picker for one of the 7 scratch categories. Each chip carries
+ * Radio-style picker for one of the 7 journal categories. Each chip carries
  * its own tooltip ("what does <category> mean?"), so the operator never has
  * to guess the semantics. Selection is single-choice.
  */
@@ -45,8 +45,8 @@ export function CategoryPicker({
   onChange,
   disabled,
 }: {
-  value: ScratchCategory;
-  onChange: (v: ScratchCategory) => void;
+  value: JournalCategory;
+  onChange: (v: JournalCategory) => void;
   disabled?: boolean;
 }) {
   return (

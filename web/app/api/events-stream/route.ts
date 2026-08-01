@@ -64,7 +64,7 @@ export async function GET(request: Request): Promise<Response> {
   /*
    * Which stream to tail. A workflow child writes to the coord root it runs in,
    * so a run driven from a sibling checkout, a submodule, or a temporary
-   * workspace journals here and emits there. Tailing the local file for such a
+   * workspace transcripts here and emits there. Tailing the local file for such a
    * run yields nothing forever, which reads as an idle run rather than as a
    * stream being watched in the wrong place. Everything downstream (offset pin,
    * watcher, filesize poll, drain) already takes the path as a parameter.

@@ -172,7 +172,7 @@ export function evaluatePolicy(
   };
 }
 
-/** Bound and normalize the receipt-safe subset before it reaches a journal or proof. */
+/** Bound and normalize the receipt-safe subset before it reaches a transcript or proof. */
 export function summarizePolicyRequest(input: PolicyRequest): PolicyRequestSummary {
   if (!isRecord(input)) throw new Error("policy request must be an object");
   const phase = enumValue(input.phase, ["dispatch", "external_mutation"], "policy phase");

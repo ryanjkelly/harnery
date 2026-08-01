@@ -16,11 +16,11 @@ export function readWorkflowLiveness(coordRoot: string, runId: string): Workflow
     }
   }
 
-  const journalPath = join(root, ".harnery", "workflows", runId, "journal.jsonl");
-  if (!existsSync(journalPath)) return "unknown";
+  const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");
+  if (!existsSync(transcriptPath)) return "unknown";
   let events: Array<{ event?: string; run_id?: string; ok?: unknown; status?: unknown }>;
   try {
-    events = readFileSync(journalPath, "utf8")
+    events = readFileSync(transcriptPath, "utf8")
       .split("\n")
       .filter(Boolean)
       .map(

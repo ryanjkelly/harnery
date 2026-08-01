@@ -29,7 +29,7 @@ interface PageProps {
 }
 
 /**
- * /workflows/[runId]: one run as a stages → agents tree, journal-driven so it
+ * /workflows/[runId]: one run as a stages → agents tree, transcript-driven so it
  * stays inspectable while the run is live and after the orchestrator exits.
  */
 export default async function WorkflowRunPage({ params }: PageProps) {
@@ -76,7 +76,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
    * Children now report the agent id the orchestrator stamped into their env, so
    * a live heartbeat says which row it is running and this is exact. The
    * fallback below covers a run started before that stamp existed, or a harness
-   * whose session never reported: unclaimed live sessions go to journaled-running
+   * whose session never reported: unclaimed live sessions go to transcripted-running
    * rows in order. That can pick the wrong row among concurrent agents, but it
    * can never claim more live agents than there are live sessions, which is the
    * part that would mislead.
@@ -108,7 +108,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
 
   const stageTree =
     orderedStages.length === 0 ? (
-      <p className="mb-8 text-sm text-muted-foreground">No agents journaled yet.</p>
+      <p className="mb-8 text-sm text-muted-foreground">No agents transcripted yet.</p>
     ) : (
       <div className="mb-8 space-y-6">
         {orderedStages.map((stageTitle) => (
@@ -125,7 +125,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                   className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm"
                 >
                   <WorkflowStatusBadge status={a.status} />
-                  <Tooltip content="Agent id within this run, assigned in dispatch order. It is the key the journal uses for this agent's start, retries, and end.">
+                  <Tooltip content="Agent id within this run, assigned in dispatch order. It is the key the transcript uses for this agent's start, retries, and end.">
                     <span className="cursor-help font-mono text-xs text-muted-foreground">
                       {a.id}
                     </span>
@@ -200,7 +200,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
   const missingWorkspaceNote =
     runRoot.fallback === "cwd-missing" ? (
       <section className="mb-8">
-        <Tooltip content="A workflow child writes its events to the coordination stream of the checkout it runs in. This run ran in a temporary workspace that has since been removed, so that stream went with it. The journal below is what survives.">
+        <Tooltip content="A workflow child writes its events to the coordination stream of the checkout it runs in. This run ran in a temporary workspace that has since been removed, so that stream went with it. The transcript below is what survives.">
           <h2 className="mb-1 inline-block cursor-help text-sm font-semibold">Activity</h2>
         </Tooltip>
         <p className="text-sm text-muted-foreground">
@@ -217,7 +217,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
     ) : (
       <section className="mb-8">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-          <Tooltip content="Everything this run's child agents actually did: each shell command with its declared intent, each file read or edit, and each turn boundary. The run journal only records agent starts and ends, so this is the only place the work itself shows up.">
+          <Tooltip content="Everything this run's child agents actually did: each shell command with its declared intent, each file read or edit, and each turn boundary. The run transcript only records agent starts and ends, so this is the only place the work itself shows up.">
             <h2 className="cursor-help text-sm font-semibold">Activity</h2>
           </Tooltip>
           <Tooltip content="One child session per agent the run spawned. `live` counts the ones still running, from their coordination heartbeats. Rows are newest-first, the same direction the Live page reads.">
@@ -229,7 +229,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
         </div>
         {runRoot.foreign ? (
           <p className="mb-2 text-xs text-muted-foreground">
-            <Tooltip content="This run executed in another checkout, so its agents wrote their events to that checkout's coordination stream instead of this one. The page reads them from there. The run journal is still local, which is why the run appears in this list at all.">
+            <Tooltip content="This run executed in another checkout, so its agents wrote their events to that checkout's coordination stream instead of this one. The page reads them from there. The run transcript is still local, which is why the run appears in this list at all.">
               <span className="cursor-help">
                 {"read from "}
                 <code className="text-[11px]">{runRoot.root}</code>
@@ -270,7 +270,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
           <h1 className="text-xl font-semibold">{run.name}</h1>
         </div>
         <p className="mb-6 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
-          <Tooltip content="Run id. Its journal lives at .harnery/workflows/<run-id>/journal.jsonl, and `workflow proof <run-id>` prints the terminal proof packet.">
+          <Tooltip content="Run id. Its transcript lives at .harnery/workflows/<run-id>/transcript.jsonl, and `workflow proof <run-id>` prints the terminal proof packet.">
             <span className="cursor-help font-mono">{run.runId}</span>
           </Tooltip>
           {run.startedAt ? (

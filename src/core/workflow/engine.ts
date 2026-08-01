@@ -1,7 +1,7 @@
 /**
  * Workflow engine: loads a workflow script (plain JS, `export default
- * async (ctx) => …`), injects the ctx API, enforces the caps, journals every
- * step to `.harnery/workflows/<run-id>/journal.jsonl`, and returns a RunReport.
+ * async (ctx) => …`), injects the ctx API, enforces the caps, transcripts every
+ * step to `.harnery/workflows/<run-id>/transcript.jsonl`, and returns a RunReport.
  *
  * Guarantees the engine makes (the pitch, in code):
  *   - **Bounded**: hard total-agent ceiling + bounded parallel() concurrency.
@@ -13,7 +13,7 @@
  *     validate; failures re-prompt with the validation errors appended, up to
  *     `maxAttempts`, then throw. Routing decisions read validated fields, so
  *     the deterministic script — not a model — decides what runs next.
- *   - **Journaled**: every stage/agent start+end lands in the run journal with
+ *   - **Transcripted**: every stage/agent start+end lands in the run transcript with
  *     cost, duration, and child session id (the resume + web-UI substrate).
  */
 
@@ -40,7 +40,6 @@ import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
-import { appendWorkflowJournalEvent } from "./journal.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -57,6 +56,7 @@ import {
 } from "./run-state.ts";
 import { assertProjectionWithinWorkspace, resolveGitGrantRoots } from "./sandbox-projection.ts";
 import { normalizeWorkflowSpecialists, resolveSpecialistAssignment } from "./specialists.ts";
+import { appendWorkflowTranscriptEvent } from "./transcript.ts";
 import type {
   AgentOpts,
   EngineOpts,
@@ -127,14 +127,14 @@ export class WorkflowRunError extends Error {
 export class WorkflowParkedError extends Error {
   readonly runId: string;
   readonly approvalId: string;
-  readonly journalPath: string;
+  readonly transcriptPath: string;
 
-  constructor(message: string, runId: string, approvalId: string, journalPath: string) {
+  constructor(message: string, runId: string, approvalId: string, transcriptPath: string) {
     super(message);
     this.name = "WorkflowParkedError";
     this.runId = runId;
     this.approvalId = approvalId;
-    this.journalPath = journalPath;
+    this.transcriptPath = transcriptPath;
   }
 }
 
@@ -263,7 +263,7 @@ async function executeWorkflow(
     `wf-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const runDir = join(opts.coordRoot, ".harnery", "workflows", runId);
   mkdirSync(runDir, { recursive: true });
-  const journalPath = join(runDir, "journal.jsonl");
+  const transcriptPath = join(runDir, "transcript.jsonl");
   const proofPath = join(runDir, "proof.json");
 
   const maxAgents = frozen?.max_agents ?? opts.maxAgents ?? DEFAULT_MAX_AGENTS;
@@ -316,19 +316,19 @@ async function executeWorkflow(
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
     const failedAttestation = await attestWorkspaceFailure(workspaceProvider, frozenBinding, error);
-    appendWorkflowJournalEvent(opts.coordRoot, runId, "run.resume", {
+    appendWorkflowTranscriptEvent(opts.coordRoot, runId, "run.resume", {
       approval_id: resumeState.approvalId,
       script: absScript,
       resumed_at: new Date().toISOString(),
     });
-    appendWorkflowJournalEvent(opts.coordRoot, runId, "workspace.reattach.failed", {
+    appendWorkflowTranscriptEvent(opts.coordRoot, runId, "workspace.reattach.failed", {
       binding_id: frozenBinding.binding_id,
       provider_id: frozenBinding.provider.id,
       status: failedAttestation.status,
       reason: failure.message,
       attestation_sha256: stableDigest(failedAttestation),
     });
-    appendWorkflowJournalEvent(opts.coordRoot, runId, "run.end", {
+    appendWorkflowTranscriptEvent(opts.coordRoot, runId, "run.end", {
       ok: false,
       error: failure.message,
       agents: 0,
@@ -347,7 +347,7 @@ async function executeWorkflow(
         startedAt,
         endedAt,
         durationMs,
-        journalPath,
+        transcriptPath,
         before: resumeState.manifest.repository_before,
         after: resumeState.manifest.repository_before,
         agents: [],
@@ -474,11 +474,16 @@ async function executeWorkflow(
           : undefined;
         throw new Error("workspace authority changed during workflow module initialization");
       }
-      appendWorkflowJournalEvent(opts.coordRoot, runId, "workspace.reattach.module_initialized", {
-        binding_id: workspaceBinding.binding_id,
-        provider_id: workspaceBinding.provider.id,
-        attestation_sha256: stableDigest(postImport),
-      });
+      appendWorkflowTranscriptEvent(
+        opts.coordRoot,
+        runId,
+        "workspace.reattach.module_initialized",
+        {
+          binding_id: workspaceBinding.binding_id,
+          provider_id: workspaceBinding.provider.id,
+          attestation_sha256: stableDigest(postImport),
+        },
+      );
     } catch (error) {
       const reattachmentError = error instanceof Error ? error : new Error(String(error));
       initializationAttestation ??= await attestWorkspaceFailure(
@@ -491,7 +496,7 @@ async function executeWorkflow(
             cause: reattachmentError,
           })
         : reattachmentError;
-      appendWorkflowJournalEvent(
+      appendWorkflowTranscriptEvent(
         opts.coordRoot,
         runId,
         "workspace.reattach.module_initialization_failed",
@@ -519,13 +524,13 @@ async function executeWorkflow(
     );
   }
 
-  // Resume: journaled results of a prior run, keyed by agent-call identity.
+  // Resume: transcripted results of a prior run, keyed by agent-call identity.
   const resumeSource = opts.resumeRunId ?? opts.resumeFrom;
   const resumeCache = resumeSource
     ? loadResumeCache(opts.coordRoot, resumeSource)
     : new Map<string, { kind: "json" | "text"; value: unknown }>();
 
-  const history = opts.resumeRunId ? loadRunHistory(journalPath) : undefined;
+  const history = opts.resumeRunId ? loadRunHistory(transcriptPath) : undefined;
 
   let agentsSpawned = history?.agentsSpawned ?? 0;
   let agentsCached = 0;
@@ -543,10 +548,10 @@ async function executeWorkflow(
   );
   const acceptanceIds = new Set(meta.acceptance.map((criterion) => criterion.id));
 
-  const journal = (event: string, data: Record<string, unknown>): void => {
-    appendWorkflowJournalEvent(opts.coordRoot, runId, event, { stage: currentStage, ...data });
+  const transcript = (event: string, data: Record<string, unknown>): void => {
+    appendWorkflowTranscriptEvent(opts.coordRoot, runId, event, { stage: currentStage, ...data });
   };
-  const journalAgentEnd = (
+  const transcriptAgentEnd = (
     data: Record<string, unknown>,
     resultKind: "text" | "json",
     result: unknown,
@@ -554,7 +559,7 @@ async function executeWorkflow(
     // The writer shrinks an oversized record itself and names what it dropped,
     // so no per-call fallback is needed here. A digest rides along regardless so
     // a shrunk record can still be tied back to the exact result.
-    journal("agent.end", {
+    transcript("agent.end", {
       ...data,
       result_kind: resultKind,
       result_digest: digestResult(result, resultKind),
@@ -611,7 +616,7 @@ async function executeWorkflow(
     const evaluation = evaluatePolicy(policy, request);
     const id = `p${++policySeq}`;
     const checkedAt = new Date().toISOString();
-    journal("policy.check", {
+    transcript("policy.check", {
       id,
       policy: policy.name,
       policy_sha256: policyDigest(policy),
@@ -659,14 +664,14 @@ async function executeWorkflow(
         });
         if (stored.approval.status === "pending") {
           if (stored.created) {
-            journal("approval.requested", {
+            transcript("approval.requested", {
               approval_id: stored.approval.request.id,
               decision_id: id,
               addressed_to: stored.approval.request.addressed_to,
               request_sha256: stored.approval.request.request_sha256,
             });
           }
-          journal("run.parked", {
+          transcript("run.parked", {
             approval_id: stored.approval.request.id,
             decision_id: id,
             phase: request.phase,
@@ -676,13 +681,13 @@ async function executeWorkflow(
             `workflow parked for approval ${stored.approval.request.id}: ${evaluation.reason}`,
             runId,
             stored.approval.request.id,
-            journalPath,
+            transcriptPath,
           );
         }
         verdict = stored.approval.decision!.verdict;
         resolvedBy = "approval";
         reason = boundedPolicyReason(stored.approval.decision!.reason ?? evaluation.reason);
-        journal("approval.consumed", {
+        transcript("approval.consumed", {
           approval_id: stored.approval.request.id,
           decision_id: id,
           verdict,
@@ -705,7 +710,7 @@ async function executeWorkflow(
       request,
     };
     policyDecisions.set(decision.id, decision);
-    journal("policy.resolve", { ...decision });
+    transcript("policy.resolve", { ...decision });
     if (decision.verdict === "deny") {
       throw new PolicyDeniedError(
         `policy ${JSON.stringify(policy.name)} denied ${request.phase} ${JSON.stringify(request.action)}: ${decision.reason}`,
@@ -760,7 +765,7 @@ async function executeWorkflow(
       agentsCached++;
       agentProof.status = "cached";
       agentProof.result = digestResult(cached.value, cached.kind);
-      journal("agent.cached", {
+      transcript("agent.cached", {
         id,
         label,
         key,
@@ -801,7 +806,7 @@ async function executeWorkflow(
           }
           projectedCost = candidate;
         } catch (error) {
-          journal("policy.cost_estimate_failed", {
+          transcript("policy.cost_estimate_failed", {
             harness,
             model: agentOpts.model ?? null,
             error: boundedPolicyReason((error as Error).message),
@@ -847,7 +852,7 @@ async function executeWorkflow(
       if (!billingProbed.has(harness)) {
         const probe = (opts.probeBilling ?? probeBilling)(harness);
         billingProbed.set(harness, probe);
-        journal("billing.probe", {
+        transcript("billing.probe", {
           harness,
           mode: subscriptionOnly ? "subscription" : probe.mode,
           api_key_source: probe.apiKeySource,
@@ -897,7 +902,7 @@ async function executeWorkflow(
 
     await acquire();
     try {
-      journal("agent.start", {
+      transcript("agent.start", {
         id,
         label,
         key,
@@ -930,7 +935,7 @@ async function executeWorkflow(
         costUsd += last.costUsd ?? 0;
 
         if (!last.ok) {
-          journal("agent.attempt_failed", { id, attempt, error: last.error });
+          transcript("agent.attempt_failed", { id, attempt, error: last.error });
           // ADR 0046: an environment failure (the binary was absent) cannot be
           // helped by retrying an unchanged environment, so stop the in-agent
           // retry too — not just the outer attempt/replan budget. An upstream
@@ -944,7 +949,7 @@ async function executeWorkflow(
             agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
           agentProof.session_id = last.sessionId;
           agentProof.result = digestResult(last.text, "text");
-          journalAgentEnd(
+          transcriptAgentEnd(
             {
               id,
               key,
@@ -971,7 +976,7 @@ async function executeWorkflow(
             agentCostUsd > 0 || last.costUsd !== undefined ? agentCostUsd : undefined;
           agentProof.session_id = last.sessionId;
           agentProof.result = digestResult(parsed.value, "json");
-          journalAgentEnd(
+          transcriptAgentEnd(
             {
               id,
               key,
@@ -987,7 +992,7 @@ async function executeWorkflow(
           return parsed.value;
         }
 
-        journal("agent.schema_retry", { id, attempt, problems });
+        transcript("agent.schema_retry", { id, attempt, problems });
         // Keep the original cache identity while making the actual output
         // contract explicit. A full bounded copy of the rejected value lets the
         // child repair omissions instead of reconstructing an unseen object.
@@ -1013,7 +1018,7 @@ async function executeWorkflow(
       // earlier attempt that transiently failed and then succeeded returned
       // above, so this only fires when the agent genuinely failed.
       if (last && !last.ok && last.class) agentProof.class = last.class;
-      journal("agent.failed", { id, error: reason });
+      transcript("agent.failed", { id, error: reason });
       throw new Error(`agent ${proofLabel}: ${reason}`);
     } catch (error) {
       agentProof.error ??= (error as Error).message;
@@ -1031,7 +1036,7 @@ async function executeWorkflow(
     return Promise.all(
       thunks.map((t) =>
         t().catch((err: unknown) => {
-          journal("parallel.item_failed", { error: (err as Error).message });
+          transcript("parallel.item_failed", { error: (err as Error).message });
           return null;
         }),
       ),
@@ -1040,7 +1045,7 @@ async function executeWorkflow(
 
   const stage = (title: string): void => {
     currentStage = title;
-    journal("stage.start", { title });
+    transcript("stage.start", { title });
     log(`[${name}] ── stage: ${title}`);
   };
 
@@ -1053,7 +1058,7 @@ async function executeWorkflow(
     });
     evidenceSeq++;
     evidenceRecords.push(record);
-    journal("evidence.recorded", { ...record });
+    transcript("evidence.recorded", { ...record });
     return record.id;
   };
 
@@ -1086,13 +1091,13 @@ async function executeWorkflow(
   };
   try {
     if (resumeState) {
-      journal("run.resume", {
+      transcript("run.resume", {
         approval_id: resumeState.approvalId,
         script: absScript,
         resumed_at: new Date().toISOString(),
       });
     } else {
-      journal("run.start", {
+      transcript("run.start", {
         name,
         work_item_id: opts.workItemId ?? null,
         work_context: workContext ?? null,
@@ -1127,7 +1132,7 @@ async function executeWorkflow(
         }`,
       );
     }
-    journal("run.end", {
+    transcript("run.end", {
       ok: true,
       agents: agentsSpawned,
       cached: agentsCached,
@@ -1146,7 +1151,7 @@ async function executeWorkflow(
         startedAt,
         endedAt,
         durationMs,
-        journalPath,
+        transcriptPath,
         before: executionRepoBefore,
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
@@ -1185,7 +1190,7 @@ async function executeWorkflow(
       agentsCached,
       costUsd: round4(costUsd),
       durationMs,
-      journalPath,
+      transcriptPath,
       proofPath,
       acceptance: proof.acceptance.summary,
       contextTokensPerChildEstimate,
@@ -1204,7 +1209,7 @@ async function executeWorkflow(
     if (err instanceof WorkflowRunError) throw err;
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - t0;
-    journal("run.end", {
+    transcript("run.end", {
       ok: false,
       error: (err as Error).message,
       agents: agentsSpawned,
@@ -1227,7 +1232,7 @@ async function executeWorkflow(
         startedAt,
         endedAt,
         durationMs,
-        journalPath,
+        transcriptPath,
         before: executionRepoBefore,
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
@@ -1315,17 +1320,17 @@ function estimateInstructionTokens(cwd: string): number {
   return 0;
 }
 
-/** Load a prior run's journal into a key → result map. Only `agent.end`
+/** Load a prior run's transcript into a key → result map. Only `agent.end`
  * entries (completed, validated) are resumable; failed or retried-out agents
- * re-run live. Unreadable journal → error (a typo'd run id should fail loud,
+ * re-run live. Unreadable transcript → error (a typo'd run id should fail loud,
  * not silently run everything fresh). */
 function loadResumeCache(
   coordRoot: string,
   resumeFrom: string,
 ): Map<string, { kind: "json" | "text"; value: unknown }> {
-  const path = join(coordRoot, ".harnery", "workflows", resumeFrom, "journal.jsonl");
+  const path = join(coordRoot, ".harnery", "workflows", resumeFrom, "transcript.jsonl");
   if (!existsSync(path)) {
-    throw new Error(`--resume-from ${resumeFrom}: no journal at ${path}`);
+    throw new Error(`--resume-from ${resumeFrom}: no transcript at ${path}`);
   }
   const cache = new Map<string, { kind: "json" | "text"; value: unknown }>();
   for (const line of readFileSync(path, "utf8").split("\n")) {

@@ -39,7 +39,7 @@ and uses the existing 2,000-character plan-event bound.
 
 Acceptance appends one `plan.retry_requested` event to the addressed plan. It
 does not edit the request, proposal, review receipt, attention event, workflow
-journal, or existing work graph. The plan derives the new
+transcript, or existing work graph. The plan derives the new
 `retry_requested` status from that event. Repeating the same operation after a
 successful append is idempotent and returns the existing outcome without
 appending a second event.
@@ -94,5 +94,5 @@ budgets reject the transition.
 - Replan counts remain cumulative. An attention plan that used the final slot
   can be inspected but cannot be retried.
 - Process loss before the event append changes nothing. Process loss after the
-  append is recoverable from the event journal and ordinary governor
+  append is recoverable from the event transcript and ordinary governor
   projection.

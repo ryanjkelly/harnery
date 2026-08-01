@@ -7,8 +7,8 @@ import {
 } from "harnery/core/workflow/workspaces/inspect";
 
 /**
- * Journal-driven reader for workflow runs (`.harnery/workflows/<run-id>/
- * journal.jsonl`). The journal is the source of truth for run structure —
+ * Transcript-driven reader for workflow runs (`.harnery/workflows/<run-id>/
+ * transcript.jsonl`). The transcript is the source of truth for run structure —
  * heartbeats only add live color — so this reader needs nothing but fs.
  */
 
@@ -25,7 +25,7 @@ export interface WorkflowAgentRow {
   sessionId?: string;
   /** `agent.start` ts. The anchor for a live elapsed timer, which is the only
    * thing distinguishing a working agent from a hung one mid-run: a child that
-   * works for 18 minutes writes nothing to the journal between its two ends. */
+   * works for 18 minutes writes nothing to the transcript between its two ends. */
   startedAt?: string;
   /** `agent.end` / `agent.failed` ts. Absent while the agent is in flight. */
   endedAt?: string;
@@ -43,13 +43,13 @@ export interface WorkflowRunSummary {
   agents: WorkflowAgentRow[];
   agentsCached: number;
   costUsd: number;
-  /** "harness=mode" per harness used (from billing.probe journal events). */
+  /** "harness=mode" per harness used (from billing.probe transcript events). */
   billing: string[];
   /** Terminal proof packet, absent for live and pre-proof runs. */
   proof?: WorkflowProof;
   /** Validated workspace projection, including an explicit error on bad authority. */
   workspace?: WorkflowWorkspaceInspection;
-  /** Journal mtime — the liveness signal for status=running vs stale. */
+  /** Transcript mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
   /** Durable work item this run is an attempt at, from `run.json`. Absent for a
    * run launched directly from a script rather than against a work item. */
@@ -58,7 +58,7 @@ export interface WorkflowRunSummary {
   attempt?: { number?: number; trigger?: string };
 }
 
-interface JournalLine {
+interface TranscriptLine {
   ts?: string;
   event?: string;
   stage?: string;
@@ -79,7 +79,7 @@ interface JournalLine {
   approval_id?: string;
 }
 
-/** A run with no journal writes for this long, and no run.end, is "stale"
+/** A run with no transcript writes for this long, and no run.end, is "stale"
  * (orchestrator likely killed) rather than "running". */
 const STALE_MS = 10 * 60 * 1000;
 
@@ -87,7 +87,7 @@ const STALE_MS = 10 * 60 * 1000;
 export interface WorkflowChildSession {
   sessionId: string;
   /** The agent row this session ran, when known: from the heartbeat's
-   * `workflow_agent_id` while live, or the journal's `agent.end` once ended. */
+   * `workflow_agent_id` while live, or the transcript's `agent.end` once ended. */
   agentId?: string;
   /** A heartbeat for this session is present and unterminated. */
   live: boolean;
@@ -128,9 +128,9 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
  * Every child harness session of a run, live and finished.
  *
  * Both sources are needed, and together they leave no gap: a live child appears
- * only in `.harnery/active/` (the journal does not learn its session id until
+ * only in `.harnery/active/` (the transcript does not learn its session id until
  * `agent.end`, because the harness mints the id and only reports it in the
- * result envelope), and a finished child appears only in the journal (its
+ * result envelope), and a finished child appears only in the transcript (its
  * heartbeat is deleted on session end).
  *
  * This is the join key for run-scoped activity: child sessions write ordinary
@@ -141,7 +141,7 @@ export function readWorkflowChildSessions(
   root: string,
   runId: string,
   /** Root holding the children's heartbeats, when the run executed in another
-   * checkout. The journal stays in `root`; only `.harnery/active/` moves. */
+   * checkout. The transcript stays in `root`; only `.harnery/active/` moves. */
   opts: { heartbeatRoot?: string } = {},
 ): WorkflowChildSession[] {
   const byId = new Map<string, WorkflowChildSession>();
@@ -158,7 +158,7 @@ export function readWorkflowChildSessions(
   for (const agent of run?.agents ?? []) {
     if (!agent.sessionId) continue;
     const existing = byId.get(agent.sessionId);
-    // The journal is authoritative for which agent ran a session; the heartbeat
+    // The transcript is authoritative for which agent ran a session; the heartbeat
     // is authoritative for whether it is still running.
     byId.set(agent.sessionId, {
       sessionId: agent.sessionId,
@@ -201,12 +201,12 @@ export function readWorkflowRun(
    * instead of once per run. Read on demand when omitted. */
   heartbeats?: Map<string, ChildHeartbeat[]>,
 ): WorkflowRunSummary | null {
-  const journalPath = join(root, ".harnery", "workflows", runId, "journal.jsonl");
-  if (!existsSync(journalPath)) return null;
+  const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");
+  if (!existsSync(transcriptPath)) return null;
 
   let mtimeIso = new Date(0).toISOString();
   try {
-    mtimeIso = statSync(journalPath).mtime.toISOString();
+    mtimeIso = statSync(transcriptPath).mtime.toISOString();
   } catch {
     /* keep epoch */
   }
@@ -225,11 +225,11 @@ export function readWorkflowRun(
   const workspace = readWorkspaceInspection(root, runId);
   const manifest = readRunManifestFacts(root, runId);
 
-  for (const line of readFileSync(journalPath, "utf8").split("\n")) {
+  for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    let e: JournalLine;
+    let e: TranscriptLine;
     try {
-      e = JSON.parse(line) as JournalLine;
+      e = JSON.parse(line) as TranscriptLine;
     } catch {
       continue;
     }
@@ -306,7 +306,7 @@ export function readWorkflowRun(
     }
   }
 
-  // A live child heartbeat outranks journal quiet. Journal mtime alone reported
+  // A live child heartbeat outranks transcript quiet. Transcript mtime alone reported
   // a healthy run as STALE, because an agent that works for longer than
   // STALE_MS writes nothing between `agent.start` and `agent.end`. The quiet
   // is the work, not a dead orchestrator.
@@ -413,15 +413,15 @@ const COORD_ROOT_WALK_LIMIT = 8;
  * Resolve the coord root that holds a run's child events.
  *
  * A workflow child writes its events to whichever coord root it runs in, which
- * is not always the root holding the run journal: a run driven from a sibling
- * checkout, a submodule, or a temporary workspace journals here and emits
+ * is not always the root holding the run transcript: a run driven from a sibling
+ * checkout, a submodule, or a temporary workspace transcripts here and emits
  * there. Reading the local stream for such a run finds nothing, which the page
  * used to present as "this run did nothing".
  *
  * The recorded cwd is a directory, not a coord root, so this walks up from it
  * the same way `coordRoot()` does. When that walk comes up empty the local root
  * is the right answer and not a consolation prize: a run whose cwd sits outside
- * any checkout was journaled here because the orchestrator's own root was here.
+ * any checkout was transcripted here because the orchestrator's own root was here.
  */
 export function resolveRunCoordRoot(localRoot: string, runId: string): RunCoordRoot {
   const manifestPath = join(localRoot, ".harnery", "workflows", runId, "run.json");

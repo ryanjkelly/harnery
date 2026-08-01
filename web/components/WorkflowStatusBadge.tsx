@@ -6,14 +6,14 @@ import { Badge } from "@/components/ui/badge";
  * a run can be `done` while individual agents inside it failed. */
 const STATUS_HINTS: Record<string, string> = {
   running:
-    "The run is in flight. A run stays running as long as a child agent's heartbeat is alive, however long it goes without writing to its journal.",
+    "The run is in flight. A run stays running as long as a child agent's heartbeat is alive, however long it goes without writing to its transcript.",
   done: "The orchestrator finished and reported success. Individual agents may still have retried along the way.",
   failed:
-    "The run ended without success. The journal records which agent failed and why; the proof packet below records what had been established before it did.",
+    "The run ended without success. The transcript records which agent failed and why; the proof packet below records what had been established before it did.",
   parked:
     "Stopped on a durable approval. No further protected work runs until someone resolves the request and resumes the run explicitly.",
   stale:
-    "No live child and no journal write for a while, with no run.end. The orchestrator most likely died. This is not a reported failure, it is the absence of any report.",
+    "No live child and no transcript write for a while, with no run.end. The orchestrator most likely died. This is not a reported failure, it is the absence of any report.",
   cached:
     "Skipped because an identical call in an earlier run already produced this result. Nothing was spawned and nothing was charged.",
 };

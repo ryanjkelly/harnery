@@ -19,7 +19,7 @@ import {
 } from "../agents/index.ts";
 
 /**
- * Agent scratchpad: per-agent markdown journal at `.harnery/scratch/<instance_id>.md`.
+ * Agent journal: per-agent markdown journal at `.harnery/journal/<instance_id>.md`.
  *
  * Rules:
  *   - Single writer (the agent itself, via this lib). Peers read but never write.
@@ -27,12 +27,12 @@ import {
  *   - Strict entry-header format: `## <Chicago datetime> · <category>`. The
  *     linter enforces this so format violations are impossible at the write path.
  *   - 50 KB hard cap; auto-prunes oldest entries when exceeded.
- *   - SessionEnd hook archives to `.harnery/scratch/archived/<instance_id>-<ts>.md`;
+ *   - SessionEnd hook archives to `.harnery/journal/archived/<instance_id>-<ts>.md`;
  *     SessionStart janitor deletes archives older than 7 days + surfaces the
  *     most-recent archive as a recovery cue.
  */
 
-export const SCRATCH_CATEGORIES = [
+export const JOURNAL_CATEGORIES = [
   "note",
   "plan",
   "decision",
@@ -42,27 +42,27 @@ export const SCRATCH_CATEGORIES = [
   "handoff",
 ] as const;
 
-export type ScratchCategory = (typeof SCRATCH_CATEGORIES)[number];
+export type JournalCategory = (typeof JOURNAL_CATEGORIES)[number];
 
-export const MAX_SCRATCH_BYTES = 50 * 1024;
-export const WARN_SCRATCH_BYTES = 40 * 1024;
+export const MAX_JOURNAL_BYTES = 50 * 1024;
+export const WARN_JOURNAL_BYTES = 40 * 1024;
 export const ARCHIVE_RETENTION_DAYS = 7;
 
 /** Entry-header regex: `## 2026-05-15 1:48 AM CDT · note` */
 export const ENTRY_HEADER_RE =
   /^## (\d{4}-\d{2}-\d{2}) (\d{1,2}):(\d{2}) (AM|PM) (CDT|CST) · (note|plan|decision|blocker|question|done|handoff)$/;
 
-/** First line of every scratchpad file: this prefix followed by the agent name. */
-export const SCRATCHPAD_HEADER_PREFIX = "# Scratchpad: agent-";
+/** First line of every journal file: this prefix followed by the agent name. */
+export const JOURNAL_HEADER_PREFIX = "# Journal: agent-";
 
-export interface ScratchEntry {
+export interface JournalEntry {
   ts_iso: string; // canonical ISO (computed from Chicago wall time at write)
   ts_display: string; // "2026-05-15 1:48 AM CDT", what's in the file
-  category: ScratchCategory;
+  category: JournalCategory;
   body: string;
 }
 
-export interface ScratchHeader {
+export interface JournalHeader {
   name: string;
   session_id: string;
   machine: string;
@@ -70,32 +70,32 @@ export interface ScratchHeader {
   last_updated: string;
 }
 
-export interface ScratchDoc {
+export interface JournalDoc {
   path: string;
-  header: ScratchHeader;
-  entries: ScratchEntry[];
+  header: JournalHeader;
+  entries: JournalEntry[];
   bytes: number;
 }
 
 // ─── Paths ────────────────────────────────────────────────────────────────
 
-export function scratchDir(): string {
+export function journalDir(): string {
   const root = monorepoRoot();
   if (!root) throw new Error("Not in a coord-aware repo (coord_root() returned null).");
-  const dir = resolve(root, ".harnery", "scratch");
+  const dir = resolve(root, ".harnery", "journal");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 export function archiveDir(): string {
-  const dir = resolve(scratchDir(), "archived");
+  const dir = resolve(journalDir(), "archived");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-export function scratchPath(instanceId: string): string {
+export function journalPath(instanceId: string): string {
   assertSafeInstanceId(instanceId);
-  return resolveContainedFile(scratchDir(), `${instanceId}.md`);
+  return resolveContainedFile(journalDir(), `${instanceId}.md`);
 }
 
 // ─── Chicago time formatting ──────────────────────────────────────────────
@@ -127,22 +127,22 @@ export function formatChicago(d: Date = new Date()): string {
 
 // ─── Parse / serialize ────────────────────────────────────────────────────
 
-/** Parse a scratchpad file (or empty content) into a structured doc. */
-export function parseScratch(path: string, content: string): ScratchDoc {
+/** Parse a journal file (or empty content) into a structured doc. */
+export function parseJournal(path: string, content: string): JournalDoc {
   const lines = content.split("\n");
-  const header: ScratchHeader = {
+  const header: JournalHeader = {
     name: "unknown",
     session_id: "",
     machine: "",
     started: "",
     last_updated: "",
   };
-  const entries: ScratchEntry[] = [];
+  const entries: JournalEntry[] = [];
 
   let i = 0;
   // ── header ──
-  if (lines[i]?.startsWith(SCRATCHPAD_HEADER_PREFIX)) {
-    header.name = lines[i].replace(SCRATCHPAD_HEADER_PREFIX, "").trim();
+  if (lines[i]?.startsWith(JOURNAL_HEADER_PREFIX)) {
+    header.name = lines[i].replace(JOURNAL_HEADER_PREFIX, "").trim();
     i++;
   }
   for (; i < lines.length; i++) {
@@ -181,7 +181,7 @@ export function parseScratch(path: string, content: string): ScratchDoc {
     entries.push({
       ts_iso: chicagoToIso(date, hour, minute, period as "AM" | "PM", tz as "CDT" | "CST"),
       ts_display: `${date} ${hour}:${minute} ${period} ${tz}`,
-      category: category as ScratchCategory,
+      category: category as JournalCategory,
       body: bodyLines.join("\n").trim(),
     });
     currentHeader = null;
@@ -203,9 +203,9 @@ export function parseScratch(path: string, content: string): ScratchDoc {
 }
 
 /** Serialize a parsed doc back to markdown. */
-export function serializeScratch(doc: ScratchDoc): string {
+export function serializeJournal(doc: JournalDoc): string {
   const lines: string[] = [];
-  lines.push(`${SCRATCHPAD_HEADER_PREFIX}${doc.header.name}`);
+  lines.push(`${JOURNAL_HEADER_PREFIX}${doc.header.name}`);
   if (doc.header.session_id) lines.push(`session_id: ${doc.header.session_id}`);
   if (doc.header.machine) lines.push(`machine: ${doc.header.machine}`);
   if (doc.header.started) lines.push(`started: ${doc.header.started}`);
@@ -245,13 +245,13 @@ export interface LintIssue {
   message: string;
 }
 
-export function lintScratch(content: string, byteCap = MAX_SCRATCH_BYTES): LintIssue[] {
+export function lintJournal(content: string, byteCap = MAX_JOURNAL_BYTES): LintIssue[] {
   const issues: LintIssue[] = [];
   const lines = content.split("\n");
 
   // Frontmatter checks
-  if (!lines[0]?.startsWith(SCRATCHPAD_HEADER_PREFIX)) {
-    issues.push({ line: 1, message: `missing '${SCRATCHPAD_HEADER_PREFIX}<name>' header` });
+  if (!lines[0]?.startsWith(JOURNAL_HEADER_PREFIX)) {
+    issues.push({ line: 1, message: `missing '${JOURNAL_HEADER_PREFIX}<name>' header` });
   }
   for (const required of ["session_id:", "machine:", "started:"]) {
     if (!lines.slice(0, 10).some((l) => l.startsWith(required))) {
@@ -310,17 +310,17 @@ export function lintScratch(content: string, byteCap = MAX_SCRATCH_BYTES): LintI
 
 export function appendEntry(
   instanceId: string,
-  category: ScratchCategory,
+  category: JournalCategory,
   body: string,
-): ScratchDoc {
+): JournalDoc {
   const hb = readHeartbeat(instanceId);
-  const path = scratchPath(instanceId);
-  let doc: ScratchDoc;
+  const path = journalPath(instanceId);
+  let doc: JournalDoc;
   if (existsSync(path)) {
-    doc = parseScratch(path, readFileSync(path, "utf8"));
+    doc = parseJournal(path, readFileSync(path, "utf8"));
   } else {
     // Seed `started` from the heartbeat's session start so cross-agent writes
-    // (`harn agents ping`) don't stamp the peer's scratchpad with our wall-clock.
+    // (`harn agents ping`) don't stamp the peer's journal with our wall-clock.
     const startedSeed = hb?.started_at ? formatChicago(new Date(hb.started_at)) : formatChicago();
     doc = {
       path,
@@ -337,7 +337,7 @@ export function appendEntry(
   }
 
   const now = new Date();
-  const entry: ScratchEntry = {
+  const entry: JournalEntry = {
     ts_iso: now.toISOString(),
     ts_display: formatChicago(now),
     category,
@@ -350,22 +350,22 @@ export function appendEntry(
   }
 
   // Prune from the tail until under cap.
-  let serialized = serializeScratch(doc);
+  let serialized = serializeJournal(doc);
   let pruned = 0;
-  while (Buffer.byteLength(serialized, "utf8") > MAX_SCRATCH_BYTES && doc.entries.length > 1) {
+  while (Buffer.byteLength(serialized, "utf8") > MAX_JOURNAL_BYTES && doc.entries.length > 1) {
     doc.entries.pop();
     pruned++;
-    serialized = serializeScratch(doc);
+    serialized = serializeJournal(doc);
   }
   if (pruned > 0) {
-    const pruneEntry: ScratchEntry = {
+    const pruneEntry: JournalEntry = {
       ts_iso: new Date().toISOString(),
       ts_display: formatChicago(),
       category: "note",
-      body: `(auto-pruned ${pruned} oldest entries to stay under ${MAX_SCRATCH_BYTES}-byte cap)`,
+      body: `(auto-pruned ${pruned} oldest entries to stay under ${MAX_JOURNAL_BYTES}-byte cap)`,
     };
     doc.entries.unshift(pruneEntry);
-    serialized = serializeScratch(doc);
+    serialized = serializeJournal(doc);
   }
   doc.bytes = Buffer.byteLength(serialized, "utf8");
 
@@ -381,9 +381,9 @@ export function appendEntry(
 // ─── Archive lifecycle ────────────────────────────────────────────────────
 
 /** Move `<owner>.md` → `archived/<owner>-<ts>.md`. No-op if missing. Returns archive path (or null). */
-export function archiveScratch(instanceId: string): string | null {
+export function archiveJournal(instanceId: string): string | null {
   assertSafeInstanceId(instanceId);
-  const src = scratchPath(instanceId);
+  const src = journalPath(instanceId);
   if (!existsSync(src)) return null;
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const dest = resolveContainedFile(archiveDir(), `${instanceId}-${ts}.md`);
@@ -412,16 +412,16 @@ export function pruneArchives(days = ARCHIVE_RETENTION_DAYS): number {
   return deleted;
 }
 
-/** Sweep `.harnery/scratch/<owner>.md` files whose corresponding heartbeat is gone. */
-export function sweepOrphanScratchpads(): string[] {
-  const dir = scratchDir();
+/** Sweep `.harnery/journal/<owner>.md` files whose corresponding heartbeat is gone. */
+export function sweepOrphanJournals(): string[] {
+  const dir = journalDir();
   const archived: string[] = [];
   for (const f of readdirSync(dir)) {
     if (!f.endsWith(".md")) continue;
     const instanceId = f.replace(/\.md$/, "");
     const hb = readHeartbeat(instanceId);
     if (!hb) {
-      const dest = archiveScratch(instanceId);
+      const dest = archiveJournal(instanceId);
       if (dest) archived.push(dest);
     }
   }
@@ -457,10 +457,10 @@ export function currentOwnerOrThrow(): string {
   return owner;
 }
 
-export function loadScratch(instanceId: string): ScratchDoc | null {
-  const path = scratchPath(instanceId);
+export function loadJournal(instanceId: string): JournalDoc | null {
+  const path = journalPath(instanceId);
   if (!existsSync(path)) return null;
-  return parseScratch(path, readFileSync(path, "utf8"));
+  return parseJournal(path, readFileSync(path, "utf8"));
 }
 
 /** Resolve an agent name → instance_id by walking active heartbeats (case-insensitive). */

@@ -292,7 +292,7 @@ function debugGate(coordRoot: string, detail: Record<string, string>): void {
 /**
  * Does git ignore this path?
  *
- * Such a claim is safe to look past. Agents write scratch files into ignored
+ * Such a claim is safe to look past. Agents write journal files into ignored
  * directories constantly, and each one used to leave a claim that Gate A could
  * never vouch for: not staged, not tracked, therefore "unknown", therefore
  * blocked. That defeated self-attribution for the rest of a session and taught

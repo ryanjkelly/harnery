@@ -147,7 +147,9 @@ describe("shared and explicit-provider compatibility", () => {
       readFileSync(join(root, ".harnery", "workflows", report.runId, "run.json"), "utf8"),
     );
     expect(manifest.execution.workspace_fallback).toEqual(proof.execution);
-    expect(readFileSync(report.journalPath, "utf8")).toContain('"event":"workspace.compatibility"');
+    expect(readFileSync(report.transcriptPath, "utf8")).toContain(
+      '"event":"workspace.compatibility"',
+    );
   });
 
   test("unsupported providers fall back only when frozen policy allows shared execution", async () => {
@@ -240,7 +242,7 @@ describe("shared and explicit-provider compatibility", () => {
     expect(
       existsSync(join(root, ".harnery", "workflows", report.runId, "workspace-request.json")),
     ).toBe(false);
-    expect(readFileSync(report.journalPath, "utf8")).toContain('"event":"workspace.fallback"');
+    expect(readFileSync(report.transcriptPath, "utf8")).toContain('"event":"workspace.fallback"');
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
     expect(proof.execution).toEqual({
       schema_version: 1,
@@ -348,16 +350,16 @@ describe("shared and explicit-provider compatibility", () => {
       expect((failure as Error).message).toMatch(message);
       expect(reattachCalls).toBe(2);
       expect(existsSync(join(repo, ".harnery", "workflows", runId, "run.json"))).toBe(true);
-      const journal = readFileSync(
-        join(repo, ".harnery", "workflows", runId, "journal.jsonl"),
+      const transcript = readFileSync(
+        join(repo, ".harnery", "workflows", runId, "transcript.jsonl"),
         "utf8",
       )
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
-      expect(journal.some((event) => event.event === "workspace.reattach.module_initialized")).toBe(
-        true,
-      );
+      expect(
+        transcript.some((event) => event.event === "workspace.reattach.module_initialized"),
+      ).toBe(true);
       const proof = JSON.parse(
         readFileSync(join(repo, ".harnery", "workflows", runId, "proof.json"), "utf8"),
       ) as WorkflowProof;
@@ -473,7 +475,7 @@ describe("shared and explicit-provider compatibility", () => {
       expect(attestation.provider_drift).toContain("source repository identity mismatch");
       expect(proof.execution?.terminal_lifecycle_state).toBe("blocked");
       expect(
-        readFileSync(join(repo, ".harnery", "workflows", runId, "journal.jsonl"), "utf8"),
+        readFileSync(join(repo, ".harnery", "workflows", runId, "transcript.jsonl"), "utf8"),
       ).toContain('"event":"workspace.reattach.module_initialization_failed"');
     } finally {
       restoreSource?.();
@@ -756,16 +758,16 @@ export default async ({ authorize, agent }) => {
         },
       }),
     ).rejects.toBeInstanceOf(WorkflowRunError);
-    const journal = readFileSync(
-      join(repo, ".harnery", "workflows", parked!.runId, "journal.jsonl"),
+    const transcript = readFileSync(
+      join(repo, ".harnery", "workflows", parked!.runId, "transcript.jsonl"),
       "utf8",
     )
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    expect(journal.some((event) => event.event === "run.resume")).toBe(true);
-    expect(journal.some((event) => event.event === "workspace.reattach.failed")).toBe(true);
-    expect(journal.at(-1)?.event).toBe("run.end");
+    expect(transcript.some((event) => event.event === "run.resume")).toBe(true);
+    expect(transcript.some((event) => event.event === "workspace.reattach.failed")).toBe(true);
+    expect(transcript.at(-1)?.event).toBe("run.end");
     const proof = JSON.parse(
       readFileSync(join(repo, ".harnery", "workflows", parked!.runId, "proof.json"), "utf8"),
     ) as WorkflowProof;
@@ -1037,7 +1039,7 @@ export default async ({ authorize, agent }) => {
     const binding = report.workspaceBinding!;
     rmSync(report.proofPath);
     writeFileSync(
-      report.journalPath,
+      report.transcriptPath,
       [
         { event: "run.start", run_id: report.runId },
         { event: "run.parked", run_id: report.runId },
@@ -2373,7 +2375,7 @@ exec "$HARNERY_REAL_GIT" "$@"
     );
   });
 
-  test("rejects digest-consistent event journals with foreign claim authority", async () => {
+  test("rejects digest-consistent event transcripts with foreign claim authority", async () => {
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-foreign-event-authority");
     tracked(host);
@@ -2404,7 +2406,7 @@ exec "$HARNERY_REAL_GIT" "$@"
       { workspace_id: "foreign-workspace" },
       { request_sha256: "f".repeat(64) },
     ]) {
-      rewriteEventJournal(eventsPath, rewrite);
+      rewriteEventTranscript(eventsPath, rewrite);
       await expect(provider.reattach(binding)).rejects.toThrow(/workspace event 1 is corrupt/);
       writeFileSync(eventsPath, eventsBody);
     }
@@ -2487,7 +2489,7 @@ function restoreEnvironment(key: string, value: string | undefined): void {
   else process.env[key] = value;
 }
 
-function rewriteEventJournal(
+function rewriteEventTranscript(
   path: string,
   rewrite: Partial<Pick<WorkspaceProviderEvent, "request_sha256" | "workspace_id">>,
 ): void {

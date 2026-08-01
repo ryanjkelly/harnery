@@ -14,7 +14,7 @@ find, but the directory name cannot say whether an agent still uses them or
 whether someone deliberately extended their lifetime.
 
 Harnery already owns repository-local agent identity and liveness. It can give
-these files a lifecycle without turning them into scratch-journal entries or
+these files a lifecycle without turning them into journal-transcript entries or
 durable workflow evidence.
 
 ## Alternatives considered
@@ -22,7 +22,7 @@ durable workflow evidence.
 **Keep a dated repo-root temp directory.** Rejected. Cleanup would still infer
 intent from a filename and could not protect work owned by a live agent.
 
-**Store working files in `.harnery/scratch/`.** Rejected. Scratch is a bounded
+**Store working files in `.harnery/journal/`.** Rejected. Journal is a bounded
 markdown journal for context recovery and peer handoff. Binary files and large
 exports have a different lifecycle.
 

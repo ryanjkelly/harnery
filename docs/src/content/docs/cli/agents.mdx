@@ -32,7 +32,7 @@ harn agents identity assume <name-or-id> # continue a durable role in this sessi
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
 harn agents watch               # stream peer state changes in real time
-harn agents ping <name> <msg>   # leave a handoff note in a peer's scratchpad
+harn agents ping <name> <msg>   # leave a handoff note in a peer's journal
 harn agents wait <name>         # block until a peer releases its files (or exits)
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
 harn agents health              # one-screen coord-layer health rollup
@@ -162,7 +162,7 @@ The coordination-in-motion commands.
   `.harnery/active/`), printing one line per delta: started, ended, activity,
   file claim, task change. `--poll-ms <n>` tunes the debounce (default `200`).
 - **`ping <name> <message...>`** appends a `handoff` entry to a peer's
-  scratchpad, prefixed `from agent-<me>:`. Use it to leave an actionable note
+  journal, prefixed `from agent-<me>:`. Use it to leave an actionable note
   for a peer holding a file you need.
 - **`wait <name>`** blocks until a peer releases its files (its `files_touched`
   empties) or exits. Scope it to specific paths with `--file <path>`

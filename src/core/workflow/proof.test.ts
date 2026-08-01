@@ -186,14 +186,14 @@ function sampleProof(): WorkflowProof {
     },
     harnesses: [],
     unknowns: [],
-    integrity: { journal: { path: "journal.jsonl", sha256: "a".repeat(64), bytes: 10 } },
+    integrity: { transcript: { path: "transcript.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };
 }
 
 describe("harness attestation citation (ADR 0038)", () => {
   const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
-  function journal(): string {
-    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+  function transcript(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
     return path;
   }
@@ -204,7 +204,7 @@ describe("harness attestation citation (ADR 0038)", () => {
     startedAt: "2026-07-24T19:00:00.000Z",
     endedAt: "2026-07-24T19:00:01.000Z",
     durationMs: 1_000,
-    journalPath: "",
+    transcriptPath: "",
     before: snapshot,
     after: snapshot,
     evidence: [],
@@ -226,7 +226,7 @@ describe("harness attestation citation (ADR 0038)", () => {
   test("a run cites the attestation backing the harness it used", () => {
     const proof = buildWorkflowProof({
       ...baseInput,
-      journalPath: journal(),
+      transcriptPath: transcript(),
       harnessAttestations: {
         "claude-code": {
           binary_version: "2.1.197",
@@ -243,7 +243,7 @@ describe("harness attestation citation (ADR 0038)", () => {
   });
 
   test("no attestation means no citation and no new unknown", () => {
-    const proof = buildWorkflowProof({ ...baseInput, journalPath: journal() });
+    const proof = buildWorkflowProof({ ...baseInput, transcriptPath: transcript() });
     expect(proof.harnesses[0]?.attestation).toBeUndefined();
     // Deliberate: an unattested host must not have every run gated on a new
     // unknown it cannot clear without spending tokens.
@@ -253,7 +253,7 @@ describe("harness attestation citation (ADR 0038)", () => {
   test("a citation for an unused harness is not attached", () => {
     const proof = buildWorkflowProof({
       ...baseInput,
-      journalPath: journal(),
+      transcriptPath: transcript(),
       harnessAttestations: {
         cursor: { binary_version: "x", observed_at: "y", record_digest: "z" },
       },
@@ -265,8 +265,8 @@ describe("harness attestation citation (ADR 0038)", () => {
 
 describe("sandbox projection evidence (ADR 0039)", () => {
   const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
-  function journalFile(): string {
-    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+  function transcriptFile(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
     return path;
   }
@@ -286,7 +286,7 @@ describe("sandbox projection evidence (ADR 0039)", () => {
   test("an applied projection is recorded so the run can be audited", () => {
     const proof = buildWorkflowProof({
       ...input,
-      journalPath: journalFile(),
+      transcriptPath: transcriptFile(),
       sandboxProjection: {
         mode: "workspace-write",
         writable_roots: ["/srv/ws/repo/.git"],
@@ -301,7 +301,7 @@ describe("sandbox projection evidence (ADR 0039)", () => {
   });
 
   test("no projection leaves the field absent rather than empty", () => {
-    const proof = buildWorkflowProof({ ...input, journalPath: journalFile() });
+    const proof = buildWorkflowProof({ ...input, transcriptPath: transcriptFile() });
     expect(proof.sandbox_projection).toBeUndefined();
   });
 });
@@ -365,8 +365,8 @@ describe("run failure class derivation (ADR 0046)", () => {
 
 describe("run-level class in the proof packet (ADR 0046)", () => {
   const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
-  function journalFile(): string {
-    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+  function transcriptFile(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
     return path;
   }
@@ -386,7 +386,7 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
   test("a failed run whose only agent hit a missing binary records run.class environment", () => {
     const proof = buildWorkflowProof({
       ...failing,
-      journalPath: journalFile(),
+      transcriptPath: transcriptFile(),
       agents: [
         {
           id: "a1",
@@ -405,7 +405,7 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
   test("a failed run with no classifiable agent leaves run.class absent (charged)", () => {
     const proof = buildWorkflowProof({
       ...failing,
-      journalPath: journalFile(),
+      transcriptPath: transcriptFile(),
       agents: [
         {
           id: "a1",

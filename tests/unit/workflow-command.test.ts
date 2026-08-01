@@ -134,6 +134,6 @@ function sampleProof(): WorkflowProof {
     },
     harnesses: [],
     unknowns: [],
-    integrity: { journal: { path: "journal.jsonl", sha256: "a".repeat(64), bytes: 10 } },
+    integrity: { transcript: { path: "transcript.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };
 }

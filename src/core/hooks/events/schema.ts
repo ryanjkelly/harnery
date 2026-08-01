@@ -48,7 +48,7 @@ export type SessionStart = EventEnvelope<
     model?: string;
     pid: number;
     /** Present iff this session is a `workflow run` child: the run id whose
-     * journal owns it (child env HARNERY_WORKFLOW_RUN_ID). Optional-field
+     * transcript owns it (child env HARNERY_WORKFLOW_RUN_ID). Optional-field
      * addition per the schema evolution rules (minor bump). */
     workflow_run_id?: string;
     /** Which agent row of that run this session is running (`a1`, `a2`, …), from
@@ -292,8 +292,8 @@ export type StateStatusChecked = EventEnvelope<
   }
 >;
 
-export type StateScratchAppend = EventEnvelope<
-  "state.scratch_append",
+export type StateJournalAppend = EventEnvelope<
+  "state.journal_append",
   {
     category: "note" | "plan" | "decision" | "blocker" | "question" | "done" | "handoff";
     body_summary: string;
@@ -474,7 +474,7 @@ export type Event =
   | ClaimConflict
   | StateTaskSet
   | StateStatusChecked
-  | StateScratchAppend
+  | StateJournalAppend
   | StatePresenceChange
   | StateHeartbeat
   | IdentityAssumed

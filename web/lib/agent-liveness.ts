@@ -1,5 +1,5 @@
 /**
- * How long an agent may be journaled running with no heartbeat before that is
+ * How long an agent may be transcripted running with no heartbeat before that is
  * worth warning about.
  *
  * A child registers its heartbeat a beat after the orchestrator starts it, not

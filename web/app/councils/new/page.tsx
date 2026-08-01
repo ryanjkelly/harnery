@@ -79,7 +79,7 @@ export default async function NewCouncilPage({
             the council via{" "}
             <code className="font-mono text-xs">harn agents council create</code>{" "}
             and routes you to its detail page. Members get pinged via their
-            scratchpads if currently active; others see the invite on next
+            journals if currently active; others see the invite on next
             SessionStart.
           </p>
         </header>

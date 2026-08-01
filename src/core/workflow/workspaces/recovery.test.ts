@@ -18,9 +18,9 @@ function fixture(runId = "run"): { root: string; runId: string; runDir: string }
   return { root, runId, runDir };
 }
 
-function journal(runDir: string, records: Array<Record<string, unknown>>): void {
+function transcript(runDir: string, records: Array<Record<string, unknown>>): void {
   writeFileSync(
-    join(runDir, "journal.jsonl"),
+    join(runDir, "transcript.jsonl"),
     `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
   );
 }
@@ -28,7 +28,7 @@ function journal(runDir: string, records: Array<Record<string, unknown>>): void 
 describe("workspace recovery liveness", () => {
   test("treats durable reattachment failure as terminal without waiting for proof", () => {
     const { root, runId, runDir } = fixture();
-    journal(runDir, [
+    transcript(runDir, [
       { event: "run.start", run_id: runId },
       { event: "run.parked", run_id: runId },
       { event: "run.resume", run_id: runId },
@@ -37,9 +37,9 @@ describe("workspace recovery liveness", () => {
     expect(readWorkflowLiveness(root, runId)).toBe("inactive");
   });
 
-  test("fails closed on malformed terminal journal evidence", () => {
+  test("fails closed on malformed terminal transcript evidence", () => {
     const { root, runId, runDir } = fixture();
-    journal(runDir, [
+    transcript(runDir, [
       { event: "run.start", run_id: runId },
       { event: "run.end", run_id: runId },
     ]);

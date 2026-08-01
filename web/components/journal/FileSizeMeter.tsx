@@ -4,11 +4,11 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 
 /**
- * Compact horizontal meter showing scratchpad bytes used vs the 50KB cap.
- * Mirrors the canonical thresholds from `harnery/src/core/scratch/index.ts`:
+ * Compact horizontal meter showing journal bytes used vs the 50KB cap.
+ * Mirrors the canonical thresholds from `harnery/src/core/journal/index.ts`:
  *
  *   WARN at 40KB (80%):  emerald → amber
- *   HARD CAP at 50KB:    amber  → red (scratch lib starts pruning oldest)
+ *   HARD CAP at 50KB:    amber  → red (journal lib starts pruning oldest)
  *
  * The cap is enforced server-side; this meter is purely informational, so
  * the operator can see how close they are without reading the source.
@@ -48,7 +48,7 @@ export function FileSizeMeter({
             of {formatBytes(MAX_BYTES)} cap
           </div>
           <div className="text-muted-foreground">
-            Warning above {formatBytes(WARN_BYTES)} (80%). The scratch
+            Warning above {formatBytes(WARN_BYTES)} (80%). The journal
             library prunes oldest entries when the file crosses the cap.
           </div>
         </div>

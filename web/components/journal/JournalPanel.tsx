@@ -33,7 +33,7 @@ import { useHostInfo } from "@/components/HostInfoProvider";
 import { SnapshotDiff } from "@/components/diff/SnapshotDiff";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
-import type { ScratchCategory } from "@/lib/coord-writer";
+import type { JournalCategory } from "@/lib/coord-writer";
 
 import { categoryMeta, CATEGORY_META } from "./categories";
 import { CategoryPicker } from "./CategoryPicker";
@@ -52,25 +52,25 @@ interface ArchiveRow {
 const BODY_BYTE_CAP = 64 * 1024;
 
 /**
- * Unified scratchpad section for the agent detail page. Replaces the old
- * separate "Scratchpad entries" + "Scratchpad editor" cards. Four tabs:
+ * Unified journal section for the agent detail page. Replaces the old
+ * separate "Journal entries" + "Journal editor" cards. Four tabs:
  *
  *   • Timeline:  chronological entry feed (default landing)
- *   • Add entry: safe single-entry append via POST /scratchpad
+ *   • Add entry: safe single-entry append via POST /journal
  *   • Raw:       view the markdown file as-is + advanced "replace whole file"
- *   • Archives:  every prior snapshot under .harnery/scratch/archived/
+ *   • Archives:  every prior snapshot under .harnery/journal/archived/
  */
-export function ScratchpadPanel({
+export function JournalPanel({
   instanceId,
   agentName,
-  scratch,
+  journal,
   rawBody,
   archiveCount,
   readOnly = false,
 }: {
   instanceId: string;
   agentName: string;
-  scratch: {
+  journal: {
     exists: boolean;
     bytes: number;
     entries: EntryRow[];
@@ -79,7 +79,7 @@ export function ScratchpadPanel({
   rawBody: string | null;
   archiveCount: number;
   /** Ended agents: hide the write surfaces (compose tab + Raw replace editor).
-   * The journal is still fully readable; appending to a dead instance's file
+   * The transcript is still fully readable; appending to a dead instance's file
    * would just orphan it. */
   readOnly?: boolean;
 }) {
@@ -88,7 +88,7 @@ export function ScratchpadPanel({
   // read-only agents can't compose, so prefer whatever's readable: entries →
   // timeline, else archives if any, else the (empty-state) raw view.
   const [tab, setTab] = useState<Tab>(() => {
-    if (scratch.exists && scratch.entries.length > 0) return "timeline";
+    if (journal.exists && journal.entries.length > 0) return "timeline";
     if (readOnly) return archiveCount > 0 ? "archives" : "raw";
     return "compose";
   });
@@ -99,18 +99,18 @@ export function ScratchpadPanel({
         <div className="flex items-center gap-2 min-w-0">
           <CardTitle className="flex items-center gap-1.5">
             <FileText className="size-4 text-muted-foreground" />
-            Scratchpad
+            Journal
           </CardTitle>
           <Tooltip
             side="right"
             content={
               <div className="space-y-1.5 max-w-[20rem]">
-                <div className="font-semibold">What is the scratchpad?</div>
+                <div className="font-semibold">What is the journal?</div>
                 <div className="text-popover-foreground/90">
-                  An append-only markdown journal the agent writes during a
+                  An append-only markdown transcript the agent writes during a
                   session. Used to leave notes for future-self (across
                   compaction), surface blockers, and hand off context to
-                  peers. The file is at <code>{scratch.path}</code>.
+                  peers. The file is at <code>{journal.path}</code>.
                 </div>
                 <div className="text-muted-foreground">
                   Other agents pull-read this on demand. That&apos;s how they
@@ -120,7 +120,7 @@ export function ScratchpadPanel({
             }
           >
             <span
-              aria-label="What is the scratchpad?"
+              aria-label="What is the journal?"
               className="text-muted-foreground hover:text-foreground cursor-help"
             >
               <HelpCircle className="size-3.5" />
@@ -132,8 +132,8 @@ export function ScratchpadPanel({
             content={
               <div>
                 <div className="font-semibold">
-                  {scratch.entries.length}{" "}
-                  {scratch.entries.length === 1 ? "entry" : "entries"}
+                  {journal.entries.length}{" "}
+                  {journal.entries.length === 1 ? "entry" : "entries"}
                 </div>
                 <div className="text-muted-foreground">
                   Parsed from headers like{" "}
@@ -143,18 +143,18 @@ export function ScratchpadPanel({
             }
           >
             <span className="text-xs text-muted-foreground tabular-nums cursor-help">
-              {scratch.entries.length}{" "}
-              {scratch.entries.length === 1 ? "entry" : "entries"}
+              {journal.entries.length}{" "}
+              {journal.entries.length === 1 ? "entry" : "entries"}
             </span>
           </Tooltip>
-          <FileSizeMeter bytes={scratch.bytes} />
+          <FileSizeMeter bytes={journal.bytes} />
           {archiveCount > 0 && (
             <Tooltip
               content={
                 <span>
                   {archiveCount} prior snapshot
                   {archiveCount === 1 ? "" : "s"} under{" "}
-                  <code>.harnery/scratch/archived/</code>.
+                  <code>.harnery/journal/archived/</code>.
                 </span>
               }
             >
@@ -174,13 +174,13 @@ export function ScratchpadPanel({
         <TabBar
           tab={tab}
           setTab={setTab}
-          hasContent={scratch.exists}
+          hasContent={journal.exists}
           readOnly={readOnly}
         />
         {tab === "timeline" && (
           <TimelineView
-            entries={scratch.entries}
-            exists={scratch.exists}
+            entries={journal.entries}
+            exists={journal.exists}
             readOnly={readOnly}
             onMutated={() => router.refresh()}
           />
@@ -260,7 +260,7 @@ function TabBar({
       id: "archives",
       label: "Archives",
       icon: <Archive className="size-3.5" />,
-      tip: "Every prior snapshot of this scratchpad, auto-archived on session end + every Raw replace.",
+      tip: "Every prior snapshot of this journal, auto-archived on session end + every Raw replace.",
     },
   ];
   return (
@@ -312,7 +312,7 @@ function TimelineView({
   onMutated: () => void;
 }) {
   const { binName } = useHostInfo();
-  const [filter, setFilter] = useState<ScratchCategory | "all">("all");
+  const [filter, setFilter] = useState<JournalCategory | "all">("all");
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState<"desc" | "asc">("desc");
 
@@ -339,18 +339,18 @@ function TimelineView({
     return (
       <EmptyState
         icon={<FileText className="size-6 text-muted-foreground" />}
-        title="No scratchpad on disk"
+        title="No journal on disk"
         body={
           readOnly ? (
             <>
-              This agent&apos;s session ended without a live scratchpad on disk.
-              Anything it journaled would be under the <strong>Archives</strong>{" "}
+              This agent&apos;s session ended without a live journal on disk.
+              Anything it transcripted would be under the <strong>Archives</strong>{" "}
               tab.
             </>
           ) : (
             <>
               Active agents create one on their first{" "}
-              <code className="text-xs">{`${binName} scratch add`}</code>. Use the{" "}
+              <code className="text-xs">{`${binName} journal add`}</code>. Use the{" "}
               <strong>Add entry</strong> tab to seed one as the operator.
             </>
           )
@@ -487,7 +487,7 @@ function ComposeView({
   instanceId: string;
   onSaved: () => void;
 }) {
-  const [category, setCategory] = useState<ScratchCategory>("note");
+  const [category, setCategory] = useState<JournalCategory>("note");
   const [body, setBody] = useState("");
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
     null,
@@ -502,7 +502,7 @@ function ComposeView({
     startTransition(async () => {
       try {
         const res = await fetch(
-          `/api/agents/${encodeURIComponent(instanceId)}/scratchpad`,
+          `/api/agents/${encodeURIComponent(instanceId)}/journal`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -607,7 +607,7 @@ function ComposeView({
               side="top"
               content={
                 trimmed
-                  ? "Appends a properly-formatted entry to the bottom of the scratchpad file."
+                  ? "Appends a properly-formatted entry to the bottom of the journal file."
                   : "Type something first."
               }
             >
@@ -676,7 +676,7 @@ function RawView({
         body={
           readOnly ? (
             <>
-              No live scratchpad for this ended session. Check the{" "}
+              No live journal for this ended session. Check the{" "}
               <strong>Archives</strong> tab for snapshots taken on session end.
             </>
           ) : (
@@ -777,7 +777,7 @@ function ReplaceEditor({
     startTransition(async () => {
       try {
         const res = await fetch(
-          `/api/agents/${encodeURIComponent(instanceId)}/scratchpad`,
+          `/api/agents/${encodeURIComponent(instanceId)}/journal`,
           {
             method: "PUT",
             headers: { "content-type": "application/json" },
@@ -800,7 +800,7 @@ function ReplaceEditor({
         }
         setFeedback({
           ok: true,
-          msg: "Replaced. Prior content archived under .harnery/scratch/archived/.",
+          msg: "Replaced. Prior content archived under .harnery/journal/archived/.",
         });
         onSaved();
       } catch (err) {
@@ -818,12 +818,12 @@ function ReplaceEditor({
         <AlertTriangle className="size-4 text-amber-500 shrink-0 mt-0.5" />
         <div className="text-muted-foreground leading-relaxed">
           <strong className="text-foreground">Wholesale replace.</strong>{" "}
-          Overwrites the whole scratchpad. The prior file is archived to{" "}
+          Overwrites the whole journal. The prior file is archived to{" "}
           <code className="text-foreground">
-            .harnery/scratch/archived/{instanceId.slice(0, 8)}…-pre-ui-&lt;ts&gt;.md
+            .harnery/journal/archived/{instanceId.slice(0, 8)}…-pre-ui-&lt;ts&gt;.md
           </code>{" "}
           and the helper appends a synthetic <code>note</code> entry so peers
-          still see an append-only journal. Prefer <strong>Add entry</strong>{" "}
+          still see an append-only transcript. Prefer <strong>Add entry</strong>{" "}
           for single notes.
         </div>
       </div>
@@ -936,7 +936,7 @@ function ArchivesView({ instanceId }: { instanceId: string }) {
     (async () => {
       try {
         const res = await fetch(
-          `/api/agents/${encodeURIComponent(instanceId)}/scratchpad/archives`,
+          `/api/agents/${encodeURIComponent(instanceId)}/journal/archives`,
         );
         const data = (await res.json()) as
           | { archives: ArchiveRow[] }
@@ -965,7 +965,7 @@ function ArchivesView({ instanceId }: { instanceId: string }) {
     setLoadingContent(true);
     try {
       const res = await fetch(
-        `/api/agents/${encodeURIComponent(instanceId)}/scratchpad/archives?filename=${encodeURIComponent(filename)}`,
+        `/api/agents/${encodeURIComponent(instanceId)}/journal/archives?filename=${encodeURIComponent(filename)}`,
       );
       const data = (await res.json()) as
         | { filename: string; body: string }

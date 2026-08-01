@@ -24,7 +24,7 @@ export interface V2Heartbeat {
   platform?: string;
   subagent_call_id?: string;
   parent_session_id?: string;
-  /** Set iff this owner is a `workflow run` child (joins to the run journal). */
+  /** Set iff this owner is a `workflow run` child (joins to the run transcript). */
   workflow_run_id?: string;
   workflow_agent_id?: string;
   started_at?: string;

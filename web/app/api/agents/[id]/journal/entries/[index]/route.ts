@@ -1,9 +1,9 @@
 import {
-  deleteScratchEntry,
-  editScratchEntry,
+  deleteJournalEntry,
+  editJournalEntry,
   safeOwnerId,
-  SCRATCH_CATEGORIES,
-  type ScratchCategory,
+  JOURNAL_CATEGORIES,
+  type JournalCategory,
 } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +14,8 @@ interface RouteContext {
 }
 
 /**
- * Edit one scratchpad entry by its newest-first index. Body:
- *   { category: ScratchCategory, body: string, expected_ts_display: string }
+ * Edit one journal entry by its newest-first index. Body:
+ *   { category: JournalCategory, body: string, expected_ts_display: string }
  *
  * `expected_ts_display` is a sanity check: if the entry at `index` no longer
  * matches that wall-clock string (because another writer raced in), the
@@ -53,10 +53,10 @@ export async function PATCH(
       ? payload.expected_ts_display
       : "";
 
-  if (!SCRATCH_CATEGORIES.includes(category as ScratchCategory)) {
+  if (!JOURNAL_CATEGORIES.includes(category as JournalCategory)) {
     return Response.json(
       {
-        error: `invalid category: must be one of ${SCRATCH_CATEGORIES.join(", ")}`,
+        error: `invalid category: must be one of ${JOURNAL_CATEGORIES.join(", ")}`,
       },
       { status: 400 },
     );
@@ -78,11 +78,11 @@ export async function PATCH(
     );
   }
 
-  const result = editScratchEntry(
+  const result = editJournalEntry(
     instanceId,
     idx,
     expectedTs,
-    category as ScratchCategory,
+    category as JournalCategory,
     body,
   );
   if (!result.ok) {
@@ -106,7 +106,7 @@ export async function PATCH(
 }
 
 /**
- * Delete one scratchpad entry by its newest-first index. Query:
+ * Delete one journal entry by its newest-first index. Query:
  *   ?expected_ts_display=<wall-clock string>
  *
  * Same race-protection contract as PATCH. The prior file is archived
@@ -135,7 +135,7 @@ export async function DELETE(
     );
   }
 
-  const result = deleteScratchEntry(instanceId, idx, expectedTs);
+  const result = deleteJournalEntry(instanceId, idx, expectedTs);
   if (!result.ok) {
     const conflict =
       result.error?.includes("no longer matches") ||

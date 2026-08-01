@@ -1,9 +1,9 @@
 import {
-  appendScratchEntry,
-  editScratchpad,
-  SCRATCH_CATEGORIES,
+  appendJournalEntry,
+  editJournal,
+  JOURNAL_CATEGORIES,
   safeOwnerId,
-  type ScratchCategory,
+  type JournalCategory,
 } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
@@ -35,10 +35,10 @@ export async function POST(
   const category = String(payload.category ?? "");
   const body = typeof payload.body === "string" ? payload.body : "";
 
-  if (!SCRATCH_CATEGORIES.includes(category as ScratchCategory)) {
+  if (!JOURNAL_CATEGORIES.includes(category as JournalCategory)) {
     return Response.json(
       {
-        error: `invalid category: must be one of ${SCRATCH_CATEGORIES.join(", ")}`,
+        error: `invalid category: must be one of ${JOURNAL_CATEGORIES.join(", ")}`,
       },
       { status: 400 },
     );
@@ -54,9 +54,9 @@ export async function POST(
     );
   }
 
-  const result = appendScratchEntry(
+  const result = appendJournalEntry(
     instanceId,
-    category as ScratchCategory,
+    category as JournalCategory,
     body,
   );
   if (!result.ok) {
@@ -99,7 +99,7 @@ export async function PUT(
 
   if (newBody.length === 0) {
     return Response.json(
-      { error: "body is empty; refusing to overwrite scratchpad with blank" },
+      { error: "body is empty; refusing to overwrite journal with blank" },
       { status: 400 },
     );
   }
@@ -111,11 +111,11 @@ export async function PUT(
     );
   }
 
-  const result = await editScratchpad(instanceId, newBody, summary);
+  const result = await editJournal(instanceId, newBody, summary);
   if (!result.ok) {
     return Response.json(
       {
-        error: "agent-coord edit-scratchpad failed",
+        error: "agent-coord edit-journal failed",
         exit_code: result.exit_code,
         stderr: result.stderr.trim(),
       },

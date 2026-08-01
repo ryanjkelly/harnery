@@ -6,7 +6,7 @@
  *
  *   - `"date"`:      date-only labels (e.g., column headers).
  *   - `"datetime"`:  full date + time (the most common surface: agent
- *                    cards, council manifests, scratchpad entries).
+ *                    cards, council manifests, journal entries).
  *   - `"timestamp"`: dense time-of-day for log rows / streaming feeds.
  *
  * Each kind has its own preset catalog and its own localStorage key so the

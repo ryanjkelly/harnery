@@ -1068,13 +1068,13 @@ describe("durable goal governor", () => {
     expect(reviewCalls).toBe(2);
   });
 
-  test("review proof recovery rejects journals that no longer match proof integrity", async () => {
+  test("review proof recovery rejects transcripts that no longer match proof integrity", async () => {
     const { root, passing, failing } = fixture();
     createWorkItem({
       coordRoot: root,
       id: "review-integrity-blocked",
       title: "Review integrity blocked",
-      objective: "Reject stale review journal recovery",
+      objective: "Reject stale review transcript recovery",
       workflowPath: failing,
       maxAttempts: 1,
     });
@@ -1106,20 +1106,26 @@ describe("durable goal governor", () => {
     });
     const planId = first.projection.pending_plan_id!;
     const planDir = join(root, ".harnery", "governors", "goal-reviewed-integrity", "plans", planId);
-    const journalPath = join(root, ".harnery", "workflows", `${planId}-review`, "journal.jsonl");
+    const transcriptPath = join(
+      root,
+      ".harnery",
+      "workflows",
+      `${planId}-review`,
+      "transcript.jsonl",
+    );
     rmSync(join(planDir, "review.json"), { force: true });
     rmSync(join(planDir, "proposal.json"), { force: true });
-    writeFileSync(journalPath, `${readFileSync(journalPath, "utf8")} `);
+    writeFileSync(transcriptPath, `${readFileSync(transcriptPath, "utf8")} `);
     await expect(
       runGovernor({
         coordRoot: root,
         goalId: "goal-reviewed-integrity",
         engine: { spawners: { codex: spawner }, probeBilling },
       }),
-    ).rejects.toThrow("journal does not match proof integrity");
+    ).rejects.toThrow("transcript does not match proof integrity");
   });
 
-  test("review proof recovery rejects journals that no longer match proof result", async () => {
+  test("review proof recovery rejects transcripts that no longer match proof result", async () => {
     const { root, passing, failing } = fixture();
     createWorkItem({
       coordRoot: root,
@@ -1158,11 +1164,11 @@ describe("durable goal governor", () => {
     const planId = first.projection.pending_plan_id!;
     const planDir = join(root, ".harnery", "governors", "goal-reviewed-result", "plans", planId);
     const runDir = join(root, ".harnery", "workflows", `${planId}-review`);
-    const journalPath = join(runDir, "journal.jsonl");
+    const transcriptPath = join(runDir, "transcript.jsonl");
     const proofPath = join(runDir, "proof.json");
     rmSync(join(planDir, "review.json"), { force: true });
     rmSync(join(planDir, "proposal.json"), { force: true });
-    const journal = readFileSync(journalPath, "utf8")
+    const transcript = readFileSync(transcriptPath, "utf8")
       .split("\n")
       .map((line) => {
         if (!line.trim()) return line;
@@ -1176,12 +1182,12 @@ describe("durable goal governor", () => {
         return line;
       })
       .join("\n");
-    writeFileSync(journalPath, journal);
+    writeFileSync(transcriptPath, transcript);
     const proof = JSON.parse(readFileSync(proofPath, "utf8"));
-    proof.integrity.journal = {
-      path: "journal.jsonl",
-      sha256: createHash("sha256").update(journal).digest("hex"),
-      bytes: Buffer.byteLength(journal),
+    proof.integrity.transcript = {
+      path: "transcript.jsonl",
+      sha256: createHash("sha256").update(transcript).digest("hex"),
+      bytes: Buffer.byteLength(transcript),
     };
     writeFileSync(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
     await expect(

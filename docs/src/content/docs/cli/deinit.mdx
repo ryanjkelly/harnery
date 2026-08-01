@@ -38,7 +38,7 @@ Done. harnery hooks are unwired; restart your harness session to drop them.
 
 ## The `.harnery/` coord root is kept by default
 
-`init` also creates the `.harnery/` directory, which holds **runtime state**: the event stream, council manifests, agent identities, scratchpads. `deinit` leaves it alone unless you ask, because that history may be worth keeping.
+`init` also creates the `.harnery/` directory, which holds **runtime state**: the event stream, council manifests, agent identities, journals. `deinit` leaves it alone unless you ask, because that history may be worth keeping.
 
 Pass `--purge-state` to delete it (and the `binName` stamp in `.harnery/config.jsonc` along with it):
 

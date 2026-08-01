@@ -2,7 +2,7 @@
  * Canonicalize a write-tool target path for the claim guard.
  *
  * Returns the monorepo-relative path, or `null` when the target lies OUTSIDE the
- * repo (an absolute path not under coordRoot, e.g. a `/tmp` scratchpad or other
+ * repo (an absolute path not under coordRoot, e.g. a `/tmp` journal or other
  * session-temp file).
  *
  * The claim system is intentionally repo-scoped: it coordinates monorepo files,
@@ -10,7 +10,7 @@
  * them is right on two counts. First, it keeps non-repo paths out of a
  * heartbeat's `files_touched`. Second, the ordering rule compares raw path
  * strings, and an absolute `/tmp/…` sorts before every repo-relative path
- * (`/` = 0x2F < any letter), so without this a scratchpad write would spuriously
+ * (`/` = 0x2F < any letter), so without this a journal write would spuriously
  * "block" a legitimately-held repo file. Returning null keeps such paths out of
  * the claim system entirely.
  *

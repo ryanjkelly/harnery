@@ -16,7 +16,7 @@ import { readWorkflowRunManifest } from "../run-state.ts";
 import { acquireNoClobberLease } from "./leases.ts";
 import {
   appendIntegrationAttempt,
-  appendWorkflowJournalEvent,
+  appendWorkflowTranscriptEvent,
   fileSha256,
   readIntegrationAttempts,
   readWorkflowSupplement,
@@ -177,7 +177,7 @@ export async function prepareIntegration(input: PrepareIntegrationInput): Promis
     }
     if (!prior) {
       writeWorkflowSupplement(input.coordRoot, input.runId, "integration/plan.json", plan);
-      appendWorkflowJournalEvent(input.coordRoot, input.runId, "integration.plan", {
+      appendWorkflowTranscriptEvent(input.coordRoot, input.runId, "integration.plan", {
         plan_id: plan.plan_id,
         plan_sha256: stableDigest(plan),
       });
@@ -236,12 +236,12 @@ export async function applyIntegration(
     }
     if (
       authorization.decision_sha256 !== stableDigest(authorization.decision) ||
-      authorization.journal_anchor.event !== "integration.plan" ||
-      authorization.journal_anchor.plan_sha256 !== planSha256
+      authorization.transcript_anchor.event !== "integration.plan" ||
+      authorization.transcript_anchor.plan_sha256 !== planSha256
     ) {
-      throw new Error("integration authorization digest or journal anchor is corrupt");
+      throw new Error("integration authorization digest or transcript anchor is corrupt");
     }
-    assertIntegrationPlanJournal(input.coordRoot, input.runId, planSha256);
+    assertIntegrationPlanTranscript(input.coordRoot, input.runId, planSha256);
     if (authorization.approval_id) {
       const approval = readWorkflowApproval(input.coordRoot, authorization.approval_id);
       if (
@@ -397,7 +397,7 @@ export async function applyIntegration(
       applied_at: providerResult.applied_at,
     };
     writeWorkflowSupplement(input.coordRoot, input.runId, "integration/receipt.json", receipt);
-    appendWorkflowJournalEvent(input.coordRoot, input.runId, "integration.apply", {
+    appendWorkflowTranscriptEvent(input.coordRoot, input.runId, "integration.apply", {
       receipt_id: receipt.receipt_id,
       status: receipt.status,
       target_commit: receipt.target_commit,
@@ -721,7 +721,7 @@ function authorizePlan(input: PrepareIntegrationInput, plan: IntegrationPlan): v
     approval_id: approvalId,
     approval_actor: approvalActor,
     approval_sha256: approvalSha256,
-    journal_anchor: {
+    transcript_anchor: {
       event: "integration.plan",
       plan_sha256: stableDigest(plan),
     },
@@ -740,7 +740,7 @@ function authorizePlan(input: PrepareIntegrationInput, plan: IntegrationPlan): v
       prior.decision_sha256 !== stableDigest(prior.decision) ||
       prior.approval_id !== authorization.approval_id ||
       prior.approval_sha256 !== authorization.approval_sha256 ||
-      stableDigest(prior.journal_anchor) !== stableDigest(authorization.journal_anchor)
+      stableDigest(prior.transcript_anchor) !== stableDigest(authorization.transcript_anchor)
     ) {
       throw new Error("existing integration authorization does not match the exact plan");
     }
@@ -752,7 +752,7 @@ function authorizePlan(input: PrepareIntegrationInput, plan: IntegrationPlan): v
     "integration/authorization.json",
     authorization,
   );
-  appendWorkflowJournalEvent(input.coordRoot, input.runId, "integration.authorized", {
+  appendWorkflowTranscriptEvent(input.coordRoot, input.runId, "integration.authorized", {
     plan_id: plan.plan_id,
     authorization_sha256: stableDigest(authorization),
     policy_sha256: authorization.policy_sha256,
@@ -787,8 +787,12 @@ function requiredIntegrationRoot(binding: WorkspaceBinding): string {
   return binding.integration_root;
 }
 
-function assertIntegrationPlanJournal(coordRoot: string, runId: string, planSha256: string): void {
-  const path = join(workflowRunDir(coordRoot, runId), "journal.jsonl");
+function assertIntegrationPlanTranscript(
+  coordRoot: string,
+  runId: string,
+  planSha256: string,
+): void {
+  const path = join(workflowRunDir(coordRoot, runId), "transcript.jsonl");
   let records: Array<Record<string, unknown>>;
   try {
     records = readFileSync(path, "utf8")
@@ -796,7 +800,7 @@ function assertIntegrationPlanJournal(coordRoot: string, runId: string, planSha2
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
   } catch (error) {
-    throw new Error(`workflow journal is corrupt: ${(error as Error).message}`);
+    throw new Error(`workflow transcript is corrupt: ${(error as Error).message}`);
   }
   if (
     records.some((record) => record.run_id !== runId || typeof record.event !== "string") ||
@@ -804,7 +808,7 @@ function assertIntegrationPlanJournal(coordRoot: string, runId: string, planSha2
       (record) => record.event === "integration.plan" && record.plan_sha256 === planSha256,
     )
   ) {
-    throw new Error("integration plan journal anchor is missing or mismatched");
+    throw new Error("integration plan transcript anchor is missing or mismatched");
   }
 }
 

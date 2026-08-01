@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { SCRATCH_CATEGORIES } from "../../core/scratch/index.ts";
+import { JOURNAL_CATEGORIES } from "../../core/journal/index.ts";
 import { checkOwnedSkill, isOwnedFile } from "./splice.ts";
 import { INSTRUCTIONS_REGION, renderInstructionsBlock, SKILLS } from "./templates.ts";
 
@@ -12,7 +12,7 @@ describe("renderInstructionsBlock", () => {
     expect(block).toContain("acme decision file");
     expect(block).toContain("acme council create");
     // no un-substituted `harn <verb>` command leaked through
-    expect(block).not.toMatch(/\bharn (agents|decision|council|scratch|web) /);
+    expect(block).not.toMatch(/\bharn (agents|decision|council|journal|web) /);
   });
 
   test("defaults cleanly to `harn` when that's the bin", () => {
@@ -40,14 +40,14 @@ describe("renderInstructionsBlock", () => {
 
   test("names all five surfaces so an agent knows they exist", () => {
     const block = renderInstructionsBlock("harn").toLowerCase();
-    for (const surface of ["identity", "intent", "scratch", "decision docket", "council"]) {
+    for (const surface of ["identity", "intent", "journal", "decision docket", "council"]) {
       expect(block).toContain(surface);
     }
   });
 
-  test("lists every scratch category (locks the block to the canonical enum)", () => {
+  test("lists every journal category (locks the block to the canonical enum)", () => {
     const block = renderInstructionsBlock("harn");
-    for (const cat of SCRATCH_CATEGORIES) {
+    for (const cat of JOURNAL_CATEGORIES) {
       expect(block).toContain(cat);
     }
   });

@@ -5,7 +5,7 @@
  * event/schema types).
  *
  * Phase 4: agent-coord uses this from CLI handlers (state.task_set,
- * state.status_checked, state.scratch_append, council.*, decision.*,
+ * state.status_checked, state.journal_append, council.*, decision.*,
  * presence.*).
  */
 

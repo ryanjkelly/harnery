@@ -78,7 +78,7 @@ export interface BuildWorkflowProofInput {
   startedAt: string;
   endedAt: string;
   durationMs: number;
-  journalPath: string;
+  transcriptPath: string;
   before: RepoSnapshot;
   after: RepoSnapshot;
   agents: WorkflowAgentProof[];
@@ -259,7 +259,7 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
   const harnesses = buildHarnessCoverage(agents, input.harnessEvidence, input.harnessAttestations);
   const unknowns = buildUnknowns(agents, harnesses, repository);
   const runClass = deriveRunFailureClass(input.status, agents);
-  const journal = readFileSync(input.journalPath);
+  const transcript = readFileSync(input.transcriptPath);
   return {
     schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
     run: {
@@ -290,10 +290,10 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     harnesses,
     unknowns,
     integrity: {
-      journal: {
-        path: "journal.jsonl",
-        sha256: createHash("sha256").update(journal).digest("hex"),
-        bytes: journal.byteLength,
+      transcript: {
+        path: "transcript.jsonl",
+        sha256: createHash("sha256").update(transcript).digest("hex"),
+        bytes: transcript.byteLength,
       },
     },
   };
@@ -450,7 +450,7 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
     lines.push(`unknowns: ${proof.unknowns.length}`);
     for (const unknown of proof.unknowns) lines.push(`  - ${unknown.message}`);
   }
-  lines.push(`journal sha256: ${proof.integrity.journal.sha256}`);
+  lines.push(`transcript sha256: ${proof.integrity.transcript.sha256}`);
   return `${lines.join("\n")}\n`;
 }
 

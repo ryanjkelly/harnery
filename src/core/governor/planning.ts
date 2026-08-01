@@ -1098,11 +1098,11 @@ function recoverReviewWorkflowResult(
     inputPath,
     "governor plan review input",
   );
-  const journal = readVerifiedWorkflowJournal(coordRoot, reviewWorkflowRunId(planId), proof);
+  const transcript = readVerifiedWorkflowTranscript(coordRoot, reviewWorkflowRunId(planId), proof);
   const starts = new Map<string, { specialist?: string }>();
   const byRound = new Map<number, Record<string, unknown>>();
   let currentCandidate: unknown = reviewInput.candidate;
-  for (const line of journal.split("\n")) {
+  for (const line of transcript.split("\n")) {
     if (!line.trim()) continue;
     const event = JSON.parse(line) as Record<string, unknown>;
     if (event.event === "agent.start" && typeof event.id === "string") {
@@ -1111,7 +1111,7 @@ function recoverReviewWorkflowResult(
       });
     }
     if (event.event !== "agent.end" || event.result_kind !== "json") continue;
-    const round = workflowJournalRound(event.stage);
+    const round = workflowTranscriptRound(event.stage);
     if (!round) continue;
     let record = byRound.get(round.round);
     if (!record) {
@@ -1122,7 +1122,7 @@ function recoverReviewWorkflowResult(
       const specialist =
         typeof event.id === "string" ? starts.get(event.id)?.specialist : undefined;
       if (!event.result || typeof event.result !== "object" || Array.isArray(event.result)) {
-        throw new Error("governor plan review journal contains an invalid reviewer result");
+        throw new Error("governor plan review transcript contains an invalid reviewer result");
       }
       (record.reviewers as unknown[]).push({
         specialist,
@@ -1154,22 +1154,28 @@ function recoverReviewWorkflowResult(
   };
 }
 
-function readVerifiedWorkflowJournal(
+function readVerifiedWorkflowTranscript(
   coordRoot: string,
   runId: string,
   proof: WorkflowProof,
 ): string {
-  const journalPath = join(coordRoot, ".harnery", "workflows", runId, proof.integrity.journal.path);
-  const journal = readFileSync(journalPath, "utf8");
-  const bytes = Buffer.byteLength(journal);
-  if (bytes <= 0 || bytes > MAX_RECORD_BYTES || bytes !== proof.integrity.journal.bytes) {
-    throw new Error(`governor plan review journal does not match proof integrity`);
+  const transcriptPath = join(
+    coordRoot,
+    ".harnery",
+    "workflows",
+    runId,
+    proof.integrity.transcript.path,
+  );
+  const transcript = readFileSync(transcriptPath, "utf8");
+  const bytes = Buffer.byteLength(transcript);
+  if (bytes <= 0 || bytes > MAX_RECORD_BYTES || bytes !== proof.integrity.transcript.bytes) {
+    throw new Error(`governor plan review transcript does not match proof integrity`);
   }
-  const sha256 = createHash("sha256").update(journal).digest("hex");
-  if (sha256 !== proof.integrity.journal.sha256) {
-    throw new Error(`governor plan review journal does not match proof integrity`);
+  const sha256 = createHash("sha256").update(transcript).digest("hex");
+  if (sha256 !== proof.integrity.transcript.sha256) {
+    throw new Error(`governor plan review transcript does not match proof integrity`);
   }
-  return journal;
+  return transcript;
 }
 
 function orderRecoveredReviewers(raw: unknown, expectedSpecialists: readonly string[]): unknown[] {
@@ -1239,7 +1245,7 @@ function assertResultDigest(raw: unknown, expected: ResultDigest | undefined, ru
   }
 }
 
-function workflowJournalRound(
+function workflowTranscriptRound(
   stage: unknown,
 ): { kind: "review" | "revision"; round: number } | undefined {
   if (typeof stage !== "string") return undefined;

@@ -16,7 +16,7 @@ After 4+ months of building multi-agent tooling inside a multi-project monorepo 
 
 - **Package**: single npm package `harnery`, binary `harn`, MIT-licensed, public repo at `github.com/ryanjkelly/harnery`. Domain at `harnery.com`.
 - **Composition**: downstream CLIs import `createHarneryProgram()` from `harnery/commander`, register their domain-specific commands via Commander's `.addCommand()`, and run. `mycli agents status` and `harn agents status` resolve to **the same code** loaded as library.
-- **State directory**: `.harnery/` is the single hidden root per repo, holding sibling dirs `active/` (heartbeats), `councils/`, `scratch/`, `identities/`, `pid-map/`, plus the `events.ndjson` stream.
+- **State directory**: `.harnery/` is the single hidden root per repo, holding sibling dirs `active/` (heartbeats), `councils/`, `journal/`, `identities/`, `pid-map/`, plus the `events.ndjson` stream.
 - **Web UI**: standalone Next.js app, boots via `harn web up`, file-based (no DB), localhost-only with opt-in tunnel exposure (gated IP allowlist + dangerously-override flag).
 - **Settings**: JSONC + published JSON Schema. `~/.config/harnery/config.jsonc` (user) + `.harnery/config.jsonc` (project) with project overriding user.
 - **Backup**: shell out to [restic](https://restic.net/). Google Drive default backend; rclone-style remote URLs configurable.

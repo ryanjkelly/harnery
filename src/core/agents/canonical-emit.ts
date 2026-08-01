@@ -1,6 +1,6 @@
 /**
  * Emit canonical events by spawning `agent-coord emit-event`. Used by every
- * `agents …` / `scratch` / `presence` write that has a canonical state event.
+ * `agents …` / `journal` / `presence` write that has a canonical state event.
  *
  * Soft-fails: never throws into the caller. A failed emit logs to stderr
  * (visible to operators in their terminal) but never breaks the CLI flow.

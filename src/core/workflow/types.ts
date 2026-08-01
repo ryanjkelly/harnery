@@ -226,8 +226,8 @@ export interface WorkflowProof {
   harnesses: HarnessEvidenceCoverage[];
   unknowns: WorkflowProofUnknown[];
   integrity: {
-    journal: {
-      path: "journal.jsonl";
+    transcript: {
+      path: "transcript.jsonl";
       sha256: string;
       bytes: number;
     };
@@ -295,7 +295,7 @@ export interface AgentOpts {
   /** Harness-turn ceiling for the child (default 25; use 1 for pure
    * classification stages — cheaper and faster). */
   maxTurns?: number;
-  /** Display label in the journal (default: prompt head). */
+  /** Display label in the transcript (default: prompt head). */
   label?: string;
   /** Which harness runs this agent (default: the run's default harness).
    * Mixed-harness workflows are legal: triage on one CLI, deep work on
@@ -359,7 +359,7 @@ export interface SpawnRequest {
   /** Run id, stamped into the child env (HARNERY_WORKFLOW_RUN_ID) so the
    * coord layer can associate child sessions with their workflow run. */
   runId?: string;
-  /** Journal agent id (`a1`, `a2`, …), stamped into the child env
+  /** Transcript agent id (`a1`, `a2`, …), stamped into the child env
    * (HARNERY_WORKFLOW_AGENT_ID) so in-flight child activity attributes to one
    * agent row rather than only to the run. */
   agentId?: string;
@@ -412,9 +412,9 @@ export interface WorkflowContext {
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>;
   /** Run thunks with bounded concurrency; a rejected thunk resolves to null. */
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>>;
-  /** Declare the current stage (journal + progress grouping). */
+  /** Declare the current stage (transcript + progress grouping). */
   stage: (title: string) => void;
-  /** Narrate progress (stderr + journal). */
+  /** Narrate progress (stderr + transcript). */
   log: (message: string) => void;
   /** Attach a bounded, sourced receipt to the run and optional acceptance criteria. */
   evidence: (input: WorkflowEvidenceInput) => string;
@@ -484,7 +484,7 @@ export interface WorkflowOperatorFinding {
 }
 
 export interface EngineOpts {
-  /** Repo root whose .harnery/ receives the run journal. */
+  /** Repo root whose .harnery/ receives the run transcript. */
   coordRoot: string;
   /** Spawner registry keyed by harness. A single-harness caller registers one
    * entry and names it in `defaultHarness`. */
@@ -493,9 +493,9 @@ export interface EngineOpts {
   defaultHarness?: HarnessName;
   /** Named specialist roles available to agent(..., { specialist }). */
   specialists?: Readonly<Record<string, WorkflowSpecialistProfile>>;
-  /** Resume: run id of a prior run whose journal supplies cached results.
+  /** Resume: run id of a prior run whose transcript supplies cached results.
    * agent() calls whose (stage, prompt, model, maxTurns, schema) key matches a
-   * completed prior agent return the journaled result without spawning. */
+   * completed prior agent return the transcripted result without spawning. */
   resumeFrom?: string;
   /** Continue a parked run in its original directory after its durable
    * approval has been resolved. The frozen run manifest supplies execution
@@ -582,11 +582,11 @@ export interface RunReport {
   /** What the script's default export returned. */
   result: unknown;
   agentsSpawned: number;
-  /** agent() calls satisfied from the resumeFrom journal without spawning. */
+  /** agent() calls satisfied from the resumeFrom transcript without spawning. */
   agentsCached: number;
   costUsd: number;
   durationMs: number;
-  journalPath: string;
+  transcriptPath: string;
   proofPath: string;
   acceptance: AcceptanceSummary;
   /** Estimated tokens of repo instructions (CLAUDE.md/AGENTS.md at the child

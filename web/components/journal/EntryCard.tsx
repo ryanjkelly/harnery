@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
-import type { ScratchCategory } from "@/lib/coord-writer";
+import type { JournalCategory } from "@/lib/coord-writer";
 
 import { CategoryPicker } from "./CategoryPicker";
 import { categoryMeta } from "./categories";
@@ -22,7 +22,7 @@ export interface EntryRow {
 }
 
 /**
- * One scratchpad entry, rendered as a card with category badge + canonical
+ * One journal entry, rendered as a card with category badge + canonical
  * datetime + body. Edit / delete actions live on hover; clicking edit swaps
  * the body for an inline editor with category picker. Delete asks for an
  * inline confirm before firing the DELETE.
@@ -35,7 +35,7 @@ export function EntryCard({
 }: {
   entry: EntryRow;
   index: number;
-  /** Ended agents: hide the inline edit / delete actions (read-only journal). */
+  /** Ended agents: hide the inline edit / delete actions (read-only transcript). */
   readOnly?: boolean;
   onMutated: () => void;
 }) {
@@ -103,7 +103,7 @@ export function EntryCard({
         </div>
       </div>
       {mode === "read" && (
-        <pre className="scratch text-sm leading-relaxed whitespace-pre-wrap wrap-break-word font-sans m-0">
+        <pre className="journal text-sm leading-relaxed whitespace-pre-wrap wrap-break-word font-sans m-0">
           {entry.body ? (
             // Linkify path-shaped tokens: handoff/ping bodies
             // and notes routinely cite repo paths. Conservative; resolveFile
@@ -153,7 +153,7 @@ function InlineEditor({
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const [category, setCategory] = useState<ScratchCategory>(entry.category as ScratchCategory);
+  const [category, setCategory] = useState<JournalCategory>(entry.category as JournalCategory);
   const [body, setBody] = useState(entry.body);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -167,7 +167,7 @@ function InlineEditor({
     startTransition(async () => {
       try {
         const res = await fetch(
-          `/api/agents/${encodeURIComponent(ownerId)}/scratchpad/entries/${index}`,
+          `/api/agents/${encodeURIComponent(ownerId)}/journal/entries/${index}`,
           {
             method: "PATCH",
             headers: { "content-type": "application/json" },
@@ -270,7 +270,7 @@ function ConfirmDelete({
     startTransition(async () => {
       try {
         const res = await fetch(
-          `/api/agents/${encodeURIComponent(ownerId)}/scratchpad/entries/${index}?expected_ts_display=${encodeURIComponent(entry.ts_chicago)}`,
+          `/api/agents/${encodeURIComponent(ownerId)}/journal/entries/${index}?expected_ts_display=${encodeURIComponent(entry.ts_chicago)}`,
           { method: "DELETE" },
         );
         const data = (await res.json()) as { ok: true } | { error: string };
@@ -288,8 +288,8 @@ function ConfirmDelete({
   return (
     <div className="space-y-2 mt-2 text-sm">
       <p className="text-muted-foreground leading-relaxed">
-        Delete this entry? The full scratchpad is archived to{" "}
-        <code className="text-foreground">.harnery/scratch/archived/</code> first, so you can
+        Delete this entry? The full journal is archived to{" "}
+        <code className="text-foreground">.harnery/journal/archived/</code> first, so you can
         recover it from the <strong>Archives</strong> tab.
       </p>
       <div className="flex items-center gap-1.5">

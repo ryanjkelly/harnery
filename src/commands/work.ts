@@ -61,7 +61,7 @@ interface GovernanceOpts {
   dispose?: string[];
 }
 
-const MAX_ATTEMPT_JOURNAL_ERROR_RENDER = 240;
+const MAX_ATTEMPT_TRANSCRIPT_ERROR_RENDER = 240;
 
 export function registerWorkCommand(program: Command, emit: EmitContext): void {
   const registry = createBuiltinHarnessRegistry();
@@ -267,7 +267,7 @@ function registerRunCommand(
                 workId,
                 runId: error.runId,
                 approvalId: error.approvalId,
-                journalPath: error.journalPath,
+                transcriptPath: error.transcriptPath,
               });
             } else {
               emit.text(
@@ -414,17 +414,17 @@ function emitWork(
 
 export function renderAttemptRow(attempt: WorkAttempt): string {
   const statusDetail =
-    attempt.status === "journal_unreadable"
-      ? `: ${renderAttemptJournalError(attempt.journal_error)}`
+    attempt.status === "transcript_unreadable"
+      ? `: ${renderAttemptTranscriptError(attempt.transcript_error)}`
       : "";
   return `  ${attempt.number}. ${attempt.run_id}  ${attempt.status}${statusDetail}`;
 }
 
-function renderAttemptJournalError(error: string | undefined): string {
+function renderAttemptTranscriptError(error: string | undefined): string {
   const normalized = (error ?? "").replace(/\s+/g, " ").trim();
-  const value = normalized || "unknown journal read error";
-  if (value.length <= MAX_ATTEMPT_JOURNAL_ERROR_RENDER) return value;
-  return `${value.slice(0, MAX_ATTEMPT_JOURNAL_ERROR_RENDER - 3).trimEnd()}...`;
+  const value = normalized || "unknown transcript read error";
+  if (value.length <= MAX_ATTEMPT_TRANSCRIPT_ERROR_RENDER) return value;
+  return `${value.slice(0, MAX_ATTEMPT_TRANSCRIPT_ERROR_RENDER - 3).trimEnd()}...`;
 }
 
 function renderWorkRow(record: WorkRecord): string {

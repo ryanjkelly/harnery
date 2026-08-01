@@ -5,7 +5,7 @@ import { coordEnv } from "./env.ts";
 
 /**
  * Resolve a human-friendly label for the current machine. Used to tag
- * coordination artifacts (scratch-doc headers, session telemetry) by the host
+ * coordination artifacts (journal-doc headers, session telemetry) by the host
  * they originated on.
  *
  * Precedence (first non-empty wins):

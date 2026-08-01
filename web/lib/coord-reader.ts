@@ -5,7 +5,7 @@
  *   1. `HARNERY_COORD_ROOT` env var (set by `harn web up` to the user's cwd)
  *   2. Walk up from process.cwd() looking for a `.harnery/` directory
  *
- * Reads heartbeats, councils, events, and scratchpads. Invalid entries are
+ * Reads heartbeats, councils, events, and journals. Invalid entries are
  * reported as `meta.invalid` rather than crashing the page.
  */
 
@@ -70,8 +70,8 @@ export function councilsDir(): string {
   return path.join(harneryDir(), "councils");
 }
 
-export function scratchDir(): string {
-  return path.join(harneryDir(), "scratch");
+export function journalDir(): string {
+  return path.join(harneryDir(), "journal");
 }
 
 export function eventsPath(): string {
@@ -254,7 +254,7 @@ export function readEndedAgent(instanceId: string): Heartbeat | null {
   };
 }
 
-export interface ScratchEntry {
+export interface JournalEntry {
   ts_chicago: string;
   ts_iso: string | null;
   category: string;
@@ -278,31 +278,31 @@ function parseChicagoStampToIso(s: string): string | null {
   return `${y}-${mo}-${d}T${h.toString().padStart(2, "0")}:${min}:00${offset}`;
 }
 
-export interface ScratchDoc {
+export interface JournalDoc {
   exists: boolean;
   path: string;
   bytes: number;
-  entries: ScratchEntry[];
+  entries: JournalEntry[];
 }
 
-// Scratchpad entries look like: `## 2026-05-27 10:39 AM CDT · handoff`
-// (see src/core/scratch/index.ts; appendEntry emits this format).
-const SCRATCH_HEADER_RE =
+// Journal entries look like: `## 2026-05-27 10:39 AM CDT · handoff`
+// (see src/core/journal/index.ts; appendEntry emits this format).
+const JOURNAL_HEADER_RE =
   /^##\s+(?<ts>.+?)\s+·\s+(?<cat>note|plan|decision|blocker|question|done|handoff)\s*$/i;
 
-export function readScratch(instanceId: string): ScratchDoc {
-  const p = path.join(scratchDir(), `${instanceId}.md`);
+export function readJournal(instanceId: string): JournalDoc {
+  const p = path.join(journalDir(), `${instanceId}.md`);
   if (!existsSync(p)) {
     return { exists: false, path: p, bytes: 0, entries: [] };
   }
   const text = readFileSync(p, "utf-8");
   const bytes = Buffer.byteLength(text, "utf-8");
-  const entries: ScratchEntry[] = [];
+  const entries: JournalEntry[] = [];
   const lines = text.split("\n");
-  let current: ScratchEntry | null = null;
+  let current: JournalEntry | null = null;
   const bodyBuf: string[] = [];
   for (const line of lines) {
-    const m = SCRATCH_HEADER_RE.exec(line);
+    const m = JOURNAL_HEADER_RE.exec(line);
     if (m) {
       if (current) {
         current.body = bodyBuf.join("\n").trim();
@@ -329,7 +329,7 @@ export function readScratch(instanceId: string): ScratchDoc {
   return { exists: true, path: p, bytes, entries };
 }
 
-export interface ScratchArchive {
+export interface JournalArchive {
   filename: string;
   path: string;
   bytes: number;
@@ -338,8 +338,8 @@ export interface ScratchArchive {
 }
 
 /**
- * List archived scratchpads for one owner. Archive filenames follow two
- * shapes from `harnery/src/core/scratch/index.ts`:
+ * List archived journals for one owner. Archive filenames follow two
+ * shapes from `harnery/src/core/journal/index.ts`:
  *
  *   <owner>-<iso>.md            auto-archive on SessionEnd
  *   <owner>-pre-ui-<iso>.md     pre-edit snapshot from the web UI's wholesale Replace
@@ -347,8 +347,8 @@ export interface ScratchArchive {
  * Both use `2026-05-28T14-06-19-123Z` style ISO with `:` swapped to `-` for
  * filesystem safety; we revert that to a real ISO for `archived_at`.
  */
-export function listScratchArchives(instanceId: string): ScratchArchive[] {
-  const dir = path.join(scratchDir(), "archived");
+export function listJournalArchives(instanceId: string): JournalArchive[] {
+  const dir = path.join(journalDir(), "archived");
   if (!existsSync(dir)) return [];
   const prefix = `${instanceId}-`;
   let names: string[];
@@ -357,7 +357,7 @@ export function listScratchArchives(instanceId: string): ScratchArchive[] {
   } catch {
     return [];
   }
-  const out: ScratchArchive[] = [];
+  const out: JournalArchive[] = [];
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith(".md")) continue;
     const full = path.join(dir, name);
@@ -393,7 +393,7 @@ export function listScratchArchives(instanceId: string): ScratchArchive[] {
   return out;
 }
 
-export function readScratchArchive(instanceId: string, filename: string): string | null {
+export function readJournalArchive(instanceId: string, filename: string): string | null {
   // Tight whitelist: must start with the owner prefix and end in `.md`, no slashes.
   if (
     !filename.startsWith(`${instanceId}-`) ||
@@ -403,7 +403,7 @@ export function readScratchArchive(instanceId: string, filename: string): string
   ) {
     return null;
   }
-  const p = path.join(scratchDir(), "archived", filename);
+  const p = path.join(journalDir(), "archived", filename);
   if (!existsSync(p)) return null;
   try {
     return readFileSync(p, "utf-8");
@@ -798,7 +798,7 @@ function loadPersistedIndex(indexPath: string): IdentityIndex {
       };
     }
   } catch {
-    // missing or corrupt → rebuild from scratch
+    // missing or corrupt → rebuild from journal
   }
   // Missing, corrupt, or built by an older parser version → one full re-scan.
   return { offset: 0, foldedArchives: [], identities: {} };

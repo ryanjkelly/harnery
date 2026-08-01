@@ -13,7 +13,7 @@ export const revalidate = 0;
 export const metadata = { title: "Workflows · Harnery" };
 
 /**
- * /workflows: journal-driven list of workflow runs. The globally-mounted
+ * /workflows: transcript-driven list of workflow runs. The globally-mounted
  * LiveRefresher re-renders on coord-layer change (workflow children emit
  * canonical events), so a running fan-out updates without bespoke polling.
  */
@@ -46,7 +46,7 @@ export default function WorkflowsPage() {
         <h1 className="mb-1 text-xl font-semibold">Workflow runs</h1>
         <p className="mb-6 text-sm text-muted-foreground">
           Bounded, schema-gated multi-subagent runs from{" "}
-          <code className="text-xs">workflow run</code>. Journals live in{" "}
+          <code className="text-xs">workflow run</code>. Transcripts live in{" "}
           <code className="text-xs">.harnery/workflows/</code>.
         </p>
 

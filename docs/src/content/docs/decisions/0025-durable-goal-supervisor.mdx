@@ -40,7 +40,7 @@ freezes:
 
 Workflow `agent()` calls may name a specialist. The engine resolves the frozen
 profile before dispatch, prepends its instructions to the assignment, records
-the specialist in the journal and proof-facing agent record, and includes the
+the specialist in the transcript and proof-facing agent record, and includes the
 resolved profile in call identity. A workflow run manifest freezes the complete
 specialist map so approval resume cannot pick up changed team behavior.
 
@@ -54,7 +54,7 @@ specialist map so approval resume cannot pick up changed team behavior.
 3. records authorized acceptance or selects ready/resumable/retryable work;
 4. dispatches at most the frozen parallel-work limit and lets each work lease
    serialize its own attempt;
-5. reconstructs all state again from work journals and proof before deciding
+5. reconstructs all state again from work transcripts and proof before deciding
    whether another cycle is legal.
 
 The governor has an exclusive crash-recoverable lease, but no mutable status

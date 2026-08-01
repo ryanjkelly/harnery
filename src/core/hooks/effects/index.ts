@@ -1,7 +1,7 @@
 /**
  * Non-coordination side effects fired from the normalized `agent-hook` handlers.
  *
- * These are DELIBERATELY outside the agent-coord path: sounds, scratch
+ * These are DELIBERATELY outside the agent-coord path: sounds, journal
  * lifecycle, session telemetry, presence detection. They used to live in
  * per-harness bash adapters. Per the directive ("use the normalized hooks; if
  * they aren't coordination, implement them outside of coordination") they move
@@ -66,12 +66,12 @@ function harnBin(repoRoot: string): string | null {
   return existsSync(bin) ? bin : null;
 }
 
-/** Prune stale scratch archives + sweep orphans (global, fast). Fire-and-forget. */
-export function scratchJanitor(repoRoot: string): void {
+/** Prune stale journal archives + sweep orphans (global, fast). Fire-and-forget. */
+export function journalJanitor(repoRoot: string): void {
   try {
     const bin = harnBin(repoRoot);
     if (!bin) return;
-    spawnSync("bash", [bin, "scratch", "janitor", "--quiet"], {
+    spawnSync("bash", [bin, "journal", "janitor", "--quiet"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       timeout: 5000,
       stdio: "ignore",
@@ -82,15 +82,15 @@ export function scratchJanitor(repoRoot: string): void {
 }
 
 /**
- * Return the one-line scratch recovery cue for SessionStart, or "" if none.
+ * Return the one-line journal recovery cue for SessionStart, or "" if none.
  * The caller merges it into the session-start additionalContext (it used to be
- * a standalone additionalContext emission from the previous scratch-on-start adapter).
+ * a standalone additionalContext emission from the previous journal-on-start adapter).
  */
-export function scratchRecoveryCue(repoRoot: string): string {
+export function journalRecoveryCue(repoRoot: string): string {
   try {
     const bin = harnBin(repoRoot);
     if (!bin) return "";
-    const r = spawnSync("bash", [bin, "scratch", "recovery-cue"], {
+    const r = spawnSync("bash", [bin, "journal", "recovery-cue"], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       timeout: 5000,
       encoding: "utf8",
@@ -101,12 +101,12 @@ export function scratchRecoveryCue(repoRoot: string): string {
   }
 }
 
-/** Archive the ending agent's scratchpad. Fire-and-forget. */
-export function scratchArchive(repoRoot: string, owner: string): void {
+/** Archive the ending agent's journal. Fire-and-forget. */
+export function journalArchive(repoRoot: string, owner: string): void {
   try {
     const bin = harnBin(repoRoot);
     if (!bin || !owner) return;
-    spawnSync("bash", [bin, "scratch", "archive", "--owner", owner], {
+    spawnSync("bash", [bin, "journal", "archive", "--owner", owner], {
       env: { ...process.env, HARNERY_OUTPUT_SESSION_TEE: "0" },
       timeout: 5000,
       stdio: "ignore",

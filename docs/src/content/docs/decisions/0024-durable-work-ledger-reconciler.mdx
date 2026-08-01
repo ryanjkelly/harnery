@@ -8,7 +8,7 @@ description: "ADR: preserve objective intent across attempts, derive its state f
 ## Context
 
 Harnery workflow runs are bounded execution attempts. They have frozen script
-identity, append-only journals, durable approval parking, resume leases, and
+identity, append-only transcripts, durable approval parking, resume leases, and
 terminal proof. Those records answer what one attempt did. They do not answer
 whether the larger objective remains pending after a failed run, whether its
 prerequisites are ready, how many attempts have been spent, or whether passing
@@ -37,7 +37,7 @@ State-changing facts append to `events.jsonl`. Each bounded event has a strict
 schema, monotonic sequence, timestamp, actor, and only the fields required by
 its event family. Reads validate every line and fail closed on truncation,
 oversize records, or schema drift. Current state is recomputed from immutable
-intent, append-only events, dependency projections, workflow journals, approval
+intent, append-only events, dependency projections, workflow transcripts, approval
 records, run leases, and proof packets. There is no mutable state file that can
 drift from the evidence.
 

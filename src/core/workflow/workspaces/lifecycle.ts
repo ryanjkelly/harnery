@@ -135,7 +135,7 @@ export interface WorkspaceLifecycleProjectionInput {
   binding?: WorkspaceBinding;
   provider_events?: readonly WorkspaceProviderEvent[];
   manifest?: WorkflowRunManifest;
-  workflow_journal?: readonly {
+  workflow_transcript?: readonly {
     event: string;
     ok?: boolean;
     status?: "blocked" | "lost" | WorkspaceCancellationResult["status"];
@@ -207,22 +207,22 @@ export function deriveWorkspaceLifecycle(
     transition(next);
   }
 
-  const journal = input.workflow_journal ?? [];
-  for (const event of journal) {
+  const transcript = input.workflow_transcript ?? [];
+  for (const event of transcript) {
     if (input.binding && (event.event === "run.start" || event.event === "run.resume")) {
       transition("running");
     }
     if (event.event === "run.parked") transition("parked");
   }
-  const failedReattachment = [...journal]
+  const failedReattachment = [...transcript]
     .reverse()
     .find((event) => event.event === "workspace.reattach.failed");
   if (failedReattachment) transition(failedReattachment.status === "blocked" ? "blocked" : "lost");
   let workflowOutcome = proofOutcome(input.proof, input.binding);
-  const terminalJournal = [...journal].reverse().find((event) => event.event === "run.end");
+  const terminalTranscript = [...transcript].reverse().find((event) => event.event === "run.end");
   if (input.proof && !failedReattachment) transition(workflowOutcome!);
-  if (terminalJournal && !input.proof && !failedReattachment) {
-    workflowOutcome = terminalJournal.ok === false ? "failed_retained" : null;
+  if (terminalTranscript && !input.proof && !failedReattachment) {
+    workflowOutcome = terminalTranscript.ok === false ? "failed_retained" : null;
     transition("blocked");
   }
   if (projectedIntegrationState !== "none") transition("integration_requested");
@@ -269,7 +269,7 @@ export function deriveWorkspaceLifecycle(
     ((input.cancellation_receipt?.status === "cancelled" &&
       input.cancellation_receipt.work_event_seq === latestGovernance.seq &&
       input.cancellation_receipt.work_event_sha256 === workEventSha256) ||
-      journal.some(
+      transcript.some(
         (event) =>
           event.event === "workspace.cancel" &&
           event.status === "cancelled" &&
@@ -459,8 +459,8 @@ function validateIntegrationAuthorization(
     !digest(authorization.policy_sha256) ||
     authorization.decision?.verdict !== "allow" ||
     authorization.decision_sha256 !== stableDigest(authorization.decision) ||
-    authorization.journal_anchor?.event !== "integration.plan" ||
-    authorization.journal_anchor.plan_sha256 !== planSha256 ||
+    authorization.transcript_anchor?.event !== "integration.plan" ||
+    authorization.transcript_anchor.plan_sha256 !== planSha256 ||
     !validTimestamp(authorization.authorized_at) ||
     (authorization.approval_id !== undefined &&
       (typeof authorization.approval_actor !== "string" || !digest(authorization.approval_sha256)))

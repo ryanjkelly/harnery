@@ -9,14 +9,14 @@
  *
  * `v` is a hash over the mtime+size of everything the SSE route fs.watches:
  * the events log (catches appends) plus the top-level entries of the active /
- * councils / scratch dirs (catches heartbeat writes, council edits, etc.).
+ * councils / journal dirs (catches heartbeat writes, council edits, etc.).
  * Just stats, no file-content reads, so it's sub-millisecond per call.
  */
 
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { activeDir, councilsDir, eventsPath, scratchDir } from "@/lib/coord-reader";
+import { activeDir, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +46,7 @@ export function GET(): Response {
     `events:${statSig(eventsPath())}`,
     `active:${dirSig(activeDir())}`,
     `councils:${dirSig(councilsDir())}`,
-    `scratch:${dirSig(scratchDir())}`,
+    `journal:${dirSig(journalDir())}`,
   ].join("|");
   const v = createHash("sha1").update(raw).digest("hex").slice(0, 16);
   return Response.json({ v }, { headers: { "Cache-Control": "no-store" } });

@@ -154,7 +154,7 @@ harn work reconcile <work-id>
 harn work accept <work-id> --actor reviewer --reason "proof and artifacts reviewed"
 ```
 
-Reconciliation compares the ledger with dependency state, workflow journals,
+Reconciliation compares the ledger with dependency state, workflow transcripts,
 approval records, leases, and proof. It records a changed state and next action
 but never executes that action. Running it repeatedly over unchanged evidence
 does not append duplicate events.
@@ -164,7 +164,7 @@ A passing workflow proof derives `in_review`. It does not derive `succeeded`.
 `reopen` retains every event and attempt while making a future attempt possible.
 
 The local dashboard exposes the same projection at `/work`, with links to each
-attempt's workflow journal and current approval or proof.
+attempt's workflow transcript and current approval or proof.
 
 ## Sending a correction back
 

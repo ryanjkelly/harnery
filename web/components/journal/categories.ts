@@ -1,11 +1,11 @@
 /**
- * Shared category metadata for the scratchpad UI. Mirrors the
- * `SCRATCH_CATEGORIES` allowlist from `harnery/src/core/scratch/index.ts`
+ * Shared category metadata for the journal UI. Mirrors the
+ * `JOURNAL_CATEGORIES` allowlist from `harnery/src/core/journal/index.ts`
  * (the source of truth: the bash + bun CLIs both reject anything outside
  * it). Descriptions are the operator-facing tooltips.
  */
 
-import type { ScratchCategory } from "@/lib/coord-writer";
+import type { JournalCategory } from "@/lib/coord-writer";
 
 type BadgeVariant =
   | "default"
@@ -19,7 +19,7 @@ type BadgeVariant =
   | "accent";
 
 export interface CategoryMeta {
-  value: ScratchCategory;
+  value: JournalCategory;
   label: string;
   variant: BadgeVariant;
   short: string;
@@ -53,7 +53,7 @@ export const CATEGORY_META: readonly CategoryMeta[] = [
     label: "Blocker",
     variant: "destructive",
     short: "Stuck: can't proceed without something.",
-    long: "Something preventing forward progress (missing access, broken dependency, unanswered question, etc.). Other agents reading the scratchpad should treat this as a request for help.",
+    long: "Something preventing forward progress (missing access, broken dependency, unanswered question, etc.). Other agents reading the journal should treat this as a request for help.",
   },
   {
     value: "question",
@@ -79,19 +79,19 @@ export const CATEGORY_META: readonly CategoryMeta[] = [
 ] as const;
 
 export const CATEGORY_BY_VALUE: Readonly<
-  Record<ScratchCategory, CategoryMeta>
+  Record<JournalCategory, CategoryMeta>
 > = Object.fromEntries(
   CATEGORY_META.map((m) => [m.value, m]),
-) as Record<ScratchCategory, CategoryMeta>;
+) as Record<JournalCategory, CategoryMeta>;
 
 export function categoryMeta(value: string): CategoryMeta {
   return (
-    CATEGORY_BY_VALUE[value as ScratchCategory] ?? {
-      value: value as ScratchCategory,
+    CATEGORY_BY_VALUE[value as JournalCategory] ?? {
+      value: value as JournalCategory,
       label: value,
       variant: "muted",
       short: "Unknown category",
-      long: `Category "${value}" is not in the canonical scratch category list. Likely an artifact of an older entry shape or a manual edit.`,
+      long: `Category "${value}" is not in the canonical journal category list. Likely an artifact of an older entry shape or a manual edit.`,
     }
   );
 }

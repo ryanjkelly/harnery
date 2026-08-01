@@ -67,7 +67,7 @@ are present.
 ### Billing safeguards
 
 The engine probes each harness's billing state on its **first spawn** of the
-run (journaled as `billing.probe`, echoed as a `[billing]` line, and reported
+run (transcripted as `billing.probe`, echoed as a `[billing]` line, and reported
 per harness in the RunReport and web view):
 
 - **`subscription`**: no key exported; children ride the stored login.
@@ -100,7 +100,7 @@ login). Where presence can't be proven either way (macOS keychain storage,
 cursor), the state is `unknown` and never hard-fails. The harness CLI itself
 is the final authority.
 
-Two accounting consequences: the `costUsd` the claude adapter journals is the
+Two accounting consequences: the `costUsd` the claude adapter transcripts is the
 CLI's *notional* cost figure (under subscription auth it is not an invoice,
 just a burn gauge), and a large fan-out consumes the subscription's usage
 allowance the same way interactive sessions do, so the agent cap and
@@ -235,7 +235,7 @@ unsatisfied or unknown criteria. Causes can be `workflow_error`,
 that terminal proof is absent; it does not diagnose why the run disappeared.
 
 The engine persists the same value as `attempt_context` in the private manifest,
-journal, and terminal proof. Approval resume restores that original value and
+transcript, and terminal proof. Approval resume restores that original value and
 does not become a retry. Standalone and historical context-free runs have
 `ctx.attempt === undefined`.
 
@@ -252,9 +252,9 @@ prompt.
 | `work` | Optional deeply frozen durable-work assignment: work ID, title, objective, and acceptance criteria. Present for new work-linked attempts; absent for standalone and legacy-resumed runs. |
 | `attempt` | Optional deeply frozen attempt identity. A retry includes a bounded synopsis of the preceding terminal evidence; approval resume preserves the original attempt. |
 | `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must parse as one JSON value and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`). Exact JSON and a whole fenced value are accepted. A harness-added leading sentence is tolerated only when exactly one unambiguous object or array reaches the end of the reply; trailing prose, multiple candidates, malformed values, and schema mismatches still fail. Failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
-| `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (journaled), so one bad item can't kill the batch; filter and route. |
-| `stage(title)` | Declare the current stage: journal marker + progress grouping. |
-| `log(message)` | Narrate progress (stderr + journal). |
+| `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (transcripted), so one bad item can't kill the batch; filter and route. |
+| `stage(title)` | Declare the current stage: transcript marker + progress grouping. |
+| `log(message)` | Narrate progress (stderr + transcript). |
 | `evidence(input)` | Attach a bounded receipt to the run and optional acceptance IDs. Returns a stable ID such as `e1`. Kinds: `test`, `command`, `artifact`, `change`, `review`, `observation`. Statuses: `passed`, `failed`, `observed`, `unknown`. |
 | `authorize(input)` | Authorize one host-mediated external mutation before performing it. Input includes a short `action` plus optional `path`, `network`, `service`, and bounded `target`. Returns the final allow decision; denial or missing host policy throws before control returns. |
 
@@ -282,7 +282,7 @@ effort, turn, timeout, and schema-retry defaults; options on the individual
 agent call override those defaults.
 
 The engine prepends the frozen role instructions to the assignment and records
-the specialist ID in the journal and proof packet. The complete profile map is
+the specialist ID in the transcript and proof packet. The complete profile map is
 also frozen in the workflow run manifest. Approval resume therefore cannot
 silently pick up changed role instructions or model settings. Specialist ID,
 resolved options, and wrapped prompt participate in resume-cache identity.
@@ -442,9 +442,9 @@ salvaging and discarding can be made without leaving Harnery.
 ## Resume
 
 `--resume-from <run-id>` reuses completed agent results from a prior run's
-journal: an `agent()` call whose identity (stage, harness, model, effort, maxTurns,
-schema, and the ORIGINAL prompt) matches a journaled `agent.end` returns the
-recorded result instantly without spawning (journaled as `agent.cached`).
+transcript: an `agent()` call whose identity (stage, harness, model, effort, maxTurns,
+schema, and the ORIGINAL prompt) matches a transcripted `agent.end` returns the
+recorded result instantly without spawning (transcripted as `agent.cached`).
 Changed or previously-failed calls re-run live. Same script + same inputs →
 100% cache, $0. A typo'd run id fails loud rather than silently re-running
 everything.
@@ -468,7 +468,7 @@ idempotent, and a conflicting retry is refused. Approval does not auto-spawn
 work. Resume must be invoked explicitly, and an exclusive resume lease refuses
 concurrent attempts for the same run.
 
-`workflow resume` reuses the same run ID and journal. It verifies the frozen
+`workflow resume` reuses the same run ID and transcript. It verifies the frozen
 script SHA-256, reconstructs completed agent results and committed cost, and
 reruns the deterministic script from its entry point. Engine-managed
 `agent()` calls return cached results and the matching approval decision is
@@ -487,13 +487,13 @@ heuristic) and reports it as `contextTokensPerChildEstimate` in the
 
 ## Output
 
-Human mode prints a run summary (agents, cached count, cost, duration, journal
+Human mode prints a run summary (agents, cached count, cost, duration, transcript
 path, proof path, acceptance summary, result). `--json` emits the full
-`RunReport`. Every run journals to
-`.harnery/workflows/<run-id>/journal.jsonl`: `run.start`, `stage.start`,
+`RunReport`. Every run transcripts to
+`.harnery/workflows/<run-id>/transcript.jsonl`: `run.start`, `stage.start`,
 `agent.start/end` (cost, duration, child session id, result), `agent.cached`,
-`agent.schema_retry`, `evidence.recorded`, `run.end`. New journal lines carry
-`schema_version` and `run_id`; older journals remain resumable.
+`agent.schema_retry`, `evidence.recorded`, `run.end`. New transcript lines carry
+`schema_version` and `run_id`; older transcripts remain resumable.
 Durable approval runs also use `approval.requested`, `approval.resolved`,
 `approval.consumed`, `run.parked`, and `run.resume`.
 
@@ -513,7 +513,7 @@ mode `0600` and contains:
 - adapter tool-evidence coverage from the harness capability registry;
 - explicit unknowns for missing capability claims, cost, session IDs, and
   incomplete repository drift;
-- a SHA-256 digest of the final journal.
+- a SHA-256 digest of the final transcript.
 - the normalized host policy, its digest, host isolation/network declarations,
   and bounded initial/final decision receipts when policy was configured.
 
@@ -526,7 +526,7 @@ Repository snapshots and packet integrity are marked separately as
 engine-observed.
 
 Inspect a packet with `harn workflow proof <run-id>`. Human mode renders the
-status, criteria, evidence count, repository drift, unknowns, and journal
+status, criteria, evidence count, repository drift, unknowns, and transcript
 digest. `--json` emits the stored schema unchanged. Failed `workflow run`
 commands include the proof path in their error output.
 
@@ -534,7 +534,7 @@ Proof packets are bounded to 50 criteria, 200 evidence records, and 512 KiB.
 Labels, summaries, and references have field-level limits. Unknown acceptance
 IDs and duplicate criterion IDs fail loud. The packet does not run a secret
 redactor; do not put credentials into objectives, evidence summaries, or
-references. The detailed journal continues to retain full agent results for
+references. The detailed transcript continues to retain full agent results for
 resume compatibility.
 
 The programmatic surface is exported from `harnery/core/workflow`, including
@@ -545,7 +545,7 @@ types, and `WORKFLOW_PROOF_SCHEMA_VERSION`.
 
 ## Web view
 
-The dashboard (`harn web up`) ships a **/workflows** page: journal-driven list
+The dashboard (`harn web up`) ships a **/workflows** page: transcript-driven list
 of runs (status, agents, cached count, cost, stage chain) and a per-run detail
 view rendering the stages → agents tree with per-agent harness, attempts,
 duration, and cost. Parked runs have a distinct awaiting-approval status and
@@ -554,7 +554,7 @@ shows the objective, acceptance criteria, declared evidence, repository drift,
 host-policy decisions, and explicit unknowns. The run list also shows the
 workspace lifecycle. Detail pages separate allocation, verification,
 integration, cleanup, and repository conflicts. Invalid durable workspace
-evidence appears as an error instead of a healthy badge. Journal-driven means a
+evidence appears as an error instead of a healthy badge. Transcript-driven means a
 run stays inspectable while live and after the orchestrator exits, with no
 terminal paging limits.
 
@@ -563,5 +563,5 @@ terminal paging limits.
 Children run with the host's hooks **on** (that's what makes them
 coordination-visible) but with `HARNERY_WORKFLOW_CHILD=1`, which the stop-hook
 rule honors as an exemption (`stop-hook.workflow_child`): the human-facing
-end-of-turn ritual doesn't apply to a headless child reporting to a journal.
+end-of-turn ritual doesn't apply to a headless child reporting to a transcript.
 Everything else (heartbeats, canonical events, claims) behaves normally.

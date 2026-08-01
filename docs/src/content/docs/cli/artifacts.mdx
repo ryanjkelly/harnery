@@ -9,7 +9,7 @@ sidebar:
 harn artifacts <subcommand> [options]
 ```
 
-Working artifacts sit between the scratch journal and tracked project files.
+Working artifacts sit between the journal and tracked project files.
 Use them for screenshots, exports, browser captures, audit dumps, experiments,
 and rollback inputs that need to survive a session but should expire later.
 Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
@@ -77,9 +77,9 @@ New workspaces expire after three days by default. Set a project default in
 Cleanup previews by default. Even with `--yes`, Harnery rechecks every deletion
 candidate and refuses to delete entries that changed classification.
 
-## Scratch, artifacts, and durable files
+## Journal, artifacts, and durable files
 
-Use `harn scratch` for short text breadcrumbs that help with context recovery
+Use `harn journal` for short text breadcrumbs that help with context recovery
 or peer handoff. Use `harn artifacts` for file trees that can expire. If a
 report, input, or piece of evidence becomes part of the project's record, copy
 it to the appropriate tracked path and document what it contains. Local

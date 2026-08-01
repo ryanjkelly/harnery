@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { runWorkflow } from "./engine.ts";
-import { WORKFLOW_JOURNAL_EVENT_BYTES } from "./journal.ts";
+import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "./transcript.ts";
 import type { Spawner, SpawnRequest, SpawnResult, WorkflowProof } from "./types.ts";
 import { parseStageOutput, validateAgainstSchema } from "./validate.ts";
 
@@ -106,12 +106,12 @@ describe("runWorkflow", () => {
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
     expect(manifest.work_context).toEqual((report.result as { work: unknown }).work);
     expect(proof.run.work_context).toEqual(manifest.work_context);
-    expect(readJournal().find((event) => event.event === "run.start")?.work_context).toEqual(
+    expect(readTranscript().find((event) => event.event === "run.start")?.work_context).toEqual(
       manifest.work_context,
     );
   });
 
-  test("injects a frozen attempt context and binds it to manifest, journal, and proof", async () => {
+  test("injects a frozen attempt context and binds it to manifest, transcript, and proof", async () => {
     const script = writeScript(`
       export default async ({ attempt }) => {
         let priorFrozen = false;
@@ -170,7 +170,7 @@ describe("runWorkflow", () => {
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
     expect(manifest.attempt_context).toEqual((report.result as { attempt: unknown }).attempt);
     expect(proof.run.attempt_context).toEqual(manifest.attempt_context);
-    expect(readJournal().find((event) => event.event === "run.start")?.attempt_context).toEqual(
+    expect(readTranscript().find((event) => event.event === "run.start")?.attempt_context).toEqual(
       manifest.attempt_context,
     );
   });
@@ -334,7 +334,7 @@ describe("runWorkflow", () => {
     expect(prompts[1]!.length).toBeLessThan(18_000);
   });
 
-  test("retry exhaustion throws and journals agent.failed + run.end ok:false", async () => {
+  test("retry exhaustion throws and transcripts agent.failed + run.end ok:false", async () => {
     const spawner: Spawner = async () => okSpawn("not json at all");
     const script = writeScript(`
       export default async ({ agent }) => agent("classify", {
@@ -345,9 +345,9 @@ describe("runWorkflow", () => {
     await expect(
       runWorkflow(script, { coordRoot: root, spawners: { "claude-code": spawner }, ...quiet }),
     ).rejects.toThrow(/schema validation failed after 2 attempt/);
-    const journal = readJournal();
-    expect(journal.some((e) => e.event === "agent.failed")).toBe(true);
-    const end = journal.find((e) => e.event === "run.end");
+    const transcript = readTranscript();
+    expect(transcript.some((e) => e.event === "agent.failed")).toBe(true);
+    const end = transcript.find((e) => e.event === "run.end");
     expect(end?.ok).toBe(false);
   });
 
@@ -404,7 +404,7 @@ describe("runWorkflow", () => {
     expect(maxInFlight).toBe(2);
   });
 
-  test("agent without schema returns raw text; journal has stage + session id", async () => {
+  test("agent without schema returns raw text; transcript has stage + session id", async () => {
     const spawner: Spawner = async () => okSpawn("plain reply");
     const script = writeScript(`
       export default async ({ agent, stage }) => {
@@ -418,15 +418,15 @@ describe("runWorkflow", () => {
       ...quiet,
     });
     expect(report.result).toBe("plain reply");
-    const journal = readJournal();
-    expect(journal.find((e) => e.event === "stage.start")?.title).toBe("explore");
-    const end = journal.find((e) => e.event === "agent.end");
+    const transcript = readTranscript();
+    expect(transcript.find((e) => e.event === "stage.start")?.title).toBe("explore");
+    const end = transcript.find((e) => e.event === "agent.end");
     expect(end?.stage).toBe("explore");
     expect(end?.session_id).toBe("child-s");
   });
 
-  test("journals a digest for an oversized agent result without failing the run", async () => {
-    const largeResult = "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES + 1024);
+  test("transcripts a digest for an oversized agent result without failing the run", async () => {
+    const largeResult = "x".repeat(WORKFLOW_TRANSCRIPT_EVENT_BYTES + 1024);
     const spawner: Spawner = async () => okSpawn(largeResult);
     const script = writeScript(`
       export default async ({ agent }) => agent("produce a large result");
@@ -439,13 +439,13 @@ describe("runWorkflow", () => {
     });
 
     expect(report.result).toBe(largeResult);
-    const lines = readFileSync(report.journalPath, "utf8").split("\n").filter(Boolean);
+    const lines = readFileSync(report.transcriptPath, "utf8").split("\n").filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
-    expect(lines.every((line) => Buffer.byteLength(line) <= WORKFLOW_JOURNAL_EVENT_BYTES)).toBe(
+    expect(lines.every((line) => Buffer.byteLength(line) <= WORKFLOW_TRANSCRIPT_EVENT_BYTES)).toBe(
       true,
     );
-    const journal = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
-    const end = journal.find((event) => event.event === "agent.end");
+    const transcript = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const end = transcript.find((event) => event.event === "agent.end");
     const proof = JSON.parse(readFileSync(report.proofPath, "utf8")) as WorkflowProof;
     expect(end?.result).toBeUndefined();
     expect(end?.result_digest).toEqual(proof.agents[0]?.result);
@@ -454,10 +454,10 @@ describe("runWorkflow", () => {
     expect(omitted.map((entry) => entry.field)).toContain("result");
   });
 
-  test("omits oversized agent metadata when journaling a large result digest", async () => {
-    const largeResult = "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES + 1024);
+  test("omits oversized agent metadata when transcripting a large result digest", async () => {
+    const largeResult = "x".repeat(WORKFLOW_TRANSCRIPT_EVENT_BYTES + 1024);
     const spawner: Spawner = async () =>
-      okSpawn(largeResult, { sessionId: "s".repeat(WORKFLOW_JOURNAL_EVENT_BYTES) });
+      okSpawn(largeResult, { sessionId: "s".repeat(WORKFLOW_TRANSCRIPT_EVENT_BYTES) });
     const script = writeScript(`
       export default async ({ agent }) => agent("produce a large result with large metadata");
     `);
@@ -469,12 +469,12 @@ describe("runWorkflow", () => {
     });
 
     expect(report.result).toBe(largeResult);
-    const lines = readFileSync(report.journalPath, "utf8").split("\n").filter(Boolean);
-    expect(lines.every((line) => Buffer.byteLength(line) <= WORKFLOW_JOURNAL_EVENT_BYTES)).toBe(
+    const lines = readFileSync(report.transcriptPath, "utf8").split("\n").filter(Boolean);
+    expect(lines.every((line) => Buffer.byteLength(line) <= WORKFLOW_TRANSCRIPT_EVENT_BYTES)).toBe(
       true,
     );
-    const journal = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
-    const end = journal.find((event) => event.event === "agent.end");
+    const transcript = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const end = transcript.find((event) => event.event === "agent.end");
     expect(end?.session_id).toBeUndefined();
     const dropped = (end?.omitted_fields as Array<Record<string, unknown>>).map((e) => e.field);
     expect(dropped).toContain("result");
@@ -651,7 +651,7 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/no spawner registered for harness "cursor"/);
   });
 
-  test("resume-from reuses journaled results; only new calls spawn", async () => {
+  test("resume-from reuses transcripted results; only new calls spawn", async () => {
     let calls = 0;
     const spawner: Spawner = async (req: SpawnRequest) => {
       calls++;
@@ -727,7 +727,7 @@ describe("runWorkflow", () => {
         resumeFrom: "wf-typo",
         ...quiet,
       }),
-    ).rejects.toThrow(/no journal at/);
+    ).rejects.toThrow(/no transcript at/);
   });
 
   test("context-cost estimate: reads instructions file size, lands in report + runId reaches spawner", async () => {
@@ -748,7 +748,7 @@ describe("runWorkflow", () => {
     expect(seenRunId).toBe(report.runId);
   });
 
-  test("writes a private proof packet with acceptance receipts, digests, repository drift, and normalized journals", async () => {
+  test("writes a private proof packet with acceptance receipts, digests, repository drift, and normalized transcripts", async () => {
     execFileSync("git", ["init", "-q"], { cwd: root });
     execFileSync("git", ["config", "user.email", "workflow-test@example.invalid"], { cwd: root });
     execFileSync("git", ["config", "user.name", "Workflow Test"], { cwd: root });
@@ -808,10 +808,10 @@ describe("runWorkflow", () => {
     expect(JSON.stringify(proof)).not.toContain("produce the private value");
     expect(proof.unknowns.some((item) => item.code === "tool_evidence_unavailable")).toBe(true);
 
-    const journal = readJournal();
-    expect(journal.every((event) => event.schema_version === 1)).toBe(true);
-    expect(journal.every((event) => event.run_id === report.runId)).toBe(true);
-    expect(proof.integrity.journal.bytes).toBe(statSync(report.journalPath).size);
+    const transcript = readTranscript();
+    expect(transcript.every((event) => event.schema_version === 1)).toBe(true);
+    expect(transcript.every((event) => event.run_id === report.runId)).toBe(true);
+    expect(proof.integrity.transcript.bytes).toBe(statSync(report.transcriptPath).size);
   });
 
   test("a failed workflow still writes a terminal proof packet and exposes its path", async () => {
@@ -844,11 +844,11 @@ describe("runWorkflow", () => {
     }
   });
 
-  function readJournal(): Array<Record<string, unknown> & { event: string }> {
+  function readTranscript(): Array<Record<string, unknown> & { event: string }> {
     const dir = join(root, ".harnery", "workflows");
     expect(existsSync(dir)).toBe(true);
     const runDir = join(dir, readdirSync(dir)[0] as string);
-    return readFileSync(join(runDir, "journal.jsonl"), "utf8")
+    return readFileSync(join(runDir, "transcript.jsonl"), "utf8")
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l));
@@ -1056,7 +1056,7 @@ describe("billing safeguards", () => {
     expect(report.billing).toEqual([{ harness: "claude-code", mode: "subscription" }]);
   });
 
-  test("probe runs once per harness and lands one billing.probe journal event", async () => {
+  test("probe runs once per harness and lands one billing.probe transcript event", async () => {
     let probes = 0;
     const spawner: Spawner = async () => okSpawn("hi");
     const script = writeScript(
@@ -1072,8 +1072,8 @@ describe("billing safeguards", () => {
       },
     });
     expect(probes).toBe(1);
-    const journal = readFileSync(report.journalPath, "utf8");
-    const billingEvents = journal.split("\n").filter((l) => l.includes('"billing.probe"'));
+    const transcript = readFileSync(report.transcriptPath, "utf8");
+    const billingEvents = transcript.split("\n").filter((l) => l.includes('"billing.probe"'));
     expect(billingEvents.length).toBe(1);
     expect(billingEvents[0]).toContain('"mode":"subscription"');
   });

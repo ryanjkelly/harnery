@@ -43,13 +43,13 @@ import {
   captureImages,
   detectPresence,
   imageJanitor,
+  journalArchive,
+  journalJanitor,
+  journalRecoveryCue,
   playSound,
   resetSoundCounters,
   runSessionSyncExtension,
   runTurnSummary,
-  scratchArchive,
-  scratchJanitor,
-  scratchRecoveryCue,
   soundForEvent,
 } from "./effects/index.ts";
 import { emit } from "./events/emit.ts";
@@ -109,7 +109,7 @@ async function readStdin(): Promise<string> {
 /**
  * Env for child agent-coord spawns, with the coord root pinned. The hook
  * process may be running with the session shell's cwd (inside a submodule or
- * scratch dir), and agent-coord resolves its root from cwd unless overridden —
+ * journal dir), and agent-coord resolves its root from cwd unless overridden —
  * without the pin a child could write state to a different .harnery than the
  * one this hook resolved.
  */
@@ -269,7 +269,7 @@ function buildEventData(
         agent_id: ctx.instanceId,
         // Workflow-child linkage: `workflow run` children carry the run id in
         // env (spawn adapters set it via buildChildEnv), so their sessions and
-        // heartbeats join back to the run journal + /workflows web view.
+        // heartbeats join back to the run transcript + /workflows web view.
         ...(coordEnv("WORKFLOW_CHILD") === "1" && coordEnv("WORKFLOW_RUN_ID")
           ? {
               workflow_run_id: coordEnv("WORKFLOW_RUN_ID"),
@@ -622,12 +622,12 @@ async function main(): Promise<number> {
   // Harness-agnostic since v0.5.0; replaces the previous bash UX layer
   // and the equivalent per-harness bash session_start handlers.
   if (norm.event_type === "session.start") {
-    // Effect (claude-code): prune stale scratch archives + sweep orphans.
+    // Effect (claude-code): prune stale journal archives + sweep orphans.
     // The recovery-cue is merged into the
     // session-start additionalContext inside emitSessionStartSystemMessage.
-    if (harness === "claude-code") scratchJanitor(coordRoot);
+    if (harness === "claude-code") journalJanitor(coordRoot);
     // Image-feed retention sweep (size + age cap on .harnery/images/). Harness-
-    // agnostic, cheap (one readdir), fail-soft. Paired with scratchJanitor as a
+    // agnostic, cheap (one readdir), fail-soft. Paired with journalJanitor as a
     // session-start "tidy the coord layer" step.
     try {
       imageJanitor(coordRoot);
@@ -699,10 +699,10 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "session-end-cleanup" });
     }
-    // Effects (claude-code): archive the ending agent's scratchpad + force a
+    // Effects (claude-code): archive the ending agent's journal + force a
     // session-telemetry sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1).
     if (harness === "claude-code") {
-      scratchArchive(coordRoot, owner.instance_id);
+      journalArchive(coordRoot, owner.instance_id);
       runSessionSyncExtension(coordRoot, true);
     }
     // Presence: publish the post-cleanup state so peers see this session gone
@@ -1515,12 +1515,12 @@ async function emitSessionStartSystemMessage(
     if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }
 
-  // Effect (claude-code): merge the scratch recovery cue into the session-start
+  // Effect (claude-code): merge the journal recovery cue into the session-start
   // context. Was a standalone additionalContext emission from the previous
-  // scratch-on-start adapter; now that agent-hook is the single SessionStart
+  // journal-on-start adapter; now that agent-hook is the single SessionStart
   // entry, it folds in here.
   if (harness === "claude-code") {
-    const cue = scratchRecoveryCue(coordRoot);
+    const cue = journalRecoveryCue(coordRoot);
     if (cue) additionalContext = [additionalContext, cue].filter(Boolean).join("\n\n");
   }
   if (recoveryBriefing) {

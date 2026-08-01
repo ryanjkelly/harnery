@@ -16,9 +16,9 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { readWorkflowApproval } from "../workflow/approvals.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
-import { WORKFLOW_JOURNAL_EVENT_BYTES, workflowJournalPath } from "../workflow/journal.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
 import { readWorkflowRunManifest, workflowScriptDigest } from "../workflow/run-state.ts";
+import { WORKFLOW_TRANSCRIPT_EVENT_BYTES, workflowTranscriptPath } from "../workflow/transcript.ts";
 import { isWorkspaceBoundExecutionEvidence } from "../workflow/workspaces/validate.ts";
 
 export const WORK_INTENT_SCHEMA_VERSION = 1 as const;
@@ -136,10 +136,10 @@ export interface WorkAttempt {
   run_id: string;
   started_at: string;
   trigger?: WorkAttemptTrigger;
-  status: "running" | "parked" | "succeeded" | "failed" | "lost" | "journal_unreadable";
+  status: "running" | "parked" | "succeeded" | "failed" | "lost" | "transcript_unreadable";
   approval_id?: string;
   proof_path?: string;
-  journal_error?: string;
+  transcript_error?: string;
   /** Why this failed attempt was uninformative about the work (ADR 0046), read
    * from the proof's run.class. Absent ⇒ the attempt is charged, exactly as
    * before ADR 0046 (which is also how a proof without a class reads). */
@@ -500,12 +500,12 @@ function deriveWorkProjection(
     };
   }
   const attemptsRemaining = intent.max_attempts - chargedAttempts;
-  if (latest.status === "journal_unreadable") {
+  if (latest.status === "transcript_unreadable") {
     return {
       ...base,
       state: "blocked",
-      reason: `workflow attempt ${latest.number} journal is unreadable: ${
-        latest.journal_error ?? "unknown journal read error"
+      reason: `workflow attempt ${latest.number} transcript is unreadable: ${
+        latest.transcript_error ?? "unknown transcript read error"
       }`,
       next_action: attemptsRemaining > 0 ? "retry" : "none",
     };
@@ -574,7 +574,7 @@ function unchargedProofError(attempt: WorkAttempt): string | undefined {
     const run = proof.run;
     const error =
       run && typeof run === "object" ? (run as Record<string, unknown>).error : undefined;
-    return typeof error === "string" && error.trim() ? boundedJournalError(error) : undefined;
+    return typeof error === "string" && error.trim() ? boundedTranscriptError(error) : undefined;
   } catch {
     return undefined;
   }
@@ -665,18 +665,18 @@ function inspectAttempt(
     }
     return attempt;
   }
-  const journalPath = workflowJournalPath(coordRoot, runId);
-  if (existsSync(journalPath)) {
+  const transcriptPath = workflowTranscriptPath(coordRoot, runId);
+  if (existsSync(transcriptPath)) {
     let parked: string | undefined;
     let resumed = false;
     try {
       for (const line of readBoundedLines(
-        journalPath,
+        transcriptPath,
         MAX_EVENTS_BYTES,
-        WORKFLOW_JOURNAL_EVENT_BYTES,
-        "workflow journal",
+        WORKFLOW_TRANSCRIPT_EVENT_BYTES,
+        "workflow transcript",
       )) {
-        const value = parseObject(line, `workflow run ${runId} journal`);
+        const value = parseObject(line, `workflow run ${runId} transcript`);
         if (value.event === "run.parked" && typeof value.approval_id === "string") {
           parked = value.approval_id;
           resumed = false;
@@ -692,8 +692,8 @@ function inspectAttempt(
       if (workflowResumeLeaseIsLive(coordRoot, runId)) {
         attempt.status = "running";
       } else {
-        attempt.status = "journal_unreadable";
-        attempt.journal_error = boundedJournalError((error as Error).message);
+        attempt.status = "transcript_unreadable";
+        attempt.transcript_error = boundedTranscriptError((error as Error).message);
       }
       return attempt;
     }
@@ -1171,13 +1171,13 @@ export function acquireWorkLease(coordRoot: string, workId: string): () => void 
   return acquireWorkFileLease(coordRoot, workId, "lease.json", "is already active");
 }
 
-/** @internal Work journal mutation seam. */
+/** @internal Work transcript mutation seam. */
 export function acquireWorkEventLease(coordRoot: string, workId: string): () => void {
   return acquireWorkFileLease(
     coordRoot,
     workId,
     "events.lease.json",
-    "event journal is already active",
+    "event transcript is already active",
   );
 }
 
@@ -1308,8 +1308,8 @@ function readBoundedLines(
   return lines;
 }
 
-function boundedJournalError(message: string): string {
-  const normalized = message.trim() || "unknown journal read error";
+function boundedTranscriptError(message: string): string {
+  const normalized = message.trim() || "unknown transcript read error";
   return normalized.length > MAX_REASON ? normalized.slice(0, MAX_REASON) : normalized;
 }
 
