@@ -155,7 +155,7 @@ describe("the engine refuses before it spends anything", () => {
           coordRoot: root,
           spawners: { "claude-code": spawner },
           probeBilling: () => ({
-            harness: "claude-code",
+            adapter: "claude-code",
             apiKeySource: null,
             apiKeyPresent: false,
             login: "present",
@@ -185,7 +185,7 @@ describe("the engine refuses before it spends anything", () => {
         coordRoot: root,
         spawners: { "claude-code": spawner },
         probeBilling: () => ({
-          harness: "claude-code",
+          adapter: "claude-code",
           apiKeySource: null,
           apiKeyPresent: false,
           login: "present",

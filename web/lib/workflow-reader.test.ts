@@ -318,7 +318,7 @@ function writeSharedManifest(): void {
       repository_before: { cwd: root, dirty_paths: [] },
       execution: {
         cwd: root,
-        default_harness: "claude-code",
+        default_adapter: "claude-code",
         max_agents: 1,
         concurrency: 1,
         subscription_only: false,
@@ -405,7 +405,7 @@ function sampleProof(): WorkflowProof {
         incomplete: false,
       },
     },
-    harnesses: [],
+    adapters: [],
     unknowns: [],
     integrity: { transcript: { path: "transcript.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };

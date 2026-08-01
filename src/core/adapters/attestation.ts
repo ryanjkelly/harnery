@@ -23,7 +23,7 @@ import {
 import { resolve } from "node:path";
 import { monorepoRoot } from "../agents/coord-client.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
-import type { CapabilitySupport, HarnessId, HarnessProfile } from "./types.ts";
+import type { AdapterId, AdapterProfile, CapabilitySupport } from "./types.ts";
 
 export const ATTESTATION_SCHEMA_VERSION = 2;
 
@@ -40,9 +40,9 @@ export const ATTESTABLE_DIMENSIONS = [
 
 export type AttestableDimension = (typeof ATTESTABLE_DIMENSIONS)[number];
 
-export interface HarnessAttestation {
+export interface AdapterAttestation {
   schema_version: number;
-  harness: HarnessId;
+  adapter: AdapterId;
   /** What the vendor binary reported when this was recorded. Staleness is
    * keyed on this, so a vendor upgrade invalidates the record automatically. */
   binary_version: string;
@@ -69,12 +69,12 @@ export interface AttestationStoreOptions {
 export function attestationsDir(opts: AttestationStoreOptions = {}): string {
   const root = opts.coordRoot ?? monorepoRoot();
   if (!root) throw new Error("Not in a coord-aware repo (coord root resolved to null).");
-  return resolve(root, ".harnery", "harnesses", "attestations");
+  return resolve(root, ".harnery", "adapters", "attestations");
 }
 
 /** Stable identity of a declaration, so editing a claim invalidates the
  * attestation that was recorded against the old one. */
-export function profileDigest(profile: HarnessProfile): string {
+export function profileDigest(profile: AdapterProfile): string {
   return stableDigest({
     id: profile.id,
     binary: profile.binary,
@@ -82,31 +82,31 @@ export function profileDigest(profile: HarnessProfile): string {
   });
 }
 
-function digestOf(record: Omit<HarnessAttestation, "record_digest">): string {
+function digestOf(record: Omit<AdapterAttestation, "record_digest">): string {
   return stableDigest(record);
 }
 
 export function sealAttestation(
-  record: Omit<HarnessAttestation, "record_digest">,
-): HarnessAttestation {
+  record: Omit<AdapterAttestation, "record_digest">,
+): AdapterAttestation {
   return { ...record, record_digest: digestOf(record) };
 }
 
-function attestationPath(harness: HarnessId, opts: AttestationStoreOptions): string {
-  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(harness)) {
-    throw new Error(`unsafe harness id for an attestation path: ${harness}`);
+function attestationPath(adapter: AdapterId, opts: AttestationStoreOptions): string {
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(adapter)) {
+    throw new Error(`unsafe adapter id for an attestation path: ${adapter}`);
   }
-  return resolve(attestationsDir(opts), `${harness}.json`);
+  return resolve(attestationsDir(opts), `${adapter}.json`);
 }
 
 /** Replace-in-place write. Unlike a workflow record an attestation is meant to
  * be re-recorded, so this is a mutable atomic swap rather than an immutable
  * create. */
 export function writeAttestation(
-  record: HarnessAttestation,
+  record: AdapterAttestation,
   opts: AttestationStoreOptions = {},
 ): string {
-  const path = attestationPath(record.harness, opts);
+  const path = attestationPath(record.adapter, opts);
   mkdirSync(attestationsDir(opts), { recursive: true, mode: 0o700 });
   const temporary = `${path}.tmp-${process.pid}`;
   try {
@@ -130,12 +130,12 @@ export function writeAttestation(
  * A record that fails its own digest is discarded rather than trusted, because
  * the whole point of the file is that it was not hand-written. */
 export function readAttestation(
-  harness: HarnessId,
+  adapter: AdapterId,
   opts: AttestationStoreOptions = {},
-): HarnessAttestation | null {
+): AdapterAttestation | null {
   let raw: string;
   try {
-    raw = readFileSync(attestationPath(harness, opts), "utf8");
+    raw = readFileSync(attestationPath(adapter, opts), "utf8");
   } catch {
     return null;
   }
@@ -145,17 +145,17 @@ export function readAttestation(
   } catch {
     return null;
   }
-  return validateAttestation(parsed, harness);
+  return validateAttestation(parsed, adapter);
 }
 
 export function validateAttestation(
   value: unknown,
-  harness?: HarnessId,
-): HarnessAttestation | null {
+  adapter?: AdapterId,
+): AdapterAttestation | null {
   if (!value || typeof value !== "object") return null;
-  const record = value as HarnessAttestation;
+  const record = value as AdapterAttestation;
   if (record.schema_version !== ATTESTATION_SCHEMA_VERSION) return null;
-  if (typeof record.harness !== "string" || (harness && record.harness !== harness)) return null;
+  if (typeof record.adapter !== "string" || (adapter && record.adapter !== adapter)) return null;
   if (typeof record.binary_version !== "string" || typeof record.profile_digest !== "string") {
     return null;
   }
@@ -171,39 +171,39 @@ export function validateAttestation(
 /** An attestation speaks only for the vendor version and declaration it was
  * recorded against. */
 export function isAttestationCurrent(
-  record: HarnessAttestation | null,
+  record: AdapterAttestation | null,
   binaryVersion: string | null,
-  profile: HarnessProfile,
+  profile: AdapterProfile,
   subscriptionOnly?: boolean,
-): record is HarnessAttestation {
+): record is AdapterAttestation {
   if (!record || !binaryVersion) return false;
   if (record.binary_version !== binaryVersion) return false;
   if (subscriptionOnly !== undefined && record.subscription_only !== subscriptionOnly) return false;
   return record.profile_digest === profileDigest(profile);
 }
 
-export function listAttestations(opts: AttestationStoreOptions = {}): HarnessAttestation[] {
+export function listAttestations(opts: AttestationStoreOptions = {}): AdapterAttestation[] {
   let names: string[];
   try {
     names = readdirSync(attestationsDir(opts));
   } catch {
     return [];
   }
-  const records: HarnessAttestation[] = [];
+  const records: AdapterAttestation[] = [];
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const record = readAttestation(name.slice(0, -".json".length), opts);
     if (record) records.push(record);
   }
-  return records.sort((a, b) => a.harness.localeCompare(b.harness));
+  return records.sort((a, b) => a.adapter.localeCompare(b.adapter));
 }
 
-/** Both harness-derived proof inputs, read once, for a workflow run
+/** Both adapter-derived proof inputs, read once, for a workflow run
  * (ADR 0038). Callers inject the result so the engine performs no capability
- * lookups of its own. A harness with no current attestation simply has no
+ * lookups of its own. A adapter with no current attestation simply has no
  * citation; that absence is not a proof unknown. */
-export function harnessProofInputs(
-  profiles: readonly HarnessProfile[],
+export function adapterProofInputs(
+  profiles: readonly AdapterProfile[],
   opts: AttestationStoreOptions & {
     versionProbe: (binary: string) => string | null;
     /** Billing policy this run will use, so a record made under the other mode
@@ -211,24 +211,24 @@ export function harnessProofInputs(
     subscriptionOnly?: boolean;
   },
 ): {
-  harnessEvidence: Record<string, { toolEvidence: HarnessProfile["capabilities"]["toolEvidence"] }>;
-  harnessAttestations: Record<
+  adapterEvidence: Record<string, { toolEvidence: AdapterProfile["capabilities"]["toolEvidence"] }>;
+  adapterAttestations: Record<
     string,
     { binary_version: string; observed_at: string; record_digest: string }
   >;
 } {
-  const harnessEvidence: Record<
+  const adapterEvidence: Record<
     string,
-    { toolEvidence: HarnessProfile["capabilities"]["toolEvidence"] }
+    { toolEvidence: AdapterProfile["capabilities"]["toolEvidence"] }
   > = {};
-  const harnessAttestations: Record<
+  const adapterAttestations: Record<
     string,
     { binary_version: string; observed_at: string; record_digest: string }
   > = {};
 
   for (const profile of profiles) {
-    harnessEvidence[profile.id] = { toolEvidence: profile.capabilities.toolEvidence };
-    let record: HarnessAttestation | null = null;
+    adapterEvidence[profile.id] = { toolEvidence: profile.capabilities.toolEvidence };
+    let record: AdapterAttestation | null = null;
     try {
       record = readAttestation(profile.id, opts);
     } catch {
@@ -245,11 +245,11 @@ export function harnessProofInputs(
     ) {
       continue;
     }
-    harnessAttestations[profile.id] = {
+    adapterAttestations[profile.id] = {
       binary_version: record.binary_version,
       observed_at: record.observed_at,
       record_digest: record.record_digest,
     };
   }
-  return { harnessEvidence, harnessAttestations };
+  return { adapterEvidence, adapterAttestations };
 }

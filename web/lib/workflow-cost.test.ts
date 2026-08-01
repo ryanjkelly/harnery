@@ -27,7 +27,7 @@ describe("describeRunCost", () => {
 
   test("a running run with nothing finished says pending rather than zero", () => {
     // $0.0000 here would read as "this run was free", which is a different and
-    // false claim: the harness has simply not reported yet.
+    // false claim: the adapter has simply not reported yet.
     const { label } = describeRunCost(run({ status: "running", costUsd: 0 }));
     expect(label).toBe("cost pending");
   });

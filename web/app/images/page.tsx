@@ -46,7 +46,7 @@ export default async function ImagesPage() {
       name: t.agent,
       last_seen: t.ts,
       instance_id: t.instance_id || undefined,
-      platform: t.harness ?? null,
+      platform: t.adapter ?? null,
     })),
   );
   const summaries = {

@@ -3,11 +3,11 @@ title: "0038: Only a live turn may attest a vendor capability"
 description: "ADR: record what an installed vendor CLI actually did in one bounded opt-in turn, key it to the observed version, and let it outrank the fixture check."
 ---
 
-**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/harnesses`, `harness` CLI, workflow proof)
+**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/adapters`, `adapter` CLI, workflow proof)
 
 ## Context
 
-[ADR 0037](/decisions/0037-attested-harness-capability-claims/) gave every bench
+[ADR 0037](/decisions/0037-attested-adapter-capability-claims/) gave every bench
 result a basis. It also showed how little of the bench is attested: on a fully
 equipped host, 33 of 63 results were `adapter` (Harnery's own planner and
 normalizer against a committed fixture) and only 5 were `attested`. The two
@@ -36,11 +36,11 @@ that record outrank the fixture check.
 
 ### The probe
 
-`harn harness attest --yes` runs one bounded turn per selected harness through
+`harn adapter attest --yes` runs one bounded turn per selected adapter through
 the adapter's production `spawn`, the same call the workflow engine makes. The
 prompt is a fixed constant with no user content. `--yes` is required because the
 command spends real vendor tokens, which is why it can never be the default and
-never runs inside `harn harness bench`.
+never runs inside `harn adapter bench`.
 
 Four dimensions are observable from one minimal turn: `invocation`,
 `finalResult`, `sessionId`, and `cost`. Anything needing a purpose-built
@@ -52,8 +52,8 @@ is the difference between "the vendor does not do this" and "we could not ask".
 
 ### The record
 
-One JSON document per harness under `.harnery/harnesses/attestations/`,
-resolved through the coordination root. It holds the harness id, the version the
+One JSON document per adapter under `.harnery/adapters/attestations/`,
+resolved through the coordination root. It holds the adapter id, the version the
 binary reported, a digest of the declaration it was recorded against, a
 timestamp, the observations, and a digest over all of it. Writes are an atomic
 replace, because unlike a workflow record an attestation is meant to be
@@ -73,7 +73,7 @@ affected rows fall back to adapter basis, which is the honest state.
 
 ### Effect on the bench
 
-`harn harness bench` reads attestations. It never writes one and never runs a
+`harn adapter bench` reads attestations. It never writes one and never runs a
 turn. A current attestation supplies the observed value for its dimensions and
 marks them `attested`; a live observation that disagrees with the declaration
 becomes drift exactly as a fixture disagreement would. Dimensions the
@@ -83,7 +83,7 @@ An unreadable or absent store is not an error. The bench runs unattested.
 
 ### Effect on workflow proof
 
-`HarnessEvidenceCoverage` gains an optional `attestation` citation carrying the
+`AdapterEvidenceCoverage` gains an optional `attestation` citation carrying the
 version, timestamp, and record digest. The host reads attestations once and
 injects them, so the engine performs no capability lookups and proof stays free
 of filesystem access.
@@ -95,7 +95,7 @@ opted in.
 
 ## Alternatives
 
-- **Attest inside `harn harness bench`.** Rejected because the bench is the
+- **Attest inside `harn adapter bench`.** Rejected because the bench is the
   credential-free, cost-free command that runs on every change. Spending vendor
   tokens there would make the cheap check expensive and flaky.
 - **Probe every dimension.** Rejected. Streaming, interruption, steering, and
@@ -107,7 +107,7 @@ opted in.
 - **Expire attestations on a timer.** Rejected because age is a poor proxy. A
   record is invalid when the version or the declaration changed, and those are
   observable directly.
-- **Raise a proof unknown when a harness has no attestation.** Rejected for
+- **Raise a proof unknown when a adapter has no attestation.** Rejected for
   now. It is the philosophically correct end state, but it would gate every run
   on every unattested host, including hosts that deliberately never spend
   tokens. Revisit once attestation is routine.
@@ -118,7 +118,7 @@ opted in.
 ## Verification
 
 - Store tests cover round-trip, replacement, absence, malformed JSON, an
-  unknown schema version, a tampered digest, and a harness id that would escape
+  unknown schema version, a tampered digest, and a adapter id that would escape
   the directory.
 - Staleness tests cover a version change, a declaration edit, an absent binary,
   and a null record.
@@ -129,7 +129,7 @@ opted in.
   being ignored, an uncovered dimension keeping adapter basis, an unreadable
   store, and an absent binary.
 - Proof tests cover the citation, its absence adding no unknown, and a citation
-  for an unused harness not being attached.
+  for an unused adapter not being attached.
 - Privacy tests assert the record contains no prompt text and no host path, and
   that a console-transcript failure is collapsed to one bounded line with the
   prompt echo stripped.

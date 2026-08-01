@@ -1,7 +1,7 @@
 /**
- * Read-only harness-hook wiring inspection — the inverse of `harn init`'s
+ * Read-only adapter-hook wiring inspection — the inverse of `harn init`'s
  * writer (commands/init.ts `wireHooks`). Compares what `init` would wire
- * (HARNESS_SPECS) against what's actually present in a project's harness
+ * (ADAPTER_SPECS) against what's actually present in a project's adapter
  * settings file, so `harn doctor` and the SessionStart nudge can tell an agent
  * when a harnery upgrade changed the hook set but the project hasn't been
  * re-wired yet.
@@ -15,9 +15,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  HARNESS_SPECS,
-  type HarnessId,
-  type HarnessSpec,
+  ADAPTER_SPECS,
+  type AdapterId,
+  type AdapterSpec,
   type HookEntryShape,
   type HookEvent,
 } from "./events.ts";
@@ -42,7 +42,7 @@ export interface SettingsFile {
   [k: string]: unknown;
 }
 
-/** Build a hook entry in the harness's shape. */
+/** Build a hook entry in the adapter's shape. */
 export function makeEntry(shape: HookEntryShape, command: string): HookGroup {
   return shape === "cursor" ? { command } : { hooks: [{ type: "command", command }] };
 }
@@ -81,17 +81,17 @@ export interface WiringDiff {
    * these — they need explicit removal — so they're surfaced separately.
    */
   orphans: string[];
-  /** Settings fields rejected by a harness with a strict top-level schema. */
+  /** Settings fields rejected by a adapter with a strict top-level schema. */
   invalidTopLevelKeys: string[];
-  /** Hook event names rejected by a harness with a strict event schema. */
+  /** Hook event names rejected by a adapter with a strict event schema. */
   invalidEventKeys: string[];
 }
 
 /**
- * Pure diff of one settings object against one harness spec. Read-only inverse
+ * Pure diff of one settings object against one adapter spec. Read-only inverse
  * of `wireHooks`; no fs, so it's unit-testable.
  */
-export function diffWiring(settings: SettingsFile, spec: HarnessSpec): WiringDiff {
+export function diffWiring(settings: SettingsFile, spec: AdapterSpec): WiringDiff {
   const missing: HookEvent[] = [];
   const present: HookEvent[] = [];
   const hooks = settings.hooks ?? {};
@@ -136,8 +136,8 @@ export function diffWiring(settings: SettingsFile, spec: HarnessSpec): WiringDif
   };
 }
 
-export interface HarnessWiringStatus {
-  harness: HarnessId;
+export interface AdapterWiringStatus {
+  adapter: AdapterId;
   /** Settings file path, relative to the project root. */
   settingsFile: string;
   missing: HookEvent[];
@@ -148,19 +148,19 @@ export interface HarnessWiringStatus {
 }
 
 /**
- * Inspect every harness whose settings file exists under `projectRoot` and
+ * Inspect every adapter whose settings file exists under `projectRoot` and
  * return only those with *drift*. Read-only; never writes.
  *
- * Drift is reported only for a harness the project has **already opted into** —
+ * Drift is reported only for a adapter the project has **already opted into** —
  * i.e. at least one harnery hook is already wired. A settings file with zero
- * harnery hooks just means this harness isn't harnery-wired here (a bare
+ * harnery hooks just means this adapter isn't harnery-wired here (a bare
  * `.claude/settings.json` is a generic Claude Code file); that's `harn init`'s
- * job to surface on first run, not drift to nag about every session. A harness
+ * job to surface on first run, not drift to nag about every session. A adapter
  * with no settings file at all, or an unparseable one, is skipped.
  */
-export function loadHarnessWiring(projectRoot: string): HarnessWiringStatus[] {
-  const out: HarnessWiringStatus[] = [];
-  for (const [id, spec] of Object.entries(HARNESS_SPECS) as [HarnessId, HarnessSpec][]) {
+export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
+  const out: AdapterWiringStatus[] = [];
+  for (const [id, spec] of Object.entries(ADAPTER_SPECS) as [AdapterId, AdapterSpec][]) {
     const settingsPath = resolve(projectRoot, spec.settingsFile);
     if (!existsSync(settingsPath)) continue;
     let settings: SettingsFile;
@@ -168,7 +168,7 @@ export function loadHarnessWiring(projectRoot: string): HarnessWiringStatus[] {
       settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
     } catch (error) {
       out.push({
-        harness: id,
+        adapter: id,
         settingsFile: spec.settingsFile,
         missing: [],
         orphans: [],
@@ -189,7 +189,7 @@ export function loadHarnessWiring(projectRoot: string): HarnessWiringStatus[] {
       continue; // current
     }
     out.push({
-      harness: id,
+      adapter: id,
       settingsFile: spec.settingsFile,
       missing: diff.missing,
       orphans: diff.orphans,

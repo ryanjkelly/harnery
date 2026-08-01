@@ -14,7 +14,7 @@ const baseRequest = {
   phase: "dispatch" as const,
   action: "spawn agent",
   path: "/workspace/repo",
-  harness: "codex",
+  adapter: "codex",
   model: "gpt-5",
   isolation: "worktree" as const,
   network_access: "disabled" as const,
@@ -27,24 +27,24 @@ describe("host policy", () => {
     const a = normalizePolicy({
       name: "release",
       network: "allow",
-      allowed_harnesses: ["codex", "claude-code", "codex"],
+      allowed_adapters: ["codex", "claude-code", "codex"],
     });
     const b = normalizePolicy({
       name: "release",
       network: "allow",
-      allowed_harnesses: ["claude-code", "codex"],
+      allowed_adapters: ["claude-code", "codex"],
     });
-    expect(a.allowed_harnesses).toEqual(["claude-code", "codex"]);
+    expect(a.allowed_adapters).toEqual(["claude-code", "codex"]);
     expect(a.external_actions).toBe("deny");
     expect(a.unknown_cost).toBe("deny");
     expect(Object.isFrozen(a)).toBe(true);
-    expect(Object.isFrozen(a.allowed_harnesses)).toBe(true);
+    expect(Object.isFrozen(a.allowed_adapters)).toBe(true);
     expect(policyDigest(a)).toBe(policyDigest(b));
   });
 
   test("composes independent restrictions with deny stronger than ask", () => {
     const policy = normalizePolicy({
-      allowed_harnesses: ["claude-code"],
+      allowed_adapters: ["claude-code"],
       allowed_models: ["claude-sonnet"],
       allowed_paths: ["/workspace/safe"],
       allowed_isolation: ["sandbox"],
@@ -53,7 +53,7 @@ describe("host policy", () => {
     const result = evaluatePolicy(policy, { ...baseRequest, network_access: "enabled" });
     expect(result.verdict).toBe("deny");
     expect(result.rules.map((rule) => rule.code)).toEqual([
-      "harness_not_allowed",
+      "adapter_not_allowed",
       "model_not_allowed",
       "path_not_allowed",
       "isolation_not_allowed",

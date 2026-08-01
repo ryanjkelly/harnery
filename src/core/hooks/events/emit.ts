@@ -2,9 +2,9 @@ import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { maybeRotateEventStream } from "./rotate.ts";
 import {
+  type Adapter,
   type EventEnvelope,
   type EventType,
-  type Harness,
   SCHEMA_VERSION,
   type Source,
 } from "./schema.ts";
@@ -19,7 +19,7 @@ export interface EmitInput<TType extends EventType, TData> {
   event_type: TType;
   instance_id: string;
   session_id: string;
-  harness: Harness;
+  adapter: Adapter;
   source?: Source;
   parent_session_id?: string;
   turn_id?: string;
@@ -45,7 +45,7 @@ export function buildEnvelope<TType extends EventType, TData>(
     parent_session_id: input.parent_session_id,
     turn_id: input.turn_id,
     parent_turn_id: input.parent_turn_id,
-    harness: input.harness,
+    adapter: input.adapter,
     source: input.source ?? "agent-hooks",
     data: input.data,
   };

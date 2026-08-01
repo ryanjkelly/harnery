@@ -167,7 +167,7 @@ describe("buildChildEnv billing behavior", () => {
 
   test("stamps the agent id so in-flight activity attributes to one agent row", () => {
     // A child cannot be identified by its session id while it is running: the
-    // harness mints that and reports it only in the result envelope, once the
+    // adapter mints that and reports it only in the result envelope, once the
     // work is over. Passing the orchestrator's own id inward is what makes live
     // attribution possible at all.
     const env = buildChildEnv("wf-1", { agentId: "a2" });

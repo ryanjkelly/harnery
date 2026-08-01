@@ -12,7 +12,7 @@ export interface PolicySpec {
   max_cost_usd?: number;
   /** Applied when a cost ceiling exists but the host cannot price a dispatch. */
   unknown_cost?: Exclude<PolicyVerdict, "allow">;
-  allowed_harnesses?: readonly string[];
+  allowed_adapters?: readonly string[];
   allowed_models?: readonly string[];
   /** Absolute paths, or paths relative to the policy file. */
   allowed_paths?: readonly string[];
@@ -27,7 +27,7 @@ export interface NormalizedPolicy {
   name: string;
   max_cost_usd?: number;
   unknown_cost: Exclude<PolicyVerdict, "allow">;
-  allowed_harnesses?: readonly string[];
+  allowed_adapters?: readonly string[];
   allowed_models?: readonly string[];
   allowed_paths?: readonly string[];
   network: PolicyVerdict;
@@ -39,7 +39,7 @@ export interface PolicyRequest {
   phase: PolicyPhase;
   action: string;
   path?: string;
-  harness?: string;
+  adapter?: string;
   model?: string;
   effort?: string;
   max_attempts?: number;

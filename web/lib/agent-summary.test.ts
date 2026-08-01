@@ -129,7 +129,7 @@ describe("sessionMetaByName", () => {
       neu: session("neu", "agent-Wren", "claude_code", "2026-06-10T00:00:00Z"),
     });
     // The newest session hasn't reported a model yet; the older session's
-    // model must NOT leak through (it belonged to a different harness).
+    // model must NOT leak through (it belonged to a different adapter).
     expect(out.get("wren")).toEqual({ platform: "claude_code", model: null });
   });
 

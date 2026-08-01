@@ -31,7 +31,7 @@ const MAX_ERROR = 2_000;
 const FOREIGN_STATUS_STALE_MS = 30_000;
 
 export interface GovernorServiceEngineConfig {
-  default_harness?: string;
+  default_adapter?: string;
   cwd?: string;
   subscription_only: boolean;
   allow_api_billing: boolean;
@@ -638,7 +638,7 @@ function normalizeEngineConfig(
   input: Partial<GovernorServiceEngineConfig> | undefined,
 ): GovernorServiceEngineConfig {
   return {
-    default_harness: optionalBounded(input?.default_harness, "default_harness", 100),
+    default_adapter: optionalBounded(input?.default_adapter, "default_adapter", 100),
     cwd: input?.cwd ? resolve(input.cwd) : coordRoot,
     subscription_only: bool(input?.subscription_only ?? false, "subscription_only"),
     allow_api_billing: bool(input?.allow_api_billing ?? false, "allow_api_billing"),

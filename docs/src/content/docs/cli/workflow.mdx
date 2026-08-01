@@ -1,12 +1,12 @@
 ---
 title: harn workflow
-description: Run bounded, schema-gated, conditionally-routed multi-subagent workflow scripts. Subagents spawn as headless harness-CLI subprocesses, registered in the coordination layer.
+description: Run bounded, schema-gated, conditionally-routed multi-subagent workflow scripts. Subagents spawn as headless adapter-CLI subprocesses, registered in the coordination layer.
 sidebar:
   order: 30
 ---
 
 ```
-harn workflow run <script> [--harness <name>] [--resume-from <run-id>]
+harn workflow run <script> [--adapter <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
                            [--policy <file>] [--isolation <mode>]
                            [--workspace-root <dir>] [--approval-to <address>]
@@ -28,7 +28,7 @@ harn workflow proof <run-id> [--json]
 
 A workflow is a small throwaway JS script with staged fan-out: the **script**
 (deterministic code), not any model, decides what runs next, and the run always
-terminates when the script returns. Subagents spawn as headless harness-CLI
+terminates when the script returns. Subagents spawn as headless adapter-CLI
 subprocesses and are **born coordination-registered**: they heartbeat, emit
 canonical events, and stay visible to peers, so a workflow child editing a file
 is subject to the same claim/guard protections as any other agent. Design
@@ -38,18 +38,18 @@ Spawn adapters: `claude-code` (default), `codex` (`codex exec
 --output-last-message`), and `cursor` (`cursor-agent -p --output-format json
 --trust`, since headless cursor refuses untrusted workspaces without the flag).
 All three are live-verified end-to-end (codex against codex-cli 0.144.5,
-cursor against cursor-agent 2026.07.16). A missing harness
+cursor against cursor-agent 2026.07.16). A missing adapter
 CLI fails loud with the vendor's install one-liner and login command in the
 error, and `harn doctor` reports all three spawn targets up front
 (installed? authenticated? how will children bill?). Select the run default
-with `--harness`, or per agent via `opts.harness`. Mixed-harness workflows
+with `--adapter`, or per agent via `opts.adapter`. Mixed-adapter workflows
 are legal (triage on one CLI, deep work on another). Codex and cursor expose
 no per-run cost or max-turns controls, so `costUsd` is unreported and
-`maxTurns` is ignored on those harnesses.
+`maxTurns` is ignored on those adapters.
 
-## Auth: children ride the logged-in harness session
+## Auth: children ride the logged-in adapter session
 
-The engine never handles credentials. Each child is the plain harness CLI, so
+The engine never handles credentials. Each child is the plain adapter CLI, so
 it authenticates exactly the way that CLI already does on the machine:
 `claude` uses the OAuth login in `~/.claude` (a subscription seat), `codex`
 uses its ChatGPT login, `cursor-agent` uses `cursor-agent login`. **A
@@ -61,14 +61,14 @@ The child-env scrub deletes *session* variables (`CLAUDE*`, `CODEX*`,
 (`CURSOR_API_KEY` is carved out of the `CURSOR*` scrub because it's a credential,
 not session state). The one way to end up on API billing is an API-key
 variable in the parent shell (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-`CURSOR_API_KEY`): harness CLIs prefer a key over a stored login when both
+`CURSOR_API_KEY`): adapter CLIs prefer a key over a stored login when both
 are present.
 
 ### Billing safeguards
 
-The engine probes each harness's billing state on its **first spawn** of the
+The engine probes each adapter's billing state on its **first spawn** of the
 run (transcripted as `billing.probe`, echoed as a `[billing]` line, and reported
-per harness in the RunReport and web view):
+per adapter in the RunReport and web view):
 
 - **`subscription`**: no key exported; children ride the stored login.
 - **`api-key`**: key present but no stored login detected, a deliberate
@@ -79,7 +79,7 @@ per harness in the RunReport and web view):
 
 `--subscription-only` goes further: every API-key var is deleted from every
 child env, so children *can only* authenticate via their stored login, and a
-harness whose login is provably absent fails loud before spawning. Pin it
+adapter whose login is provably absent fails loud before spawning. Pin it
 repo-wide with `.harnery/config.jsonc`. **`harn init` stamps this pin by
 default** into any project without a committed `workflow` key, so new setups
 are subscription-only out of the box:
@@ -97,7 +97,7 @@ Login detection is a heuristic over well-known credential locations (Claude
 Code's `~/.claude/.credentials.json`, codex's `$CODEX_HOME/auth.json`; a
 `codex login --api-key` stored key is classified as API-key billing, not a
 login). Where presence can't be proven either way (macOS keychain storage,
-cursor), the state is `unknown` and never hard-fails. The harness CLI itself
+cursor), the state is `unknown` and never hard-fails. The adapter CLI itself
 is the final authority.
 
 Two accounting consequences: the `costUsd` the claude adapter transcripts is the
@@ -251,7 +251,7 @@ prompt.
 | --- | --- |
 | `work` | Optional deeply frozen durable-work assignment: work ID, title, objective, and acceptance criteria. Present for new work-linked attempts; absent for standalone and legacy-resumed runs. |
 | `attempt` | Optional deeply frozen attempt identity. A retry includes a bounded synopsis of the preceding terminal evidence; approval resume preserves the original attempt. |
-| `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must parse as one JSON value and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`). Exact JSON and a whole fenced value are accepted. A harness-added leading sentence is tolerated only when exactly one unambiguous object or array reaches the end of the reply; trailing prose, multiple candidates, malformed values, and schema mismatches still fail. Failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
+| `agent(prompt, opts?)` | Spawn one subagent. With `opts.schema` the reply must parse as one JSON value and validate against the schema subset (`type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `enum`). Exact JSON and a whole fenced value are accepted. A adapter-added leading sentence is tolerated only when exactly one unambiguous object or array reaches the end of the reply; trailing prose, multiple candidates, malformed values, and schema mismatches still fail. Failures re-prompt with the validation errors appended, up to `opts.maxAttempts` (default 2), then throw. Without a schema, resolves to the raw reply text. Other opts: `specialist`, `model`, `effort`, `maxTurns` (default 25; use 1 for pure classification), `timeoutMs` (default 300000), `label`. |
 | `parallel(thunks)` | Run thunks against the run-wide concurrency pool. A rejected thunk resolves to `null` (transcripted), so one bad item can't kill the batch; filter and route. |
 | `stage(title)` | Declare the current stage: transcript marker + progress grouping. |
 | `log(message)` | Narrate progress (stderr + transcript). |
@@ -269,7 +269,7 @@ only checked when the call executes.
 `low | medium | high | xhigh | max`; Codex accepts
 `none | minimal | low | medium | high | xhigh`. Cursor does not accept a
 separate effort option through Harnery because its effort syntax is embedded
-inside some parameterized model ids. See [`harn harness`](./harness/) for the
+inside some parameterized model ids. See [`harn adapter`](./adapter/) for the
 executable capability declaration.
 
 ### Specialist profiles
@@ -277,7 +277,7 @@ executable capability declaration.
 An embedding host may provide `EngineOpts.specialists`, and a
 [`harn governor`](./governor/) freezes those profiles into its durable goal
 intent. A workflow selects one with `agent(prompt, { specialist: "reviewer" })`.
-The profile contributes bounded instructions plus optional harness, model,
+The profile contributes bounded instructions plus optional adapter, model,
 effort, turn, timeout, and schema-retry defaults; options on the individual
 agent call override those defaults.
 
@@ -301,7 +301,7 @@ resolved options, and wrapped prompt participate in resume-cache identity.
 
 `--policy <file>` applies a host-owned JSON/JSONC policy immediately before
 every uncached agent dispatch. The policy can constrain run cost, unknown
-pricing, harness, model, working path, network state, and the host-declared
+pricing, adapter, model, working path, network state, and the host-declared
 isolation mode. It is not part of workflow metadata, so the script and child
 prompts cannot weaken it.
 
@@ -315,7 +315,7 @@ can still supply `EngineOpts.resolvePolicyAsk` for immediate decisions. Use
 `--isolation` declares the requested boundary: `shared`, `worktree`, `sandbox`,
 or `remote`. The standalone CLI can create the built-in local Git boundary
 when `worktree` is paired with an explicit `--workspace-root`. Other boundary
-types still require an embedding host provider. Ordinary CLI harness
+types still require an embedding host provider. Ordinary CLI adapter
 subprocesses inherit host networking, so the CLI declares network enabled and
 a `network: deny` policy blocks dispatch.
 
@@ -332,14 +332,14 @@ await authorize({
 ```
 
 This seam protects host-mediated operations. It does not intercept arbitrary
-tools invoked inside an opaque harness subprocess. Adapter-native policy
-mapping remains a separate capability claim in `harn harness show`.
+tools invoked inside an opaque adapter subprocess. Adapter-native policy
+mapping remains a separate capability claim in `harn adapter show`.
 
 Cursor workflow children run in non-interactive print mode with workspace trust
 and command execution enabled. Print mode has no operator prompt channel, so a
 child without command authorization can edit through its patch tool but cannot
 run tests or create a commit. This does not make Cursor's inner tools
-policy-aware: `harn harness show cursor` still reports policy mapping as
+policy-aware: `harn adapter show cursor` still reports policy mapping as
 unsupported. Use a provider with a stronger filesystem boundary when prompt
 instructions alone are not sufficient isolation.
 
@@ -442,7 +442,7 @@ salvaging and discarding can be made without leaving Harnery.
 ## Resume
 
 `--resume-from <run-id>` reuses completed agent results from a prior run's
-transcript: an `agent()` call whose identity (stage, harness, model, effort, maxTurns,
+transcript: an `agent()` call whose identity (stage, adapter, model, effort, maxTurns,
 schema, and the ORIGINAL prompt) matches a transcripted `agent.end` returns the
 recorded result instantly without spawning (transcripted as `agent.cached`).
 Changed or previously-failed calls re-run live. Same script + same inputs →
@@ -510,7 +510,7 @@ mode `0600` and contains:
 - SHA-256 digests and byte counts for agent and workflow results, not their raw
   text;
 - engine-observed repository snapshots before and after the run;
-- adapter tool-evidence coverage from the harness capability registry;
+- adapter tool-evidence coverage from the adapter capability registry;
 - explicit unknowns for missing capability claims, cost, session IDs, and
   incomplete repository drift;
 - a SHA-256 digest of the final transcript.
@@ -547,7 +547,7 @@ types, and `WORKFLOW_PROOF_SCHEMA_VERSION`.
 
 The dashboard (`harn web up`) ships a **/workflows** page: transcript-driven list
 of runs (status, agents, cached count, cost, stage chain) and a per-run detail
-view rendering the stages → agents tree with per-agent harness, attempts,
+view rendering the stages → agents tree with per-agent adapter, attempts,
 duration, and cost. Parked runs have a distinct awaiting-approval status and
 show the durable approval ID and inspection command. When a terminal proof packet exists, the detail page also
 shows the objective, acceptance criteria, declared evidence, repository drift,

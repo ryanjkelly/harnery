@@ -12,9 +12,9 @@ import {
   validateAttestation,
   writeAttestation,
 } from "./attestation.ts";
-import { createBuiltinHarnessRegistry } from "./registry.ts";
+import { createBuiltinAdapterRegistry } from "./registry.ts";
 
-const registry = createBuiltinHarnessRegistry();
+const registry = createBuiltinAdapterRegistry();
 const codex = registry.require("codex").profile;
 
 function tempRoot(): string {
@@ -26,7 +26,7 @@ function tempRoot(): string {
 function record(overrides: Record<string, unknown> = {}) {
   return sealAttestation({
     schema_version: 2,
-    harness: "codex",
+    adapter: "codex",
     binary_version: "codex-cli 0.144.5",
     profile_digest: profileDigest(codex),
     subscription_only: false,
@@ -41,7 +41,7 @@ describe("attestation store", () => {
     const coordRoot = tempRoot();
     writeAttestation(record(), { coordRoot });
     const loaded = readAttestation("codex", { coordRoot });
-    expect(loaded?.harness).toBe("codex");
+    expect(loaded?.adapter).toBe("codex");
     expect(loaded?.observations.sessionId).toBe("unsupported");
   });
 
@@ -77,10 +77,10 @@ describe("attestation store", () => {
     expect(readAttestation("codex", { coordRoot })).toBeNull();
   });
 
-  test("a harness id that would escape the store is refused", () => {
+  test("a adapter id that would escape the store is refused", () => {
     expect(() =>
-      writeAttestation(record({ harness: "../escape" }), { coordRoot: tempRoot() }),
-    ).toThrow(/unsafe harness id/);
+      writeAttestation(record({ adapter: "../escape" }), { coordRoot: tempRoot() }),
+    ).toThrow(/unsafe adapter id/);
   });
 
   test("the record carries no prompt text and no host path", () => {

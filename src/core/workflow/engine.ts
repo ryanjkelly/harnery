@@ -58,10 +58,10 @@ import { assertProjectionWithinWorkspace, resolveGitGrantRoots } from "./sandbox
 import { normalizeWorkflowSpecialists, resolveSpecialistAssignment } from "./specialists.ts";
 import { appendWorkflowTranscriptEvent } from "./transcript.ts";
 import type {
+  AdapterName,
   AgentOpts,
   EngineOpts,
   GitAdministrativeGrant,
-  HarnessName,
   RunReport,
   SpawnFilesystemPolicy,
   SpawnResult,
@@ -272,8 +272,8 @@ async function executeWorkflow(
   assertPositiveWorkflowBound(concurrency, "concurrency");
   const cwd = frozen?.cwd ?? opts.cwd ?? opts.coordRoot;
   const log = opts.onLog ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const defaultHarness: HarnessName =
-    frozen?.default_harness ?? opts.defaultHarness ?? "claude-code";
+  const defaultAdapter: AdapterName =
+    frozen?.default_adapter ?? opts.defaultAdapter ?? "claude-code";
   const specialists =
     frozen?.specialists ?? (resumeState ? {} : normalizeWorkflowSpecialists(opts.specialists));
   const networkAccess = frozen?.network_access ?? opts.networkAccess ?? "unknown";
@@ -352,8 +352,8 @@ async function executeWorkflow(
         after: resumeState.manifest.repository_before,
         agents: [],
         evidence: [],
-        harnessEvidence: opts.harnessEvidence,
-        harnessAttestations: opts.harnessAttestations,
+        adapterEvidence: opts.adapterEvidence,
+        adapterAttestations: opts.adapterAttestations,
         sandboxProjection: sandboxProjectionEvidence(
           opts.filesystemPolicy,
           opts.gitWrite ?? "none",
@@ -431,7 +431,7 @@ async function executeWorkflow(
         repository_before: executionRepoBefore,
         execution: {
           cwd: executionCwd,
-          default_harness: defaultHarness,
+          default_adapter: defaultAdapter,
           max_agents: maxAgents,
           concurrency,
           subscription_only: subscriptionOnly,
@@ -540,7 +540,7 @@ async function executeWorkflow(
   let agentSeq = 0;
   let evidenceSeq = 0;
   let policySeq = 0;
-  const billingProbed = new Map<HarnessName, BillingProbe>();
+  const billingProbed = new Map<AdapterName, BillingProbe>();
   const agentProofs = new Map<string, WorkflowAgentProof>();
   const evidenceRecords: WorkflowEvidenceRecord[] = [];
   const policyDecisions = new Map<string, PolicyDecision>(
@@ -729,11 +729,11 @@ async function executeWorkflow(
       : assignmentPrompt;
     let reservedForDispatch = 0;
     let spawnCountClaimed = false;
-    const harness = agentOpts.harness ?? defaultHarness;
-    const spawner = opts.spawners[harness];
+    const adapter = agentOpts.adapter ?? defaultAdapter;
+    const spawner = opts.spawners[adapter];
     if (!spawner) {
       throw new Error(
-        `no spawner registered for harness "${harness}" (registered: ${Object.keys(opts.spawners).join(", ") || "none"})`,
+        `no spawner registered for adapter "${adapter}" (registered: ${Object.keys(opts.spawners).join(", ") || "none"})`,
       );
     }
     const id = `a${++agentSeq}`;
@@ -745,7 +745,7 @@ async function executeWorkflow(
       label: proofLabel,
       stage: currentStage || undefined,
       specialist: agentOpts.specialist,
-      harness,
+      adapter,
       model: agentOpts.model,
       status: "failed",
       attempts: 0,
@@ -753,9 +753,9 @@ async function executeWorkflow(
     };
     agentProofs.set(id, agentProof);
 
-    // Call identity for resume: same stage + harness + model + effort + turns + schema
+    // Call identity for resume: same stage + adapter + model + effort + turns + schema
     // + ORIGINAL prompt → same key. Retry-mutated prompts never enter the key.
-    const key = agentCallKey(currentStage, harness, agentOpts, assignmentPrompt);
+    const key = agentCallKey(currentStage, adapter, agentOpts, assignmentPrompt);
     const cached = resumeCache.get(key);
     if (cached) {
       // Exact-run replay skips dispatch authorization because no dispatch
@@ -769,7 +769,7 @@ async function executeWorkflow(
         id,
         label,
         key,
-        harness,
+        adapter,
         specialist: agentOpts.specialist ?? null,
         model: agentOpts.model ?? null,
         kind: cached.kind,
@@ -785,7 +785,7 @@ async function executeWorkflow(
         phase: "dispatch",
         action: "spawn agent",
         path: executionCwd,
-        harness,
+        adapter,
         model: agentOpts.model,
         effort: agentOpts.effort,
         max_attempts: maxAttempts,
@@ -807,7 +807,7 @@ async function executeWorkflow(
           projectedCost = candidate;
         } catch (error) {
           transcript("policy.cost_estimate_failed", {
-            harness,
+            adapter,
             model: agentOpts.model ?? null,
             error: boundedPolicyReason((error as Error).message),
           });
@@ -843,17 +843,17 @@ async function executeWorkflow(
       }
     }
 
-    // Billing safeguard: on a harness's FIRST spawn this run, classify which
+    // Billing safeguard: on a adapter's FIRST spawn this run, classify which
     // auth its children will use and refuse the silent-override state (an
     // exported API key shadowing a stored subscription login) unless the
     // caller explicitly opted into API billing. Cached agents never reach
     // this — no spawn, no billing.
     try {
-      if (!billingProbed.has(harness)) {
-        const probe = (opts.probeBilling ?? probeBilling)(harness);
-        billingProbed.set(harness, probe);
+      if (!billingProbed.has(adapter)) {
+        const probe = (opts.probeBilling ?? probeBilling)(adapter);
+        billingProbed.set(adapter, probe);
         transcript("billing.probe", {
-          harness,
+          adapter,
           mode: subscriptionOnly ? "subscription" : probe.mode,
           api_key_source: probe.apiKeySource,
           login: probe.login,
@@ -862,29 +862,29 @@ async function executeWorkflow(
         if (subscriptionOnly) {
           if (probe.login === "absent") {
             throw new Error(
-              `subscription-only: no stored login detected for ${harness}; ` +
-                `log the harness CLI in (or drop --subscription-only for a key-only host)`,
+              `subscription-only: no stored login detected for ${adapter}; ` +
+                `log the adapter CLI in (or drop --subscription-only for a key-only host)`,
             );
           }
-          log(`[billing] ${harness}: subscription-only (API-key vars scrubbed from child env)`);
+          log(`[billing] ${adapter}: subscription-only (API-key vars scrubbed from child env)`);
         } else if (probe.mode === "api-key-override" && !allowApiBilling) {
           throw new Error(
-            `${probe.apiKeySource} is set AND a stored ${harness} login exists — the key silently ` +
+            `${probe.apiKeySource} is set AND a stored ${adapter} login exists — the key silently ` +
               `overrides your subscription auth, so children would bill per-token API rates. ` +
               `Either unset ${probe.apiKeySource}, run with --subscription-only to scrub it from ` +
               `child envs, or pass --allow-api-billing if API billing is intended`,
           );
         } else if (probe.mode === "api-key") {
           log(
-            `[billing] ${harness}: API-key billing (${probe.apiKeySource}; no stored login detected) — ` +
+            `[billing] ${adapter}: API-key billing (${probe.apiKeySource}; no stored login detected) — ` +
               `children bill per-token rates`,
           );
         } else if (probe.mode === "api-key-override") {
           log(
-            `[billing] ${harness}: API-key billing (--allow-api-billing; key overrides stored login)`,
+            `[billing] ${adapter}: API-key billing (--allow-api-billing; key overrides stored login)`,
           );
         } else {
-          log(`[billing] ${harness}: subscription login`);
+          log(`[billing] ${adapter}: subscription login`);
         }
       }
     } catch (error) {
@@ -906,12 +906,12 @@ async function executeWorkflow(
         id,
         label,
         key,
-        harness,
+        adapter,
         specialist: agentOpts.specialist ?? null,
         model: agentOpts.model ?? null,
         effort: agentOpts.effort ?? null,
       });
-      log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${harness}] ${label}`);
+      log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${adapter}] ${label}`);
 
       let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
@@ -1156,8 +1156,8 @@ async function executeWorkflow(
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
-        harnessEvidence: opts.harnessEvidence,
-        harnessAttestations: opts.harnessAttestations,
+        adapterEvidence: opts.adapterEvidence,
+        adapterAttestations: opts.adapterAttestations,
         sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
         policy: policy
           ? {
@@ -1195,7 +1195,7 @@ async function executeWorkflow(
       acceptance: proof.acceptance.summary,
       contextTokensPerChildEstimate,
       billing: Array.from(billingProbed.values()).map((p) => ({
-        harness: p.harness,
+        adapter: p.adapter,
         mode: subscriptionOnly ? "subscription" : p.mode,
       })),
       policy: proof.policy?.summary,
@@ -1237,8 +1237,8 @@ async function executeWorkflow(
         after: snapshotRepo(executionCwd),
         agents: Array.from(agentProofs.values()),
         evidence: evidenceRecords,
-        harnessEvidence: opts.harnessEvidence,
-        harnessAttestations: opts.harnessAttestations,
+        adapterEvidence: opts.adapterEvidence,
+        adapterAttestations: opts.adapterAttestations,
         sandboxProjection: sandboxProjectionEvidence(filesystemPolicy, gitWrite),
         policy: policy
           ? {
@@ -1285,13 +1285,13 @@ function boundedSchemaReply(value: string): string {
  * prompt (never a retry-mutated one) plus everything that changes behavior. */
 function agentCallKey(
   stage: string,
-  harness: string,
+  adapter: string,
   agentOpts: AgentOpts,
   prompt: string,
 ): string {
   const parts: unknown[] = [
     stage,
-    harness,
+    adapter,
     agentOpts.model ?? null,
     agentOpts.effort ?? null,
     agentOpts.maxTurns ?? DEFAULT_MAX_TURNS,

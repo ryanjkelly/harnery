@@ -11,13 +11,13 @@ Harnery workflow runs already wrote an append-only JSONL transcript. It was usef
 for diagnosis, resume, and the live dashboard, but it was not a compact answer
 to the questions that matter after a run: What was the objective? Which
 acceptance criteria were met? What inspectable evidence supports that status?
-What changed around the run? Which facts did the harness expose, and which
+What changed around the run? Which facts did the adapter expose, and which
 remain unknown?
 
 A successful process exit is too weak to answer those questions. The opposite
 approach, treating the full transcript or transcript as a proof artifact, is too
 large, difficult to review, and likely to repeat sensitive prompts and model
-output. Harness differences also make a uniform claim impossible. A final-result
+output. Adapter differences also make a uniform claim impossible. A final-result
 adapter cannot produce tool-level evidence it never received.
 
 ## Decision
@@ -50,7 +50,7 @@ The final transcript receives the same integrity treatment. Repository evidence
 stores before and after Git snapshots and calls out when retained dirty paths
 or truncated status lists prevent a complete change claim.
 
-Harness evidence coverage comes from the registered adapter profile. Missing
+Adapter evidence coverage comes from the registered adapter profile. Missing
 claims remain unknown; partial and unsupported tool evidence are stated
 explicitly. Missing per-run cost and session identifiers also become explicit
 unknowns rather than zeroes or inferred values.

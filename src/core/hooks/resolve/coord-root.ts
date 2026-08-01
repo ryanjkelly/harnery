@@ -8,11 +8,11 @@ import { coordEnv } from "../../../lib/env.ts";
  *
  * Resolution precedence:
  *   1. HARNERY_COORD_ROOT_OVERRIDE — explicit pin (tests, git hooks).
- *   2. The harness's project dir (CLAUDE_PROJECT_DIR) — hook processes
+ *   2. The adapter's project dir (CLAUDE_PROJECT_DIR) — hook processes
  *      inherit the session's *shell* cwd, which follows `cd` into
  *      subdirectories/submodules that may carry a `.harnery/` of their own
  *      (or none at all, e.g. a journal dir under /tmp). The session's
- *      coordination home is the project the harness opened, not wherever the
+ *      coordination home is the project the adapter opened, not wherever the
  *      shell happens to sit, so a project dir that resolves to a coord root
  *      wins over the cwd walk.
  *   3. Walk up from `start` (default cwd).
@@ -27,7 +27,7 @@ export function findCoordRoot(start: string = process.cwd()): string | null {
   const override = coordEnv("COORD_ROOT_OVERRIDE");
   if (override) return override;
   // Claude Code exports CLAUDE_PROJECT_DIR to every hook process; other
-  // harnesses don't set it, so this is inert outside claude-code hooks.
+  // adapters don't set it, so this is inert outside claude-code hooks.
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (projectDir) {
     const fromProject = walkUp(projectDir);

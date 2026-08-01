@@ -1,14 +1,14 @@
 /**
  * The opt-in live probe that produces an attestation (ADR 0038).
  *
- * One bounded turn per harness, through the same `spawn` the workflow engine
+ * One bounded turn per adapter, through the same `spawn` the workflow engine
  * uses, so what gets attested is the path production takes rather than a
  * parallel test rig.
  */
 
 import type { SpawnResult } from "../workflow/types.ts";
 import { probeFilesystemProjection } from "./attest-projection.ts";
-import type { AttestableDimension, HarnessAttestation } from "./attestation.ts";
+import type { AdapterAttestation, AttestableDimension } from "./attestation.ts";
 import {
   ATTESTATION_SCHEMA_VERSION,
   profileDigest,
@@ -16,8 +16,8 @@ import {
   writeAttestation,
 } from "./attestation.ts";
 import { probeBinaryVersion } from "./bench.ts";
-import type { HarnessRegistry } from "./registry.ts";
-import type { CapabilitySupport, HarnessId } from "./types.ts";
+import type { AdapterRegistry } from "./registry.ts";
+import type { AdapterId, CapabilitySupport } from "./types.ts";
 
 /** Fixed and content-free, so nothing user-supplied can reach the record and
  * the turn stays as cheap as a turn can be. */
@@ -46,8 +46,8 @@ function boundedReason(reason: string | undefined): string {
 
 export type AttestationOutcome = "recorded" | "skipped" | "unreachable" | "failed";
 
-export interface HarnessAttestationResult {
-  harness: HarnessId;
+export interface AdapterAttestationResult {
+  adapter: AdapterId;
   outcome: AttestationOutcome;
   binaryVersion?: string;
   observations?: Partial<Record<AttestableDimension, CapabilitySupport>>;
@@ -55,18 +55,18 @@ export interface HarnessAttestationResult {
   note: string;
 }
 
-export interface HarnessAttestationReport {
+export interface AdapterAttestationReport {
   generatedAt: string;
-  harnesses: HarnessId[];
-  results: HarnessAttestationResult[];
+  adapters: AdapterId[];
+  results: AdapterAttestationResult[];
   recorded: number;
-  /** True when at least one selected harness could not be attested, so a
+  /** True when at least one selected adapter could not be attested, so a
    * caller can tell a partial sweep from a complete one. */
   incomplete: boolean;
 }
 
-export interface RunHarnessAttestationOptions {
-  harnesses?: readonly string[];
+export interface RunAdapterAttestationOptions {
+  adapters?: readonly string[];
   timeoutMs?: number;
   cwd?: string;
   coordRoot?: string;
@@ -78,12 +78,12 @@ export interface RunHarnessAttestationOptions {
   /** Test seam and alternate host probe. A null version means unavailable. */
   versionProbe?: (binary: string) => string | null;
   /** Test seam. Defaults to the adapter's production spawner. */
-  spawn?: (harness: HarnessId, prompt: string, timeoutMs: number) => Promise<SpawnResult>;
+  spawn?: (adapter: AdapterId, prompt: string, timeoutMs: number) => Promise<SpawnResult>;
   /** Test seam. Defaults to writing under the coord root. */
-  persist?: (record: HarnessAttestation) => void;
+  persist?: (record: AdapterAttestation) => void;
   /**
    * Also probe `filesystemPolicyProjection` (ADR 0041). Off by default because
-   * it costs two extra turns per capable harness, against one for everything
+   * it costs two extra turns per capable adapter, against one for everything
    * else: the observation needs a control run to be readable at all.
    */
   projection?: boolean;
@@ -92,24 +92,24 @@ export interface RunHarnessAttestationOptions {
   now?: () => Date;
 }
 
-export async function runHarnessAttestation(
-  registry: HarnessRegistry,
-  opts: RunHarnessAttestationOptions = {},
-): Promise<HarnessAttestationReport> {
-  const ids = opts.harnesses?.length ? [...opts.harnesses] : registry.ids();
+export async function runAdapterAttestation(
+  registry: AdapterRegistry,
+  opts: RunAdapterAttestationOptions = {},
+): Promise<AdapterAttestationReport> {
+  const ids = opts.adapters?.length ? [...opts.adapters] : registry.ids();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_ATTESTATION_TIMEOUT_MS;
   const cwd = opts.cwd ?? process.cwd();
   const subscriptionOnly = opts.subscriptionOnly === true;
   const versionProbe = opts.versionProbe ?? probeBinaryVersion;
   const now = opts.now ?? (() => new Date());
-  const results: HarnessAttestationResult[] = [];
+  const results: AdapterAttestationResult[] = [];
 
   for (const id of ids) {
     const adapter = registry.require(id);
     const binaryVersion = versionProbe(adapter.profile.binary);
     if (!binaryVersion) {
       results.push({
-        harness: id,
+        adapter: id,
         outcome: "skipped",
         note: `${adapter.profile.binary} not found on PATH`,
       });
@@ -129,7 +129,7 @@ export async function runHarnessAttestation(
           });
     } catch (error) {
       results.push({
-        harness: id,
+        adapter: id,
         outcome: "failed",
         binaryVersion,
         note: `probe threw: ${boundedReason((error as Error).message)}`,
@@ -141,7 +141,7 @@ export async function runHarnessAttestation(
     // failed turn records nothing at all rather than a page of `unsupported`.
     if (!result.ok) {
       results.push({
-        harness: id,
+        adapter: id,
         outcome: "unreachable",
         binaryVersion,
         durationMs: result.durationMs,
@@ -172,7 +172,7 @@ export async function runHarnessAttestation(
 
     const record = sealAttestation({
       schema_version: ATTESTATION_SCHEMA_VERSION,
-      harness: id,
+      adapter: id,
       binary_version: binaryVersion,
       profile_digest: profileDigest(adapter.profile),
       subscription_only: subscriptionOnly,
@@ -184,7 +184,7 @@ export async function runHarnessAttestation(
     else writeAttestation(record, { coordRoot: opts.coordRoot });
 
     results.push({
-      harness: id,
+      adapter: id,
       outcome: "recorded",
       binaryVersion,
       observations,
@@ -195,7 +195,7 @@ export async function runHarnessAttestation(
 
   return {
     generatedAt: now().toISOString(),
-    harnesses: ids,
+    adapters: ids,
     results,
     recorded: results.filter((row) => row.outcome === "recorded").length,
     incomplete: results.some((row) => row.outcome !== "recorded"),

@@ -2,6 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import {
+  adapterProofInputs,
+  createBuiltinAdapterRegistry,
+  probeBinaryVersion,
+} from "../core/adapters/index.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
 import {
   approveGovernorPlan,
@@ -28,11 +33,6 @@ import {
   runGovernorServiceDaemon,
   spawnGovernorService,
 } from "../core/governor/index.ts";
-import {
-  createBuiltinHarnessRegistry,
-  harnessProofInputs,
-  probeBinaryVersion,
-} from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -57,7 +57,7 @@ interface CreateOpts {
 }
 
 interface RunOpts {
-  harness?: string;
+  adapter?: string;
   cwd?: string;
   subscriptionOnly?: boolean;
   allowApiBilling?: boolean;
@@ -76,7 +76,7 @@ interface ServiceOpts extends RunOpts {
 }
 
 export function registerGovernorCommand(program: Command, emit: EmitContext): void {
-  const registry = createBuiltinHarnessRegistry();
+  const registry = createBuiltinAdapterRegistry();
   const governor = program
     .command("governor")
     .description("Run a bounded specialist team over a durable-work dependency graph.");
@@ -103,9 +103,9 @@ export function registerGovernorCommand(program: Command, emit: EmitContext): vo
       withGovernorRoot(emit, (coordRoot) => {
         const specialists = readTeamFile(opts.team);
         for (const [id, profile] of Object.entries(specialists)) {
-          if (profile.harness && !registry.get(profile.harness)) {
+          if (profile.adapter && !registry.get(profile.adapter)) {
             throw new Error(
-              `specialist ${id} names unknown harness ${JSON.stringify(profile.harness)}`,
+              `specialist ${id} names unknown adapter ${JSON.stringify(profile.adapter)}`,
             );
           }
         }
@@ -293,7 +293,7 @@ function registerPlanCommand(governor: Command, emit: EmitContext): void {
 
 function registerServiceCommand(
   governor: Command,
-  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+  registry: ReturnType<typeof createBuiltinAdapterRegistry>,
   emit: EmitContext,
 ): void {
   const service = governor
@@ -403,9 +403,9 @@ function addServiceOptions(command: Command): Command {
     .option("--heartbeat-interval-ms <n>", "Heartbeat interval (default 2000)")
     .option("--error-backoff-base-ms <n>", "Initial service-error backoff (default 2000)")
     .option("--error-backoff-max-ms <n>", "Maximum service-error backoff (default 300000)")
-    .option("--harness <name>", "Fallback harness for agent calls without a specialist")
+    .option("--adapter <name>", "Fallback adapter for agent calls without a specialist")
     .option("--cwd <dir>", "Working directory for child agents")
-    .option("--subscription-only", "Require stored harness-login billing")
+    .option("--subscription-only", "Require stored adapter-login billing")
     .option("--allow-api-billing", "Permit API-key override billing")
     .option("--policy <file>", "Host policy JSON/JSONC")
     .option("--isolation <mode>", "shared | worktree | sandbox | remote")
@@ -416,7 +416,7 @@ function prepareServiceConfig(
   coordRoot: string,
   goalIds: string[],
   opts: ServiceOpts,
-  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+  registry: ReturnType<typeof createBuiltinAdapterRegistry>,
 ): GovernorServiceConfig {
   if (goalIds.length === 0) {
     if (hasServiceConfigOverrides(opts)) {
@@ -424,8 +424,8 @@ function prepareServiceConfig(
     }
     return readGovernorServiceConfig(coordRoot);
   }
-  if (opts.harness && !registry.get(opts.harness)) {
-    throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
+  if (opts.adapter && !registry.get(opts.adapter)) {
+    throw new Error(`unknown adapter ${JSON.stringify(opts.adapter)}`);
   }
   const policy = opts.policy ? loadPolicyFile(opts.policy) : undefined;
   return configureGovernorService({
@@ -436,7 +436,7 @@ function prepareServiceConfig(
     errorBackoffBaseMs: integer(opts.errorBackoffBaseMs),
     errorBackoffMaxMs: integer(opts.errorBackoffMaxMs),
     engine: {
-      default_harness: opts.harness,
+      default_adapter: opts.adapter,
       cwd: opts.cwd,
       subscription_only:
         opts.subscriptionOnly === true ? true : workflowSubscriptionOnly(coordRoot),
@@ -454,7 +454,7 @@ function hasServiceConfigOverrides(opts: ServiceOpts): boolean {
       opts.heartbeatIntervalMs ||
       opts.errorBackoffBaseMs ||
       opts.errorBackoffMaxMs ||
-      opts.harness ||
+      opts.adapter ||
       opts.cwd ||
       opts.subscriptionOnly ||
       opts.allowApiBilling ||
@@ -466,15 +466,15 @@ function hasServiceConfigOverrides(opts: ServiceOpts): boolean {
 
 function serviceEngine(
   config: GovernorServiceConfig,
-  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+  registry: ReturnType<typeof createBuiltinAdapterRegistry>,
 ) {
   return {
     spawners: registry.spawners(),
-    defaultHarness: config.engine.default_harness,
+    defaultAdapter: config.engine.default_adapter,
     cwd: config.engine.cwd,
     subscriptionOnly: config.engine.subscription_only,
     allowApiBilling: config.engine.allow_api_billing,
-    ...harnessProofInputs(
+    ...adapterProofInputs(
       registry.list().map((adapter) => adapter.profile),
       { versionProbe: probeBinaryVersion },
     ),
@@ -529,7 +529,7 @@ function emitServiceStatus(
 function registerRunCommand(
   governor: Command,
   mode: "tick" | "run",
-  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
+  registry: ReturnType<typeof createBuiltinAdapterRegistry>,
   emit: EmitContext,
 ): void {
   governor
@@ -539,9 +539,9 @@ function registerRunCommand(
         ? "Perform at most one bounded scheduling cycle."
         : "Run bounded cycles until success, attention, no progress, or budget exhaustion.",
     )
-    .option("--harness <name>", "Fallback harness for agent calls without a specialist")
+    .option("--adapter <name>", "Fallback adapter for agent calls without a specialist")
     .option("--cwd <dir>", "Working directory for child agents")
-    .option("--subscription-only", "Require stored harness-login billing")
+    .option("--subscription-only", "Require stored adapter-login billing")
     .option("--allow-api-billing", "Permit API-key override billing")
     .option("--policy <file>", "Host policy JSON/JSONC")
     .option("--isolation <mode>", "shared | worktree | sandbox | remote")
@@ -550,8 +550,8 @@ function registerRunCommand(
     .option("--json", "Emit the complete run report as JSON")
     .action(async (goalId: string, opts: RunOpts) => {
       await withGovernorRootAsync(emit, async (coordRoot) => {
-        if (opts.harness && !registry.get(opts.harness)) {
-          throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
+        if (opts.adapter && !registry.get(opts.adapter)) {
+          throw new Error(`unknown adapter ${JSON.stringify(opts.adapter)}`);
         }
         const report = await runGovernor({
           coordRoot,
@@ -561,12 +561,12 @@ function registerRunCommand(
           onLog: opts.json ? undefined : (line) => emit.text(`${line}\n`),
           engine: {
             spawners: registry.spawners(),
-            defaultHarness: opts.harness,
+            defaultAdapter: opts.adapter,
             cwd: opts.cwd,
             subscriptionOnly:
               opts.subscriptionOnly === true ? true : workflowSubscriptionOnly(coordRoot),
             allowApiBilling: opts.allowApiBilling,
-            ...harnessProofInputs(
+            ...adapterProofInputs(
               registry.list().map((adapter) => adapter.profile),
               { versionProbe: probeBinaryVersion },
             ),

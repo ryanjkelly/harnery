@@ -1,16 +1,16 @@
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { workflowSubscriptionOnly } from "../core/config.ts";
 import {
+  type AdapterAttestationReport,
+  type AdapterBenchReport,
   type BenchResult,
-  createBuiltinHarnessRegistry,
-  type HarnessAttestationReport,
-  type HarnessBenchReport,
+  createBuiltinAdapterRegistry,
   listAttestations,
-  runHarnessAttestation,
-  runHarnessBench,
-} from "../core/harnesses/index.ts";
-import type { HarnessProfile } from "../core/harnesses/types.ts";
+  runAdapterAttestation,
+  runAdapterBench,
+} from "../core/adapters/index.ts";
+import type { AdapterProfile } from "../core/adapters/types.ts";
+import { workflowSubscriptionOnly } from "../core/config.ts";
 
 interface FormatOpts {
   json?: boolean;
@@ -27,22 +27,22 @@ interface AttestOpts extends FormatOpts {
   projection?: boolean;
 }
 
-const registry = createBuiltinHarnessRegistry();
+const registry = createBuiltinAdapterRegistry();
 
-export function registerHarnessCommand(program: Command, emit: EmitContext): void {
+export function registerAdapterCommand(program: Command, emit: EmitContext): void {
   const command = program
-    .command("harness")
-    .description("Inspect registered harness capabilities and run their conformance bench.");
+    .command("adapter")
+    .description("Inspect registered adapter capabilities and run their conformance bench.");
 
   command
     .command("list")
-    .description("List registered harness adapters and their high-signal capability claims.")
+    .description("List registered adapter adapters and their high-signal capability claims.")
     .option("--json", "Machine-readable profile catalog")
     .action((opts: FormatOpts) => {
       const profiles = registry.list().map((adapter) => adapter.profile);
       if (opts.json) {
         emit.config({ format: "json" });
-        emit.data({ harnesses: profiles });
+        emit.data({ adapters: profiles });
       } else {
         emit.text(renderProfileTable(profiles));
       }
@@ -50,14 +50,14 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
 
   command
     .command("show <id>")
-    .description("Show one harness's complete capability declaration.")
+    .description("Show one adapter's complete capability declaration.")
     .option("--json", "Machine-readable profile")
     .action((id: string, opts: FormatOpts) => {
       const adapter = registry.get(id);
       if (!adapter) {
         emit.error({
-          code: "unknown_harness",
-          message: `unknown harness ${JSON.stringify(id)} (registered: ${registry.ids().join(", ")})`,
+          code: "unknown_adapter",
+          message: `unknown adapter ${JSON.stringify(id)} (registered: ${registry.ids().join(", ")})`,
         });
         emit.setExitCode(1);
         return;
@@ -71,13 +71,13 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
     });
 
   command
-    .command("bench [harnesses...]")
+    .command("bench [adapters...]")
     .description("Run the offline adapter-contract bench (no model calls); drift exits non-zero.")
     .option("--require-installed", "Also fail when a registered vendor CLI is missing")
     .option("--json", "Machine-readable conformance report")
-    .action((harnesses: string[], opts: BenchOpts) => {
+    .action((adapters: string[], opts: BenchOpts) => {
       try {
-        const report = runHarnessBench(registry, { harnesses });
+        const report = runAdapterBench(registry, { adapters });
         if (opts.json) {
           emit.config({ format: "json" });
           emit.data(report);
@@ -86,13 +86,13 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
         }
         emit.setExitCode(report.drift || (opts.requireInstalled && report.skipped) ? 1 : 0);
       } catch (error) {
-        emit.error({ code: "harness_bench_failed", message: (error as Error).message });
+        emit.error({ code: "adapter_bench_failed", message: (error as Error).message });
         emit.setExitCode(1);
       }
     });
 
   command
-    .command("attest [harnesses...]")
+    .command("attest [adapters...]")
     .description(
       "Record what the installed vendor CLIs actually do. Runs one real model turn each; needs --yes.",
     )
@@ -101,18 +101,18 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
       "--subscription-only",
       "Scrub API-key vars so the child uses its stored login (repo default via config.jsonc workflow.subscriptionOnly)",
     )
-    .option("--timeout <ms>", "Per-harness probe timeout in milliseconds")
+    .option("--timeout <ms>", "Per-adapter probe timeout in milliseconds")
     .option(
       "--projection",
-      "Also probe whether a declared sandbox is enforced; costs two extra turns per capable harness",
+      "Also probe whether a declared sandbox is enforced; costs two extra turns per capable adapter",
     )
     .option("--json", "Machine-readable attestation report")
-    .action(async (harnesses: string[], opts: AttestOpts) => {
+    .action(async (adapters: string[], opts: AttestOpts) => {
       if (!opts.yes) {
         emit.error({
-          code: "harness_attest_unconfirmed",
+          code: "adapter_attest_unconfirmed",
           message:
-            "harness attest runs one real model turn per harness and spends vendor tokens. Re-run with --yes.",
+            "adapter attest runs one real model turn per adapter and spends vendor tokens. Re-run with --yes.",
         });
         emit.setExitCode(1);
         return;
@@ -120,7 +120,7 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
       const timeoutMs = opts.timeout ? Number(opts.timeout) : undefined;
       if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
         emit.error({
-          code: "harness_attest_bad_timeout",
+          code: "adapter_attest_bad_timeout",
           message: "--timeout must be a positive number",
         });
         emit.setExitCode(1);
@@ -128,8 +128,8 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
       }
       try {
         const subscriptionOnly = opts.subscriptionOnly || workflowSubscriptionOnly();
-        const report = await runHarnessAttestation(registry, {
-          harnesses,
+        const report = await runAdapterAttestation(registry, {
+          adapters,
           timeoutMs,
           subscriptionOnly,
           projection: opts.projection === true,
@@ -145,7 +145,7 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
         // to install every vendor CLI.
         emit.setExitCode(report.recorded === 0 ? 1 : 0);
       } catch (error) {
-        emit.error({ code: "harness_attest_failed", message: (error as Error).message });
+        emit.error({ code: "adapter_attest_failed", message: (error as Error).message });
         emit.setExitCode(1);
       }
     });
@@ -163,14 +163,14 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
           return;
         }
         if (records.length === 0) {
-          emit.text("No attestations recorded. Run `harness attest --yes` to create one.");
+          emit.text("No attestations recorded. Run `adapter attest --yes` to create one.");
           return;
         }
         emit.text(
           renderTable(
-            ["HARNESS", "VERSION", "BILLING", "OBSERVED AT", "OBSERVATIONS"],
+            ["ADAPTER", "VERSION", "BILLING", "OBSERVED AT", "OBSERVATIONS"],
             records.map((record) => [
-              record.harness,
+              record.adapter,
               record.binary_version,
               record.subscription_only ? "subscription" : "any",
               record.observed_at,
@@ -181,15 +181,15 @@ export function registerHarnessCommand(program: Command, emit: EmitContext): voi
           ),
         );
       } catch (error) {
-        emit.error({ code: "harness_attestations_failed", message: (error as Error).message });
+        emit.error({ code: "adapter_attestations_failed", message: (error as Error).message });
         emit.setExitCode(1);
       }
     });
 }
 
-export function renderAttestationReport(report: HarnessAttestationReport): string {
+export function renderAttestationReport(report: AdapterAttestationReport): string {
   const rows = report.results.map((result) => [
-    result.harness,
+    result.adapter,
     result.outcome,
     result.binaryVersion ?? "",
     result.observations
@@ -198,14 +198,14 @@ export function renderAttestationReport(report: HarnessAttestationReport): strin
           .join(" ")
       : result.note,
   ]);
-  const table = renderTable(["HARNESS", "OUTCOME", "VERSION", "OBSERVED"], rows);
+  const table = renderTable(["ADAPTER", "OUTCOME", "VERSION", "OBSERVED"], rows);
   const tail = report.incomplete
-    ? "Some harnesses were not attested; their bench rows keep an adapter basis."
-    : "Every selected harness was attested.";
+    ? "Some adapters were not attested; their bench rows keep an adapter basis."
+    : "Every selected adapter was attested.";
   return `${table}\n\nrecorded: ${report.recorded}/${report.results.length}\n${tail}`;
 }
 
-export function renderProfileTable(profiles: readonly HarnessProfile[]): string {
+export function renderProfileTable(profiles: readonly AdapterProfile[]): string {
   const rows = profiles.map((profile) => [
     profile.id,
     profile.binary,
@@ -214,10 +214,10 @@ export function renderProfileTable(profiles: readonly HarnessProfile[]): string 
     profile.capabilities.sessionId.support,
     profile.capabilities.cost.support,
   ]);
-  return renderTable(["HARNESS", "BINARY", "MODEL", "EFFORT", "SESSION", "COST"], rows);
+  return renderTable(["ADAPTER", "BINARY", "MODEL", "EFFORT", "SESSION", "COST"], rows);
 }
 
-export function renderProfile(profile: HarnessProfile): string {
+export function renderProfile(profile: AdapterProfile): string {
   const lines = [
     `${profile.displayName} (${profile.id})`,
     `binary: ${profile.binary}`,
@@ -237,9 +237,9 @@ export function renderProfile(profile: HarnessProfile): string {
   return lines.join("\n");
 }
 
-export function renderBenchReport(report: HarnessBenchReport): string {
+export function renderBenchReport(report: AdapterBenchReport): string {
   const rows = report.results.map((result) => [
-    result.harness,
+    result.adapter,
     result.dimension,
     result.declared,
     result.observed,
@@ -247,7 +247,7 @@ export function renderBenchReport(report: HarnessBenchReport): string {
     result.basis,
   ]);
   const table = renderTable(
-    ["HARNESS", "DIMENSION", "DECLARED", "OBSERVED", "VERDICT", "BASIS"],
+    ["ADAPTER", "DIMENSION", "DECLARED", "OBSERVED", "VERDICT", "BASIS"],
     rows,
   );
   const summary = Object.entries(report.summary)

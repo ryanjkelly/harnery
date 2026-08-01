@@ -2,13 +2,13 @@
 "harnery": patch
 ---
 
-Identity resolution now asks the harness before it guesses from the process tree.
+Identity resolution now asks the adapter before it guesses from the process tree.
 
-Every supported harness exports its session id into the environment of the
+Every supported adapter exports its session id into the environment of the
 subprocess it spawns for a tool call, and every heartbeat records the session id
 it was minted under. Matching the two names an agent outright. That check used to
 run only for Cursor, and only after the ppid walk had already failed, so on every
-other harness a pid-map row outranked it.
+other adapter a pid-map row outranked it.
 
 Rows name pids, and pids get recycled. Measured on one development machine:
 `pid_max` of 99999 against roughly 100 new processes a second, so the whole pid

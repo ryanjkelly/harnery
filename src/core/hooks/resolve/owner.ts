@@ -9,7 +9,7 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
  *
  * Precedence:
  *
- *   1. `HARNERY_AGENT_COORD_OWNER` env var. Set by harness adapters when they know
+ *   1. `HARNERY_AGENT_COORD_OWNER` env var. Set by adapter adapters when they know
  *      the owner identity at spawn time (Codex's apply_patch tool path uses
  *      this).
  *   2. Hook payload fields, in order: `agent_id` → `subagent_id` →
@@ -41,7 +41,7 @@ export function resolveOwner(opts: {
   }
 
   // Pid-map ancestor walk. Start at own pid (the bash wrapper's bun child),
-  // walk up through ppids. The pid-map is stamped keyed by the harness PID, so
+  // walk up through ppids. The pid-map is stamped keyed by the adapter PID, so
   // we'll usually find it 1-3 hops up.
   const pidmap = join(opts.coordRoot, ".harnery", "pid-map");
   if (existsSync(pidmap)) {

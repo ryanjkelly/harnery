@@ -42,7 +42,7 @@ export interface BlockSkills {
  * `harn-council`) even for a renamed bin; only command strings track `binName`.
  *
  * The block only points at a skill that actually exists here: a host that
- * excludes one via `skills.exclude`, or a harness with no skill primitive
+ * excludes one via `skills.exclude`, or a adapter with no skill primitive
  * (cursor/codex get the block but no skill files), gets a `--help` pointer
  * instead of a dangling reference to a skill it doesn't have.
  */
@@ -135,10 +135,10 @@ surfaces prior decisions, so check for precedent before re-deciding. ${decidePoi
 
 // ── Skills ──────────────────────────────────────────────────────────────────
 
-/** A shipped skill: its harness-relative file path + a bin-name-aware renderer. */
+/** A shipped skill: its adapter-relative file path + a bin-name-aware renderer. */
 export interface SkillTemplate {
   id: string;
-  /** path under the harness skill dir, e.g. `harn-decide/SKILL.md` */
+  /** path under the adapter skill dir, e.g. `harn-decide/SKILL.md` */
   relPath: string;
   render: (binName: string) => string;
 }

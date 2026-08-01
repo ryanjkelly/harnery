@@ -5,11 +5,11 @@
  * if skipped):
  *   1. Create the `.harnery/` coord root; without it `findCoordRoot` returns
  *      null and every hook no-ops forever.
- *   2. Register the agent-hook entries in the harness settings file.
+ *   2. Register the agent-hook entries in the adapter settings file.
  *
- * Wires whichever harness `--harness` names (Claude Code `.claude/settings.json`,
- * Cursor `.cursor/hooks.json`, or Codex `.codex/hooks.json`): the per-harness
- * file path, event list, and hook-entry shape all come from HARNESS_SPECS.
+ * Wires whichever adapter `--adapter` names (Claude Code `.claude/settings.json`,
+ * Cursor `.cursor/hooks.json`, or Codex `.codex/hooks.json`): the per-adapter
+ * file path, event list, and hook-entry shape all come from ADAPTER_SPECS.
  *
  * `harn init` does both, non-destructively: it merges hook entries into an
  * existing settings file (preserving any other hooks) and skips entries that are
@@ -23,14 +23,14 @@ import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME, pinnedBinName, stripJsonComments } from "../core/config.ts";
-import { HARNESS_SPECS, type HarnessId, type HarnessSpec } from "../core/hooks/harness/events.ts";
+import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
 import {
   commandWiresSubcommand,
   groupCommands,
   type HookGroup,
   makeEntry,
   type SettingsFile,
-} from "../core/hooks/harness/wiring.ts";
+} from "../core/hooks/adapter/wiring.ts";
 import {
   type ApplyResult,
   applyInstructions,
@@ -39,14 +39,14 @@ import {
 import { HostAddendumError } from "../lib/instructions/host-addendum.ts";
 
 // Re-exported for back-compat: callers (deinit, tests) import these names
-// from init.ts. The definitions now live in core/hooks/harness/wiring.ts.
+// from init.ts. The definitions now live in core/hooks/adapter/wiring.ts.
 export type { HookGroup, SettingsFile };
 
 // This file is src/commands/init.ts → harnery package root is two levels up.
 const HARNERY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface InitOpts {
-  harness: string;
+  adapter: string;
   dryRun?: boolean;
   check?: boolean;
   projectRoot?: string;
@@ -56,20 +56,20 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
   program
     .command("init")
     .description(
-      "Bootstrap harnery in this project: create .harnery/, wire the harness " +
+      "Bootstrap harnery in this project: create .harnery/, wire the adapter " +
         "hooks, and inject the agent-facing instructions block + skills " +
         "(idempotent; safe to re-run). Use --dry-run to preview, --check to " +
         "report drift without writing (exit 0 fresh / 2 drift / 1 error).",
     )
-    .option("--harness <id>", "claude-code | cursor | codex", "claude-code")
+    .option("--adapter <id>", "claude-code | cursor | codex", "claude-code")
     .option("--dry-run", "Show what would change without writing")
     .option("--check", "Report instructions/skills drift without writing; exit 0/2/1")
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .action((opts: InitOpts) => {
-      const harness = opts.harness as HarnessId;
-      const spec = HARNESS_SPECS[harness];
+      const adapter = opts.adapter as AdapterId;
+      const spec = ADAPTER_SPECS[adapter];
       if (!spec) {
-        emit.text(`Unknown harness '${opts.harness}'. Expected: claude-code | cursor | codex.`);
+        emit.text(`Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex.`);
         emit.setExitCode(1);
         return;
       }
@@ -84,7 +84,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
       // ── --check: read-only drift report on the block + skills ──────────────
       if (opts.check === true) {
-        const { status, issues } = checkInstructions(projectRoot, { binName: bin, harness });
+        const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
         const head =
           status === "fresh"
             ? "harn init --check: instructions + skills are current"
@@ -127,7 +127,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
       // ── 1c. workflow billing default ───────────────────────────────────────
       // Every init'd project gets `workflow.subscriptionOnly: true`: workflow
-      // children ride the logged-in (subscription) harness auth, and the pin
+      // children ride the logged-in (subscription) adapter auth, and the pin
       // makes per-token API billing structurally impossible unless the project
       // deliberately flips it. A committed `workflow` key of any shape is a
       // deliberate choice and is never touched.
@@ -136,7 +136,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         if (stamp) actions.push(stamp);
       }
 
-      // ── 2. harness hooks ───────────────────────────────────────────────────
+      // ── 2. adapter hooks ───────────────────────────────────────────────────
       const settingsPath = resolve(projectRoot, spec.settingsFile);
       const agentHook = relative(projectRoot, resolve(HARNERY_ROOT, "bin", "agent-hook"));
 
@@ -155,11 +155,11 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       } else {
         settings = {};
       }
-      const { wired, already, removed, upgraded } = wireHooks(settings, spec, agentHook, harness);
+      const { wired, already, removed, upgraded } = wireHooks(settings, spec, agentHook, adapter);
 
       if (wired === 0 && removed === 0 && upgraded === 0) {
         actions.push(
-          `· all ${spec.events.length} ${harness} hooks already wired in ${rel(projectRoot, settingsPath)}`,
+          `· all ${spec.events.length} ${adapter} hooks already wired in ${rel(projectRoot, settingsPath)}`,
         );
       } else if (dryRun) {
         actions.push(
@@ -181,7 +181,7 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // a bad path leaves the repo exactly as it found it.
       let applied: ApplyResult;
       try {
-        applied = applyInstructions(projectRoot, { binName: bin, harness, dryRun });
+        applied = applyInstructions(projectRoot, { binName: bin, adapter, dryRun });
       } catch (err) {
         if (!(err instanceof HostAddendumError)) throw err;
         emit.text(`${bin} init: ${err.message}`);
@@ -195,12 +195,12 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 }
 
 /**
- * Merge agent-hook entries into a harness settings object in place, idempotently.
+ * Merge agent-hook entries into a adapter settings object in place, idempotently.
  * Preserves every existing hook; rewrites events already wired to
  * `agent-hook <subcommand>` when their command string is stale (e.g. an older
- * harnery wired a bare relative path). Honors the harness's entry shape
+ * harnery wired a bare relative path). Honors the adapter's entry shape
  * (Claude/Codex nest under an inner `hooks` array; Cursor uses a flat
- * `{ command }`) and ensures the root `version` key when the harness requires
+ * `{ command }`) and ensures the root `version` key when the adapter requires
  * one. Pure (no fs/git) so it's unit-testable.
  *
  * The trailing space in the match (`agent-hook ${subcommand} `) is load-bearing:
@@ -208,9 +208,9 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
  */
 export function wireHooks(
   settings: SettingsFile,
-  spec: HarnessSpec,
+  spec: AdapterSpec,
   agentHookPath: string,
-  harness: HarnessId,
+  adapter: AdapterId,
 ): { wired: number; already: number; removed: number; upgraded: number } {
   if (spec.rootVersion !== undefined && settings.version === undefined) {
     settings.version = spec.rootVersion;
@@ -231,7 +231,7 @@ export function wireHooks(
     else settings.hooks[settingsKey] = kept;
   }
   for (const { settingsKey, subcommand } of spec.events) {
-    const command = hookCommand(spec, agentHookPath, subcommand, harness);
+    const command = hookCommand(spec, agentHookPath, subcommand, adapter);
     const groups = settings.hooks[settingsKey] ?? [];
     let present = false;
     for (const group of groups) {
@@ -251,23 +251,23 @@ export function wireHooks(
 }
 
 /**
- * The canonical hook command for one event. When the harness exports a
+ * The canonical hook command for one event. When the adapter exports a
  * project-dir env var to hook processes (Claude Code's CLAUDE_PROJECT_DIR),
  * anchor the agent-hook path on it: hook processes inherit the session
  * shell's cwd, which follows `cd` away from the project root — a bare
  * relative path silently fails to spawn from there (no events, no image
- * capture, no guards). `:-.` keeps the command working on harness versions
+ * capture, no guards). `:-.` keeps the command working on adapter versions
  * that don't set the var. Only the env expansion is quoted so the
  * `agent-hook <subcommand> ` wiring match stays byte-identical.
  */
 function hookCommand(
-  spec: HarnessSpec,
+  spec: AdapterSpec,
   agentHookPath: string,
   subcommand: string,
-  harness: HarnessId,
+  adapter: AdapterId,
 ): string {
   const anchor = spec.projectDirEnv ? `"\${${spec.projectDirEnv}:-.}"/` : "";
-  return `bash ${anchor}${agentHookPath} ${subcommand} --harness ${harness}`;
+  return `bash ${anchor}${agentHookPath} ${subcommand} --adapter ${adapter}`;
 }
 
 /**
@@ -311,8 +311,8 @@ function rewriteStaleCommands(
  * contains `agent-hook ` (the trailing space matches `agent-hook <subcommand>`),
  * so any non-harnery hook the consumer added is preserved. Emptied
  * `hooks[settingsKey]` arrays are dropped; an emptied `hooks` object is dropped
- * entirely. Harness-agnostic (scans every key) so it removes entries left by any
- * harness. Pure (no fs) so it's unit-testable. Returns the count removed and the
+ * entirely. Adapter-agnostic (scans every key) so it removes entries left by any
+ * adapter. Pure (no fs) so it's unit-testable. Returns the count removed and the
  * count of non-harnery hooks left behind.
  */
 export function unwireHooks(settings: SettingsFile): { removed: number; remaining: number } {
@@ -400,7 +400,7 @@ export function stampBinName(configPath: string, binName: string, dryRun: boolea
 
 /** The commented workflow-billing default block init stamps into config.jsonc. */
 const WORKFLOW_DEFAULT_BLOCK =
-  `  // Workflow children ride the logged-in (subscription) harness auth; this pin\n` +
+  `  // Workflow children ride the logged-in (subscription) adapter auth; this pin\n` +
   `  // scrubs API-key vars from child envs so runs can never bill per-token rates.\n` +
   `  // Key-only hosts (CI): set false, or HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=0.\n` +
   `  "workflow": { "subscriptionOnly": true }`;

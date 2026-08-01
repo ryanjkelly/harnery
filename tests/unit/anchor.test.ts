@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  harnessPidFromEnv,
+  adapterPidFromEnv,
   parsePsChainLine,
   selectAnchorPid,
 } from "../../src/core/hooks/resolve/anchor.ts";
@@ -50,7 +50,7 @@ describe("selectAnchorPid", () => {
     expect(selectAnchorPid(CLAUDE_CHAIN, "claude-code")).toBe(4900);
   });
 
-  test("non-cursor without a harness comm token does NOT fall back to node", () => {
+  test("non-cursor without a adapter comm token does NOT fall back to node", () => {
     // A bare `node` ancestor must not be mis-claimed as a CC/Codex anchor;
     // only cursor opts into the node fallback.
     expect(selectAnchorPid(CURSOR_POST_TOOL_USE_CHAIN, "claude-code")).toBeUndefined();
@@ -72,7 +72,7 @@ describe("selectAnchorPid", () => {
   });
 
   test("claude-code: matches a version-named binary by its install path", () => {
-    // The chain this repo actually runs on. The harness binary's comm is the
+    // The chain this repo actually runs on. The adapter binary's comm is the
     // release version, so comm matching finds nothing and the caller anchors on
     // the hook's own shell, which exits seconds later. The install directory is
     // what identifies it.
@@ -111,29 +111,29 @@ describe("selectAnchorPid", () => {
   });
 });
 
-describe("harnessPidFromEnv", () => {
+describe("adapterPidFromEnv", () => {
   const saved = process.env.CLAUDE_PID;
   afterEach(() => {
     if (saved === undefined) delete process.env.CLAUDE_PID;
     else process.env.CLAUDE_PID = saved;
   });
 
-  test("reads the harness pid the harness exported", () => {
+  test("reads the adapter pid the adapter exported", () => {
     process.env.CLAUDE_PID = "71258";
-    expect(harnessPidFromEnv()).toBe(71258);
+    expect(adapterPidFromEnv()).toBe(71258);
   });
 
   test("ignores our own pid, which would anchor on the hook shell", () => {
     process.env.CLAUDE_PID = String(process.pid);
-    expect(harnessPidFromEnv()).toBeUndefined();
+    expect(adapterPidFromEnv()).toBeUndefined();
   });
 
   test("ignores unset, empty, non-numeric, and out-of-range values", () => {
     delete process.env.CLAUDE_PID;
-    expect(harnessPidFromEnv()).toBeUndefined();
+    expect(adapterPidFromEnv()).toBeUndefined();
     for (const bad of ["", "  ", "not-a-pid", "0", "1", "-4", "12.5"]) {
       process.env.CLAUDE_PID = bad;
-      expect(harnessPidFromEnv()).toBeUndefined();
+      expect(adapterPidFromEnv()).toBeUndefined();
     }
   });
 });

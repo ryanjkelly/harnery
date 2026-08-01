@@ -329,7 +329,7 @@ function pruneClaimFromPeer(coordRoot: string, instanceId: string, relPath: stri
         event_type: "claim.release",
         instance_id: instanceId,
         session_id: (body.session_id as string | undefined) ?? instanceId,
-        harness: platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code",
+        adapter: platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code",
         source: "agent-coord",
         data: { path: target, reason: "heal" },
         // eslint-disable-next-line @typescript-eslint/consistent-type-assertions

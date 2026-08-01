@@ -40,11 +40,11 @@ describe("context telemetry", () => {
           },
         },
       },
-      { sessionId: "session-a", harness: "claude-code", observedAt: "2026-07-21T00:00:00Z" },
+      { sessionId: "session-a", adapter: "claude-code", observedAt: "2026-07-21T00:00:00Z" },
     );
     expect(sample).toEqual({
       session_id: "session-a",
-      harness: "claude-code",
+      adapter: "claude-code",
       model: "claude-fable-5",
       used_tokens: 400_000,
       window_tokens: 1_000_000,
@@ -59,7 +59,7 @@ describe("context telemetry", () => {
     expect(
       extractContextSample(
         { session_id: "session-a", model: "claude-fable-5" },
-        { sessionId: "session-a", harness: "claude-code" },
+        { sessionId: "session-a", adapter: "claude-code" },
       ),
     ).toBeNull();
   });
@@ -68,7 +68,7 @@ describe("context telemetry", () => {
     const coordRoot = root();
     const sample = extractContextSample(
       { context_window: { context_window_size: 200_000, used_percentage: 50 } },
-      { sessionId: "session-a", harness: "claude-code", observedAt: "2026-07-21T00:00:00Z" },
+      { sessionId: "session-a", adapter: "claude-code", observedAt: "2026-07-21T00:00:00Z" },
     )!;
     expect(recordContextSample(coordRoot, "owner-a", sample).changed).toBe(true);
     expect(
@@ -97,14 +97,14 @@ describe("continuity checkpoints", () => {
     const first = checkpointContext(coordRoot, {
       sessionId: "session-a",
       instanceId: "owner-a",
-      harness: "claude-code",
+      adapter: "claude-code",
       cwd: coordRoot,
       reason: "pre_compact",
     });
     const duplicate = checkpointContext(coordRoot, {
       sessionId: "session-a",
       instanceId: "owner-a",
-      harness: "claude-code",
+      adapter: "claude-code",
       cwd: coordRoot,
       reason: "pre_compact",
     });
@@ -122,7 +122,7 @@ describe("continuity checkpoints", () => {
     const first = checkpointContext(coordRoot, {
       sessionId: "session-a",
       instanceId: "owner-a",
-      harness: "claude-code",
+      adapter: "claude-code",
       cwd: coordRoot,
       reason: "pre_compact",
       continuationNote: "run focused tests next",
@@ -135,7 +135,7 @@ describe("continuity checkpoints", () => {
     const second = checkpointContext(coordRoot, {
       sessionId: "session-a",
       instanceId: "owner-a",
-      harness: "claude-code",
+      adapter: "claude-code",
       cwd: coordRoot,
       reason: "pre_compact",
     });
@@ -182,7 +182,7 @@ describe("continuity checkpoints", () => {
       session: {
         session_id: "session-a",
         instance_id: "owner-a",
-        harness: "claude-code",
+        adapter: "claude-code",
       },
       work: { task: "ship it", files_held: ["src/a.ts"] },
       repo: {

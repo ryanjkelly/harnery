@@ -47,7 +47,7 @@ describe("workflow workspace commands", () => {
     };
 
     await runCommand(
-      ["workflow", "run", script, "--isolation", "worktree", "--workspace-root", host],
+      ["run", script, "--isolation", "worktree", "--workspace-root", host],
       emit,
     );
     const inspection = listWorkflowWorkspaceInspections(repo).find(
@@ -56,18 +56,18 @@ describe("workflow workspace commands", () => {
     expect(inspection?.ok).toBe(true);
     if (!inspection?.ok) throw new Error("isolated workspace inspection missing");
 
-    await runCommand(["workflow", "workspace", inspection.value.run_id], emit);
+    await runCommand(["run", "workspace", inspection.value.run_id], emit);
     expect(output.join("\n")).toContain("verification: ok");
     expect(output.join("\n")).toContain("integration none");
 
-    await runCommand(["workflow", "workspace", inspection.value.run_id, "--json"], emit);
+    await runCommand(["run", "workspace", inspection.value.run_id, "--json"], emit);
     expect(emitted.at(-1)).toMatchObject({
       run_id: inspection.value.run_id,
       selection: "isolated",
       lifecycle: { state: "completed_unintegrated" },
     });
 
-    await runCommand(["workflow", "workspaces"], emit);
+    await runCommand(["run", "workspaces"], emit);
     expect(output.join("\n")).toContain(`${inspection.value.run_id}\tisolated`);
   });
 
@@ -111,7 +111,7 @@ describe("workflow workspace commands", () => {
           };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -138,7 +138,7 @@ describe("workflow workspace commands", () => {
     };
 
     const prepareArgs = [
-      "workflow",
+      "run",
       "integration",
       "prepare",
       report.runId,
@@ -178,8 +178,7 @@ describe("workflow workspace commands", () => {
     output.length = 0;
     await runCommand(
       [
-        "workflow",
-        "approvals",
+        "approval",
         "approve",
         approvalId,
         "--actor",
@@ -204,18 +203,18 @@ describe("workflow workspace commands", () => {
     });
 
     await expect(
-      runCommand(["workflow", "integration", "apply", report.runId], emit),
+      runCommand(["run", "integration", "apply", report.runId], emit),
     ).rejects.toThrow(/pass --yes/);
-    await runCommand(["workflow", "integration", "apply", report.runId, "--yes"], emit);
+    await runCommand(["run", "integration", "apply", report.runId, "--yes"], emit);
     expect(existsSync(join(repo, "result.txt"))).toBe(true);
     expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
       lifecycle: { state: "integrated", integration_state: "applied" },
     });
 
-    await expect(runCommand(["workflow", "cleanup", report.runId], emit)).rejects.toThrow(
+    await expect(runCommand(["run", "cleanup", report.runId], emit)).rejects.toThrow(
       /pass --yes/,
     );
-    await runCommand(["workflow", "cleanup", report.runId, "--yes"], emit);
+    await runCommand(["run", "cleanup", report.runId, "--yes"], emit);
     expect(readWorkflowWorkspaceStatus(repo, report.runId)).toMatchObject({
       lifecycle: { state: "released", resource_state: "released" },
       cleanup: { state: "released" },

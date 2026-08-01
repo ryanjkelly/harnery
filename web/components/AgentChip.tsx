@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { AgentSummary } from "@/lib/agent-summary";
-import { harnessLabel } from "@/lib/harness";
+import { adapterLabel } from "@/lib/adapter";
 import {
   Activity,
   Check,
@@ -348,7 +348,7 @@ function AgentCardBody({
             {summary.kind && <span>{summary.kind}</span>}
             {summary.platform && (
               <span className="text-foreground/90 font-medium">
-                {harnessLabel(summary.platform)}
+                {adapterLabel(summary.platform)}
               </span>
             )}
             {summary.model && <span className="font-mono">{summary.model}</span>}

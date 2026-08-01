@@ -3,7 +3,7 @@
  * subprocess.
  *
  * Contract notes (LIVE-VERIFIED 2026-07-16 against codex-cli 0.144.5: flags
- * present, schema-gated triage + text stages round-trip via `--harness codex`):
+ * present, schema-gated triage + text stages round-trip via `--adapter codex`):
  * - `codex exec "<prompt>"` is the non-interactive mode.
  * - The final assistant message is captured via `--output-last-message <file>`
  *   (a temp file), which is far more drift-tolerant than parsing the
@@ -20,22 +20,22 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exec } from "../../lib/exec.ts";
-import { builtinHarnessProfile, validateHarnessEffort } from "../harnesses/profiles.ts";
-import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
+import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profiles.ts";
+import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
+import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { notFoundError } from "./harnesses.ts";
 import { resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
 
-export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): HarnessInvocation {
-  validateHarnessEffort("codex", req.effort);
+export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): AdapterInvocation {
+  validateAdapterEffort("codex", req.effort);
   if (!resultFile) throw new Error("codex adapter requires a final-message result file");
   // Default stays workspace-write so an unprojected request is unchanged.
   const projection = req.filesystemPolicy
     ? resolveSandboxProjection(
         "codex",
-        builtinHarnessProfile("codex")?.sandboxProjection,
+        builtinAdapterProfile("codex")?.sandboxProjection,
         req.filesystemPolicy,
       )
     : undefined;
@@ -60,7 +60,7 @@ export function buildCodexInvocation(req: SpawnRequest, resultFile?: string): Ha
   return { argv, resultFile };
 }
 
-export function normalizeCodexResult(raw: HarnessRawResult): SpawnResult {
+export function normalizeCodexResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,
@@ -110,7 +110,7 @@ export const codexSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnRes
   );
 
   try {
-    let invocation: HarnessInvocation;
+    let invocation: AdapterInvocation;
     try {
       invocation = buildCodexInvocation(req, outFile);
     } catch (error) {

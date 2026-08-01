@@ -52,8 +52,8 @@ function okSpawn(text: string, extra: Partial<SpawnResult> = {}): SpawnResult {
 // never depend on the machine's real credential files / exported keys.
 const quiet = {
   onLog: () => {},
-  probeBilling: (harness: string) => ({
-    harness,
+  probeBilling: (adapter: string) => ({
+    adapter,
     apiKeySource: null,
     apiKeyPresent: false,
     login: "present" as const,
@@ -529,7 +529,7 @@ describe("runWorkflow", () => {
       specialists: {
         reviewer: {
           instructions: "You are the independent reviewer. Report concrete defects.",
-          harness: "codex",
+          adapter: "codex",
           model: "review-model",
           effort: "high",
           maxTurns: 12,
@@ -567,7 +567,7 @@ describe("runWorkflow", () => {
     const first = await runWorkflow(script, {
       coordRoot: root,
       spawners: { codex: spawner },
-      specialists: { reviewer: { instructions: "Review version one", harness: "codex" } },
+      specialists: { reviewer: { instructions: "Review version one", adapter: "codex" } },
       ...quiet,
     });
     const changed = await runWorkflow(
@@ -578,7 +578,7 @@ describe("runWorkflow", () => {
         coordRoot: root,
         spawners: { codex: spawner },
         resumeFrom: first.runId,
-        specialists: { reviewer: { instructions: "Review version two", harness: "codex" } },
+        specialists: { reviewer: { instructions: "Review version two", adapter: "codex" } },
         ...quiet,
       },
     );
@@ -592,7 +592,7 @@ describe("runWorkflow", () => {
         {
           coordRoot: root,
           spawners: { codex: spawner },
-          specialists: { reviewer: { instructions: "Review", harness: "codex" } },
+          specialists: { reviewer: { instructions: "Review", adapter: "codex" } },
           ...quiet,
         },
       ),
@@ -620,7 +620,7 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/export default/);
   });
 
-  test("per-agent harness routes to the matching spawner; unknown harness fails loud", async () => {
+  test("per-agent adapter routes to the matching spawner; unknown adapter fails loud", async () => {
     const seen: string[] = [];
     const mk =
       (tag: string): Spawner =>
@@ -630,8 +630,8 @@ describe("runWorkflow", () => {
       };
     const script = writeScript(`
       export default async ({ agent }) => {
-        const a = await agent("one");                          // default harness
-        const b = await agent("two", { harness: "codex" });    // explicit route
+        const a = await agent("one");                          // default adapter
+        const b = await agent("two", { adapter: "codex" });    // explicit route
         return [a, b];
       };
     `);
@@ -644,11 +644,11 @@ describe("runWorkflow", () => {
     expect(seen).toEqual(["cc", "cx"]);
 
     const script2 = writeScript(
-      `export default async ({ agent }) => agent("x", { harness: "cursor" });`,
+      `export default async ({ agent }) => agent("x", { adapter: "cursor" });`,
     );
     await expect(
       runWorkflow(script2, { coordRoot: root, spawners: { "claude-code": mk("cc") }, ...quiet }),
-    ).rejects.toThrow(/no spawner registered for harness "cursor"/);
+    ).rejects.toThrow(/no spawner registered for adapter "cursor"/);
   });
 
   test("resume-from reuses transcripted results; only new calls spawn", async () => {
@@ -781,8 +781,8 @@ describe("runWorkflow", () => {
       coordRoot: root,
       cwd: root,
       spawners: { codex: async () => okSpawn("TOP_SECRET_REPLY") },
-      defaultHarness: "codex",
-      harnessEvidence: {
+      defaultAdapter: "codex",
+      adapterEvidence: {
         codex: {
           toolEvidence: {
             support: "unsupported",
@@ -947,7 +947,7 @@ describe("validate", () => {
     expect(parseStageOutput("nope").error).toContain("not valid JSON");
   });
 
-  test("parseStageOutput accepts one leading harness preamble before a JSON container", () => {
+  test("parseStageOutput accepts one leading adapter preamble before a JSON container", () => {
     expect(
       parseStageOutput('I will inspect the files first.{"status":"complete","findings":[]}').value,
     ).toEqual({ status: "complete", findings: [] });
@@ -982,8 +982,8 @@ describe("stop-hook workflow-child exemption", () => {
 });
 
 describe("billing safeguards", () => {
-  const overrideProbe = (harness: string) => ({
-    harness,
+  const overrideProbe = (adapter: string) => ({
+    adapter,
     apiKeySource: "ANTHROPIC_API_KEY",
     apiKeyPresent: true,
     login: "present" as const,
@@ -1014,7 +1014,7 @@ describe("billing safeguards", () => {
       allowApiBilling: true,
     });
     expect(report.result).toBe("hi");
-    expect(report.billing).toEqual([{ harness: "claude-code", mode: "api-key-override" }]);
+    expect(report.billing).toEqual([{ adapter: "claude-code", mode: "api-key-override" }]);
   });
 
   test("subscription-only fails loud when the stored login is provably absent", async () => {
@@ -1026,7 +1026,7 @@ describe("billing safeguards", () => {
         spawners: { "claude-code": spawner },
         ...quiet,
         probeBilling: (h) => ({
-          harness: h,
+          adapter: h,
           apiKeySource: null,
           apiKeyPresent: false,
           login: "absent" as const,
@@ -1053,10 +1053,10 @@ describe("billing safeguards", () => {
     });
     expect(report.result).toBe("hi");
     expect(requests[0]?.subscriptionOnly).toBe(true);
-    expect(report.billing).toEqual([{ harness: "claude-code", mode: "subscription" }]);
+    expect(report.billing).toEqual([{ adapter: "claude-code", mode: "subscription" }]);
   });
 
-  test("probe runs once per harness and lands one billing.probe transcript event", async () => {
+  test("probe runs once per adapter and lands one billing.probe transcript event", async () => {
     let probes = 0;
     const spawner: Spawner = async () => okSpawn("hi");
     const script = writeScript(

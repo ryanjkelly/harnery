@@ -9,7 +9,7 @@
  * the canonical stream. The web image feed (`/images`) groups those events by
  * hash and streams them live over the existing SSE infra.
  *
- * Why this lives at the hook layer: it's the single harness-agnostic chokepoint
+ * Why this lives at the hook layer: it's the single adapter-agnostic chokepoint
  * that sees every tool call across Claude Code / Cursor / Codex with the full
  * `tool_input` (file paths) and `tool_response`. No per-command code needed.
  *
@@ -29,9 +29,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import type { ParsedPayload } from "../adapter/parse.ts";
 import { emit } from "../events/emit.ts";
-import type { Harness } from "../events/schema.ts";
-import type { ParsedPayload } from "../harness/parse.ts";
+import type { Adapter } from "../events/schema.ts";
 
 /** Raster + vector image extensions the feed accepts. PDF is intentionally
  * excluded: book renders aren't an "image feed" and don't thumbnail inline. */
@@ -59,7 +59,7 @@ export interface CaptureContext {
   payload: ParsedPayload | null;
   instanceId: string;
   sessionId: string;
-  harness: Harness;
+  adapter: Adapter;
 }
 
 interface Candidate {
@@ -95,7 +95,7 @@ export function captureImages(coordRoot: string, ctx: CaptureContext): void {
       event_type: "image.captured",
       instance_id: ctx.instanceId,
       session_id: ctx.sessionId,
-      harness: ctx.harness,
+      adapter: ctx.adapter,
       data: {
         hash: captured.hash,
         ext: captured.ext,

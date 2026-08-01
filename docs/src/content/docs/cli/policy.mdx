@@ -21,7 +21,7 @@ silently ignored.
   "name": "release workflow",
   "max_cost_usd": 2.5,
   "unknown_cost": "ask",
-  "allowed_harnesses": ["codex", "claude-code"],
+  "allowed_adapters": ["codex", "claude-code"],
   "allowed_models": ["gpt-5.4", "claude-sonnet-4-6"],
   "allowed_paths": ["../project"],
   "network": "ask",
@@ -47,8 +47,8 @@ in every run.
 | --- | --- |
 | `max_cost_usd` | Compares accumulated run cost plus the host's projected dispatch cost. |
 | `unknown_cost` | `ask` or `deny`; used when a ceiling exists but pricing is unavailable. Defaults to `deny`. |
-| `allowed_harnesses` | Denies an unlisted dispatch harness. Omit for any registered harness. |
-| `allowed_models` | Denies an unlisted or unknown model. Omit to allow the harness default. |
+| `allowed_adapters` | Denies an unlisted dispatch adapter. Omit for any registered adapter. |
+| `allowed_models` | Denies an unlisted or unknown model. Omit to allow the adapter default. |
 | `allowed_paths` | Requires the dispatch working directory or mutation path to be contained by one listed root. |
 | `network` | Verdict applied when network is enabled or unknown. Defaults to `deny`. |
 | `external_actions` | Verdict applied to every `ctx.authorize()` external mutation. Defaults to `deny`. |
@@ -63,7 +63,7 @@ external actions, unknown cost, and the schema defaults shown above.
 The workflow engine owns dispatch, so dispatch policy is authoritative. External
 mutation policy is authoritative when host code calls `ctx.authorize()` before
 the operation. It does not intercept arbitrary tools inside a subprocess
-harness. Use [`harn harness`](./harness/) to inspect each adapter's separate
+adapter. Use [`harn adapter`](./adapter/) to inspect each adapter's separate
 `policyMapping` capability claim.
 
 Every final decision is included in the workflow proof packet. Receipts contain

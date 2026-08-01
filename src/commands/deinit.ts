@@ -2,7 +2,7 @@
  * `harn deinit`: reverse what `harn init` wired into a project.
  *
  * `init` makes two kinds of change outside the harnery package:
- *   1. Merges `agent-hook` entries into the harness settings file
+ *   1. Merges `agent-hook` entries into the adapter settings file
  *      (Claude Code `.claude/settings.json`, Cursor `.cursor/hooks.json`, or
  *      Codex `.codex/hooks.json`).
  *   2. Creates the `.harnery/` coord root (runtime state: events, councils,
@@ -33,12 +33,12 @@ import { createInterface } from "node:readline";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME } from "../core/config.ts";
-import { HARNESS_SPECS, type HarnessId } from "../core/hooks/harness/events.ts";
+import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
 import { removeInstructions } from "../lib/instructions/apply.ts";
 import { type SettingsFile, unwireHooks } from "./init.ts";
 
 interface DeinitOpts {
-  harness: string;
+  adapter: string;
   dryRun?: boolean;
   projectRoot?: string;
   purgeState?: boolean;
@@ -54,20 +54,20 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
   program
     .command("deinit")
     .description(
-      "Reverse `harn init`: remove harnery's hook entries from the harness " +
+      "Reverse `harn init`: remove harnery's hook entries from the adapter " +
         "settings file (keeps any others). Pass --purge-state to also delete the " +
         ".harnery/ coord root (on a terminal it asks first). Idempotent; use " +
         "--dry-run to preview.",
     )
-    .option("--harness <id>", "claude-code | cursor | codex", "claude-code")
+    .option("--adapter <id>", "claude-code | cursor | codex", "claude-code")
     .option("--dry-run", "Show what would change without writing")
     .option("--project-root <path>", "Project root (default: git toplevel, else cwd)")
     .option("--purge-state", "Also delete the .harnery/ coord root (runtime state, destructive)")
     .action(async (opts: DeinitOpts) => {
-      const harness = opts.harness as HarnessId;
-      const spec = HARNESS_SPECS[harness];
+      const adapter = opts.adapter as AdapterId;
+      const spec = ADAPTER_SPECS[adapter];
       if (!spec) {
-        emit.text(`Unknown harness '${opts.harness}'. Expected: claude-code | cursor | codex.`);
+        emit.text(`Unknown adapter '${opts.adapter}'. Expected: claude-code | cursor | codex.`);
         emit.setExitCode(1);
         return;
       }
@@ -92,7 +92,7 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
         purgeState = await confirmDeleteState(coordDir);
       }
 
-      // ── 1. unwire harness hooks ────────────────────────────────────────────
+      // ── 1. unwire adapter hooks ────────────────────────────────────────────
       const settingsPath = resolve(projectRoot, spec.settingsFile);
       if (!existsSync(settingsPath)) {
         actions.push(`· ${rel(projectRoot, settingsPath)} doesn't exist; no hooks to remove`);
@@ -111,7 +111,7 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
         const { removed, remaining } = unwireHooks(settings);
         if (removed === 0) {
           actions.push(`· no harnery hooks found in ${rel(projectRoot, settingsPath)}`);
-        } else if (harnessOnly(settings)) {
+        } else if (adapterOnly(settings)) {
           // Nothing left but what init itself put there (no hooks, at most a
           // version key), so remove the file rather than leave an empty shell.
           if (dryRun) {
@@ -135,7 +135,7 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
       }
 
       // ── 1b. agent-facing instructions block + skills ───────────────────────
-      const removed = removeInstructions(projectRoot, { harness, dryRun });
+      const removed = removeInstructions(projectRoot, { adapter, dryRun });
       actions.push(...removed.actions, ...removed.warnings.map((w) => `! ${w}`));
 
       // ── 2. coord root (opt-in; destructive) ────────────────────────────────
@@ -210,7 +210,7 @@ function confirm(question: string): Promise<boolean> {
 }
 
 /** True when an unwired settings object holds nothing but (optionally) `version`. */
-function harnessOnly(settings: SettingsFile): boolean {
+function adapterOnly(settings: SettingsFile): boolean {
   const keys = Object.keys(settings);
   return keys.length === 0 || (keys.length === 1 && keys[0] === "version");
 }
@@ -224,7 +224,7 @@ function render(
   const head = dryRun ? "harn deinit (dry run): no changes written" : "harn deinit";
   const tail = dryRun
     ? "\nRe-run without --dry-run to apply."
-    : "\nDone. harnery hooks are unwired; restart your harness session to drop them.";
+    : "\nDone. harnery hooks are unwired; restart your adapter session to drop them.";
   const hintBlock = hint ? `\n\n${hint}` : "";
   return `${head}\n  root: ${projectRoot}\n${actions.map((a) => `  ${a}`).join("\n")}${tail}${hintBlock}`;
 }

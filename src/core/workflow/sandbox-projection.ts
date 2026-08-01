@@ -1,5 +1,5 @@
 /**
- * Project the host's filesystem policy into a harness's own vendor sandbox
+ * Project the host's filesystem policy into a adapter's own vendor sandbox
  * (ADR 0039).
  *
  * Harnery decides where a workflow child may write. Until this existed it never
@@ -14,12 +14,12 @@
  * not, which is worse than refusing and worse than never offering the feature.
  */
 
-import type { HarnessSandboxProjection } from "../harnesses/types.ts";
+import type { AdapterSandboxProjection } from "../adapters/types.ts";
 import type { GitAdministrativeGrant, SpawnFilesystemPolicy } from "./types.ts";
 import type { WorkspaceBinding } from "./workspaces/types.ts";
 
 export class SandboxProjectionError extends Error {
-  readonly harness: string;
+  readonly adapter: string;
   readonly reason:
     | "mode_unrepresentable"
     | "writable_roots_unrepresentable"
@@ -27,10 +27,10 @@ export class SandboxProjectionError extends Error {
     | "writable_root_escapes_workspace"
     | "git_grant_unavailable";
 
-  constructor(harness: string, reason: SandboxProjectionError["reason"], message: string) {
+  constructor(adapter: string, reason: SandboxProjectionError["reason"], message: string) {
     super(message);
     this.name = "SandboxProjectionError";
-    this.harness = harness;
+    this.adapter = adapter;
     this.reason = reason;
   }
 }
@@ -46,31 +46,31 @@ export interface ResolvedSandboxProjection {
  * Throws rather than degrading; see the module note.
  */
 export function resolveSandboxProjection(
-  harness: string,
-  declaration: HarnessSandboxProjection | undefined,
+  adapter: string,
+  declaration: AdapterSandboxProjection | undefined,
   policy: SpawnFilesystemPolicy,
 ): ResolvedSandboxProjection {
   if (!declaration) {
     throw new SandboxProjectionError(
-      harness,
+      adapter,
       "no_projection",
-      `${harness} cannot project a filesystem policy into its sandbox; remove the policy or use a harness that can`,
+      `${adapter} cannot project a filesystem policy into its sandbox; remove the policy or use a adapter that can`,
     );
   }
   const nativeMode = declaration.modes[policy.mode];
   if (!nativeMode) {
     throw new SandboxProjectionError(
-      harness,
+      adapter,
       "mode_unrepresentable",
-      `${harness} does not distinguish the "${policy.mode}" filesystem mode, so it cannot be enforced`,
+      `${adapter} does not distinguish the "${policy.mode}" filesystem mode, so it cannot be enforced`,
     );
   }
   const writableRoots = policy.writableRoots ?? [];
   if (writableRoots.length > 0 && !declaration.writableRoots) {
     throw new SandboxProjectionError(
-      harness,
+      adapter,
       "writable_roots_unrepresentable",
-      `${harness} does not accept an explicit writable-root set, so ${writableRoots.length} declared path(s) could not be enforced`,
+      `${adapter} does not accept an explicit writable-root set, so ${writableRoots.length} declared path(s) could not be enforced`,
     );
   }
   for (const root of writableRoots) {
@@ -78,7 +78,7 @@ export function resolveSandboxProjection(
     // resolved differently by every vendor, so they are refused outright.
     if (typeof root !== "string" || !root.startsWith("/")) {
       throw new SandboxProjectionError(
-        harness,
+        adapter,
         "writable_roots_unrepresentable",
         `writable root ${JSON.stringify(root)} must be an absolute path`,
       );
@@ -103,14 +103,14 @@ function isWithin(root: string, candidate: string): boolean {
  * radius of a run that the workspace lifecycle believes it has contained.
  */
 export function assertProjectionWithinWorkspace(
-  harness: string,
+  adapter: string,
   allowedRootRealpath: string,
   writableRoots: readonly string[],
 ): void {
   for (const root of writableRoots) {
     if (!isWithin(allowedRootRealpath, root)) {
       throw new SandboxProjectionError(
-        harness,
+        adapter,
         "writable_root_escapes_workspace",
         `writable root ${JSON.stringify(root)} is outside the workspace root ${JSON.stringify(allowedRootRealpath)} the provider validated`,
       );

@@ -1,28 +1,28 @@
 /**
- * Billing-mode probe: which auth a headless harness child will actually use.
+ * Billing-mode probe: which auth a headless adapter child will actually use.
  *
- * The engine never handles credentials — children are plain harness CLIs and
+ * The engine never handles credentials — children are plain adapter CLIs and
  * authenticate however that CLI does. But the CLIs prefer an exported API key
  * over a stored (subscription) login when both are present, and that override
  * is almost always an accident: a sourced .env or a leftover export silently
  * moves the run from subsidized subscription billing to per-token API billing.
- * This probe classifies the state per harness so the engine can refuse the
+ * This probe classifies the state per adapter so the engine can refuse the
  * silent-override case (see decision 0015 addendum) while leaving deliberate
  * key-only hosts (CI boxes with no login) working.
  *
  * Detection is a heuristic over well-known credential locations; when a
  * location can't prove presence or absence (e.g. Claude Code stores its OAuth
  * token in the macOS keychain, not a file), the state is "unknown" and the
- * engine never hard-fails on it — the harness CLI itself is the final
+ * engine never hard-fails on it — the adapter CLI itself is the final
  * authority and will error loudly if truly unauthenticated.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HarnessName } from "./types.ts";
+import type { AdapterName } from "./types.ts";
 
-/** The env var each harness CLI reads as an API key (preferred over a stored
+/** The env var each adapter CLI reads as an API key (preferred over a stored
  * login when set). Shared with the child-env builder's subscription-only
  * scrub. */
 export const API_KEY_VARS: Record<string, string> = {
@@ -43,7 +43,7 @@ export type BillingMode =
   | "api-key-override";
 
 export interface BillingProbe {
-  harness: HarnessName;
+  adapter: AdapterName;
   /** The env var checked (from API_KEY_VARS), or a note when the key was
    * found in a credential file instead of the environment. */
   apiKeySource: string | null;
@@ -57,19 +57,19 @@ export interface ProbeIo {
   home?: string;
 }
 
-export type BillingProber = (harness: HarnessName) => BillingProbe;
+export type BillingProber = (adapter: AdapterName) => BillingProbe;
 
-export function probeBilling(harness: HarnessName, io: ProbeIo = {}): BillingProbe {
+export function probeBilling(adapter: AdapterName, io: ProbeIo = {}): BillingProbe {
   const env = io.env ?? process.env;
   const home = io.home ?? homedir();
-  const keyVar = API_KEY_VARS[harness];
+  const keyVar = API_KEY_VARS[adapter];
   const envKey = keyVar ? Boolean(env[keyVar]?.trim()) : false;
 
   let login: LoginState;
   let apiKeyPresent = envKey;
   let apiKeySource: string | null = envKey ? keyVar : null;
 
-  switch (harness) {
+  switch (adapter) {
     case "claude-code":
       login = probeClaudeLogin(home);
       break;
@@ -105,7 +105,7 @@ export function probeBilling(harness: HarnessName, io: ProbeIo = {}): BillingPro
         ? "api-key"
         : "subscription";
 
-  return { harness, apiKeySource, apiKeyPresent, login, mode };
+  return { adapter, apiKeySource, apiKeyPresent, login, mode };
 }
 
 /** Claude Code: OAuth login lives at ~/.claude/.credentials.json on Linux;

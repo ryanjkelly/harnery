@@ -3,8 +3,8 @@
  * alongside the legacy stream.
  *
  * Flow:
- *   1. Parse argv → event-name + harness.
- *   2. Read stdin → harness payload (JSON or empty).
+ *   1. Parse argv → event-name + adapter.
+ *   2. Read stdin → adapter payload (JSON or empty).
  *   3. Find coord root (walk up for .harnery/).
  *   4. Resolve instance_id (env → payload → pid-map walk).
  *   5. Map event-name → canonical event_type.
@@ -15,7 +15,7 @@
  * Phase 2 ship criterion: confirms parser correctness across thousands of
  * real events without affecting behavior. Always exits 0. Failures land in
  * `.harnery/debug/agent-hook.errors.ndjson` for audit but never break the
- * harness flow.
+ * adapter flow.
  */
 
 import { spawnSync } from "node:child_process";
@@ -39,6 +39,15 @@ import {
   recordContextSample,
 } from "../context/index.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
+import { detectAdapter } from "./adapter/detect.ts";
+import {
+  extractBashCommand,
+  extractToolDescription,
+  type NormalizedEventType,
+  normalizeEventName,
+  type ParsedPayload,
+  parsePayload,
+} from "./adapter/parse.ts";
 import {
   captureImages,
   detectPresence,
@@ -53,18 +62,9 @@ import {
   soundForEvent,
 } from "./effects/index.ts";
 import { emit } from "./events/emit.ts";
-import type { Harness } from "./events/schema.ts";
+import type { Adapter } from "./events/schema.ts";
 import { canonicalize } from "./guard-path.ts";
-import { detectHarness } from "./harness/detect.ts";
-import {
-  extractBashCommand,
-  extractToolDescription,
-  type NormalizedEventType,
-  normalizeEventName,
-  type ParsedPayload,
-  parsePayload,
-} from "./harness/parse.ts";
-import { harnessPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
+import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
 import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
@@ -79,11 +79,11 @@ function parseArgv(argv: string[]): Argv {
   const out: Argv = { eventName: null, extra: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--harness") {
-      i++; // detectHarness will re-parse; just consume the value here.
+    if (arg === "--adapter") {
+      i++; // detectAdapter will re-parse; just consume the value here.
       continue;
     }
-    if (arg.startsWith("--harness=")) continue;
+    if (arg.startsWith("--adapter=")) continue;
     if (!out.eventName && !arg.startsWith("--")) {
       out.eventName = arg;
     } else {
@@ -150,7 +150,7 @@ function logError(coordRoot: string | null, err: unknown, context: Record<string
 /**
  * Spawn `agent-coord assign-name <owner> <kind>` to mint or recover the
  * hurricane-style name for this owner. Returns null on any failure so
- * session.start emission never breaks the harness flow.
+ * session.start emission never breaks the adapter flow.
  *
  * Lives at agent-hooks side (not agent-coord) to keep emitter/consumer
  * separation: we spawn rather than import.
@@ -202,7 +202,7 @@ function writePidmapViaAgentCoord(
   try {
     writePidmapRow(coordRoot, pid, instanceId, platform);
   } catch {
-    /* never break the harness flow */
+    /* never break the adapter flow */
   }
 }
 
@@ -224,7 +224,7 @@ interface BuildContext {
   coordRoot: string;
   payload: ParsedPayload | null;
   raw: string;
-  harness: Harness;
+  adapter: Adapter;
   instanceId: string;
 }
 
@@ -235,24 +235,24 @@ function buildEventData(
   const p = ctx.payload;
   switch (eventType) {
     case "session.start": {
-      const harnessPlatform =
-        ctx.harness === "claude-code"
+      const adapterPlatform =
+        ctx.adapter === "claude-code"
           ? "claude_code"
-          : ctx.harness === "cursor"
+          : ctx.adapter === "cursor"
             ? "cursor"
             : "codex";
       // Assign (or recover) name + kind via agent-coord. Idempotent: resume
       // returns the original name; new owner consumes a counter slot.
       const assigned = assignNameViaAgentCoord(ctx.coordRoot, ctx.instanceId, "session");
-      // Write the harness pid-map row so `harn agents whoami` ppid-walks find
+      // Write the adapter pid-map row so `harn agents whoami` ppid-walks find
       // this owner. Prefer the payload pid (the actual claude binary), then the
       // anchor walk (the `node` ancestor for Cursor, which has no payload pid),
       // then our own process.ppid. Without the anchor, Cursor anchored on the
       // ephemeral hook bash parent, a PID that dies before the agent's next
       // shell tool call, so the ppid walk found nothing (no_pidmap_entry).
-      const harnessPid = p?.pid ?? findHarnessAnchorPid(ctx.harness) ?? process.ppid;
-      if (harnessPid) {
-        writePidmapViaAgentCoord(ctx.coordRoot, harnessPid, ctx.instanceId, harnessPlatform);
+      const adapterPid = p?.pid ?? findAdapterAnchorPid(ctx.adapter) ?? process.ppid;
+      if (adapterPid) {
+        writePidmapViaAgentCoord(ctx.coordRoot, adapterPid, ctx.instanceId, adapterPlatform);
       }
       return {
         started_at: new Date().toISOString(),
@@ -261,9 +261,9 @@ function buildEventData(
         // supply it). Fall back to the transcript, populated on `resume`, and
         // backfilled later by `turn.stop` for a fresh `startup` session.
         model: p?.model ?? scanTranscriptModel(p?.transcript_path),
-        pid: harnessPid,
+        pid: adapterPid,
         source: p?.source,
-        platform: harnessPlatform,
+        platform: adapterPlatform,
         name: assigned?.name,
         kind: "session",
         agent_id: ctx.instanceId,
@@ -274,7 +274,7 @@ function buildEventData(
           ? {
               workflow_run_id: coordEnv("WORKFLOW_RUN_ID"),
               // Which agent row of that run this session is. The orchestrator
-              // stamps it on the way in, because the harness does not report a
+              // stamps it on the way in, because the adapter does not report a
               // session id until the agent has already finished.
               ...(coordEnv("WORKFLOW_AGENT_ID")
                 ? { workflow_agent_id: coordEnv("WORKFLOW_AGENT_ID") }
@@ -298,7 +298,7 @@ function buildEventData(
 
     case "turn.stop": {
       return {
-        // Backfill the model for harnesses that omit it at session.start
+        // Backfill the model for adapters that omit it at session.start
         // (Claude Code). The transcript is populated with assistant turns by
         // Stop-hook time, so this resolves even for fresh `startup` sessions.
         model: p?.model ?? scanTranscriptModel(p?.transcript_path),
@@ -440,14 +440,14 @@ function numberField(value: unknown): number | undefined {
 
 async function main(): Promise<number> {
   const { eventName, extra } = parseArgv(process.argv.slice(2));
-  const harness = detectHarness(process.argv.slice(2));
+  const adapter = detectAdapter(process.argv.slice(2));
   const raw = await readStdin();
 
   // Kill-switch-INDEPENDENT effects: notification sounds fire BEFORE the
   // HARNERY_AGENT_COORD_OFF gate so audible feedback survives incident-triage
   // bypass: sound playback happens before the kill-switch bailout.
   // Claude-Code-only; stop-failure → error, sub-agent-start → subagent-start.
-  if (harness === "claude-code" && eventName) {
+  if (adapter === "claude-code" && eventName) {
     const s = soundForEvent(eventName);
     if (s) {
       const repoRoot = findCoordRoot(process.cwd());
@@ -479,7 +479,7 @@ async function main(): Promise<number> {
   const debugBase = {
     ts: new Date().toISOString(),
     event_name: eventName,
-    harness,
+    adapter,
     extra_argv: extra,
     payload_bytes: raw.length,
     cwd: process.cwd(),
@@ -487,8 +487,8 @@ async function main(): Promise<number> {
     ppid: process.ppid,
   };
 
-  if (!eventName || !harness) {
-    appendDebug(coordRoot, { ...debugBase, skipped: "missing-event-or-harness" });
+  if (!eventName || !adapter) {
+    appendDebug(coordRoot, { ...debugBase, skipped: "missing-event-or-adapter" });
     return 0;
   }
 
@@ -498,7 +498,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const payload = parsePayload(raw, harness);
+  const payload = parsePayload(raw, adapter);
   const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
   if (!owner) {
     appendDebug(coordRoot, {
@@ -515,7 +515,7 @@ async function main(): Promise<number> {
     coordRoot,
     payload,
     raw,
-    harness,
+    adapter,
     instanceId: owner.instance_id,
   });
 
@@ -526,7 +526,7 @@ async function main(): Promise<number> {
     parent_session_id: payload?.parent_session_id,
     turn_id: payload?.turn_id,
     parent_turn_id: payload?.parent_turn_id,
-    harness,
+    adapter,
     data,
     // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
   } as Parameters<typeof emit>[1]);
@@ -539,13 +539,13 @@ async function main(): Promise<number> {
   });
 
   // Context telemetry is opportunistic and truthful: only persist a sample
-  // when the harness payload actually exposes usage/window data. Identical
+  // when the adapter payload actually exposes usage/window data. Identical
   // measurements are de-duplicated before they reach the canonical stream.
   if (payload?.raw) {
     try {
       const sample = extractContextSample(payload.raw, {
         sessionId,
-        harness,
+        adapter,
         model: payload.model,
         source: "hook",
         confidence: "reported",
@@ -557,7 +557,7 @@ async function main(): Promise<number> {
             event_type: "context.sampled",
             instance_id: owner.instance_id,
             session_id: sessionId,
-            harness,
+            adapter,
             data: {
               model: sample.model,
               used_tokens: sample.used_tokens,
@@ -576,13 +576,13 @@ async function main(): Promise<number> {
 
   // A native pre-compaction signal is the safest available point to capture
   // external work state. The operation is idempotent until recovery, so a
-  // harness retry cannot create a storm of near-identical capsules.
+  // adapter retry cannot create a storm of near-identical capsules.
   if (norm.event_type === "context.compaction.started") {
     try {
       const checkpoint = checkpointContext(coordRoot, {
         sessionId,
         instanceId: owner.instance_id,
-        harness,
+        adapter,
         cwd: payload?.cwd ?? process.cwd(),
         reason: "pre_compact",
         model: payload?.model,
@@ -591,7 +591,7 @@ async function main(): Promise<number> {
         event_type: "context.checkpoint.created",
         instance_id: owner.instance_id,
         session_id: sessionId,
-        harness,
+        adapter,
         data: {
           capsule_id: checkpoint.capsule.capsule_id,
           generation: checkpoint.capsule.generation,
@@ -617,16 +617,16 @@ async function main(): Promise<number> {
   }
 
   // Phase 8: SessionStart post-emit: project the event so the heartbeat
-  // lands synchronously, run stale-sweep, and emit the harness-shaped
+  // lands synchronously, run stale-sweep, and emit the adapter-shaped
   // systemMessage JSON (peer table + wiring check + council invites).
-  // Harness-agnostic since v0.5.0; replaces the previous bash UX layer
-  // and the equivalent per-harness bash session_start handlers.
+  // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
+  // and the equivalent per-adapter bash session_start handlers.
   if (norm.event_type === "session.start") {
     // Effect (claude-code): prune stale journal archives + sweep orphans.
     // The recovery-cue is merged into the
     // session-start additionalContext inside emitSessionStartSystemMessage.
-    if (harness === "claude-code") journalJanitor(coordRoot);
-    // Image-feed retention sweep (size + age cap on .harnery/images/). Harness-
+    if (adapter === "claude-code") journalJanitor(coordRoot);
+    // Image-feed retention sweep (size + age cap on .harnery/images/). Adapter-
     // agnostic, cheap (one readdir), fail-soft. Paired with journalJanitor as a
     // session-start "tidy the coord layer" step.
     try {
@@ -641,7 +641,7 @@ async function main(): Promise<number> {
           event_type: "context.compaction.completed",
           instance_id: owner.instance_id,
           session_id: sessionId,
-          harness,
+          adapter,
           data: { trigger: "auto" },
         });
         markContextCompactionCompleted(coordRoot, {
@@ -663,7 +663,7 @@ async function main(): Promise<number> {
         owner.instance_id,
         sessionId,
         data,
-        harness,
+        adapter,
         recovery?.briefing ?? "",
       );
       if (injected && recovery) {
@@ -671,7 +671,7 @@ async function main(): Promise<number> {
           coordRoot,
           owner.instance_id,
           sessionId,
-          harness,
+          adapter,
           recovery,
           "SessionStart",
         );
@@ -691,7 +691,7 @@ async function main(): Promise<number> {
     }
   }
 
-  // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Harness-
+  // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Adapter-
   // agnostic since v0.5.0.
   if (norm.event_type === "session.end") {
     try {
@@ -701,7 +701,7 @@ async function main(): Promise<number> {
     }
     // Effects (claude-code): archive the ending agent's journal + force a
     // session-telemetry sync (via HARNERY_CLAUDE_SESSIONS_FORCE=1).
-    if (harness === "claude-code") {
+    if (adapter === "claude-code") {
       journalArchive(coordRoot, owner.instance_id);
       runSessionSyncExtension(coordRoot, true);
     }
@@ -730,14 +730,14 @@ async function main(): Promise<number> {
           agentCoordBin,
           [
             "log",
-            `SUBAGENT_START  agent_type=${(data.agent_type as string) ?? "unknown"} agent_id=${owner.instance_id.slice(0, 8)} platform=${harnessPlatform(harness)}`,
+            `SUBAGENT_START  agent_type=${(data.agent_type as string) ?? "unknown"} agent_id=${owner.instance_id.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
             "--instance",
             owner.instance_id,
           ],
           { encoding: "utf8", timeout: 2000, env: childEnv(coordRoot) },
         );
       }
-      emitSubagentStartContext(coordRoot, owner.instance_id, sessionId, data, harness);
+      emitSubagentStartContext(coordRoot, owner.instance_id, sessionId, data, adapter);
     } catch (err) {
       logError(coordRoot, err, { phase: "subagent-start-project" });
     }
@@ -753,7 +753,7 @@ async function main(): Promise<number> {
           agentCoordBin,
           [
             "log",
-            `SUBAGENT_STOP   agent_id=${owner.instance_id.slice(0, 8)} platform=${harnessPlatform(harness)}`,
+            `SUBAGENT_STOP   agent_id=${owner.instance_id.slice(0, 8)} platform=${adapterPlatform(adapter)}`,
             "--instance",
             owner.instance_id,
           ],
@@ -766,11 +766,11 @@ async function main(): Promise<number> {
   }
 
   // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
-  // and emit the harness-shaped systemMessage JSON. Harness-agnostic since v0.5.0.
+  // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
   if (norm.event_type === "user_prompt.submit") {
     // Effects (claude-code): reset per-turn sound rate-limit counters + run
     // presence detection on the prompt.
-    if (harness === "claude-code") {
+    if (adapter === "claude-code") {
       resetSoundCounters(sessionId);
       const prompt = (payload?.raw?.prompt as string | undefined) ?? "";
       if (prompt) detectPresence(prompt);
@@ -803,7 +803,7 @@ async function main(): Promise<number> {
         coordRoot,
         owner.instance_id,
         sessionId,
-        harness,
+        adapter,
         recovery?.briefing ?? "",
       );
       if (injected && recovery) {
@@ -811,7 +811,7 @@ async function main(): Promise<number> {
           coordRoot,
           owner.instance_id,
           sessionId,
-          harness,
+          adapter,
           recovery,
           "UserPromptSubmit",
         );
@@ -822,7 +822,7 @@ async function main(): Promise<number> {
   }
 
   // turn.stop: telemetry + turn-summary effects, then the stop verdict. The
-  // verdict + codex-replay previously lived in the per-harness shell adapters;
+  // verdict + codex-replay previously lived in the per-adapter shell adapters;
   // agent-hook owns them now. Runs on the normal "stop" event only;
   // "stop-failure" (API error) gets no gate, matching the previous
   // stop vs stop-failure split.
@@ -831,7 +831,7 @@ async function main(): Promise<number> {
     // the status_checked / task_set / status_box_present evidence (codex
     // doesn't emit those live; this re-emits turn.stop after agent-hook's own,
     // so the verdict reads the replay's box signal as the latest).
-    if (harness === "codex" && payload?.transcript_path && existsSync(payload.transcript_path)) {
+    if (adapter === "codex" && payload?.transcript_path && existsSync(payload.transcript_path)) {
       try {
         replayCodexJsonl({
           coordRoot,
@@ -847,7 +847,7 @@ async function main(): Promise<number> {
 
     // CC effects: rate-limited session-telemetry sync + turn-summary Haiku
     // auto-summary.
-    if (harness === "claude-code") {
+    if (adapter === "claude-code") {
       runSessionSyncExtension(coordRoot, false);
       runTurnSummary(coordRoot, owner.instance_id, sessionId, payload?.transcript_path);
     }
@@ -855,7 +855,7 @@ async function main(): Promise<number> {
     // Master-state heartbeat projection. Drains events.ndjson since the last
     // cursor → per-owner heartbeats. Was a SECOND binary (`agent-coord project`)
     // pinned to Claude Code Stop only; folded in here so it (a) is one
-    // entry per event like everything else and (b) fires on EVERY harness's stop,
+    // entry per event like everything else and (b) fires on EVERY adapter's stop,
     // not just CC. Runs unconditionally before the verdict's possible exit-2 return
     // (the events are real regardless of whether the agent gets nagged), and after
     // codex-replay above so codex's replayed events are included in the drain.
@@ -886,22 +886,22 @@ async function main(): Promise<number> {
       rule: "stop-hook",
       instance_id: owner.instance_id,
       session_id: sessionId,
-      harness,
+      adapter,
       bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
     if (!verdict.allow) {
-      // Harness-aware enforcement channel: Claude Code / Codex honor exit-2 +
+      // Adapter-aware enforcement channel: Claude Code / Codex honor exit-2 +
       // stderr as a turn block; Cursor ignores exit codes (fail-open) and
       // re-prompts only via a `followup_message` it auto-submits. emitStopBlock
       // writes the right shape and returns the exit code to use.
-      const { emitStopBlock } = await import("./harness/output.ts");
-      return emitStopBlock(harness, verdict);
+      const { emitStopBlock } = await import("./adapter/output.ts");
+      return emitStopBlock(adapter, verdict);
     }
   }
 
   // Phase 7: PreToolUse: heartbeat + pid-map self-heal on every tool call.
-  // Harness-agnostic: both writes have the same shape regardless of who fired.
+  // Adapter-agnostic: both writes have the same shape regardless of who fired.
   // Cursor/Codex bash dispatchers still fire their own G-guard logic, but the
   // heals here keep the agent-coord layer's view of liveness fresh.
   //
@@ -911,8 +911,8 @@ async function main(): Promise<number> {
   // call was restored here afterward.
   if (norm.event_type === "tool.pre_use") {
     try {
-      healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, harness);
-      refreshPidmap(coordRoot, owner.instance_id, harness, payload?.pid);
+      healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, adapter);
+      refreshPidmap(coordRoot, owner.instance_id, adapter, payload?.pid);
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-heal" });
     }
@@ -926,29 +926,29 @@ async function main(): Promise<number> {
         payload,
         instanceId: owner.instance_id,
         sessionId,
-        harness,
+        adapter,
       });
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-image-capture" });
     }
 
-    // G-guard for ALL harnesses. Claude Code previously ran this via a
+    // G-guard for ALL adapters. Claude Code previously ran this via a
     // pre-tool-use bash adapter (which called `agent-coord verdict --rule=claim`);
-    // that adapter is now deleted, so agent-hook owns the deny for every harness.
-    // emitDeny() inside emits the harness-shaped permission JSON (claude-code +
+    // that adapter is now deleted, so agent-hook owns the deny for every adapter.
+    // emitDeny() inside emits the adapter-shaped permission JSON (claude-code +
     // codex use hookSpecificOutput.permissionDecision; cursor uses .permission).
     // apply_patch (codex) parses paths from the patch body and runs verdict
     // per-path; Edit/Write/NotebookEdit resolve a single target. Non-write tools
     // (incl. Agent) yield no targets and pass through with no deny.
     try {
-      await runPreToolUseGuard(coordRoot, owner.instance_id, sessionId, data, harness);
+      await runPreToolUseGuard(coordRoot, owner.instance_id, sessionId, data, adapter);
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-guard" });
     }
 
     // Shell-mutation warn (warn-only, never blocks). Was the cursor
     // beforeShellExecution + codex preToolUse-Bash shell-mutation-claim-log in
-    // the per-harness shell adapters. Cursor sends the command at payload.command;
+    // the per-adapter shell adapters. Cursor sends the command at payload.command;
     // codex Bash at tool_input.command. Emits a decision.warn per candidate-mutated
     // path so a peer sees the write in events.ndjson. (CC never did this,
     // preserved; it emits with its own hooks-side emitter per the
@@ -956,7 +956,7 @@ async function main(): Promise<number> {
     const shellCmd =
       eventName === "before-shell-execution"
         ? ((payload?.raw.command as string | undefined) ?? "")
-        : harness === "codex" && data.tool_name === "Bash"
+        : adapter === "codex" && data.tool_name === "Bash"
           ? (((payload?.raw.tool_input as Record<string, unknown> | undefined)?.command as
               | string
               | undefined) ?? "")
@@ -965,13 +965,13 @@ async function main(): Promise<number> {
       try {
         const paths = shellMutationPaths(shellCmd, coordRoot);
         const truncated = shellCmd.length > 80 ? shellCmd.slice(0, 80) : shellCmd;
-        const platform = harnessPlatform(harness);
+        const platform = adapterPlatform(adapter);
         for (const p of paths) {
           emit(coordRoot, {
             event_type: "decision.warn",
             instance_id: owner.instance_id,
             session_id: sessionId,
-            harness,
+            adapter,
             data: {
               rule: "shell_mutation_candidate",
               reason: `path=${p} cmd=${truncated} platform=${platform}`,
@@ -986,7 +986,7 @@ async function main(): Promise<number> {
   }
 
   // Phase 7: PostToolUse: stamp last_tool + last_tool_target on heartbeat.
-  // Harness-agnostic for the same reason as tool.pre_use above.
+  // Adapter-agnostic for the same reason as tool.pre_use above.
   if (norm.event_type === "tool.post_use") {
     try {
       stampToolActivity(coordRoot, owner.instance_id, data);
@@ -1004,7 +1004,7 @@ async function main(): Promise<number> {
         payload,
         instanceId: owner.instance_id,
         sessionId,
-        harness,
+        adapter,
       });
     } catch (err) {
       logError(coordRoot, err, { phase: "post-tool-use-image-capture" });
@@ -1012,7 +1012,7 @@ async function main(): Promise<number> {
   }
 
   // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
-  // never landed; the claim is stale). Harness-agnostic.
+  // never landed; the claim is stale). Adapter-agnostic.
   if (norm.event_type === "tool.post_use_failure") {
     try {
       releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
@@ -1029,7 +1029,7 @@ async function runPreToolUseGuard(
   instanceId: string,
   sessionId: string,
   data: Record<string, unknown>,
-  harness: Harness,
+  adapter: Adapter,
 ): Promise<void> {
   const toolName = (data.tool_name as string | undefined) ?? "";
   const targets = collectGuardTargets(toolName, data)
@@ -1073,8 +1073,8 @@ async function runPreToolUseGuard(
           reason += ` The patch also touched: ${siblings}: pick a different file or wait.`;
         }
       }
-      const { emitDeny } = await import("./harness/output.ts");
-      emitDeny(harness, reason);
+      const { emitDeny } = await import("./adapter/output.ts");
+      emitDeny(adapter, reason);
       return;
     }
   }
@@ -1140,15 +1140,15 @@ function healHeartbeatViaCli(
   coordRoot: string,
   instanceId: string,
   sessionId: string,
-  harness: string,
+  adapter: string,
 ): void {
   const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
   if (!existsSync(agentCoordBin)) return;
-  // Pass the detected harness so a pruned Cursor/Codex heartbeat is recreated
+  // Pass the detected adapter so a pruned Cursor/Codex heartbeat is recreated
   // with the correct platform; without it, healHeartbeat defaults to
   // claude_code and the dashboard mislabels the agent. See
   // heartbeat-writer.healHeartbeat.
-  spawnSync(agentCoordBin, ["heal-heartbeat", instanceId, sessionId, `--harness=${harness}`], {
+  spawnSync(agentCoordBin, ["heal-heartbeat", instanceId, sessionId, `--adapter=${adapter}`], {
     encoding: "utf8",
     timeout: 2000,
     env: childEnv(coordRoot),
@@ -1156,32 +1156,32 @@ function healHeartbeatViaCli(
 }
 
 /**
- * Walk up the ppid chain on Linux/WSL looking for the harness anchor PID,
+ * Walk up the ppid chain on Linux/WSL looking for the adapter anchor PID,
  * the PID of the claude / cursor / codex binary. Finds the agent PID. Used by
- * `tool.pre_use`'s pid-map self-heal so a re-parented harness binary (the
+ * `tool.pre_use`'s pid-map self-heal so a re-parented adapter binary (the
  * VS Code 2.1.x sibling-claude spawn case) gets its pid-map row rewritten on
  * the next tool call rather than going invisible until SessionStart fires
  * again, which it may never do.
  *
  * Returns undefined only when no anchor is found; callers fall back to
- * `process.ppid` (the bash wrapper's parent, which is usually the harness binary
+ * `process.ppid` (the bash wrapper's parent, which is usually the adapter binary
  * itself). `HARNERY_AGENT_COORD_TEST_ANCHOR_PID` overrides everything so the
  * test sandbox can pin a deterministic PID.
  */
-function findHarnessAnchorPid(harness?: Harness): number | undefined {
+function findAdapterAnchorPid(adapter?: Adapter): number | undefined {
   const override = coordEnv("AGENT_COORD_TEST_ANCHOR_PID");
   if (override) {
     const n = Number(override);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  // A harness that states its own pid ends the search. Nothing inferred from the
-  // process tree beats the harness naming itself, and the inference is the part
+  // A adapter that states its own pid ends the search. Nothing inferred from the
+  // process tree beats the adapter naming itself, and the inference is the part
   // that has been failing: comm matching wants a binary called after its
-  // harness, and one Claude Code build ships its CLI under a version-numbered
+  // adapter, and one Claude Code build ships its CLI under a version-numbered
   // filename, so the walk found nothing and the caller fell back to the hook's
   // own shell. That row was dead within seconds, leaving every session in this
   // environment unattributed.
-  const fromEnv = harnessPidFromEnv();
+  const fromEnv = adapterPidFromEnv();
   if (fromEnv) return fromEnv;
   // Build the ppid chain (nearest → root, up to 20 hops), then hand it to the
   // pure selector. Linux/WSL reads /proc; macOS/BSD (no /proc) falls back to
@@ -1192,7 +1192,7 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
   // Only the /proc branch carries an executable path for the selector's
   // path-based pass. Asking `ps` for one means either a second spawn per hop or
   // splitting `comm` from `args` on a line where comm may itself contain spaces,
-  // and the harness that needs the path pass states its pid in the env anyway.
+  // and the adapter that needs the path pass states its pid in the env anyway.
   const chain: Array<{ pid: number; comm: string; exe?: string }> = [];
   let pid = process.pid;
   for (let hops = 0; hops < 20; hops++) {
@@ -1221,7 +1221,7 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
     if (!Number.isFinite(hop.ppid) || hop.ppid === 0 || hop.ppid === 1) break;
     pid = hop.ppid;
   }
-  return selectAnchorPid(chain, harness);
+  return selectAnchorPid(chain, adapter);
 }
 
 /**
@@ -1231,7 +1231,7 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
  *
  * The pid argument prefers the payload's `pid` (CC populates it on
  * SessionStart and may also send it on PreToolUse), then
- * `findHarnessAnchorPid`, then `process.ppid`. Writes go through the same
+ * `findAdapterAnchorPid`, then `process.ppid`. Writes go through the same
  * idempotent `writePidmapViaAgentCoord` helper that SessionStart uses: no
  * disk I/O on no-op heals (when the row already points at us).
  *
@@ -1242,12 +1242,12 @@ function findHarnessAnchorPid(harness?: Harness): number | undefined {
 function refreshPidmap(
   coordRoot: string,
   instanceId: string,
-  harness: Harness,
+  adapter: Adapter,
   payloadPid?: number,
 ): void {
-  const pid = payloadPid ?? findHarnessAnchorPid(harness) ?? process.ppid;
+  const pid = payloadPid ?? findAdapterAnchorPid(adapter) ?? process.ppid;
   if (!Number.isFinite(pid) || pid <= 0) return;
-  writePidmapViaAgentCoord(coordRoot, pid, instanceId, harnessPlatform(harness));
+  writePidmapViaAgentCoord(coordRoot, pid, instanceId, adapterPlatform(adapter));
 }
 
 function stampToolActivity(
@@ -1382,7 +1382,7 @@ async function emitUserPromptSubmitSystemMessage(
   coordRoot: string,
   instanceId: string,
   sessionId: string,
-  harness: Harness,
+  adapter: Adapter,
   recoveryBriefing = "",
 ): Promise<boolean> {
   const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
@@ -1404,14 +1404,14 @@ async function emitUserPromptSubmitSystemMessage(
 
     const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
     if (agentName) args.push("--name", agentName);
-    // Every human-facing harness gets the first-session naming reminder from
+    // Every human-facing adapter gets the first-session naming reminder from
     // the shared hook path. Cursor + Codex additionally get ongoing set-task
     // staleness nudges; Claude Code enforces those via its Stop transcript.
     // Codex gets a fresh status-footer reminder on every prompt. Its Stop hook
     // stays observe-only, so missing the footer never replaces the answer.
     args.push("--session-name-nudge");
-    if (harness === "cursor" || harness === "codex") args.push("--task-nudge");
-    if (harness === "codex") args.push("--status-footer-nudge");
+    if (adapter === "cursor" || adapter === "codex") args.push("--task-nudge");
+    if (adapter === "codex") args.push("--status-footer-nudge");
     const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
     if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }
@@ -1420,8 +1420,8 @@ async function emitUserPromptSubmitSystemMessage(
   }
   if (!additionalContext) return false;
 
-  const { emitContext } = await import("./harness/output.ts");
-  emitContext(harness, "UserPromptSubmit", additionalContext);
+  const { emitContext } = await import("./adapter/output.ts");
+  emitContext(adapter, "UserPromptSubmit", additionalContext);
   return true;
 }
 
@@ -1430,14 +1430,14 @@ function emitSubagentStartContext(
   instanceId: string,
   sessionId: string,
   data: Record<string, unknown>,
-  harness: Harness,
+  adapter: Adapter,
 ): void {
   // Look up the subagent's assigned name (just-written by agent-coord assignName
   // in session.start data) + the parent's short id for the "you are a subagent
   // of X" framing.
   const subagentName = (data.name as string | undefined) ?? "";
   if (!subagentName) return;
-  const platformLabel = harnessPlatform(harness);
+  const platformLabel = adapterPlatform(adapter);
   const parentShort =
     sessionId && sessionId !== instanceId ? `agent-${sessionId.slice(0, 8)}` : "the parent session";
   const message = `You are agent-${subagentName} (${platformLabel} subagent). You're a subagent of ${parentShort}.`;
@@ -1459,14 +1459,14 @@ function emitSubagentStartContext(
 
   // Use SubagentStart event-name in CC's hookSpecificOutput shape; cursor's
   // flat `additional_context` works the same way.
-  void import("./harness/output.ts").then(({ emitContext }) => {
-    emitContext(harness, "SubagentStart", combined);
+  void import("./adapter/output.ts").then(({ emitContext }) => {
+    emitContext(adapter, "SubagentStart", combined);
   });
 }
 
-function harnessPlatform(harness: Harness): string {
-  if (harness === "claude-code") return "claude_code";
-  return harness;
+function adapterPlatform(adapter: Adapter): string {
+  if (adapter === "claude-code") return "claude_code";
+  return adapter;
 }
 
 async function emitSessionStartSystemMessage(
@@ -1474,7 +1474,7 @@ async function emitSessionStartSystemMessage(
   instanceId: string,
   sessionId: string,
   emittedData: Record<string, unknown>,
-  harness: Harness,
+  adapter: Adapter,
   recoveryBriefing = "",
 ): Promise<boolean> {
   const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
@@ -1486,10 +1486,10 @@ async function emitSessionStartSystemMessage(
     // Stale-sweep dead peers before rendering peer table.
     spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
 
-    // SESSION_START activity log line, fired across all harnesses.
+    // SESSION_START activity log line, fired across all adapters.
     const model = (emittedData.model as string | undefined) ?? "unknown";
     const source = (emittedData.source as string | undefined) ?? "startup";
-    const platform = harnessPlatform(harness);
+    const platform = adapterPlatform(adapter);
     spawnSync(
       agentCoordBin,
       [
@@ -1508,7 +1508,7 @@ async function emitSessionStartSystemMessage(
     // The "You are agent-X." prefix in session-context renders unqualified by
     // default (claude-code-style). For cursor/codex the bash dispatchers add
     // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
-    if (harness !== "claude-code") {
+    if (adapter !== "claude-code") {
       args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
     }
     const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
@@ -1519,7 +1519,7 @@ async function emitSessionStartSystemMessage(
   // context. Was a standalone additionalContext emission from the previous
   // journal-on-start adapter; now that agent-hook is the single SessionStart
   // entry, it folds in here.
-  if (harness === "claude-code") {
+  if (adapter === "claude-code") {
     const cue = journalRecoveryCue(coordRoot);
     if (cue) additionalContext = [additionalContext, cue].filter(Boolean).join("\n\n");
   }
@@ -1528,8 +1528,8 @@ async function emitSessionStartSystemMessage(
   }
   if (!additionalContext) return false;
 
-  const { emitContext } = await import("./harness/output.ts");
-  emitContext(harness, "SessionStart", additionalContext);
+  const { emitContext } = await import("./adapter/output.ts");
+  emitContext(adapter, "SessionStart", additionalContext);
   return true;
 }
 
@@ -1537,7 +1537,7 @@ function completeRecoveryInjection(
   coordRoot: string,
   instanceId: string,
   sessionId: string,
-  harness: Harness,
+  adapter: Adapter,
   recovery: PreparedContextRecovery,
   injectionEvent: "SessionStart" | "UserPromptSubmit",
 ): void {
@@ -1546,7 +1546,7 @@ function completeRecoveryInjection(
     event_type: "context.recovery.injected",
     instance_id: instanceId,
     session_id: sessionId,
-    harness,
+    adapter,
     data: {
       capsule_id: recovery.capsule.capsule_id,
       generation: recovery.capsule.generation,

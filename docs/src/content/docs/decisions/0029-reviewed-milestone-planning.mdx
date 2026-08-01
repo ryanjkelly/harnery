@@ -22,7 +22,7 @@ guarantees. Letting reviewer approval directly execute work would collapse the
 existing distinction between evidence and authority.
 
 The workflow engine also has a related contract gap. A stage may declare a
-schema that Harnery validates, but the child harness is not shown that schema.
+schema that Harnery validates, but the child adapter is not shown that schema.
 Simple stages often infer the expected shape from prose; larger planner
 responses can repeatedly omit required fields without ever seeing the complete
 output contract.
@@ -130,19 +130,19 @@ attempt; it cannot invent approval or duplicate executable work.
 - Every configured reviewer is required. A missing or malformed verdict fails
   closed rather than shrinking the panel at runtime.
 - Reviewer approval establishes contract-compliant evidence, not strategic
-  correctness. Quality still depends on specialist instructions and harness
+  correctness. Quality still depends on specialist instructions and adapter
   behavior.
 - Existing work IDs and newly proposed keys occupy different namespaces. Any
   model-authored finding that requires `proposal.root` to equal `active_root`
   contradicts the frozen plan contract.
 - Agent counts are hard-bounded and reported costs remain truthful where a
-  harness supplies them. Harnery does not claim a universal token budget for
-  subscription harnesses that do not expose one.
+  adapter supplies them. Harnery does not claim a universal token budget for
+  subscription adapters that do not expose one.
 - Completed durable boundaries are recoverable, but Harnery cannot make an
   arbitrary in-flight provider request exactly-once after process death.
 - Review receipts contain bounded structured findings, not hidden project
   memory or full conversation history.
-- A harness may add a short leading sentence even after receiving the explicit
+- A adapter may add a short leading sentence even after receiving the explicit
   JSON-only contract. Harnery accepts that drift only when the reply contains
   exactly one unambiguous top-level object or array and the value reaches the
   end of the reply. Trailing prose, multiple candidates, malformed values, and

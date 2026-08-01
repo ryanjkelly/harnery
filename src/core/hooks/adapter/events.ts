@@ -1,47 +1,47 @@
 /**
- * Canonical hook-wiring spec per harness: which settings file to write, which
- * event key maps to which `agent-hook <subcommand>`, and how each harness encodes
+ * Canonical hook-wiring spec per adapter: which settings file to write, which
+ * event key maps to which `agent-hook <subcommand>`, and how each adapter encodes
  * a command hook. Single source of truth for `harn init` (and any future docs /
  * installers) so the wired set can't drift from what agent-hook actually handles.
  *
  * The event lists + entry shapes mirror exactly what a fully-wired project uses
- * for each harness (Claude Code `.claude/settings.json`, Cursor `.cursor/hooks.json`,
+ * for each adapter (Claude Code `.claude/settings.json`, Cursor `.cursor/hooks.json`,
  * Codex `.codex/hooks.json`).
  */
 
-export type HarnessId = "claude-code" | "cursor" | "codex";
+export type AdapterId = "claude-code" | "cursor" | "codex";
 
 export interface HookEvent {
-  /** Key under the harness settings file's `hooks` map (e.g. `SessionStart`, `preToolUse`). */
+  /** Key under the adapter settings file's `hooks` map (e.g. `SessionStart`, `preToolUse`). */
   settingsKey: string;
   /** agent-hook subcommand to invoke for this event. */
   subcommand: string;
 }
 
 /**
- * How a harness encodes a single command hook under `hooks.<settingsKey>`:
+ * How a adapter encodes a single command hook under `hooks.<settingsKey>`:
  * - `claude`: `[{ hooks: [{ type: "command", command }] }]` (Claude Code + Codex)
  * - `cursor`: `[{ command }]` (Cursor: flat entry, no inner `hooks` array)
  */
 export type HookEntryShape = "claude" | "cursor";
 
-export interface HarnessSpec {
+export interface AdapterSpec {
   /** Settings file to wire, relative to the project root. */
   settingsFile: string;
-  /** Events this harness fires, mapped to agent-hook subcommands. */
+  /** Events this adapter fires, mapped to agent-hook subcommands. */
   events: HookEvent[];
   /** Per-entry encoding under the root `hooks` object. */
   entryShape: HookEntryShape;
   /** When set, ensure this top-level `version` key in the file (Cursor requires `1`). */
   rootVersion?: number;
-  /** Harness-owned entries from older specs that `init` should remove during migration. */
+  /** Adapter-owned entries from older specs that `init` should remove during migration. */
   legacyEvents?: HookEvent[];
-  /** Strict top-level settings keys accepted by this harness, when its parser is closed. */
+  /** Strict top-level settings keys accepted by this adapter, when its parser is closed. */
   allowedTopLevelKeys?: string[];
-  /** Strict hook event keys accepted by this harness, including events harnery does not wire. */
+  /** Strict hook event keys accepted by this adapter, including events harnery does not wire. */
   allowedEventKeys?: string[];
   /**
-   * Env var the harness exports to hook processes carrying the project root
+   * Env var the adapter exports to hook processes carrying the project root
    * (e.g. Claude Code's CLAUDE_PROJECT_DIR). When set, `init` anchors the
    * agent-hook path on it so the hook still spawns when the process cwd has
    * wandered (the session shell `cd`ing into a subdirectory or off-repo).
@@ -115,8 +115,8 @@ export const CODEX_ALLOWED_EVENT_KEYS = [
   "Stop",
 ];
 
-/** Every supported harness, fully wireable by `harn init`. */
-export const HARNESS_SPECS: Record<HarnessId, HarnessSpec> = {
+/** Every supported adapter, fully wireable by `harn init`. */
+export const ADAPTER_SPECS: Record<AdapterId, AdapterSpec> = {
   "claude-code": {
     settingsFile: ".claude/settings.json",
     events: CLAUDE_CODE_EVENTS,

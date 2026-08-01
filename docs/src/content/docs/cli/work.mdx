@@ -51,13 +51,13 @@ item becomes ready. Dependencies are immutable in the first schema.
 ## Run, park, and retry
 
 ```bash
-harn work run <work-id> --harness codex --subscription-only
+harn work run <work-id> --adapter codex --subscription-only
 harn work retry <work-id>
 ```
 
 `run` starts ready work. It records an attempt and stable workflow run ID
 before loading the workflow script. Standard workflow options are available:
-`--harness`, `--max-agents`, `--concurrency`, `--cwd`,
+`--adapter`, `--max-agents`, `--concurrency`, `--cwd`,
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`,
 `--workspace-root`, and `--approval-to`.
 

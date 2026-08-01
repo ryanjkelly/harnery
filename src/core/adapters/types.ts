@@ -1,12 +1,12 @@
 import type { Spawner, SpawnRequest, SpawnResult } from "../workflow/types.ts";
 
-/** Open harness identifier. Built-ins are registered at runtime rather than
+/** Open adapter identifier. Built-ins are registered at runtime rather than
  * repeated through closed unions in every consumer. */
-export type HarnessId = string;
+export type AdapterId = string;
 
 export type CapabilitySupport = "supported" | "partial" | "unsupported" | "unknown";
 
-export const HARNESS_CAPABILITY_DIMENSIONS = [
+export const ADAPTER_CAPABILITY_DIMENSIONS = [
   "invocation",
   "modelSelection",
   "effortSelection",
@@ -28,7 +28,7 @@ export const HARNESS_CAPABILITY_DIMENSIONS = [
   "compaction",
 ] as const;
 
-export type HarnessCapabilityDimension = (typeof HARNESS_CAPABILITY_DIMENSIONS)[number];
+export type AdapterCapabilityDimension = (typeof ADAPTER_CAPABILITY_DIMENSIONS)[number];
 
 export interface CapabilityClaim {
   support: CapabilitySupport;
@@ -37,21 +37,21 @@ export interface CapabilityClaim {
   note?: string;
 }
 
-export type HarnessCapabilities = Record<HarnessCapabilityDimension, CapabilityClaim>;
+export type AdapterCapabilities = Record<AdapterCapabilityDimension, CapabilityClaim>;
 
-/** What one harness can represent of a filesystem-policy projection
- * (ADR 0039). `null` means the harness does not distinguish that, which is a
- * fact about the harness rather than something to paper over: a projection the
+/** What one adapter can represent of a filesystem-policy projection
+ * (ADR 0039). `null` means the adapter does not distinguish that, which is a
+ * fact about the adapter rather than something to paper over: a projection the
  * adapter would silently drop must be refused instead. */
-export interface HarnessSandboxProjection {
+export interface AdapterSandboxProjection {
   /** Native representation per canonical mode, or null when unrepresentable. */
   modes: Record<"read-only" | "workspace-write", string | null>;
-  /** Whether the harness accepts an explicit writable-root set. */
+  /** Whether the adapter accepts an explicit writable-root set. */
   writableRoots: boolean;
 }
 
-export interface HarnessProfile {
-  id: HarnessId;
+export interface AdapterProfile {
+  id: AdapterId;
   displayName: string;
   binary: string;
   installHint: string;
@@ -61,23 +61,23 @@ export interface HarnessProfile {
   authModel: "own-auth";
   modelFamily: "claude" | "gpt" | "multi";
   effortValues: readonly string[];
-  capabilities: HarnessCapabilities;
+  capabilities: AdapterCapabilities;
   /** The last real vendor CLI contract used to validate this declaration. */
   verified?: { date: string; version: string };
   /** How this adapter projects host filesystem policy into the vendor's own
    * sandbox (ADR 0039). Absent means it cannot project any of it. */
-  sandboxProjection?: HarnessSandboxProjection;
+  sandboxProjection?: AdapterSandboxProjection;
 }
 
 /** Fully planned child invocation. `resultFile` is used by adapters such as
  * Codex that deliver the authoritative final answer out-of-band. */
-export interface HarnessInvocation {
+export interface AdapterInvocation {
   argv: string[];
   resultFile?: string;
 }
 
 /** Vendor subprocess material passed through an adapter's normalizer. */
-export interface HarnessRawResult {
+export interface AdapterRawResult {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -95,8 +95,8 @@ export interface HarnessRawResult {
   spawnErrno?: string;
 }
 
-export interface HarnessBenchFixture {
-  raw: HarnessRawResult;
+export interface AdapterBenchFixture {
+  raw: AdapterRawResult;
   expected: Pick<SpawnResult, "ok" | "text"> & {
     sessionId?: string;
     costUsd?: number;
@@ -106,10 +106,10 @@ export interface HarnessBenchFixture {
 /** One registered executable adapter. The same planner and normalizer power
  * production workflow runs and the offline conformance bench, preventing the
  * bench from testing a parallel mock implementation. */
-export interface HarnessAdapter {
-  profile: HarnessProfile;
+export interface Adapter {
+  profile: AdapterProfile;
   spawn: Spawner;
-  buildInvocation: (request: SpawnRequest, resultFile?: string) => HarnessInvocation;
-  normalizeResult: (raw: HarnessRawResult) => SpawnResult;
-  fixture: HarnessBenchFixture;
+  buildInvocation: (request: SpawnRequest, resultFile?: string) => AdapterInvocation;
+  normalizeResult: (raw: AdapterRawResult) => SpawnResult;
+  fixture: AdapterBenchFixture;
 }

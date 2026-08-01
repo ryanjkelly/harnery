@@ -11,7 +11,7 @@ sidebar:
 ## Context
 
 harnery ships a coordination *engine*: decision docket (ADR 0007), councils,
-journals, agent heartbeats, harness hooks. But it ships no agent-facing
+journals, agent heartbeats, adapter hooks. But it ships no agent-facing
 *guidance*. `harn init` wires hooks and creates the coord root, and the runtime
 injects dynamic session context (identity, peer table), yet nothing tells the
 consumer's agent that these surfaces exist or when to reach for them. "Start a
@@ -29,20 +29,20 @@ Two kinds of guidance want two different lifetimes:
   instructions file that loads every session.
 - **On-demand procedure.** How to run a council round, how to resolve a
   decision with evidence: long, and only needed when invoked. This is what
-  harness skills are for.
+  adapter skills are for.
 
 ## Alternatives considered
 
 - **Document it on the docs site / README only.** Rejected: agents don't read
-  the docs site. Guidance has to land in the harness's own discovery path
+  the docs site. Guidance has to land in the adapter's own discovery path
   (instructions file + skills) to exist at all from the agent's view.
 - **Inject the orientation at runtime via hooks** (SessionStart extra context)
   instead of a file block. Rejected as the primary channel: invisible to the
   consumer's repo (nothing to review, diff, or commit), re-paid in tokens every
-  session, and each harness caps injected context differently. Runtime
+  session, and each adapter caps injected context differently. Runtime
   injection stays for what's genuinely dynamic (identity, peers); the static
   orientation belongs in a committed file. A file block is also the only
-  channel that reaches a harness whose hooks aren't wired yet.
+  channel that reaches a adapter whose hooks aren't wired yet.
 - **One big skill instead of an instructions block.** Rejected: skills load
   only when invoked, and an agent that doesn't know the docket exists never
   invokes the docket skill. It is a chicken-and-egg problem: the *existence*
@@ -107,7 +107,7 @@ Two kinds of guidance want two different lifetimes:
   `.harnery/config.jsonc`. Static markdown can't call `resolveBinName()` at
   runtime, so re-running `init` after a bin rename re-renders the block.
 
-**2. Generic skills**, written where the harness has a native skill primitive:
+**2. Generic skills**, written where the adapter has a native skill primitive:
 
 - v1 targets Claude Code: `.claude/skills/harn-decide/SKILL.md` (file, search,
   claim, resolve-with-evidence mechanics for the docket) and
@@ -137,7 +137,7 @@ an upgrade shows up as `--check` drift until `init` is re-run.
 
 **4. Deinit symmetry.** Splice the block out of `AGENTS.md`/`CLAUDE.md`
 (deleting the file only when `init` created it and nothing outside the block
-remains, mirroring the harness-only settings-file removal), delete marked
+remains, mirroring the adapter-only settings-file removal), delete marked
 skill files, leave everything else. `--purge-state` semantics are unchanged.
 
 ## Consequences

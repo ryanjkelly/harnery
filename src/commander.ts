@@ -18,16 +18,17 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { registerAgentsCommand } from "./commands/agents.ts";
+import { registerAdapterCommand } from "./commands/adapter.ts";
+import { registerAgentsCommand, registerCouncilCommands } from "./commands/agents.ts";
 import { registerArtifactsCommand } from "./commands/artifacts.ts";
 import { registerBackupCommand } from "./commands/backup.ts";
 import { registerBrowseCommand } from "./commands/browse.ts";
 import { registerBrowseAiCommand } from "./commands/browse-ai.ts";
 import { registerCallersCommand } from "./commands/callers.ts";
+import { registerCheckpointCommand } from "./commands/checkpoint.ts";
 import { registerClaudeDesktopCommand } from "./commands/claude-desktop.ts";
 import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigGetCommand } from "./commands/config-get.ts";
-import { registerContextCommand } from "./commands/context.ts";
 import { registerCookiesCommand } from "./commands/cookies.ts";
 import { registerDecisionCommand } from "./commands/decision.ts";
 import { registerDeinitCommand } from "./commands/deinit.ts";
@@ -41,7 +42,6 @@ import { registerFetchCommand } from "./commands/fetch.ts";
 import { registerFileHistoryCommand } from "./commands/file-history.ts";
 import { registerGovernorCommand } from "./commands/governor.ts";
 import { registerGrepCommand } from "./commands/grep.ts";
-import { registerHarnessCommand } from "./commands/harness.ts";
 import { registerInitCommand } from "./commands/init.ts";
 import { registerJournalCommand } from "./commands/journal.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
@@ -258,7 +258,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
 
   program
     .name(opts.binName ?? "harn")
-    .description("Multi-agent coordination + harness adapters + portable CLI utilities.")
+    .description("Multi-agent coordination + adapter adapters + portable CLI utilities.")
     .version(readVersion());
 
   registerTokensCommand(program, emit);
@@ -274,7 +274,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCallersCommand(program, emit, opts.context);
   registerEditBatchCommand(program, emit);
   registerGrepCommand(program, emit, opts.context);
-  registerHarnessCommand(program, emit);
+  registerAdapterCommand(program, emit);
   registerPolicyCommand(program, emit);
   registerCookiesCommand(program, emit);
   registerFetchCommand(program, emit, opts.context);
@@ -282,14 +282,15 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerBrowseCommand(program, emit, opts.context);
   registerBrowseAiCommand(program, emit);
   registerCompletionCommand(program, emit, opts.context);
-  registerContextCommand(program, emit, opts.context);
+  registerCheckpointCommand(program, emit, opts.context);
   registerJournalCommand(program, emit);
   registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);
   registerDevtoolsCommand(program, emit);
   registerTunnelCommand(program, emit, opts.context);
   registerDocsCommand(program, emit, opts.context);
-  registerAgentsCommand(program, emit);
+  registerAgentsCommand(program, emit, opts.context);
+  registerCouncilCommands(program);
   registerDoctorCommand(program, emit);
   registerInitCommand(program, emit, opts.binName);
   registerDeinitCommand(program, emit, opts.binName);

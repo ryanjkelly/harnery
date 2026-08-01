@@ -105,7 +105,7 @@ Two safety properties, both required and both enforced by tests:
 ### Detection, in order of durability
 
 - **environment is structural.** `exec()` surfaces `spawnErrno`;
-  `HarnessRawResult` carries it; each adapter maps `ENOENT` to
+  `AdapterRawResult` carries it; each adapter maps `ENOENT` to
   `class: "environment"`. A bare 127 with no errno is *not* classed, because it is
   indistinguishable from a legitimate shell 127, so it stays a charged work
   failure.

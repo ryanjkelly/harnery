@@ -419,7 +419,7 @@ export interface EventRow {
   ts: string;
   instance_id?: string;
   session_id?: string;
-  harness?: string;
+  adapter?: string;
   source?: string;
   data?: Record<string, unknown>;
 }
@@ -584,7 +584,7 @@ export function readEvents(
     limit?: number;
     instanceId?: string;
     type?: string;
-    /** Session-id allowlist. A main harness session carries the same id in
+    /** Session-id allowlist. A main adapter session carries the same id in
      * `session_id` and `instance_id`, so either matching is a hit. */
     sessions?: Set<string>;
     /** Read another checkout's stream (see `scanEventsTail`). */

@@ -1,25 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import type { SpawnResult } from "../workflow/types.ts";
-import { runHarnessAttestation } from "./attest.ts";
-import type { HarnessAttestation } from "./attestation.ts";
-import { createBuiltinHarnessRegistry } from "./registry.ts";
+import { runAdapterAttestation } from "./attest.ts";
+import type { AdapterAttestation } from "./attestation.ts";
+import { createBuiltinAdapterRegistry } from "./registry.ts";
 
-const registry = createBuiltinHarnessRegistry();
+const registry = createBuiltinAdapterRegistry();
 
 function ok(overrides: Partial<SpawnResult> = {}): SpawnResult {
   return { ok: true, text: "ok", durationMs: 12, ...overrides };
 }
 
 function capture() {
-  const written: HarnessAttestation[] = [];
-  return { written, persist: (record: HarnessAttestation) => void written.push(record) };
+  const written: AdapterAttestation[] = [];
+  return { written, persist: (record: AdapterAttestation) => void written.push(record) };
 }
 
-describe("live harness attestation", () => {
+describe("live adapter attestation", () => {
   test("a completed turn records what it saw", async () => {
     const sink = capture();
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["claude-code"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["claude-code"],
       versionProbe: () => "2.1.197",
       spawn: async () => ok({ sessionId: "s-1", costUsd: 0.004 }),
       persist: sink.persist,
@@ -39,8 +39,8 @@ describe("live harness attestation", () => {
 
   test("what the vendor withholds is recorded as unsupported, not omitted", async () => {
     const sink = capture();
-    await runHarnessAttestation(registry, {
-      harnesses: ["codex"],
+    await runAdapterAttestation(registry, {
+      adapters: ["codex"],
       versionProbe: () => "codex-cli 0.144.5",
       spawn: async () => ok(),
       persist: sink.persist,
@@ -51,8 +51,8 @@ describe("live harness attestation", () => {
 
   test("a missing binary is a skip that records nothing", async () => {
     const sink = capture();
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["cursor"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["cursor"],
       versionProbe: () => null,
       spawn: async () => {
         throw new Error("spawn must not run when the binary is absent");
@@ -69,8 +69,8 @@ describe("live harness attestation", () => {
     // The prerequisite rule: a failed turn must not be written down as a page
     // of `unsupported`, because none of it was observed.
     const sink = capture();
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["codex"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["codex"],
       versionProbe: () => "codex-cli 0.144.5",
       spawn: async () => ({ ok: false, text: "", durationMs: 5, error: "auth required" }),
       persist: sink.persist,
@@ -80,25 +80,25 @@ describe("live harness attestation", () => {
     expect(sink.written).toHaveLength(0);
   });
 
-  test("a thrown probe fails that harness without stopping the sweep", async () => {
+  test("a thrown probe fails that adapter without stopping the sweep", async () => {
     const sink = capture();
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["codex", "cursor"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["codex", "cursor"],
       versionProbe: () => "1.0.0",
-      spawn: async (harness) => {
-        if (harness === "codex") throw new Error("boom");
+      spawn: async (adapter) => {
+        if (adapter === "codex") throw new Error("boom");
         return ok({ sessionId: "s-2" });
       },
       persist: sink.persist,
     });
     expect(report.results.map((row) => row.outcome)).toEqual(["failed", "recorded"]);
-    expect(sink.written.map((row) => row.harness)).toEqual(["cursor"]);
+    expect(sink.written.map((row) => row.adapter)).toEqual(["cursor"]);
   });
 
   test("an empty reply is a completed turn with no final result", async () => {
     const sink = capture();
-    await runHarnessAttestation(registry, {
-      harnesses: ["codex"],
+    await runAdapterAttestation(registry, {
+      adapters: ["codex"],
       versionProbe: () => "1.0.0",
       spawn: async () => ok({ text: "   " }),
       persist: sink.persist,
@@ -110,8 +110,8 @@ describe("live harness attestation", () => {
 describe("failure notes are bounded evidence", () => {
   test("a console-transcript failure is collapsed and the prompt echo removed", async () => {
     const noisy = `banner\n${"x".repeat(4000)}\nReply with the single word: ok\ntrailing`;
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["codex"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["codex"],
       versionProbe: () => "codex-cli 0.144.5",
       spawn: async () => ({ ok: false, text: "", durationMs: 5, error: noisy }),
       persist: () => {},
@@ -134,8 +134,8 @@ describe("failure notes are bounded evidence", () => {
       "session id: 019f9661-d51e-7dc0-b130-f6b852d86765",
       "ERROR: Your workspace is out of credits. Add credits to continue.",
     ].join("\n");
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["codex"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["codex"],
       versionProbe: () => "codex-cli 0.144.5",
       spawn: async () => ({ ok: false, text: "", durationMs: 5, error: transcript }),
       persist: () => {},
@@ -146,8 +146,8 @@ describe("failure notes are bounded evidence", () => {
   });
 
   test("a failure with no reason still reads cleanly", async () => {
-    const report = await runHarnessAttestation(registry, {
-      harnesses: ["codex"],
+    const report = await runAdapterAttestation(registry, {
+      adapters: ["codex"],
       versionProbe: () => "1.0.0",
       spawn: async () => ({ ok: false, text: "", durationMs: 5 }),
       persist: () => {},

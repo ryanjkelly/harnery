@@ -58,7 +58,7 @@ check "harn --help mentions backup" "$HARN --help" "backup"
 check "harn --help mentions sync" "$HARN --help" "sync"
 check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
-check "harn --help mentions harness" "$HARN --help" "harness"
+check "harn --help mentions adapter" "$HARN --help" "adapter"
 check "harn --help mentions durable work" "$HARN --help" "work"
 check "harn --help mentions governor" "$HARN --help" "governor"
 check "harn --help mentions artifacts" "$HARN --help" "artifacts"
@@ -84,16 +84,16 @@ check "harn artifacts cleanup previews an expired unit" \
 check "harn artifacts cleanup deletes only with confirmation" \
   "$HARN artifacts clean --yes" '"deleted"'
 
-# 5. harn harness catalog + offline bench
-check "harn harness list includes all built-ins" \
-  "$HARN harness list" "cursor-agent"
+# 5. harn adapter catalog + offline bench
+check "harn adapter list includes all built-ins" \
+  "$HARN adapter list" "cursor-agent"
 # Drift is a legitimate result and exits non-zero, so these assert on output.
 # A host whose installed vendor CLI differs from the recorded contract will
 # report contract drift; that must not fail the smoke test.
-check "harn harness bench makes no model calls" \
-  "$HARN harness bench" "offline (no model calls)" 1
-check "harn harness bench reports the basis of each result" \
-  "$HARN harness bench" "basis:" 1
+check "harn adapter bench makes no model calls" \
+  "$HARN adapter bench" "offline (no model calls)" 1
+check "harn adapter bench reports the basis of each result" \
+  "$HARN adapter bench" "basis:" 1
 
 # 6. harn workflow --help exposes proof and durable approval operations
 check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"
@@ -147,7 +147,7 @@ check "harn governor service starts unconfigured" \
 
 MISSION_FIXTURE="$TMPDIR_TEST/mission-fixture"
 mkdir -p "$MISSION_FIXTURE"
-printf '%s\n' '{"planner":{"instructions":"Plan bounded milestones","harness":"codex"},"reviewer":{"instructions":"Review milestone plans independently","harness":"codex"}}' \
+printf '%s\n' '{"planner":{"instructions":"Plan bounded milestones","adapter":"codex"},"reviewer":{"instructions":"Review milestone plans independently","adapter":"codex"}}' \
   > "$MISSION_FIXTURE/team.json"
 printf '%s\n' '{"objective":"Deliver a verified mission","acceptance":["The mission proof passes"],"max_milestones":2}' \
   > "$MISSION_FIXTURE/mission.json"

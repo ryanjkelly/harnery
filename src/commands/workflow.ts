@@ -2,12 +2,12 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
 import {
-  createBuiltinHarnessRegistry,
-  harnessProofInputs,
+  adapterProofInputs,
+  createBuiltinAdapterRegistry,
   probeBinaryVersion,
-} from "../core/harnesses/index.ts";
+} from "../core/adapters/index.ts";
+import { resolveBinName, workflowSubscriptionOnly } from "../core/config.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -17,7 +17,7 @@ import type { WorkspaceProvider } from "../core/workflow/index.ts";
 
 /**
  * `workflow run <script>`: execute a workflow script — bounded, schema-gated,
- * conditionally-routed stages fanning out to headless harness-CLI subagents.
+ * conditionally-routed stages fanning out to headless adapter-CLI subagents.
  * The script (deterministic code), not a model, decides routing between
  * stages, and the run terminates when the script returns.
  *
@@ -29,7 +29,7 @@ interface WorkflowRunOpts {
   maxAgents?: string;
   concurrency?: string;
   cwd?: string;
-  harness?: string;
+  adapter?: string;
   resumeFrom?: string;
   subscriptionOnly?: boolean;
   allowApiBilling?: boolean;
@@ -75,24 +75,33 @@ interface WorkflowReclaimOpts extends WorkflowConfirmedMutationOpts {
 }
 
 export function registerWorkflowCommand(program: Command, emit: EmitContext): void {
-  const registry = createBuiltinHarnessRegistry();
-  const harnesses = registry.ids();
+  const registry = createBuiltinAdapterRegistry();
+  const adapters = registry.ids();
   const workflow = program
-    .command("workflow")
-    .description("Run bounded, schema-gated multi-subagent workflow scripts.");
-
-  workflow
-    .command("run <script>")
+    .command("run")
     .description(
-      "Execute a workflow script (plain JS: `export default async ({agent, parallel, stage, log, evidence, authorize}) => …`). " +
-        "Subagents spawn as headless harness-CLI subprocesses, coordination-registered.",
+      "Execute one bounded, schema-gated multi-subagent script. Subagents spawn as headless " +
+        "adapter-CLI subprocesses, born coordination-registered.",
+    )
+    // An option has to bind to whichever command name precedes it, so that a
+    // subcommand's own --policy / --json reach the subcommand and not `run`.
+    .enablePositionalOptions();
+
+  // Executing a script is `run`'s default, so `harn run ./wf.js` works with no
+  // second verb. It has to be a real (hidden) subcommand rather than an action
+  // on `run` itself: `run` and several of its subcommands declare the same
+  // option names, and a parent-level declaration swallows the child's copy.
+  workflow
+    .command("script <script>", { isDefault: true, hidden: true })
+    .description(
+      "Workflow script (plain JS: `export default async ({agent, parallel, stage, log, evidence, authorize}) => …`)",
     )
     .option("--max-agents <n>", "Total-agent ceiling for the run (default 50)")
     .option("--concurrency <n>", "Concurrent-subagent cap (default 4)")
     .option("--cwd <dir>", "Working directory children spawn in (default: coord root)")
     .option(
-      "--harness <name>",
-      `Default harness for agent() calls: ${harnesses.join(" | ")} (default claude-code); scripts can override per agent via opts.harness`,
+      "--adapter <name>",
+      `Default adapter for agent() calls: ${adapters.join(" | ")} (default claude-code); scripts can override per agent via opts.adapter`,
     )
     .option(
       "--resume-from <run-id>",
@@ -101,7 +110,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
     .option(
       "--subscription-only",
       "Guarantee subscription billing: scrub API-key vars from child envs; fail loud when a " +
-        "harness has no stored login (repo default via config.jsonc workflow.subscriptionOnly)",
+        "adapter has no stored login (repo default via config.jsonc workflow.subscriptionOnly)",
     )
     .option(
       "--allow-api-billing",
@@ -131,10 +140,10 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         });
         process.exit(1);
       }
-      if (opts.harness && !registry.get(opts.harness)) {
+      if (opts.adapter && !registry.get(opts.adapter)) {
         emit.error({
-          code: "bad_harness",
-          message: `unknown harness "${opts.harness}" (expected: ${harnesses.join(" | ")})`,
+          code: "bad_adapter",
+          message: `unknown adapter "${opts.adapter}" (expected: ${adapters.join(" | ")})`,
         });
         process.exit(1);
       }
@@ -179,14 +188,14 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         const report = await runWorkflow(script, {
           coordRoot,
           spawners: registry.spawners(),
-          defaultHarness: opts.harness,
+          defaultAdapter: opts.adapter,
           resumeFrom: opts.resumeFrom,
           subscriptionOnly,
           allowApiBilling: opts.allowApiBilling,
           maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
           concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
           cwd: opts.cwd,
-          ...harnessProofInputs(
+          ...adapterProofInputs(
             registry.list().map((adapter) => adapter.profile),
             { versionProbe: probeBinaryVersion },
           ),
@@ -195,7 +204,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
           approvalAddressee: opts.approvalTo,
           isolation: opts.isolation,
           workspace,
-          // CLI harness subprocesses inherit the host network. A policy that
+          // CLI adapter subprocesses inherit the host network. A policy that
           // forbids network must therefore deny dispatch unless a future host
           // adapter creates and declares a network-disabled boundary.
           networkAccess: "enabled",
@@ -207,7 +216,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
         }
         const cachedPart = report.agentsCached > 0 ? ` (+${report.agentsCached} cached)` : "";
         const billingPart = report.billing.length
-          ? `billing: ${report.billing.map((b) => `${b.harness}=${b.mode}`).join(", ")}\n`
+          ? `billing: ${report.billing.map((b) => `${b.adapter}=${b.mode}`).join(", ")}\n`
           : "";
         emit.text(
           `run ${report.runId} (${report.name}) finished: ${report.agentsSpawned} agent(s)${cachedPart}, ` +
@@ -282,7 +291,7 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
                 writableRoots: [binding.writable_root.configured],
               }
             : undefined,
-          ...harnessProofInputs(
+          ...adapterProofInputs(
             registry.list().map((adapter) => adapter.profile),
             { versionProbe: probeBinaryVersion },
           ),
@@ -668,9 +677,9 @@ export function registerWorkflowCommand(program: Command, emit: EmitContext): vo
       }
     });
 
-  const approvals = workflow
-    .command("approvals")
-    .description("Inspect and resolve durable workflow policy approvals.");
+  const approvals = program
+    .command("approval")
+    .description("Inspect and resolve durable run-policy approvals.");
 
   approvals
     .command("list")

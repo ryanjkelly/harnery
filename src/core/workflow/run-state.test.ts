@@ -37,7 +37,7 @@ describe("workflow run state", () => {
         repository_before: { cwd: root, dirty_paths: [] },
         execution: {
           cwd: root,
-          default_harness: "claude-code",
+          default_adapter: "claude-code",
           max_agents: 5,
           concurrency: 2,
           subscription_only: true,
@@ -80,7 +80,7 @@ describe("workflow run state", () => {
         repository_before: { cwd: root, dirty_paths: [] },
         execution: {
           cwd: root,
-          default_harness: "codex",
+          default_adapter: "codex",
           max_agents: 1,
           concurrency: 1,
           subscription_only: true,

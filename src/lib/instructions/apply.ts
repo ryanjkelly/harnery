@@ -83,8 +83,8 @@ export function readSkillsExclude(projectRoot: string): Set<string> {
  * codex get the block but no skill files, so both read false there. Kept in one
  * place so `applyInstructions` and `checkInstructions` render byte-identical blocks.
  */
-function blockSkills(projectRoot: string, harness: string): BlockSkills {
-  const claudeCode = harness === "claude-code";
+function blockSkills(projectRoot: string, adapter: string): BlockSkills {
+  const claudeCode = adapter === "claude-code";
   const exclude = readSkillsExclude(projectRoot);
   return {
     decide: claudeCode && !exclude.has("harn-decide"),
@@ -94,7 +94,7 @@ function blockSkills(projectRoot: string, harness: string): BlockSkills {
 
 interface ApplyOpts {
   binName: string;
-  harness: string;
+  adapter: string;
   dryRun: boolean;
 }
 
@@ -111,7 +111,7 @@ export interface ApplyResult {
 export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyResult {
   const actions: string[] = [];
   const warnings: string[] = [];
-  const claudeCode = opts.harness === "claude-code";
+  const claudeCode = opts.adapter === "claude-code";
   // dry-run narrates the future ("would create"); a real run narrates the past.
   const verbed = (base: string, past: string) => (opts.dryRun ? `would ${base}` : past);
 
@@ -123,7 +123,7 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
   const agentsPath = join(projectRoot, AGENTS_FILE);
   const agentsExisted = existsSync(agentsPath);
   const agentsBefore = agentsExisted ? readFileSync(agentsPath, "utf8") : "";
-  const body = renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.harness));
+  const body = renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.adapter));
   const spliced = spliceRegion(agentsBefore, INSTRUCTIONS_REGION, body);
   if (!spliced.changed) {
     actions.push(`· ${AGENTS_FILE} instructions block already current`);
@@ -221,7 +221,7 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
 }
 
 interface RemoveOpts {
-  harness: string;
+  adapter: string;
   dryRun: boolean;
 }
 
@@ -234,7 +234,7 @@ interface RemoveOpts {
 export function removeInstructions(projectRoot: string, opts: RemoveOpts): ApplyResult {
   const actions: string[] = [];
   const warnings: string[] = [];
-  const claudeCode = opts.harness === "claude-code";
+  const claudeCode = opts.adapter === "claude-code";
 
   // ── AGENTS.md block + host addendum ─────────────────────────────────────
   const agentsPath = join(projectRoot, AGENTS_FILE);
@@ -327,7 +327,7 @@ export interface CheckResult {
  */
 export function checkInstructions(
   projectRoot: string,
-  opts: { binName: string; harness: string },
+  opts: { binName: string; adapter: string },
 ): CheckResult {
   const issues: string[] = [];
   let errored = false;
@@ -345,7 +345,7 @@ export function checkInstructions(
       checkRegion(
         content,
         INSTRUCTIONS_REGION,
-        renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.harness)),
+        renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.adapter)),
       ),
     );
 
@@ -361,7 +361,7 @@ export function checkInstructions(
       issues.push(`${AGENTS_FILE} host addendum: present but no longer configured (re-run init)`);
     }
 
-    if (opts.harness === "claude-code") {
+    if (opts.adapter === "claude-code") {
       const exclude = readSkillsExclude(projectRoot);
       for (const skill of SKILLS) {
         if (exclude.has(skill.id)) continue;

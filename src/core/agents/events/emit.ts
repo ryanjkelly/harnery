@@ -19,7 +19,7 @@ const STREAM_FILE = ".harnery/events.ndjson";
 const LOCK_FILE = ".harnery/events.ndjson.lock";
 const MAX_LINE_BYTES = 64 * 1024;
 
-export type Harness = "claude-code" | "cursor" | "codex";
+export type Adapter = "claude-code" | "cursor" | "codex";
 export type Source = "agent-hooks" | "agent-coord" | "user" | "system";
 
 export interface Envelope {
@@ -32,7 +32,7 @@ export interface Envelope {
   parent_session_id?: string;
   turn_id?: string;
   parent_turn_id?: string;
-  harness: Harness;
+  adapter: Adapter;
   source: Source;
   data: Record<string, unknown>;
 }
@@ -41,7 +41,7 @@ export interface EmitInput {
   event_type: string;
   instance_id: string;
   session_id: string;
-  harness: Harness;
+  adapter: Adapter;
   source?: Source;
   parent_session_id?: string;
   turn_id?: string;
@@ -61,7 +61,7 @@ export function buildEnvelope(input: EmitInput): Envelope {
     parent_session_id: input.parent_session_id,
     turn_id: input.turn_id,
     parent_turn_id: input.parent_turn_id,
-    harness: input.harness,
+    adapter: input.adapter,
     source: input.source ?? "agent-coord",
     data: input.data,
   };

@@ -9,7 +9,7 @@ import { useHostInfo } from "@/components/HostInfoProvider";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { formatRelativeAgo } from "@/lib/format/datetime";
-import { harnessLabel } from "@/lib/harness";
+import { adapterLabel } from "@/lib/adapter";
 import type { CouncilPromptState } from "@/lib/coord-reader";
 
 /** Live heartbeat signal for the member a prompt routes to. */
@@ -156,7 +156,7 @@ export function RoutingPromptTabs({
               <span className="text-[10px] text-muted-foreground/70 tabular-nums">
                 {selected.bytes.toLocaleString()} bytes
               </span>
-              <HarnessBadge platform={selected.platform} model={selected.model} />
+              <AdapterBadge platform={selected.platform} model={selected.model} />
               <StateBadge state={selected.state} />
               {selected.activity && selected.state !== "contributed" && (
                 <Tooltip
@@ -185,7 +185,7 @@ export function RoutingPromptTabs({
               disabled={selected.state !== "active"}
               tooltip={
                 selected.state === "active"
-                  ? "Copy this prompt, then paste it into the receiving agent's harness."
+                  ? "Copy this prompt, then paste it into the receiving agent's adapter."
                   : selected.state === "contributed"
                     ? `${selected.member} already contributed; prompt no longer actionable.`
                     : "Queued. Wait for the active prompt to be contributed before routing this one."
@@ -376,7 +376,7 @@ function StewardDetail({
           <UserCog className="size-3" aria-hidden />
           steward
         </span>
-        <HarnessBadge platform={seat.platform} model={seat.model} />
+        <AdapterBadge platform={seat.platform} model={seat.model} />
         {seat.contributed ? (
           <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 bg-emerald-500/15 text-emerald-300 ring-emerald-500/30">
             <Check className="size-3" aria-hidden />
@@ -432,7 +432,7 @@ function StewardDetail({
 }
 
 /** "Claude Code · claude-opus-4-8" pill: where the member's session lives. */
-function HarnessBadge({
+function AdapterBadge({
   platform,
   model,
 }: {
@@ -447,9 +447,9 @@ function HarnessBadge({
           {platform && (
             <p>
               <span className="text-foreground font-medium">
-                {harnessLabel(platform)}
+                {adapterLabel(platform)}
               </span>
-              {`: the harness this member's session runs in. Paste their prompt there.`}
+              {`: the adapter this member's session runs in. Paste their prompt there.`}
             </p>
           )}
           {model && (
@@ -462,7 +462,7 @@ function HarnessBadge({
       }
     >
       <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ring-1 ring-border/60 bg-muted/40 text-muted-foreground cursor-help">
-        {harnessLabel(platform)}
+        {adapterLabel(platform)}
         {platform && model && <span className="text-muted-foreground/50">·</span>}
         {model && <span className="font-mono">{model}</span>}
       </span>

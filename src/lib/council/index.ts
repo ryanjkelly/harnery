@@ -588,7 +588,7 @@ export function writeContribution(
  * Path to the round-N prompts directory: `.harnery/councils/<id>/round-N/prompts/`.
  * Sibling to the contribution files. Holds one `<member>.md` per non-self
  * council member, drafted by the steward, read by the operator (copy-paste
- * into each agent harness) and the web UI (per-member panel).
+ * into each agent adapter) and the web UI (per-member panel).
  */
 export function promptsDir(councilId: string, round: number): string | null {
   const rd = roundDir(councilId, round);
@@ -636,9 +636,9 @@ const SUBMIT_FOOTER_MARKER = "<!-- council-submit-footer -->";
  * Build the submit footer appended to every steward-drafted prompt. This is the
  * load-bearing instruction that a contribution composed in chat is NOT recorded;
  * the agent must run the command below. It rides on the prompt (the one
- * artifact the operator always pastes) so it reaches every harness regardless of
+ * artifact the operator always pastes) so it reaches every adapter regardless of
  * whether the convene-time invitation was delivered or a `/council` skill is
- * available. Without it, agents (esp. non-Claude harnesses with no skill) write
+ * available. Without it, agents (esp. non-Claude adapters with no skill) write
  * their take as a reply and end the turn, leaving the council showing them as
  * still-pending. Visible markdown (not an HTML comment) so the agent reads it.
  */
@@ -654,7 +654,7 @@ export function buildSubmitFooter(councilId: string): string {
     `# longer write-up? ${bin} agents council contribute ${councilId} --file <path>`,
     "```",
     "",
-    '_(Or invoke the `council` skill in your harness: `/council contribute` in Claude Code, `$council` / "use the council skill" in Codex/Cursor, for the same flow with routing guards.)_',
+    '_(Or invoke the `council` skill in your adapter: `/council contribute` in Claude Code, `$council` / "use the council skill" in Codex/Cursor, for the same flow with routing guards.)_',
   ].join("\n");
 }
 

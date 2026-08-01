@@ -245,7 +245,7 @@ function hookEventSearchText(e: EventRow, instanceToName: Record<string, string>
     name,
     e.instance_id ?? "",
     e.session_id ?? "",
-    e.harness ?? "",
+    e.adapter ?? "",
     e.source ?? "",
     e.data ? JSON.stringify(e.data) : "",
   ]

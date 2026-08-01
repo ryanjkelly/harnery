@@ -36,7 +36,7 @@ function captureLine(opts: {
     ts,
     instance_id: instanceId,
     session_id: instanceId,
-    harness: "claude-code",
+    adapter: "claude-code",
     source: "test",
     data: {
       hash,
@@ -57,7 +57,7 @@ const NON_IMAGE = JSON.stringify({
   ts: "2026-07-07T00:00:00Z",
   instance_id: "sess-1",
   session_id: "sess-1",
-  harness: "claude-code",
+  adapter: "claude-code",
   source: "test",
   data: { tool_name: "Bash" },
 });

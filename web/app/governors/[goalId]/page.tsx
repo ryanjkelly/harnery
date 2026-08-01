@@ -276,7 +276,7 @@ export default async function GovernorGoalPage({ params }: PageProps) {
               <li key={id} className="rounded bg-muted/50 px-3 py-2">
                 <span className="font-medium">{id}</span>
                 <span className="ml-2 text-xs text-muted-foreground">
-                  {profile.harness ?? "default harness"}
+                  {profile.adapter ?? "default adapter"}
                   {profile.model ? ` · ${profile.model}` : ""}
                   {profile.effort ? ` · ${profile.effort}` : ""}
                 </span>

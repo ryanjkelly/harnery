@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
 import { probeFilesystemProjection } from "./attest-projection.ts";
-import type { HarnessAdapter, HarnessSandboxProjection } from "./types.ts";
+import type { Adapter, AdapterSandboxProjection } from "./types.ts";
 
-const PROJECTION: HarnessSandboxProjection = {
+const PROJECTION: AdapterSandboxProjection = {
   modes: { "read-only": "read-only", "workspace-write": "workspace-write" },
   writableRoots: true,
 };
 
-function adapterWith(projection: HarnessSandboxProjection | undefined): HarnessAdapter {
-  return { profile: { sandboxProjection: projection } } as unknown as HarnessAdapter;
+function adapterWith(projection: AdapterSandboxProjection | undefined): Adapter {
+  return { profile: { sandboxProjection: projection } } as unknown as Adapter;
 }
 
 const ok = (): SpawnResult => ({ ok: true, text: "done", durationMs: 1 }) as SpawnResult;

@@ -79,7 +79,7 @@ describe("assumeIdentity", () => {
     expect(readFileSync(historyPath, "utf8")).toBe(historyBefore);
   });
 
-  test("refuses a namesake whose harness process is still alive", () => {
+  test("refuses a namesake whose adapter process is still alive", () => {
     seedHeartbeat(root, "session-old", "Yann");
     // Anchor the old session to THIS live test process so the reclaim probe
     // treats it as genuinely occupied.

@@ -4,7 +4,7 @@
  *
  * Contract notes (LIVE-VERIFIED 2026-07-17 against cursor-agent
  * 2026.07.16-899851b: schema-gated triage + text stages round-trip via
- * `--harness cursor`, session_id parses from the envelope):
+ * `--adapter cursor`, session_id parses from the envelope):
  * - `cursor-agent -p "<prompt>" --output-format json` prints a single result
  *   envelope modeled on Claude Code's (`{type: "result", is_error, result,
  *   session_id, …}`).
@@ -20,10 +20,10 @@
  */
 
 import { exec } from "../../lib/exec.ts";
-import { builtinHarnessProfile, validateHarnessEffort } from "../harnesses/profiles.ts";
-import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
+import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profiles.ts";
+import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
+import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { notFoundError } from "./harnesses.ts";
 import { resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -53,13 +53,13 @@ export function parseCursorOutput(stdout: string): {
   }
 }
 
-export function buildCursorInvocation(req: SpawnRequest): HarnessInvocation {
-  validateHarnessEffort("cursor", req.effort);
+export function buildCursorInvocation(req: SpawnRequest): AdapterInvocation {
+  validateAdapterEffort("cursor", req.effort);
   if (req.filesystemPolicy) {
     // Declared unrepresentable: refuse rather than drop it silently (ADR 0039).
     resolveSandboxProjection(
       "cursor",
-      builtinHarnessProfile("cursor")?.sandboxProjection,
+      builtinAdapterProfile("cursor")?.sandboxProjection,
       req.filesystemPolicy,
     );
   }
@@ -73,7 +73,7 @@ export function buildCursorInvocation(req: SpawnRequest): HarnessInvocation {
   return { argv };
 }
 
-export function normalizeCursorResult(raw: HarnessRawResult): SpawnResult {
+export function normalizeCursorResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,
@@ -130,7 +130,7 @@ export function normalizeCursorResult(raw: HarnessRawResult): SpawnResult {
 
 export const cursorSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
   const t0 = Date.now();
-  let invocation: HarnessInvocation;
+  let invocation: AdapterInvocation;
   try {
     invocation = buildCursorInvocation(req);
   } catch (error) {

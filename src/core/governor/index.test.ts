@@ -48,8 +48,8 @@ function fixture() {
   return { root, passing, failing };
 }
 
-const probeBilling = (harness: string) => ({
-  harness,
+const probeBilling = (adapter: string) => ({
+  adapter,
   apiKeySource: null,
   apiKeyPresent: false,
   login: "present" as const,
@@ -79,7 +79,7 @@ describe("durable goal governor", () => {
       id: "goal-fixture",
       rootWorkId: "root",
       specialists: {
-        implementer: { instructions: "Implement carefully", harness: "codex" },
+        implementer: { instructions: "Implement carefully", adapter: "codex" },
       },
     });
     expect(record.projection.work_ids).toEqual(["leaf", "root"]);
@@ -122,7 +122,7 @@ describe("durable goal governor", () => {
       specialists: {
         implementer: {
           instructions: "You are the implementation specialist. Keep changes focused.",
-          harness: "codex",
+          adapter: "codex",
           effort: "high",
         },
       },
@@ -161,7 +161,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-review",
       rootWorkId: "reviewed",
-      specialists: { implementer: { instructions: "Implement", harness: "codex" } },
+      specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
     });
     const spawner: Spawner = async () => ({ ok: true, text: "done", durationMs: 1 });
     const report = await runGovernor({
@@ -187,7 +187,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-approval",
       rootWorkId: "approved",
-      specialists: { implementer: { instructions: "Implement", harness: "codex" } },
+      specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
       automation: { accept_passing_proof: true },
       limits: { max_total_attempts: 1 },
     });
@@ -348,7 +348,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-budget",
       rootWorkId: "budget-root",
-      specialists: { implementer: { instructions: "Implement", harness: "codex" } },
+      specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
       automation: { accept_passing_proof: true },
       limits: { max_total_attempts: 1 },
     });
@@ -378,7 +378,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-replan-budget",
       rootWorkId: "replan-budget-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       limits: { max_total_attempts: 1 },
       replanning: {
         plannerSpecialist: "planner",
@@ -418,7 +418,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-tick",
       rootWorkId: "ticked",
-      specialists: { implementer: { instructions: "Implement", harness: "codex" } },
+      specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
       automation: { accept_passing_proof: true },
     });
     const spawner: Spawner = async () => ({ ok: true, text: "done", durationMs: 1 });
@@ -456,8 +456,8 @@ describe("durable goal governor", () => {
       id: "goal-replan-review",
       rootWorkId: "blocked-root",
       specialists: {
-        planner: { instructions: "Design a minimal recovery graph", harness: "codex" },
-        implementer: { instructions: "Implement the approved recovery", harness: "codex" },
+        planner: { instructions: "Design a minimal recovery graph", adapter: "codex" },
+        implementer: { instructions: "Implement the approved recovery", adapter: "codex" },
       },
       automation: { accept_passing_proof: true },
       replanning: {
@@ -546,8 +546,8 @@ describe("durable goal governor", () => {
       id: "goal-replan-auto",
       rootWorkId: "auto-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        implementer: { instructions: "Implement", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        implementer: { instructions: "Implement", adapter: "codex" },
       },
       automation: { accept_passing_proof: true },
       replanning: {
@@ -591,9 +591,9 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-pass",
       rootWorkId: "review-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review plans independently", harness: "codex" },
-        implementer: { instructions: "Implement", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review plans independently", adapter: "codex" },
+        implementer: { instructions: "Implement", adapter: "codex" },
       },
       automation: { accept_passing_proof: true },
       replanning: {
@@ -680,9 +680,9 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-auto",
       rootWorkId: "review-auto-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
-        implementer: { instructions: "Implement", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
+        implementer: { instructions: "Implement", adapter: "codex" },
       },
       automation: { accept_passing_proof: true },
       replanning: {
@@ -727,8 +727,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-revision",
       rootWorkId: "review-revision-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -822,8 +822,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-exhausted",
       rootWorkId: "review-exhausted-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -920,8 +920,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-corrupt",
       rootWorkId: "review-corrupt-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -964,8 +964,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-recover",
       rootWorkId: "review-recover-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1020,9 +1020,9 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-recover-order",
       rootWorkId: "review-recover-order-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        alpha: { instructions: "Review first", harness: "codex" },
-        beta: { instructions: "Review second", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        alpha: { instructions: "Review first", adapter: "codex" },
+        beta: { instructions: "Review second", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1083,8 +1083,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-integrity",
       rootWorkId: "review-integrity-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1140,8 +1140,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-result",
       rootWorkId: "review-result-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1214,9 +1214,9 @@ describe("durable goal governor", () => {
       id: "goal-reviewed-policy-mismatch",
       rootWorkId: "review-policy-mismatch-blocked",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        alpha: { instructions: "Review first", harness: "codex" },
-        beta: { instructions: "Review second", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        alpha: { instructions: "Review first", adapter: "codex" },
+        beta: { instructions: "Review second", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1268,7 +1268,7 @@ describe("durable goal governor", () => {
         coordRoot: root,
         id: "goal-reviewer-planner",
         rootWorkId: "review-policy-root",
-        specialists: { planner: { instructions: "Plan", harness: "codex" } },
+        specialists: { planner: { instructions: "Plan", adapter: "codex" } },
         replanning: {
           plannerSpecialist: "planner",
           review: { reviewerSpecialists: ["planner"], maxRevisionRounds: 1 },
@@ -1281,7 +1281,7 @@ describe("durable goal governor", () => {
         coordRoot: root,
         id: "goal-reviewer-missing",
         rootWorkId: "review-policy-root",
-        specialists: { planner: { instructions: "Plan", harness: "codex" } },
+        specialists: { planner: { instructions: "Plan", adapter: "codex" } },
         replanning: {
           plannerSpecialist: "planner",
           review: { reviewerSpecialists: ["missing"], maxRevisionRounds: 1 },
@@ -1305,7 +1305,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-replan-attention",
       rootWorkId: "needs-judgment",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         templates: { repair: { workflowPath: passing, root: true } },
@@ -1374,7 +1374,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-guided-retry",
       rootWorkId: "guided-retry-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 2,
@@ -1484,7 +1484,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-retry-budget",
       rootWorkId: "retry-budget-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 1,
@@ -1535,7 +1535,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-replan-rejected",
       rootWorkId: "rejected-plan-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 2,
@@ -1604,7 +1604,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-planner-approval",
       rootWorkId: "planner-approval-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         templates: { repair: { workflowPath: passing, root: true } },
@@ -1667,8 +1667,8 @@ describe("durable goal governor", () => {
       id: "goal-review-approval",
       rootWorkId: "review-approval-root",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1738,9 +1738,9 @@ describe("durable goal governor", () => {
     const { root, passing } = fixture();
     const reviewerSpecialists = Array.from({ length: 6 }, (_, index) => `reviewer-${index + 1}`);
     const specialists = Object.fromEntries([
-      ["planner", { instructions: "Plan", harness: "codex" }],
+      ["planner", { instructions: "Plan", adapter: "codex" }],
       ...reviewerSpecialists.map(
-        (specialist) => [specialist, { instructions: "Review", harness: "codex" }] as const,
+        (specialist) => [specialist, { instructions: "Review", adapter: "codex" }] as const,
       ),
     ]);
     expect(() =>
@@ -1777,7 +1777,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-bounded-plan",
       rootWorkId: "bounded-plan-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 1,
@@ -1837,8 +1837,8 @@ describe("durable goal governor", () => {
       id: "goal-review-code",
       rootWorkId: "review-code-root",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -1897,7 +1897,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-replan-invalid",
       rootWorkId: "invalid-plan-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 1,
@@ -1940,7 +1940,7 @@ describe("durable goal governor", () => {
     const record = createGovernor({
       coordRoot: root,
       id: "goal-mission-initial",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       mission: {
         objective: "Deliver the bounded mission",
         acceptance: ["The mission outcome is independently verified"],
@@ -1968,7 +1968,7 @@ describe("durable goal governor", () => {
       createGovernor({
         coordRoot: root,
         id: "goal-mission-no-completion-slot",
-        specialists: { planner: { instructions: "Plan", harness: "codex" } },
+        specialists: { planner: { instructions: "Plan", adapter: "codex" } },
         mission: {
           objective: "Use every milestone slot",
           acceptance: ["The mission is complete"],
@@ -1997,7 +1997,7 @@ describe("durable goal governor", () => {
         coordRoot: root,
         id: "goal-mission-missing-planner",
         rootWorkId: "supplied-milestone",
-        specialists: { implementer: { instructions: "Implement", harness: "codex" } },
+        specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
         mission: {
           objective: "Complete a supplied mission",
           acceptance: ["The mission is complete"],
@@ -2009,8 +2009,8 @@ describe("durable goal governor", () => {
       id: "goal-mission-supplied",
       rootWorkId: "supplied-milestone",
       specialists: {
-        planner: { instructions: "Reassess", harness: "codex" },
-        implementer: { instructions: "Implement", harness: "codex" },
+        planner: { instructions: "Reassess", adapter: "codex" },
+        implementer: { instructions: "Implement", adapter: "codex" },
       },
       mission: {
         objective: "Complete a supplied mission",
@@ -2055,7 +2055,7 @@ describe("durable goal governor", () => {
     createGovernor({
       coordRoot: root,
       id: "goal-mission-premature",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       mission: {
         objective: "Produce verified evidence",
         acceptance: ["Evidence exists"],
@@ -2099,7 +2099,7 @@ describe("durable goal governor", () => {
     createGovernor({
       coordRoot: root,
       id: "goal-mission-attention",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       mission: {
         objective: "Clarify a blocked mission",
         acceptance: ["The mission outcome is verified"],
@@ -2146,8 +2146,8 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-mission-reviewed",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        implementer: { instructions: "Implement", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        implementer: { instructions: "Implement", adapter: "codex" },
       },
       mission: {
         objective: "Ship one reviewed milestone",
@@ -2231,8 +2231,8 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-mission-loop",
       specialists: {
-        planner: { instructions: "Plan one milestone", harness: "codex" },
-        implementer: { instructions: "Execute the milestone", harness: "codex" },
+        planner: { instructions: "Plan one milestone", adapter: "codex" },
+        implementer: { instructions: "Execute the milestone", adapter: "codex" },
       },
       mission: {
         objective: "Ship one verified milestone",
@@ -2305,8 +2305,8 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-reopen-mission",
       specialists: {
-        planner: { instructions: "Plan one milestone", harness: "codex" },
-        implementer: { instructions: "Execute the milestone", harness: "codex" },
+        planner: { instructions: "Plan one milestone", adapter: "codex" },
+        implementer: { instructions: "Execute the milestone", adapter: "codex" },
       },
       mission: {
         objective: "Ship one verified milestone",
@@ -2405,7 +2405,7 @@ describe("durable goal governor", () => {
     createGovernor({
       coordRoot: root,
       id: "goal-reopen-refuses",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       mission: { objective: "Ship", acceptance: ["Accepted"], maxMilestones: 2 },
       replanning: {
         plannerSpecialist: "planner",
@@ -2440,7 +2440,7 @@ describe("durable goal governor", () => {
         coordRoot: root,
         id,
         rootWorkId: `${id}-root`,
-        specialists: { planner: { instructions: "Plan a recovery", harness: "codex" } },
+        specialists: { planner: { instructions: "Plan a recovery", adapter: "codex" } },
         replanning: {
           plannerSpecialist: "planner",
           templates: { repair: { workflowPath: join(root, "passing.mjs"), root: true } },
@@ -2578,7 +2578,7 @@ describe("durable goal governor", () => {
       coordRoot: root,
       id: "goal-no-proposal",
       rootWorkId: "no-proposal-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 1,
@@ -2632,8 +2632,8 @@ describe("durable goal governor", () => {
       id: "goal-reviewer-rejection",
       rootWorkId: "reviewer-rejection-root",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",
@@ -2691,8 +2691,8 @@ describe("durable goal governor", () => {
       id: "goal-mixed-consumption",
       rootWorkId: "mixed-consumption-root",
       specialists: {
-        planner: { instructions: "Plan", harness: "codex" },
-        reviewer: { instructions: "Review", harness: "codex" },
+        planner: { instructions: "Plan", adapter: "codex" },
+        reviewer: { instructions: "Review", adapter: "codex" },
       },
       replanning: {
         plannerSpecialist: "planner",

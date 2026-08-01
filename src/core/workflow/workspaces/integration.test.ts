@@ -74,7 +74,7 @@ describe("verification-gated fast-forward integration", () => {
             };
           },
         },
-        harnessEvidence: {
+        adapterEvidence: {
           "claude-code": { toolEvidence: { support: "supported" } },
         },
         isolation: "worktree",
@@ -184,7 +184,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -427,7 +427,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -505,7 +505,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -605,7 +605,7 @@ describe("verification-gated fast-forward integration", () => {
             return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
           },
         },
-        harnessEvidence: {
+        adapterEvidence: {
           "claude-code": { toolEvidence: { support: "supported" } },
         },
         ...quiet,
@@ -669,7 +669,7 @@ describe("verification-gated fast-forward integration", () => {
             return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
           },
         },
-        harnessEvidence: {
+        adapterEvidence: {
           "claude-code": { toolEvidence: { support: "supported" } },
         },
         ...quiet,
@@ -746,7 +746,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       ...quiet,

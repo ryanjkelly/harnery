@@ -1,16 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { HARNESS_SPECS } from "../hooks/harness/events.ts";
+import { ADAPTER_SPECS } from "../hooks/adapter/events.ts";
 import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
-import type { AttestableDimension, HarnessAttestation } from "./attestation.ts";
+import type { AdapterAttestation, AttestableDimension } from "./attestation.ts";
 import { isAttestationCurrent, readAttestation } from "./attestation.ts";
-import type { HarnessRegistry } from "./registry.ts";
-import type {
-  CapabilitySupport,
-  HarnessAdapter,
-  HarnessCapabilityDimension,
-  HarnessId,
-} from "./types.ts";
-import { HARNESS_CAPABILITY_DIMENSIONS } from "./types.ts";
+import type { AdapterRegistry } from "./registry.ts";
+import type { Adapter, AdapterCapabilityDimension, AdapterId, CapabilitySupport } from "./types.ts";
+import { ADAPTER_CAPABILITY_DIMENSIONS } from "./types.ts";
 
 export type BenchVerdict =
   | "supported"
@@ -21,7 +16,7 @@ export type BenchVerdict =
   | "skipped"
   | "drift";
 
-export type BenchDimension = "registration" | "binary" | "contract" | HarnessCapabilityDimension;
+export type BenchDimension = "registration" | "binary" | "contract" | AdapterCapabilityDimension;
 
 /** How a result was established (ADR 0037). Orthogonal to the verdict: this
  * answers "how do we know", not "what is true".
@@ -33,7 +28,7 @@ export type BenchDimension = "registration" | "binary" | "contract" | HarnessCap
 export type BenchBasis = "adapter" | "attested" | "declared";
 
 export interface BenchResult {
-  harness: HarnessId;
+  adapter: AdapterId;
   dimension: BenchDimension;
   declared: CapabilitySupport | "not_applicable";
   observed: BenchVerdict;
@@ -42,10 +37,10 @@ export interface BenchResult {
   note?: string;
 }
 
-export interface HarnessBenchReport {
+export interface AdapterBenchReport {
   generatedAt: string;
   mode: "offline";
-  harnesses: HarnessId[];
+  adapters: AdapterId[];
   results: BenchResult[];
   summary: Record<BenchVerdict, number>;
   /** Result counts per basis, so a caller can tell a clean report from an
@@ -55,16 +50,16 @@ export interface HarnessBenchReport {
   skipped: boolean;
 }
 
-export interface HarnessBenchOptions {
-  harnesses?: readonly string[];
-  dimensions?: readonly HarnessCapabilityDimension[];
+export interface AdapterBenchOptions {
+  adapters?: readonly string[];
+  dimensions?: readonly AdapterCapabilityDimension[];
   /** Test seam and alternate host probe. A null version means unavailable. */
   versionProbe?: (binary: string) => string | null;
   /** Where to look for live attestations (ADR 0038). Defaults to the coord
    * root. Reading them never runs a model turn. */
   coordRoot?: string;
   /** Test seam. Defaults to reading the attestation store. */
-  attestationReader?: (harness: HarnessId) => HarnessAttestation | null;
+  attestationReader?: (adapter: AdapterId) => AdapterAttestation | null;
   /** Only cite attestations recorded under this billing mode. Omitted means
    * any mode is acceptable for reporting purposes. */
   subscriptionOnly?: boolean;
@@ -90,12 +85,12 @@ const EMPTY_BASIS_SUMMARY: Record<BenchBasis, number> = {
  * version and the current declaration. A stale one is ignored rather than
  * trusted, so an upgraded vendor CLI silently drops back to adapter basis. */
 function loadAttestation(
-  id: HarnessId,
+  id: AdapterId,
   version: string | null,
-  adapter: HarnessAdapter,
-  opts: HarnessBenchOptions,
-): HarnessAttestation | null {
-  let record: HarnessAttestation | null = null;
+  adapter: Adapter,
+  opts: AdapterBenchOptions,
+): AdapterAttestation | null {
+  let record: AdapterAttestation | null = null;
   try {
     record = opts.attestationReader
       ? opts.attestationReader(id)
@@ -118,21 +113,21 @@ function versionToken(value: string | null | undefined): string | null {
   return match ? match[0].toLowerCase() : null;
 }
 
-export function runHarnessBench(
-  registry: HarnessRegistry,
-  opts: HarnessBenchOptions = {},
-): HarnessBenchReport {
-  const ids = opts.harnesses?.length ? [...opts.harnesses] : registry.ids();
+export function runAdapterBench(
+  registry: AdapterRegistry,
+  opts: AdapterBenchOptions = {},
+): AdapterBenchReport {
+  const ids = opts.adapters?.length ? [...opts.adapters] : registry.ids();
   const dimensions = opts.dimensions?.length
     ? [...new Set(opts.dimensions)]
-    : [...HARNESS_CAPABILITY_DIMENSIONS];
+    : [...ADAPTER_CAPABILITY_DIMENSIONS];
   const versionProbe = opts.versionProbe ?? probeBinaryVersion;
   const results: BenchResult[] = [];
 
   for (const id of ids) {
     const adapter = registry.require(id);
     results.push({
-      harness: id,
+      adapter: id,
       dimension: "registration",
       declared: "supported",
       observed: "supported",
@@ -143,7 +138,7 @@ export function runHarnessBench(
 
     const version = versionProbe(adapter.profile.binary);
     results.push({
-      harness: id,
+      adapter: id,
       dimension: "binary",
       declared: "supported",
       observed: version ? "supported" : "skipped",
@@ -166,7 +161,7 @@ export function runHarnessBench(
         ? { observed: live, basis: "attested" }
         : observations[dimension];
       results.push({
-        harness: id,
+        adapter: id,
         dimension,
         declared: claim.support,
         observed,
@@ -186,7 +181,7 @@ export function runHarnessBench(
   return {
     generatedAt: new Date().toISOString(),
     mode: "offline",
-    harnesses: ids,
+    adapters: ids,
     results,
     summary,
     basisSummary,
@@ -203,13 +198,9 @@ export function runHarnessBench(
  * broken, but the declaration is no longer backed by an observation. An
  * unrecorded or unparseable declared version stays `unknown` rather than being
  * inferred from the installed one. */
-function contractResult(
-  id: HarnessId,
-  adapter: HarnessAdapter,
-  version: string | null,
-): BenchResult {
+function contractResult(id: AdapterId, adapter: Adapter, version: string | null): BenchResult {
   const recorded = adapter.profile.verified;
-  const base = { harness: id, dimension: "contract" as const, declared: "supported" as const };
+  const base = { adapter: id, dimension: "contract" as const, declared: "supported" as const };
 
   if (!version) {
     return {
@@ -265,8 +256,8 @@ function fromAdapter(observed: BenchVerdict): DimensionObservation {
 const NOT_CHECKED: DimensionObservation = { observed: "unknown", basis: "declared" };
 
 function observeAdapter(
-  adapter: HarnessAdapter,
-): Record<HarnessCapabilityDimension, DimensionObservation> {
+  adapter: Adapter,
+): Record<AdapterCapabilityDimension, DimensionObservation> {
   const profile = adapter.profile;
   const effort = profile.effortValues[0];
   const request: SpawnRequest = {
@@ -312,8 +303,8 @@ function observeAdapter(
   const sessionObserved = normalized?.sessionId !== undefined ? "supported" : "unsupported";
   const costObserved = normalized?.costUsd !== undefined ? "supported" : "unsupported";
   const hookSpec =
-    adapter.profile.id in HARNESS_SPECS
-      ? HARNESS_SPECS[adapter.profile.id as keyof typeof HARNESS_SPECS]
+    adapter.profile.id in ADAPTER_SPECS
+      ? ADAPTER_SPECS[adapter.profile.id as keyof typeof ADAPTER_SPECS]
       : undefined;
   const hookSubcommands = new Set(hookSpec?.events.map((event) => event.subcommand) ?? []);
 

@@ -3,9 +3,9 @@
  *
  * These are DELIBERATELY outside the agent-coord path: sounds, journal
  * lifecycle, session telemetry, presence detection. They used to live in
- * per-harness bash adapters. Per the directive ("use the normalized hooks; if
+ * per-adapter bash adapters. Per the directive ("use the normalized hooks; if
  * they aren't coordination, implement them outside of coordination") they move
- * here so the harness configs reference only `agent-hook`, while staying a
+ * here so the adapter configs reference only `agent-hook`, while staying a
  * distinct concern from the coordination logic in cli.ts / agent-coord.
  *
  * Everything here is best-effort: it never throws and never blocks the hook on a
@@ -120,13 +120,13 @@ export function journalArchive(repoRoot: string, owner: string): void {
  * Fire the optional host session-sync extension on turn stop / session end.
  * harnery core has no session-telemetry sink of its own; a host that wants one
  * drops an executable at
- * `scripts/hooks/harness/claude_code/extensions/session-sync.sh` under the coord
+ * `scripts/hooks/adapter/claude_code/extensions/session-sync.sh` under the coord
  * root, and core runs it detached + unref'd so a slow sink never blocks the
  * hook. `force` arrives as argv $1 ("1" on session end, "0" on turn stop) so the
  * host can rate-limit the stop path and force-flush on end. No-op when the
  * script is absent, so a plain public install spawns nothing. Mirrors
  * `runTurnSummary`'s extension-script pattern. Caller gates to the claude-code
- * harness.
+ * adapter.
  */
 export function runSessionSyncExtension(repoRoot: string, force: boolean): void {
   try {
@@ -134,7 +134,7 @@ export function runSessionSyncExtension(repoRoot: string, force: boolean): void 
       repoRoot,
       "scripts",
       "hooks",
-      "harness",
+      "adapter",
       "claude_code",
       "extensions",
       "session-sync.sh",
@@ -169,7 +169,7 @@ export function runTurnSummary(
       repoRoot,
       "scripts",
       "hooks",
-      "harness",
+      "adapter",
       "claude_code",
       "extensions",
       "turn-summary.sh",

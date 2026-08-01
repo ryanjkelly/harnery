@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import {
+  adapterProofInputs,
+  createBuiltinAdapterRegistry,
+  probeBinaryVersion,
+} from "../core/adapters/index.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
 import { findCompletedMissionGoverning, reopenGovernorMission } from "../core/governor/index.ts";
-import {
-  createBuiltinHarnessRegistry,
-  harnessProofInputs,
-  probeBinaryVersion,
-} from "../core/harnesses/index.ts";
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
@@ -39,7 +39,7 @@ interface WorkCreateOpts {
 }
 
 interface WorkRunOpts {
-  harness?: string;
+  adapter?: string;
   maxAgents?: string;
   concurrency?: string;
   cwd?: string;
@@ -64,8 +64,8 @@ interface GovernanceOpts {
 const MAX_ATTEMPT_TRANSCRIPT_ERROR_RENDER = 240;
 
 export function registerWorkCommand(program: Command, emit: EmitContext): void {
-  const registry = createBuiltinHarnessRegistry();
-  const harnesses = registry.ids();
+  const registry = createBuiltinAdapterRegistry();
+  const adapters = registry.ids();
   const work = program
     .command("work")
     .description("Track durable objectives across bounded workflow attempts.");
@@ -159,8 +159,8 @@ export function registerWorkCommand(program: Command, emit: EmitContext): void {
       });
     });
 
-  registerRunCommand(work, "run", false, registry, harnesses, emit);
-  registerRunCommand(work, "retry", true, registry, harnesses, emit);
+  registerRunCommand(work, "run", false, registry, adapters, emit);
+  registerRunCommand(work, "retry", true, registry, adapters, emit);
   registerGovernanceCommand(work, "accept", emit);
   registerGovernanceCommand(work, "cancel", emit);
   registerGovernanceCommand(work, "reopen", emit);
@@ -170,8 +170,8 @@ function registerRunCommand(
   work: Command,
   name: "run" | "retry",
   retry: boolean,
-  registry: ReturnType<typeof createBuiltinHarnessRegistry>,
-  harnesses: string[],
+  registry: ReturnType<typeof createBuiltinAdapterRegistry>,
+  adapters: string[],
   emit: EmitContext,
 ): void {
   work
@@ -184,8 +184,8 @@ function registerRunCommand(
     .option("--max-agents <n>", "Total-agent ceiling for the workflow")
     .option("--concurrency <n>", "Concurrent-subagent cap")
     .option("--cwd <dir>", "Working directory children spawn in")
-    .option("--harness <name>", `Default harness: ${harnesses.join(" | ")}`)
-    .option("--subscription-only", "Require stored harness-login billing")
+    .option("--adapter <name>", `Default adapter: ${adapters.join(" | ")}`)
+    .option("--subscription-only", "Require stored adapter-login billing")
     .option("--allow-api-billing", "Permit API-key override billing")
     .option("--policy <file>", "Host policy JSON/JSONC")
     .option("--isolation <mode>", "shared | worktree | sandbox | remote")
@@ -195,8 +195,8 @@ function registerRunCommand(
     .option("--json", "Emit the workflow report or parked result as JSON")
     .action(async (workId: string, opts: WorkRunOpts) => {
       await withWorkRootAsync(emit, async (coordRoot) => {
-        if (opts.harness && !registry.get(opts.harness)) {
-          throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
+        if (opts.adapter && !registry.get(opts.adapter)) {
+          throw new Error(`unknown adapter ${JSON.stringify(opts.adapter)}`);
         }
         if (opts.workspaceRoot && opts.isolation !== "worktree") {
           throw new Error("--workspace-root requires --isolation worktree");
@@ -220,14 +220,14 @@ function registerRunCommand(
             actor: opts.actor,
             engine: {
               spawners: registry.spawners(),
-              defaultHarness: opts.harness,
+              defaultAdapter: opts.adapter,
               maxAgents: opts.maxAgents ? Number.parseInt(opts.maxAgents, 10) : undefined,
               concurrency: opts.concurrency ? Number.parseInt(opts.concurrency, 10) : undefined,
               cwd: opts.cwd,
               subscriptionOnly:
                 opts.subscriptionOnly === true ? true : workflowSubscriptionOnly(coordRoot),
               allowApiBilling: opts.allowApiBilling,
-              ...harnessProofInputs(
+              ...adapterProofInputs(
                 registry.list().map((adapter) => adapter.profile),
                 { versionProbe: probeBinaryVersion },
               ),

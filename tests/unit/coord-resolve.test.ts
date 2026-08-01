@@ -1,5 +1,5 @@
 /**
- * Resolution tests: harness detection, pid-map row format, and owner
+ * Resolution tests: adapter detection, pid-map row format, and owner
  * resolution.
  */
 
@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { findCoordRoot } from "../../src/core/hooks/resolve/coord-root.ts";
-import { detectHarness } from "../../src/core/hooks/harness/detect.ts";
+import { detectAdapter } from "../../src/core/hooks/adapter/detect.ts";
 import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import {
@@ -93,33 +93,33 @@ describe("findCoordRoot (hooks-side)", () => {
   });
 });
 
-describe("detectHarness", () => {
-  const saved = process.env.HARNERY_AGENT_COORD_HARNESS;
+describe("detectAdapter", () => {
+  const saved = process.env.HARNERY_AGENT_COORD_ADAPTER;
   afterEach(() => {
-    if (saved === undefined) delete process.env.HARNERY_AGENT_COORD_HARNESS;
-    else process.env.HARNERY_AGENT_COORD_HARNESS = saved;
+    if (saved === undefined) delete process.env.HARNERY_AGENT_COORD_ADAPTER;
+    else process.env.HARNERY_AGENT_COORD_ADAPTER = saved;
   });
 
-  test("--harness flag wins (both spaced + = form)", () => {
-    expect(detectHarness(["--harness", "cursor"])).toBe("cursor");
-    expect(detectHarness(["--harness=codex"])).toBe("codex");
+  test("--adapter flag wins (both spaced + = form)", () => {
+    expect(detectAdapter(["--adapter", "cursor"])).toBe("cursor");
+    expect(detectAdapter(["--adapter=codex"])).toBe("codex");
   });
 
-  test("falls back to HARNERY_AGENT_COORD_HARNESS env when flag absent", () => {
-    process.env.HARNERY_AGENT_COORD_HARNESS = "cursor";
-    expect(detectHarness([])).toBe("cursor");
+  test("falls back to HARNERY_AGENT_COORD_ADAPTER env when flag absent", () => {
+    process.env.HARNERY_AGENT_COORD_ADAPTER = "cursor";
+    expect(detectAdapter([])).toBe("cursor");
   });
 
   test("legacy claude_code (underscore) maps to claude-code", () => {
-    expect(detectHarness(["--harness", "claude_code"])).toBe("claude-code");
-    process.env.HARNERY_AGENT_COORD_HARNESS = "claude_code";
-    expect(detectHarness([])).toBe("claude-code");
+    expect(detectAdapter(["--adapter", "claude_code"])).toBe("claude-code");
+    process.env.HARNERY_AGENT_COORD_ADAPTER = "claude_code";
+    expect(detectAdapter([])).toBe("claude-code");
   });
 
   test("unknown / missing → null", () => {
-    delete process.env.HARNERY_AGENT_COORD_HARNESS;
-    expect(detectHarness([])).toBeNull();
-    expect(detectHarness(["--harness", "emacs"])).toBeNull();
+    delete process.env.HARNERY_AGENT_COORD_ADAPTER;
+    expect(detectAdapter([])).toBeNull();
+    expect(detectAdapter(["--adapter", "emacs"])).toBeNull();
   });
 });
 
@@ -193,7 +193,7 @@ describe("pid-map row format + resolveOwner", () => {
 
   test("platform parses out of a row that also carries a start token", () => {
     // The third field must not leak into the platform, or the walk stops
-    // preferring the harness row and silently downgrades to a fallback match.
+    // preferring the adapter row and silently downgrades to a fallback match.
     expect(parsePidmapRowPlatform("sess-abc\tcursor\tl12345")).toBe("cursor");
     expect(parsePidmapRowPlatform("sess-abc\tcursor")).toBe("cursor");
     expect(parsePidmapRowPlatform("sess-abc")).toBe("claude_code");
@@ -269,7 +269,7 @@ describe("resolveSingleActiveOwner (ppid-walk fallback for the sole live agent)"
   });
 });
 
-describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)", () => {
+describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)", () => {
   let root: string;
   let activeDir: string;
   const SAVED = SESSION_ID_ENV_KEYS.map((k) => [k, process.env[k]] as const);
@@ -340,7 +340,7 @@ describe("resolveOwnerBySessionEnv (harness session-id env → live heartbeat)",
     expect(resolveOwnerBySessionEnv(root)).toBeNull();
   });
 
-  test("HARNERY_AGENT_COORD_SESSION_ID override wins over harness vars", () => {
+  test("HARNERY_AGENT_COORD_SESSION_ID override wins over adapter vars", () => {
     writeHeartbeat("agent-a", "sess-a", 30_000);
     writeHeartbeat("agent-b", "sess-b", 30_000);
     process.env.CLAUDE_CODE_SESSION_ID = "sess-a";

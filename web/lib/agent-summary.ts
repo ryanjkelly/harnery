@@ -198,7 +198,7 @@ export interface SessionMeta {
  * name → {platform, model} fallback from durable `session.start` identities
  * (newest session wins per bare name, as a unit, never mixing fields across
  * sessions). Heartbeats carry both while live, but they die with the heartbeat;
- * journal-archive stale entries have neither, so "which harness/model was
+ * journal-archive stale entries have neither, so "which adapter/model was
  * Celeste on?" goes unanswered exactly when the operator needs it (routing a
  * prompt to a not-currently-running agent). Exported pure for tests.
  */

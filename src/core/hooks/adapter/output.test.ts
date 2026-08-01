@@ -1,5 +1,5 @@
 /**
- * Locks the per-harness Stop-block enforcement channel. Claude Code blocks via
+ * Locks the per-adapter Stop-block enforcement channel. Claude Code blocks via
  * exit-2 + a stderr reason; Cursor continues through `followup_message`; Codex
  * is observe-only because a continuation can replace the completed answer.
  */

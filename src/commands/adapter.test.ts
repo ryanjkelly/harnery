@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { createBuiltinHarnessRegistry, runHarnessBench } from "../core/harnesses/index.ts";
-import { renderBenchReport, renderProfile, renderProfileTable } from "./harness.ts";
+import { createBuiltinAdapterRegistry, runAdapterBench } from "../core/adapters/index.ts";
+import { renderBenchReport, renderProfile, renderProfileTable } from "./adapter.ts";
 
-describe("harness command rendering", () => {
-  test("catalog table keeps the three harnesses and high-signal claims visible", () => {
-    const profiles = createBuiltinHarnessRegistry()
+describe("adapter command rendering", () => {
+  test("catalog table keeps the three adapters and high-signal claims visible", () => {
+    const profiles = createBuiltinAdapterRegistry()
       .list()
       .map((adapter) => adapter.profile);
     const text = renderProfileTable(profiles);
@@ -15,7 +15,7 @@ describe("harness command rendering", () => {
   });
 
   test("show output includes qualifications, not only booleans", () => {
-    const profile = createBuiltinHarnessRegistry().require("cursor").profile;
+    const profile = createBuiltinAdapterRegistry().require("cursor").profile;
     const text = renderProfile(profile);
     expect(text).toContain("Cursor embeds effort");
     expect(text).toContain("compaction");
@@ -23,8 +23,8 @@ describe("harness command rendering", () => {
   });
 
   test("bench output states that it made no model calls", () => {
-    const report = runHarnessBench(createBuiltinHarnessRegistry(), {
-      harnesses: ["codex"],
+    const report = runAdapterBench(createBuiltinAdapterRegistry(), {
+      adapters: ["codex"],
       versionProbe: () => "installed",
     });
     expect(renderBenchReport(report)).toContain("offline (no model calls)");

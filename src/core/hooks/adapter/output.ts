@@ -1,9 +1,9 @@
 /**
- * Harness-aware hook output JSON. Each adapter target has its own protocol
+ * Adapter-aware hook output JSON. Each adapter target has its own protocol
  * shape, so encode it once here so post-emit handlers don't have to branch on
- * `harness` everywhere.
+ * `adapter` everywhere.
  *
- * Shapes (verified against live dispatchers + each harness's upstream hooks docs):
+ * Shapes (verified against live dispatchers + each adapter's upstream hooks docs):
  *
  * - **Claude Code**: `{hookSpecificOutput: {hookEventName, additionalContext}}`
  *   for SessionStart / UserPromptSubmit / SubagentStart; deny uses
@@ -18,34 +18,34 @@
  * fire-and-forget. Empty text → no-op (no JSON written).
  */
 
-import type { Harness } from "../events/schema.ts";
+import type { Adapter } from "../events/schema.ts";
 
 export type SystemEvent = "SessionStart" | "UserPromptSubmit" | "SubagentStart";
 
 /** Emit a context-injection (peer table, wiring check, council pending, …). */
-export function emitContext(harness: Harness, event: SystemEvent, text: string): void {
+export function emitContext(adapter: Adapter, event: SystemEvent, text: string): void {
   if (!text || text.length === 0) return;
-  const json = buildContextJson(harness, event, text);
+  const json = buildContextJson(adapter, event, text);
   process.stdout.write(`${JSON.stringify(json)}\n`);
 }
 
 /** Emit a PreToolUse deny: blocks the tool call with `reason` shown to the model. */
-export function emitDeny(harness: Harness, reason: string): void {
+export function emitDeny(adapter: Adapter, reason: string): void {
   if (!reason) return;
-  const json = buildDenyJson(harness, reason);
+  const json = buildDenyJson(adapter, reason);
   process.stdout.write(`${JSON.stringify(json)}\n`);
 }
 
 /**
- * Emit a Stop-hook block in the firing harness's enforcement channel and return
+ * Emit a Stop-hook block in the firing adapter's enforcement channel and return
  * the process exit code the caller should use.
  *
- * The verdict (allow/block + reason) is computed harness-agnostically in
+ * The verdict (allow/block + reason) is computed adapter-agnostically in
  * agents/rules/stop-hook.ts; this function only shapes *how the block is
- * communicated back*, because each harness has a different mechanism:
+ * communicated back*, because each adapter has a different mechanism:
  *
  * - **Claude Code** honors `exit 2` + a stderr reason as a turn block, and the
- *   harness re-prompts the model with the stderr text.
+ *   adapter re-prompts the model with the stderr text.
  * - **Codex** also supports that channel, but Harnery must not use it for
  *   coordination reminders. A Stop continuation can replace the completed
  *   answer in clients that retain only the final continuation response. Return
@@ -58,13 +58,13 @@ export function emitDeny(harness: Harness, reason: string): void {
  *   We exit 0 so Cursor treats the run as a success and honors the output.
  *   (Confirmed against cursor.com/docs/agent/hooks.)
  */
-export function emitStopBlock(harness: Harness, verdict: { reason?: string; rule: string }): 0 | 2 {
-  if (harness === "codex") return 0;
+export function emitStopBlock(adapter: Adapter, verdict: { reason?: string; rule: string }): 0 | 2 {
+  if (adapter === "codex") return 0;
 
   const message = `${
     verdict.reason ?? "End-of-turn coordination ritual incomplete."
   }\n[agent-hook stop]: rule=${verdict.rule}`;
-  if (harness === "cursor") {
+  if (adapter === "cursor") {
     process.stdout.write(`${JSON.stringify({ followup_message: message })}\n`);
     return 0;
   }
@@ -73,16 +73,16 @@ export function emitStopBlock(harness: Harness, verdict: { reason?: string; rule
 }
 
 function buildContextJson(
-  harness: Harness,
+  adapter: Adapter,
   event: SystemEvent,
   text: string,
 ): Record<string, unknown> {
-  if (harness === "cursor") {
+  if (adapter === "cursor") {
     // Cursor uses a flat top-level key + an env block that survives across the
     // session. The dispatcher historically also wrote
-    // `env: {HARNERY_AGENT_COORD_HARNESS, HARNERY_AGENT_COORD_PLATFORM}`. These are
+    // `env: {HARNERY_AGENT_COORD_ADAPTER, HARNERY_AGENT_COORD_PLATFORM}`. These are
     // observer hints, not load-bearing; agent-hook + agent-coord recover the
-    // harness from event metadata. Drop them.
+    // adapter from event metadata. Drop them.
     return { additional_context: text };
   }
   // Claude Code + Codex share the `hookSpecificOutput` envelope.
@@ -94,8 +94,8 @@ function buildContextJson(
   };
 }
 
-function buildDenyJson(harness: Harness, reason: string): Record<string, unknown> {
-  if (harness === "cursor") {
+function buildDenyJson(adapter: Adapter, reason: string): Record<string, unknown> {
+  if (adapter === "cursor") {
     return { permission: "deny", agent_message: reason, user_message: reason };
   }
   return {

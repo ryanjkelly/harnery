@@ -56,7 +56,7 @@ export interface CanonicalEvent {
   parent_session_id?: string;
   turn_id?: string;
   parent_turn_id?: string;
-  harness: string;
+  adapter: string;
   source: string;
   data: Record<string, unknown>;
 }

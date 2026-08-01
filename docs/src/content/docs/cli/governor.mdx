@@ -48,19 +48,19 @@ The team file is a JSON object keyed by role ID:
 {
   "architect": {
     "instructions": "Own system boundaries, contracts, and decomposition.",
-    "harness": "codex",
+    "adapter": "codex",
     "effort": "high",
     "maxTurns": 20,
     "timeoutMs": 900000
   },
   "implementer": {
     "instructions": "Implement the assigned slice and attach concrete verification.",
-    "harness": "claude-code",
+    "adapter": "claude-code",
     "maxTurns": 30
   },
   "reviewer": {
     "instructions": "Review independently. Report defects with file and evidence references.",
-    "harness": "codex",
+    "adapter": "codex",
     "effort": "high"
   }
 }
@@ -312,7 +312,7 @@ receipts, workflow transcripts, approvals, proofs, and accepted dependencies
 determine where it continues. A private exclusive lease prevents two
 governors from driving the same goal concurrently.
 
-Standard workflow host options remain available: `--harness`, `--cwd`,
+Standard workflow host options remain available: `--adapter`, `--cwd`,
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
 `--approval-to`.
 
@@ -351,7 +351,7 @@ service before changing its enrollment or authority.
 | `--error-backoff-max-ms` | 300,000 | Maximum exponential service-error delay |
 
 Backoff applies only to service failures, such as a temporarily unavailable
-harness. It does not authorize a failed work retry or consume a work attempt.
+adapter. It does not authorize a failed work retry or consume a work attempt.
 Any durable goal change bypasses stale backoff.
 
 The service writes private status, recoverable per-goal wake state, an audit

@@ -51,7 +51,7 @@ function startLine(
     ts: "2026-06-04T00:00:00Z",
     instance_id: instanceId,
     session_id: type === "subagent.start" ? "parent-sess" : instanceId,
-    harness: "claude-code",
+    adapter: "claude-code",
     source: "test",
     data,
   });
@@ -64,7 +64,7 @@ const NON_START = JSON.stringify({
   ts: "2026-06-04T00:00:00Z",
   instance_id: "sess-1",
   session_id: "sess-1",
-  harness: "claude-code",
+  adapter: "claude-code",
   source: "test",
   data: { tool_name: "Bash" },
 });
@@ -77,7 +77,7 @@ function turnStopLine(instanceId: string, model: string): string {
     ts: "2026-06-04T00:01:00Z",
     instance_id: instanceId,
     session_id: instanceId,
-    harness: "claude-code",
+    adapter: "claude-code",
     source: "test",
     data: { model, tool_call_count: 1 },
   });
@@ -91,7 +91,7 @@ function identityAssumedLine(instanceId: string, name: string, agentId: string):
     ts: "2026-06-04T00:02:00Z",
     instance_id: instanceId,
     session_id: instanceId,
-    harness: "codex",
+    adapter: "codex",
     source: "agent-coord",
     data: { name, agent_id: agentId },
   });
@@ -295,7 +295,7 @@ describe("readEvents", () => {
       ts: "2026-06-04T00:00:00Z",
       instance_id: instanceId,
       session_id: instanceId,
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
       data: { seq, filler: "x".repeat(pad) },
     });
@@ -394,7 +394,7 @@ function evLine(seq: number, instanceId = "sess-1"): string {
     ts: "2026-06-04T00:00:00Z",
     instance_id: instanceId,
     session_id: instanceId,
-    harness: "claude-code",
+    adapter: "claude-code",
     source: "test",
     data: { seq },
   });

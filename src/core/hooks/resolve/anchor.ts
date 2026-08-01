@@ -3,7 +3,7 @@
  * the heartbeat pid-map row should be keyed to, so the agent's later shell
  * tool calls (which ppid-walk up to find it) resolve their own identity.
  *
- * Split out of cli.ts's `findHarnessAnchorPid` so the comm-matching logic is
+ * Split out of cli.ts's `findAdapterAnchorPid` so the comm-matching logic is
  * unit-testable against the real Phase 0 Cursor probe chains without needing a
  * live /proc tree.
  *
@@ -14,7 +14,7 @@
  * calls a reachable, stable pid-map row. This faithfully restores the previous
  * cursor anchor behavior (match `cursor` first, then fall back to `node`) that
  * was dropped in the Phase 4-6 TS refactor, the same regression class as the
- * heartbeat-platform + pidmap-self-heal losses. Scoped to `harness === "cursor"`
+ * heartbeat-platform + pidmap-self-heal losses. Scoped to `adapter === "cursor"`
  * so Claude Code / Codex never
  * mis-anchor on an unrelated `node` ancestor (they match their own comm token
  * directly).
@@ -25,33 +25,33 @@
  * concurrent same-window chats disambiguate via `--session-id`.
  */
 
-/** Harness-binary comm names. CC's tool calls descend from `claude`, Codex's
+/** Adapter-binary comm names. CC's tool calls descend from `claude`, Codex's
  * from `codex`; matched directly so neither needs the `node` fallback. */
 const PRIMARY_COMM_TOKENS = new Set(["claude", "claude-code", "cursor", "codex"]);
 
 /**
- * Harness-exported pid environment variables, in precedence order.
+ * Adapter-exported pid environment variables, in precedence order.
  *
- * A harness that names its own process spares us the guessing entirely, and the
+ * A adapter that names its own process spares us the guessing entirely, and the
  * guess is the part that breaks: comm matching only recognises a binary called
- * by its harness name, and at least one Claude Code build installs its CLI
+ * by its adapter name, and at least one Claude Code build installs its CLI
  * under a version-numbered filename, whose comm is a bare version string. The
  * walk then finds nothing, falls back to the ephemeral hook shell, and writes a
  * row that is dead within seconds.
  *
  * Only Claude Code is known to export one today. Absent variables cost a lookup.
  */
-const HARNESS_PID_ENV_VARS = ["CLAUDE_PID"] as const;
+const ADAPTER_PID_ENV_VARS = ["CLAUDE_PID"] as const;
 
 /**
- * The harness pid as stated by the harness itself, or undefined.
+ * The adapter pid as stated by the adapter itself, or undefined.
  *
  * Sanity-checked against our own pid: a variable naming this process would
  * anchor the row to whatever short-lived thing is running the hook, which is
  * the failure it exists to avoid.
  */
-export function harnessPidFromEnv(): number | undefined {
-  for (const key of HARNESS_PID_ENV_VARS) {
+export function adapterPidFromEnv(): number | undefined {
+  for (const key of ADAPTER_PID_ENV_VARS) {
     const raw = process.env[key]?.trim();
     if (!raw) continue;
     const pid = Number(raw);
@@ -62,14 +62,14 @@ export function harnessPidFromEnv(): number | undefined {
 }
 
 /**
- * Does an executable path belong to a harness?
+ * Does an executable path belong to a adapter?
  *
  * Read as path segments rather than substrings, so a token has to be a whole
- * directory or file name. The leading dot is optional because harnesses install
+ * directory or file name. The leading dot is optional because adapters install
  * under a dotted home directory, and that directory is what identifies the
  * binary when the binary's own name is a version number.
  */
-function pathNamesAHarness(exePath: string | undefined): boolean {
+function pathNamesAAdapter(exePath: string | undefined): boolean {
   if (!exePath) return false;
   for (const raw of exePath.split("/")) {
     const segment = raw.startsWith(".") ? raw.slice(1) : raw;
@@ -81,23 +81,23 @@ function pathNamesAHarness(exePath: string | undefined): boolean {
 /**
  * Pick the anchor PID from a ppid chain ordered nearest-first (the resolving
  * process at index 0, walking up toward init). Returns the first ancestor
- * matching a harness comm token; for cursor, falls back to the first `node`
+ * matching a adapter comm token; for cursor, falls back to the first `node`
  * ancestor; otherwise undefined (caller falls back to process.ppid).
  */
 export function selectAnchorPid(
   chain: ReadonlyArray<{ pid: number; comm: string; exe?: string }>,
-  harness?: string,
+  adapter?: string,
 ): number | undefined {
   for (const hop of chain) {
     if (PRIMARY_COMM_TOKENS.has(hop.comm)) return hop.pid;
   }
-  // Second pass on the executable path, for a harness whose binary is not named
+  // Second pass on the executable path, for a adapter whose binary is not named
   // after itself. Kept behind the comm pass so an exactly-named ancestor still
   // wins, and so this only ever adds matches.
   for (const hop of chain) {
-    if (pathNamesAHarness(hop.exe)) return hop.pid;
+    if (pathNamesAAdapter(hop.exe)) return hop.pid;
   }
-  if (harness === "cursor") {
+  if (adapter === "cursor") {
     for (const hop of chain) {
       if (hop.comm === "node") return hop.pid;
     }
@@ -110,7 +110,7 @@ export function selectAnchorPid(
  * shape the `/proc` fast path produces, for the macOS/BSD branch of the anchor
  * walk. `ps` prints `comm` as a full executable path (and some Apple helper
  * names contain spaces, e.g. `Code Helper (Plugin)`), so the comm is reduced to
- * its basename to match the harness comm tokens the way Linux's `/proc/<pid>/comm`
+ * its basename to match the adapter comm tokens the way Linux's `/proc/<pid>/comm`
  * basename does. Returns null when the line has no leading numeric ppid.
  *
  * Pure (no I/O) so the parsing — the error-prone part — is unit-testable

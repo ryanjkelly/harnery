@@ -66,13 +66,13 @@ describe("governor background service", () => {
       errorBackoffMaxMs: 4_000,
       engine: {
         subscription_only: true,
-        default_harness: "codex",
+        default_adapter: "codex",
         policy: normalizePolicy({ name: "frozen-service-policy", network: "ask" }),
       },
     });
     expect(config.goal_ids).toEqual([goalId]);
     expect(config.engine).toMatchObject({
-      default_harness: "codex",
+      default_adapter: "codex",
       cwd: root,
       subscription_only: true,
       allow_api_billing: false,
@@ -176,7 +176,7 @@ describe("governor background service", () => {
         : base;
     const runGoal = async () => {
       attempts++;
-      throw new Error("temporary harness outage");
+      throw new Error("temporary adapter outage");
     };
 
     const first = await runGovernorServiceSweep({

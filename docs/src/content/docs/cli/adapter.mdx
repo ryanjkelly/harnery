@@ -1,20 +1,20 @@
 ---
-title: harn harness
+title: harn adapter
 description: Inspect the registered Claude, Codex, and Cursor adapter capabilities and run the offline conformance bench.
 sidebar:
   order: 29
 ---
 
 ```
-harn harness list [--json]
-harn harness show <id> [--json]
-harn harness bench [harnesses...] [--require-installed] [--json]
-harn harness attest [harnesses...] --yes [--subscription-only] [--timeout <ms>] [--projection] [--json]
-harn harness attestations [--json]
+harn adapter list [--json]
+harn adapter show <id> [--json]
+harn adapter bench [adapters...] [--require-installed] [--json]
+harn adapter attest [adapters...] --yes [--subscription-only] [--timeout <ms>] [--projection] [--json]
+harn adapter attestations [--json]
 ```
 
-`harn harness` is the executable source of truth for Harnery's workflow
-adapters. The built-in registry intentionally contains three harnesses:
+`harn adapter` is the executable source of truth for Harnery's workflow
+adapters. The built-in registry intentionally contains three adapters:
 `claude-code`, `codex`, and `cursor`.
 
 The registry describes the Harnery adapter boundary, not every feature in the
@@ -24,7 +24,7 @@ workflow adapter currently returns only a normalized final result, so
 
 ## Capability catalog
 
-`harn harness list` prints the high-signal claims. `harn harness show <id>`
+`harn adapter list` prints the high-signal claims. `harn adapter show <id>`
 prints every dimension, its support level, and its qualification.
 
 Claims use four states:
@@ -45,7 +45,7 @@ native compaction.
 
 ## Conformance bench
 
-`harn harness bench` runs without credentials and makes no model calls. It
+`harn adapter bench` runs without credentials and makes no model calls. It
 uses the same invocation planners and result normalizers as production
 workflow runs, then reconciles their observed behavior with the registry
 claims. A disagreement is `drift` and exits non-zero.
@@ -63,13 +63,13 @@ The full verdict vocabulary is:
 A missing binary is a neutral skip by default because the registry can be
 tested on machines that do not install every vendor CLI. Pass
 `--require-installed` when the current machine is expected to host every
-registered harness. `--json` emits the complete report for CI or dashboards.
+registered adapter. `--json` emits the complete report for CI or dashboards.
 
 ### Basis: how a result was established
 
 Every row also carries a `basis`, which answers "how do we know" rather than
 "what is true". Verdict and basis are independent
-([ADR 0037](/decisions/0037-attested-harness-capability-claims/)).
+([ADR 0037](/decisions/0037-attested-adapter-capability-claims/)).
 
 | Basis | Meaning |
 | --- | --- |
@@ -88,7 +88,7 @@ measured run from an unmeasured one without walking every row.
 
 ### The contract dimension
 
-Each harness profile can record the vendor CLI contract its declaration was
+Each adapter profile can record the vendor CLI contract its declaration was
 last validated against. The `contract` dimension compares that recorded version
 with the version the installed binary reports:
 
@@ -107,22 +107,22 @@ version string costs nothing to read.
 
 ## Live attestation
 
-`harn harness attest --yes` records what the installed vendor CLIs actually do
-([ADR 0038](/decisions/0038-live-harness-attestation/)). It runs one bounded
-turn per harness through the same `spawn` the workflow engine uses, so what gets
+`harn adapter attest --yes` records what the installed vendor CLIs actually do
+([ADR 0038](/decisions/0038-live-adapter-attestation/)). It runs one bounded
+turn per adapter through the same `spawn` the workflow engine uses, so what gets
 attested is the path production takes.
 
 ```bash
-harn harness attest --yes                  # every registered harness
-harn harness attest --yes claude-code      # one harness
-harn harness attest --yes --subscription-only # match a subscription-only run
-harn harness attest --yes --timeout 180000 # per-harness probe timeout
-harn harness attest --yes --projection     # also prove the sandbox is enforced
-harn harness attestations                  # show records, no model calls
+harn adapter attest --yes                  # every registered adapter
+harn adapter attest --yes claude-code      # one adapter
+harn adapter attest --yes --subscription-only # match a subscription-only run
+harn adapter attest --yes --timeout 180000 # per-adapter probe timeout
+harn adapter attest --yes --projection     # also prove the sandbox is enforced
+harn adapter attestations                  # show records, no model calls
 ```
 
 `--yes` is required because this spends real vendor tokens. Nothing else in the
-`harness` command group makes a model call, and `bench` never does.
+`adapter` command group makes a model call, and `bench` never does.
 
 One turn can honestly establish four dimensions: `invocation`, `finalResult`,
 `sessionId`, and `cost`. Dimensions that would need a staged scenario are left
@@ -143,10 +143,10 @@ child that simply ignored the instruction would be indistinguishable from a
 sandbox doing its job. If the control completes without writing, the probe
 reports inconclusive, skips the treatment turn, and records nothing.
 
-This costs two extra turns per capable harness, which is why it is opt-in. An
+This costs two extra turns per capable adapter, which is why it is opt-in. An
 adapter that declares no sandbox projection spends no extra turn at all.
 
-Records live under `.harnery/harnesses/attestations/`. They are structural
+Records live under `.harnery/adapters/attestations/`. They are structural
 throughout: version strings, dimension names, timestamps, and digests. The probe
 prompt is a fixed constant, so no prompt text, completion text, or host path can
 reach the file.
@@ -186,7 +186,7 @@ Workflow `agent()` calls accept `effort` alongside `model`:
 
 ```js
 await agent("Review this patch", {
-  harness: "codex",
+  adapter: "codex",
   model: "gpt-5.6-sol",
   effort: "high",
 });

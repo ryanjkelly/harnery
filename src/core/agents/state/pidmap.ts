@@ -1,9 +1,9 @@
 /**
  * Pid-map writer + liveness helpers.
  *
- * Per-harness pid-map at `.harnery/pid-map/<pid>` containing
+ * Per-adapter pid-map at `.harnery/pid-map/<pid>` containing
  * `<instance_id>\t<platform>\t<start_token>`. `harn agents whoami` walks ppid up
- * 20 hops looking for a matching entry (preferring the harness, falling back to
+ * 20 hops looking for a matching entry (preferring the adapter, falling back to
  * any platform).
  *
  * The start token pins each row to one *run* of that pid, because a pid on its

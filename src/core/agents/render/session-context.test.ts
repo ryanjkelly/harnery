@@ -36,7 +36,7 @@ describe("renderSessionContext", () => {
     expect(out).not.toContain("(Codex)");
   });
 
-  test("platformLabel renders harness suffix on self-name", () => {
+  test("platformLabel renders adapter suffix on self-name", () => {
     const out = renderSessionContext({
       coordRoot: root,
       instanceId: "self",

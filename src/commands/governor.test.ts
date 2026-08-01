@@ -103,7 +103,7 @@ describe("governor command", () => {
       coordRoot: root,
       id: "goal-cli-no-proposal",
       rootWorkId: "cli-no-proposal-root",
-      specialists: { planner: { instructions: "Plan", harness: "codex" } },
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
       replanning: {
         plannerSpecialist: "planner",
         maxReplans: 1,
@@ -126,8 +126,8 @@ describe("governor command", () => {
             durationMs: 1,
           }),
         },
-        probeBilling: (harness: string) => ({
-          harness,
+        probeBilling: (adapter: string) => ({
+          adapter,
           apiKeySource: null,
           apiKeyPresent: false,
           login: "present" as const,

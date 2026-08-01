@@ -159,7 +159,7 @@ describe("renderPromptContext", () => {
     expect(out).toContain("task");
   });
 
-  test("first-session nudge tells every harness how to print the suggested name", () => {
+  test("first-session nudge tells every adapter how to print the suggested name", () => {
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     writeFileSync(
       join(activeDir, "self.json"),

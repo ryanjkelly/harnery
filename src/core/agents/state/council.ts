@@ -7,7 +7,7 @@
  *
  * This module owns: lifecycle (advance, close, archive, unarchive, delete)
  * and steward reassignment. Council CREATION + contribution writes stay
- * separate (operator-side, harness-agnostic).
+ * separate (operator-side, adapter-agnostic).
  */
 
 import {

@@ -61,7 +61,7 @@ export interface ImageTouch {
   tool_name: string;
   intent?: string;
   command_head?: string;
-  harness?: string; // claude-code | cursor | codex, for the fallback hover card
+  adapter?: string; // claude-code | cursor | codex, for the fallback hover card
 }
 
 /** A distinct image (one content hash), with every touch that referenced it. */
@@ -144,7 +144,7 @@ export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesR
       tool_name: d.tool_name,
       intent: d.intent,
       command_head: d.command_head,
-      harness: row.harness,
+      adapter: row.adapter,
     };
     totalTouches++;
 

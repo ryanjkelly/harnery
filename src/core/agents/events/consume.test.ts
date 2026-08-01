@@ -26,7 +26,7 @@ function ev(id: string): Record<string, unknown> {
     ts: "2026-06-04T00:00:00Z",
     instance_id: "owner-1",
     session_id: "owner-1",
-    harness: "claude-code",
+    adapter: "claude-code",
     source: "test",
     data: {},
   };

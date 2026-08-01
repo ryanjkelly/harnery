@@ -1,5 +1,5 @@
 /**
- * Harness payload parser. One file because all three harnesses (CC, Cursor,
+ * Adapter payload parser. One file because all three adapters (CC, Cursor,
  * Codex) share most of their PreToolUse / PostToolUse field names (Codex's
  * field names match CC's directly) and Cursor's deltas are small enough to
  * branch inline.
@@ -10,7 +10,7 @@
  * events without affecting behavior": fail-soft beats fail-hard.
  */
 
-import type { Harness } from "../events/schema.ts";
+import type { Adapter } from "../events/schema.ts";
 
 export interface ParsedPayload {
   hook_event_name?: string;
@@ -40,10 +40,10 @@ export interface ParsedPayload {
 }
 
 /**
- * Parse the raw stdin payload string for any harness. Returns null when JSON
+ * Parse the raw stdin payload string for any adapter. Returns null when JSON
  * parse fails (Cursor occasionally fires hooks with no payload).
  */
-export function parsePayload(raw: string, _harness: Harness): ParsedPayload | null {
+export function parsePayload(raw: string, _adapter: Adapter): ParsedPayload | null {
   if (!raw || raw.trim().length === 0) return null;
   let json: Record<string, unknown>;
   try {
@@ -128,7 +128,7 @@ function pickBool(o: Record<string, unknown>, k: string): boolean | undefined {
 // ── Event-name normalization ────────────────────────────────────────────────
 
 /**
- * Each harness uses a slightly different name for the "same" lifecycle event.
+ * Each adapter uses a slightly different name for the "same" lifecycle event.
  * Map the CLI-arg event-name (kebab-case, set by us in the wiring) to one of
  * the canonical event_types. Phase 2's CLI passes the kebab event
  * name; this returns the canonical event_type or null when the event has no

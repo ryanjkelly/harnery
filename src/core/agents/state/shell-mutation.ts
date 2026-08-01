@@ -1,7 +1,7 @@
 /**
  * A heuristic parser that extracts file paths likely to be mutated by a
  * shell command. Used by
- * the cursor + codex harness adapters to emit SHELL_CLAIM_CANDIDATE log lines
+ * the cursor + codex adapter adapters to emit SHELL_CLAIM_CANDIDATE log lines
  * (warn-only, never blocks).
  *
  * Two cases:

@@ -120,8 +120,8 @@ export default async function CouncilDetailPage({ params, searchParams }: PagePr
     for (const c of r.contributors) everyName.add(c.author);
   }
   // Durable session identities ride along so stale members (no heartbeat
-  // left) still resolve their harness (platform): the operator routing a
-  // prompt needs to know WHICH harness window to paste into.
+  // left) still resolve their adapter (platform): the operator routing a
+  // prompt needs to know WHICH adapter window to paste into.
   const summaries = buildAgentSummaryMap(everyName, readInstanceIdentities());
   const knownAgents = listKnownAgents();
   const summaryOf = (member: string) =>

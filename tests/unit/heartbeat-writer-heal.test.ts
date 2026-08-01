@@ -47,19 +47,19 @@ describe("heartbeat-writer canonical health.* emission", () => {
     expect(evs.length).toBe(1);
   });
 
-  test("healHeartbeat stamps platform from the supplied harness, defaults to claude_code", () => {
+  test("healHeartbeat stamps platform from the supplied adapter, defaults to claude_code", () => {
     const root = freshRoot();
 
-    // No harness → legacy default preserved (manual `harn agents heal` path).
+    // No adapter → legacy default preserved (manual `harn agents heal` path).
     const cc = healHeartbeat(root, "owner-cc", "owner-cc");
     expect(cc?.platform).toBe("claude_code");
 
-    // harness="cursor" → platform recreated as cursor, not mislabeled
+    // adapter="cursor" → platform recreated as cursor, not mislabeled
     // claude_code (the live tool.pre_use heal path for a pruned Cursor agent).
     const cur = healHeartbeat(root, "owner-cur", "owner-cur", "", "cursor");
     expect(cur?.platform).toBe("cursor");
 
-    // harness="codex" → platform codex.
+    // adapter="codex" → platform codex.
     const cdx = healHeartbeat(root, "owner-cdx", "owner-cdx", "", "codex");
     expect(cdx?.platform).toBe("codex");
   });

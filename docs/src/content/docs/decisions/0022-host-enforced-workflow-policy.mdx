@@ -9,14 +9,14 @@ description: "ADR: add a fail-closed ALLOW, ASK, and DENY boundary before agent 
 
 The workflow engine already owned the only path to a real child-agent spawn,
 tracked run cost, and wrote a terminal proof packet. It did not have a portable
-way for an embedding host to say which harnesses, models, paths, network
+way for an embedding host to say which adapters, models, paths, network
 conditions, isolation boundaries, or costs were acceptable before work began.
 
 Putting those rules into the workflow script or the agent prompt would be too
 weak. The code requesting an action must not also be the authority that can
 weaken its constraints. The opposite extreme, claiming that Harnery can
-intercept every tool call made inside every harness subprocess, would also be
-false. Some harnesses expose policy hooks and tool events; others provide only
+intercept every tool call made inside every adapter subprocess, would also be
+false. Some adapters expose policy hooks and tool events; others provide only
 a final result.
 
 ## Decision
@@ -30,7 +30,7 @@ Policy schema version 1 supports:
 
 - a run-cost ceiling and `ask | deny` behavior when dispatch pricing is
   unknown;
-- harness and model allowlists;
+- adapter and model allowlists;
 - filesystem roots with containment checks;
 - network and external-action verdicts;
 - a set of acceptable host-declared isolation modes: `shared`, `worktree`,
@@ -43,7 +43,7 @@ This keeps evaluation deterministic and makes a decision safe to repeat.
 The engine evaluates policy immediately before each uncached dispatch, before
 billing probing, spawn accounting, or adapter invocation. The request uses
 engine and host facts: current cost, a host-supplied cost projection, child
-working directory, harness, model, isolation, and network state. A cached
+working directory, adapter, model, isolation, and network state. A cached
 result does not dispatch and therefore does not produce a new dispatch
 decision.
 
@@ -68,7 +68,7 @@ credentials, URL queries, and response bodies are omitted.
 Add `harn policy check <file> [--json]` for validation and normalization, plus
 `harn workflow run --policy <file> --isolation <mode>`. Policy paths in a file
 resolve relative to that file. The CLI truthfully declares its ordinary
-harness subprocesses network-enabled.
+adapter subprocesses network-enabled.
 
 ## Alternatives considered
 
@@ -87,8 +87,8 @@ harness subprocesses network-enabled.
 - **Rank isolation modes from weak to strong.** Rejected because worktrees,
   sandboxes, and remote runtimes protect different boundaries. Policy lists
   acceptable modes; the host declares which boundary it actually created.
-- **Intercept arbitrary child-harness tool calls.** Rejected as a portable
-  guarantee. The existing harness capability registry remains the truth source
+- **Intercept arbitrary child-adapter tool calls.** Rejected as a portable
+  guarantee. The existing adapter capability registry remains the truth source
   for adapter-native policy mapping.
 - **Build a durable approval inbox now.** Deferred. The callback is the stable
   seam; durable addressed messages, parking, and crash-safe resumption are a
@@ -110,6 +110,6 @@ harness subprocesses network-enabled.
   actually happened.
 - `authorize()` is an enforcement seam for cooperative host code. It cannot
   stop workflow code from performing an undeclared operation or see hidden
-  tool calls inside an opaque child process. Sandboxing and harness-native tool
+  tool calls inside an opaque child process. Sandboxing and adapter-native tool
   policy remain separate, explicitly declared capabilities.
 

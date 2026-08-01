@@ -51,7 +51,7 @@ proof packet because it is not terminal.
 
 Each workflow run also receives a private, frozen resume manifest before its
 first dispatch. It records the script path and SHA-256, original start time,
-repository-before snapshot, normalized policy, working directory, harness and
+repository-before snapshot, normalized policy, working directory, adapter and
 bounded execution options. `harn workflow resume <run-id>` acquires an
 exclusive, crash-recoverable lease before loading the workflow module, refuses
 script drift, reuses the same run ID and transcript, reconstructs completed agent

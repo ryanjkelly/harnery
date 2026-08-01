@@ -1,7 +1,7 @@
 /**
- * Locks the read-only wiring inspection that powers `harn doctor`'s harness-hook
+ * Locks the read-only wiring inspection that powers `harn doctor`'s adapter-hook
  * check and the SessionStart drift nudge. The load-bearing rule: drift is only
- * reported for a harness the project has ALREADY opted into (≥1 hook wired), so
+ * reported for a adapter the project has ALREADY opted into (≥1 hook wired), so
  * a bare `.claude/settings.json` never false-warns.
  */
 
@@ -9,10 +9,10 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_CODE_EVENTS, HARNESS_SPECS } from "./events.ts";
-import { diffWiring, loadHarnessWiring, type SettingsFile } from "./wiring.ts";
+import { ADAPTER_SPECS, CLAUDE_CODE_EVENTS } from "./events.ts";
+import { diffWiring, loadAdapterWiring, type SettingsFile } from "./wiring.ts";
 
-const CLAUDE = HARNESS_SPECS["claude-code"];
+const CLAUDE = ADAPTER_SPECS["claude-code"];
 const HOOK_BASE = "/repo/harnery/bin/agent-hook";
 
 /** Build a Claude Code settings object wiring exactly the given subcommands. */
@@ -22,7 +22,7 @@ function settingsWiring(subcommands: string[]): SettingsFile {
     const event = CLAUDE_CODE_EVENTS.find((e) => e.subcommand === sub);
     if (!event) throw new Error(`no spec event for ${sub}`);
     hooks[event.settingsKey] = [
-      { hooks: [{ type: "command", command: `bash ${HOOK_BASE} ${sub} --harness claude-code` }] },
+      { hooks: [{ type: "command", command: `bash ${HOOK_BASE} ${sub} --adapter claude-code` }] },
     ];
   }
   return { hooks };
@@ -64,7 +64,7 @@ describe("diffWiring", () => {
         SessionStart: [
           {
             hooks: [
-              { type: "command", command: `bash ${HOOK_BASE} session-start --harness claude-code` },
+              { type: "command", command: `bash ${HOOK_BASE} session-start --adapter claude-code` },
             ],
           },
         ],
@@ -72,7 +72,7 @@ describe("diffWiring", () => {
         LegacyEvent: [
           {
             hooks: [
-              { type: "command", command: `bash ${HOOK_BASE} legacy-thing --harness claude-code` },
+              { type: "command", command: `bash ${HOOK_BASE} legacy-thing --adapter claude-code` },
             ],
           },
         ],
@@ -98,14 +98,14 @@ describe("diffWiring", () => {
   });
 
   test("Codex reports fields and events rejected by its strict schema", () => {
-    const codex = HARNESS_SPECS.codex;
+    const codex = ADAPTER_SPECS.codex;
     const settings: SettingsFile = {
       _comment: "legacy metadata",
       hooks: {
         SessionStart: [
           {
             hooks: [
-              { type: "command", command: `bash ${HOOK_BASE} session-start --harness codex` },
+              { type: "command", command: `bash ${HOOK_BASE} session-start --adapter codex` },
             ],
           },
         ],
@@ -118,7 +118,7 @@ describe("diffWiring", () => {
   });
 });
 
-describe("loadHarnessWiring (fs-backed)", () => {
+describe("loadAdapterWiring (fs-backed)", () => {
   let dir: string;
 
   function setup(): string {
@@ -136,7 +136,7 @@ describe("loadHarnessWiring (fs-backed)", () => {
   test("no settings file → no drift", () => {
     const root = setup();
     try {
-      expect(loadHarnessWiring(root)).toHaveLength(0);
+      expect(loadAdapterWiring(root)).toHaveLength(0);
     } finally {
       teardown();
     }
@@ -146,7 +146,7 @@ describe("loadHarnessWiring (fs-backed)", () => {
     const root = setup();
     try {
       writeClaudeSettings(root, settingsWiring(CLAUDE_CODE_EVENTS.map((e) => e.subcommand)));
-      expect(loadHarnessWiring(root)).toHaveLength(0);
+      expect(loadAdapterWiring(root)).toHaveLength(0);
     } finally {
       teardown();
     }
@@ -156,9 +156,9 @@ describe("loadHarnessWiring (fs-backed)", () => {
     const root = setup();
     try {
       writeClaudeSettings(root, settingsWiring(["session-start", "stop"]));
-      const drift = loadHarnessWiring(root);
+      const drift = loadAdapterWiring(root);
       expect(drift).toHaveLength(1);
-      expect(drift[0]!.harness).toBe("claude-code");
+      expect(drift[0]!.adapter).toBe("claude-code");
       expect(drift[0]!.missing.map((m) => m.subcommand)).toContain("pre-tool-use");
     } finally {
       teardown();
@@ -172,7 +172,7 @@ describe("loadHarnessWiring (fs-backed)", () => {
       writeClaudeSettings(root, {
         hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo hi" }] }] },
       });
-      expect(loadHarnessWiring(root)).toHaveLength(0);
+      expect(loadAdapterWiring(root)).toHaveLength(0);
     } finally {
       teardown();
     }
@@ -183,7 +183,7 @@ describe("loadHarnessWiring (fs-backed)", () => {
     try {
       mkdirSync(join(root, ".claude"), { recursive: true });
       writeFileSync(join(root, ".claude", "settings.json"), "{ not valid json");
-      const drift = loadHarnessWiring(root);
+      const drift = loadAdapterWiring(root);
       expect(drift).toHaveLength(1);
       expect(drift[0]!.parseError).toContain("JSON");
     } finally {
@@ -201,7 +201,7 @@ describe("loadHarnessWiring (fs-backed)", () => {
               hooks: [
                 {
                   type: "command",
-                  command: `bash ${HOOK_BASE} session-start --harness claude-code`,
+                  command: `bash ${HOOK_BASE} session-start --adapter claude-code`,
                 },
               ],
             },
@@ -210,13 +210,13 @@ describe("loadHarnessWiring (fs-backed)", () => {
           LegacyEvent: [
             {
               hooks: [
-                { type: "command", command: `bash ${HOOK_BASE} gone-event --harness claude-code` },
+                { type: "command", command: `bash ${HOOK_BASE} gone-event --adapter claude-code` },
               ],
             },
           ],
         },
       });
-      const drift = loadHarnessWiring(root);
+      const drift = loadAdapterWiring(root);
       expect(drift).toHaveLength(1);
       expect(drift[0]!.missing).toHaveLength(0);
       expect(drift[0]!.orphans).toEqual(["gone-event"]);

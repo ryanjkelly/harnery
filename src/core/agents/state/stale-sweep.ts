@@ -15,8 +15,8 @@ import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { emit } from "../events/emit.ts";
 
-/** platform → harness, for the swept-event envelope (mirrors heartbeat-writer's harnessOf). */
-function harnessFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
+/** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
+function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
@@ -26,7 +26,7 @@ function harnessFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
 function emitSwept(
   coordRoot: string,
   instanceId: string,
-  harness: "claude-code" | "cursor" | "codex",
+  adapter: "claude-code" | "cursor" | "codex",
   sessionId: string,
   reason: "stale" | "unparseable" | "missing_ts",
   ageSecs?: number,
@@ -36,7 +36,7 @@ function emitSwept(
       event_type: "health.heartbeat_swept",
       instance_id: instanceId,
       session_id: sessionId,
-      harness,
+      adapter,
       source: "agent-coord",
       data: { reason, ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}) },
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -116,7 +116,7 @@ export function staleSweep(coordRoot: string): {
       }
 
       const instanceId = parsed.instance_id ?? idFromFile;
-      const harness = harnessFromPlatform(parsed.platform);
+      const adapter = adapterFromPlatform(parsed.platform);
       const sessionId = parsed.session_id ?? instanceId;
       const ts = parsed.last_heartbeat
         ? Math.floor(Date.parse(parsed.last_heartbeat) / 1000)
@@ -127,7 +127,7 @@ export function staleSweep(coordRoot: string): {
         if (mtimeSecs(path) < cutoff) {
           unlinkSync(path);
           heartbeatsRemoved.push(f);
-          emitSwept(coordRoot, instanceId, harness, sessionId, "missing_ts");
+          emitSwept(coordRoot, instanceId, adapter, sessionId, "missing_ts");
         } else if (parsed.instance_id) {
           liveInstanceIds.add(parsed.instance_id);
         }
@@ -138,7 +138,7 @@ export function staleSweep(coordRoot: string): {
         // Legitimate stale prune (valid timestamp, past the freshness cutoff).
         unlinkSync(path);
         heartbeatsRemoved.push(f);
-        emitSwept(coordRoot, instanceId, harness, sessionId, "stale", nowSec - ts);
+        emitSwept(coordRoot, instanceId, adapter, sessionId, "stale", nowSec - ts);
         continue;
       }
 

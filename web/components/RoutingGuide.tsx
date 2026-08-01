@@ -18,7 +18,7 @@ import {
 } from "@/components/CouncilActionTrigger";
 import { useHostInfo } from "@/components/HostInfoProvider";
 import { councilAttentionRequest } from "@/lib/council-attention";
-import { harnessLabel } from "@/lib/harness";
+import { adapterLabel } from "@/lib/adapter";
 
 /**
  * Presentational helpers that make the council routing flow self-explanatory and
@@ -27,7 +27,7 @@ import { harnessLabel } from "@/lib/harness";
  * member-level round state and a live "working" signal from heartbeats.
  *
  * The model they explain: the steward drafts one prompt per member; the operator
- * copies the **active** prompt, pastes it into that agent's harness session, and
+ * copies the **active** prompt, pastes it into that agent's adapter session, and
  * the agent runs `/council contribute`, which unlocks the next prompt. Queued
  * prompts are copy-disabled so routing can't happen out of order. The steward
  * routes prompts to OTHERS and contributes directly, so "all prompts contributed"
@@ -246,10 +246,10 @@ export function NextActionBanner({
           &apos;s prompt below and paste it into their{" "}
           {activeMemberPlatform ? (
             <span className="font-medium text-foreground">
-              {harnessLabel(activeMemberPlatform)}
+              {adapterLabel(activeMemberPlatform)}
             </span>
           ) : (
-            "harness"
+            "adapter"
           )}{" "}
           session. They run{" "}
           <code className="font-mono">/council contribute</code> to submit, and

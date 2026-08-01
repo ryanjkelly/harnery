@@ -2,7 +2,7 @@
 "harnery": patch
 ---
 
-Tell every interactive harness how to surface Harnery's suggested session name
+Tell every interactive adapter how to surface Harnery's suggested session name
 on its first prompt.
 
 The shared prompt hook now detects that no `set-task` call has occurred, asks

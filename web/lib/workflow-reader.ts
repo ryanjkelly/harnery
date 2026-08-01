@@ -16,7 +16,7 @@ export interface WorkflowAgentRow {
   id: string;
   label: string;
   stage: string;
-  harness?: string;
+  adapter?: string;
   model?: string | null;
   status: "running" | "done" | "failed" | "cached";
   attempts?: number;
@@ -43,7 +43,7 @@ export interface WorkflowRunSummary {
   agents: WorkflowAgentRow[];
   agentsCached: number;
   costUsd: number;
-  /** "harness=mode" per harness used (from billing.probe transcript events). */
+  /** "adapter=mode" per adapter used (from billing.probe transcript events). */
   billing: string[];
   /** Terminal proof packet, absent for live and pre-proof runs. */
   proof?: WorkflowProof;
@@ -66,7 +66,7 @@ interface TranscriptLine {
   label?: string;
   title?: string;
   name?: string;
-  harness?: string;
+  adapter?: string;
   model?: string | null;
   mode?: string;
   attempts?: number;
@@ -83,7 +83,7 @@ interface TranscriptLine {
  * (orchestrator likely killed) rather than "running". */
 const STALE_MS = 10 * 60 * 1000;
 
-/** One child harness session belonging to a workflow run. */
+/** One child adapter session belonging to a workflow run. */
 export interface WorkflowChildSession {
   sessionId: string;
   /** The agent row this session ran, when known: from the heartbeat's
@@ -125,11 +125,11 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
 }
 
 /**
- * Every child harness session of a run, live and finished.
+ * Every child adapter session of a run, live and finished.
  *
  * Both sources are needed, and together they leave no gap: a live child appears
  * only in `.harnery/active/` (the transcript does not learn its session id until
- * `agent.end`, because the harness mints the id and only reports it in the
+ * `agent.end`, because the adapter mints the id and only reports it in the
  * result envelope), and a finished child appears only in the transcript (its
  * heartbeat is deleted on session end).
  *
@@ -248,7 +248,7 @@ export function readWorkflowRun(
         if (e.title && !stages.includes(e.title)) stages.push(e.title);
         break;
       case "billing.probe":
-        if (e.harness && e.mode) billing.push(`${e.harness}=${e.mode}`);
+        if (e.adapter && e.mode) billing.push(`${e.adapter}=${e.mode}`);
         break;
       case "agent.start":
         if (e.id) {
@@ -256,7 +256,7 @@ export function readWorkflowRun(
             id: e.id,
             label: e.label ?? e.id,
             stage: e.stage ?? "",
-            harness: e.harness,
+            adapter: e.adapter,
             model: e.model ?? null,
             status: "running",
             startedAt: e.ts,

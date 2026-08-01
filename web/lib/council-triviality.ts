@@ -25,7 +25,7 @@ export type RoundBodies = {
  * Backticks around the tag don't matter (substring match); case-insensitive.
  * No marker at all → null (an untagged contribution never counts as trivial).
  *
- * Bare-word fallback: in practice agents across harnesses end with plain
+ * Bare-word fallback: in practice agents across adapters end with plain
  * "trivial", "classification: substantive", or "**Status: trivial**" instead
  * of the angle-bracket form (a whole 4-round council shipped 25/25 bodies
  * that way, 2026-07-06, silently reading as untagged and keeping the exit

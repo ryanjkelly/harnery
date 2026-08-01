@@ -18,7 +18,7 @@ export interface CanonicalEmitInput {
   type: string;
   owner: string;
   session: string;
-  harness: "claude-code" | "cursor" | "codex";
+  adapter: "claude-code" | "cursor" | "codex";
   data: Record<string, unknown>;
   turnId?: string;
   parentSessionId?: string;
@@ -68,8 +68,8 @@ export function emitCanonical(input: CanonicalEmitInput): void {
       input.owner,
       "--session",
       input.session,
-      "--harness",
-      input.harness,
+      "--adapter",
+      input.adapter,
       "--data-json",
       JSON.stringify(input.data),
     ];
@@ -96,9 +96,9 @@ export function emitCanonical(input: CanonicalEmitInput): void {
 
 /**
  * Normalize the heartbeat's `platform` field (which uses snake_case
- * `claude_code`) to the canonical kebab-case Harness type.
+ * `claude_code`) to the canonical kebab-case Adapter type.
  */
-export function normalizeHarness(platform: string | undefined): "claude-code" | "cursor" | "codex" {
+export function normalizeAdapter(platform: string | undefined): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";

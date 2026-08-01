@@ -3,14 +3,14 @@ title: "0037: A capability claim states the basis it was checked on"
 description: "ADR: separate adapter-checked conformance from live vendor attestation so a clean bench can no longer mean nothing was measured."
 ---
 
-**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/harnesses`, `harness` CLI)
+**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/adapters`, `adapter` CLI)
 
 ## Context
 
-[ADR 0018](/decisions/0018-harness-registry-conformance-bench/) made harness
+[ADR 0018](/decisions/0018-adapter-registry-conformance-bench/) made adapter
 support an executable claim. Each registered adapter owns a profile with
 capability claims, the production invocation planner, the production result
-normalizer, and one deterministic fixture. `harn harness bench` reconciles the
+normalizer, and one deterministic fixture. `harn adapter bench` reconciles the
 declared claim against an observed value and reports drift.
 
 That bench is honest about what it runs. It is not honest about what its result
@@ -26,11 +26,11 @@ against a fixture and a dimension never checked at all both arrive as a
 therefore reads as "no disagreement found" when the accurate reading is "no
 vendor behavior was observed."
 
-One field was supposed to carry the live half of the story. `HarnessProfile`
+One field was supposed to carry the live half of the story. `AdapterProfile`
 has an optional `verified: { date, version }` recording the last real vendor
 CLI contract used to validate the declaration. Nothing reads it. It is typed,
-declared for all three built-in harnesses, and inert. Meanwhile the bench
-already runs `binary --version` on every invocation to decide whether a harness
+declared for all three built-in adapters, and inert. Meanwhile the bench
+already runs `binary --version` on every invocation to decide whether a adapter
 is installed, then discards the version string into a note.
 
 The result is a system holding the two halves of a check and never performing
@@ -61,7 +61,7 @@ inventing a verdict for each combination.
 
 ### The contract dimension
 
-The bench adds a `contract` dimension per harness. Its declared value is
+The bench adds a `contract` dimension per adapter. Its declared value is
 `profile.verified.version`; its observed value is the version string already
 probed from the installed binary. It reports:
 
@@ -77,7 +77,7 @@ turn, because a version string is a vendor fact obtainable for free.
 
 ### Consequences for existing behavior
 
-`harn harness bench` keeps its current surface, its `--json` shape (extended,
+`harn adapter bench` keeps its current surface, its `--json` shape (extended,
 not changed), its `--require-installed` flag, and its non-zero exit on drift. A
 host with no vendor CLI installed still gets a clean offline run. The change is
 that a clean run now states its basis rather than implying an attestation it

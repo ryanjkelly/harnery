@@ -1,10 +1,10 @@
 /**
  * UserPromptSubmit UX renderer. Combines the peer-refresh dedup, the
- * council-pending hash-dedup, the cross-harness first-session naming nudge,
+ * council-pending hash-dedup, the cross-adapter first-session naming nudge,
  * the Cursor/Codex set-task staleness nudge, and the Codex status-footer
  * reminder.
  * agent-hook's user_prompt.submit post-emit handler calls this
- * and forwards the result as the harness-shaped additionalContext payload.
+ * and forwards the result as the adapter-shaped additionalContext payload.
  *
  * Four subsections combined into one additionalContext payload:
  *   1. Peer table: semantically-relevant peer fields hashed; only re-emits
@@ -13,7 +13,7 @@
  *   2. Council pending: pending open-council IDs hashed; re-emits when the
  *      ID set changes.
  *   3. Focus nudge. Before the first set-task in a human-facing session, tells
- *      every harness to reproduce set-task's suggested session name in a fenced
+ *      every adapter to reproduce set-task's suggested session name in a fenced
  *      code block. Cursor/Codex additionally get the existing unset/stale-task
  *      reminder because their Stop hooks do not enforce task declarations as
  *      reliably as Claude Code's.
@@ -69,7 +69,7 @@ export interface PromptContextOpts {
   sessionId: string;
   agentName?: string;
   /** When true, remind a human-facing session to print the session name before
-   * its first set-task. UserPromptSubmit enables this for every harness. */
+   * its first set-task. UserPromptSubmit enables this for every adapter. */
   sessionNameNudge?: boolean;
   /** When true, run the unset/stale-task check after the first set-task.
    * Cursor/Codex use this; Claude Code has Stop-hook transcript enforcement. */
@@ -109,7 +109,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (councilMsg) sections.push(councilMsg);
   }
 
-  // 3. First-session naming for every harness, plus unset/stale-task reminders
+  // 3. First-session naming for every adapter, plus unset/stale-task reminders
   // for Cursor/Codex. One state machine avoids a second generic "task unset"
   // reminder immediately after the first-session reminder has been deduped.
   if (sessionNameNudge || taskNudge) {
@@ -144,7 +144,7 @@ function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): 
 }
 
 /**
- * First-session naming for every harness, followed by Cursor/Codex task
+ * First-session naming for every adapter, followed by Cursor/Codex task
  * staleness checks. The absence of `task_updated_at` is the same invariant
  * `agents set-task` uses for `first_of_session`; clears still stamp the field.
  */
@@ -188,7 +188,7 @@ function computeFocusNudgeIfChanged(
     nudgeKind = "task-unset";
     message =
       `Heads up: your \`task\` field is unset. Run \`${bin} agents set-task "<short focus>"\` so peers + the coord dashboard can see what you're working on. ` +
-      "(This harness cannot enforce the declaration from its Stop hook as reliably as Claude Code, so this is a one-time soft reminder per staleness state.)";
+      "(This adapter cannot enforce the declaration from its Stop hook as reliably as Claude Code, so this is a one-time soft reminder per staleness state.)";
   } else if (opts.taskNudge && hb.task_updated_at) {
     const updatedSec = Math.floor(Date.parse(hb.task_updated_at) / 1000);
     const nowSec = Math.floor(Date.now() / 1000);

@@ -58,7 +58,7 @@ export interface WorkflowRunManifest {
   repository_before: RepoSnapshot;
   execution: {
     cwd: string;
-    default_harness: string;
+    default_adapter: string;
     max_agents: number;
     concurrency: number;
     subscription_only: boolean;
@@ -270,8 +270,8 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
   if (!value || typeof value !== "object") return false;
   return (
     isAbsolute(value.cwd) &&
-    typeof value.default_harness === "string" &&
-    value.default_harness.length > 0 &&
+    typeof value.default_adapter === "string" &&
+    value.default_adapter.length > 0 &&
     positiveSafeInteger(value.max_agents) &&
     positiveSafeInteger(value.concurrency) &&
     typeof value.subscription_only === "boolean" &&

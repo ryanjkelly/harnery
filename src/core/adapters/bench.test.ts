@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { HarnessAttestation } from "./attestation.ts";
+import type { AdapterAttestation } from "./attestation.ts";
 import { profileDigest, sealAttestation } from "./attestation.ts";
-import { runHarnessBench } from "./bench.ts";
-import { createBuiltinHarnessRegistry, HarnessRegistry } from "./registry.ts";
+import { runAdapterBench } from "./bench.ts";
+import { AdapterRegistry, createBuiltinAdapterRegistry } from "./registry.ts";
 
 /** Echo each profile's own recorded vendor contract, so the contract dimension
  * is satisfied and a test can isolate the behavior it actually targets. */
-function matchingVersionProbe(registry = createBuiltinHarnessRegistry()) {
+function matchingVersionProbe(registry = createBuiltinAdapterRegistry()) {
   const byBinary = new Map(
     registry.ids().map((id) => {
       const profile = registry.require(id).profile;
@@ -16,13 +16,13 @@ function matchingVersionProbe(registry = createBuiltinHarnessRegistry()) {
   return (binary: string) => byBinary.get(binary) ?? "installed";
 }
 
-describe("harness conformance bench", () => {
+describe("adapter conformance bench", () => {
   test("offline profiles reconcile against the production planners and normalizers", () => {
-    const report = runHarnessBench(createBuiltinHarnessRegistry(), {
+    const report = runAdapterBench(createBuiltinAdapterRegistry(), {
       versionProbe: matchingVersionProbe(),
     });
     expect(report.mode).toBe("offline");
-    expect(report.harnesses).toEqual(["claude-code", "codex", "cursor"]);
+    expect(report.adapters).toEqual(["claude-code", "codex", "cursor"]);
     expect(report.drift).toBe(false);
     expect(report.summary.drift).toBe(0);
     expect(report.summary.supported).toBeGreaterThan(0);
@@ -30,8 +30,8 @@ describe("harness conformance bench", () => {
   });
 
   test("missing vendor binaries are capability-neutral skips", () => {
-    const report = runHarnessBench(createBuiltinHarnessRegistry(), {
-      harnesses: ["claude-code"],
+    const report = runAdapterBench(createBuiltinAdapterRegistry(), {
+      adapters: ["claude-code"],
       versionProbe: () => null,
     });
     expect(report.skipped).toBe(true);
@@ -40,8 +40,8 @@ describe("harness conformance bench", () => {
   });
 
   test("a declaration that disagrees with executable behavior becomes drift", () => {
-    const base = createBuiltinHarnessRegistry().require("codex");
-    const registry = new HarnessRegistry([
+    const base = createBuiltinAdapterRegistry().require("codex");
+    const registry = new AdapterRegistry([
       {
         ...base,
         profile: {
@@ -54,7 +54,7 @@ describe("harness conformance bench", () => {
         },
       },
     ]);
-    const report = runHarnessBench(registry, { versionProbe: () => "installed" });
+    const report = runAdapterBench(registry, { versionProbe: () => "installed" });
     const invocation = report.results.find((row) => row.dimension === "invocation");
     expect(invocation?.observed).toBe("supported");
     expect(invocation?.verdict).toBe("drift");
@@ -62,8 +62,8 @@ describe("harness conformance bench", () => {
   });
 
   test("dimension slices retain registration and availability context", () => {
-    const report = runHarnessBench(createBuiltinHarnessRegistry(), {
-      harnesses: ["cursor"],
+    const report = runAdapterBench(createBuiltinAdapterRegistry(), {
+      adapters: ["cursor"],
       dimensions: ["sessionId"],
       versionProbe: () => "installed",
     });
@@ -78,13 +78,13 @@ describe("harness conformance bench", () => {
 });
 
 describe("bench result basis (ADR 0037)", () => {
-  const registry = createBuiltinHarnessRegistry();
+  const registry = createBuiltinAdapterRegistry();
   // Hermetic: never read this host's real attestation store.
   const noAttestations = () => null;
 
   test("an adapter-checked dimension never claims to be attested", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["claude-code"],
+    const report = runAdapterBench(registry, {
+      adapters: ["claude-code"],
       versionProbe: matchingVersionProbe(registry),
       attestationReader: noAttestations,
     });
@@ -95,8 +95,8 @@ describe("bench result basis (ADR 0037)", () => {
   });
 
   test("an unchecked dimension reports its declaration as unchecked", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["claude-code"],
+    const report = runAdapterBench(registry, {
+      adapters: ["claude-code"],
       dimensions: ["streaming"],
       versionProbe: matchingVersionProbe(registry),
       attestationReader: noAttestations,
@@ -107,7 +107,7 @@ describe("bench result basis (ADR 0037)", () => {
   });
 
   test("only observations of the installed binary are attested", () => {
-    const report = runHarnessBench(registry, {
+    const report = runAdapterBench(registry, {
       versionProbe: matchingVersionProbe(registry),
       attestationReader: noAttestations,
     });
@@ -119,7 +119,7 @@ describe("bench result basis (ADR 0037)", () => {
   });
 
   test("nothing is attested when no vendor binary is present", () => {
-    const report = runHarnessBench(registry, {
+    const report = runAdapterBench(registry, {
       versionProbe: () => null,
       attestationReader: noAttestations,
     });
@@ -128,7 +128,7 @@ describe("bench result basis (ADR 0037)", () => {
   });
 
   test("the basis rollup accounts for every result", () => {
-    const report = runHarnessBench(registry, {
+    const report = runAdapterBench(registry, {
       versionProbe: matchingVersionProbe(registry),
       attestationReader: noAttestations,
     });
@@ -139,16 +139,16 @@ describe("bench result basis (ADR 0037)", () => {
 });
 
 describe("vendor contract attestation (ADR 0037)", () => {
-  const registry = createBuiltinHarnessRegistry();
-  const contractOf = (report: ReturnType<typeof runHarnessBench>) =>
+  const registry = createBuiltinAdapterRegistry();
+  const contractOf = (report: ReturnType<typeof runAdapterBench>) =>
     report.results.find((row) => row.dimension === "contract");
 
   /** A registry holding one profile whose recorded contract is pinned by the
    * test. These cases are about the reconciliation rule, so they must not move
    * when `bun run verify:contracts` legitimately updates the real catalogue. */
   function pinned(version: string | undefined) {
-    const base = createBuiltinHarnessRegistry().require("codex");
-    return new HarnessRegistry([
+    const base = createBuiltinAdapterRegistry().require("codex");
+    return new AdapterRegistry([
       {
         ...base,
         profile: {
@@ -161,7 +161,7 @@ describe("vendor contract attestation (ADR 0037)", () => {
   }
 
   test("an installed version matching the recorded contract is attested", () => {
-    const report = runHarnessBench(pinned("codex-cli 0.145.0-alpha.18"), {
+    const report = runAdapterBench(pinned("codex-cli 0.145.0-alpha.18"), {
       versionProbe: () => "codex-cli 0.145.0-alpha.18",
       attestationReader: () => null,
     });
@@ -173,7 +173,7 @@ describe("vendor contract attestation (ADR 0037)", () => {
   test("a vendor version prefix does not defeat the match", () => {
     // A CLI that prints its version bare must reconcile against a recorded
     // contract that carries the vendor prefix.
-    const report = runHarnessBench(pinned("codex-cli 0.145.0-alpha.18"), {
+    const report = runAdapterBench(pinned("codex-cli 0.145.0-alpha.18"), {
       versionProbe: () => "0.145.0-alpha.18",
       attestationReader: () => null,
     });
@@ -181,7 +181,7 @@ describe("vendor contract attestation (ADR 0037)", () => {
   });
 
   test("an installed version that differs from the recorded contract is drift", () => {
-    const report = runHarnessBench(pinned("codex-cli 0.145.0-alpha.18"), {
+    const report = runAdapterBench(pinned("codex-cli 0.145.0-alpha.18"), {
       versionProbe: () => "codex-cli 0.144.5",
       attestationReader: () => null,
     });
@@ -195,8 +195,8 @@ describe("vendor contract attestation (ADR 0037)", () => {
     // Synthetic on purpose: the rule under test is "a recorded value that is
     // not a version yields unknown", not whatever the built-in profiles happen
     // to carry today.
-    const base = createBuiltinHarnessRegistry().require("claude-code");
-    const unparseable = new HarnessRegistry([
+    const base = createBuiltinAdapterRegistry().require("claude-code");
+    const unparseable = new AdapterRegistry([
       {
         ...base,
         profile: {
@@ -206,7 +206,7 @@ describe("vendor contract attestation (ADR 0037)", () => {
         },
       },
     ]);
-    const report = runHarnessBench(unparseable, {
+    const report = runAdapterBench(unparseable, {
       versionProbe: () => "2.1.197 (Claude Code)",
       attestationReader: () => null,
     });
@@ -218,8 +218,8 @@ describe("vendor contract attestation (ADR 0037)", () => {
   test("a recorded contract that matches the installed version is attested", () => {
     // Guards the real catalog: after `bun run verify:contracts`, an attested
     // profile's contract row must reconcile on the host it was written from.
-    const report = runHarnessBench(registry, {
-      harnesses: ["claude-code"],
+    const report = runAdapterBench(registry, {
+      adapters: ["claude-code"],
       versionProbe: () => registry.require("claude-code").profile.verified?.version ?? "",
       attestationReader: () => null,
     });
@@ -227,8 +227,8 @@ describe("vendor contract attestation (ADR 0037)", () => {
   });
 
   test("an absent binary skips the contract check instead of failing it", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["cursor"],
+    const report = runAdapterBench(registry, {
+      adapters: ["cursor"],
       versionProbe: () => null,
     });
     expect(contractOf(report)?.verdict).toBe("skipped");
@@ -237,25 +237,25 @@ describe("vendor contract attestation (ADR 0037)", () => {
   });
 
   test("a profile with no recorded contract is unknown, not supported", () => {
-    const base = createBuiltinHarnessRegistry().require("codex");
+    const base = createBuiltinAdapterRegistry().require("codex");
     const { verified: _dropped, ...profileWithoutContract } = base.profile;
-    const registryWithout = new HarnessRegistry([
+    const registryWithout = new AdapterRegistry([
       { ...base, profile: { ...profileWithoutContract, id: "unpinned" } },
     ]);
-    const report = runHarnessBench(registryWithout, { versionProbe: () => "9.9.9" });
+    const report = runAdapterBench(registryWithout, { versionProbe: () => "9.9.9" });
     expect(contractOf(report)?.verdict).toBe("unknown");
     expect(contractOf(report)?.note).toContain("no verified vendor contract recorded");
   });
 });
 
 describe("bench reads live attestations (ADR 0038)", () => {
-  const registry = createBuiltinHarnessRegistry();
+  const registry = createBuiltinAdapterRegistry();
   const codex = registry.require("codex").profile;
 
-  function attestation(overrides: Partial<HarnessAttestation> = {}): HarnessAttestation {
+  function attestation(overrides: Partial<AdapterAttestation> = {}): AdapterAttestation {
     return sealAttestation({
       schema_version: 2,
-      harness: "codex",
+      adapter: "codex",
       binary_version: "codex-cli 0.144.5",
       profile_digest: profileDigest(codex),
       subscription_only: false,
@@ -265,14 +265,14 @@ describe("bench reads live attestations (ADR 0038)", () => {
     });
   }
 
-  const rowFor = (report: ReturnType<typeof runHarnessBench>, dimension: string) =>
+  const rowFor = (report: ReturnType<typeof runAdapterBench>, dimension: string) =>
     report.results.find((row) => row.dimension === dimension);
 
   test("a live observation outranks the fixture check and is marked attested", () => {
     // codex declares sessionId unsupported and its fixture agrees. A live turn
     // that DID return a session id must surface as drift, not be ignored.
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    const report = runAdapterBench(registry, {
+      adapters: ["codex"],
       dimensions: ["sessionId"],
       versionProbe: () => "codex-cli 0.144.5",
       attestationReader: () => attestation(),
@@ -284,8 +284,8 @@ describe("bench reads live attestations (ADR 0038)", () => {
   });
 
   test("a stale attestation is ignored and the row falls back to adapter basis", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    const report = runAdapterBench(registry, {
+      adapters: ["codex"],
       dimensions: ["sessionId"],
       versionProbe: () => "codex-cli 0.146.0",
       attestationReader: () => attestation(),
@@ -295,8 +295,8 @@ describe("bench reads live attestations (ADR 0038)", () => {
   });
 
   test("a dimension the attestation did not observe keeps its adapter basis", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    const report = runAdapterBench(registry, {
+      adapters: ["codex"],
       dimensions: ["sessionId", "finalResult"],
       versionProbe: () => "codex-cli 0.144.5",
       attestationReader: () => attestation({ observations: { sessionId: "supported" } }),
@@ -306,8 +306,8 @@ describe("bench reads live attestations (ADR 0038)", () => {
   });
 
   test("an unreadable attestation store never breaks the bench", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    const report = runAdapterBench(registry, {
+      adapters: ["codex"],
       dimensions: ["sessionId"],
       versionProbe: () => "codex-cli 0.144.5",
       attestationReader: () => {
@@ -318,8 +318,8 @@ describe("bench reads live attestations (ADR 0038)", () => {
   });
 
   test("an attestation cannot be applied when the binary is absent", () => {
-    const report = runHarnessBench(registry, {
-      harnesses: ["codex"],
+    const report = runAdapterBench(registry, {
+      adapters: ["codex"],
       dimensions: ["sessionId"],
       versionProbe: () => null,
       attestationReader: () => attestation(),

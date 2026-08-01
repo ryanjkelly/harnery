@@ -3,7 +3,7 @@ import type { WorkflowRunSummary } from "./workflow-reader";
 /**
  * How to state a run's cost without overclaiming.
  *
- * A harness reports what an agent cost only when that agent finishes, so a run
+ * A adapter reports what an agent cost only when that agent finishes, so a run
  * with nothing finished yet has no cost to report. Printing `$0.0000` there says
  * something different and false: that the run was free. The four states are
  * genuinely different claims and the label says which one it is.
@@ -42,6 +42,6 @@ export function describeRunCost(run: WorkflowRunSummary): { label: string; hint:
       }
     : {
         label: "cost pending",
-        hint: "No cost reported yet. A harness reports an agent's cost only when it finishes, so a run whose first agent is still working has nothing to show. This is not a claim that the run is free.",
+        hint: "No cost reported yet. A adapter reports an agent's cost only when it finishes, so a run whose first agent is still working has nothing to show. This is not a claim that the run is free.",
       };
 }

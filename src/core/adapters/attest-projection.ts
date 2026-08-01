@@ -21,7 +21,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnRequest, SpawnResult } from "../workflow/types.ts";
-import type { HarnessAdapter } from "./types.ts";
+import type { Adapter } from "./types.ts";
 
 /** Distinct names so a control artifact can never be mistaken for a treatment
  * one, even if a child writes both or the directory is reused. */
@@ -61,7 +61,7 @@ export interface ProjectionProbeOptions {
  * failing the whole attestation sweep.
  */
 export async function probeFilesystemProjection(
-  adapter: HarnessAdapter,
+  adapter: Adapter,
   opts: ProjectionProbeOptions,
 ): Promise<ProjectionProbeResult> {
   if (!adapter.profile.sandboxProjection) {

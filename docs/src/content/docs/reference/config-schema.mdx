@@ -69,7 +69,7 @@ Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key �
 
 | Field              | Type | Default | Description |
 | ------------------ | ---- | ------- | ----------- |
-| `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the harness CLI's stored login |
+| `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the adapter CLI's stored login |
 
 `harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [workflow → billing safeguards](/cli/workflow/#billing-safeguards).
 

@@ -73,7 +73,7 @@ export interface Heartbeat {
   last_tool_target?: string;
   /** Free-form task/intent string set via `harn agents set-task`. Phase 2. */
   task?: string;
-  /** UTC ISO-8601 timestamp when task was last set/cleared. Used by harnesses without Stop enforcement to compute staleness. 2026-05-24. */
+  /** UTC ISO-8601 timestamp when task was last set/cleared. Used by adapters without Stop enforcement to compute staleness. 2026-05-24. */
   task_updated_at?: string | null;
   /** Auto-generated per-turn summary written by the Stop hook via Haiku. 2026-05-23. */
   turn_summary?: string | null;
@@ -281,14 +281,14 @@ export function resolveOwnerWithSource(): {
   const root = monorepoRoot();
   if (!root) return { owner: null, source: "none" };
 
-  // Every supported harness exports its session id into the env of the
+  // Every supported adapter exports its session id into the env of the
   // subprocess it spawns for a tool call, and each heartbeat records the
   // session id it was minted under. Matching the two names us outright, even
   // with many live agents, so it goes ahead of the ppid walk rather than
   // catching what the walk drops. Cursor needed this first because its
   // Glass/Agents UI runs several chats under one node ancestor, making that row
   // last-writer-wins; pid recycling generalises the same hazard to every
-  // harness.
+  // adapter.
   if (shouldPreferSessionEnv()) {
     const bySession = resolveOwnerBySessionEnv(root);
     if (bySession) {
@@ -334,8 +334,8 @@ export function resolveOwnerWithSource(): {
 }
 
 /**
- * Harness-exported session-id environment variables, in precedence order. Each
- * supported harness propagates its session id into the env of the subprocess it
+ * Adapter-exported session-id environment variables, in precedence order. Each
+ * supported adapter propagates its session id into the env of the subprocess it
  * spawns for a tool call (Claude Code's Bash tool, Cursor's terminal, Codex's
  * shell). A coord CLI invoked as such a tool can therefore recover its own
  * identity from the env even when the ppid walk misses.
@@ -351,7 +351,7 @@ const SESSION_ID_ENV_VARS = [
   "CODEX_SESSION_ID",
 ] as const;
 
-/** Read normalized candidates from the first non-empty harness session-id env var. */
+/** Read normalized candidates from the first non-empty adapter session-id env var. */
 function sessionIdsFromEnv(): string[] {
   for (const key of SESSION_ID_ENV_VARS) {
     const v = process.env[key]?.trim();
@@ -364,15 +364,15 @@ function sessionIdsFromEnv(): string[] {
   return [];
 }
 
-/** Read the first non-empty harness session-id env var, or null. */
+/** Read the first non-empty adapter session-id env var, or null. */
 function sessionIdFromEnv(): string | null {
   return sessionIdsFromEnv()[0] ?? null;
 }
 
 /**
- * Should the harness-exported session id be consulted before the ppid walk?
+ * Should the adapter-exported session id be consulted before the ppid walk?
  *
- * Yes, whenever one is exported. The env var is the harness stating its own
+ * Yes, whenever one is exported. The env var is the adapter stating its own
  * identity; the walk is a guess over a namespace the OS recycles. On a box with
  * `pid_max` of 99999 and ~100 pids allocated per second the whole pid space
  * turns over about every quarter hour, so a row written before that can name a
@@ -390,7 +390,7 @@ function shouldPreferSessionEnv(): boolean {
 }
 
 /**
- * Resolve the owner by matching the harness session-id env var against the
+ * Resolve the owner by matching the adapter session-id env var against the
  * `session_id` of a live heartbeat in this coord root. Returns the matching
  * `instance_id`, or null if there's no session-id env var or no live heartbeat
  * carries it. "Live" reuses the same 10-minute freshness window the singleton

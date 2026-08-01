@@ -182,13 +182,13 @@ async function emitClaimRelease(
     const { emit } = await import("./events/emit.ts");
     const canonical = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
     const platform = hb.platform;
-    const harness =
+    const adapter =
       platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
     emit(root, {
       event_type: "claim.release",
       instance_id: owner,
       session_id: hb.session_id ?? owner,
-      harness,
+      adapter,
       source: "agent-coord",
       data: { path: canonical, reason },
     });
@@ -291,16 +291,16 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       return 0;
     }
     case "heal-heartbeat": {
-      // harness arrives as a `--harness=<h>` flag (not positional) so the live
+      // adapter arrives as a `--adapter=<h>` flag (not positional) so the live
       // tool.pre_use heal and the manual `harn agents heal` path (which pass
       // different positional counts) can both supply it without arg-order
       // fragility. Positionals (sessionId, model) stay as-is once flags are
       // filtered out.
-      const harness = args.find((a) => a.startsWith("--harness="))?.slice("--harness=".length);
+      const adapter = args.find((a) => a.startsWith("--adapter="))?.slice("--adapter=".length);
       const positional = args.filter((a) => !a.startsWith("--"));
       const sessionId = positional[0];
       const model = positional[1];
-      const hb = writer.healHeartbeat(root, owner, sessionId, model, harness);
+      const hb = writer.healHeartbeat(root, owner, sessionId, model, adapter);
       process.stdout.write(`${JSON.stringify({ instance_id: owner, recreated: !!hb })}\n`);
       return hb ? 0 : 1;
     }
@@ -564,7 +564,7 @@ async function handleShellMutationClaimLog(root: string, rest: string[]): Promis
   // in a log file; now a canonical decision.warn so the
   // signal survives in events.ndjson. (The blocking claim-conflict path is
   // separate: claim.conflict / verdict, and unaffected.)
-  const harness = platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
+  const adapter = platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
   const hb = owner ? readHeartbeat(root, owner) : null;
   for (const p of paths) {
     try {
@@ -572,7 +572,7 @@ async function handleShellMutationClaimLog(root: string, rest: string[]): Promis
         event_type: "decision.warn",
         instance_id: owner ?? "unknown",
         session_id: hb?.session_id ?? owner ?? "unknown",
-        harness,
+        adapter,
         data: {
           rule: "shell_mutation_candidate",
           reason: `path=${p} cmd=${truncated} platform=${platform}`,
@@ -745,12 +745,12 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   const eventType = args.type;
   const instanceId = args.owner;
   const sessionId = args.session;
-  const harness = args.harness as "claude-code" | "cursor" | "codex" | undefined;
+  const adapter = args.adapter as "claude-code" | "cursor" | "codex" | undefined;
   const dataJson = args["data-json"] ?? "{}";
 
-  if (!eventType || !instanceId || !sessionId || !harness) {
+  if (!eventType || !instanceId || !sessionId || !adapter) {
     process.stderr.write(
-      "agent-coord emit-event --type <T> --owner <id> --session <id> --harness <h> [--data-json '<json>']\n",
+      "agent-coord emit-event --type <T> --owner <id> --session <id> --adapter <h> [--data-json '<json>']\n",
     );
     return 2;
   }
@@ -776,7 +776,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
       event_type: eventType,
       instance_id: instanceId,
       session_id: sessionId,
-      harness,
+      adapter,
       turn_id: args["turn-id"],
       parent_session_id: args["parent-session-id"],
       parent_turn_id: args["parent-turn-id"],

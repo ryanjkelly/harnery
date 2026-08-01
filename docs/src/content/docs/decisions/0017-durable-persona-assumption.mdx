@@ -7,7 +7,7 @@ description: "ADR: replace manual coordination-state edits with an atomic, colli
 
 ## Context
 
-Long-running agent roles often outlive one harness session. A replacement session may need to continue as `agent-Yann` or `agent-Beatrice` so handoff instructions, peer pings, review ownership, and operator vocabulary remain stable.
+Long-running agent roles often outlive one adapter session. A replacement session may need to continue as `agent-Yann` or `agent-Beatrice` so handoff instructions, peer pings, review ownership, and operator vocabulary remain stable.
 
 The only available procedure required editing three files:
 
@@ -27,7 +27,7 @@ The command:
 
 - resolves the calling main session through the normal owner resolver, with `--session-id` as the ppid-walk escape hatch;
 - resolves an existing durable persona by name, alias, or UUID, minting one by name when absent;
-- serializes assumption under `.harnery/identity-assume.lock` and refuses a local namesake whose harness process is still alive, or a namesake in cached cross-machine presence; abandoned local heartbeats (fresh timestamp, dead/missing pid-map process) are reclaimed in-line so replacement sessions do not need a separate kill/sweep step;
+- serializes assumption under `.harnery/identity-assume.lock` and refuses a local namesake whose adapter process is still alive, or a namesake in cached cross-machine presence; abandoned local heartbeats (fresh timestamp, dead/missing pid-map process) are reclaimed in-line so replacement sessions do not need a separate kill/sweep step;
 - appends a new `.name-history` row with `source: "identity.assume"` and `agent_id`; history resolution becomes latest-row-wins, preserving the original pool assignment for audit;
 - emits `identity.assumed` with the new and previous name/persona IDs, then synchronously projects it into the heartbeat;
 - remains idempotent: once history and heartbeat already carry the persona, a retry writes no row and emits no event.

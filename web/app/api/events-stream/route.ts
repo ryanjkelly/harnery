@@ -36,7 +36,7 @@ export async function GET(request: Request): Promise<Response> {
   const initialLines = Number(url.searchParams.get("initial") ?? 500);
 
   /**
-   * Session-id allowlist for `?run=<runId>`: the run's child harness sessions.
+   * Session-id allowlist for `?run=<runId>`: the run's child adapter sessions.
    *
    * Re-resolved on every drain rather than pinned at connect, because a run
    * spawns children over its whole life. A stage-3 agent that starts twenty
@@ -263,7 +263,7 @@ interface TailOpts {
   sessions?: Set<string>;
 }
 
-/** A workflow child is a main harness session, so its rows carry the same id in
+/** A workflow child is a main adapter session, so its rows carry the same id in
  * `session_id` and `instance_id`; accept either so the filter does not depend on
  * which one a given producer stamped. */
 function inSessions(ev: EventRow, sessions?: Set<string>): boolean {

@@ -57,10 +57,10 @@
       "types": "./dist/core/hooks/index.d.ts",
       "import": "./dist/core/hooks/index.js"
     },
-    "./core/harnesses": {
-      "bun": "./src/core/harnesses/index.ts",
-      "types": "./dist/core/harnesses/index.d.ts",
-      "import": "./dist/core/harnesses/index.js"
+    "./core/adapters": {
+      "bun": "./src/core/adapters/index.ts",
+      "types": "./dist/core/adapters/index.d.ts",
+      "import": "./dist/core/adapters/index.js"
     },
     "./core/context": {
       "bun": "./src/core/context/index.ts",

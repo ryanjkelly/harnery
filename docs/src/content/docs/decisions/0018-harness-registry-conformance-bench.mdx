@@ -1,16 +1,16 @@
 ---
-title: "0018: Harness support is a registered, executable claim"
-description: "ADR: replace duplicated harness lists with three registered adapters and an offline conformance bench that reports unknowns, skips, and drift honestly."
+title: "0018: Adapter support is a registered, executable claim"
+description: "ADR: replace duplicated adapter lists with three registered adapters and an offline conformance bench that reports unknowns, skips, and drift honestly."
 ---
 
-**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/harnesses`, `harness` CLI, workflow dispatch)
+**Status:** accepted (2026-07-21) · **Scope:** product tier (`core/adapters`, `adapter` CLI, workflow dispatch)
 
 ## Context
 
 Harnery supported Claude Code, Codex, and Cursor in workflows, hooks, doctor
 checks, and documentation, but the support claim was spread across a closed
 TypeScript union, several command-local arrays, metadata maps, spawn modules,
-and prose. Adding a harness or changing a capability required finding every
+and prose. Adding a adapter or changing a capability required finding every
 copy. More importantly, the package had no executable answer to questions such
 as “does this adapter expose cost?” or “did a vendor CLI change the result
 contract?”
@@ -27,9 +27,9 @@ narrower behavior Harnery's adapter actually exposes.
 
 ## Decision
 
-Add a product-tier `HarnessRegistry` whose registered adapter owns:
+Add a product-tier `AdapterRegistry` whose registered adapter owns:
 
-- one `HarnessProfile` with executable metadata and explicit capability
+- one `AdapterProfile` with executable metadata and explicit capability
   claims;
 - the production workflow `spawn` function;
 - the production invocation planner;
@@ -38,16 +38,16 @@ Add a product-tier `HarnessRegistry` whose registered adapter owns:
 
 The built-in catalog remains deliberately limited to `claude-code`, `codex`,
 and `cursor`. Workflow command choices and spawner dispatch now derive from
-the registry. The public `harnery/core/harnesses` export lets an embedding host
+the registry. The public `harnery/core/adapters` export lets an embedding host
 construct a separate registry and register another adapter without first
-widening a package-owned harness union.
+widening a package-owned adapter union.
 
 Capability claims use `supported`, `partial`, `unsupported`, and `unknown`.
 Unknown is not coerced to false. Partial claims require a qualification. The
 profile describes Harnery's adapter boundary rather than the vendor's complete
 feature set.
 
-Add `harn harness list|show|bench`. The bench is offline by default and makes
+Add `harn adapter list|show|bench`. The bench is offline by default and makes
 no model calls. It runs the production planner and normalizer against a
 standard request and deterministic vendor-result fixture, probes vendor CLI
 availability with `--version`, and reconciles observations against claims.
@@ -84,7 +84,7 @@ because rewriting parameterized model ids would be an unverified heuristic.
 
 ## Consequences
 
-- Adding a built-in harness now begins with one profile and one adapter
+- Adding a built-in adapter now begins with one profile and one adapter
   registration. The workflow command, doctor metadata, public catalog, and
   bench derive from that source.
 - Offline conformance catches planner/normalizer drift but cannot prove policy,

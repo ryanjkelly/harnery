@@ -4,7 +4,7 @@ import type { EmitContext } from "../commander.ts";
 import {
   emitCanonical,
   monorepoRoot,
-  normalizeHarness,
+  normalizeAdapter,
   readHeartbeat,
   resolveOwner,
 } from "../core/agents/index.ts";
@@ -432,7 +432,7 @@ function emitDecisionEvent(type: string, data: Record<string, unknown>): void {
     type,
     owner,
     session: hb?.session_id ?? owner,
-    harness: normalizeHarness(hb?.platform),
+    adapter: normalizeAdapter(hb?.platform),
     data,
   });
 }

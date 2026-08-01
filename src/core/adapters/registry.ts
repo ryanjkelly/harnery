@@ -14,15 +14,15 @@ import {
   normalizeCursorResult,
 } from "../workflow/spawn-cursor.ts";
 import {
-  BUILTIN_HARNESS_IDS,
-  BUILTIN_HARNESS_PROFILES,
-  type BuiltinHarnessId,
+  BUILTIN_ADAPTER_IDS,
+  BUILTIN_ADAPTER_PROFILES,
+  type BuiltinAdapterId,
 } from "./profiles.ts";
-import type { HarnessAdapter, HarnessId } from "./types.ts";
+import type { Adapter, AdapterId } from "./types.ts";
 
-const BUILTIN_ADAPTERS: Record<BuiltinHarnessId, HarnessAdapter> = {
+const BUILTIN_ADAPTERS: Record<BuiltinAdapterId, Adapter> = {
   "claude-code": {
-    profile: BUILTIN_HARNESS_PROFILES["claude-code"],
+    profile: BUILTIN_ADAPTER_PROFILES["claude-code"],
     spawn: claudeCodeSpawner,
     buildInvocation: buildClaudeInvocation,
     normalizeResult: normalizeClaudeResult,
@@ -47,7 +47,7 @@ const BUILTIN_ADAPTERS: Record<BuiltinHarnessId, HarnessAdapter> = {
     },
   },
   codex: {
-    profile: BUILTIN_HARNESS_PROFILES.codex,
+    profile: BUILTIN_ADAPTER_PROFILES.codex,
     spawn: codexSpawner,
     buildInvocation: buildCodexInvocation,
     normalizeResult: normalizeCodexResult,
@@ -63,7 +63,7 @@ const BUILTIN_ADAPTERS: Record<BuiltinHarnessId, HarnessAdapter> = {
     },
   },
   cursor: {
-    profile: BUILTIN_HARNESS_PROFILES.cursor,
+    profile: BUILTIN_ADAPTER_PROFILES.cursor,
     spawn: cursorSpawner,
     buildInvocation: buildCursorInvocation,
     normalizeResult: normalizeCursorResult,
@@ -89,52 +89,52 @@ const BUILTIN_ADAPTERS: Record<BuiltinHarnessId, HarnessAdapter> = {
 
 /** Mutable registry for embedders, initialized empty unless adapters are
  * provided. Duplicate ids fail loud instead of silently replacing behavior. */
-export class HarnessRegistry {
-  readonly #adapters = new Map<HarnessId, HarnessAdapter>();
+export class AdapterRegistry {
+  readonly #adapters = new Map<AdapterId, Adapter>();
 
-  constructor(adapters: Iterable<HarnessAdapter> = []) {
+  constructor(adapters: Iterable<Adapter> = []) {
     for (const adapter of adapters) this.register(adapter);
   }
 
-  register(adapter: HarnessAdapter): this {
+  register(adapter: Adapter): this {
     const id = adapter.profile.id.trim();
-    if (!id) throw new Error("harness adapter id cannot be empty");
+    if (!id) throw new Error("adapter adapter id cannot be empty");
     if (this.#adapters.has(id))
-      throw new Error(`harness adapter ${JSON.stringify(id)} is already registered`);
+      throw new Error(`adapter adapter ${JSON.stringify(id)} is already registered`);
     if (adapter.profile.binary.trim() === "") {
-      throw new Error(`harness adapter ${JSON.stringify(id)} has no binary`);
+      throw new Error(`adapter adapter ${JSON.stringify(id)} has no binary`);
     }
     this.#adapters.set(id, adapter);
     return this;
   }
 
-  get(id: HarnessId): HarnessAdapter | undefined {
+  get(id: AdapterId): Adapter | undefined {
     return this.#adapters.get(id);
   }
 
-  require(id: HarnessId): HarnessAdapter {
+  require(id: AdapterId): Adapter {
     const adapter = this.get(id);
     if (!adapter) {
       throw new Error(
-        `unknown harness ${JSON.stringify(id)} (registered: ${this.ids().join(", ") || "none"})`,
+        `unknown adapter ${JSON.stringify(id)} (registered: ${this.ids().join(", ") || "none"})`,
       );
     }
     return adapter;
   }
 
-  list(): HarnessAdapter[] {
+  list(): Adapter[] {
     return Array.from(this.#adapters.values());
   }
 
-  ids(): HarnessId[] {
+  ids(): AdapterId[] {
     return Array.from(this.#adapters.keys());
   }
 
-  spawners(): Record<HarnessId, HarnessAdapter["spawn"]> {
+  spawners(): Record<AdapterId, Adapter["spawn"]> {
     return Object.fromEntries(this.list().map((adapter) => [adapter.profile.id, adapter.spawn]));
   }
 }
 
-export function createBuiltinHarnessRegistry(): HarnessRegistry {
-  return new HarnessRegistry(BUILTIN_HARNESS_IDS.map((id) => BUILTIN_ADAPTERS[id]));
+export function createBuiltinAdapterRegistry(): AdapterRegistry {
+  return new AdapterRegistry(BUILTIN_ADAPTER_IDS.map((id) => BUILTIN_ADAPTERS[id]));
 }

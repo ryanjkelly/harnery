@@ -34,8 +34,8 @@ Exits `0` unless a required dep is missing.
 | `bun`          | optional | Daily-driver execution layer; speeds up `harn` startup |
 | `ripgrep`      | optional | Fast engine for `harn grep` (grep fallback works, just slower). `--fix` installs it; or opt in to auto-install via `.harnery/config.jsonc` |
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
-| `harness hooks`| optional | Compares wired `agent-hook` entries against the current harness spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
-| `workflow:claude-code` / `workflow:codex` / `workflow:cursor` | optional | Spawn targets for [`harn workflow`](/cli/workflow/): is the harness CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
+| `adapter hooks`| optional | Compares wired `agent-hook` entries against the current adapter spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
+| `workflow:claude-code` / `workflow:codex` / `workflow:cursor` | optional | Spawn targets for [`harn workflow`](/cli/workflow/): is the adapter CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
 | `rclone`       | optional | Required for `harn sync` |
 | `playwright`   | optional | Required for `harn browse` (module + browsers installed) |
@@ -79,13 +79,13 @@ $ harn doctor --json
 
 Updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout) is enough for **code** fixes — your wired hooks call the `agent-hook` binary, so they immediately run the new code. No re-`init` needed.
 
-The one exception is when a release **adds, renames, or retires a hook event**. Re-run [`harn init`](/cli/init) to migrate the Harnery-owned entries without touching third-party hooks. `harn doctor`'s `harness hooks` check catches this, and a one-line nudge also appears at the start of your next session:
+The one exception is when a release **adds, renames, or retires a hook event**. Re-run [`harn init`](/cli/init) to migrate the Harnery-owned entries without touching third-party hooks. `harn doctor`'s `adapter hooks` check catches this, and a one-line nudge also appears at the start of your next session:
 
 ```bash
 $ harn doctor
 ...
-⚠ harness hooks  .claude/settings.json: 2 missing (sub-agent-start, post-tool-use-failure)
+⚠ adapter hooks  .claude/settings.json: 2 missing (sub-agent-start, post-tool-use-failure)
     ↳ run `harn init` to wire the new hook(s) (idempotent)
 ```
 
-The check only performs missing-hook drift checks for a harness the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. Invalid JSON is always reported. Codex's parser is strict, so `doctor` also flags unsupported top-level fields and event names before they can silently disable every hook. Re-run `harn init` to remove legacy Harnery-owned events after repairing any invalid third-party configuration.
+The check only performs missing-hook drift checks for a adapter the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. Invalid JSON is always reported. Codex's parser is strict, so `doctor` also flags unsupported top-level fields and event names before they can silently disable every hook. Re-run `harn init` to remove legacy Harnery-owned events after repairing any invalid third-party configuration.

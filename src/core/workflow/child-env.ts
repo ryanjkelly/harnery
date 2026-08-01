@@ -2,8 +2,8 @@
  * Child-process environment builder shared by every spawn adapter.
  *
  * Rules (the first is a hard-won Phase 1 spike finding):
- * 1. **Delete inherited harness-session vars, never blank them.** A nested
- *    harness CLI under a live session inherits vars that make it exit 1 with
+ * 1. **Delete inherited adapter-session vars, never blank them.** A nested
+ *    adapter CLI under a live session inherits vars that make it exit 1 with
  *    empty output; an empty-string var still reads as set. Scrub all three
  *    families (CLAUDE*, CODEX*, CURSOR*) regardless of which adapter spawns —
  *    a codex child launched from inside a Claude Code session must not inherit
@@ -27,7 +27,7 @@
  *    web UI can associate child sessions with their workflow run.
  * 6. **Stamp the agent id** (HARNERY_WORKFLOW_AGENT_ID) so that association is
  *    per-agent rather than only per-run. The orchestrator cannot use the child's
- *    session id for this: the harness mints that id and reports it back only in
+ *    session id for this: the adapter mints that id and reports it back only in
  *    the result envelope, which is to say only once the work being watched is
  *    over. Passing in the id the orchestrator already owns is the only way to
  *    attribute in-flight activity to a particular agent.
@@ -36,7 +36,7 @@
 import { API_KEY_VARS } from "./billing.ts";
 
 const SCRUB_PREFIXES = ["CLAUDE", "CODEX", "CURSOR"];
-const PRESERVED_HARNESS_VARS = new Set(["CODEX_HOME"]);
+const PRESERVED_ADAPTER_VARS = new Set(["CODEX_HOME"]);
 
 export interface ChildEnvOpts {
   /** Delete all API-key vars so children can only use stored logins. */
@@ -54,7 +54,7 @@ export function buildChildEnv(runId?: string, opts: ChildEnvOpts = {}): Record<s
     if (
       SCRUB_PREFIXES.some((p) => k.startsWith(p)) &&
       !keyVars.has(k) &&
-      !PRESERVED_HARNESS_VARS.has(k)
+      !PRESERVED_ADAPTER_VARS.has(k)
     ) {
       continue;
     }

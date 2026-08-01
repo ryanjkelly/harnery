@@ -1,11 +1,11 @@
-import type { CapabilityClaim, HarnessCapabilities, HarnessProfile } from "./types.ts";
+import type { AdapterCapabilities, AdapterProfile, CapabilityClaim } from "./types.ts";
 
 const supported = (note?: string): CapabilityClaim => ({ support: "supported", note });
 const unsupported = (note?: string): CapabilityClaim => ({ support: "unsupported", note });
 const partial = (note: string): CapabilityClaim => ({ support: "partial", note });
 const unknown = (note: string): CapabilityClaim => ({ support: "unknown", note });
 
-function capabilities(overrides: Partial<HarnessCapabilities>): HarnessCapabilities {
+function capabilities(overrides: Partial<AdapterCapabilities>): AdapterCapabilities {
   return {
     invocation: supported("Headless CLI subprocess."),
     modelSelection: supported("Explicit model flag is mapped by the adapter."),
@@ -25,14 +25,14 @@ function capabilities(overrides: Partial<HarnessCapabilities>): HarnessCapabilit
     contextTelemetry: unknown("The workflow adapter does not expose live context usage."),
     preCompactionSignal: unknown("No compaction lifecycle probe has certified this adapter."),
     postCompactionSignal: unknown("No compaction lifecycle probe has certified this adapter."),
-    compaction: unsupported("Harnery does not initiate native harness compaction."),
+    compaction: unsupported("Harnery does not initiate native adapter compaction."),
     ...overrides,
   };
 }
 
-/** The one built-in profile catalog. Adding a fourth harness starts here; CLI
+/** The one built-in profile catalog. Adding a fourth adapter starts here; CLI
  * choices, doctor metadata, workflow dispatch, and the bench derive from it. */
-export const BUILTIN_HARNESS_PROFILES = {
+export const BUILTIN_ADAPTER_PROFILES = {
   "claude-code": {
     id: "claude-code",
     displayName: "Claude Code",
@@ -123,26 +123,26 @@ export const BUILTIN_HARNESS_PROFILES = {
       ),
     }),
   },
-} as const satisfies Record<string, HarnessProfile>;
+} as const satisfies Record<string, AdapterProfile>;
 
-export type BuiltinHarnessId = keyof typeof BUILTIN_HARNESS_PROFILES;
+export type BuiltinAdapterId = keyof typeof BUILTIN_ADAPTER_PROFILES;
 
-export const BUILTIN_HARNESS_IDS = Object.freeze(
-  Object.keys(BUILTIN_HARNESS_PROFILES) as BuiltinHarnessId[],
+export const BUILTIN_ADAPTER_IDS = Object.freeze(
+  Object.keys(BUILTIN_ADAPTER_PROFILES) as BuiltinAdapterId[],
 );
 
-export function isBuiltinHarness(id: string): id is BuiltinHarnessId {
-  return Object.hasOwn(BUILTIN_HARNESS_PROFILES, id);
+export function isBuiltinAdapter(id: string): id is BuiltinAdapterId {
+  return Object.hasOwn(BUILTIN_ADAPTER_PROFILES, id);
 }
 
-export function builtinHarnessProfile(id: string): HarnessProfile | undefined {
-  return isBuiltinHarness(id) ? BUILTIN_HARNESS_PROFILES[id] : undefined;
+export function builtinAdapterProfile(id: string): AdapterProfile | undefined {
+  return isBuiltinAdapter(id) ? BUILTIN_ADAPTER_PROFILES[id] : undefined;
 }
 
-export function validateHarnessEffort(id: string, effort: string | undefined): void {
+export function validateAdapterEffort(id: string, effort: string | undefined): void {
   if (!effort) return;
-  const profile = builtinHarnessProfile(id);
-  if (!profile) throw new Error(`unknown harness ${JSON.stringify(id)}`);
+  const profile = builtinAdapterProfile(id);
+  if (!profile) throw new Error(`unknown adapter ${JSON.stringify(id)}`);
   if (!profile.effortValues.includes(effort)) {
     const supportedValues = profile.effortValues.length ? profile.effortValues.join(", ") : "none";
     throw new Error(

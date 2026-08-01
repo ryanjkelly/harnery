@@ -12,7 +12,7 @@
 
 export const SCHEMA_VERSION = 1 as const;
 
-export type Harness = "claude-code" | "cursor" | "codex";
+export type Adapter = "claude-code" | "cursor" | "codex";
 
 export type Source = "agent-hooks" | "agent-coord" | "user" | "system";
 
@@ -28,11 +28,11 @@ export interface EventEnvelope<TType extends string, TData> {
   event_type: TType;
   ts: string; // ISO-8601 with milliseconds
   instance_id: string; // resolved by agent-hooks
-  session_id: string; // harness-level session
+  session_id: string; // adapter-level session
   parent_session_id?: string; // present iff event is from a subagent
   turn_id?: string; // present when event is bound to an assistant turn
   parent_turn_id?: string; // present iff this turn is nested under another
-  harness: Harness;
+  adapter: Adapter;
   source: Source;
   data: TData;
 }

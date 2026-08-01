@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, watch } fr
 import { resolve as resolvePath } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import { emitCanonical, normalizeHarness, readHeartbeat } from "../core/agents/index.ts";
+import { emitCanonical, normalizeAdapter, readHeartbeat } from "../core/agents/index.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   appendEntry,
@@ -58,7 +58,7 @@ export function registerJournalCommand(program: Command, emitParam: EmitContext)
           type: "state.journal_append",
           owner,
           session: hb?.session_id ?? owner,
-          harness: normalizeHarness(hb?.platform),
+          adapter: normalizeAdapter(hb?.platform),
           data: {
             category: cat,
             body_summary: body.length > 1000 ? `${body.slice(0, 997)}...` : body,

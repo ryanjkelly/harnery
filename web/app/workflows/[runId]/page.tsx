@@ -56,7 +56,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
         }).rows
       : [];
 
-  // Child harness sessions are main sessions, so instance_id === session_id and
+  // Child adapter sessions are main sessions, so instance_id === session_id and
   // the durable identity log names them even after they exit.
   const identities = readInstanceIdentities();
   const instanceToName: Record<string, string> = {};
@@ -75,7 +75,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
    *
    * Children now report the agent id the orchestrator stamped into their env, so
    * a live heartbeat says which row it is running and this is exact. The
-   * fallback below covers a run started before that stamp existed, or a harness
+   * fallback below covers a run started before that stamp existed, or a adapter
    * whose session never reported: unclaimed live sessions go to transcripted-running
    * rows in order. That can pick the wrong row among concurrent agents, but it
    * can never claim more live agents than there are live sessions, which is the
@@ -130,12 +130,12 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                       {a.id}
                     </span>
                   </Tooltip>
-                  {a.harness ? (
+                  {a.adapter ? (
                     <Tooltip
-                      content={`Harness that ran this agent. It was spawned as a headless ${a.harness} subprocess${a.model ? `, model ${a.model}` : ""}.`}
+                      content={`Adapter that ran this agent. It was spawned as a headless ${a.adapter} subprocess${a.model ? `, model ${a.model}` : ""}.`}
                     >
                       <span className="cursor-help rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                        {a.harness}
+                        {a.adapter}
                       </span>
                     </Tooltip>
                   ) : null}
@@ -298,7 +298,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
             </Tooltip>
           ) : null}
           {run.billing.length > 0 ? (
-            <Tooltip content="How each harness authenticated. `subscription` means a stored login paid for it; `api` means an API key did.">
+            <Tooltip content="How each adapter authenticated. `subscription` means a stored login paid for it; `api` means an API key did.">
               <span className="cursor-help">{`· billing: ${run.billing.join(", ")}`}</span>
             </Tooltip>
           ) : null}
@@ -571,7 +571,7 @@ export default async function WorkflowRunPage({ params }: PageProps) {
                 </summary>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
                   {run.proof.unknowns.map((unknown, index) => (
-                    <li key={`${unknown.code}-${unknown.agent_id ?? unknown.harness ?? index}`}>
+                    <li key={`${unknown.code}-${unknown.agent_id ?? unknown.adapter ?? index}`}>
                       {unknown.message}
                     </li>
                   ))}
