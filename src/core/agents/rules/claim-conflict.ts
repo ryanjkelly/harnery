@@ -21,12 +21,9 @@ import { emit } from "../events/emit.ts";
 
 const FRESHNESS_SECS = 600;
 
-export type VerdictResult = {
-  allow: boolean;
-  exit_code: 0 | 2;
-  rule: string;
-  reason?: string;
-};
+export type { VerdictResult } from "./verdict.ts";
+
+import type { VerdictResult } from "./verdict.ts";
 
 interface PeerView {
   instance_id: string;

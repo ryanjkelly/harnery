@@ -19,8 +19,9 @@ const STREAM_FILE = ".harnery/events.ndjson";
 const LOCK_FILE = ".harnery/events.ndjson.lock";
 const MAX_LINE_BYTES = 64 * 1024;
 
-export type Adapter = "claude-code" | "cursor" | "codex";
-export type Source = "agent-hooks" | "agent-coord" | "user" | "system";
+export type { Adapter, Source } from "../../hooks/events/schema.ts";
+
+import type { Adapter, Source } from "../../hooks/events/schema.ts";
 
 export interface Envelope {
   schema_version: typeof SCHEMA_VERSION;

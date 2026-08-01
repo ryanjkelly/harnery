@@ -9,7 +9,9 @@
  * Codex `.codex/hooks.json`).
  */
 
-export type AdapterId = "claude-code" | "cursor" | "codex";
+export type { Adapter as AdapterId } from "../events/schema.ts";
+
+import type { Adapter as AdapterId } from "../events/schema.ts";
 
 export interface HookEvent {
   /** Key under the adapter settings file's `hooks` map (e.g. `SessionStart`, `preToolUse`). */

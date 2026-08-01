@@ -12,6 +12,10 @@
 
 export const SCHEMA_VERSION = 1 as const;
 
+/** The adapters harnery ships first-party hook wiring for. The registry's open
+ * `AdapterId` covers any adapter a host registers; this is the closed set, and
+ * it is declared exactly once. Re-exported by the two event modules that used
+ * to keep their own byte-identical copy. */
 export type Adapter = "claude-code" | "cursor" | "codex";
 
 export type Source = "agent-hooks" | "agent-coord" | "user" | "system";
