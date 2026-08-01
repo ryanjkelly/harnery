@@ -7,10 +7,11 @@ function cachePath(tool: string, filename: string): string {
   return resolve(dir, filename);
 }
 
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { resolveBinName } from "../core/config.ts";
 import {
   clearState,
   DEFAULT_INSTANCE,
@@ -58,6 +59,11 @@ interface UpOpts {
 }
 
 interface DownOpts {
+  name?: string;
+  all?: boolean;
+}
+
+interface ReloadOpts {
   name?: string;
   all?: boolean;
 }
@@ -393,6 +399,49 @@ function tunnelIsAlive(state: TunnelState): boolean {
   return isProcessAlive(state.gate_pid) && providerIsAlive(state);
 }
 
+interface GateSpawnOpts {
+  name: string;
+  gatePort: number;
+  target: string;
+  vhost: string;
+  provider: TunnelProvider;
+  allowedIps: string[];
+  gateLogPath: string;
+}
+
+/**
+ * Spawn the detached gate worker.
+ *
+ * Shared by `up` (fresh start) and `reload` (in-place restart) so both hand the
+ * gate an identical environment and record the same kind of PID. The allowlist
+ * is passed as an env var, which the gate snapshots at module load and never
+ * re-reads — that snapshot is precisely why `reload` has to exist.
+ */
+function spawnGate(o: GateSpawnOpts): ChildProcess {
+  const gateFd = openSync(o.gateLogPath, "a");
+  // `--name`/`--port` on argv mirror the env vars; they're what makes the gate
+  // process distinguishable per-instance in `pgrep -f` (see sweepStrays).
+  const gateProc = spawn(
+    "bun",
+    ["run", gateScriptPath(), "--name", o.name, "--port", String(o.gatePort)],
+    {
+      detached: true,
+      stdio: ["ignore", gateFd, gateFd],
+      env: {
+        ...process.env,
+        HARNERY_TUNNEL_ALLOW: o.allowedIps.join(","),
+        HARNERY_TUNNEL_ACCESS:
+          o.provider === "cloudflare" ? "cloudflare-allowlist" : "trusted-local-proxy",
+        HARNERY_TUNNEL_TARGET: o.target,
+        HARNERY_TUNNEL_VHOST: o.vhost,
+        HARNERY_TUNNEL_PORT: String(o.gatePort),
+      },
+    },
+  );
+  gateProc.unref();
+  return gateProc;
+}
+
 async function up(opts: UpOpts): Promise<void> {
   if (!bunAvailable()) {
     emit.error({
@@ -463,27 +512,15 @@ async function up(opts: UpOpts): Promise<void> {
   writeFileSync(gateLogPath, "");
   writeFileSync(providerLogPath, "");
 
-  const gateFd = openSync(gateLogPath, "a");
-  // `--name`/`--port` on argv mirror the env vars; they're what makes the gate
-  // process distinguishable per-instance in `pgrep -f` (see sweepStrays).
-  const gateProc = spawn(
-    "bun",
-    ["run", gateScriptPath(), "--name", name, "--port", String(gatePort)],
-    {
-      detached: true,
-      stdio: ["ignore", gateFd, gateFd],
-      env: {
-        ...process.env,
-        HARNERY_TUNNEL_ALLOW: cfg.allowed_ips.join(","),
-        HARNERY_TUNNEL_ACCESS:
-          provider === "cloudflare" ? "cloudflare-allowlist" : "trusted-local-proxy",
-        HARNERY_TUNNEL_TARGET: target,
-        HARNERY_TUNNEL_VHOST: vhost,
-        HARNERY_TUNNEL_PORT: String(gatePort),
-      },
-    },
-  );
-  gateProc.unref();
+  const gateProc = spawnGate({
+    name,
+    gatePort,
+    target,
+    vhost,
+    provider,
+    allowedIps: cfg.allowed_ips,
+    gateLogPath,
+  });
 
   await sleep(800);
 
@@ -658,6 +695,156 @@ function down(opts: DownOpts): void {
   );
 }
 
+/** Poll until `port` has no LISTEN socket (or the deadline passes). */
+async function waitForPortFree(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!listeningPorts().has(port)) return true;
+    await sleep(100);
+  }
+  return !listeningPorts().has(port);
+}
+
+/** Poll until `port` has a LISTEN socket (or the deadline passes). */
+async function waitForPortBound(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (listeningPorts().has(port)) return true;
+    await sleep(100);
+  }
+  return listeningPorts().has(port);
+}
+
+/**
+ * Restart ONE instance's gate in place, deliberately leaving the provider
+ * process running.
+ *
+ * That asymmetry is the whole point. A Cloudflare quick tunnel's hostname is
+ * minted by cloudflared at startup, so a full `down`/`up` hands back a NEW
+ * random *.trycloudflare.com URL and breaks every link already shared — a
+ * miserable trade for adding one IP. cloudflared only ever forwards to
+ * `localhost:<gate_port>`, so the gate beneath it can be swapped out and the
+ * edge reconnects without noticing.
+ */
+export async function reloadOne(state: TunnelState): Promise<{ ok: boolean; message: string }> {
+  const bin = resolveBinName();
+  const name = state.name;
+  const gatePort = state.gate_port;
+
+  if (!providerIsAlive(state)) {
+    return {
+      ok: false,
+      message:
+        `[${name}] the provider process is gone, so the public URL is already dead. ` +
+        `Reloading the gate can't bring it back — run \`${bin} tunnel up --name ${name}\`.`,
+    };
+  }
+  if (!bunAvailable()) {
+    return { ok: false, message: `[${name}] bun is not on PATH, so the gate can't be respawned.` };
+  }
+
+  // Kill ONLY the gate. sweepStrays() is deliberately avoided here: it also
+  // matches `--url http://localhost:<port>`, which is the provider process we
+  // are going out of our way to keep alive.
+  const killed = new Set<number>();
+  if (isProcessAlive(state.gate_pid)) {
+    try {
+      process.kill(state.gate_pid);
+      killed.add(state.gate_pid);
+    } catch {
+      /* race: already gone */
+    }
+  }
+  killByPattern(`gate\\.ts.*--port ${gatePort}( |$)`, killed);
+
+  if (!(await waitForPortFree(gatePort, 5_000))) {
+    return {
+      ok: false,
+      message:
+        `[${name}] port ${gatePort} never released, so the old gate looks wedged. ` +
+        `Tunnel is down; check \`${bin} tunnel status\`.`,
+    };
+  }
+
+  const cfg = readConfig();
+  const gateProc = spawnGate({
+    name,
+    gatePort,
+    target: state.target,
+    vhost: state.vhost,
+    provider: state.provider,
+    allowedIps: cfg.allowed_ips,
+    gateLogPath: cachePath("tunnel", gateLogFile(name)),
+  });
+
+  await sleep(800);
+  const pid = gateProc.pid;
+  if (
+    typeof pid !== "number" ||
+    !isProcessAlive(pid) ||
+    !(await waitForPortBound(gatePort, 5_000))
+  ) {
+    return {
+      ok: false,
+      message:
+        `[${name}] the gate did not come back on port ${gatePort}. ` +
+        `Tunnel is down; check \`${bin} tunnel logs --name ${name}\`.`,
+    };
+  }
+
+  writeState({ ...state, gate_pid: pid });
+  const allowNote =
+    state.provider === "cloudflare" ? ` Allowlist: ${cfg.allowed_ips.length} IP(s).` : "";
+  return { ok: true, message: `[${name}] gate reloaded, URL unchanged: ${state.url}.${allowNote}` };
+}
+
+async function reload(opts: ReloadOpts): Promise<void> {
+  const bin = resolveBinName();
+
+  if (opts.all) {
+    const all = listStates();
+    // Only live tunnels are reloadable, and a box commonly accumulates stale
+    // state files from long-dead runs. Reporting those as failures would make
+    // the common post-`allow add` path exit non-zero for no real reason.
+    const live = all.filter((s) => providerIsAlive(s));
+    const stale = all.length - live.length;
+    if (live.length === 0) {
+      emit.text(
+        all.length === 0
+          ? "No tunnels up. Nothing to reload.\n"
+          : `No live tunnels to reload (${all.length} stale). Start one with \`${bin} tunnel up\`.\n`,
+      );
+      return;
+    }
+    let failed = 0;
+    for (const s of live) {
+      const r = await reloadOne(s);
+      emit.text(`${r.ok ? "ok  " : "FAIL"} ${r.message}\n`);
+      if (!r.ok) failed++;
+    }
+    emit.text(
+      `Reloaded ${live.length - failed} of ${live.length} live tunnel(s)` +
+        (stale > 0 ? `; skipped ${stale} stale.\n` : ".\n"),
+    );
+    if (failed > 0) process.exitCode = 1;
+    return;
+  }
+
+  const name = resolveName(opts.name);
+  const state = readState(name);
+  if (!state) {
+    emit.error({
+      code: "tunnel_not_found",
+      message: `No tunnel state for [${name}]. Start it with \`${bin} tunnel up --name ${name}\`.`,
+    });
+    process.exit(1);
+    return;
+  }
+  const r = await reloadOne(state);
+  emit.text(`${r.message}\n`);
+  if (!r.ok) process.exit(1);
+}
+
 function instanceState(state: TunnelState): "up" | "stale" {
   return tunnelIsAlive(state) ? "up" : "stale";
 }
@@ -772,6 +959,23 @@ function allowList(): void {
   for (const ip of cfg.allowed_ips) emit.text(`${ip}\n`);
 }
 
+/**
+ * Trailer for `allow add`/`allow rm`. Each gate snapshots the allowlist at
+ * spawn, so a config edit alone changes nothing until the gates restart.
+ * Only LIVE tunnels are listed — stale state files pile up on a long-running
+ * box, and naming nine dead instances made the old hint read like nine
+ * restarts were owed.
+ */
+function allowChangedHint(): void {
+  const live = listStates().filter((s) => s.provider === "cloudflare" && providerIsAlive(s));
+  if (live.length === 0) return;
+  emit.text(
+    `Each gate reads the allowlist once at start, so this applies on reload ` +
+      `(${live.map((s) => s.name).join(", ")}):\n` +
+      `  ${resolveBinName()} tunnel reload --all\n`,
+  );
+}
+
 function allowAdd(ip: string): void {
   const cfg = readConfig();
   if (cfg.allowed_ips.includes(ip)) {
@@ -781,12 +985,7 @@ function allowAdd(ip: string): void {
   cfg.allowed_ips.push(ip);
   writeConfig(cfg);
   emit.text(`Added ${ip}.\n`);
-  const up = listStates().filter((s) => s.provider === "cloudflare");
-  if (up.length > 0) {
-    emit.text(
-      `Cloudflare allowlist is shared across Cloudflare tunnels; restart each to apply (${up.map((s) => s.name).join(", ")}).\n`,
-    );
-  }
+  allowChangedHint();
 }
 
 function allowRm(ip: string): void {
@@ -799,12 +998,7 @@ function allowRm(ip: string): void {
   cfg.allowed_ips.splice(idx, 1);
   writeConfig(cfg);
   emit.text(`Removed ${ip}.\n`);
-  const up = listStates().filter((s) => s.provider === "cloudflare");
-  if (up.length > 0) {
-    emit.text(
-      `Cloudflare allowlist is shared across Cloudflare tunnels; restart each to apply (${up.map((s) => s.name).join(", ")}).\n`,
-    );
-  }
+  allowChangedHint();
 }
 
 let emit: EmitContext;
@@ -857,6 +1051,15 @@ export function registerTunnelCommand(
     .option("--name <name>", "instance to stop", DEFAULT_INSTANCE)
     .option("--all", "stop every running tunnel")
     .action(down);
+
+  cmd
+    .command("reload")
+    .description(
+      "Restart an instance's gate in place to pick up allowlist changes, keeping the public URL",
+    )
+    .option("--name <name>", "instance to reload", DEFAULT_INSTANCE)
+    .option("--all", "reload every live tunnel")
+    .action(reload);
 
   cmd
     .command("status")
