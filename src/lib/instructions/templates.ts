@@ -89,7 +89,7 @@ widely-shared files.
 
 **Dispatching a team.** Everything else here coordinates the agents already
 present. These three start new ones, and they differ by how long the objective
-outlives a single execution. \`${b} workflow run <script>\` is one bounded pass:
+outlives a single execution. \`${b} run <script>\` is one bounded pass:
 plain JS stages fan out to headless subagents that are born
 coordination-registered, with deterministic code deciding the routing between
 stages. \`${b} work create <title> <workflow>\` wraps an objective that has to
@@ -99,7 +99,7 @@ what runs next and how much it may settle without asking a human. Reach for the
 first when one pass will do, the second when the objective must outlive the
 attempt, and the third when a human would otherwise have to babysit the loop. A
 run that needs authorization parks durably instead of failing, so check
-\`${b} workflow approvals list\` when one appears to be waiting rather than stuck.
+\`${b} approval list\` when one appears to be waiting rather than stuck.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run \`${b} agents identity assume <name>\` before declaring your task.
