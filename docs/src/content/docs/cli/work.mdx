@@ -215,6 +215,6 @@ harn work reopen <work-id> --actor reviewer --finding "..."
 ```
 
 The accepted completion stays in the plan log. A superseding `plan.reopened` event
-is appended beside it, the goal returns to `ready`, and `harn supervisor run`
+is appended beside it, the goal returns to `ready`, and `harn governor run`
 dispatches the reopened item ahead of any milestone reassessment. Run it twice and
 nothing further happens. See [ADR 0050](/decisions/0050-reopening-a-completed-mission/).

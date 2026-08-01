@@ -1,49 +1,49 @@
 import type { SpawnFailureClass } from "../workflow/types.ts";
 
-export const SUPERVISOR_PLAN_SCHEMA_VERSION = 1 as const;
-export const MAX_SUPERVISOR_PLAN_REVIEWERS = 5 as const;
-export const MAX_SUPERVISOR_PLAN_REVISION_ROUNDS = 3 as const;
+export const GOVERNOR_PLAN_SCHEMA_VERSION = 1 as const;
+export const MAX_GOVERNOR_PLAN_REVIEWERS = 5 as const;
+export const MAX_GOVERNOR_PLAN_REVISION_ROUNDS = 3 as const;
 
-export interface SupervisorPlanTemplate {
+export interface GovernorPlanTemplate {
   workflow: { path: string; sha256: string };
   max_attempts: number;
   root: boolean;
 }
 
-export interface SupervisorReplanningPolicy {
+export interface GovernorReplanningPolicy {
   planner_specialist: string;
   auto_apply: boolean;
   max_replans: number;
   max_work_items_per_plan: number;
   max_total_work_items: number;
-  templates: Record<string, SupervisorPlanTemplate>;
+  templates: Record<string, GovernorPlanTemplate>;
   review?: {
     reviewer_specialists: string[];
     max_revision_rounds: number;
   };
 }
 
-export interface CreateSupervisorPlanTemplateInput {
+export interface CreateGovernorPlanTemplateInput {
   workflowPath: string;
   maxAttempts?: number;
   root?: boolean;
 }
 
-export interface CreateSupervisorReplanningInput {
+export interface CreateGovernorReplanningInput {
   plannerSpecialist: string;
   autoApply?: boolean;
   maxReplans?: number;
   maxWorkItemsPerPlan?: number;
   maxTotalWorkItems?: number;
-  templates: Readonly<Record<string, CreateSupervisorPlanTemplateInput>>;
+  templates: Readonly<Record<string, CreateGovernorPlanTemplateInput>>;
   review?: {
     reviewerSpecialists: readonly string[];
     maxRevisionRounds: number;
   };
 }
 
-export interface SupervisorPlanRequest {
-  schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
+export interface GovernorPlanRequest {
+  schema_version: typeof GOVERNOR_PLAN_SCHEMA_VERSION;
   id: string;
   goal_id: string;
   sequence: number;
@@ -54,14 +54,14 @@ export interface SupervisorPlanRequest {
   created_at: string;
 }
 
-export interface SupervisorPlanMilestone {
+export interface GovernorPlanMilestone {
   sequence: number;
   title: string;
   objective: string;
   acceptance: string[];
 }
 
-export interface SupervisorPlanWorkSpec {
+export interface GovernorPlanWorkSpec {
   key: string;
   title: string;
   objective: string;
@@ -70,18 +70,18 @@ export interface SupervisorPlanWorkSpec {
   template: string;
 }
 
-export interface SupervisorPlanProposal {
-  schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
+export interface GovernorPlanProposal {
+  schema_version: typeof GOVERNOR_PLAN_SCHEMA_VERSION;
   plan_id: string;
   decision: "apply" | "complete" | "attention";
   rationale: string;
   root: string;
-  work: SupervisorPlanWorkSpec[];
-  milestone?: SupervisorPlanMilestone;
+  work: GovernorPlanWorkSpec[];
+  milestone?: GovernorPlanMilestone;
   proposed_at: string;
 }
 
-export type SupervisorPlanEventType =
+export type GovernorPlanEventType =
   | "plan.awaiting_approval"
   | "plan.resumed"
   | "plan.reviewed"
@@ -94,55 +94,55 @@ export type SupervisorPlanEventType =
   | "plan.failed"
   | "plan.reopened";
 
-export type SupervisorPlanReviewStatus = "passed" | "revision_exhausted" | "attention" | "failed";
+export type GovernorPlanReviewStatus = "passed" | "revision_exhausted" | "attention" | "failed";
 
-export type SupervisorPlanReviewVerdict = "approve" | "revise" | "attention";
+export type GovernorPlanReviewVerdict = "approve" | "revise" | "attention";
 
-export interface SupervisorPlanReviewFinding {
+export interface GovernorPlanReviewFinding {
   code: string;
   severity: "blocking" | "advisory";
   summary: string;
   recommendation: string;
 }
 
-export interface SupervisorPlanReviewReviewer {
+export interface GovernorPlanReviewReviewer {
   specialist: string;
-  verdict: SupervisorPlanReviewVerdict;
+  verdict: GovernorPlanReviewVerdict;
   rationale: string;
-  findings: SupervisorPlanReviewFinding[];
+  findings: GovernorPlanReviewFinding[];
 }
 
-export interface SupervisorPlanReviewRound {
+export interface GovernorPlanReviewRound {
   round: number;
   candidate_sha256: string;
-  reviewers: SupervisorPlanReviewReviewer[];
+  reviewers: GovernorPlanReviewReviewer[];
   outcome: "approved" | "revise" | "attention" | "failed";
   revision_workflow_run_id?: string;
 }
 
-export interface SupervisorPlanReviewReceipt {
-  schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
+export interface GovernorPlanReviewReceipt {
+  schema_version: typeof GOVERNOR_PLAN_SCHEMA_VERSION;
   plan_id: string;
-  status: SupervisorPlanReviewStatus;
+  status: GovernorPlanReviewStatus;
   candidate_sha256: string;
-  final_candidate: SupervisorPlanProposal;
-  rounds: SupervisorPlanReviewRound[];
+  final_candidate: GovernorPlanProposal;
+  rounds: GovernorPlanReviewRound[];
 }
 
-export interface SupervisorPlanReviewSummary {
-  status: SupervisorPlanReviewStatus;
+export interface GovernorPlanReviewSummary {
+  status: GovernorPlanReviewStatus;
   candidate_sha256: string;
   rounds: number;
   blocking_findings: number;
   advisory_findings: number;
 }
 
-export interface SupervisorPlanEvent {
-  schema_version: typeof SUPERVISOR_PLAN_SCHEMA_VERSION;
+export interface GovernorPlanEvent {
+  schema_version: typeof GOVERNOR_PLAN_SCHEMA_VERSION;
   plan_id: string;
   seq: number;
   ts: string;
-  event: SupervisorPlanEventType;
+  event: GovernorPlanEventType;
   actor: string;
   reason: string;
   approval_id?: string;
@@ -155,7 +155,7 @@ export interface SupervisorPlanEvent {
   class?: SpawnFailureClass;
 }
 
-export type SupervisorPlanStatus =
+export type GovernorPlanStatus =
   | "interrupted"
   | "awaiting_approval"
   | "resumable"
@@ -168,12 +168,12 @@ export type SupervisorPlanStatus =
   | "attention"
   | "failed";
 
-export interface SupervisorPlanRecord {
-  request: SupervisorPlanRequest;
-  proposal?: SupervisorPlanProposal;
-  review?: SupervisorPlanReviewSummary;
-  events: SupervisorPlanEvent[];
-  status: SupervisorPlanStatus;
+export interface GovernorPlanRecord {
+  request: GovernorPlanRequest;
+  proposal?: GovernorPlanProposal;
+  review?: GovernorPlanReviewSummary;
+  events: GovernorPlanEvent[];
+  status: GovernorPlanStatus;
   approval_id?: string;
   root_work_id?: string;
   work_ids: string[];
@@ -184,27 +184,27 @@ export interface SupervisorPlanRecord {
   class?: SpawnFailureClass;
 }
 
-export interface SupervisorPlanHistory {
-  plans: SupervisorPlanRecord[];
+export interface GovernorPlanHistory {
+  plans: GovernorPlanRecord[];
   active_root_work_id: string;
   generation: number;
   applied_work_ids: string[];
   materialized_work_ids: string[];
   milestones_completed: number;
   completed: boolean;
-  latest?: SupervisorPlanRecord;
+  latest?: GovernorPlanRecord;
 }
 
-export interface SupervisorPlanOutcome {
+export interface GovernorPlanOutcome {
   plan_id: string;
-  status: SupervisorPlanStatus;
+  status: GovernorPlanStatus;
   workflow_run_id: string;
   reason?: string;
   root_work_id?: string;
   work_ids: string[];
 }
 
-export function supervisorGraphFingerprint(input: {
+export function governorGraphFingerprint(input: {
   rootWorkId: string;
   generation: number;
   work: ReadonlyArray<{

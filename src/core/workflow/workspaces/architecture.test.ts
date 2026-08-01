@@ -5,11 +5,11 @@ import { join } from "node:path";
 const root = process.cwd();
 
 describe("workspace provider authority boundaries", () => {
-  test("provider modules cannot write host work, proof, supervisor, retry, or budget state", () => {
+  test("provider modules cannot write host work, proof, governor, retry, or budget state", () => {
     for (const file of ["local-git.ts", "git.ts", "paths.ts", "leases.ts"]) {
       const provider = readFileSync(join(root, "src/core/workflow/workspaces", file), "utf8");
       expect(provider).not.toContain("../../work/");
-      expect(provider).not.toContain("../../supervisor/");
+      expect(provider).not.toContain("../../governor/");
       expect(provider).not.toContain("writeWorkflowProof");
       expect(provider).not.toContain("writeWorkflowSupplement");
       expect(provider).not.toContain("attempt.started");

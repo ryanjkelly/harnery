@@ -5,15 +5,15 @@ import { join } from "node:path";
 import { cancelWorkItem, createWorkItem, readWorkItem, reopenWorkItem } from "../work/index.ts";
 import { resolveWorkflowApproval, type Spawner, type SpawnRequest } from "../workflow/index.ts";
 import {
-  approveSupervisorPlan,
-  createSupervisor,
+  approveGovernorPlan,
+  createGovernor,
   findCompletedMissionGoverning,
-  readSupervisor,
-  readSupervisorPlan,
-  rejectSupervisorPlan,
-  reopenSupervisorMission,
-  retrySupervisorPlan,
-  runSupervisor,
+  readGovernor,
+  readGovernorPlan,
+  rejectGovernorPlan,
+  reopenGovernorMission,
+  retryGovernorPlan,
+  runGovernor,
 } from "./index.ts";
 
 const roots: string[] = [];
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = mkdtempSync(join("/tmp", "harnery-supervisor-"));
+  const root = mkdtempSync(join("/tmp", "harnery-governor-"));
   roots.push(root);
   const passing = join(root, "passing.mjs");
   writeFileSync(
@@ -56,7 +56,7 @@ const probeBilling = (harness: string) => ({
   mode: "subscription" as const,
 });
 
-describe("durable goal supervisor", () => {
+describe("durable goal governor", () => {
   test("freezes a private team intent and derives its static dependency graph", () => {
     const { root, passing } = fixture();
     createWorkItem({
@@ -74,7 +74,7 @@ describe("durable goal supervisor", () => {
       workflowPath: passing,
       dependencies: ["leaf"],
     });
-    const record = createSupervisor({
+    const record = createGovernor({
       coordRoot: root,
       id: "goal-fixture",
       rootWorkId: "root",
@@ -86,10 +86,10 @@ describe("durable goal supervisor", () => {
     expect(record.projection.ready_work).toEqual(["leaf"]);
     expect(record.projection.specialists).toEqual(["implementer"]);
     expect(
-      statSync(join(root, ".harnery", "supervisors", "goal-fixture", "intent.json")).mode & 0o777,
+      statSync(join(root, ".harnery", "governors", "goal-fixture", "intent.json")).mode & 0o777,
     ).toBe(0o600);
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-fixture",
         rootWorkId: "root",
@@ -115,7 +115,7 @@ describe("durable goal supervisor", () => {
       workflowPath: passing,
       dependencies: ["leaf"],
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-chain",
       rootWorkId: "root",
@@ -133,7 +133,7 @@ describe("durable goal supervisor", () => {
       requests.push(request);
       return { ok: true, text: "done", durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-chain",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -145,7 +145,7 @@ describe("durable goal supervisor", () => {
     expect(requests[0]?.prompt).toStartWith("You are the implementation specialist");
     expect(readWorkItem(root, "leaf").projection.state).toBe("succeeded");
     expect(readWorkItem(root, "root").projection.state).toBe("succeeded");
-    expect(readSupervisor(root, "goal-chain").projection.state).toBe("succeeded");
+    expect(readGovernor(root, "goal-chain").projection.state).toBe("succeeded");
   });
 
   test("defaults to stopping for explicit review after passing proof", async () => {
@@ -157,14 +157,14 @@ describe("durable goal supervisor", () => {
       objective: "Wait for review",
       workflowPath: passing,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-review",
       rootWorkId: "reviewed",
       specialists: { implementer: { instructions: "Implement", harness: "codex" } },
     });
     const spawner: Spawner = async () => ({ ok: true, text: "done", durationMs: 1 });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-review",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -183,7 +183,7 @@ describe("durable goal supervisor", () => {
       objective: "Resume safely",
       workflowPath: passing,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-approval",
       rootWorkId: "approved",
@@ -203,7 +203,7 @@ describe("durable goal supervisor", () => {
       networkAccess: "enabled" as const,
       approvalMode: "park" as const,
     };
-    const parked = await runSupervisor({
+    const parked = await runGovernor({
       coordRoot: root,
       goalId: "goal-approval",
       engine,
@@ -220,10 +220,10 @@ describe("durable goal supervisor", () => {
       verdict: "allow",
       actor: "reviewer",
     });
-    const resumable = readSupervisor(root, "goal-approval");
+    const resumable = readGovernor(root, "goal-approval");
     expect(resumable.projection.state).toBe("ready");
     expect(resumable.projection.attempts_remaining).toBe(0);
-    const resumed = await runSupervisor({
+    const resumed = await runGovernor({
       coordRoot: root,
       goalId: "goal-approval",
       engine,
@@ -245,7 +245,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 2,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-retry",
       rootWorkId: "failing",
@@ -253,7 +253,7 @@ describe("durable goal supervisor", () => {
       automation: { retry_blocked: true },
       limits: { max_total_attempts: 5 },
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-retry",
       engine: { spawners: {}, probeBilling },
@@ -264,7 +264,7 @@ describe("durable goal supervisor", () => {
     expect(readWorkItem(root, "failing").projection.next_action).toBe("none");
   });
 
-  test("an authorized supervisor retry receives the prior failure synopsis", async () => {
+  test("an authorized governor retry receives the prior failure synopsis", async () => {
     const { root } = fixture();
     const contextual = join(root, "contextual-retry.mjs");
     writeFileSync(
@@ -297,7 +297,7 @@ describe("durable goal supervisor", () => {
       workflowPath: contextual,
       maxAttempts: 2,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-contextual",
       rootWorkId: "contextual",
@@ -306,7 +306,7 @@ describe("durable goal supervisor", () => {
       limits: { max_total_attempts: 2 },
     });
 
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-contextual",
       engine: { spawners: {}, probeBilling },
@@ -344,7 +344,7 @@ describe("durable goal supervisor", () => {
       workflowPath: passing,
       dependencies: ["budget-leaf"],
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-budget",
       rootWorkId: "budget-root",
@@ -353,7 +353,7 @@ describe("durable goal supervisor", () => {
       limits: { max_total_attempts: 1 },
     });
     const spawner: Spawner = async () => ({ ok: true, text: "done", durationMs: 1 });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-budget",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -374,7 +374,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-replan-budget",
       rootWorkId: "replan-budget-root",
@@ -386,7 +386,7 @@ describe("durable goal supervisor", () => {
       },
     });
     let plannerCalls = 0;
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-budget",
       engine: {
@@ -414,7 +414,7 @@ describe("durable goal supervisor", () => {
       objective: "Advance once",
       workflowPath: passing,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-tick",
       rootWorkId: "ticked",
@@ -422,7 +422,7 @@ describe("durable goal supervisor", () => {
       automation: { accept_passing_proof: true },
     });
     const spawner: Spawner = async () => ({ ok: true, text: "done", durationMs: 1 });
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-tick",
       mode: "tick",
@@ -431,7 +431,7 @@ describe("durable goal supervisor", () => {
     expect(first.stop_reason).toBe("tick_complete");
     expect(first.acceptances).toBe(0);
     expect(readWorkItem(root, "ticked").projection.state).toBe("in_review");
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-tick",
       mode: "tick",
@@ -451,7 +451,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-replan-review",
       rootWorkId: "blocked-root",
@@ -473,7 +473,7 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: "implemented", durationMs: 1 };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-review",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -483,20 +483,12 @@ describe("durable goal supervisor", () => {
     expect(first.projection.next_action).toBe("review_plan");
     expect(plannerCalls).toBe(1);
     const planId = first.projection.pending_plan_id!;
-    const unreviewedPlan = readSupervisorPlan(root, "goal-replan-review", planId);
+    const unreviewedPlan = readGovernorPlan(root, "goal-replan-review", planId);
     expect(unreviewedPlan.status).toBe("proposed");
     expect(unreviewedPlan.review).toBeUndefined();
     expect(
       statSync(
-        join(
-          root,
-          ".harnery",
-          "supervisors",
-          "goal-replan-review",
-          "plans",
-          planId,
-          "proposal.json",
-        ),
+        join(root, ".harnery", "governors", "goal-replan-review", "plans", planId, "proposal.json"),
       ).mode & 0o777,
     ).toBe(0o600);
 
@@ -511,11 +503,11 @@ describe("durable goal supervisor", () => {
       dependencies: [],
       workflowPath: passing,
       maxAttempts: 1,
-      source: { kind: "workflow", ref: `supervisor:goal-replan-review/plan:${planId}` },
+      source: { kind: "workflow", ref: `governor:goal-replan-review/plan:${planId}` },
       actor: "recovery-fixture",
     });
 
-    const applied = approveSupervisorPlan({
+    const applied = approveGovernorPlan({
       coordRoot: root,
       goalId: "goal-replan-review",
       planId,
@@ -523,13 +515,13 @@ describe("durable goal supervisor", () => {
       reason: "replacement graph is scoped and auditable",
     });
     expect(applied.status).toBe("applied");
-    const replaced = readSupervisor(root, "goal-replan-review");
+    const replaced = readGovernor(root, "goal-replan-review");
     expect(replaced.projection.root_work_id).toBe(`${planId}-repair`);
     expect(replaced.projection.plan_generation).toBe(1);
     expect(replaced.projection.attempts_used).toBe(1);
     expect(replaced.projection.governed_work_ids).toContain("blocked-root");
 
-    const completed = await runSupervisor({
+    const completed = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-review",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -549,7 +541,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-replan-auto",
       rootWorkId: "auto-blocked",
@@ -572,7 +564,7 @@ describe("durable goal supervisor", () => {
         : "implemented",
       durationMs: 1,
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-auto",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -594,7 +586,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-pass",
       rootWorkId: "review-blocked",
@@ -631,13 +623,13 @@ describe("durable goal supervisor", () => {
         durationMs: 1,
       };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-pass",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = report.projection.pending_plan_id!;
-    const plan = readSupervisorPlan(root, "goal-reviewed-pass", planId);
+    const plan = readGovernorPlan(root, "goal-reviewed-pass", planId);
     expect(report.stop_reason).toBe("awaiting_attention");
     expect(report.projection.next_action).toBe("review_plan");
     expect(plan.status).toBe("proposed");
@@ -647,7 +639,7 @@ describe("durable goal supervisor", () => {
       false,
     );
 
-    const planDir = join(root, ".harnery", "supervisors", "goal-reviewed-pass", "plans", planId);
+    const planDir = join(root, ".harnery", "governors", "goal-reviewed-pass", "plans", planId);
     const reviewPath = join(planDir, "review.json");
     const proposalPath = join(planDir, "proposal.json");
     const originalReview = readFileSync(reviewPath, "utf8");
@@ -655,7 +647,7 @@ describe("durable goal supervisor", () => {
     receipt.final_candidate.rationale = "Replace the candidate after its final review round";
     receipt.candidate_sha256 = candidateDigestForTest(receipt.final_candidate);
     writeFileSync(reviewPath, `${JSON.stringify(receipt, null, 2)}\n`);
-    expect(() => readSupervisorPlan(root, "goal-reviewed-pass", planId)).toThrow(
+    expect(() => readGovernorPlan(root, "goal-reviewed-pass", planId)).toThrow(
       "final round does not match its candidate",
     );
 
@@ -664,7 +656,7 @@ describe("durable goal supervisor", () => {
     proposal.work[0].objective = "Apply work that the reviewers never evaluated";
     writeFileSync(proposalPath, `${JSON.stringify(proposal, null, 2)}\n`);
     expect(() =>
-      approveSupervisorPlan({
+      approveGovernorPlan({
         coordRoot: root,
         goalId: "goal-reviewed-pass",
         planId,
@@ -683,7 +675,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-auto",
       rootWorkId: "review-auto-blocked",
@@ -710,7 +702,7 @@ describe("durable goal supervisor", () => {
           : "implemented",
       durationMs: 1,
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-auto",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -730,7 +722,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-revision",
       rootWorkId: "review-revision-blocked",
@@ -761,7 +753,7 @@ describe("durable goal supervisor", () => {
           durationMs: 1,
         };
       }
-      if (request.prompt.includes("Revise this supervisor plan candidate")) {
+      if (request.prompt.includes("Revise this governor plan candidate")) {
         revisionCalls++;
         return {
           ok: true,
@@ -774,19 +766,19 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: "ignored", durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-revision",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = report.projection.pending_plan_id!;
-    const plan = readSupervisorPlan(root, "goal-reviewed-revision", planId);
+    const plan = readGovernorPlan(root, "goal-reviewed-revision", planId);
     const receipt = JSON.parse(
       readFileSync(
         join(
           root,
           ".harnery",
-          "supervisors",
+          "governors",
           "goal-reviewed-revision",
           "plans",
           planId,
@@ -825,7 +817,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-exhausted",
       rootWorkId: "review-exhausted-blocked",
@@ -853,7 +845,7 @@ describe("durable goal supervisor", () => {
           durationMs: 1,
         };
       }
-      if (request.prompt.includes("Revise this supervisor plan candidate")) {
+      if (request.prompt.includes("Revise this governor plan candidate")) {
         revisionCalls++;
         return {
           ok: true,
@@ -866,13 +858,13 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: "ignored", durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-exhausted",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
-    const planId = readSupervisor(root, "goal-reviewed-exhausted").plans[0]!.request.id;
-    const plan = readSupervisorPlan(root, "goal-reviewed-exhausted", planId);
+    const planId = readGovernor(root, "goal-reviewed-exhausted").plans[0]!.request.id;
+    const plan = readGovernorPlan(root, "goal-reviewed-exhausted", planId);
     expect(report.stop_reason).toBe("awaiting_attention");
     expect(plan.status).toBe("attention");
     expect(plan.review).toMatchObject({ status: "revision_exhausted", rounds: 1 });
@@ -881,7 +873,7 @@ describe("durable goal supervisor", () => {
         join(
           root,
           ".harnery",
-          "supervisors",
+          "governors",
           "goal-reviewed-exhausted",
           "plans",
           planId,
@@ -893,7 +885,7 @@ describe("durable goal supervisor", () => {
     const reviewedPlanDir = join(
       root,
       ".harnery",
-      "supervisors",
+      "governors",
       "goal-reviewed-exhausted",
       "plans",
       planId,
@@ -901,7 +893,7 @@ describe("durable goal supervisor", () => {
     const requestBeforeRetry = readFileSync(join(reviewedPlanDir, "request.json"), "utf8");
     const reviewBeforeRetry = readFileSync(join(reviewedPlanDir, "review.json"), "utf8");
     expect(
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-reviewed-exhausted",
         planId,
@@ -923,7 +915,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-corrupt",
       rootWorkId: "review-corrupt-blocked",
@@ -944,25 +936,17 @@ describe("durable goal supervisor", () => {
         : replacementProposal(),
       durationMs: 1,
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-corrupt",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = report.projection.pending_plan_id!;
     writeFileSync(
-      join(
-        root,
-        ".harnery",
-        "supervisors",
-        "goal-reviewed-corrupt",
-        "plans",
-        planId,
-        "review.json",
-      ),
+      join(root, ".harnery", "governors", "goal-reviewed-corrupt", "plans", planId, "review.json"),
       '{"status":"passed"',
     );
-    expect(() => readSupervisorPlan(root, "goal-reviewed-corrupt", planId)).toThrow();
+    expect(() => readGovernorPlan(root, "goal-reviewed-corrupt", planId)).toThrow();
   });
 
   test("completed review proof reconstructs a missing receipt and proposal idempotently", async () => {
@@ -975,7 +959,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-recover",
       rootWorkId: "review-recover-blocked",
@@ -1000,21 +984,21 @@ describe("durable goal supervisor", () => {
         durationMs: 1,
       };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-recover",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = first.projection.pending_plan_id!;
-    const planDir = join(root, ".harnery", "supervisors", "goal-reviewed-recover", "plans", planId);
+    const planDir = join(root, ".harnery", "governors", "goal-reviewed-recover", "plans", planId);
     rmSync(join(planDir, "review.json"), { force: true });
     rmSync(join(planDir, "proposal.json"), { force: true });
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-recover",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
-    const recovered = readSupervisorPlan(root, "goal-reviewed-recover", planId);
+    const recovered = readGovernorPlan(root, "goal-reviewed-recover", planId);
     expect(second.stop_reason).toBe("awaiting_attention");
     expect(recovered.status).toBe("proposed");
     expect(recovered.review).toMatchObject({ status: "passed", rounds: 1 });
@@ -1031,7 +1015,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-recover-order",
       rootWorkId: "review-recover-order-blocked",
@@ -1055,7 +1039,7 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: replacementProposal(), durationMs: 1 };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-recover-order",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1064,14 +1048,14 @@ describe("durable goal supervisor", () => {
     const planDir = join(
       root,
       ".harnery",
-      "supervisors",
+      "governors",
       "goal-reviewed-recover-order",
       "plans",
       planId,
     );
     rmSync(join(planDir, "review.json"), { force: true });
     rmSync(join(planDir, "proposal.json"), { force: true });
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-recover-order",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1094,7 +1078,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-integrity",
       rootWorkId: "review-integrity-blocked",
@@ -1115,26 +1099,19 @@ describe("durable goal supervisor", () => {
         : replacementProposal(),
       durationMs: 1,
     });
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-integrity",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = first.projection.pending_plan_id!;
-    const planDir = join(
-      root,
-      ".harnery",
-      "supervisors",
-      "goal-reviewed-integrity",
-      "plans",
-      planId,
-    );
+    const planDir = join(root, ".harnery", "governors", "goal-reviewed-integrity", "plans", planId);
     const journalPath = join(root, ".harnery", "workflows", `${planId}-review`, "journal.jsonl");
     rmSync(join(planDir, "review.json"), { force: true });
     rmSync(join(planDir, "proposal.json"), { force: true });
     writeFileSync(journalPath, `${readFileSync(journalPath, "utf8")} `);
     await expect(
-      runSupervisor({
+      runGovernor({
         coordRoot: root,
         goalId: "goal-reviewed-integrity",
         engine: { spawners: { codex: spawner }, probeBilling },
@@ -1152,7 +1129,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-result",
       rootWorkId: "review-result-blocked",
@@ -1173,13 +1150,13 @@ describe("durable goal supervisor", () => {
         : replacementProposal(),
       durationMs: 1,
     });
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-result",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = first.projection.pending_plan_id!;
-    const planDir = join(root, ".harnery", "supervisors", "goal-reviewed-result", "plans", planId);
+    const planDir = join(root, ".harnery", "governors", "goal-reviewed-result", "plans", planId);
     const runDir = join(root, ".harnery", "workflows", `${planId}-review`);
     const journalPath = join(runDir, "journal.jsonl");
     const proofPath = join(runDir, "proof.json");
@@ -1208,7 +1185,7 @@ describe("durable goal supervisor", () => {
     };
     writeFileSync(proofPath, `${JSON.stringify(proof, null, 2)}\n`);
     await expect(
-      runSupervisor({
+      runGovernor({
         coordRoot: root,
         goalId: "goal-reviewed-result",
         engine: { spawners: { codex: spawner }, probeBilling },
@@ -1226,7 +1203,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewed-policy-mismatch",
       rootWorkId: "review-policy-mismatch-blocked",
@@ -1248,7 +1225,7 @@ describe("durable goal supervisor", () => {
         : replacementProposal(),
       durationMs: 1,
     });
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewed-policy-mismatch",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1257,7 +1234,7 @@ describe("durable goal supervisor", () => {
     const reviewPath = join(
       root,
       ".harnery",
-      "supervisors",
+      "governors",
       "goal-reviewed-policy-mismatch",
       "plans",
       planId,
@@ -1266,12 +1243,12 @@ describe("durable goal supervisor", () => {
     const receipt = JSON.parse(readFileSync(reviewPath, "utf8"));
     receipt.rounds[0].reviewers.reverse();
     writeFileSync(reviewPath, `${JSON.stringify(receipt, null, 2)}\n`);
-    expect(() => readSupervisorPlan(root, "goal-reviewed-policy-mismatch", planId)).toThrow(
+    expect(() => readGovernorPlan(root, "goal-reviewed-policy-mismatch", planId)).toThrow(
       "frozen review policy",
     );
   });
 
-  test("rejects invalid reviewer specialists at supervisor creation", () => {
+  test("rejects invalid reviewer specialists at governor creation", () => {
     const { root, passing } = fixture();
     createWorkItem({
       coordRoot: root,
@@ -1281,7 +1258,7 @@ describe("durable goal supervisor", () => {
       workflowPath: passing,
     });
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-reviewer-planner",
         rootWorkId: "review-policy-root",
@@ -1294,7 +1271,7 @@ describe("durable goal supervisor", () => {
       }),
     ).toThrow("reviewer specialist cannot be the planner specialist");
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-reviewer-missing",
         rootWorkId: "review-policy-root",
@@ -1318,7 +1295,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-replan-attention",
       rootWorkId: "needs-judgment",
@@ -1342,7 +1319,7 @@ describe("durable goal supervisor", () => {
         durationMs: 1,
       };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-attention",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1351,9 +1328,9 @@ describe("durable goal supervisor", () => {
     expect(first.projection.latest_plan_status).toBe("attention");
     expect(first.projection.next_action).toBe("retry_plan");
     expect(first.projection.attention_plan_id).toBe(
-      readSupervisor(root, "goal-replan-attention").plans[0]?.request.id,
+      readGovernor(root, "goal-replan-attention").plans[0]?.request.id,
     );
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-attention",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1365,10 +1342,10 @@ describe("durable goal supervisor", () => {
       reason: "Change durable graph truth",
     });
     expect(
-      readSupervisor(root, "goal-replan-attention").projection.attention_plan_id,
+      readGovernor(root, "goal-replan-attention").projection.attention_plan_id,
     ).toBeUndefined();
     expect(() =>
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-replan-attention",
         planId: first.projection.attention_plan_id!,
@@ -1387,7 +1364,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-guided-retry",
       rootWorkId: "guided-retry-root",
@@ -1415,19 +1392,19 @@ describe("durable goal supervisor", () => {
         durationMs: 1,
       };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-guided-retry",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     const planId = first.projection.attention_plan_id!;
-    const planDir = join(root, ".harnery", "supervisors", "goal-guided-retry", "plans", planId);
+    const planDir = join(root, ".harnery", "governors", "goal-guided-retry", "plans", planId);
     const requestBefore = readFileSync(join(planDir, "request.json"), "utf8");
     const proposalBefore = readFileSync(join(planDir, "proposal.json"), "utf8");
     const eventsBefore = readFileSync(join(planDir, "events.jsonl"), "utf8");
 
     expect(() =>
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-guided-retry",
         planId,
@@ -1435,7 +1412,7 @@ describe("durable goal supervisor", () => {
       }),
     ).toThrow("plan retry reason must not be empty");
     expect(() =>
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-guided-retry",
         planId,
@@ -1443,14 +1420,14 @@ describe("durable goal supervisor", () => {
       }),
     ).toThrow("plan retry reason exceeds 2000 characters");
 
-    const retried = retrySupervisorPlan({
+    const retried = retryGovernorPlan({
       coordRoot: root,
       goalId: "goal-guided-retry",
       planId,
       actor: "operator",
       reason: "Keep the recovery local and preserve the existing API",
     });
-    const repeated = retrySupervisorPlan({
+    const repeated = retryGovernorPlan({
       coordRoot: root,
       goalId: "goal-guided-retry",
       planId,
@@ -1466,9 +1443,9 @@ describe("durable goal supervisor", () => {
     expect(eventsAfter.match(/plan\.retry_requested/g)).toHaveLength(1);
     expect(eventsAfter).toContain("Keep the recovery local and preserve the existing API");
     expect(eventsAfter).not.toContain("This duplicate must not replace the first guidance");
-    expect(readSupervisor(root, "goal-guided-retry").projection.next_action).toBe("replan");
+    expect(readGovernor(root, "goal-guided-retry").projection.next_action).toBe("replan");
 
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-guided-retry",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1478,13 +1455,13 @@ describe("durable goal supervisor", () => {
     expect(readFileSync(join(planDir, "request.json"), "utf8")).toBe(requestBefore);
     expect(readFileSync(join(planDir, "proposal.json"), "utf8")).toBe(proposalBefore);
     expect(() =>
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-guided-retry",
         planId,
         reason: "Retry the historical plan",
       }),
-    ).toThrow(`supervisor plan ${planId} is not the latest plan`);
+    ).toThrow(`governor plan ${planId} is not the latest plan`);
   });
 
   test("attention retry stays unavailable after the frozen replan budget is exhausted", async () => {
@@ -1497,7 +1474,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-retry-budget",
       rootWorkId: "retry-budget-root",
@@ -1508,7 +1485,7 @@ describe("durable goal supervisor", () => {
         templates: { repair: { workflowPath: passing, root: true } },
       },
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-retry-budget",
       engine: {
@@ -1529,13 +1506,13 @@ describe("durable goal supervisor", () => {
     });
     expect(report.projection.next_action).toBe("none");
     expect(() =>
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-retry-budget",
         planId: report.projection.attention_plan_id!,
         reason: "Try once more",
       }),
-    ).toThrow("supervisor goal-retry-budget exhausted its 1 replans");
+    ).toThrow("governor goal-retry-budget exhausted its 1 replans");
   });
 
   test("feeds an explicit rejection reason into the next bounded planner attempt", async () => {
@@ -1548,7 +1525,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-replan-rejected",
       rootWorkId: "rejected-plan-root",
@@ -1576,28 +1553,28 @@ describe("durable goal supervisor", () => {
         durationMs: 1,
       };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-rejected",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     expect(() =>
-      retrySupervisorPlan({
+      retryGovernorPlan({
         coordRoot: root,
         goalId: "goal-replan-rejected",
         planId: first.projection.pending_plan_id!,
         reason: "Retry a proposal that still awaits review",
       }),
     ).toThrow("cannot be retried from proposed");
-    rejectSupervisorPlan({
+    rejectGovernorPlan({
       coordRoot: root,
       goalId: "goal-replan-rejected",
       planId: first.projection.pending_plan_id!,
       actor: "reviewer",
       reason: "Use a narrower recovery scope",
     });
-    expect(readSupervisor(root, "goal-replan-rejected").projection.next_action).toBe("replan");
-    const second = await runSupervisor({
+    expect(readGovernor(root, "goal-replan-rejected").projection.next_action).toBe("replan");
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-replan-rejected",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1617,7 +1594,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-planner-approval",
       rootWorkId: "planner-approval-root",
@@ -1640,7 +1617,7 @@ describe("durable goal supervisor", () => {
       networkAccess: "enabled" as const,
       approvalMode: "park" as const,
     };
-    const parked = await runSupervisor({
+    const parked = await runGovernor({
       coordRoot: root,
       goalId: "goal-planner-approval",
       engine,
@@ -1648,7 +1625,7 @@ describe("durable goal supervisor", () => {
     expect(parked.stop_reason).toBe("awaiting_attention");
     expect(parked.projection.next_action).toBe("resolve_approval");
     expect(spawns).toBe(0);
-    const planBefore = readSupervisor(root, "goal-planner-approval").plans[0]!;
+    const planBefore = readGovernor(root, "goal-planner-approval").plans[0]!;
     expect(planBefore.status).toBe("awaiting_approval");
     resolveWorkflowApproval({
       coordRoot: root,
@@ -1656,8 +1633,8 @@ describe("durable goal supervisor", () => {
       verdict: "allow",
       actor: "operator",
     });
-    expect(readSupervisor(root, "goal-planner-approval").projection.next_action).toBe("replan");
-    const resumed = await runSupervisor({
+    expect(readGovernor(root, "goal-planner-approval").projection.next_action).toBe("replan");
+    const resumed = await runGovernor({
       coordRoot: root,
       goalId: "goal-planner-approval",
       engine,
@@ -1679,7 +1656,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-review-approval",
       rootWorkId: "review-approval-root",
@@ -1713,8 +1690,8 @@ describe("durable goal supervisor", () => {
       approvalMode: "park" as const,
     };
 
-    await runSupervisor({ coordRoot: root, goalId: "goal-review-approval", engine });
-    let plan = readSupervisor(root, "goal-review-approval").plans[0]!;
+    await runGovernor({ coordRoot: root, goalId: "goal-review-approval", engine });
+    let plan = readGovernor(root, "goal-review-approval").plans[0]!;
     resolveWorkflowApproval({
       coordRoot: root,
       approvalId: plan.approval_id!,
@@ -1722,14 +1699,14 @@ describe("durable goal supervisor", () => {
       actor: "operator",
     });
 
-    const reviewParked = await runSupervisor({
+    const reviewParked = await runGovernor({
       coordRoot: root,
       goalId: "goal-review-approval",
       engine,
     });
     expect(reviewParked.projection.next_action).toBe("resolve_approval");
     expect(spawns).toBe(1);
-    plan = readSupervisor(root, "goal-review-approval").plans[0]!;
+    plan = readGovernor(root, "goal-review-approval").plans[0]!;
     expect(plan.status).toBe("awaiting_approval");
     resolveWorkflowApproval({
       coordRoot: root,
@@ -1738,12 +1715,12 @@ describe("durable goal supervisor", () => {
       actor: "operator",
     });
 
-    const resumed = await runSupervisor({
+    const resumed = await runGovernor({
       coordRoot: root,
       goalId: "goal-review-approval",
       engine,
     });
-    expect(readSupervisor(root, "goal-review-approval").plans[0]).toMatchObject({
+    expect(readGovernor(root, "goal-review-approval").plans[0]).toMatchObject({
       status: "proposed",
     });
     expect(resumed.projection.next_action).toBe("review_plan");
@@ -1761,7 +1738,7 @@ describe("durable goal supervisor", () => {
       ),
     ]);
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-oversized-review-panel",
         rootWorkId: undefined,
@@ -1790,7 +1767,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-bounded-plan",
       rootWorkId: "bounded-plan-root",
@@ -1828,7 +1805,7 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: replacementProposal(), durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-bounded-plan",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1836,7 +1813,7 @@ describe("durable goal supervisor", () => {
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain("$.work[0].key: expected at most 32 character(s)");
     expect(report.projection.next_action).toBe("review_plan");
-    expect(readSupervisor(root, "goal-bounded-plan").plans[0]?.status).toBe("proposed");
+    expect(readGovernor(root, "goal-bounded-plan").plans[0]?.status).toBe("proposed");
   });
 
   test("retries a malformed reviewer finding code at the schema gate", async () => {
@@ -1849,7 +1826,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-review-code",
       rootWorkId: "review-code-root",
@@ -1884,7 +1861,7 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: "ignored", durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-review-code",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -1894,7 +1871,7 @@ describe("durable goal supervisor", () => {
       '$.findings[0].code: expected string matching "^[a-z][a-z0-9._-]*$"',
     );
     expect(report.projection.next_action).toBe("review_plan");
-    expect(readSupervisor(root, "goal-review-code").plans[0]).toMatchObject({
+    expect(readGovernor(root, "goal-review-code").plans[0]).toMatchObject({
       status: "proposed",
       review: { status: "passed", blocking_findings: 0 },
     });
@@ -1910,7 +1887,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-replan-invalid",
       rootWorkId: "invalid-plan-root",
@@ -1941,20 +1918,20 @@ describe("durable goal supervisor", () => {
       durationMs: 1,
     });
     await expect(
-      runSupervisor({
+      runGovernor({
         coordRoot: root,
         goalId: "goal-replan-invalid",
         engine: { spawners: { codex: spawner }, probeBilling },
       }),
     ).rejects.toThrow("is not active or earlier in the plan");
-    const invalid = readSupervisor(root, "goal-replan-invalid");
+    const invalid = readGovernor(root, "goal-replan-invalid");
     expect(invalid.plans[0]?.status).toBe("failed");
     expect(invalid.projection.state).toBe("budget_exhausted");
   });
 
   test("creates an objective-first mission without inventing executable root work", () => {
     const { root, passing } = fixture();
-    const record = createSupervisor({
+    const record = createGovernor({
       coordRoot: root,
       id: "goal-mission-initial",
       specialists: { planner: { instructions: "Plan", harness: "codex" } },
@@ -1975,14 +1952,14 @@ describe("durable goal supervisor", () => {
     expect(record.projection.milestones_remaining).toBe(3);
     expect(record.intent.mission?.objective).toBe("Deliver the bounded mission");
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-mission-invalid",
         specialists: {},
       }),
     ).toThrow("requires a mission and replanning policy");
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-mission-no-completion-slot",
         specialists: { planner: { instructions: "Plan", harness: "codex" } },
@@ -2010,7 +1987,7 @@ describe("durable goal supervisor", () => {
       workflowPath: passing,
     });
     expect(() =>
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id: "goal-mission-missing-planner",
         rootWorkId: "supplied-milestone",
@@ -2021,7 +1998,7 @@ describe("durable goal supervisor", () => {
         },
       }),
     ).toThrow("mission requires a replanning policy");
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-mission-supplied",
       rootWorkId: "supplied-milestone",
@@ -2040,7 +2017,7 @@ describe("durable goal supervisor", () => {
         templates: { delivery: { workflowPath: passing, root: true } },
       },
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-mission-supplied",
       engine: {
@@ -2064,14 +2041,12 @@ describe("durable goal supervisor", () => {
     expect(report.stop_reason).toBe("awaiting_attention");
     expect(report.projection.milestones_completed).toBe(1);
     expect(report.projection.milestones_remaining).toBe(2);
-    expect(readSupervisor(root, "goal-mission-supplied").plans[0]?.request.trigger).toBe(
-      "milestone",
-    );
+    expect(readGovernor(root, "goal-mission-supplied").plans[0]?.request.trigger).toBe("milestone");
   });
 
   test("refuses to declare an objective-first mission complete before milestone evidence", async () => {
     const { root, passing } = fixture();
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-mission-premature",
       specialists: { planner: { instructions: "Plan", harness: "codex" } },
@@ -2086,7 +2061,7 @@ describe("durable goal supervisor", () => {
     });
     let plannerCalls = 0;
     await expect(
-      runSupervisor({
+      runGovernor({
         coordRoot: root,
         goalId: "goal-mission-premature",
         engine: {
@@ -2110,12 +2085,12 @@ describe("durable goal supervisor", () => {
       }),
     ).rejects.toThrow("schema validation failed after 2 attempt(s)");
     expect(plannerCalls).toBe(2);
-    expect(readSupervisor(root, "goal-mission-premature").plans[0]?.status).toBe("failed");
+    expect(readGovernor(root, "goal-mission-premature").plans[0]?.status).toBe("failed");
   });
 
   test("keeps an objective-first attention decision quiescent until durable state changes", async () => {
     const { root, passing } = fixture();
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-mission-attention",
       specialists: { planner: { instructions: "Plan", harness: "codex" } },
@@ -2143,12 +2118,12 @@ describe("durable goal supervisor", () => {
       };
     };
     const engine = { spawners: { codex: spawner }, probeBilling };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-mission-attention",
       engine,
     });
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-mission-attention",
       engine,
@@ -2161,7 +2136,7 @@ describe("durable goal supervisor", () => {
 
   test("requires review for each mission plan and approves completion idempotently", async () => {
     const { root, passing } = fixture();
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-mission-reviewed",
       specialists: {
@@ -2201,7 +2176,7 @@ describe("durable goal supervisor", () => {
       return { ok: true, text: "milestone delivered", durationMs: 1 };
     };
     const engine = { spawners: { codex: spawner }, probeBilling };
-    const initial = await runSupervisor({
+    const initial = await runGovernor({
       coordRoot: root,
       goalId: "goal-mission-reviewed",
       engine,
@@ -2209,7 +2184,7 @@ describe("durable goal supervisor", () => {
     const initialPlanId = initial.projection.pending_plan_id!;
     expect(initial.projection.next_action).toBe("review_plan");
     expect(
-      approveSupervisorPlan({
+      approveGovernorPlan({
         coordRoot: root,
         goalId: "goal-mission-reviewed",
         planId: initialPlanId,
@@ -2217,23 +2192,23 @@ describe("durable goal supervisor", () => {
       }).status,
     ).toBe("applied");
 
-    const boundary = await runSupervisor({
+    const boundary = await runGovernor({
       coordRoot: root,
       goalId: "goal-mission-reviewed",
       engine,
     });
     const completionPlanId = boundary.projection.pending_plan_id!;
     expect(boundary.projection.next_action).toBe("review_plan");
-    expect(readSupervisorPlan(root, "goal-mission-reviewed", completionPlanId).status).toBe(
+    expect(readGovernorPlan(root, "goal-mission-reviewed", completionPlanId).status).toBe(
       "proposed",
     );
-    const firstApproval = approveSupervisorPlan({
+    const firstApproval = approveGovernorPlan({
       coordRoot: root,
       goalId: "goal-mission-reviewed",
       planId: completionPlanId,
       actor: "reviewer",
     });
-    const repeatedApproval = approveSupervisorPlan({
+    const repeatedApproval = approveGovernorPlan({
       coordRoot: root,
       goalId: "goal-mission-reviewed",
       planId: completionPlanId,
@@ -2241,12 +2216,12 @@ describe("durable goal supervisor", () => {
     });
     expect(firstApproval.status).toBe("completed");
     expect(repeatedApproval.status).toBe("completed");
-    expect(readSupervisor(root, "goal-mission-reviewed").projection.state).toBe("succeeded");
+    expect(readGovernor(root, "goal-mission-reviewed").projection.state).toBe("succeeded");
   });
 
   test("plans, executes, reassesses, and explicitly completes a bounded mission", async () => {
     const { root, passing } = fixture();
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-mission-loop",
       specialists: {
@@ -2294,7 +2269,7 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: "milestone delivered", durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-mission-loop",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -2310,17 +2285,17 @@ describe("durable goal supervisor", () => {
     expect(report.projection.milestones_completed).toBe(1);
     expect(report.projection.state).toBe("succeeded");
     expect(
-      readSupervisor(root, "goal-mission-loop").plans.map((plan) => plan.request.trigger),
+      readGovernor(root, "goal-mission-loop").plans.map((plan) => plan.request.trigger),
     ).toEqual(["initial", "milestone"]);
   });
 
   // ADR 0050: a mission that completes is the strongest "passed while possibly
   // wrong" state, and it is exactly where an operator reviews the output and finds
   // something. Before this, `work reopen` reported the item ready and the goal
-  // reported succeeded at the same time, so the supervisor never dispatched it.
+  // reported succeeded at the same time, so the governor never dispatched it.
   test("an operator finding under a completed mission reopens the mission and dispatches", async () => {
     const { root, passing } = fixture();
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reopen-mission",
       specialists: {
@@ -2360,7 +2335,7 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: "milestone delivered", durationMs: 1 };
     };
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reopen-mission",
       engine: { spawners: { codex: spawner }, probeBilling },
@@ -2380,19 +2355,19 @@ describe("durable goal supervisor", () => {
     });
 
     // The defect: the item is ready and the goal is finished, simultaneously.
-    const stranded = readSupervisor(root, "goal-reopen-mission").projection;
+    const stranded = readGovernor(root, "goal-reopen-mission").projection;
     expect(stranded.ready_work).toContain(rootWorkId);
     expect(stranded.state).toBe("succeeded");
     expect(stranded.next_action).toBe("none");
 
-    reopenSupervisorMission({
+    reopenGovernorMission({
       coordRoot: root,
       goalId: "goal-reopen-mission",
       actor: "operator",
       reason: "an operator finding must be addressed before the mission is done",
     });
 
-    const resumed = readSupervisor(root, "goal-reopen-mission").projection;
+    const resumed = readGovernor(root, "goal-reopen-mission").projection;
     expect(resumed.state).toBe("ready");
     expect(resumed.next_action).toBe("run");
     expect(resumed.reason).toContain("mission completion was reopened");
@@ -2400,20 +2375,20 @@ describe("durable goal supervisor", () => {
 
     // Append-only: the accepted completion is still in the log, with the reopen
     // recorded after it rather than in place of it.
-    const plan = readSupervisorPlan(root, "goal-reopen-mission", completedPlanId);
+    const plan = readGovernorPlan(root, "goal-reopen-mission", completedPlanId);
     expect(plan.status).toBe("reopened");
     const kinds = plan.events.map((event) => event.event);
     expect(kinds).toContain("plan.completed");
     expect(kinds.indexOf("plan.reopened")).toBeGreaterThan(kinds.indexOf("plan.completed"));
 
     // Reopening twice is idempotent, not a second event.
-    reopenSupervisorMission({
+    reopenGovernorMission({
       coordRoot: root,
       goalId: "goal-reopen-mission",
       reason: "same finding, run again",
     });
     expect(
-      readSupervisorPlan(root, "goal-reopen-mission", completedPlanId).events.filter(
+      readGovernorPlan(root, "goal-reopen-mission", completedPlanId).events.filter(
         (event) => event.event === "plan.reopened",
       ),
     ).toHaveLength(1);
@@ -2421,7 +2396,7 @@ describe("durable goal supervisor", () => {
 
   test("a mission that never completed refuses to be reopened", async () => {
     const { root, passing } = fixture();
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reopen-refuses",
       specialists: { planner: { instructions: "Plan", harness: "codex" } },
@@ -2433,7 +2408,7 @@ describe("durable goal supervisor", () => {
       },
     });
     expect(() =>
-      reopenSupervisorMission({
+      reopenGovernorMission({
         coordRoot: root,
         goalId: "goal-reopen-refuses",
         reason: "nothing to reopen",
@@ -2455,7 +2430,7 @@ describe("durable goal supervisor", () => {
         workflowPath: join(root, "failing.mjs"),
         maxAttempts: 1,
       });
-      createSupervisor({
+      createGovernor({
         coordRoot: root,
         id,
         rootWorkId: `${id}-root`,
@@ -2489,10 +2464,10 @@ describe("durable goal supervisor", () => {
       // The runner rethrows the planner failure after recording plan.failed, just
       // as it does live; the operator (or the next tick) re-runs.
       await expect(
-        runSupervisor({ coordRoot: root, goalId: "goal-plan-env", engine }),
+        runGovernor({ coordRoot: root, goalId: "goal-plan-env", engine }),
       ).rejects.toThrow();
 
-      const stopped = readSupervisor(root, "goal-plan-env");
+      const stopped = readGovernor(root, "goal-plan-env");
       expect(stopped.projection.state).toBe("blocked");
       expect(stopped.projection.next_action).toBe("none");
       expect(stopped.projection.reason).toContain("required precondition is missing");
@@ -2504,7 +2479,7 @@ describe("durable goal supervisor", () => {
       expect(stopped.plans.at(-1)?.class).toBe("environment");
 
       // Re-running does NOT replan an unchanged environment — the loop is broken.
-      const rerun = await runSupervisor({ coordRoot: root, goalId: "goal-plan-env", engine });
+      const rerun = await runGovernor({ coordRoot: root, goalId: "goal-plan-env", engine });
       expect(rerun.stop_reason).toBe("blocked");
       expect(plannerCalls).toBe(1);
     });
@@ -2529,9 +2504,9 @@ describe("durable goal supervisor", () => {
       // the bound the goal stays retryable (next: replan).
       for (let attempt = 1; attempt <= 3; attempt++) {
         await expect(
-          runSupervisor({ coordRoot: root, goalId: "goal-plan-upstream", engine }),
+          runGovernor({ coordRoot: root, goalId: "goal-plan-upstream", engine }),
         ).rejects.toThrow();
-        const between = readSupervisor(root, "goal-plan-upstream");
+        const between = readGovernor(root, "goal-plan-upstream");
         expect(between.plans.length).toBe(attempt);
         expect(between.plans.at(-1)?.class).toBe("upstream");
         // None of the upstream failures charged the replan budget.
@@ -2542,7 +2517,7 @@ describe("durable goal supervisor", () => {
           expect(between.projection.next_action).toBe("replan");
         }
       }
-      const bounded = readSupervisor(root, "goal-plan-upstream");
+      const bounded = readGovernor(root, "goal-plan-upstream");
       expect(bounded.projection.state).toBe("blocked");
       expect(bounded.projection.next_action).toBe("none");
       expect(bounded.projection.reason).toContain("waiting on an outside service");
@@ -2550,9 +2525,9 @@ describe("durable goal supervisor", () => {
 
       // At the bound the goal stops rather than retrying the outage forever — no
       // fourth replan is created.
-      const halted = await runSupervisor({ coordRoot: root, goalId: "goal-plan-upstream", engine });
+      const halted = await runGovernor({ coordRoot: root, goalId: "goal-plan-upstream", engine });
       expect(halted.stop_reason).toBe("blocked");
-      expect(readSupervisor(root, "goal-plan-upstream").plans.length).toBe(3);
+      expect(readGovernor(root, "goal-plan-upstream").plans.length).toBe(3);
     });
 
     test("an unclassed planner failure still charges the replan, exactly as before", async () => {
@@ -2570,9 +2545,9 @@ describe("durable goal supervisor", () => {
         probeBilling,
       };
       await expect(
-        runSupervisor({ coordRoot: root, goalId: "goal-plan-charged", engine }),
+        runGovernor({ coordRoot: root, goalId: "goal-plan-charged", engine }),
       ).rejects.toThrow();
-      const charged = readSupervisor(root, "goal-plan-charged");
+      const charged = readGovernor(root, "goal-plan-charged");
       // No class ⇒ a charged replan: replans_used and replans_remaining move
       // together, the pre-ADR-0046 behaviour.
       expect(charged.plans.at(-1)?.class).toBeUndefined();
@@ -2593,7 +2568,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-no-proposal",
       rootWorkId: "no-proposal-root",
@@ -2604,7 +2579,7 @@ describe("durable goal supervisor", () => {
         templates: { repair: { workflowPath: passing, root: true } },
       },
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-no-proposal",
       engine: {
@@ -2624,7 +2599,7 @@ describe("durable goal supervisor", () => {
       },
     });
     expect(report.stop_reason).toBe("awaiting_attention");
-    const projection = readSupervisor(root, "goal-no-proposal").projection;
+    const projection = readGovernor(root, "goal-no-proposal").projection;
     expect(projection.next_action).toBe("none");
     // The single consumed replan is a planner no-proposal outcome, not a
     // reviewer rejection, and must never read as review-round exhaustion.
@@ -2646,7 +2621,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-reviewer-rejection",
       rootWorkId: "reviewer-rejection-root",
@@ -2661,7 +2636,7 @@ describe("durable goal supervisor", () => {
         templates: { repair: { workflowPath: passing, maxAttempts: 1, root: true } },
       },
     });
-    const report = await runSupervisor({
+    const report = await runGovernor({
       coordRoot: root,
       goalId: "goal-reviewer-rejection",
       engine: {
@@ -2686,7 +2661,7 @@ describe("durable goal supervisor", () => {
       },
     });
     expect(report.stop_reason).toBe("awaiting_attention");
-    const projection = readSupervisor(root, "goal-reviewer-rejection").projection;
+    const projection = readGovernor(root, "goal-reviewer-rejection").projection;
     expect(projection.next_action).toBe("none");
     // A reviewer rejection has no planner no-proposal history, so the projection
     // is byte-for-byte the pre-change output: no attribution field and the
@@ -2705,7 +2680,7 @@ describe("durable goal supervisor", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-mixed-consumption",
       rootWorkId: "mixed-consumption-root",
@@ -2749,26 +2724,26 @@ describe("durable goal supervisor", () => {
       }
       return { ok: true, text: replacementProposal(), durationMs: 1 };
     };
-    const first = await runSupervisor({
+    const first = await runGovernor({
       coordRoot: root,
       goalId: "goal-mixed-consumption",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     expect(first.projection.next_action).toBe("retry_plan");
-    retrySupervisorPlan({
+    retryGovernorPlan({
       coordRoot: root,
       goalId: "goal-mixed-consumption",
       planId: first.projection.attention_plan_id!,
       actor: "operator",
       reason: "Operator addressed the judgment; replan once more",
     });
-    const second = await runSupervisor({
+    const second = await runGovernor({
       coordRoot: root,
       goalId: "goal-mixed-consumption",
       engine: { spawners: { codex: spawner }, probeBilling },
     });
     expect(second.stop_reason).toBe("awaiting_attention");
-    const projection = readSupervisor(root, "goal-mixed-consumption").projection;
+    const projection = readGovernor(root, "goal-mixed-consumption").projection;
     expect(projection.next_action).toBe("none");
     expect(projection.replan_consumption).toEqual({
       reviewer_rejection: 1,

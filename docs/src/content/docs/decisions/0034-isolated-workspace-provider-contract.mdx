@@ -1,14 +1,14 @@
 ---
 title: "0034: Isolated workspace providers bind to durable workflow attempts"
-description: "ADR: add an optional workspace-provider contract without replacing durable work, proof, policy, approval, or supervisor authority."
+description: "ADR: add an optional workspace-provider contract without replacing durable work, proof, policy, approval, or governor authority."
 ---
 
-**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/workflow`, `core/work`, `core/policy`, `core/supervisor`)
+**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/workflow`, `core/work`, `core/policy`, `core/governor`)
 
 ## Context
 
 Harnery already has durable work items, bounded attempts, workflow proof,
-policy checks, approvals, and supervisor projections. Those records decide
+policy checks, approvals, and governor projections. Those records decide
 what was requested, which attempt ran, whether verification passed, and what
 requires review.
 
@@ -37,7 +37,7 @@ Record ownership is physically separated:
 ```text
 .harnery/
   work/...                                  durable work authority
-  supervisors/...                           supervisor projections
+  governors/...                           governor projections
   approvals/...                             approval authority
   workflows/<run-id>/
     workspace-request.json                  immutable workflow request
@@ -67,7 +67,7 @@ Record ownership is physically separated:
 ```
 
 Providers do not write work, attempt, proof, review, approval, integration
-receipt, supervisor, or budget records. Workflow core does not infer a
+receipt, governor, or budget records. Workflow core does not infer a
 provider or writable root. A new non-shared isolation declaration without a
 provider records an explicit compatibility selection: the requested
 isolation, effective shared execution, and `provider_not_configured` reason.
@@ -204,7 +204,7 @@ rewriting it.
 - Missing Git affects only the local Git provider.
 - Provider recovery, cancellation, cleanup, integration, and replay do not
   append `attempt.started` or reset cumulative budgets.
-- The supervisor remains a projection over work and proof; it gains no
+- The governor remains a projection over work and proof; it gains no
   workspace queue, scheduler, lease, or cleanup loop.
 - Named provider APIs extend only the existing `harnery/core/workflow`
   subpath.
@@ -224,7 +224,7 @@ rewriting it.
 
 ## Consequences
 
-Isolation can be added without changing supervisor scheduling or shared
+Isolation can be added without changing governor scheduling or shared
 checkout behavior. Recovery and cleanup are conservative and may preserve a
 workspace for operator action. Integration requires more durable records, but
 those records make authorization loss, replay drift, and crash-after-apply

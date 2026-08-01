@@ -3,7 +3,7 @@ title: "0026: Background supervision is an optional durable service"
 description: "ADR: keep goal correctness ledger-derived while adding explicit enrollment, heartbeat, wakeup, quiescence, and service-error backoff."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor service CLI, dashboard)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/governor`, governor service CLI, dashboard)
 
 ## Context
 
@@ -15,16 +15,16 @@ durable state changes, and exposes enough liveness state to distinguish active,
 stopped, and crashed execution.
 
 The service must not become a second source of truth. Goal state still belongs
-to immutable supervisor intent, work events, workflow journals, approvals, and
+to immutable governor intent, work events, workflow journals, approvals, and
 proof. The service also must not turn a blocked attempt into an unbounded retry
 loop or silently broaden host policy after a restart.
 
 ## Decision
 
-Add an optional per-repository service under `harn supervisor service`. An
+Add an optional per-repository service under `harn governor service`. An
 operator explicitly enrolls one or more existing goal IDs with `service start`
 or runs the same loop in the foreground with `service run`. Configuration is
-written privately to `.harnery/supervisor-service/config.json` and freezes:
+written privately to `.harnery/governor-service/config.json` and freezes:
 
 - the exact enrolled goal IDs;
 - wake and heartbeat intervals;
@@ -46,7 +46,7 @@ errors. Goal and work state are never projected from these service files.
 
 Each sweep reads every enrolled goal through the existing state-only boundary:
 
-1. a `ready` goal receives one `runSupervisor({ mode: "tick" })` call;
+1. a `ready` goal receives one `runGovernor({ mode: "tick" })` call;
 2. a goal needing review, approval, retry authority, or another external
    change becomes `awaiting_change` and is only reread on later polls;
 3. an unchanged `awaiting_change` goal causes no workflow or model call;
@@ -72,7 +72,7 @@ execution capability.
 
 ## Alternatives considered
 
-- **Make the daemon mandatory for supervisor correctness.** Rejected. The
+- **Make the daemon mandatory for governor correctness.** Rejected. The
   foreground tick/run contract remains complete, and all goal state remains
   reconstructable when no service exists.
 - **Ship systemd, launchd, or Windows-service installation in the first
@@ -81,7 +81,7 @@ execution capability.
 - **Use only filesystem watchers.** Rejected because watches can coalesce or
   miss changes across replacement and restart. Bounded polling over a compact
   state projection is portable and deterministic.
-- **Poll by repeatedly executing the supervisor.** Rejected because attention
+- **Poll by repeatedly executing the governor.** Rejected because attention
   states would create needless reconciliation, logs, and potential usage.
   Persisted fingerprints let unchanged goals remain quiescent.
 - **Apply exponential backoff to failed work attempts.** Rejected. That would

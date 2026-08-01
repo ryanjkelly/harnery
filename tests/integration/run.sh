@@ -60,7 +60,7 @@ check "harn --help mentions web" "$HARN --help" "web"
 check "harn --help mentions agents" "$HARN --help" "agents"
 check "harn --help mentions harness" "$HARN --help" "harness"
 check "harn --help mentions durable work" "$HARN --help" "work"
-check "harn --help mentions supervisor" "$HARN --help" "supervisor"
+check "harn --help mentions governor" "$HARN --help" "governor"
 check "harn --help mentions artifacts" "$HARN --help" "artifacts"
 
 # 2. harn doctor
@@ -134,16 +134,16 @@ check "harn workflow proof preserves the attempt context" \
   "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
   '"attempt_context"'
 
-# 8. harn supervisor exposes bounded goal execution
-check "harn supervisor --help mentions tick" "$HARN supervisor --help" "tick"
-check "harn supervisor --help mentions run" "$HARN supervisor --help" "run"
-check "harn supervisor exposes replanning review" "$HARN supervisor plan --help" "approve"
-check "harn supervisor exposes attention recovery" "$HARN supervisor plan --help" "retry"
-check "harn supervisor list starts empty" "$HARN supervisor list" "no durable supervisors"
-check "harn supervisor service exposes lifecycle commands" \
-  "$HARN supervisor service --help" "status"
-check "harn supervisor service starts unconfigured" \
-  "$HARN supervisor service status" "unconfigured"
+# 8. harn governor exposes bounded goal execution
+check "harn governor --help mentions tick" "$HARN governor --help" "tick"
+check "harn governor --help mentions run" "$HARN governor --help" "run"
+check "harn governor exposes replanning review" "$HARN governor plan --help" "approve"
+check "harn governor exposes attention recovery" "$HARN governor plan --help" "retry"
+check "harn governor list starts empty" "$HARN governor list" "no durable governors"
+check "harn governor service exposes lifecycle commands" \
+  "$HARN governor service --help" "status"
+check "harn governor service starts unconfigured" \
+  "$HARN governor service status" "unconfigured"
 
 MISSION_FIXTURE="$TMPDIR_TEST/mission-fixture"
 mkdir -p "$MISSION_FIXTURE"
@@ -155,15 +155,15 @@ printf '%s\n' 'export default async () => "done";' \
   > "$MISSION_FIXTURE/workflow.mjs"
 printf '%s\n' '{"planner_specialist":"planner","max_replans":3,"review":{"reviewer_specialists":["reviewer"],"max_revision_rounds":1},"templates":{"delivery":{"workflow":"./workflow.mjs","root":true}}}' \
   > "$MISSION_FIXTURE/replanning.json"
-check "harn supervisor creates an objective-first mission" \
-  "$HARN supervisor create --id goal-integration-mission --team '$MISSION_FIXTURE/team.json' --mission '$MISSION_FIXTURE/mission.json' --replanning '$MISSION_FIXTURE/replanning.json'" \
+check "harn governor creates an objective-first mission" \
+  "$HARN governor create --id goal-integration-mission --team '$MISSION_FIXTURE/team.json' --mission '$MISSION_FIXTURE/mission.json' --replanning '$MISSION_FIXTURE/replanning.json'" \
   "next: plan_initial"
-check "harn supervisor renders frozen plan review policy" \
-  "$HARN supervisor show goal-integration-mission" "plan review: reviewers=reviewer, max_revision_rounds=1"
-check "harn supervisor shows frozen mission progress" \
-  "$HARN supervisor show goal-integration-mission" "milestones: 0/2"
-check "harn supervisor json freezes reviewed planning policy" \
-  "$HARN supervisor show goal-integration-mission --json" '"max_revision_rounds":1'
+check "harn governor renders frozen plan review policy" \
+  "$HARN governor show goal-integration-mission" "plan review: reviewers=reviewer, max_revision_rounds=1"
+check "harn governor shows frozen mission progress" \
+  "$HARN governor show goal-integration-mission" "milestones: 0/2"
+check "harn governor json freezes reviewed planning policy" \
+  "$HARN governor show goal-integration-mission --json" '"max_revision_rounds":1'
 
 # 9. harn web --help mentions all subcommands
 check "harn web --help mentions up" "$HARN web --help" "up"

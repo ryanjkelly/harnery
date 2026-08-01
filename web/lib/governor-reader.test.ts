@@ -2,15 +2,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createSupervisor } from "harnery/core/supervisor";
+import { createGovernor } from "harnery/core/governor";
 import { createWorkItem } from "harnery/core/work";
 import {
-  readSupervisorBackgroundService,
-  readSupervisorGoal,
-  readSupervisors,
-  supervisorDashboardDecision,
-  supervisorPlanDashboardStatus,
-} from "./supervisor-reader";
+  readGovernorBackgroundService,
+  readGovernorGoal,
+  readGovernors,
+  governorDashboardDecision,
+  governorPlanDashboardStatus,
+} from "./governor-reader";
 
 const roots: string[] = [];
 
@@ -18,9 +18,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("supervisor dashboard reader", () => {
+describe("governor dashboard reader", () => {
   test("reads list and detail through the state-only export", () => {
-    const root = mkdtempSync(join("/tmp", "harnery-supervisor-web-"));
+    const root = mkdtempSync(join("/tmp", "harnery-governor-web-"));
     roots.push(root);
     const workflowPath = join(root, "workflow.mjs");
     writeFileSync(workflowPath, "export default async () => 'ok';\n");
@@ -31,23 +31,23 @@ describe("supervisor dashboard reader", () => {
       objective: "Render durable state",
       workflowPath,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "dashboard-goal",
       rootWorkId: "dashboard-work",
       specialists: { reviewer: { instructions: "Review carefully" } },
     });
 
-    expect(readSupervisors(root).map((record) => record.intent.id)).toEqual(["dashboard-goal"]);
-    expect(readSupervisorGoal(root, "dashboard-goal")?.projection.state).toBe("ready");
-    expect(readSupervisorGoal(root, "dashboard-goal")?.projection.plan_generation).toBe(0);
-    expect(readSupervisorGoal(root, "dashboard-goal")?.plans).toEqual([]);
-    expect(readSupervisorGoal(root, "../escape")).toBeNull();
-    expect(readSupervisorBackgroundService(root)).toEqual({ running: false, stale: false });
+    expect(readGovernors(root).map((record) => record.intent.id)).toEqual(["dashboard-goal"]);
+    expect(readGovernorGoal(root, "dashboard-goal")?.projection.state).toBe("ready");
+    expect(readGovernorGoal(root, "dashboard-goal")?.projection.plan_generation).toBe(0);
+    expect(readGovernorGoal(root, "dashboard-goal")?.plans).toEqual([]);
+    expect(readGovernorGoal(root, "../escape")).toBeNull();
+    expect(readGovernorBackgroundService(root)).toEqual({ running: false, stale: false });
   });
 
   test("reports reviewed proposals as awaiting decision instead of unreviewed", () => {
-    const root = mkdtempSync(join("/tmp", "harnery-supervisor-web-"));
+    const root = mkdtempSync(join("/tmp", "harnery-governor-web-"));
     roots.push(root);
     const workflowPath = join(root, "workflow.mjs");
     writeFileSync(workflowPath, "export default async () => 'ok';\n");
@@ -58,7 +58,7 @@ describe("supervisor dashboard reader", () => {
       objective: "Need a reviewed replacement",
       workflowPath,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "reviewed-goal",
       rootWorkId: "reviewed-root",
@@ -74,7 +74,7 @@ describe("supervisor dashboard reader", () => {
     });
 
     const planId = "plan-0001-deadbeef";
-    const planDir = join(root, ".harnery", "supervisors", "reviewed-goal", "plans", planId);
+    const planDir = join(root, ".harnery", "governors", "reviewed-goal", "plans", planId);
     mkdirSync(planDir, { recursive: true, mode: 0o700 });
     writeJson(join(planDir, "request.json"), {
       schema_version: 1,
@@ -137,7 +137,7 @@ describe("supervisor dashboard reader", () => {
         seq: 1,
         ts: "2026-07-22T00:02:00.000Z",
         event: "plan.reviewed",
-        actor: "supervisor",
+        actor: "governor",
         reason: "review passed",
       })}\n${JSON.stringify({
         schema_version: 1,
@@ -145,12 +145,12 @@ describe("supervisor dashboard reader", () => {
         seq: 2,
         ts: "2026-07-22T00:02:01.000Z",
         event: "plan.proposed",
-        actor: "supervisor",
+        actor: "governor",
         reason: "reviewed proposal is ready for an authority decision",
       })}\n`,
     );
 
-    const record = readSupervisorGoal(root, "reviewed-goal")!;
+    const record = readGovernorGoal(root, "reviewed-goal")!;
     const plan = record.plans[0];
     expect(plan?.status).toBe("proposed");
     expect(plan?.review).toEqual({
@@ -160,7 +160,7 @@ describe("supervisor dashboard reader", () => {
       blocking_findings: 0,
       advisory_findings: 0,
     });
-    expect(supervisorPlanDashboardStatus(plan!)).toMatchObject({
+    expect(governorPlanDashboardStatus(plan!)).toMatchObject({
       state: "proposal_review_passed",
       label: "review passed",
       badgeVariant: "info",
@@ -168,12 +168,12 @@ describe("supervisor dashboard reader", () => {
       requiresDecision: true,
       reviewLabel: "passed · 1 review round · 0 blocking · 0 advisory",
     });
-    expect(supervisorDashboardDecision(record)).toEqual({
+    expect(governorDashboardDecision(record)).toEqual({
       nextAction: "approve_or_reject_plan",
       reason: `Plan ${planId} passed independent review and awaits explicit approval or rejection.`,
     });
     expect(
-      supervisorPlanDashboardStatus({
+      governorPlanDashboardStatus({
         ...plan!,
         proposal: undefined,
         status: "attention",
@@ -188,7 +188,7 @@ describe("supervisor dashboard reader", () => {
       reviewLabel: "revision exhausted · 1 review round · 1 blocking · 0 advisory",
     });
     expect(
-      supervisorPlanDashboardStatus({
+      governorPlanDashboardStatus({
         ...plan!,
         proposal: undefined,
         status: "retry_requested",

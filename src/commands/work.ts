@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
+import { findCompletedMissionGoverning, reopenGovernorMission } from "../core/governor/index.ts";
 import {
   createBuiltinHarnessRegistry,
   harnessProofInputs,
@@ -10,10 +11,6 @@ import {
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
-import {
-  findCompletedMissionGoverning,
-  reopenSupervisorMission,
-} from "../core/supervisor/index.ts";
 import {
   acceptWorkItem,
   cancelWorkItem,
@@ -325,7 +322,7 @@ function registerGovernanceCommand(
       const fn =
         name === "accept" ? acceptWorkItem : name === "cancel" ? cancelWorkItem : reopenWorkItem;
       // ADR 0050: a reopen under a mission that already succeeded has to reopen the
-      // mission too, or the item lands in ready_work that the supervisor will never
+      // mission too, or the item lands in ready_work that the governor will never
       // dispatch. Resolve the goal BEFORE touching the work item so a refusal leaves
       // nothing half-done.
       const goalId =
@@ -336,7 +333,7 @@ function registerGovernanceCommand(
         ...(opts.dispose?.length ? { dispositions: opts.dispose.map(parseDisposition) } : {}),
       });
       if (goalId) {
-        reopenSupervisorMission({
+        reopenGovernorMission({
           coordRoot,
           goalId,
           actor: opts.actor,

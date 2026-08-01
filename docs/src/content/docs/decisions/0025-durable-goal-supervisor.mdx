@@ -3,7 +3,7 @@ title: "0025: Goal supervision is an explicit bounded host"
 description: "ADR: compose durable work into a restartable specialist team loop without turning reconciliation into an autonomous daemon."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, workflow specialist profiles)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/governor`, governor CLI, dashboard, workflow specialist profiles)
 
 ## Context
 
@@ -25,15 +25,15 @@ unbounded recursive agents.
 
 ## Decision
 
-Add the product-tier `harnery/core/supervisor` module and `harn supervisor`
-command. A supervisor intent is created once under
-`.harnery/supervisors/<goal-id>/intent.json` with private permissions. It
+Add the product-tier `harnery/core/governor` module and `harn governor`
+command. A governor intent is created once under
+`.harnery/governors/<goal-id>/intent.json` with private permissions. It
 freezes:
 
 - one root durable-work ID whose immutable dependency closure is the goal graph;
 - named specialist profiles with bounded instructions and optional harness,
   model, effort, turn, timeout, and schema-retry defaults;
-- run limits for supervisor cycles, wall time, graph-wide attempts, parallel
+- run limits for governor cycles, wall time, graph-wide attempts, parallel
   work items, agents per work item, and child-agent concurrency;
 - explicit automation policy for accepting passing proof, resuming resolved
   approvals, and retrying blocked work.
@@ -44,8 +44,8 @@ the specialist in the journal and proof-facing agent record, and includes the
 resolved profile in call identity. A workflow run manifest freezes the complete
 specialist map so approval resume cannot pick up changed team behavior.
 
-`harn supervisor tick <goal-id>` performs at most one bounded cycle.
-`harn supervisor run <goal-id>` repeats cycles in the foreground. Each cycle:
+`harn governor tick <goal-id>` performs at most one bounded cycle.
+`harn governor run <goal-id>` repeats cycles in the foreground. Each cycle:
 
 1. reconstructs the root dependency closure from work intent and reconciles it;
 2. stops for pending approvals, reviews not authorized for automatic
@@ -57,19 +57,19 @@ specialist map so approval resume cannot pick up changed team behavior.
 5. reconstructs all state again from work journals and proof before deciding
    whether another cycle is legal.
 
-The supervisor has an exclusive crash-recoverable lease, but no mutable status
-file. Its projection and reports are derived from immutable supervisor intent
+The governor has an exclusive crash-recoverable lease, but no mutable status
+file. Its projection and reports are derived from immutable governor intent
 plus the work ledger. Restarting `run` after a process loss continues from
 those records. It never keeps a model process alive merely to preserve role
 identity; specialist roles are durable configuration and child sessions remain
 bounded leaf processes.
 
-Expose the same read-only projection at `/supervisors` and
-`/supervisors/<goal-id>`. The dashboard imports a state-only package subpath so
+Expose the same read-only projection at `/governors` and
+`/governors/<goal-id>`. The dashboard imports a state-only package subpath so
 rendering goal state does not bundle the workflow execution engine.
 
 Automation defaults fail closed. Passing proof still enters `in_review` unless
-the immutable supervisor policy explicitly authorizes acceptance. Blocked work
+the immutable governor policy explicitly authorizes acceptance. Blocked work
 is not retried unless the intent explicitly authorizes it, and the work item's
 own attempt ceiling plus the goal-wide attempt ceiling still apply. Resolved
 approval resume is separately configurable and never bypasses the recorded
@@ -82,7 +82,7 @@ approval decision.
 - **Run an always-on background daemon.** Rejected as a required runtime. A
   host may schedule the foreground command, but ledger correctness cannot
   depend on daemon liveness.
-- **Use one long-lived model session as the supervisor.** Rejected because
+- **Use one long-lived model session as the governor.** Rejected because
   process death and context compaction would become state-loss mechanisms.
 - **Let a planner dynamically rewrite the graph in the first schema.**
   Deferred. The initial static dependency closure is auditable and enough to
@@ -98,12 +98,12 @@ approval decision.
 
 - Goal continuity lives in private records rather than model context.
 - The initial graph is static: create prerequisite work first, then the root,
-  then the supervisor intent. Dynamic planning is a later additive layer.
+  then the governor intent. Dynamic planning is a later additive layer.
 - Parallel work items each enforce their own child concurrency, so the maximum
   simultaneous child count is `parallel_work × agent_concurrency`.
-- `isolation` remains a host declaration; the supervisor does not create a
+- `isolation` remains a host declaration; the governor does not create a
   worktree or sandbox. Shared-checkout children still use Harnery's normal
   coordination and claim guards.
-- Automatic acceptance means the supervisor writes an explicit governance
+- Automatic acceptance means the governor writes an explicit governance
   event as its named actor after fully passing proof; it is not a reconciler
   side effect or an inference from process exit.

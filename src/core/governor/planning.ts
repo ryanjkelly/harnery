@@ -23,27 +23,23 @@ import {
   type WorkflowProof,
   workflowScriptDigest,
 } from "../workflow/index.ts";
+import { readGovernorPlan, readGovernorPlanReviewReceipt, readGovernorPlans } from "./plan-read.ts";
 import {
-  readSupervisorPlan,
-  readSupervisorPlanReviewReceipt,
-  readSupervisorPlans,
-} from "./plan-read.ts";
-import {
-  SUPERVISOR_PLAN_SCHEMA_VERSION,
-  type SupervisorPlanEvent,
-  type SupervisorPlanMilestone,
-  type SupervisorPlanOutcome,
-  type SupervisorPlanProposal,
-  type SupervisorPlanRequest,
-  type SupervisorPlanReviewFinding,
-  type SupervisorPlanReviewReceipt,
-  type SupervisorPlanReviewReviewer,
-  type SupervisorPlanReviewRound,
-  type SupervisorPlanWorkSpec,
-  type SupervisorReplanningPolicy,
-  supervisorGraphFingerprint,
+  GOVERNOR_PLAN_SCHEMA_VERSION,
+  type GovernorPlanEvent,
+  type GovernorPlanMilestone,
+  type GovernorPlanOutcome,
+  type GovernorPlanProposal,
+  type GovernorPlanRequest,
+  type GovernorPlanReviewFinding,
+  type GovernorPlanReviewReceipt,
+  type GovernorPlanReviewReviewer,
+  type GovernorPlanReviewRound,
+  type GovernorPlanWorkSpec,
+  type GovernorReplanningPolicy,
+  governorGraphFingerprint,
 } from "./plan-types.ts";
-import type { SupervisorRecord } from "./state.ts";
+import type { GovernorRecord } from "./state.ts";
 
 const PLAN_KEY = /^[a-z][a-z0-9-]{0,31}$/;
 const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -53,26 +49,26 @@ const MAX_REASON = 2_000;
 const PROPOSAL_ROOT_RULE =
   "proposal.root names one newly proposed work key using a root-capable template; it does not preserve or repeat active_root, which is context only";
 
-export interface RunSupervisorPlannerInput {
+export interface RunGovernorPlannerInput {
   coordRoot: string;
-  record: SupervisorRecord;
+  record: GovernorRecord;
   engine: Omit<EngineOpts, "coordRoot" | "runId" | "resumeRunId" | "specialists">;
   actor: string;
   onLog?: (line: string) => void;
 }
 
-export async function runSupervisorPlanner(
-  input: RunSupervisorPlannerInput,
-): Promise<SupervisorPlanOutcome> {
+export async function runGovernorPlanner(
+  input: RunGovernorPlannerInput,
+): Promise<GovernorPlanOutcome> {
   const coordRoot = resolve(input.coordRoot);
   const policy = input.record.intent.replanning;
-  if (!policy) throw new Error(`supervisor ${input.record.intent.id} does not allow replanning`);
-  const history = readSupervisorPlans(
+  if (!policy) throw new Error(`governor ${input.record.intent.id} does not allow replanning`);
+  const history = readGovernorPlans(
     coordRoot,
     input.record.intent.id,
     input.record.intent.root_work_id,
   );
-  const triggerFingerprint = supervisorGraphFingerprint({
+  const triggerFingerprint = governorGraphFingerprint({
     rootWorkId: input.record.projection.root_work_id,
     generation: input.record.projection.plan_generation,
     work: input.record.work,
@@ -136,7 +132,7 @@ export async function runSupervisorPlanner(
     const reviewInput = resumingReview
       ? readBoundedJson<{ candidate: unknown }>(
           reviewInputPath(coordRoot, input.record.intent.id, request.id),
-          "supervisor plan review input",
+          "governor plan review input",
         )
       : undefined;
     const rawProposal = reviewInput
@@ -169,9 +165,9 @@ export async function runSupervisorPlanner(
           actor: input.actor,
           reason: proposal.rationale,
         });
-        return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+        return outcome(readGovernorPlan(coordRoot, input.record.intent.id, request.id));
       }
-      let receipt: SupervisorPlanReviewReceipt;
+      let receipt: GovernorPlanReviewReceipt;
       try {
         receipt = await ensurePlanReview({
           coordRoot,
@@ -196,7 +192,7 @@ export async function runSupervisorPlanner(
             MAX_REASON,
           ),
         });
-        return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+        return outcome(readGovernorPlan(coordRoot, input.record.intent.id, request.id));
       }
       return finalizeReviewedProposal({
         coordRoot,
@@ -210,7 +206,7 @@ export async function runSupervisorPlanner(
     writeExclusiveJson(
       planProposalPath(coordRoot, input.record.intent.id, request.id),
       proposal,
-      "supervisor plan proposal",
+      "governor plan proposal",
     );
     appendPlanEvent(coordRoot, input.record.intent.id, request.id, {
       event: "plan.proposed",
@@ -224,18 +220,18 @@ export async function runSupervisorPlanner(
         actor: input.actor,
         reason: proposal.rationale,
       });
-      return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+      return outcome(readGovernorPlan(coordRoot, input.record.intent.id, request.id));
     }
     if (policy.auto_apply) {
-      return applySupervisorPlanProposal({
+      return applyGovernorPlanProposal({
         coordRoot,
         record: input.record,
         planId: request.id,
         actor: input.actor,
-        reason: "proposal applied by frozen supervisor replanning policy",
+        reason: "proposal applied by frozen governor replanning policy",
       });
     }
-    return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+    return outcome(readGovernorPlan(coordRoot, input.record.intent.id, request.id));
   } catch (error) {
     if (proposalWritten) throw error;
     if (error instanceof WorkflowParkedError) {
@@ -245,7 +241,7 @@ export async function runSupervisorPlanner(
         reason: `planning workflow parked for approval ${error.approvalId}`,
         approval_id: error.approvalId,
       });
-      return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, request.id));
+      return outcome(readGovernorPlan(coordRoot, input.record.intent.id, request.id));
     }
     // ADR 0046: a planner workflow that never touched the plan (its binary was
     // absent, or the vendor refused) writes a proof carrying run.class. Stamp it
@@ -266,10 +262,7 @@ export async function runSupervisorPlanner(
 /** The failure class (ADR 0046) of a planner workflow run, read from its proof.
  * Undefined when no proof was written, the proof is unreadable, or the run was
  * informative about the plan — all of which default to a charged replan. */
-function plannerFailureClass(
-  coordRoot: string,
-  workflowRunId: string,
-): SupervisorPlanEvent["class"] {
+function plannerFailureClass(coordRoot: string, workflowRunId: string): GovernorPlanEvent["class"] {
   try {
     return readWorkflowProof(coordRoot, workflowRunId).run.class;
   } catch {
@@ -279,16 +272,16 @@ function plannerFailureClass(
 
 async function recoverReviewedPlan(input: {
   coordRoot: string;
-  record: SupervisorRecord;
-  request: SupervisorPlanRequest;
-  history: ReturnType<typeof readSupervisorPlans>;
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
-  policy: SupervisorReplanningPolicy;
+  record: GovernorRecord;
+  request: GovernorPlanRequest;
+  history: ReturnType<typeof readGovernorPlans>;
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>;
+  policy: GovernorReplanningPolicy;
   actor: string;
-}): Promise<SupervisorPlanOutcome | undefined> {
+}): Promise<GovernorPlanOutcome | undefined> {
   const review = input.policy.review;
   if (!review) return undefined;
-  const existing = readSupervisorPlanReviewReceipt(
+  const existing = readGovernorPlanReviewReceipt(
     input.coordRoot,
     input.record.intent.id,
     input.request.id,
@@ -308,7 +301,7 @@ async function recoverReviewedPlan(input: {
     writeExclusiveJson(
       reviewReceiptPath(input.coordRoot, input.record.intent.id, input.request.id),
       receipt,
-      "supervisor plan review receipt",
+      "governor plan review receipt",
     );
   }
   return finalizeReviewedProposal({
@@ -323,17 +316,17 @@ async function recoverReviewedPlan(input: {
 
 async function ensurePlanReview(input: {
   coordRoot: string;
-  record: SupervisorRecord;
-  request: SupervisorPlanRequest;
-  proposal: SupervisorPlanProposal;
-  history: ReturnType<typeof readSupervisorPlans>;
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
-  policy: SupervisorReplanningPolicy;
+  record: GovernorRecord;
+  request: GovernorPlanRequest;
+  proposal: GovernorPlanProposal;
+  history: ReturnType<typeof readGovernorPlans>;
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>;
+  policy: GovernorReplanningPolicy;
   engine: Omit<EngineOpts, "coordRoot" | "runId" | "resumeRunId" | "specialists">;
   actor: string;
   onLog?: (line: string) => void;
-}): Promise<SupervisorPlanReviewReceipt> {
-  const existing = readSupervisorPlanReviewReceipt(
+}): Promise<GovernorPlanReviewReceipt> {
+  const existing = readGovernorPlanReviewReceipt(
     input.coordRoot,
     input.record.intent.id,
     input.request.id,
@@ -344,7 +337,7 @@ async function ensurePlanReview(input: {
     writeExclusiveJson(
       reviewReceiptPath(input.coordRoot, input.record.intent.id, input.request.id),
       reconstructed,
-      "supervisor plan review receipt",
+      "governor plan review receipt",
     );
     return reconstructed;
   }
@@ -352,12 +345,12 @@ async function ensurePlanReview(input: {
   writeExclusiveJson(
     reviewInputPath(input.coordRoot, input.record.intent.id, input.request.id),
     { candidate: input.proposal },
-    "supervisor plan review input",
+    "governor plan review input",
   );
   writeExclusive(
     reviewScript,
     plannerReviewScript(input.record, input.request.id, input.proposal, input.trigger),
-    "supervisor plan review script",
+    "governor plan review script",
   );
   const review = input.policy.review!;
   const runId = reviewWorkflowRunId(input.request.id);
@@ -385,19 +378,19 @@ async function ensurePlanReview(input: {
   writeExclusiveJson(
     reviewReceiptPath(input.coordRoot, input.record.intent.id, input.request.id),
     receipt,
-    "supervisor plan review receipt",
+    "governor plan review receipt",
   );
   return receipt;
 }
 
 function finalizeReviewedProposal(input: {
   coordRoot: string;
-  record: SupervisorRecord;
-  request: SupervisorPlanRequest;
-  receipt: SupervisorPlanReviewReceipt;
-  policy: SupervisorReplanningPolicy;
+  record: GovernorRecord;
+  request: GovernorPlanRequest;
+  receipt: GovernorPlanReviewReceipt;
+  policy: GovernorReplanningPolicy;
   actor: string;
-}): SupervisorPlanOutcome {
+}): GovernorPlanOutcome {
   if (input.receipt.status !== "passed") {
     const event = input.receipt.status === "failed" ? "plan.failed" : "plan.attention";
     appendPlanEventIfMissing(input.coordRoot, input.record.intent.id, input.request.id, event, {
@@ -405,7 +398,7 @@ function finalizeReviewedProposal(input: {
       actor: input.actor,
       reason: reviewStatusReason(input.receipt),
     });
-    return outcome(readSupervisorPlan(input.coordRoot, input.record.intent.id, input.request.id));
+    return outcome(readGovernorPlan(input.coordRoot, input.record.intent.id, input.request.id));
   }
   // The review authority must become durable before the proposal can become
   // visible. If the process stops after this event, the plan remains
@@ -425,7 +418,7 @@ function finalizeReviewedProposal(input: {
   writeExclusiveJson(
     planProposalPath(input.coordRoot, input.record.intent.id, input.request.id),
     input.receipt.final_candidate,
-    "supervisor plan proposal",
+    "governor plan proposal",
   );
   appendPlanEventIfMissing(
     input.coordRoot,
@@ -439,18 +432,18 @@ function finalizeReviewedProposal(input: {
     },
   );
   if (input.policy.auto_apply) {
-    return applySupervisorPlanProposal({
+    return applyGovernorPlanProposal({
       coordRoot: input.coordRoot,
       record: input.record,
       planId: input.request.id,
       actor: input.actor,
-      reason: "proposal applied by frozen supervisor replanning policy",
+      reason: "proposal applied by frozen governor replanning policy",
     });
   }
-  return outcome(readSupervisorPlan(input.coordRoot, input.record.intent.id, input.request.id));
+  return outcome(readGovernorPlan(input.coordRoot, input.record.intent.id, input.request.id));
 }
 
-function reviewStatusReason(receipt: SupervisorPlanReviewReceipt): string {
+function reviewStatusReason(receipt: GovernorPlanReviewReceipt): string {
   if (receipt.status === "revision_exhausted") {
     return "plan review exhausted its bounded revision rounds";
   }
@@ -458,47 +451,43 @@ function reviewStatusReason(receipt: SupervisorPlanReviewReceipt): string {
   return "plan review requires attention";
 }
 
-export function applySupervisorPlanProposal(input: {
+export function applyGovernorPlanProposal(input: {
   coordRoot: string;
-  record: SupervisorRecord;
+  record: GovernorRecord;
   planId: string;
   actor: string;
   reason?: string;
-}): SupervisorPlanOutcome {
+}): GovernorPlanOutcome {
   const coordRoot = resolve(input.coordRoot);
   const policy = input.record.intent.replanning;
-  if (!policy) throw new Error(`supervisor ${input.record.intent.id} does not allow replanning`);
-  const plan = readSupervisorPlan(coordRoot, input.record.intent.id, input.planId);
+  if (!policy) throw new Error(`governor ${input.record.intent.id} does not allow replanning`);
+  const plan = readGovernorPlan(coordRoot, input.record.intent.id, input.planId);
   if (plan.status === "applied" || plan.status === "completed") return outcome(plan);
   if (
     plan.status !== "proposed" ||
     !plan.proposal ||
     !["apply", "complete"].includes(plan.proposal.decision)
   ) {
-    throw new Error(`supervisor plan ${input.planId} cannot be applied from ${plan.status}`);
+    throw new Error(`governor plan ${input.planId} cannot be applied from ${plan.status}`);
   }
   if (policy.review) {
-    const receipt = readSupervisorPlanReviewReceipt(
-      coordRoot,
-      input.record.intent.id,
-      input.planId,
-    );
+    const receipt = readGovernorPlanReviewReceipt(coordRoot, input.record.intent.id, input.planId);
     if (receipt?.status !== "passed") {
-      throw new Error(`supervisor plan ${input.planId} has no passed review receipt`);
+      throw new Error(`governor plan ${input.planId} has no passed review receipt`);
     }
     if (candidateDigest(plan.proposal) !== receipt.candidate_sha256) {
-      throw new Error(`supervisor plan ${input.planId} proposal does not match its passed review`);
+      throw new Error(`governor plan ${input.planId} proposal does not match its passed review`);
     }
     if (!plan.events.some((event) => event.event === "plan.reviewed")) {
-      throw new Error(`supervisor plan ${input.planId} has no reviewed authority event`);
+      throw new Error(`governor plan ${input.planId} has no reviewed authority event`);
     }
   }
   if (plan.request.prior_root_work_id !== input.record.projection.root_work_id) {
     throw new Error(
-      `supervisor plan ${input.planId} targets stale root ${plan.request.prior_root_work_id}`,
+      `governor plan ${input.planId} targets stale root ${plan.request.prior_root_work_id}`,
     );
   }
-  const history = readSupervisorPlans(
+  const history = readGovernorPlans(
     coordRoot,
     input.record.intent.id,
     input.record.intent.root_work_id,
@@ -516,7 +505,7 @@ export function applySupervisorPlanProposal(input: {
       actor: input.actor,
       reason: input.reason ?? proposal.rationale,
     });
-    return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, input.planId));
+    return outcome(readGovernorPlan(coordRoot, input.record.intent.id, input.planId));
   }
   const ids = new Map<string, string>();
   const created: string[] = [];
@@ -538,7 +527,7 @@ export function applySupervisorPlanProposal(input: {
       max_attempts: template.max_attempts,
       source: {
         kind: "workflow" as const,
-        ref: `supervisor:${input.record.intent.id}/plan:${input.planId}`,
+        ref: `governor:${input.record.intent.id}/plan:${input.planId}`,
       },
     };
     if (existsSync(join(coordRoot, ".harnery", "work", workId, "intent.json"))) {
@@ -577,35 +566,35 @@ export function applySupervisorPlanProposal(input: {
   appendPlanEvent(coordRoot, input.record.intent.id, input.planId, {
     event: "plan.applied",
     actor: input.actor,
-    reason: input.reason ?? "supervisor plan explicitly approved",
+    reason: input.reason ?? "governor plan explicitly approved",
     root_work_id: rootWorkId,
     work_ids: created,
   });
-  return outcome(readSupervisorPlan(coordRoot, input.record.intent.id, input.planId));
+  return outcome(readGovernorPlan(coordRoot, input.record.intent.id, input.planId));
 }
 
-export function rejectSupervisorPlanProposal(input: {
+export function rejectGovernorPlanProposal(input: {
   coordRoot: string;
   goalId: string;
   planId: string;
   actor: string;
   reason: string;
-}): SupervisorPlanOutcome {
-  const plan = readSupervisorPlan(input.coordRoot, input.goalId, input.planId);
+}): GovernorPlanOutcome {
+  const plan = readGovernorPlan(input.coordRoot, input.goalId, input.planId);
   if (plan.status === "rejected") return outcome(plan);
   if (plan.status !== "proposed") {
-    throw new Error(`supervisor plan ${input.planId} cannot be rejected from ${plan.status}`);
+    throw new Error(`governor plan ${input.planId} cannot be rejected from ${plan.status}`);
   }
   appendPlanEvent(input.coordRoot, input.goalId, input.planId, {
     event: "plan.rejected",
     actor: input.actor,
     reason: input.reason,
   });
-  return outcome(readSupervisorPlan(input.coordRoot, input.goalId, input.planId));
+  return outcome(readGovernorPlan(input.coordRoot, input.goalId, input.planId));
 }
 
 /** ADR 0050: reopen a mission whose completion was already accepted, so an operator
- * finding on work beneath it can be dispatched through the normal supervisor rather
+ * finding on work beneath it can be dispatched through the normal governor rather
  * than only by running the work item by hand.
  *
  * The accepted `plan.completed` event is never rewritten. This appends a superseding
@@ -613,55 +602,55 @@ export function rejectSupervisorPlanProposal(input: {
  * and why a reader that cannot understand the new event still sees a completed plan
  * rather than a silently altered one. Refuses when the mission is not complete, so a
  * caller cannot use it to skip the ordinary completion path. */
-export function reopenSupervisorMissionPlan(input: {
+export function reopenGovernorMissionPlan(input: {
   coordRoot: string;
-  record: SupervisorRecord;
+  record: GovernorRecord;
   actor: string;
   reason: string;
-}): SupervisorPlanOutcome {
+}): GovernorPlanOutcome {
   const goalId = input.record.intent.id;
   if (!input.record.intent.mission) {
-    throw new Error(`supervisor ${goalId} is not a mission`);
+    throw new Error(`governor ${goalId} is not a mission`);
   }
-  const history = readSupervisorPlans(input.coordRoot, goalId, input.record.intent.root_work_id);
+  const history = readGovernorPlans(input.coordRoot, goalId, input.record.intent.root_work_id);
   const latest = history.latest;
   if (!latest) {
-    throw new Error(`supervisor ${goalId} has no plan to reopen`);
+    throw new Error(`governor ${goalId} has no plan to reopen`);
   }
   if (latest.status === "reopened") return outcome(latest);
   if (!history.completed || latest.status !== "completed") {
-    throw new Error(`supervisor ${goalId} mission is not complete, so there is nothing to reopen`);
+    throw new Error(`governor ${goalId} mission is not complete, so there is nothing to reopen`);
   }
   appendPlanEvent(input.coordRoot, goalId, latest.request.id, {
     event: "plan.reopened",
     actor: input.actor,
     reason: bounded(input.reason, "mission reopen reason", MAX_REASON),
   });
-  return outcome(readSupervisorPlan(input.coordRoot, goalId, latest.request.id));
+  return outcome(readGovernorPlan(input.coordRoot, goalId, latest.request.id));
 }
 
-export function retrySupervisorPlanProposal(input: {
+export function retryGovernorPlanProposal(input: {
   coordRoot: string;
-  record: SupervisorRecord;
+  record: GovernorRecord;
   planId: string;
   actor: string;
   reason: string;
-}): SupervisorPlanOutcome {
+}): GovernorPlanOutcome {
   const policy = input.record.intent.replanning;
   if (!policy) {
-    throw new Error(`supervisor ${input.record.intent.id} does not allow replanning`);
+    throw new Error(`governor ${input.record.intent.id} does not allow replanning`);
   }
   const reason = bounded(input.reason, "plan retry reason", MAX_REASON);
-  const history = readSupervisorPlans(
+  const history = readGovernorPlans(
     input.coordRoot,
     input.record.intent.id,
     input.record.intent.root_work_id,
   );
   const latest = history.latest;
   if (!latest || latest.request.id !== input.planId) {
-    throw new Error(`supervisor plan ${input.planId} is not the latest plan`);
+    throw new Error(`governor plan ${input.planId} is not the latest plan`);
   }
-  const triggerFingerprint = supervisorGraphFingerprint({
+  const triggerFingerprint = governorGraphFingerprint({
     rootWorkId: history.active_root_work_id,
     generation: history.generation,
     work: input.record.work,
@@ -670,18 +659,18 @@ export function retrySupervisorPlanProposal(input: {
     latest.request.trigger_fingerprint !== triggerFingerprint ||
     latest.request.prior_root_work_id !== history.active_root_work_id
   ) {
-    throw new Error(`supervisor plan ${input.planId} no longer matches the active graph`);
+    throw new Error(`governor plan ${input.planId} no longer matches the active graph`);
   }
   if (history.completed) {
-    throw new Error(`supervisor ${input.record.intent.id} mission is already complete`);
+    throw new Error(`governor ${input.record.intent.id} mission is already complete`);
   }
   if (latest.status === "retry_requested") return outcome(latest);
   if (latest.status !== "attention") {
-    throw new Error(`supervisor plan ${input.planId} cannot be retried from ${latest.status}`);
+    throw new Error(`governor plan ${input.planId} cannot be retried from ${latest.status}`);
   }
   if (history.plans.length >= policy.max_replans) {
     throw new Error(
-      `supervisor ${input.record.intent.id} exhausted its ${policy.max_replans} replans`,
+      `governor ${input.record.intent.id} exhausted its ${policy.max_replans} replans`,
     );
   }
   appendPlanEvent(input.coordRoot, input.record.intent.id, input.planId, {
@@ -689,24 +678,24 @@ export function retrySupervisorPlanProposal(input: {
     actor: input.actor,
     reason,
   });
-  return outcome(readSupervisorPlan(input.coordRoot, input.record.intent.id, input.planId));
+  return outcome(readGovernorPlan(input.coordRoot, input.record.intent.id, input.planId));
 }
 
 function createPlanRequest(
   coordRoot: string,
-  record: SupervisorRecord,
+  record: GovernorRecord,
   sequence: number,
   triggerFingerprint: string,
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
-): SupervisorPlanRequest {
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>,
+): GovernorPlanRequest {
   const policy = record.intent.replanning;
-  if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
+  if (!policy) throw new Error(`governor ${record.intent.id} does not allow replanning`);
   if (sequence > policy.max_replans) {
-    throw new Error(`supervisor ${record.intent.id} exhausted its ${policy.max_replans} replans`);
+    throw new Error(`governor ${record.intent.id} exhausted its ${policy.max_replans} replans`);
   }
   const planId = `plan-${String(sequence).padStart(4, "0")}-${randomBytes(4).toString("hex")}`;
-  const request: SupervisorPlanRequest = {
-    schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
+  const request: GovernorPlanRequest = {
+    schema_version: GOVERNOR_PLAN_SCHEMA_VERSION,
     id: planId,
     goal_id: record.intent.id,
     sequence,
@@ -720,19 +709,19 @@ function createPlanRequest(
   const dir = planDir(coordRoot, record.intent.id, planId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  writeExclusiveJson(join(dir, "request.json"), request, "supervisor plan request");
-  writeExclusive(join(dir, "planner.mjs"), script, "supervisor planner script");
+  writeExclusiveJson(join(dir, "request.json"), request, "governor plan request");
+  writeExclusive(join(dir, "planner.mjs"), script, "governor planner script");
   return request;
 }
 
 function plannerScript(
   coordRoot: string,
-  record: SupervisorRecord,
+  record: GovernorRecord,
   planId: string,
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>,
 ): string {
   const policy = record.intent.replanning;
-  if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
+  if (!policy) throw new Error(`governor ${record.intent.id} does not allow replanning`);
   const prompt = [
     "You are producing one bounded replacement plan or milestone decision for a durable supervised goal.",
     record.intent.mission
@@ -811,14 +800,14 @@ function plannerScript(
 }
 
 function plannerReviewScript(
-  record: SupervisorRecord,
+  record: GovernorRecord,
   planId: string,
-  initialCandidate: SupervisorPlanProposal,
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+  initialCandidate: GovernorPlanProposal,
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>,
 ): string {
   const policy = record.intent.replanning;
   const review = policy?.review;
-  if (!policy || !review) throw new Error(`supervisor ${record.intent.id} does not review plans`);
+  if (!policy || !review) throw new Error(`governor ${record.intent.id} does not review plans`);
   const proposalSchema = planProposalSchema(record, trigger);
   const reviewerSchema: StageSchema = {
     type: "object",
@@ -879,7 +868,7 @@ function plannerReviewScript(
     "    stage('Review round ' + round);",
     "    const reviewersOut = await Promise.all(reviewers.map(async (specialist) => {",
     "      const prompt = [",
-    "        'Review this bounded supervisor plan candidate independently.',",
+    "        'Review this bounded governor plan candidate independently.',",
     "        'Return approve only when the candidate is complete, scoped, and satisfies the goal context.',",
     "        'Return revise for blocking defects. Return attention when human judgment is required.',",
     "        'Apply proposal_root_rule exactly; never require proposal.root to equal active_root.',",
@@ -899,7 +888,7 @@ function plannerReviewScript(
     "    if (round > maxRevisionRounds) break;",
     "    stage('Revise round ' + round);",
     "    const revisionPrompt = [",
-    "      'Revise this supervisor plan candidate. Return a complete replacement candidate, not a patch.',",
+    "      'Revise this governor plan candidate. Return a complete replacement candidate, not a patch.',",
     "      'Do not merge reviewer text mechanically; satisfy the blocking findings within the frozen goal and template constraints.',",
     "      'Apply proposal_root_rule exactly; never require proposal.root to equal active_root.',",
     "      'Goal context: ' + JSON.stringify(goalContext),",
@@ -921,13 +910,13 @@ function plannerReviewScript(
 
 function normalizeReviewReceipt(input: {
   raw: unknown;
-  initialCandidate: SupervisorPlanProposal;
-  record: SupervisorRecord;
-  request: SupervisorPlanRequest;
-  history: ReturnType<typeof readSupervisorPlans>;
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
-  policy: SupervisorReplanningPolicy;
-}): SupervisorPlanReviewReceipt {
+  initialCandidate: GovernorPlanProposal;
+  record: GovernorRecord;
+  request: GovernorPlanRequest;
+  history: ReturnType<typeof readGovernorPlans>;
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>;
+  policy: GovernorReplanningPolicy;
+}): GovernorPlanReviewReceipt {
   const review = input.policy.review;
   if (!review) throw new Error("missing review policy");
   if (!input.raw || typeof input.raw !== "object" || Array.isArray(input.raw)) {
@@ -938,9 +927,9 @@ function normalizeReviewReceipt(input: {
   if (raw.rounds.length < 1 || raw.rounds.length > review.max_revision_rounds + 1) {
     throw new Error("review result has an invalid number of rounds");
   }
-  const rounds: SupervisorPlanReviewRound[] = [];
+  const rounds: GovernorPlanReviewRound[] = [];
   let candidate = input.initialCandidate;
-  let status: SupervisorPlanReviewReceipt["status"] | undefined;
+  let status: GovernorPlanReviewReceipt["status"] | undefined;
   for (const [index, rawRound] of raw.rounds.entries()) {
     if (!rawRound || typeof rawRound !== "object" || Array.isArray(rawRound)) {
       throw new Error(`review round ${index + 1} must be an object`);
@@ -951,7 +940,7 @@ function normalizeReviewReceipt(input: {
     if (roundNumber !== index + 1) throw new Error(`review round must be ${index + 1}`);
     const reviewers = normalizeReviewers(value.reviewers, review.reviewer_specialists);
     const outcome = aggregateReviewers(reviewers);
-    const round: SupervisorPlanReviewRound = {
+    const round: GovernorPlanReviewRound = {
       round: roundNumber,
       candidate_sha256: candidateDigest(candidate),
       reviewers,
@@ -982,7 +971,7 @@ function normalizeReviewReceipt(input: {
   }
   status ??= "attention";
   return {
-    schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
+    schema_version: GOVERNOR_PLAN_SCHEMA_VERSION,
     plan_id: input.request.id,
     status,
     candidate_sha256: candidateDigest(candidate),
@@ -994,7 +983,7 @@ function normalizeReviewReceipt(input: {
 function normalizeReviewers(
   raw: unknown,
   expectedSpecialists: readonly string[],
-): SupervisorPlanReviewReviewer[] {
+): GovernorPlanReviewReviewer[] {
   if (!Array.isArray(raw) || raw.length !== expectedSpecialists.length) {
     throw new Error("reviewer result count does not match the frozen review policy");
   }
@@ -1017,7 +1006,7 @@ function normalizeReviewers(
   });
 }
 
-function normalizeFindings(raw: unknown, specialist: string): SupervisorPlanReviewFinding[] {
+function normalizeFindings(raw: unknown, specialist: string): GovernorPlanReviewFinding[] {
   if (!Array.isArray(raw) || raw.length > 50) {
     throw new Error(`review findings from ${specialist} must contain at most 50 items`);
   }
@@ -1046,8 +1035,8 @@ function findingCode(value: unknown, specialist: string, index: number): string 
 }
 
 function aggregateReviewers(
-  reviewers: readonly SupervisorPlanReviewReviewer[],
-): SupervisorPlanReviewRound["outcome"] {
+  reviewers: readonly GovernorPlanReviewReviewer[],
+): GovernorPlanReviewRound["outcome"] {
   if (reviewers.length < 1) return "failed";
   if (reviewers.some((reviewer) => reviewer.verdict === "attention")) return "attention";
   if (
@@ -1064,12 +1053,12 @@ function aggregateReviewers(
 
 function reconstructReviewReceiptFromProof(input: {
   coordRoot: string;
-  record: SupervisorRecord;
-  request: SupervisorPlanRequest;
-  history: ReturnType<typeof readSupervisorPlans>;
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>;
-  policy: SupervisorReplanningPolicy;
-}): SupervisorPlanReviewReceipt | undefined {
+  record: GovernorRecord;
+  request: GovernorPlanRequest;
+  history: ReturnType<typeof readGovernorPlans>;
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>;
+  policy: GovernorReplanningPolicy;
+}): GovernorPlanReviewReceipt | undefined {
   const runId = reviewWorkflowRunId(input.request.id);
   const proofPath = join(input.coordRoot, ".harnery", "workflows", runId, "proof.json");
   if (!existsSync(proofPath)) return undefined;
@@ -1101,13 +1090,13 @@ function recoverReviewWorkflowResult(
   proof: WorkflowProof,
   expectedSpecialists: readonly string[],
 ): {
-  initialCandidate: SupervisorPlanProposal;
+  initialCandidate: GovernorPlanProposal;
   result: { rounds: unknown[] };
 } {
   const inputPath = reviewInputPath(coordRoot, goalId, planId);
-  const reviewInput = readBoundedJson<{ candidate: SupervisorPlanProposal }>(
+  const reviewInput = readBoundedJson<{ candidate: GovernorPlanProposal }>(
     inputPath,
-    "supervisor plan review input",
+    "governor plan review input",
   );
   const journal = readVerifiedWorkflowJournal(coordRoot, reviewWorkflowRunId(planId), proof);
   const starts = new Map<string, { specialist?: string }>();
@@ -1133,7 +1122,7 @@ function recoverReviewWorkflowResult(
       const specialist =
         typeof event.id === "string" ? starts.get(event.id)?.specialist : undefined;
       if (!event.result || typeof event.result !== "object" || Array.isArray(event.result)) {
-        throw new Error("supervisor plan review journal contains an invalid reviewer result");
+        throw new Error("governor plan review journal contains an invalid reviewer result");
       }
       (record.reviewers as unknown[]).push({
         specialist,
@@ -1174,11 +1163,11 @@ function readVerifiedWorkflowJournal(
   const journal = readFileSync(journalPath, "utf8");
   const bytes = Buffer.byteLength(journal);
   if (bytes <= 0 || bytes > MAX_RECORD_BYTES || bytes !== proof.integrity.journal.bytes) {
-    throw new Error(`supervisor plan review journal does not match proof integrity`);
+    throw new Error(`governor plan review journal does not match proof integrity`);
   }
   const sha256 = createHash("sha256").update(journal).digest("hex");
   if (sha256 !== proof.integrity.journal.sha256) {
-    throw new Error(`supervisor plan review journal does not match proof integrity`);
+    throw new Error(`governor plan review journal does not match proof integrity`);
   }
   return journal;
 }
@@ -1238,7 +1227,7 @@ function aggregateRecoveredReviewers(reviewers: readonly unknown[]): string {
 
 function assertResultDigest(raw: unknown, expected: ResultDigest | undefined, runId: string): void {
   if (!expected) {
-    throw new Error(`supervisor plan review proof ${runId} is missing its result digest`);
+    throw new Error(`governor plan review proof ${runId} is missing its result digest`);
   }
   const actual = digestResult(raw, "json");
   if (
@@ -1246,7 +1235,7 @@ function assertResultDigest(raw: unknown, expected: ResultDigest | undefined, ru
     actual.sha256 !== expected.sha256 ||
     actual.bytes !== expected.bytes
   ) {
-    throw new Error(`supervisor plan review result does not match proof digest`);
+    throw new Error(`governor plan review result does not match proof digest`);
   }
 }
 
@@ -1261,13 +1250,13 @@ function workflowJournalRound(
   return undefined;
 }
 
-function candidateDigest(candidate: SupervisorPlanProposal): string {
+function candidateDigest(candidate: GovernorPlanProposal): string {
   return createHash("sha256")
     .update(JSON.stringify(canonicalCandidate(candidate)))
     .digest("hex");
 }
 
-function canonicalCandidate(candidate: SupervisorPlanProposal): unknown {
+function canonicalCandidate(candidate: GovernorPlanProposal): unknown {
   return {
     schema_version: candidate.schema_version,
     plan_id: candidate.plan_id,
@@ -1287,11 +1276,11 @@ function hasReviewRecoveryEvidence(coordRoot: string, goalId: string, planId: st
 }
 
 function planProposalSchema(
-  record: SupervisorRecord,
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+  record: GovernorRecord,
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>,
 ): StageSchema {
   const policy = record.intent.replanning;
-  if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
+  if (!policy) throw new Error(`governor ${record.intent.id} does not allow replanning`);
   const rationale: StageSchema = { type: "string", minLength: 1, maxLength: MAX_REASON };
   const workItem: StageSchema = {
     type: "object",
@@ -1381,13 +1370,13 @@ function planProposalSchema(
 function normalizeProposal(
   planId: string,
   raw: unknown,
-  record: SupervisorRecord,
+  record: GovernorRecord,
   previouslyApplied: number,
-  trigger: NonNullable<SupervisorPlanRequest["trigger"]>,
+  trigger: NonNullable<GovernorPlanRequest["trigger"]>,
   preservedProposedAt?: string,
-): SupervisorPlanProposal {
+): GovernorPlanProposal {
   const policy = record.intent.replanning;
-  if (!policy) throw new Error(`supervisor ${record.intent.id} does not allow replanning`);
+  if (!policy) throw new Error(`governor ${record.intent.id} does not allow replanning`);
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("planner result must be an object");
   }
@@ -1405,7 +1394,7 @@ function normalizeProposal(
       throw new Error("mission completion may be proposed only at a milestone boundary");
     }
     return {
-      schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
+      schema_version: GOVERNOR_PLAN_SCHEMA_VERSION,
       plan_id: planId,
       decision,
       rationale,
@@ -1433,7 +1422,7 @@ function normalizeProposal(
   }
   const active = new Set(record.projection.work_ids);
   const seen = new Set<string>();
-  const work = value.work.map((candidate, index): SupervisorPlanWorkSpec => {
+  const work = value.work.map((candidate, index): GovernorPlanWorkSpec => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       throw new Error(`plan work[${index}] must be an object`);
     }
@@ -1499,7 +1488,7 @@ function normalizeProposal(
       `plan contains work not reachable from root: ${unused.map((item) => item.key).join(", ")}`,
     );
   return {
-    schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
+    schema_version: GOVERNOR_PLAN_SCHEMA_VERSION,
     plan_id: planId,
     decision,
     rationale,
@@ -1521,7 +1510,7 @@ function persistedProposalTimestamp(raw: unknown): string {
   return value;
 }
 
-function normalizeMilestone(raw: unknown, expectedSequence: number): SupervisorPlanMilestone {
+function normalizeMilestone(raw: unknown, expectedSequence: number): GovernorPlanMilestone {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("mission plan must contain a milestone object");
   }
@@ -1543,7 +1532,7 @@ function normalizeMilestone(raw: unknown, expectedSequence: number): SupervisorP
   };
 }
 
-function planTrigger(record: SupervisorRecord): NonNullable<SupervisorPlanRequest["trigger"]> {
+function planTrigger(record: GovernorRecord): NonNullable<GovernorPlanRequest["trigger"]> {
   if (
     record.intent.mission &&
     record.projection.plan_generation === 0 &&
@@ -1559,13 +1548,13 @@ function appendPlanEvent(
   coordRootRaw: string,
   goalId: string,
   planId: string,
-  input: Omit<SupervisorPlanEvent, "schema_version" | "plan_id" | "seq" | "ts">,
+  input: Omit<GovernorPlanEvent, "schema_version" | "plan_id" | "seq" | "ts">,
 ): void {
   const coordRoot = resolve(coordRootRaw);
   const path = join(planDir(coordRoot, goalId, planId), "events.jsonl");
-  const current = readSupervisorPlan(coordRoot, goalId, planId).events;
-  const event: SupervisorPlanEvent = {
-    schema_version: SUPERVISOR_PLAN_SCHEMA_VERSION,
+  const current = readGovernorPlan(coordRoot, goalId, planId).events;
+  const event: GovernorPlanEvent = {
+    schema_version: GOVERNOR_PLAN_SCHEMA_VERSION,
     plan_id: planId,
     seq: current.length + 1,
     ts: new Date().toISOString(),
@@ -1576,7 +1565,7 @@ function appendPlanEvent(
   const line = `${JSON.stringify(event)}\n`;
   const existing = existsSync(path) ? statSync(path).size : 0;
   if (existing + Buffer.byteLength(line) > MAX_EVENTS_BYTES) {
-    throw new Error("supervisor plan event log would exceed its byte limit");
+    throw new Error("governor plan event log would exceed its byte limit");
   }
   appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
   chmodSync(path, 0o600);
@@ -1586,15 +1575,15 @@ function appendPlanEventIfMissing(
   coordRoot: string,
   goalId: string,
   planId: string,
-  eventType: SupervisorPlanEvent["event"],
-  input: Omit<SupervisorPlanEvent, "schema_version" | "plan_id" | "seq" | "ts">,
+  eventType: GovernorPlanEvent["event"],
+  input: Omit<GovernorPlanEvent, "schema_version" | "plan_id" | "seq" | "ts">,
 ): void {
-  const plan = readSupervisorPlan(coordRoot, goalId, planId);
+  const plan = readGovernorPlan(coordRoot, goalId, planId);
   if (plan.events.some((event) => event.event === eventType)) return;
   appendPlanEvent(coordRoot, goalId, planId, input);
 }
 
-function outcome(plan: ReturnType<typeof readSupervisorPlan>): SupervisorPlanOutcome {
+function outcome(plan: ReturnType<typeof readGovernorPlan>): GovernorPlanOutcome {
   return {
     plan_id: plan.request.id,
     status: plan.status,
@@ -1635,7 +1624,7 @@ function writeExclusive(path: string, body: string, label: string): void {
 }
 
 function planDir(coordRoot: string, goalId: string, planId: string): string {
-  return join(coordRoot, ".harnery", "supervisors", goalId, "plans", planId);
+  return join(coordRoot, ".harnery", "governors", goalId, "plans", planId);
 }
 
 function planScriptPath(coordRoot: string, goalId: string, planId: string): string {

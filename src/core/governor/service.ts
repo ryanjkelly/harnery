@@ -18,19 +18,19 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type NormalizedPolicy, normalizePolicy, type PolicyIsolation } from "../policy/index.ts";
 import type { RunWorkItemInput } from "../work/index.ts";
-import { runSupervisor, type SupervisorRunReport, type SupervisorStopReason } from "./runner.ts";
-import { readSupervisor, type SupervisorRecord } from "./state.ts";
+import { type GovernorRunReport, type GovernorStopReason, runGovernor } from "./runner.ts";
+import { type GovernorRecord, readGovernor } from "./state.ts";
 
-export const SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_SERVICE_RUNTIME_SCHEMA_VERSION = 1 as const;
-export const SUPERVISOR_SERVICE_STATUS_SCHEMA_VERSION = 1 as const;
+export const GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION = 1 as const;
+export const GOVERNOR_SERVICE_RUNTIME_SCHEMA_VERSION = 1 as const;
+export const GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION = 1 as const;
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_GOALS = 100;
 const MAX_ERROR = 2_000;
 const FOREIGN_STATUS_STALE_MS = 30_000;
 
-export interface SupervisorServiceEngineConfig {
+export interface GovernorServiceEngineConfig {
   default_harness?: string;
   cwd?: string;
   subscription_only: boolean;
@@ -40,54 +40,54 @@ export interface SupervisorServiceEngineConfig {
   approval_addressee?: string;
 }
 
-export interface SupervisorServiceConfig {
-  schema_version: typeof SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION;
+export interface GovernorServiceConfig {
+  schema_version: typeof GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION;
   goal_ids: string[];
   wake_interval_ms: number;
   heartbeat_interval_ms: number;
   error_backoff_base_ms: number;
   error_backoff_max_ms: number;
-  engine: SupervisorServiceEngineConfig;
+  engine: GovernorServiceEngineConfig;
   created_at: string;
 }
 
-export interface ConfigureSupervisorServiceInput {
+export interface ConfigureGovernorServiceInput {
   coordRoot: string;
   goalIds: readonly string[];
   wakeIntervalMs?: number;
   heartbeatIntervalMs?: number;
   errorBackoffBaseMs?: number;
   errorBackoffMaxMs?: number;
-  engine?: Partial<SupervisorServiceEngineConfig>;
+  engine?: Partial<GovernorServiceEngineConfig>;
 }
 
-export type SupervisorServiceGoalState = "idle" | "backoff" | "awaiting_change";
+export type GovernorServiceGoalState = "idle" | "backoff" | "awaiting_change";
 
-export interface SupervisorServiceGoalRuntime {
-  state: SupervisorServiceGoalState;
+export interface GovernorServiceGoalRuntime {
+  state: GovernorServiceGoalState;
   consecutive_errors: number;
   observed_fingerprint?: string;
   next_wake_at?: string;
   last_tick_at?: string;
-  last_stop_reason?: SupervisorStopReason;
+  last_stop_reason?: GovernorStopReason;
   last_error?: string;
 }
 
-export interface SupervisorServiceRuntime {
-  schema_version: typeof SUPERVISOR_SERVICE_RUNTIME_SCHEMA_VERSION;
+export interface GovernorServiceRuntime {
+  schema_version: typeof GOVERNOR_SERVICE_RUNTIME_SCHEMA_VERSION;
   config_created_at: string;
   updated_at: string;
-  goals: Record<string, SupervisorServiceGoalRuntime>;
+  goals: Record<string, GovernorServiceGoalRuntime>;
 }
 
-export type SupervisorServiceProcessState = "starting" | "running" | "stopping" | "stopped";
+export type GovernorServiceProcessState = "starting" | "running" | "stopping" | "stopped";
 
-export interface SupervisorServiceStatusRecord {
-  schema_version: typeof SUPERVISOR_SERVICE_STATUS_SCHEMA_VERSION;
+export interface GovernorServiceStatusRecord {
+  schema_version: typeof GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION;
   pid: number;
   host: string;
   nonce: string;
-  state: SupervisorServiceProcessState;
+  state: GovernorServiceProcessState;
   started_at: string;
   heartbeat_at: string;
   config_created_at: string;
@@ -99,40 +99,40 @@ export interface SupervisorServiceStatusRecord {
   stopped_at?: string;
 }
 
-export interface SupervisorServiceStatus {
+export interface GovernorServiceStatus {
   running: boolean;
   stale: boolean;
-  record?: SupervisorServiceStatusRecord;
-  config?: SupervisorServiceConfig;
-  runtime?: SupervisorServiceRuntime;
+  record?: GovernorServiceStatusRecord;
+  config?: GovernorServiceConfig;
+  runtime?: GovernorServiceRuntime;
 }
 
-export interface SupervisorServiceSweepOutcome {
+export interface GovernorServiceSweepOutcome {
   goal_id: string;
   action: "tick" | "skip" | "backoff";
   reason: string;
-  stop_reason?: SupervisorStopReason;
+  stop_reason?: GovernorStopReason;
   next_wake_at?: string;
 }
 
-export interface SupervisorServiceSweepReport {
+export interface GovernorServiceSweepReport {
   started_at: string;
   ended_at: string;
-  outcomes: SupervisorServiceSweepOutcome[];
+  outcomes: GovernorServiceSweepOutcome[];
 }
 
-export interface RunSupervisorServiceSweepInput {
+export interface RunGovernorServiceSweepInput {
   coordRoot: string;
-  config: SupervisorServiceConfig;
+  config: GovernorServiceConfig;
   engine?: Omit<RunWorkItemInput["engine"], "maxAgents" | "concurrency" | "specialists">;
   actor?: string;
   now?: () => number;
-  readGoal?: (coordRoot: string, goalId: string) => SupervisorRecord;
-  runGoal?: (goalId: string) => Promise<SupervisorRunReport>;
+  readGoal?: (coordRoot: string, goalId: string) => GovernorRecord;
+  runGoal?: (goalId: string) => Promise<GovernorRunReport>;
   onGoalStart?: (goalId: string) => void;
 }
 
-export interface RunSupervisorServiceDaemonInput {
+export interface RunGovernorServiceDaemonInput {
   coordRoot: string;
   engine: Omit<RunWorkItemInput["engine"], "maxAgents" | "concurrency" | "specialists">;
   actor?: string;
@@ -147,19 +147,19 @@ interface ServiceLease {
   created_at: string;
 }
 
-export function configureSupervisorService(
-  input: ConfigureSupervisorServiceInput,
-): SupervisorServiceConfig {
+export function configureGovernorService(
+  input: ConfigureGovernorServiceInput,
+): GovernorServiceConfig {
   const coordRoot = resolve(input.coordRoot);
   const active = readStatusRecord(coordRoot);
   if (active && statusOwnerIsLive(active)) {
-    throw new Error(`stop supervisor service pid ${active.pid} before changing its configuration`);
+    throw new Error(`stop governor service pid ${active.pid} before changing its configuration`);
   }
   const goalIds = unique(input.goalIds.map((value) => value.trim()).filter(Boolean));
   if (goalIds.length < 1 || goalIds.length > MAX_GOALS) {
-    throw new Error(`supervisor service requires from 1 to ${MAX_GOALS} unique goal ids`);
+    throw new Error(`governor service requires from 1 to ${MAX_GOALS} unique goal ids`);
   }
-  for (const goalId of goalIds) readSupervisor(coordRoot, goalId);
+  for (const goalId of goalIds) readGovernor(coordRoot, goalId);
   const wakeIntervalMs = positive(
     input.wakeIntervalMs ?? 5_000,
     "service wake_interval_ms",
@@ -183,8 +183,8 @@ export function configureSupervisorService(
   if (errorBackoffMaxMs < errorBackoffBaseMs) {
     throw new Error("service error_backoff_max_ms must be at least error_backoff_base_ms");
   }
-  const config: SupervisorServiceConfig = {
-    schema_version: SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION,
+  const config: GovernorServiceConfig = {
+    schema_version: GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION,
     goal_ids: goalIds,
     wake_interval_ms: wakeIntervalMs,
     heartbeat_interval_ms: heartbeatIntervalMs,
@@ -197,53 +197,53 @@ export function configureSupervisorService(
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   writePrivateJsonAtomic(serviceConfigPath(coordRoot), config);
-  return readSupervisorServiceConfig(coordRoot);
+  return readGovernorServiceConfig(coordRoot);
 }
 
-export function readSupervisorServiceConfig(coordRootRaw: string): SupervisorServiceConfig {
+export function readGovernorServiceConfig(coordRootRaw: string): GovernorServiceConfig {
   const coordRoot = resolve(coordRootRaw);
-  const config = readBoundedJson<SupervisorServiceConfig>(
+  const config = readBoundedJson<GovernorServiceConfig>(
     serviceConfigPath(coordRoot),
-    "supervisor service configuration",
+    "governor service configuration",
   );
   validateConfig(coordRoot, config);
   return config;
 }
 
-export function readSupervisorServiceRuntime(
+export function readGovernorServiceRuntime(
   coordRootRaw: string,
-): SupervisorServiceRuntime | undefined {
+): GovernorServiceRuntime | undefined {
   const coordRoot = resolve(coordRootRaw);
   if (!existsSync(serviceRuntimePath(coordRoot))) return undefined;
-  const runtime = readBoundedJson<SupervisorServiceRuntime>(
+  const runtime = readBoundedJson<GovernorServiceRuntime>(
     serviceRuntimePath(coordRoot),
-    "supervisor service runtime",
+    "governor service runtime",
   );
   if (
-    runtime.schema_version !== SUPERVISOR_SERVICE_RUNTIME_SCHEMA_VERSION ||
+    runtime.schema_version !== GOVERNOR_SERVICE_RUNTIME_SCHEMA_VERSION ||
     !validTimestamp(runtime.config_created_at) ||
     !validTimestamp(runtime.updated_at) ||
     !runtime.goals ||
     typeof runtime.goals !== "object" ||
     Array.isArray(runtime.goals)
   ) {
-    throw new Error("supervisor service runtime has an unsupported schema");
+    throw new Error("governor service runtime has an unsupported schema");
   }
   return runtime;
 }
 
-export function readSupervisorServiceStatus(coordRootRaw: string): SupervisorServiceStatus {
+export function readGovernorServiceStatus(coordRootRaw: string): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const record = readStatusRecord(coordRoot);
-  let config: SupervisorServiceConfig | undefined;
-  let runtime: SupervisorServiceRuntime | undefined;
+  let config: GovernorServiceConfig | undefined;
+  let runtime: GovernorServiceRuntime | undefined;
   try {
-    config = readSupervisorServiceConfig(coordRoot);
+    config = readGovernorServiceConfig(coordRoot);
   } catch {
     // A service has no usable configuration until explicitly configured.
   }
   try {
-    runtime = readSupervisorServiceRuntime(coordRoot);
+    runtime = readGovernorServiceRuntime(coordRoot);
   } catch {
     // Status remains readable when recoverable runtime state is corrupt.
   }
@@ -252,14 +252,12 @@ export function readSupervisorServiceStatus(coordRootRaw: string): SupervisorSer
   return { running, stale: !running && record.state !== "stopped", record, config, runtime };
 }
 
-export async function spawnSupervisorService(
-  coordRootRaw: string,
-): Promise<SupervisorServiceStatus> {
+export async function spawnGovernorService(coordRootRaw: string): Promise<GovernorServiceStatus> {
   const coordRoot = resolve(coordRootRaw);
-  readSupervisorServiceConfig(coordRoot);
-  const current = readSupervisorServiceStatus(coordRoot);
+  readGovernorServiceConfig(coordRoot);
+  const current = readGovernorServiceStatus(coordRoot);
   if (current.running) {
-    throw new Error(`supervisor service is already running under pid ${current.record?.pid}`);
+    throw new Error(`governor service is already running under pid ${current.record?.pid}`);
   }
   mkdirSync(serviceDir(coordRoot), { recursive: true, mode: 0o700 });
   const logFd = openSync(serviceLogPath(coordRoot), "a", 0o600);
@@ -270,7 +268,7 @@ export async function spawnSupervisorService(
     throw new Error(`cannot find harn executable at ${harnBin}`);
   }
   let spawnError: Error | undefined;
-  const child = spawn(harnBin, ["supervisor", "service", "daemon"], {
+  const child = spawn(harnBin, ["governor", "service", "daemon"], {
     cwd: coordRoot,
     detached: true,
     stdio: ["ignore", logFd, logFd],
@@ -289,16 +287,16 @@ export async function spawnSupervisorService(
   while (Date.now() < deadline) {
     await delay(50);
     if (spawnError) throw spawnError;
-    const status = readSupervisorServiceStatus(coordRoot);
+    const status = readGovernorServiceStatus(coordRoot);
     if (status.running && status.record?.pid === child.pid) return status;
     if (child.exitCode !== null) break;
   }
-  throw new Error(`supervisor service failed to start; inspect ${serviceLogPath(coordRoot)}`);
+  throw new Error(`governor service failed to start; inspect ${serviceLogPath(coordRoot)}`);
 }
 
-export function requestSupervisorServiceStop(coordRootRaw: string): SupervisorServiceStatus {
+export function requestGovernorServiceStop(coordRootRaw: string): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
-  const status = readSupervisorServiceStatus(coordRoot);
+  const status = readGovernorServiceStatus(coordRoot);
   if (!status.running || !status.record) return status;
   writePrivateJsonAtomic(serviceStopPath(coordRoot), {
     requested_at: new Date().toISOString(),
@@ -311,27 +309,27 @@ export function requestSupervisorServiceStop(coordRootRaw: string): SupervisorSe
       // The durable stop request remains for a racing or restarted daemon.
     }
   }
-  return readSupervisorServiceStatus(coordRoot);
+  return readGovernorServiceStatus(coordRoot);
 }
 
-export async function runSupervisorServiceSweep(
-  input: RunSupervisorServiceSweepInput,
-): Promise<SupervisorServiceSweepReport> {
+export async function runGovernorServiceSweep(
+  input: RunGovernorServiceSweepInput,
+): Promise<GovernorServiceSweepReport> {
   const coordRoot = resolve(input.coordRoot);
   const now = input.now ?? Date.now;
-  const readGoal = input.readGoal ?? readSupervisor;
+  const readGoal = input.readGoal ?? readGovernor;
   const runtime = runtimeForConfig(coordRoot, input.config, now());
   const startedAt = new Date(now()).toISOString();
-  const outcomes: SupervisorServiceSweepOutcome[] = [];
+  const outcomes: GovernorServiceSweepOutcome[] = [];
   const runGoal =
     input.runGoal ??
     (async (goalId: string) => {
-      if (!input.engine) throw new Error("supervisor service sweep requires an engine");
-      return await runSupervisor({
+      if (!input.engine) throw new Error("governor service sweep requires an engine");
+      return await runGovernor({
         coordRoot,
         goalId,
         mode: "tick",
-        actor: input.actor ?? "supervisor-service",
+        actor: input.actor ?? "governor-service",
         engine: input.engine,
       });
     });
@@ -454,16 +452,16 @@ export async function runSupervisorServiceSweep(
   return { started_at: startedAt, ended_at: endedAt, outcomes };
 }
 
-export async function runSupervisorServiceDaemon(
-  input: RunSupervisorServiceDaemonInput,
-): Promise<SupervisorServiceStatusRecord> {
+export async function runGovernorServiceDaemon(
+  input: RunGovernorServiceDaemonInput,
+): Promise<GovernorServiceStatusRecord> {
   const coordRoot = resolve(input.coordRoot);
-  const config = readSupervisorServiceConfig(coordRoot);
+  const config = readGovernorServiceConfig(coordRoot);
   const release = acquireServiceLease(coordRoot);
   rmSync(serviceStopPath(coordRoot), { force: true });
   const now = new Date().toISOString();
-  const status: SupervisorServiceStatusRecord = {
-    schema_version: SUPERVISOR_SERVICE_STATUS_SCHEMA_VERSION,
+  const status: GovernorServiceStatusRecord = {
+    schema_version: GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION,
     pid: process.pid,
     host: hostname(),
     nonce: randomUUID(),
@@ -494,19 +492,19 @@ export async function runSupervisorServiceDaemon(
     goals: config.goal_ids,
     config_created_at: config.created_at,
   });
-  log(`supervisor service started for ${config.goal_ids.length} goal(s)`);
+  log(`governor service started for ${config.goal_ids.length} goal(s)`);
   const heartbeat = setInterval(() => {
     try {
       writeStatus();
     } catch (error) {
-      log(`supervisor service heartbeat error: ${boundedError((error as Error).message)}`);
+      log(`governor service heartbeat error: ${boundedError((error as Error).message)}`);
     }
   }, config.heartbeat_interval_ms);
   try {
     while (!stopRequested && !existsSync(serviceStopPath(coordRoot))) {
       let sleepMs = config.wake_interval_ms;
       try {
-        const report = await runSupervisorServiceSweep({
+        const report = await runGovernorServiceSweep({
           coordRoot,
           config,
           engine: input.engine,
@@ -534,7 +532,7 @@ export async function runSupervisorServiceDaemon(
           event: "service.sweep_error",
           error: status.last_error,
         });
-        log(`supervisor service sweep error: ${status.last_error}`);
+        log(`governor service sweep error: ${status.last_error}`);
       }
       if (input.maxSweeps !== undefined && status.sweep_count >= input.maxSweeps) break;
       if (!stopRequested && !existsSync(serviceStopPath(coordRoot))) {
@@ -563,18 +561,18 @@ export async function runSupervisorServiceDaemon(
   return status;
 }
 
-export function supervisorServiceLogPath(coordRoot: string): string {
+export function governorServiceLogPath(coordRoot: string): string {
   return serviceLogPath(resolve(coordRoot));
 }
 
 function runtimeForConfig(
   coordRoot: string,
-  config: SupervisorServiceConfig,
+  config: GovernorServiceConfig,
   timestamp: number,
-): SupervisorServiceRuntime {
-  let existing: SupervisorServiceRuntime | undefined;
+): GovernorServiceRuntime {
+  let existing: GovernorServiceRuntime | undefined;
   try {
-    existing = readSupervisorServiceRuntime(coordRoot);
+    existing = readGovernorServiceRuntime(coordRoot);
   } catch {
     // Runtime is a recoverable scheduling hint; durable goal state remains authoritative.
   }
@@ -585,31 +583,31 @@ function runtimeForConfig(
     return { ...existing, goals };
   }
   return {
-    schema_version: SUPERVISOR_SERVICE_RUNTIME_SCHEMA_VERSION,
+    schema_version: GOVERNOR_SERVICE_RUNTIME_SCHEMA_VERSION,
     config_created_at: config.created_at,
     updated_at: new Date(timestamp).toISOString(),
     goals: Object.fromEntries(config.goal_ids.map((goalId) => [goalId, emptyGoalRuntime()])),
   };
 }
 
-function emptyGoalRuntime(): SupervisorServiceGoalRuntime {
+function emptyGoalRuntime(): GovernorServiceGoalRuntime {
   return { state: "idle", consecutive_errors: 0 };
 }
 
 function persistRuntime(
   coordRoot: string,
-  runtime: SupervisorServiceRuntime,
+  runtime: GovernorServiceRuntime,
   timestamp: number,
 ): void {
   runtime.updated_at = new Date(timestamp).toISOString();
   writePrivateJsonAtomic(serviceRuntimePath(coordRoot), runtime);
 }
 
-function goalFingerprint(record: SupervisorRecord): string {
+function goalFingerprint(record: GovernorRecord): string {
   return projectionFingerprint(record.projection);
 }
 
-function projectionFingerprint(projection: SupervisorRecord["projection"]): string {
+function projectionFingerprint(projection: GovernorRecord["projection"]): string {
   return JSON.stringify([
     projection.state,
     projection.next_action,
@@ -637,8 +635,8 @@ function wakeDue(value: string | undefined, now: number): boolean {
 
 function normalizeEngineConfig(
   coordRoot: string,
-  input: Partial<SupervisorServiceEngineConfig> | undefined,
-): SupervisorServiceEngineConfig {
+  input: Partial<GovernorServiceEngineConfig> | undefined,
+): GovernorServiceEngineConfig {
   return {
     default_harness: optionalBounded(input?.default_harness, "default_harness", 100),
     cwd: input?.cwd ? resolve(input.cwd) : coordRoot,
@@ -650,16 +648,16 @@ function normalizeEngineConfig(
   };
 }
 
-function validateConfig(coordRoot: string, config: SupervisorServiceConfig): void {
+function validateConfig(coordRoot: string, config: GovernorServiceConfig): void {
   if (
-    config.schema_version !== SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION ||
+    config.schema_version !== GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION ||
     !validTimestamp(config.created_at) ||
     !Array.isArray(config.goal_ids)
   ) {
-    throw new Error("supervisor service configuration has an unsupported schema");
+    throw new Error("governor service configuration has an unsupported schema");
   }
-  const normalized: SupervisorServiceConfig = {
-    schema_version: SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION,
+  const normalized: GovernorServiceConfig = {
+    schema_version: GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION,
     goal_ids: unique(config.goal_ids.map((goalId) => goalId.trim()).filter(Boolean)),
     wake_interval_ms: positive(
       config.wake_interval_ms,
@@ -690,7 +688,7 @@ function validateConfig(coordRoot: string, config: SupervisorServiceConfig): voi
     normalized.error_backoff_max_ms < normalized.error_backoff_base_ms ||
     JSON.stringify(normalized) !== JSON.stringify(config)
   ) {
-    throw new Error("supervisor service configuration is not canonical");
+    throw new Error("governor service configuration is not canonical");
   }
 }
 
@@ -728,10 +726,10 @@ function acquireServiceLease(coordRoot: string): () => void {
   if (!acquire()) {
     const existing = readLease(path);
     if (existing && leaseOwnerIsLive(existing)) {
-      throw new Error(`supervisor service is already running under pid ${existing.pid}`);
+      throw new Error(`governor service is already running under pid ${existing.pid}`);
     }
     unlinkSync(path);
-    if (!acquire()) throw new Error("supervisor service lease raced with another process");
+    if (!acquire()) throw new Error("governor service lease raced with another process");
   }
   return () => {
     try {
@@ -766,15 +764,15 @@ function leaseOwnerIsLive(lease: ServiceLease): boolean {
   return pidAlive(lease.pid);
 }
 
-function readStatusRecord(coordRoot: string): SupervisorServiceStatusRecord | undefined {
+function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | undefined {
   if (!existsSync(serviceStatusPath(coordRoot))) return undefined;
   try {
-    const value = readBoundedJson<SupervisorServiceStatusRecord>(
+    const value = readBoundedJson<GovernorServiceStatusRecord>(
       serviceStatusPath(coordRoot),
-      "supervisor service status",
+      "governor service status",
     );
     if (
-      value.schema_version !== SUPERVISOR_SERVICE_STATUS_SCHEMA_VERSION ||
+      value.schema_version !== GOVERNOR_SERVICE_STATUS_SCHEMA_VERSION ||
       !Number.isSafeInteger(value.pid) ||
       value.pid < 1 ||
       typeof value.host !== "string" ||
@@ -790,7 +788,7 @@ function readStatusRecord(coordRoot: string): SupervisorServiceStatusRecord | un
   }
 }
 
-function statusOwnerIsLive(record: SupervisorServiceStatusRecord): boolean {
+function statusOwnerIsLive(record: GovernorServiceStatusRecord): boolean {
   if (record.state === "stopped") return false;
   if (record.host === hostname()) return pidAlive(record.pid);
   const age = Date.now() - Date.parse(record.heartbeat_at);
@@ -817,13 +815,13 @@ function appendServiceEvent(coordRoot: string, data: Record<string, unknown>): v
   chmodSync(path, 0o600);
 }
 
-function renderSweepLog(report: SupervisorServiceSweepReport): string | undefined {
+function renderSweepLog(report: GovernorServiceSweepReport): string | undefined {
   const counts = report.outcomes.reduce<Record<string, number>>((acc, outcome) => {
     acc[outcome.action] = (acc[outcome.action] ?? 0) + 1;
     return acc;
   }, {});
   if (!counts.tick && !counts.backoff) return undefined;
-  return `supervisor service sweep: ${counts.tick ?? 0} tick, ${counts.skip ?? 0} skip, ${counts.backoff ?? 0} backoff`;
+  return `governor service sweep: ${counts.tick ?? 0} tick, ${counts.skip ?? 0} skip, ${counts.backoff ?? 0} backoff`;
 }
 
 function readBoundedJson<T>(path: string, label: string): T {
@@ -840,7 +838,7 @@ function readBoundedJson<T>(path: string, label: string): T {
 function writePrivateJsonAtomic(path: string, value: unknown): void {
   const body = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(body) > MAX_FILE_BYTES) {
-    throw new Error(`supervisor service file exceeds ${MAX_FILE_BYTES} bytes`);
+    throw new Error(`governor service file exceeds ${MAX_FILE_BYTES} bytes`);
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   chmodSync(dirname(path), 0o700);
@@ -851,7 +849,7 @@ function writePrivateJsonAtomic(path: string, value: unknown): void {
 }
 
 function serviceDir(coordRoot: string): string {
-  return join(resolve(coordRoot), ".harnery", "supervisor-service");
+  return join(resolve(coordRoot), ".harnery", "governor-service");
 }
 
 function serviceConfigPath(coordRoot: string): string {

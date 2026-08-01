@@ -6,16 +6,16 @@ import {
   runWorkItem,
   type WorkRecord,
 } from "../work/index.ts";
-import type { SupervisorPlanOutcome } from "./plan-types.ts";
-import { runSupervisorPlanner } from "./planning.ts";
+import type { GovernorPlanOutcome } from "./plan-types.ts";
+import { runGovernorPlanner } from "./planning.ts";
 import {
-  acquireSupervisorLease,
-  readSupervisorIgnoringLease,
-  type SupervisorProjection,
-  type SupervisorRecord,
+  acquireGovernorLease,
+  type GovernorProjection,
+  type GovernorRecord,
+  readGovernorIgnoringLease,
 } from "./state.ts";
 
-export type SupervisorStopReason =
+export type GovernorStopReason =
   | "succeeded"
   | "awaiting_attention"
   | "blocked"
@@ -23,7 +23,7 @@ export type SupervisorStopReason =
   | "no_progress"
   | "tick_complete";
 
-export interface SupervisorDispatchOutcome {
+export interface GovernorDispatchOutcome {
   work_id: string;
   action: "run" | "resume" | "retry";
   status: "completed" | "parked" | "failed";
@@ -31,10 +31,10 @@ export interface SupervisorDispatchOutcome {
   error?: string;
 }
 
-export interface SupervisorRunReport {
+export interface GovernorRunReport {
   goal_id: string;
   mode: "tick" | "run";
-  stop_reason: SupervisorStopReason;
+  stop_reason: GovernorStopReason;
   reason: string;
   started_at: string;
   ended_at: string;
@@ -43,12 +43,12 @@ export interface SupervisorRunReport {
   dispatches: number;
   acceptances: number;
   replans: number;
-  outcomes: SupervisorDispatchOutcome[];
-  plan_outcomes: SupervisorPlanOutcome[];
-  projection: SupervisorProjection;
+  outcomes: GovernorDispatchOutcome[];
+  plan_outcomes: GovernorPlanOutcome[];
+  projection: GovernorProjection;
 }
 
-export interface RunSupervisorInput {
+export interface RunGovernorInput {
   coordRoot: string;
   goalId: string;
   mode?: "tick" | "run";
@@ -63,22 +63,22 @@ interface Candidate {
   consumesAttempt: boolean;
 }
 
-export async function runSupervisor(input: RunSupervisorInput): Promise<SupervisorRunReport> {
+export async function runGovernor(input: RunGovernorInput): Promise<GovernorRunReport> {
   const coordRoot = resolve(input.coordRoot);
   const mode = input.mode ?? "run";
-  const actor = input.actor?.trim() || `supervisor:${input.goalId}`;
+  const actor = input.actor?.trim() || `governor:${input.goalId}`;
   const log = input.onLog ?? (() => undefined);
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
-  const release = acquireSupervisorLease(coordRoot, input.goalId);
+  const release = acquireGovernorLease(coordRoot, input.goalId);
   let cycles = 0;
   let dispatches = 0;
   let acceptances = 0;
   let replans = 0;
-  const outcomes: SupervisorDispatchOutcome[] = [];
-  const planOutcomes: SupervisorPlanOutcome[] = [];
+  const outcomes: GovernorDispatchOutcome[] = [];
+  const planOutcomes: GovernorPlanOutcome[] = [];
   try {
-    const initial = readSupervisorIgnoringLease(coordRoot, input.goalId);
+    const initial = readGovernorIgnoringLease(coordRoot, input.goalId);
     const cycleLimit = mode === "tick" ? 1 : initial.intent.limits.max_cycles;
     const deadline = startedMs + initial.intent.limits.max_runtime_ms;
     while (cycles < cycleLimit) {
@@ -92,7 +92,7 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
         return report("succeeded", record.projection.reason, record);
       }
       if (Date.now() >= deadline) {
-        return report("budget_exhausted", "supervisor wall-time limit reached", record);
+        return report("budget_exhausted", "governor wall-time limit reached", record);
       }
 
       const before = graphFingerprint(record);
@@ -105,7 +105,7 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
         log(
           `[${record.intent.title}] ${record.projection.next_action} at graph generation ${record.projection.plan_generation}`,
         );
-        const plan = await runSupervisorPlanner({
+        const plan = await runGovernorPlanner({
           coordRoot,
           record,
           engine: input.engine,
@@ -135,7 +135,7 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
           if (work.projection.state !== "in_review") continue;
           acceptWorkItem(coordRoot, work.intent.id, {
             actor,
-            reason: "passing proof accepted by frozen supervisor policy",
+            reason: "passing proof accepted by frozen governor policy",
           });
           acceptances++;
           changed = true;
@@ -175,7 +175,7 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
                 action: candidate.action,
                 status: "completed",
                 run_id: result.runId,
-              } satisfies SupervisorDispatchOutcome;
+              } satisfies GovernorDispatchOutcome;
             } catch (error) {
               const latest = reconcileWorkItem(coordRoot, candidate.record.intent.id, actor);
               return {
@@ -184,7 +184,7 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
                 status: latest.projection.state === "awaiting_approval" ? "parked" : "failed",
                 run_id: latest.projection.latest_run_id,
                 error: boundedError((error as Error).message),
-              } satisfies SupervisorDispatchOutcome;
+              } satisfies GovernorDispatchOutcome;
             }
           }),
         );
@@ -202,12 +202,12 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
           before === after ? "no_progress" : "tick_complete",
           before === after
             ? "the tick found no legal progress action"
-            : "one bounded supervisor cycle completed",
+            : "one bounded governor cycle completed",
           record,
         );
       }
       if (Date.now() >= deadline) {
-        return report("budget_exhausted", "supervisor wall-time limit reached", record);
+        return report("budget_exhausted", "governor wall-time limit reached", record);
       }
       if (record.projection.state === "budget_exhausted") {
         return report("budget_exhausted", record.projection.reason, record);
@@ -219,20 +219,20 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
         return report(stopForProjection(record.projection), record.projection.reason, record);
       }
       if (before === after) {
-        return report("no_progress", "a supervisor cycle produced no durable state change", record);
+        return report("no_progress", "a governor cycle produced no durable state change", record);
       }
     }
     const final = refreshGraph(coordRoot, input.goalId, actor);
-    return report("budget_exhausted", `supervisor cycle limit reached (${cycleLimit})`, final);
+    return report("budget_exhausted", `governor cycle limit reached (${cycleLimit})`, final);
   } finally {
     release();
   }
 
   function report(
-    stopReason: SupervisorStopReason,
+    stopReason: GovernorStopReason,
     reason: string,
-    record: SupervisorRecord,
-  ): SupervisorRunReport {
+    record: GovernorRecord,
+  ): GovernorRunReport {
     const endedAt = new Date().toISOString();
     return {
       goal_id: input.goalId,
@@ -253,13 +253,13 @@ export async function runSupervisor(input: RunSupervisorInput): Promise<Supervis
   }
 }
 
-function refreshGraph(coordRoot: string, goalId: string, actor: string): SupervisorRecord {
-  const before = readSupervisorIgnoringLease(coordRoot, goalId);
+function refreshGraph(coordRoot: string, goalId: string, actor: string): GovernorRecord {
+  const before = readGovernorIgnoringLease(coordRoot, goalId);
   for (const work of before.work) reconcileWorkItem(coordRoot, work.intent.id, actor);
-  return readSupervisorIgnoringLease(coordRoot, goalId);
+  return readGovernorIgnoringLease(coordRoot, goalId);
 }
 
-function selectCandidates(record: SupervisorRecord): Candidate[] {
+function selectCandidates(record: GovernorRecord): Candidate[] {
   const candidates: Candidate[] = [];
   for (const work of record.work) {
     if (work.projection.state === "ready") {
@@ -285,7 +285,7 @@ function selectCandidates(record: SupervisorRecord): Candidate[] {
   return candidates;
 }
 
-function selectWithinAttemptBudget(record: SupervisorRecord, candidates: Candidate[]): Candidate[] {
+function selectWithinAttemptBudget(record: GovernorRecord, candidates: Candidate[]): Candidate[] {
   let remaining = record.projection.attempts_remaining;
   return candidates.filter((candidate) => {
     if (!candidate.consumesAttempt) return true;
@@ -295,7 +295,7 @@ function selectWithinAttemptBudget(record: SupervisorRecord, candidates: Candida
   });
 }
 
-function graphFingerprint(record: SupervisorRecord): string {
+function graphFingerprint(record: GovernorRecord): string {
   return JSON.stringify([
     record.projection.root_work_id,
     record.projection.plan_generation,
@@ -310,7 +310,7 @@ function graphFingerprint(record: SupervisorRecord): string {
   ]);
 }
 
-function stopForProjection(projection: SupervisorProjection): SupervisorStopReason {
+function stopForProjection(projection: GovernorProjection): GovernorStopReason {
   if (projection.state === "budget_exhausted") return "budget_exhausted";
   if (projection.state === "blocked") return "blocked";
   return "awaiting_attention";

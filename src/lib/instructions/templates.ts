@@ -94,7 +94,7 @@ plain JS stages fan out to headless subagents that are born
 coordination-registered, with deterministic code deciding the routing between
 stages. \`${b} work create <title> <workflow>\` wraps an objective that has to
 survive many such passes, holding it across retries, failures, and review.
-\`${b} supervisor create\` drives a whole graph of work toward a goal, choosing
+\`${b} governor create\` drives a whole graph of work toward a goal, choosing
 what runs next and how much it may settle without asking a human. Reach for the
 first when one pass will do, the second when the objective must outlive the
 attempt, and the third when a human would otherwise have to babysit the loop. A

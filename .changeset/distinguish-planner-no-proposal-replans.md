@@ -11,13 +11,13 @@ left the goal quiescent with an undifferentiated exhaustion reason, so an
 operator could not tell a planner that never proposed anything apart from
 review-round exhaustion.
 
-Supervisor projection now attributes each consumed replan through the existing
+Governor projection now attributes each consumed replan through the existing
 plan seams — a review receipt is present exactly when a proposal was produced
 and reviewed, so its presence separates the two causes with no new record field
 or planner mechanism. When any replan was a planner no-proposal outcome, the
 projection carries a `replan_consumption` breakdown, the exhaustion reason names
 the planner explicitly instead of reading as review-round exhaustion, and
-`harn supervisor list` / `harn supervisor show` surface the distinction.
+`harn governor list` / `harn governor show` surface the distinction.
 
 Budget accounting, cumulative counters, and append-only record authority are
 unchanged. Records written before this change stay meaningful — a goal with no

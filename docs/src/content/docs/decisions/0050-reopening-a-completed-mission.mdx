@@ -1,9 +1,9 @@
 ---
 title: "0050: A completed mission reopens by appending"
-description: "ADR: an operator finding on work beneath a succeeded mission reopens the mission through a superseding plan event, so the correction reaches the supervisor instead of stranding."
+description: "ADR: an operator finding on work beneath a succeeded mission reopens the mission through a superseding plan event, so the correction reaches the governor instead of stranding."
 ---
 
-**Status:** accepted (2026-07-26) · **Scope:** product tier (`core/supervisor`, work CLI, public package APIs)
+**Status:** accepted (2026-07-26) · **Scope:** product tier (`core/governor`, work CLI, public package APIs)
 
 ## Context
 
@@ -20,7 +20,7 @@ Reopening an item beneath a succeeded mission did everything it claimed. The ite
 `ready`, the findings landed on the `work.reopened` event, and the item appeared in the
 goal's `ready_work`. Then nothing dispatched it. The goal projection returned `succeeded`
 with `next_action: none` as soon as `intent.mission && plans.completed`, ahead of the
-branch that reads `plans.latest` and ahead of any `ready_work` evaluation. `harn supervisor
+branch that reads `plans.latest` and ahead of any `ready_work` evaluation. `harn governor
 run` reported the mission already complete and exited without a cycle.
 
 Observed on a real goal:
@@ -32,7 +32,7 @@ ready_work: ["plan-0002-bf9e35f3-fix-stopping-reason"]
 
 The conflict was projection precedence, not a broken correction payload. `harn work run
 <id>` on the same item worked and carried both findings into the attempt. So the channel
-was sound and only the supervisor path was closed, which is the worst shape for this
+was sound and only the governor path was closed, which is the worst shape for this
 failure: the reopen reports success, and the operator has no way to learn from any CLI
 output that the work will never be picked up.
 
@@ -61,7 +61,7 @@ completed refuses.
 **Refuse the reopen and name the workaround.** Cheapest and honest: exit non-zero with
 "this item's goal has completed; reopen the goal first or run the item directly." Rejected
 because ADR 0043 defines reopen as *the* governed correction path. Sending the operator to
-`harn work run` routes the correction around the supervisor, which is where the attempt
+`harn work run` routes the correction around the governor, which is where the attempt
 budget, the acceptance policy, and the audit live.
 
 **Allow the reopen and warn.** The smallest change, and the only option ruled out on

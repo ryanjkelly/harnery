@@ -42,7 +42,7 @@ const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
 /** Default ceiling on consecutive uncharged attempts (ADR 0046). Kept low: each
  * one is a real vendor round-trip, so a handful gives a transient outage room
  * to recover before the item stops and names the outside service. There is no
- * backoff between them beyond the cadence of the supervisor and the vendor's own
+ * backoff between them beyond the cadence of the governor and the vendor's own
  * responses, which is why the bound stays small. */
 const DEFAULT_MAX_UNCHARGED_ATTEMPTS = 3;
 
@@ -516,7 +516,7 @@ function deriveWorkProjection(
   if (latest.status === "failed" && latest.uncharged === "environment") {
     // A missing precondition. The operator chose to STOP the item immediately
     // rather than retry an unchanged environment (ADR 0046); next_action "none"
-    // stops the supervisor. A human who fixes the environment can still force a
+    // stops the governor. A human who fixes the environment can still force a
     // retry — the attempt was uncharged, so the budget is intact.
     return {
       ...base,

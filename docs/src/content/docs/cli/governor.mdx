@@ -1,12 +1,12 @@
 ---
-title: harn supervisor
+title: harn governor
 description: Run a bounded, restartable specialist team over a durable-work dependency graph.
 sidebar:
   order: 28
 ---
 
 ```
-harn supervisor create [root-work-id] --team <file>
+harn governor create [root-work-id] --team <file>
                        [--id <goal-id>] [--title <text>]
                        [--max-cycles <n>] [--max-runtime-ms <n>]
                        [--max-parallel-work <n>] [--max-total-attempts <n>]
@@ -14,29 +14,29 @@ harn supervisor create [root-work-id] --team <file>
                        [--accept-passing-proof] [--no-resume-approved]
                        [--retry-blocked] [--replanning <file>]
                        [--mission <file>] [--json]
-harn supervisor list [--json]
-harn supervisor show <goal-id> [--json]
-harn supervisor plan list <goal-id> [--json]
-harn supervisor plan show <goal-id> <plan-id> [--json]
-harn supervisor plan approve <goal-id> <plan-id> [--actor <name>] [--reason <text>] [--json]
-harn supervisor plan reject <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
-harn supervisor plan retry <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
-harn supervisor tick <goal-id> [workflow host options] [--json]
-harn supervisor run <goal-id> [workflow host options] [--json]
-harn supervisor service start [goal-id...] [service options] [--json]
-harn supervisor service run [goal-id...] [service options] [--json]
-harn supervisor service status [--json]
-harn supervisor service stop [--json]
-harn supervisor service logs [--lines <n>]
+harn governor list [--json]
+harn governor show <goal-id> [--json]
+harn governor plan list <goal-id> [--json]
+harn governor plan show <goal-id> <plan-id> [--json]
+harn governor plan approve <goal-id> <plan-id> [--actor <name>] [--reason <text>] [--json]
+harn governor plan reject <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
+harn governor plan retry <goal-id> <plan-id> --reason <text> [--actor <name>] [--json]
+harn governor tick <goal-id> [workflow host options] [--json]
+harn governor run <goal-id> [workflow host options] [--json]
+harn governor service start [goal-id...] [service options] [--json]
+harn governor service run [goal-id...] [service options] [--json]
+harn governor service status [--json]
+harn governor service stop [--json]
+harn governor service logs [--lines <n>]
 ```
 
-A supervisor is a bounded host above
+A governor is a bounded host above
 [`harn work`](./work/). It reconstructs a root work item's immutable dependency
 closure, selects legal progress actions, dispatches bounded workflow attempts,
 and reconstructs the graph from journals and proof before every new cycle.
 
 It does not change reconciliation. Running `harn work reconcile` remains
-observational. Foreground `supervisor tick` / `supervisor run` and the optional
+observational. Foreground `governor tick` / `governor run` and the optional
 explicitly enrolled service are the only hosts that can execute the automation
 policy frozen at goal creation.
 
@@ -86,7 +86,7 @@ export default async ({ agent, evidence }) => {
 };
 ```
 
-Instructions and defaults are copied into the private supervisor intent. Each
+Instructions and defaults are copied into the private governor intent. Each
 workflow run freezes that same map in its run manifest, so a parked run resumes
 under exactly the team contract it started with. The original team file may be
 moved or edited without changing existing goals.
@@ -104,11 +104,11 @@ harn work create "Verify" ./workflows/verify.mjs \
   --objective "Verify the implementation" \
   --depends-on work-implement --id work-verify
 
-harn supervisor create work-verify --team ./team.json \
+harn governor create work-verify --team ./team.json \
   --id goal-release --max-runtime-ms 14400000
 ```
 
-The supervisor intent is private and immutable. It freezes the root, the full
+The governor intent is private and immutable. It freezes the root, the full
 team, automation decisions, and these defaults:
 
 | Limit | Default | Meaning |
@@ -140,7 +140,7 @@ provide a mission file alongside replanning authority:
 ```
 
 ```bash
-harn supervisor create --team ./team.json \
+harn governor create --team ./team.json \
   --mission ./mission.json --replanning ./replanning.json \
   --id goal-release
 ```
@@ -207,7 +207,7 @@ planner is allowed to select:
 ```
 
 ```bash
-harn supervisor create work-root --team ./team.json \
+harn governor create work-root --team ./team.json \
   --replanning ./replanning.json --id goal-release
 ```
 
@@ -219,7 +219,7 @@ is materialized.
 `review` is optional. When present, it freezes an ordered panel of specialists
 from the same team file and a hard revision bound. Reviewers must be distinct
 from the planner. A panel contains one to five reviewers and
-`max_revision_rounds` may be zero to three. The supervisor rejects a review
+`max_revision_rounds` may be zero to three. The governor rejects a review
 policy whose worst-case planner, reviewer, and revision calls would exceed
 `max_agents_per_work`.
 
@@ -239,18 +239,18 @@ cannot introduce a script path, mutate an existing work intent, or remove
 history.
 
 Proposals are private under
-`.harnery/supervisors/<goal-id>/plans/<plan-id>/`. Review and resolve them with:
+`.harnery/governors/<goal-id>/plans/<plan-id>/`. Review and resolve them with:
 
 ```bash
-harn supervisor plan list goal-release
-harn supervisor plan show goal-release plan-0001-a1b2c3d4
-harn supervisor plan approve goal-release plan-0001-a1b2c3d4 \
+harn governor plan list goal-release
+harn governor plan show goal-release plan-0001-a1b2c3d4
+harn governor plan approve goal-release plan-0001-a1b2c3d4 \
   --actor operator --reason "Scoped recovery graph"
 # or
-harn supervisor plan reject goal-release plan-0001-a1b2c3d4 \
+harn governor plan reject goal-release plan-0001-a1b2c3d4 \
   --actor operator --reason "Needs a narrower migration"
 # or, after the plan stops for human judgment
-harn supervisor plan retry goal-release plan-0001-a1b2c3d4 \
+harn governor plan retry goal-release plan-0001-a1b2c3d4 \
   --actor operator --reason "Keep the migration local and preserve the old API"
 ```
 
@@ -280,7 +280,7 @@ no-change revision parks the plan for human attention.
 
 Passing review writes a bounded receipt and a `plan.reviewed` event, then
 continues through ordinary plan authority. It does not approve execution by
-itself. `harn supervisor plan show` renders receipt status, round count, and
+itself. `harn governor plan show` renders receipt status, round count, and
 finding totals; `--json` includes the complete plan record for tooling.
 
 `auto_apply` defaults to `false`. Setting it to `true` is immutable authority
@@ -291,8 +291,8 @@ replan, cycle, wall-time, and work-attempt bounds still apply.
 ## Tick and run
 
 ```bash
-harn supervisor tick goal-release --subscription-only
-harn supervisor run goal-release --subscription-only --policy ./policy.jsonc
+harn governor tick goal-release --subscription-only
+harn governor run goal-release --subscription-only --policy ./policy.jsonc
 ```
 
 `tick` performs at most one cycle. It is useful for schedulers, tests, and
@@ -307,10 +307,10 @@ conditions is reconstructed:
 - a cycle produces no durable state change;
 - no legal progress action remains.
 
-Process loss does not erase the goal. Restart `supervisor run`; work attempt
+Process loss does not erase the goal. Restart `governor run`; work attempt
 receipts, workflow journals, approvals, proofs, and accepted dependencies
 determine where it continues. A private exclusive lease prevents two
-supervisors from driving the same goal concurrently.
+governors from driving the same goal concurrently.
 
 Standard workflow host options remain available: `--harness`, `--cwd`,
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`, and
@@ -322,14 +322,14 @@ Enroll one or more existing goals in the repository's optional detached
 service:
 
 ```bash
-harn supervisor service start goal-release goal-docs \
+harn governor service start goal-release goal-docs \
   --subscription-only --policy ./policy.jsonc
-harn supervisor service status
-harn supervisor service logs --lines 100
-harn supervisor service stop
+harn governor service status
+harn governor service logs --lines 100
+harn governor service stop
 ```
 
-The service is one process per coordination root. It runs one supervisor tick
+The service is one process per coordination root. It runs one governor tick
 for each ready goal, then polls compact durable state without making model calls
 while goals are unchanged. A review, unresolved approval, terminal state, or
 blocked goal becomes `awaiting_change`. A replanning-enabled terminal graph is
@@ -338,7 +338,7 @@ instead ready for one bounded planner tick. A pending proposal then becomes
 the service without model churn while it waits.
 
 Service configuration is private and frozen at start under
-`.harnery/supervisor-service/config.json`. It includes the exact enrolled goal
+`.harnery/governor-service/config.json`. It includes the exact enrolled goal
 IDs, runtime options, and normalized host-policy content. The policy file may be
 moved or edited without changing a running or restarted service. Stop the
 service before changing its enrollment or authority.
@@ -355,15 +355,15 @@ harness. It does not authorize a failed work retry or consume a work attempt.
 Any durable goal change bypasses stale backoff.
 
 The service writes private status, recoverable per-goal wake state, an audit
-ledger, and a bounded-summary log beneath `.harnery/supervisor-service/`. The
+ledger, and a bounded-summary log beneath `.harnery/governor-service/`. The
 dashboard's Goals page shows heartbeat, enrollment, active goal, last tick
 result, and backoff state through a read-only package boundary.
 
 `service stop` is graceful: an active bounded tick finishes before the daemon
 exits, avoiding orphaned child processes. After a process or host restart, run
-`harn supervisor service start` with no goal IDs to reuse the existing frozen
+`harn governor service start` with no goal IDs to reuse the existing frozen
 configuration and wake state. For automatic operating-system restart, use
-`harn supervisor service run` as the foreground command owned by the host's
+`harn governor service run` as the foreground command owned by the host's
 process manager.
 
 ## Automation policy
@@ -371,7 +371,7 @@ process manager.
 Automation fails closed by default:
 
 - Passing proof stops in `in_review`. `--accept-passing-proof` authorizes the
-  supervisor to append an explicit acceptance event as its own actor.
+  governor to append an explicit acceptance event as its own actor.
 - A resolved approval resumes the same attempt by default. Use
   `--no-resume-approved` to require a separate invocation.
 - Failed work stops blocked. `--retry-blocked` authorizes bounded retry, still
@@ -380,7 +380,7 @@ Automation fails closed by default:
   `ctx.attempt.prior`; the workflow decides how to use it.
 
 These choices are immutable goal intent, not runtime convenience flags. Create
-a new supervisor when the automation authority must change.
+a new governor when the automation authority must change.
 
 ## Current boundary
 

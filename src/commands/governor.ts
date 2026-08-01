@@ -4,6 +4,31 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
 import {
+  approveGovernorPlan,
+  type CreateGovernorMissionInput,
+  type CreateGovernorReplanningInput,
+  configureGovernorService,
+  createGovernor,
+  type GovernorPlanOutcome,
+  type GovernorPlanRecord,
+  type GovernorRecord,
+  type GovernorRunReport,
+  type GovernorServiceConfig,
+  type GovernorServiceStatus,
+  governorServiceLogPath,
+  listGovernors,
+  readGovernor,
+  readGovernorPlan,
+  readGovernorServiceConfig,
+  readGovernorServiceStatus,
+  rejectGovernorPlan,
+  requestGovernorServiceStop,
+  retryGovernorPlan,
+  runGovernor,
+  runGovernorServiceDaemon,
+  spawnGovernorService,
+} from "../core/governor/index.ts";
+import {
   createBuiltinHarnessRegistry,
   harnessProofInputs,
   probeBinaryVersion,
@@ -11,31 +36,6 @@ import {
 import { findCoordRoot } from "../core/hooks/resolve/coord-root.ts";
 import type { PolicyIsolation } from "../core/policy/index.ts";
 import { loadPolicyFile } from "../core/policy/index.ts";
-import {
-  approveSupervisorPlan,
-  type CreateSupervisorMissionInput,
-  type CreateSupervisorReplanningInput,
-  configureSupervisorService,
-  createSupervisor,
-  listSupervisors,
-  readSupervisor,
-  readSupervisorPlan,
-  readSupervisorServiceConfig,
-  readSupervisorServiceStatus,
-  rejectSupervisorPlan,
-  requestSupervisorServiceStop,
-  retrySupervisorPlan,
-  runSupervisor,
-  runSupervisorServiceDaemon,
-  type SupervisorPlanOutcome,
-  type SupervisorPlanRecord,
-  type SupervisorRecord,
-  type SupervisorRunReport,
-  type SupervisorServiceConfig,
-  type SupervisorServiceStatus,
-  spawnSupervisorService,
-  supervisorServiceLogPath,
-} from "../core/supervisor/index.ts";
 import type { WorkflowSpecialistProfile } from "../core/workflow/index.ts";
 
 interface CreateOpts {
@@ -75,13 +75,13 @@ interface ServiceOpts extends RunOpts {
   errorBackoffMaxMs?: string;
 }
 
-export function registerSupervisorCommand(program: Command, emit: EmitContext): void {
+export function registerGovernorCommand(program: Command, emit: EmitContext): void {
   const registry = createBuiltinHarnessRegistry();
-  const supervisor = program
-    .command("supervisor")
+  const governor = program
+    .command("governor")
     .description("Run a bounded specialist team over a durable-work dependency graph.");
 
-  supervisor
+  governor
     .command("create [root-work-id]")
     .description("Freeze an existing-root goal or an objective-first bounded mission.")
     .requiredOption("--team <file>", "JSON object mapping specialist ids to profiles")
@@ -93,14 +93,14 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
     .option("--max-total-attempts <n>", "Graph-wide attempt ceiling (default 100)")
     .option("--max-agents-per-work <n>", "Child-agent ceiling per work item (default 20)")
     .option("--agent-concurrency <n>", "Child concurrency per work item (default 4)")
-    .option("--accept-passing-proof", "Allow the supervisor to explicitly accept passing proof")
+    .option("--accept-passing-proof", "Allow the governor to explicitly accept passing proof")
     .option("--no-resume-approved", "Stop after an approval instead of resuming its parked run")
     .option("--retry-blocked", "Allow bounded retry of blocked work")
     .option("--replanning <file>", "Frozen planner policy and allowed workflow-template catalog")
     .option("--mission <file>", "Frozen objective, acceptance criteria, and milestone bound")
-    .option("--json", "Emit the complete supervisor record as JSON")
+    .option("--json", "Emit the complete governor record as JSON")
     .action((rootWorkId: string | undefined, opts: CreateOpts) => {
-      withSupervisorRoot(emit, (coordRoot) => {
+      withGovernorRoot(emit, (coordRoot) => {
         const specialists = readTeamFile(opts.team);
         for (const [id, profile] of Object.entries(specialists)) {
           if (profile.harness && !registry.get(profile.harness)) {
@@ -109,8 +109,8 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
             );
           }
         }
-        emitSupervisor(
-          createSupervisor({
+        emitGovernor(
+          createGovernor({
             coordRoot,
             rootWorkId,
             specialists,
@@ -139,42 +139,42 @@ export function registerSupervisorCommand(program: Command, emit: EmitContext): 
       });
     });
 
-  supervisor
+  governor
     .command("list")
     .description("List durable goals and their derived next action.")
-    .option("--json", "Emit complete supervisor records as JSON")
+    .option("--json", "Emit complete governor records as JSON")
     .action((opts: { json?: boolean }) => {
-      withSupervisorRoot(emit, (coordRoot) => {
-        const records = listSupervisors(coordRoot);
+      withGovernorRoot(emit, (coordRoot) => {
+        const records = listGovernors(coordRoot);
         if (opts.json) {
           emit.config({ format: "json" });
           emit.data(records);
         } else if (records.length === 0) {
-          emit.text("no durable supervisors\n");
+          emit.text("no durable governors\n");
         } else {
-          emit.text(`${records.map(renderSupervisorRow).join("\n")}\n`);
+          emit.text(`${records.map(renderGovernorRow).join("\n")}\n`);
         }
       });
     });
 
-  supervisor
+  governor
     .command("show <goal-id>")
     .description("Show one goal, frozen team, bounds, graph state, and next action.")
-    .option("--json", "Emit the complete supervisor record as JSON")
+    .option("--json", "Emit the complete governor record as JSON")
     .action((goalId: string, opts: { json?: boolean }) => {
-      withSupervisorRoot(emit, (coordRoot) => {
-        emitSupervisor(readSupervisor(coordRoot, goalId), opts.json, emit, true);
+      withGovernorRoot(emit, (coordRoot) => {
+        emitGovernor(readGovernor(coordRoot, goalId), opts.json, emit, true);
       });
     });
 
-  registerPlanCommand(supervisor, emit);
-  registerServiceCommand(supervisor, registry, emit);
-  registerRunCommand(supervisor, "tick", registry, emit);
-  registerRunCommand(supervisor, "run", registry, emit);
+  registerPlanCommand(governor, emit);
+  registerServiceCommand(governor, registry, emit);
+  registerRunCommand(governor, "tick", registry, emit);
+  registerRunCommand(governor, "run", registry, emit);
 }
 
-function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
-  const plan = supervisor
+function registerPlanCommand(governor: Command, emit: EmitContext): void {
+  const plan = governor
     .command("plan")
     .description("Inspect and resolve bounded planner proposals for a durable goal.");
 
@@ -183,13 +183,13 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
     .description("List append-only replanning attempts for one goal.")
     .option("--json", "Emit complete plan records as JSON")
     .action((goalId: string, opts: { json?: boolean }) => {
-      withSupervisorRoot(emit, (coordRoot) => {
-        const plans = readSupervisor(coordRoot, goalId).plans;
+      withGovernorRoot(emit, (coordRoot) => {
+        const plans = readGovernor(coordRoot, goalId).plans;
         if (opts.json) {
           emit.config({ format: "json" });
           emit.data(plans);
         } else if (plans.length === 0) {
-          emit.text(`supervisor ${goalId} has no replanning attempts\n`);
+          emit.text(`governor ${goalId} has no replanning attempts\n`);
         } else {
           emit.text(`${plans.map(renderPlanRow).join("\n")}\n`);
         }
@@ -201,8 +201,8 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
     .description("Show one planner request, schema-gated proposal, and audit events.")
     .option("--json", "Emit the complete plan record as JSON")
     .action((goalId: string, planId: string, opts: { json?: boolean }) => {
-      withSupervisorRoot(emit, (coordRoot) => {
-        emitPlan(readSupervisorPlan(coordRoot, goalId, planId), opts.json, emit);
+      withGovernorRoot(emit, (coordRoot) => {
+        emitPlan(readGovernorPlan(coordRoot, goalId, planId), opts.json, emit);
       });
     });
 
@@ -218,9 +218,9 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
         planId: string,
         opts: { actor?: string; reason?: string; json?: boolean },
       ) => {
-        withSupervisorRoot(emit, (coordRoot) => {
+        withGovernorRoot(emit, (coordRoot) => {
           emitPlanOutcome(
-            approveSupervisorPlan({
+            approveGovernorPlan({
               coordRoot,
               goalId,
               planId,
@@ -246,9 +246,9 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
         planId: string,
         opts: { actor?: string; reason: string; json?: boolean },
       ) => {
-        withSupervisorRoot(emit, (coordRoot) => {
+        withGovernorRoot(emit, (coordRoot) => {
           emitPlanOutcome(
-            rejectSupervisorPlan({
+            rejectGovernorPlan({
               coordRoot,
               goalId,
               planId,
@@ -274,9 +274,9 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
         planId: string,
         opts: { actor?: string; reason: string; json?: boolean },
       ) => {
-        withSupervisorRoot(emit, (coordRoot) => {
+        withGovernorRoot(emit, (coordRoot) => {
           emitPlanOutcome(
-            retrySupervisorPlan({
+            retryGovernorPlan({
               coordRoot,
               goalId,
               planId,
@@ -292,24 +292,24 @@ function registerPlanCommand(supervisor: Command, emit: EmitContext): void {
 }
 
 function registerServiceCommand(
-  supervisor: Command,
+  governor: Command,
   registry: ReturnType<typeof createBuiltinHarnessRegistry>,
   emit: EmitContext,
 ): void {
-  const service = supervisor
+  const service = governor
     .command("service")
     .description("Run explicitly enrolled durable goals in a restartable background service.");
 
   addServiceOptions(
     service
       .command("start [goal-ids...]")
-      .description("Configure and start the detached per-repository supervisor service."),
+      .description("Configure and start the detached per-repository governor service."),
   )
     .option("--json", "Emit complete service status as JSON")
     .action(async (goalIds: string[], opts: ServiceOpts) => {
-      await withSupervisorRootAsync(emit, async (coordRoot) => {
+      await withGovernorRootAsync(emit, async (coordRoot) => {
         prepareServiceConfig(coordRoot, goalIds, opts, registry);
-        const status = await spawnSupervisorService(coordRoot);
+        const status = await spawnGovernorService(coordRoot);
         emitServiceStatus(status, opts.json, emit);
       });
     });
@@ -321,9 +321,9 @@ function registerServiceCommand(
   )
     .option("--json", "Emit terminal service status as JSON")
     .action(async (goalIds: string[], opts: ServiceOpts) => {
-      await withSupervisorRootAsync(emit, async (coordRoot) => {
+      await withGovernorRootAsync(emit, async (coordRoot) => {
         const config = prepareServiceConfig(coordRoot, goalIds, opts, registry);
-        const status = await runSupervisorServiceDaemon({
+        const status = await runGovernorServiceDaemon({
           coordRoot,
           engine: serviceEngine(config, registry),
           onLog: opts.json ? undefined : (line) => emit.text(`${line}\n`),
@@ -340,8 +340,8 @@ function registerServiceCommand(
     .description("Show service liveness, heartbeat, enrolled goals, and durable wake state.")
     .option("--json", "Emit complete service status as JSON")
     .action((opts: { json?: boolean }) => {
-      withSupervisorRoot(emit, (coordRoot) => {
-        emitServiceStatus(readSupervisorServiceStatus(coordRoot), opts.json, emit);
+      withGovernorRoot(emit, (coordRoot) => {
+        emitServiceStatus(readGovernorServiceStatus(coordRoot), opts.json, emit);
       });
     });
 
@@ -350,12 +350,12 @@ function registerServiceCommand(
     .description("Request a graceful stop; an active goal tick is allowed to finish safely.")
     .option("--json", "Emit complete service status as JSON")
     .action(async (opts: { json?: boolean }) => {
-      await withSupervisorRootAsync(emit, async (coordRoot) => {
-        let status = requestSupervisorServiceStop(coordRoot);
+      await withGovernorRootAsync(emit, async (coordRoot) => {
+        let status = requestGovernorServiceStop(coordRoot);
         const deadline = Date.now() + 5_000;
         while (status.running && Date.now() < deadline) {
           await delay(50);
-          status = readSupervisorServiceStatus(coordRoot);
+          status = readGovernorServiceStatus(coordRoot);
         }
         emitServiceStatus(status, opts.json, emit);
       });
@@ -366,12 +366,12 @@ function registerServiceCommand(
     .description("Show the tail of the private background-service log.")
     .option("--lines <n>", "Number of lines to show (default 50)", "50")
     .action((opts: { lines: string }) => {
-      withSupervisorRoot(emit, (coordRoot) => {
+      withGovernorRoot(emit, (coordRoot) => {
         const lines = integer(opts.lines) ?? 50;
         if (lines > 10_000) throw new Error("service log lines must not exceed 10000");
-        const path = supervisorServiceLogPath(coordRoot);
+        const path = governorServiceLogPath(coordRoot);
         if (!existsSync(path)) {
-          emit.text("no supervisor service log\n");
+          emit.text("no governor service log\n");
           return;
         }
         const selected = readFileSync(path, "utf8")
@@ -386,9 +386,9 @@ function registerServiceCommand(
     .command("daemon", { hidden: true })
     .description("Internal detached service entrypoint.")
     .action(async () => {
-      await withSupervisorRootAsync(emit, async (coordRoot) => {
-        const config = readSupervisorServiceConfig(coordRoot);
-        await runSupervisorServiceDaemon({
+      await withGovernorRootAsync(emit, async (coordRoot) => {
+        const config = readGovernorServiceConfig(coordRoot);
+        await runGovernorServiceDaemon({
           coordRoot,
           engine: serviceEngine(config, registry),
           onLog: (line) => emit.text(`${line}\n`),
@@ -417,18 +417,18 @@ function prepareServiceConfig(
   goalIds: string[],
   opts: ServiceOpts,
   registry: ReturnType<typeof createBuiltinHarnessRegistry>,
-): SupervisorServiceConfig {
+): GovernorServiceConfig {
   if (goalIds.length === 0) {
     if (hasServiceConfigOverrides(opts)) {
-      throw new Error("goal ids are required when changing supervisor service options");
+      throw new Error("goal ids are required when changing governor service options");
     }
-    return readSupervisorServiceConfig(coordRoot);
+    return readGovernorServiceConfig(coordRoot);
   }
   if (opts.harness && !registry.get(opts.harness)) {
     throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
   }
   const policy = opts.policy ? loadPolicyFile(opts.policy) : undefined;
-  return configureSupervisorService({
+  return configureGovernorService({
     coordRoot,
     goalIds,
     wakeIntervalMs: integer(opts.wakeIntervalMs),
@@ -465,7 +465,7 @@ function hasServiceConfigOverrides(opts: ServiceOpts): boolean {
 }
 
 function serviceEngine(
-  config: SupervisorServiceConfig,
+  config: GovernorServiceConfig,
   registry: ReturnType<typeof createBuiltinHarnessRegistry>,
 ) {
   return {
@@ -487,7 +487,7 @@ function serviceEngine(
 }
 
 function emitServiceStatus(
-  status: SupervisorServiceStatus,
+  status: GovernorServiceStatus,
   json: boolean | undefined,
   emit: EmitContext,
 ): void {
@@ -497,7 +497,7 @@ function emitServiceStatus(
     return;
   }
   if (!status.config && !status.record) {
-    emit.text("supervisor service: unconfigured\n");
+    emit.text("governor service: unconfigured\n");
     return;
   }
   const state = status.running
@@ -506,7 +506,7 @@ function emitServiceStatus(
       ? "stale"
       : "stopped";
   const lines = [
-    `supervisor service: ${state}`,
+    `governor service: ${state}`,
     `goals: ${status.config?.goal_ids.join(", ") || "none"}`,
   ];
   if (status.record) {
@@ -527,12 +527,12 @@ function emitServiceStatus(
 }
 
 function registerRunCommand(
-  supervisor: Command,
+  governor: Command,
   mode: "tick" | "run",
   registry: ReturnType<typeof createBuiltinHarnessRegistry>,
   emit: EmitContext,
 ): void {
-  supervisor
+  governor
     .command(`${mode} <goal-id>`)
     .description(
       mode === "tick"
@@ -546,14 +546,14 @@ function registerRunCommand(
     .option("--policy <file>", "Host policy JSON/JSONC")
     .option("--isolation <mode>", "shared | worktree | sandbox | remote")
     .option("--approval-to <address>", "Address durable ASK requests")
-    .option("--actor <name>", "Actor recorded on supervisor work decisions")
+    .option("--actor <name>", "Actor recorded on governor work decisions")
     .option("--json", "Emit the complete run report as JSON")
     .action(async (goalId: string, opts: RunOpts) => {
-      await withSupervisorRootAsync(emit, async (coordRoot) => {
+      await withGovernorRootAsync(emit, async (coordRoot) => {
         if (opts.harness && !registry.get(opts.harness)) {
           throw new Error(`unknown harness ${JSON.stringify(opts.harness)}`);
         }
-        const report = await runSupervisor({
+        const report = await runGovernor({
           coordRoot,
           goalId,
           mode,
@@ -577,7 +577,7 @@ function registerRunCommand(
             networkAccess: "enabled",
           },
         });
-        emitSupervisorReport(report, opts.json, emit);
+        emitGovernorReport(report, opts.json, emit);
       });
     });
 }
@@ -588,47 +588,47 @@ function readTeamFile(path: string): Record<string, WorkflowSpecialistProfile> {
   try {
     value = JSON.parse(readFileSync(absolute, "utf8"));
   } catch (error) {
-    throw new Error(`cannot read supervisor team at ${absolute}: ${(error as Error).message}`);
+    throw new Error(`cannot read governor team at ${absolute}: ${(error as Error).message}`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("supervisor team must be a JSON object keyed by specialist id");
+    throw new Error("governor team must be a JSON object keyed by specialist id");
   }
   return value as Record<string, WorkflowSpecialistProfile>;
 }
 
-function readReplanningFile(path: string): CreateSupervisorReplanningInput {
+function readReplanningFile(path: string): CreateGovernorReplanningInput {
   const absolute = resolve(path);
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(absolute, "utf8"));
   } catch (error) {
     throw new Error(
-      `cannot read supervisor replanning policy at ${absolute}: ${(error as Error).message}`,
+      `cannot read governor replanning policy at ${absolute}: ${(error as Error).message}`,
     );
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("supervisor replanning policy must be a JSON object");
+    throw new Error("governor replanning policy must be a JSON object");
   }
   const config = value as Record<string, unknown>;
   if (typeof config.planner_specialist !== "string") {
-    throw new Error("supervisor replanning planner_specialist must be a string");
+    throw new Error("governor replanning planner_specialist must be a string");
   }
   if (
     !config.templates ||
     typeof config.templates !== "object" ||
     Array.isArray(config.templates)
   ) {
-    throw new Error("supervisor replanning templates must be an object");
+    throw new Error("governor replanning templates must be an object");
   }
   const base = dirname(absolute);
   const templates = Object.fromEntries(
     Object.entries(config.templates as Record<string, unknown>).map(([id, raw]) => {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-        throw new Error(`supervisor replanning template ${id} must be an object`);
+        throw new Error(`governor replanning template ${id} must be an object`);
       }
       const template = raw as Record<string, unknown>;
       if (typeof template.workflow !== "string") {
-        throw new Error(`supervisor replanning template ${id} workflow must be a string`);
+        throw new Error(`governor replanning template ${id} workflow must be a string`);
       }
       return [
         id,
@@ -657,19 +657,17 @@ function readReplanningFile(path: string): CreateSupervisorReplanningInput {
   };
 }
 
-function readReplanningReview(raw: unknown): CreateSupervisorReplanningInput["review"] | undefined {
+function readReplanningReview(raw: unknown): CreateGovernorReplanningInput["review"] | undefined {
   if (raw === undefined) return undefined;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("supervisor replanning review must be a JSON object");
+    throw new Error("governor replanning review must be a JSON object");
   }
   const review = raw as Record<string, unknown>;
   if (
     !Array.isArray(review.reviewer_specialists) ||
     review.reviewer_specialists.some((item) => typeof item !== "string")
   ) {
-    throw new Error(
-      "supervisor replanning review reviewer_specialists must be an array of strings",
-    );
+    throw new Error("governor replanning review reviewer_specialists must be an array of strings");
   }
   return {
     reviewerSpecialists: review.reviewer_specialists as string[],
@@ -679,26 +677,26 @@ function readReplanningReview(raw: unknown): CreateSupervisorReplanningInput["re
   };
 }
 
-function readMissionFile(path: string): CreateSupervisorMissionInput {
+function readMissionFile(path: string): CreateGovernorMissionInput {
   const absolute = resolve(path);
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(absolute, "utf8"));
   } catch (error) {
-    throw new Error(`cannot read supervisor mission at ${absolute}: ${(error as Error).message}`);
+    throw new Error(`cannot read governor mission at ${absolute}: ${(error as Error).message}`);
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("supervisor mission must be a JSON object");
+    throw new Error("governor mission must be a JSON object");
   }
   const config = value as Record<string, unknown>;
   if (typeof config.objective !== "string") {
-    throw new Error("supervisor mission objective must be a string");
+    throw new Error("governor mission objective must be a string");
   }
   if (
     !Array.isArray(config.acceptance) ||
     config.acceptance.some((item) => typeof item !== "string")
   ) {
-    throw new Error("supervisor mission acceptance must be an array of strings");
+    throw new Error("governor mission acceptance must be an array of strings");
   }
   return {
     objective: config.objective,
@@ -707,8 +705,8 @@ function readMissionFile(path: string): CreateSupervisorMissionInput {
   };
 }
 
-function emitSupervisor(
-  record: SupervisorRecord,
+function emitGovernor(
+  record: GovernorRecord,
   json: boolean | undefined,
   emit: EmitContext,
   detail = false,
@@ -719,7 +717,7 @@ function emitSupervisor(
     return;
   }
   if (!detail) {
-    emit.text(`${renderSupervisorRow(record)}\n`);
+    emit.text(`${renderGovernorRow(record)}\n`);
     return;
   }
   const projection = record.projection;
@@ -770,8 +768,8 @@ function emitSupervisor(
   emit.text(`${lines.join("\n")}\n`);
 }
 
-function emitSupervisorReport(
-  report: SupervisorRunReport,
+function emitGovernorReport(
+  report: GovernorRunReport,
   json: boolean | undefined,
   emit: EmitContext,
 ): void {
@@ -781,7 +779,7 @@ function emitSupervisorReport(
     return;
   }
   emit.text(
-    `supervisor ${report.goal_id}: ${report.stop_reason}\n` +
+    `governor ${report.goal_id}: ${report.stop_reason}\n` +
       `reason: ${report.reason}\n` +
       `cycles: ${report.cycles}; dispatches: ${report.dispatches}; acceptances: ${report.acceptances}\n` +
       `replans: ${report.replans}\n` +
@@ -789,7 +787,7 @@ function emitSupervisorReport(
   );
 }
 
-function renderSupervisorRow(record: SupervisorRecord): string {
+function renderGovernorRow(record: GovernorRecord): string {
   const projection = record.projection;
   const row = `${record.intent.id}  ${projection.state.padEnd(20)}  ${projection.attempts_used}/${record.intent.limits.max_total_attempts}  ${projection.next_action.padEnd(18)}  ${record.intent.title}`;
   const consumption = projection.replan_consumption;
@@ -828,7 +826,7 @@ function jsonBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
-function emitPlan(plan: SupervisorPlanRecord, json: boolean | undefined, emit: EmitContext): void {
+function emitPlan(plan: GovernorPlanRecord, json: boolean | undefined, emit: EmitContext): void {
   if (json) {
     emit.config({ format: "json" });
     emit.data(plan);
@@ -862,7 +860,7 @@ function emitPlan(plan: SupervisorPlanRecord, json: boolean | undefined, emit: E
 }
 
 function emitPlanOutcome(
-  outcome: SupervisorPlanOutcome,
+  outcome: GovernorPlanOutcome,
   json: boolean | undefined,
   emit: EmitContext,
 ): void {
@@ -872,13 +870,13 @@ function emitPlanOutcome(
     return;
   }
   emit.text(
-    `supervisor plan ${outcome.plan_id}: ${outcome.status}\n` +
+    `governor plan ${outcome.plan_id}: ${outcome.status}\n` +
       `${outcome.reason ? `reason: ${outcome.reason}\n` : ""}` +
       `${outcome.root_work_id ? `root: ${outcome.root_work_id}\n` : ""}`,
   );
 }
 
-function renderPlanRow(plan: SupervisorPlanRecord): string {
+function renderPlanRow(plan: GovernorPlanRecord): string {
   const review = plan.review ? `  review:${plan.review.status}` : "";
   return `${plan.request.id}  ${plan.status.padEnd(18)}  ${plan.request.prior_root_work_id}${review}`;
 }
@@ -887,7 +885,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
-function withSupervisorRoot(emit: EmitContext, fn: (coordRoot: string) => void): void {
+function withGovernorRoot(emit: EmitContext, fn: (coordRoot: string) => void): void {
   const coordRoot = findCoordRoot();
   if (!coordRoot) {
     emit.error({
@@ -900,12 +898,12 @@ function withSupervisorRoot(emit: EmitContext, fn: (coordRoot: string) => void):
   try {
     fn(coordRoot);
   } catch (error) {
-    emit.error({ code: "supervisor_failed", message: (error as Error).message });
+    emit.error({ code: "governor_failed", message: (error as Error).message });
     emit.setExitCode(1);
   }
 }
 
-async function withSupervisorRootAsync(
+async function withGovernorRootAsync(
   emit: EmitContext,
   fn: (coordRoot: string) => Promise<void>,
 ): Promise<void> {
@@ -921,7 +919,7 @@ async function withSupervisorRootAsync(
   try {
     await fn(coordRoot);
   } catch (error) {
-    emit.error({ code: "supervisor_failed", message: (error as Error).message });
+    emit.error({ code: "governor_failed", message: (error as Error).message });
     emit.setExitCode(1);
   }
 }

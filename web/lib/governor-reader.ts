@@ -1,26 +1,26 @@
 import {
-  listSupervisors,
-  readSupervisor,
-  readSupervisorServiceStatus,
-  type SupervisorPlanRecord,
-  type SupervisorPlanReviewStatus,
-  type SupervisorRecord,
-  type SupervisorServiceStatus,
-  type SupervisorState,
-} from "harnery/core/supervisor/state";
+  listGovernors,
+  readGovernor,
+  readGovernorServiceStatus,
+  type GovernorPlanRecord,
+  type GovernorPlanReviewStatus,
+  type GovernorRecord,
+  type GovernorServiceStatus,
+  type GovernorState,
+} from "harnery/core/governor/state";
 
 type BadgeVariant = "muted" | "info" | "success" | "warning" | "destructive";
 
-export type SupervisorPlanDashboardState =
-  | SupervisorPlanRecord["status"]
+export type GovernorPlanDashboardState =
+  | GovernorPlanRecord["status"]
   | "proposal_unreviewed"
   | "proposal_review_passed"
   | "proposal_revision_exhausted"
   | "proposal_review_attention"
   | "proposal_review_failed";
 
-export interface SupervisorPlanDashboardStatus {
-  state: SupervisorPlanDashboardState;
+export interface GovernorPlanDashboardStatus {
+  state: GovernorPlanDashboardState;
   label: string;
   badgeVariant: BadgeVariant;
   requiresReview: boolean;
@@ -28,38 +28,38 @@ export interface SupervisorPlanDashboardStatus {
   reviewLabel?: string;
 }
 
-export interface SupervisorDashboardDecision {
+export interface GovernorDashboardDecision {
   nextAction: string;
   reason: string;
 }
 
 export type {
-  SupervisorPlanRecord,
-  SupervisorPlanReviewStatus,
-  SupervisorRecord,
-  SupervisorServiceStatus,
-  SupervisorState,
+  GovernorPlanRecord,
+  GovernorPlanReviewStatus,
+  GovernorRecord,
+  GovernorServiceStatus,
+  GovernorState,
 };
 
-export function readSupervisors(root: string): SupervisorRecord[] {
-  return listSupervisors(root);
+export function readGovernors(root: string): GovernorRecord[] {
+  return listGovernors(root);
 }
 
-export function readSupervisorGoal(root: string, goalId: string): SupervisorRecord | null {
+export function readGovernorGoal(root: string, goalId: string): GovernorRecord | null {
   try {
-    return readSupervisor(root, goalId);
+    return readGovernor(root, goalId);
   } catch {
     return null;
   }
 }
 
-export function readSupervisorBackgroundService(root: string): SupervisorServiceStatus {
-  return readSupervisorServiceStatus(root);
+export function readGovernorBackgroundService(root: string): GovernorServiceStatus {
+  return readGovernorServiceStatus(root);
 }
 
-export function supervisorPlanDashboardStatus(
-  plan: SupervisorPlanRecord,
-): SupervisorPlanDashboardStatus {
+export function governorPlanDashboardStatus(
+  plan: GovernorPlanRecord,
+): GovernorPlanDashboardStatus {
   if (plan.status === "attention" && plan.review && plan.review.status !== "passed") {
     return {
       state: reviewedProposalState(plan.review.status),
@@ -67,7 +67,7 @@ export function supervisorPlanDashboardStatus(
       badgeVariant: reviewedProposalBadgeVariant(plan.review.status),
       requiresReview: false,
       requiresDecision: false,
-      reviewLabel: formatSupervisorPlanReview(plan),
+      reviewLabel: formatGovernorPlanReview(plan),
     };
   }
   if (plan.status === "proposed") {
@@ -86,7 +86,7 @@ export function supervisorPlanDashboardStatus(
       badgeVariant: reviewedProposalBadgeVariant(plan.review.status),
       requiresReview: false,
       requiresDecision: plan.review.status === "passed",
-      reviewLabel: formatSupervisorPlanReview(plan),
+      reviewLabel: formatGovernorPlanReview(plan),
     };
   }
   return {
@@ -104,15 +104,15 @@ export function supervisorPlanDashboardStatus(
               : "muted",
     requiresReview: false,
     requiresDecision: false,
-    reviewLabel: formatSupervisorPlanReview(plan),
+    reviewLabel: formatGovernorPlanReview(plan),
   };
 }
 
-export function supervisorDashboardDecision(record: SupervisorRecord): SupervisorDashboardDecision {
+export function governorDashboardDecision(record: GovernorRecord): GovernorDashboardDecision {
   const pendingPlan = record.projection.pending_plan_id
     ? record.plans.find((plan) => plan.request.id === record.projection.pending_plan_id)
     : undefined;
-  const status = pendingPlan ? supervisorPlanDashboardStatus(pendingPlan) : undefined;
+  const status = pendingPlan ? governorPlanDashboardStatus(pendingPlan) : undefined;
   if (pendingPlan && status?.requiresDecision) {
     return {
       nextAction: "approve_or_reject_plan",
@@ -126,9 +126,9 @@ export function supervisorDashboardDecision(record: SupervisorRecord): Superviso
 }
 
 function reviewedProposalState(
-  status: SupervisorPlanReviewStatus,
+  status: GovernorPlanReviewStatus,
 ): Extract<
-  SupervisorPlanDashboardState,
+  GovernorPlanDashboardState,
   | "proposal_review_passed"
   | "proposal_revision_exhausted"
   | "proposal_review_attention"
@@ -140,20 +140,20 @@ function reviewedProposalState(
   return "proposal_review_failed";
 }
 
-function reviewedProposalLabel(status: SupervisorPlanReviewStatus): string {
+function reviewedProposalLabel(status: GovernorPlanReviewStatus): string {
   if (status === "passed") return "review passed";
   if (status === "revision_exhausted") return "revision exhausted";
   if (status === "attention") return "review needs attention";
   return "review failed";
 }
 
-function reviewedProposalBadgeVariant(status: SupervisorPlanReviewStatus): BadgeVariant {
+function reviewedProposalBadgeVariant(status: GovernorPlanReviewStatus): BadgeVariant {
   if (status === "passed") return "info";
   if (status === "attention" || status === "revision_exhausted") return "warning";
   return "destructive";
 }
 
-function formatSupervisorPlanReview(plan: SupervisorPlanRecord): string | undefined {
+function formatGovernorPlanReview(plan: GovernorPlanRecord): string | undefined {
   if (!plan.review) return undefined;
   const rounds = `${plan.review.rounds} review round${plan.review.rounds === 1 ? "" : "s"}`;
   const blocking = `${plan.review.blocking_findings} blocking`;

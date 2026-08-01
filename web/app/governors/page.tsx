@@ -1,23 +1,23 @@
 import Link from "next/link";
 import { NavBar } from "@/components/NavBar";
-import { SupervisorStateBadge } from "@/components/SupervisorStateBadge";
+import { GovernorStateBadge } from "@/components/GovernorStateBadge";
 import { Badge } from "@/components/ui/badge";
 import { coordRoot } from "@/lib/coord-reader";
 import {
-  readSupervisorBackgroundService,
-  readSupervisors,
-  supervisorDashboardDecision,
-  supervisorPlanDashboardStatus,
-} from "@/lib/supervisor-reader";
+  readGovernorBackgroundService,
+  readGovernors,
+  governorDashboardDecision,
+  governorPlanDashboardStatus,
+} from "@/lib/governor-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const metadata = { title: "Goals · Harnery" };
 
-export default function SupervisorsPage() {
+export default function GovernorsPage() {
   const root = coordRoot();
-  const records = readSupervisors(root);
-  const service = readSupervisorBackgroundService(root);
+  const records = readGovernors(root);
+  const service = readGovernorBackgroundService(root);
   const serviceState = service.running
     ? (service.record?.state ?? "running")
     : service.stale
@@ -54,27 +54,27 @@ export default function SupervisorsPage() {
         </section>
         {records.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No goals yet. Create one with <code>harn supervisor create</code>.
+            No goals yet. Create one with <code>harn governor create</code>.
           </p>
         ) : (
           <ul className="space-y-2">
             {records.map((record) => {
               const { intent, projection, plans } = record;
-              const decision = supervisorDashboardDecision(record);
+              const decision = governorDashboardDecision(record);
               const pendingPlan = projection.pending_plan_id
                 ? plans.find((plan) => plan.request.id === projection.pending_plan_id)
                 : undefined;
               const pendingPlanStatus = pendingPlan
-                ? supervisorPlanDashboardStatus(pendingPlan)
+                ? governorPlanDashboardStatus(pendingPlan)
                 : undefined;
               return (
                 <li key={intent.id}>
                   <Link
-                    href={`/supervisors/${encodeURIComponent(intent.id)}`}
+                    href={`/governors/${encodeURIComponent(intent.id)}`}
                     className="block rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:border-foreground/25"
                   >
                     <div className="flex flex-wrap items-center gap-2">
-                      <SupervisorStateBadge state={projection.state} />
+                      <GovernorStateBadge state={projection.state} />
                       <span className="font-medium">{intent.title}</span>
                       <span className="text-xs text-muted-foreground">{intent.id}</span>
                     </div>

@@ -3,22 +3,22 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { readWorkItem } from "../work/read.ts";
 import {
-  MAX_SUPERVISOR_PLAN_REVIEWERS,
-  MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
-  SUPERVISOR_PLAN_SCHEMA_VERSION,
-  type SupervisorPlanEvent,
-  type SupervisorPlanEventType,
-  type SupervisorPlanHistory,
-  type SupervisorPlanProposal,
-  type SupervisorPlanRecord,
-  type SupervisorPlanRequest,
-  type SupervisorPlanReviewFinding,
-  type SupervisorPlanReviewReceipt,
-  type SupervisorPlanReviewReviewer,
-  type SupervisorPlanReviewRound,
-  type SupervisorPlanReviewSummary,
-  type SupervisorPlanReviewVerdict,
-  type SupervisorReplanningPolicy,
+  GOVERNOR_PLAN_SCHEMA_VERSION,
+  type GovernorPlanEvent,
+  type GovernorPlanEventType,
+  type GovernorPlanHistory,
+  type GovernorPlanProposal,
+  type GovernorPlanRecord,
+  type GovernorPlanRequest,
+  type GovernorPlanReviewFinding,
+  type GovernorPlanReviewReceipt,
+  type GovernorPlanReviewReviewer,
+  type GovernorPlanReviewRound,
+  type GovernorPlanReviewSummary,
+  type GovernorPlanReviewVerdict,
+  type GovernorReplanningPolicy,
+  MAX_GOVERNOR_PLAN_REVIEWERS,
+  MAX_GOVERNOR_PLAN_REVISION_ROUNDS,
 } from "./plan-types.ts";
 
 const PLAN_ID = /^plan-[0-9]{4}-[a-f0-9]{8}$/;
@@ -31,7 +31,7 @@ const MAX_PLANS = 100;
 const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_EVENTS_BYTES = 512 * 1024;
 const MAX_EVENTS = 100;
-const EVENT_TYPES = new Set<SupervisorPlanEventType>([
+const EVENT_TYPES = new Set<GovernorPlanEventType>([
   "plan.awaiting_approval",
   "plan.resumed",
   "plan.reviewed",
@@ -45,12 +45,12 @@ const EVENT_TYPES = new Set<SupervisorPlanEventType>([
   "plan.reopened",
 ]);
 
-export function readSupervisorPlans(
+export function readGovernorPlans(
   coordRootRaw: string,
   goalId: string,
   originalRootWorkId: string,
-): SupervisorPlanHistory {
-  assertId(goalId, GOAL_ID, "supervisor id");
+): GovernorPlanHistory {
+  assertId(goalId, GOAL_ID, "governor id");
   assertId(originalRootWorkId, WORK_ID, "work id");
   const coordRoot = resolve(coordRootRaw);
   const root = plansRoot(coordRoot, goalId);
@@ -68,14 +68,14 @@ export function readSupervisorPlans(
   const entries = readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && PLAN_ID.test(entry.name))
     .map((entry) => entry.name);
-  if (entries.length > MAX_PLANS) throw new Error(`supervisor plan history exceeds ${MAX_PLANS}`);
+  if (entries.length > MAX_PLANS) throw new Error(`governor plan history exceeds ${MAX_PLANS}`);
   const plans = entries
-    .map((planId) => readSupervisorPlan(coordRootRaw, goalId, planId))
+    .map((planId) => readGovernorPlan(coordRootRaw, goalId, planId))
     .sort((left, right) => left.request.sequence - right.request.sequence);
   const sequences = new Set<number>();
   for (const plan of plans) {
     if (sequences.has(plan.request.sequence)) {
-      throw new Error(`supervisor ${goalId} has duplicate plan sequence ${plan.request.sequence}`);
+      throw new Error(`governor ${goalId} has duplicate plan sequence ${plan.request.sequence}`);
     }
     sequences.add(plan.request.sequence);
   }
@@ -108,7 +108,7 @@ export function readSupervisorPlans(
     completedPlans.length > 1 ||
     (completedPlans.length === 1 && completedPlans[0] !== plans.at(-1))
   ) {
-    throw new Error(`supervisor ${goalId} has invalid completion history`);
+    throw new Error(`governor ${goalId} has invalid completion history`);
   }
   completed = completedPlans.length === 1;
   return {
@@ -123,23 +123,23 @@ export function readSupervisorPlans(
   };
 }
 
-export function readSupervisorPlan(
+export function readGovernorPlan(
   coordRootRaw: string,
   goalId: string,
   planId: string,
-): SupervisorPlanRecord {
-  assertId(goalId, GOAL_ID, "supervisor id");
-  assertId(planId, PLAN_ID, "supervisor plan id");
+): GovernorPlanRecord {
+  assertId(goalId, GOAL_ID, "governor id");
+  assertId(planId, PLAN_ID, "governor plan id");
   const coordRoot = resolve(coordRootRaw);
   const dir = planDir(coordRoot, goalId, planId);
-  const request = readJson<SupervisorPlanRequest>(join(dir, "request.json"), "plan request");
+  const request = readJson<GovernorPlanRequest>(join(dir, "request.json"), "plan request");
   validateRequest(request, goalId, planId);
   const proposalPath = join(dir, "proposal.json");
   const proposal = existsSync(proposalPath)
-    ? readJson<SupervisorPlanProposal>(proposalPath, "plan proposal")
+    ? readJson<GovernorPlanProposal>(proposalPath, "plan proposal")
     : undefined;
   if (proposal) validateProposalEnvelope(proposal, planId);
-  const review = readSupervisorPlanReviewReceipt(coordRootRaw, goalId, planId);
+  const review = readGovernorPlanReviewReceipt(coordRootRaw, goalId, planId);
   const events = readEvents(join(dir, "events.jsonl"), planId);
   const derived = deriveStatus(coordRoot, events, proposal);
   return {
@@ -151,17 +151,17 @@ export function readSupervisorPlan(
   };
 }
 
-export function readSupervisorPlanReviewReceipt(
+export function readGovernorPlanReviewReceipt(
   coordRootRaw: string,
   goalId: string,
   planId: string,
-): SupervisorPlanReviewReceipt | undefined {
-  assertId(goalId, GOAL_ID, "supervisor id");
-  assertId(planId, PLAN_ID, "supervisor plan id");
+): GovernorPlanReviewReceipt | undefined {
+  assertId(goalId, GOAL_ID, "governor id");
+  assertId(planId, PLAN_ID, "governor plan id");
   const coordRoot = resolve(coordRootRaw);
   const path = join(planDir(coordRoot, goalId, planId), "review.json");
   if (!existsSync(path)) return undefined;
-  const receipt = readJson<SupervisorPlanReviewReceipt>(path, "plan review receipt");
+  const receipt = readJson<GovernorPlanReviewReceipt>(path, "plan review receipt");
   validateReviewReceipt(receipt, planId);
   const reviewPolicy = readFrozenReviewPolicy(coordRoot, goalId);
   if (reviewPolicy) validateReviewReceiptMatchesPolicy(receipt, planId, reviewPolicy);
@@ -170,10 +170,10 @@ export function readSupervisorPlanReviewReceipt(
 
 function deriveStatus(
   coordRoot: string,
-  events: SupervisorPlanEvent[],
-  proposal: SupervisorPlanProposal | undefined,
+  events: GovernorPlanEvent[],
+  proposal: GovernorPlanProposal | undefined,
 ): Pick<
-  SupervisorPlanRecord,
+  GovernorPlanRecord,
   "status" | "approval_id" | "root_work_id" | "work_ids" | "reason" | "class"
 > {
   const latest = events.at(-1);
@@ -231,22 +231,21 @@ function deriveStatus(
   return { status: "interrupted", work_ids: [], reason: latest?.reason };
 }
 
-function readEvents(path: string, planId: string): SupervisorPlanEvent[] {
+function readEvents(path: string, planId: string): GovernorPlanEvent[] {
   if (!existsSync(path)) return [];
   const size = statSync(path).size;
-  if (size > MAX_EVENTS_BYTES) throw new Error("supervisor plan events exceed their byte limit");
+  if (size > MAX_EVENTS_BYTES) throw new Error("governor plan events exceed their byte limit");
   const body = readFileSync(path, "utf8");
-  if (body && !body.endsWith("\n"))
-    throw new Error(`supervisor plan ${planId} has a partial event`);
+  if (body && !body.endsWith("\n")) throw new Error(`governor plan ${planId} has a partial event`);
   const lines = body.split("\n").filter(Boolean);
-  if (lines.length > MAX_EVENTS) throw new Error(`supervisor plan exceeds ${MAX_EVENTS} events`);
+  if (lines.length > MAX_EVENTS) throw new Error(`governor plan exceeds ${MAX_EVENTS} events`);
   return lines.map((line, index) => {
-    let event: SupervisorPlanEvent;
+    let event: GovernorPlanEvent;
     try {
-      event = JSON.parse(line) as SupervisorPlanEvent;
+      event = JSON.parse(line) as GovernorPlanEvent;
     } catch (error) {
       throw new Error(
-        `cannot parse supervisor plan ${planId} event ${index + 1}: ${(error as Error).message}`,
+        `cannot parse governor plan ${planId} event ${index + 1}: ${(error as Error).message}`,
       );
     }
     validateEvent(event, planId, index + 1);
@@ -254,9 +253,9 @@ function readEvents(path: string, planId: string): SupervisorPlanEvent[] {
   });
 }
 
-function validateRequest(request: SupervisorPlanRequest, goalId: string, planId: string): void {
+function validateRequest(request: GovernorPlanRequest, goalId: string, planId: string): void {
   if (
-    request.schema_version !== SUPERVISOR_PLAN_SCHEMA_VERSION ||
+    request.schema_version !== GOVERNOR_PLAN_SCHEMA_VERSION ||
     request.id !== planId ||
     request.goal_id !== goalId ||
     !Number.isSafeInteger(request.sequence) ||
@@ -271,13 +270,13 @@ function validateRequest(request: SupervisorPlanRequest, goalId: string, planId:
     !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(request.workflow_run_id) ||
     !validTimestamp(request.created_at)
   ) {
-    throw new Error(`supervisor plan request ${planId} has an unsupported schema`);
+    throw new Error(`governor plan request ${planId} has an unsupported schema`);
   }
 }
 
-function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: string): void {
+function validateProposalEnvelope(proposal: GovernorPlanProposal, planId: string): void {
   if (
-    proposal.schema_version !== SUPERVISOR_PLAN_SCHEMA_VERSION ||
+    proposal.schema_version !== GOVERNOR_PLAN_SCHEMA_VERSION ||
     proposal.plan_id !== planId ||
     !["apply", "complete", "attention"].includes(proposal.decision) ||
     typeof proposal.rationale !== "string" ||
@@ -289,7 +288,7 @@ function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: stri
     proposal.root.length > 32 ||
     !validTimestamp(proposal.proposed_at)
   ) {
-    throw new Error(`supervisor plan proposal ${planId} has an unsupported schema`);
+    throw new Error(`governor plan proposal ${planId} has an unsupported schema`);
   }
   if (proposal.milestone !== undefined) {
     const milestone = proposal.milestone;
@@ -311,14 +310,14 @@ function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: stri
           typeof criterion !== "string" || criterion.length < 1 || criterion.length > 500,
       )
     ) {
-      throw new Error(`supervisor plan proposal ${planId} milestone is invalid`);
+      throw new Error(`governor plan proposal ${planId} milestone is invalid`);
     }
   }
   if (
     (proposal.decision === "attention" || proposal.decision === "complete") &&
     (proposal.root !== "" || proposal.work.length > 0 || proposal.milestone !== undefined)
   ) {
-    throw new Error(`supervisor plan proposal ${planId} terminal decision contains work`);
+    throw new Error(`governor plan proposal ${planId} terminal decision contains work`);
   }
   for (const [index, spec] of proposal.work.entries()) {
     if (
@@ -339,88 +338,88 @@ function validateProposalEnvelope(proposal: SupervisorPlanProposal, planId: stri
       spec.dependencies.some((value) => typeof value !== "string" || value.length > 100) ||
       !TEMPLATE_ID.test(spec.template)
     ) {
-      throw new Error(`supervisor plan proposal ${planId} work[${index}] is invalid`);
+      throw new Error(`governor plan proposal ${planId} work[${index}] is invalid`);
     }
   }
 }
 
-function validateReviewReceipt(receipt: SupervisorPlanReviewReceipt, planId: string): void {
+function validateReviewReceipt(receipt: GovernorPlanReviewReceipt, planId: string): void {
   if (
     !receipt ||
     typeof receipt !== "object" ||
-    receipt.schema_version !== SUPERVISOR_PLAN_SCHEMA_VERSION ||
+    receipt.schema_version !== GOVERNOR_PLAN_SCHEMA_VERSION ||
     receipt.plan_id !== planId ||
     !["passed", "revision_exhausted", "attention", "failed"].includes(receipt.status) ||
     !/^[a-f0-9]{64}$/.test(receipt.candidate_sha256) ||
     !Array.isArray(receipt.rounds) ||
     receipt.rounds.length < 1 ||
-    receipt.rounds.length > MAX_SUPERVISOR_PLAN_REVISION_ROUNDS + 1
+    receipt.rounds.length > MAX_GOVERNOR_PLAN_REVISION_ROUNDS + 1
   ) {
-    throw new Error(`supervisor plan review ${planId} has an unsupported schema`);
+    throw new Error(`governor plan review ${planId} has an unsupported schema`);
   }
   validateProposalEnvelope(receipt.final_candidate, planId);
   if (receipt.candidate_sha256 !== candidateDigest(receipt.final_candidate)) {
-    throw new Error(`supervisor plan review ${planId} has invalid candidate digest`);
+    throw new Error(`governor plan review ${planId} has invalid candidate digest`);
   }
   receipt.rounds.forEach((round, index) => {
     validateReviewRound(round, planId, index + 1);
   });
   const finalRound = receipt.rounds.at(-1);
   if (finalRound?.candidate_sha256 !== receipt.candidate_sha256) {
-    throw new Error(`supervisor plan review ${planId} final round does not match its candidate`);
+    throw new Error(`governor plan review ${planId} final round does not match its candidate`);
   }
   if (receipt.status === "passed" && finalRound?.outcome !== "approved") {
-    throw new Error(`supervisor plan review ${planId} passed without approval`);
+    throw new Error(`governor plan review ${planId} passed without approval`);
   }
   if (receipt.status === "attention" && finalRound?.outcome === "approved") {
-    throw new Error(`supervisor plan review ${planId} attention conflicts with approval`);
+    throw new Error(`governor plan review ${planId} attention conflicts with approval`);
   }
 }
 
 function readFrozenReviewPolicy(
   coordRoot: string,
   goalId: string,
-): SupervisorReplanningPolicy["review"] | undefined {
-  const path = join(coordRoot, ".harnery", "supervisors", goalId, "intent.json");
+): GovernorReplanningPolicy["review"] | undefined {
+  const path = join(coordRoot, ".harnery", "governors", goalId, "intent.json");
   if (!existsSync(path)) return undefined;
-  const intent = readJson<{ replanning?: SupervisorReplanningPolicy }>(path, "supervisor intent");
+  const intent = readJson<{ replanning?: GovernorReplanningPolicy }>(path, "governor intent");
   return intent.replanning?.review;
 }
 
 function validateReviewReceiptMatchesPolicy(
-  receipt: SupervisorPlanReviewReceipt,
+  receipt: GovernorPlanReviewReceipt,
   planId: string,
-  review: NonNullable<SupervisorReplanningPolicy["review"]>,
+  review: NonNullable<GovernorReplanningPolicy["review"]>,
 ): void {
   if (receipt.rounds.length > review.max_revision_rounds + 1) {
-    throw new Error(`supervisor plan review ${planId} exceeds the frozen review policy`);
+    throw new Error(`governor plan review ${planId} exceeds the frozen review policy`);
   }
   for (const round of receipt.rounds) {
     if (round.reviewers.length !== review.reviewer_specialists.length) {
-      throw new Error(`supervisor plan review ${planId} does not match the frozen review policy`);
+      throw new Error(`governor plan review ${planId} does not match the frozen review policy`);
     }
     round.reviewers.forEach((reviewer, index) => {
       if (reviewer.specialist !== review.reviewer_specialists[index]) {
-        throw new Error(`supervisor plan review ${planId} does not match the frozen review policy`);
+        throw new Error(`governor plan review ${planId} does not match the frozen review policy`);
       }
     });
     const outcome = aggregateReviewers(round.reviewers);
     if (round.outcome !== outcome) {
-      throw new Error(`supervisor plan review ${planId} has an invalid reviewer outcome`);
+      throw new Error(`governor plan review ${planId} has an invalid reviewer outcome`);
     }
   }
   const finalRound = receipt.rounds.at(-1)!;
   if (receipt.status === "passed" && finalRound.outcome !== "approved") {
-    throw new Error(`supervisor plan review ${planId} passed without policy approval`);
+    throw new Error(`governor plan review ${planId} passed without policy approval`);
   }
   if (receipt.status === "revision_exhausted" && finalRound.round <= review.max_revision_rounds) {
-    throw new Error(`supervisor plan review ${planId} exhausted before the frozen review limit`);
+    throw new Error(`governor plan review ${planId} exhausted before the frozen review limit`);
   }
 }
 
 function aggregateReviewers(
-  reviewers: readonly SupervisorPlanReviewReviewer[],
-): SupervisorPlanReviewRound["outcome"] {
+  reviewers: readonly GovernorPlanReviewReviewer[],
+): GovernorPlanReviewRound["outcome"] {
   if (reviewers.length < 1) return "failed";
   if (reviewers.some((reviewer) => reviewer.verdict === "attention")) return "attention";
   if (
@@ -435,13 +434,13 @@ function aggregateReviewers(
   return "approved";
 }
 
-function candidateDigest(candidate: SupervisorPlanProposal): string {
+function candidateDigest(candidate: GovernorPlanProposal): string {
   return createHash("sha256")
     .update(JSON.stringify(canonicalCandidate(candidate)))
     .digest("hex");
 }
 
-function canonicalCandidate(candidate: SupervisorPlanProposal): unknown {
+function canonicalCandidate(candidate: GovernorPlanProposal): unknown {
   return {
     schema_version: candidate.schema_version,
     plan_id: candidate.plan_id,
@@ -454,7 +453,7 @@ function canonicalCandidate(candidate: SupervisorPlanProposal): unknown {
 }
 
 function validateReviewRound(
-  round: SupervisorPlanReviewRound,
+  round: GovernorPlanReviewRound,
   planId: string,
   sequence: number,
 ): void {
@@ -465,12 +464,12 @@ function validateReviewRound(
     !/^[a-f0-9]{64}$/.test(round.candidate_sha256) ||
     !Array.isArray(round.reviewers) ||
     round.reviewers.length < 1 ||
-    round.reviewers.length > MAX_SUPERVISOR_PLAN_REVIEWERS ||
+    round.reviewers.length > MAX_GOVERNOR_PLAN_REVIEWERS ||
     !["approved", "revise", "attention", "failed"].includes(round.outcome) ||
     (round.revision_workflow_run_id !== undefined &&
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(round.revision_workflow_run_id))
   ) {
-    throw new Error(`supervisor plan review ${planId} round ${sequence} is invalid`);
+    throw new Error(`governor plan review ${planId} round ${sequence} is invalid`);
   }
   round.reviewers.forEach((reviewer, index) => {
     validateReviewReviewer(reviewer, planId, sequence, index);
@@ -478,7 +477,7 @@ function validateReviewRound(
 }
 
 function validateReviewReviewer(
-  reviewer: SupervisorPlanReviewReviewer,
+  reviewer: GovernorPlanReviewReviewer,
   planId: string,
   round: number,
   index: number,
@@ -489,14 +488,14 @@ function validateReviewReviewer(
     typeof reviewer.specialist !== "string" ||
     reviewer.specialist.length < 1 ||
     reviewer.specialist.length > 100 ||
-    !["approve", "revise", "attention"].includes(reviewer.verdict as SupervisorPlanReviewVerdict) ||
+    !["approve", "revise", "attention"].includes(reviewer.verdict as GovernorPlanReviewVerdict) ||
     typeof reviewer.rationale !== "string" ||
     reviewer.rationale.length < 1 ||
     reviewer.rationale.length > 2_000 ||
     !Array.isArray(reviewer.findings) ||
     reviewer.findings.length > 50
   ) {
-    throw new Error(`supervisor plan review ${planId} round ${round} reviewer ${index} is invalid`);
+    throw new Error(`governor plan review ${planId} round ${round} reviewer ${index} is invalid`);
   }
   reviewer.findings.forEach((finding, findingIndex) => {
     validateReviewFinding(finding, planId, round, index, findingIndex);
@@ -504,7 +503,7 @@ function validateReviewReviewer(
 }
 
 function validateReviewFinding(
-  finding: SupervisorPlanReviewFinding,
+  finding: GovernorPlanReviewFinding,
   planId: string,
   round: number,
   reviewerIndex: number,
@@ -524,12 +523,12 @@ function validateReviewFinding(
     finding.recommendation.length > 1_000
   ) {
     throw new Error(
-      `supervisor plan review ${planId} round ${round} reviewer ${reviewerIndex} finding ${findingIndex} is invalid`,
+      `governor plan review ${planId} round ${round} reviewer ${reviewerIndex} finding ${findingIndex} is invalid`,
     );
   }
 }
 
-function summarizeReview(receipt: SupervisorPlanReviewReceipt): SupervisorPlanReviewSummary {
+function summarizeReview(receipt: GovernorPlanReviewReceipt): GovernorPlanReviewSummary {
   const findings = receipt.rounds.flatMap((round) =>
     round.reviewers.flatMap((reviewer) => reviewer.findings),
   );
@@ -542,9 +541,9 @@ function summarizeReview(receipt: SupervisorPlanReviewReceipt): SupervisorPlanRe
   };
 }
 
-function validateEvent(event: SupervisorPlanEvent, planId: string, sequence: number): void {
+function validateEvent(event: GovernorPlanEvent, planId: string, sequence: number): void {
   if (
-    event.schema_version !== SUPERVISOR_PLAN_SCHEMA_VERSION ||
+    event.schema_version !== GOVERNOR_PLAN_SCHEMA_VERSION ||
     event.plan_id !== planId ||
     event.seq !== sequence ||
     !EVENT_TYPES.has(event.event) ||
@@ -556,21 +555,21 @@ function validateEvent(event: SupervisorPlanEvent, planId: string, sequence: num
     event.reason.length < 1 ||
     event.reason.length > 2_000
   ) {
-    throw new Error(`supervisor plan ${planId} event ${sequence} has an unsupported schema`);
+    throw new Error(`governor plan ${planId} event ${sequence} has an unsupported schema`);
   }
   if (event.approval_id !== undefined && !APPROVAL_ID.test(event.approval_id)) {
-    throw new Error(`supervisor plan ${planId} event ${sequence} has an invalid approval id`);
+    throw new Error(`governor plan ${planId} event ${sequence} has an invalid approval id`);
   }
   if (event.root_work_id !== undefined && !WORK_ID.test(event.root_work_id)) {
-    throw new Error(`supervisor plan ${planId} event ${sequence} has an invalid root work id`);
+    throw new Error(`governor plan ${planId} event ${sequence} has an invalid root work id`);
   }
   if (event.work_ids !== undefined) {
     if (!Array.isArray(event.work_ids) || event.work_ids.some((id) => !WORK_ID.test(id))) {
-      throw new Error(`supervisor plan ${planId} event ${sequence} has invalid work ids`);
+      throw new Error(`governor plan ${planId} event ${sequence} has invalid work ids`);
     }
   }
   if (event.class !== undefined && event.class !== "environment" && event.class !== "upstream") {
-    throw new Error(`supervisor plan ${planId} event ${sequence} has an unknown failure class`);
+    throw new Error(`governor plan ${planId} event ${sequence} has an unknown failure class`);
   }
 }
 
@@ -597,7 +596,7 @@ function readJson<T>(path: string, label: string): T {
 }
 
 function plansRoot(coordRoot: string, goalId: string): string {
-  return join(coordRoot, ".harnery", "supervisors", goalId, "plans");
+  return join(coordRoot, ".harnery", "governors", goalId, "plans");
 }
 
 function planDir(coordRoot: string, goalId: string, planId: string): string {

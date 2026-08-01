@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { normalizePolicy } from "../policy/index.ts";
 import { acceptWorkItem, createWorkItem, readWorkItem } from "../work/index.ts";
 import {
-  configureSupervisorService,
-  readSupervisorServiceConfig,
-  readSupervisorServiceRuntime,
-  readSupervisorServiceStatus,
-  runSupervisorServiceDaemon,
-  runSupervisorServiceSweep,
+  configureGovernorService,
+  readGovernorServiceConfig,
+  readGovernorServiceRuntime,
+  readGovernorServiceStatus,
+  runGovernorServiceDaemon,
+  runGovernorServiceSweep,
 } from "./service.ts";
-import { createSupervisor, readSupervisor } from "./state.ts";
+import { createGovernor, readGovernor } from "./state.ts";
 
 const roots: string[] = [];
 
@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 function fixture(options: { accept?: boolean; goalId?: string; workId?: string } = {}) {
-  const root = mkdtempSync(join("/tmp", "harnery-supervisor-service-"));
+  const root = mkdtempSync(join("/tmp", "harnery-governor-service-"));
   roots.push(root);
   const workflow = join(root, "passing.mjs");
   writeFileSync(
@@ -44,7 +44,7 @@ function fixture(options: { accept?: boolean; goalId?: string; workId?: string }
     objective: "Complete through the background service",
     workflowPath: workflow,
   });
-  createSupervisor({
+  createGovernor({
     coordRoot: root,
     id: goalId,
     rootWorkId: workId,
@@ -54,10 +54,10 @@ function fixture(options: { accept?: boolean; goalId?: string; workId?: string }
   return { root, workId, goalId };
 }
 
-describe("supervisor background service", () => {
+describe("governor background service", () => {
   test("freezes a private canonical service configuration for explicit goals", () => {
     const { root, goalId } = fixture();
-    const config = configureSupervisorService({
+    const config = configureGovernorService({
       coordRoot: root,
       goalIds: [goalId, goalId],
       wakeIntervalMs: 250,
@@ -78,19 +78,19 @@ describe("supervisor background service", () => {
       allow_api_billing: false,
       policy: { name: "frozen-service-policy", network: "ask" },
     });
-    expect(readSupervisorServiceConfig(root)).toEqual(config);
-    expect(statSync(join(root, ".harnery", "supervisor-service", "config.json")).mode & 0o777).toBe(
+    expect(readGovernorServiceConfig(root)).toEqual(config);
+    expect(statSync(join(root, ".harnery", "governor-service", "config.json")).mode & 0o777).toBe(
       0o600,
     );
-    expect(() =>
-      configureSupervisorService({ coordRoot: root, goalIds: ["missing-goal"] }),
-    ).toThrow("does not exist");
+    expect(() => configureGovernorService({ coordRoot: root, goalIds: ["missing-goal"] })).toThrow(
+      "does not exist",
+    );
   });
 
   test("continues ready ticks, then quiesces after accepted success", async () => {
     const { root, goalId, workId } = fixture({ accept: true });
-    const config = configureSupervisorService({ coordRoot: root, goalIds: [goalId] });
-    const first = await runSupervisorServiceSweep({
+    const config = configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    const first = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
@@ -99,9 +99,9 @@ describe("supervisor background service", () => {
       expect.objectContaining({ goal_id: goalId, action: "tick", stop_reason: "tick_complete" }),
     ]);
     expect(readWorkItem(root, workId).projection.state).toBe("in_review");
-    expect(readSupervisorServiceRuntime(root)?.goals[goalId]?.state).toBe("idle");
+    expect(readGovernorServiceRuntime(root)?.goals[goalId]?.state).toBe("idle");
 
-    const second = await runSupervisorServiceSweep({
+    const second = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
@@ -111,9 +111,9 @@ describe("supervisor background service", () => {
       action: "tick",
       stop_reason: "succeeded",
     });
-    expect(readSupervisor(root, goalId).projection.state).toBe("succeeded");
+    expect(readGovernor(root, goalId).projection.state).toBe("succeeded");
 
-    const third = await runSupervisorServiceSweep({
+    const third = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
@@ -127,15 +127,15 @@ describe("supervisor background service", () => {
 
   test("waits without model churn when a goal needs explicit attention", async () => {
     const { root, goalId, workId } = fixture();
-    const config = configureSupervisorService({ coordRoot: root, goalIds: [goalId] });
-    const first = await runSupervisorServiceSweep({
+    const config = configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    const first = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
     });
     expect(first.outcomes[0]).toMatchObject({ action: "tick", stop_reason: "tick_complete" });
     expect(readWorkItem(root, workId).projection.state).toBe("in_review");
-    const second = await runSupervisorServiceSweep({
+    const second = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
@@ -146,7 +146,7 @@ describe("supervisor background service", () => {
     });
 
     acceptWorkItem(root, workId, { actor: "reviewer", reason: "review passed" });
-    const third = await runSupervisorServiceSweep({
+    const third = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
@@ -157,7 +157,7 @@ describe("supervisor background service", () => {
 
   test("persists exponential error backoff and bypasses it on durable change", async () => {
     const { root, goalId } = fixture();
-    const config = configureSupervisorService({
+    const config = configureGovernorService({
       coordRoot: root,
       goalIds: [goalId],
       errorBackoffBaseMs: 1_000,
@@ -166,7 +166,7 @@ describe("supervisor background service", () => {
     const timestamp = Date.parse("2026-07-22T12:00:00.000Z");
     let attempts = 0;
     let changed = false;
-    const base = readSupervisor(root, goalId);
+    const base = readGovernor(root, goalId);
     const readGoal = () =>
       changed
         ? {
@@ -179,7 +179,7 @@ describe("supervisor background service", () => {
       throw new Error("temporary harness outage");
     };
 
-    const first = await runSupervisorServiceSweep({
+    const first = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       now: () => timestamp,
@@ -187,13 +187,13 @@ describe("supervisor background service", () => {
       runGoal,
     });
     expect(first.outcomes[0]).toMatchObject({ action: "backoff" });
-    expect(readSupervisorServiceRuntime(root)?.goals[goalId]).toMatchObject({
+    expect(readGovernorServiceRuntime(root)?.goals[goalId]).toMatchObject({
       state: "backoff",
       consecutive_errors: 1,
       next_wake_at: "2026-07-22T12:00:01.000Z",
     });
 
-    const skipped = await runSupervisorServiceSweep({
+    const skipped = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       now: () => timestamp,
@@ -204,7 +204,7 @@ describe("supervisor background service", () => {
     expect(attempts).toBe(1);
 
     changed = true;
-    const bypassed = await runSupervisorServiceSweep({
+    const bypassed = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       now: () => timestamp,
@@ -213,7 +213,7 @@ describe("supervisor background service", () => {
     });
     expect(bypassed.outcomes[0]).toMatchObject({ action: "backoff" });
     expect(attempts).toBe(2);
-    expect(readSupervisorServiceRuntime(root)?.goals[goalId]).toMatchObject({
+    expect(readGovernorServiceRuntime(root)?.goals[goalId]).toMatchObject({
       consecutive_errors: 2,
       next_wake_at: "2026-07-22T12:00:02.000Z",
     });
@@ -221,41 +221,38 @@ describe("supervisor background service", () => {
 
   test("reconstructs from durable goal state when recoverable runtime is corrupt", async () => {
     const { root, goalId } = fixture({ accept: true });
-    const config = configureSupervisorService({ coordRoot: root, goalIds: [goalId] });
-    const runtimePath = join(root, ".harnery", "supervisor-service", "runtime.json");
+    const config = configureGovernorService({ coordRoot: root, goalIds: [goalId] });
+    const runtimePath = join(root, ".harnery", "governor-service", "runtime.json");
     writeFileSync(runtimePath, "{not-json\n");
-    const report = await runSupervisorServiceSweep({
+    const report = await runGovernorServiceSweep({
       coordRoot: root,
       config,
       engine: { spawners: {} },
     });
     expect(report.outcomes[0]).toMatchObject({ action: "tick" });
-    expect(readSupervisorServiceRuntime(root)?.config_created_at).toBe(config.created_at);
+    expect(readGovernorServiceRuntime(root)?.config_created_at).toBe(config.created_at);
   });
 
   test("writes heartbeat, audit, and terminal status around a foreground service sweep", async () => {
     const { root, goalId } = fixture();
-    configureSupervisorService({
+    configureGovernorService({
       coordRoot: root,
       goalIds: [goalId],
       wakeIntervalMs: 50,
       heartbeatIntervalMs: 25,
     });
-    const status = await runSupervisorServiceDaemon({
+    const status = await runGovernorServiceDaemon({
       coordRoot: root,
       engine: { spawners: {} },
       maxSweeps: 1,
     });
     expect(status).toMatchObject({ state: "stopped", sweep_count: 1 });
-    expect(readSupervisorServiceStatus(root)).toMatchObject({
+    expect(readGovernorServiceStatus(root)).toMatchObject({
       running: false,
       stale: false,
       record: { state: "stopped", sweep_count: 1 },
     });
-    const events = readFileSync(
-      join(root, ".harnery", "supervisor-service", "events.jsonl"),
-      "utf8",
-    );
+    const events = readFileSync(join(root, ".harnery", "governor-service", "events.jsonl"), "utf8");
     expect(events).toContain('"event":"service.started"');
     expect(events).toContain('"event":"service.stopped"');
   });

@@ -158,7 +158,7 @@ export default async function run({ agent, parallel, stage, log, evidence }) {
 ### Work-linked context
 
 When the workflow runs through [`harn work`](./work/) or
-[`harn supervisor`](./supervisor/), `ctx.work` contains the frozen assignment:
+[`harn governor`](./governor/), `ctx.work` contains the frozen assignment:
 
 ```js
 export default async function run({ work, agent, evidence }) {
@@ -240,7 +240,7 @@ does not become a retry. Standalone and historical context-free runs have
 `ctx.attempt === undefined`.
 
 Attempt context does not grant retry authority or add attempts. Explicit
-`harn work retry`, frozen supervisor policy, and the existing work and
+`harn work retry`, frozen governor policy, and the existing work and
 goal-wide ceilings still decide whether another run may start. As with
 `ctx.work`, the workflow controls whether and how the data enters a child
 prompt.
@@ -275,7 +275,7 @@ executable capability declaration.
 ### Specialist profiles
 
 An embedding host may provide `EngineOpts.specialists`, and a
-[`harn supervisor`](./supervisor/) freezes those profiles into its durable goal
+[`harn governor`](./governor/) freezes those profiles into its durable goal
 intent. A workflow selects one with `agent(prompt, { specialist: "reviewer" })`.
 The profile contributes bounded instructions plus optional harness, model,
 effort, turn, timeout, and schema-retry defaults; options on the individual

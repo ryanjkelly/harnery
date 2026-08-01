@@ -3,7 +3,7 @@ title: "0029: Milestone proposals receive independent bounded review"
 description: "ADR: review one planner candidate through frozen specialists, revise it under hard bounds, and preserve ordinary plan authority."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/supervisor`, supervisor CLI, dashboard, public package APIs)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/governor`, governor CLI, dashboard, public package APIs)
 
 ## Context
 
@@ -17,7 +17,7 @@ good next move.
 An operator can reject a proposal and supply guidance, but that occurs after
 the planner workflow and depends on a human noticing every defect. Letting the
 planner certify its own work would add ceremony without independence. Allowing
-an unbounded debate would weaken the supervisor's budget and quiescence
+an unbounded debate would weaken the governor's budget and quiescence
 guarantees. Letting reviewer approval directly execute work would collapse the
 existing distinction between evidence and authority.
 
@@ -29,10 +29,10 @@ output contract.
 
 ## Decision
 
-Add an optional immutable review policy to supervisor replanning. It freezes a
+Add an optional immutable review policy to governor replanning. It freezes a
 small ordered set of distinct review specialists and a maximum number of
 revision rounds. Every specialist must exist in the frozen team, no reviewer may
-also be the planner, and supervisor creation rejects a worst-case review loop
+also be the planner, and governor creation rejects a worst-case review loop
 that exceeds the existing per-work agent ceiling.
 
 The planner first returns one schema-gated candidate exactly as it does today.
@@ -78,7 +78,7 @@ revision rounds moves the plan to human attention.
 Review produces an immutable private receipt beside the plan request and
 proposal. It records candidate digests, review rounds, specialist verdicts,
 bounded findings, outcome, and the final candidate needed for recovery and
-inspection. Raw transcripts do not enter supervisor projection. Plan events add
+inspection. Raw transcripts do not enter governor projection. Plan events add
 a reviewed boundary, while CLI, dashboard, and package APIs expose bounded
 review status and counts.
 
@@ -126,7 +126,7 @@ attempt; it cannot invent approval or duplicate executable work.
 - Independent review is opt-in. Existing replanning policies retain their exact
   single-planner behavior and persisted shape.
 - The review panel is deliberately small and frozen. Changing specialists or
-  revision bounds requires a new supervisor, not mutation of durable intent.
+  revision bounds requires a new governor, not mutation of durable intent.
 - Every configured reviewer is required. A missing or malformed verdict fails
   closed rather than shrinking the panel at runtime.
 - Reviewer approval establishes contract-compliant evidence, not strategic

@@ -1,6 +1,6 @@
-import type { SupervisorState } from "harnery/core/supervisor/state";
+import type { GovernorState } from "harnery/core/governor/state";
 
-export function SupervisorStateBadge({ state }: { state: SupervisorState }) {
+export function GovernorStateBadge({ state }: { state: GovernorState }) {
   const tone =
     state === "succeeded"
       ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"

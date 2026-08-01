@@ -1,16 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { NavBar } from "@/components/NavBar";
-import { SupervisorStateBadge } from "@/components/SupervisorStateBadge";
+import { GovernorStateBadge } from "@/components/GovernorStateBadge";
 import { Badge } from "@/components/ui/badge";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
 import {
-  readSupervisorBackgroundService,
-  readSupervisorGoal,
-  supervisorDashboardDecision,
-  supervisorPlanDashboardStatus,
-} from "@/lib/supervisor-reader";
+  readGovernorBackgroundService,
+  readGovernorGoal,
+  governorDashboardDecision,
+  governorPlanDashboardStatus,
+} from "@/lib/governor-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -19,15 +19,15 @@ interface PageProps {
   params: Promise<{ goalId: string }>;
 }
 
-export default async function SupervisorGoalPage({ params }: PageProps) {
+export default async function GovernorGoalPage({ params }: PageProps) {
   const { goalId } = await params;
   const root = coordRoot();
   const decodedGoalId = decodeURIComponent(goalId);
-  const record = readSupervisorGoal(root, decodedGoalId);
+  const record = readGovernorGoal(root, decodedGoalId);
   if (!record) notFound();
   const { intent, projection, work, plans } = record;
-  const decision = supervisorDashboardDecision(record);
-  const service = readSupervisorBackgroundService(root);
+  const decision = governorDashboardDecision(record);
+  const service = readGovernorBackgroundService(root);
   const serviceRuntime = service.runtime?.goals[intent.id];
   const enrolled = service.config?.goal_ids.includes(intent.id) ?? false;
   return (
@@ -35,12 +35,12 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
       <NavBar scannedDir={coordRoot()} />
       <main className="mx-auto max-w-5xl px-4 py-6">
         <p className="mb-3 text-xs">
-          <Link href="/supervisors" className="text-muted-foreground hover:text-foreground">
+          <Link href="/governors" className="text-muted-foreground hover:text-foreground">
             ← all goals
           </Link>
         </p>
         <div className="mb-1 flex flex-wrap items-center gap-2">
-          <SupervisorStateBadge state={projection.state} />
+          <GovernorStateBadge state={projection.state} />
           <h1 className="text-xl font-semibold">{intent.title}</h1>
         </div>
         <p className="mb-6 text-xs text-muted-foreground">
@@ -93,7 +93,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
             <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
               Plan {projection.attention_plan_id} needs operator guidance. Review it, then run{" "}
               <code>
-                {`harn supervisor plan retry ${intent.id} ${projection.attention_plan_id} --reason <text>`}
+                {`harn governor plan retry ${intent.id} ${projection.attention_plan_id} --reason <text>`}
               </code>
               .
             </p>
@@ -117,7 +117,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
             ) : (
               <ul className="space-y-2">
                 {[...plans].reverse().map((plan) => {
-                  const planStatus = supervisorPlanDashboardStatus(plan);
+                  const planStatus = governorPlanDashboardStatus(plan);
                   return (
                     <li
                       key={plan.request.id}
@@ -157,7 +157,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                         <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
                           Review with{" "}
                           <code>
-                            harn supervisor plan show {intent.id} {plan.request.id}
+                            harn governor plan show {intent.id} {plan.request.id}
                           </code>
                           , then approve or reject it explicitly.
                         </p>
@@ -166,11 +166,11 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                         <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">
                           Review has passed. Approve with{" "}
                           <code>
-                            {`harn supervisor plan approve ${intent.id} ${plan.request.id}`}
+                            {`harn governor plan approve ${intent.id} ${plan.request.id}`}
                           </code>{" "}
                           or reject it with{" "}
                           <code>
-                            {`harn supervisor plan reject ${intent.id} ${plan.request.id} --reason <text>`}
+                            {`harn governor plan reject ${intent.id} ${plan.request.id} --reason <text>`}
                           </code>
                           .
                         </p>
@@ -180,7 +180,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
                         <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
                           Supply the missing judgment with{" "}
                           <code>
-                            {`harn supervisor plan retry ${intent.id} ${plan.request.id} --reason <text>`}
+                            {`harn governor plan retry ${intent.id} ${plan.request.id} --reason <text>`}
                           </code>
                           .
                         </p>
@@ -221,7 +221,7 @@ export default async function SupervisorGoalPage({ params }: PageProps) {
             </dl>
           ) : (
             <p className="mt-2 text-xs text-muted-foreground">
-              Enroll this goal with <code>harn supervisor service start {intent.id}</code>.
+              Enroll this goal with <code>harn governor service start {intent.id}</code>.
             </p>
           )}
           {serviceRuntime?.last_error ? (

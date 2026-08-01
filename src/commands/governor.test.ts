@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
-import { createSupervisor, runSupervisor } from "../core/supervisor/index.ts";
+import { createGovernor, runGovernor } from "../core/governor/index.ts";
 import { createWorkItem } from "../core/work/index.ts";
 
 const roots: string[] = [];
@@ -39,10 +39,10 @@ function captureEmit(): { emit: EmitContext; text: () => string } {
   return { emit, text: () => buffer };
 }
 
-describe("supervisor command", () => {
+describe("governor command", () => {
   test("registers the durable goal lifecycle", () => {
     const program = createHarneryProgram();
-    const command = program.commands.find((candidate) => candidate.name() === "supervisor");
+    const command = program.commands.find((candidate) => candidate.name() === "governor");
     expect(command).toBeDefined();
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
       "create",
@@ -77,7 +77,7 @@ describe("supervisor command", () => {
 
   test("list and show expose planner no-proposal replan exhaustion", async () => {
     cwd = process.cwd();
-    const root = mkdtempSync(join("/tmp", "harnery-supervisor-cli-"));
+    const root = mkdtempSync(join("/tmp", "harnery-governor-cli-"));
     roots.push(root);
     const passing = join(root, "passing.mjs");
     writeFileSync(
@@ -99,7 +99,7 @@ describe("supervisor command", () => {
       workflowPath: failing,
       maxAttempts: 1,
     });
-    createSupervisor({
+    createGovernor({
       coordRoot: root,
       id: "goal-cli-no-proposal",
       rootWorkId: "cli-no-proposal-root",
@@ -110,7 +110,7 @@ describe("supervisor command", () => {
         templates: { repair: { workflowPath: passing, root: true } },
       },
     });
-    await runSupervisor({
+    await runGovernor({
       coordRoot: root,
       goalId: "goal-cli-no-proposal",
       engine: {
@@ -141,7 +141,7 @@ describe("supervisor command", () => {
     await createHarneryProgram({ emit: listed.emit }).parseAsync([
       "node",
       "harn",
-      "supervisor",
+      "governor",
       "list",
     ]);
     expect(listed.text()).toContain("[planner no-proposal x1]");
@@ -150,7 +150,7 @@ describe("supervisor command", () => {
     await createHarneryProgram({ emit: shown.emit }).parseAsync([
       "node",
       "harn",
-      "supervisor",
+      "governor",
       "show",
       "goal-cli-no-proposal",
     ]);

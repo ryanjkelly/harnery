@@ -3,7 +3,7 @@ title: "0049: Replan exhaustion is attributed to its cause"
 description: "ADR: distinguish a replan spent by a planner that produced no proposal from one spent by reviewer rejection, using the existing plan seams."
 ---
 
-**Status:** accepted (2026-07-26) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, public package APIs)
+**Status:** accepted (2026-07-26) · **Scope:** product tier (`core/governor`, governor CLI, dashboard, public package APIs)
 
 ## Context
 
@@ -47,7 +47,7 @@ Projection exposes an optional `replan_consumption` breakdown
 (`{ reviewer_rejection, planner_no_proposal }`), present only when at least one
 consumed replan was a planner no-proposal outcome. When present, the exhausted-goal
 `projection.reason` (the field itself, not only the rendered row) names the
-planner no-proposal share, and `harn supervisor list` / `harn supervisor show`
+planner no-proposal share, and `harn governor list` / `harn governor show`
 surface the breakdown. The latest plan's own per-plan reason still leads: a
 reviewed-and-rejected latest plan reports its review-round exhaustion first, then
 the reason names the planner no-proposal share of the budget. This is deliberate:

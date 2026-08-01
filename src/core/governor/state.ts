@@ -17,18 +17,18 @@ import { assertWorkId, readWorkItem, type WorkRecord } from "../work/read.ts";
 import { workflowScriptDigest } from "../workflow/run-state.ts";
 import { normalizeWorkflowSpecialists } from "../workflow/specialists.ts";
 import type { WorkflowSpecialistProfile } from "../workflow/types.ts";
-import { readSupervisorPlans } from "./plan-read.ts";
+import { readGovernorPlans } from "./plan-read.ts";
 import {
-  type CreateSupervisorReplanningInput,
-  MAX_SUPERVISOR_PLAN_REVIEWERS,
-  MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
-  type SupervisorPlanHistory,
-  type SupervisorPlanRecord,
-  type SupervisorReplanningPolicy,
-  supervisorGraphFingerprint,
+  type CreateGovernorReplanningInput,
+  type GovernorPlanHistory,
+  type GovernorPlanRecord,
+  type GovernorReplanningPolicy,
+  governorGraphFingerprint,
+  MAX_GOVERNOR_PLAN_REVIEWERS,
+  MAX_GOVERNOR_PLAN_REVISION_ROUNDS,
 } from "./plan-types.ts";
 
-export const SUPERVISOR_INTENT_SCHEMA_VERSION = 1 as const;
+export const GOVERNOR_INTENT_SCHEMA_VERSION = 1 as const;
 
 const GOAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const MAX_TITLE = 200;
@@ -46,7 +46,7 @@ const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
  * environment failure self-bounds at one because it stops immediately. */
 const MAX_UNCHARGED_REPLANS = 3;
 
-export interface SupervisorLimits {
+export interface GovernorLimits {
   max_cycles: number;
   max_runtime_ms: number;
   max_parallel_work: number;
@@ -55,38 +55,38 @@ export interface SupervisorLimits {
   agent_concurrency: number;
 }
 
-export interface SupervisorAutomationPolicy {
+export interface GovernorAutomationPolicy {
   accept_passing_proof: boolean;
   resume_approved: boolean;
   retry_blocked: boolean;
 }
 
-export interface SupervisorMission {
+export interface GovernorMission {
   objective: string;
   acceptance: string[];
   max_milestones: number;
 }
 
-export interface CreateSupervisorMissionInput {
+export interface CreateGovernorMissionInput {
   objective: string;
   acceptance: readonly string[];
   maxMilestones?: number;
 }
 
-export interface SupervisorIntent {
-  schema_version: typeof SUPERVISOR_INTENT_SCHEMA_VERSION;
+export interface GovernorIntent {
+  schema_version: typeof GOVERNOR_INTENT_SCHEMA_VERSION;
   id: string;
   title: string;
   root_work_id: string;
   specialists: Record<string, WorkflowSpecialistProfile>;
-  limits: SupervisorLimits;
-  automation: SupervisorAutomationPolicy;
-  mission?: SupervisorMission;
-  replanning?: SupervisorReplanningPolicy;
+  limits: GovernorLimits;
+  automation: GovernorAutomationPolicy;
+  mission?: GovernorMission;
+  replanning?: GovernorReplanningPolicy;
   created_at: string;
 }
 
-export type SupervisorState =
+export type GovernorState =
   | "ready"
   | "running"
   | "awaiting_attention"
@@ -94,7 +94,7 @@ export type SupervisorState =
   | "budget_exhausted"
   | "succeeded";
 
-export type SupervisorNextAction =
+export type GovernorNextAction =
   | "run"
   | "wait_for_run"
   | "resolve_approval"
@@ -107,14 +107,14 @@ export type SupervisorNextAction =
   | "retry_plan"
   | "none";
 
-export interface SupervisorProjection {
+export interface GovernorProjection {
   id: string;
   title: string;
   root_work_id: string;
   root_materialized: boolean;
-  state: SupervisorState;
+  state: GovernorState;
   reason: string;
-  next_action: SupervisorNextAction;
+  next_action: GovernorNextAction;
   work_ids: string[];
   ready_work: string[];
   resumable_work: string[];
@@ -130,7 +130,7 @@ export interface SupervisorProjection {
   milestones_remaining: number;
   pending_plan_id?: string;
   attention_plan_id?: string;
-  latest_plan_status?: SupervisorPlanRecord["status"];
+  latest_plan_status?: GovernorPlanRecord["status"];
   /**
    * How consumed (charged) replans that did not advance the graph broke down,
    * present only when at least one replan was spent by a planner run that
@@ -148,37 +148,35 @@ export interface SupervisorProjection {
   governed_work_ids: string[];
 }
 
-export interface SupervisorRecord {
-  intent: SupervisorIntent;
-  projection: SupervisorProjection;
+export interface GovernorRecord {
+  intent: GovernorIntent;
+  projection: GovernorProjection;
   work: WorkRecord[];
-  plans: SupervisorPlanRecord[];
+  plans: GovernorPlanRecord[];
 }
 
-export interface CreateSupervisorInput {
+export interface CreateGovernorInput {
   coordRoot: string;
   rootWorkId?: string;
   specialists: Readonly<Record<string, WorkflowSpecialistProfile>>;
   title?: string;
   id?: string;
-  limits?: Partial<SupervisorLimits>;
-  automation?: Partial<SupervisorAutomationPolicy>;
-  mission?: CreateSupervisorMissionInput;
-  replanning?: CreateSupervisorReplanningInput;
+  limits?: Partial<GovernorLimits>;
+  automation?: Partial<GovernorAutomationPolicy>;
+  mission?: CreateGovernorMissionInput;
+  replanning?: CreateGovernorReplanningInput;
 }
 
-export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord {
+export function createGovernor(input: CreateGovernorInput): GovernorRecord {
   const coordRoot = resolve(input.coordRoot);
-  const id = input.id ?? newSupervisorId();
-  assertSupervisorId(id);
+  const id = input.id ?? newGovernorId();
+  assertGovernorId(id);
   const mission = input.mission ? normalizeMission(input.mission) : undefined;
   if (mission && !input.replanning) {
-    throw new Error("supervisor mission requires a replanning policy");
+    throw new Error("governor mission requires a replanning policy");
   }
   if (!input.rootWorkId && !mission) {
-    throw new Error(
-      "supervisor creation without root work requires a mission and replanning policy",
-    );
+    throw new Error("governor creation without root work requires a mission and replanning policy");
   }
   if (input.rootWorkId) assertWorkId(input.rootWorkId);
   const root = input.rootWorkId ? readWorkItem(coordRoot, input.rootWorkId) : undefined;
@@ -196,12 +194,12 @@ export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord
       "objective-first mission max_replans must exceed max_milestones to reserve completion review",
     );
   }
-  const intent: SupervisorIntent = {
-    schema_version: SUPERVISOR_INTENT_SCHEMA_VERSION,
+  const intent: GovernorIntent = {
+    schema_version: GOVERNOR_INTENT_SCHEMA_VERSION,
     id,
     title: bounded(
       input.title ?? root?.intent.title ?? missionTitle(mission!),
-      "supervisor title",
+      "governor title",
       MAX_TITLE,
     ),
     root_work_id: input.rootWorkId ?? missionRootId(id),
@@ -212,42 +210,41 @@ export function createSupervisor(input: CreateSupervisorInput): SupervisorRecord
     ...(replanning ? { replanning } : {}),
     created_at: new Date().toISOString(),
   };
-  const path = supervisorIntentPath(coordRoot, id);
+  const path = governorIntentPath(coordRoot, id);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   chmodSync(dirname(path), 0o700);
   writePrivateJson(path, intent);
-  return readSupervisor(coordRoot, id);
+  return readGovernor(coordRoot, id);
 }
 
-export function readSupervisor(coordRoot: string, goalId: string): SupervisorRecord {
-  return readSupervisorInternal(coordRoot, goalId, false);
+export function readGovernor(coordRoot: string, goalId: string): GovernorRecord {
+  return readGovernorInternal(coordRoot, goalId, false);
 }
 
-/** @internal Runner seam; ignores the lease held by this supervisor process. */
-export function readSupervisorIgnoringLease(coordRoot: string, goalId: string): SupervisorRecord {
-  return readSupervisorInternal(coordRoot, goalId, true);
+/** @internal Runner seam; ignores the lease held by this governor process. */
+export function readGovernorIgnoringLease(coordRoot: string, goalId: string): GovernorRecord {
+  return readGovernorInternal(coordRoot, goalId, true);
 }
 
-export function listSupervisors(coordRoot: string): SupervisorRecord[] {
-  const base = join(resolve(coordRoot), ".harnery", "supervisors");
+export function listGovernors(coordRoot: string): GovernorRecord[] {
+  const base = join(resolve(coordRoot), ".harnery", "governors");
   if (!existsSync(base)) return [];
-  const records: SupervisorRecord[] = [];
+  const records: GovernorRecord[] = [];
   for (const name of readdirSync(base)) {
-    if (!GOAL_ID.test(name) || !existsSync(supervisorIntentPath(coordRoot, name))) continue;
-    records.push(readSupervisor(coordRoot, name));
+    if (!GOAL_ID.test(name) || !existsSync(governorIntentPath(coordRoot, name))) continue;
+    records.push(readGovernor(coordRoot, name));
   }
   return records.sort((left, right) =>
     right.intent.created_at.localeCompare(left.intent.created_at),
   );
 }
 
-export function collectSupervisorWork(coordRoot: string, rootWorkId: string): WorkRecord[] {
+export function collectGovernorWork(coordRoot: string, rootWorkId: string): WorkRecord[] {
   const records = new Map<string, WorkRecord>();
   const visiting = new Set<string>();
   const visit = (workId: string): void => {
     if (records.has(workId)) return;
-    if (visiting.has(workId))
-      throw new Error(`supervisor work graph contains a cycle at ${workId}`);
+    if (visiting.has(workId)) throw new Error(`governor work graph contains a cycle at ${workId}`);
     visiting.add(workId);
     const record = readWorkItem(coordRoot, workId);
     for (const dependency of record.intent.dependencies) visit(dependency);
@@ -258,18 +255,18 @@ export function collectSupervisorWork(coordRoot: string, rootWorkId: string): Wo
   return Array.from(records.values());
 }
 
-export function assertSupervisorId(goalId: string): void {
-  if (!GOAL_ID.test(goalId)) throw new Error(`invalid supervisor id ${JSON.stringify(goalId)}`);
+export function assertGovernorId(goalId: string): void {
+  if (!GOAL_ID.test(goalId)) throw new Error(`invalid governor id ${JSON.stringify(goalId)}`);
 }
 
-export function newSupervisorId(): string {
+export function newGovernorId(): string {
   return `goal-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
 }
 
-/** @internal Runner seam; one exclusive crash-recoverable supervisor lease. */
-export function acquireSupervisorLease(coordRoot: string, goalId: string): () => void {
-  readSupervisorIntent(coordRoot, goalId);
-  const path = join(supervisorDir(coordRoot, goalId), "lease.json");
+/** @internal Runner seam; one exclusive crash-recoverable governor lease. */
+export function acquireGovernorLease(coordRoot: string, goalId: string): () => void {
+  readGovernorIntent(coordRoot, goalId);
+  const path = join(governorDir(coordRoot, goalId), "lease.json");
   const owner = {
     pid: process.pid,
     host: hostname(),
@@ -295,11 +292,11 @@ export function acquireSupervisorLease(coordRoot: string, goalId: string): () =>
     const existing = readLease(path);
     if (existing && leaseIsLive(existing)) {
       throw new Error(
-        `supervisor ${goalId} is already running under pid ${existing.pid} on ${existing.host}`,
+        `governor ${goalId} is already running under pid ${existing.pid} on ${existing.host}`,
       );
     }
     unlinkSync(path);
-    if (!acquire()) throw new Error(`supervisor ${goalId} lease raced with another process`);
+    if (!acquire()) throw new Error(`governor ${goalId} lease raced with another process`);
   }
   return () => {
     try {
@@ -311,19 +308,19 @@ export function acquireSupervisorLease(coordRoot: string, goalId: string): () =>
   };
 }
 
-function readSupervisorInternal(
+function readGovernorInternal(
   coordRootRaw: string,
   goalId: string,
   ignoreLease: boolean,
-): SupervisorRecord {
+): GovernorRecord {
   const coordRoot = resolve(coordRootRaw);
-  const intent = readSupervisorIntent(coordRoot, goalId);
-  const plans = readSupervisorPlans(coordRoot, intent.id, intent.root_work_id);
+  const intent = readGovernorIntent(coordRoot, goalId);
+  const plans = readGovernorPlans(coordRoot, intent.id, intent.root_work_id);
   const activeRootExists = workIntentExists(coordRoot, plans.active_root_work_id);
   if (!activeRootExists && (!intent.mission || plans.generation > 0)) {
-    throw new Error(`supervisor ${intent.id} root work is missing`);
+    throw new Error(`governor ${intent.id} root work is missing`);
   }
-  const work = activeRootExists ? collectSupervisorWork(coordRoot, plans.active_root_work_id) : [];
+  const work = activeRootExists ? collectGovernorWork(coordRoot, plans.active_root_work_id) : [];
   const governed = collectGovernedWork(coordRoot, intent.root_work_id, plans, work);
   return {
     intent,
@@ -335,12 +332,12 @@ function readSupervisorInternal(
 
 function deriveProjection(
   coordRoot: string,
-  intent: SupervisorIntent,
+  intent: GovernorIntent,
   work: WorkRecord[],
   governed: WorkRecord[],
-  plans: SupervisorPlanHistory,
+  plans: GovernorPlanHistory,
   ignoreLease: boolean,
-): SupervisorProjection {
+): GovernorProjection {
   const root = work.find((record) => record.intent.id === plans.active_root_work_id);
   const attemptsUsed = governed.reduce((sum, record) => sum + record.projection.attempts_used, 0);
   // The goal budget, like the per-item budget, counts only charged attempts
@@ -438,11 +435,11 @@ function deriveProjection(
     ...(replanConsumption.planner_no_proposal > 0 ? { replan_consumption: replanConsumption } : {}),
     governed_work_ids: governed.map((record) => record.intent.id),
   };
-  if (!ignoreLease && supervisorLeaseIsLive(coordRoot, intent.id)) {
+  if (!ignoreLease && governorLeaseIsLive(coordRoot, intent.id)) {
     return {
       ...base,
       state: "running",
-      reason: "the foreground supervisor holds the goal lease",
+      reason: "the foreground governor holds the goal lease",
       next_action: "wait_for_run",
     };
   }
@@ -531,7 +528,7 @@ function deriveProjection(
     // dispatchable — the vendor may have recovered. canReplan reads
     // chargedReplans, so these uncharged attempts do not exhaust max_replans.
   }
-  const triggerFingerprint = supervisorGraphFingerprint({
+  const triggerFingerprint = governorGraphFingerprint({
     rootWorkId: plans.active_root_work_id,
     generation: plans.generation,
     work,
@@ -572,7 +569,7 @@ function deriveProjection(
       next_action: "plan_initial",
     };
   }
-  if (!root) throw new Error(`supervisor ${intent.id} root work is missing`);
+  if (!root) throw new Error(`governor ${intent.id} root work is missing`);
   if (root.projection.state === "succeeded" && intent.mission) {
     if (!intent.replanning || chargedReplans >= intent.replanning.max_replans) {
       return {
@@ -726,7 +723,7 @@ interface ReplanConsumption {
  * environment/upstream planner failures (ADR 0046) do not spend the replan
  * budget and are attributed to their outside precondition, not counted here.
  */
-function classifyReplanConsumption(plans: SupervisorPlanHistory): ReplanConsumption {
+function classifyReplanConsumption(plans: GovernorPlanHistory): ReplanConsumption {
   let reviewerRejection = 0;
   let plannerNoProposal = 0;
   for (const plan of plans.plans) {
@@ -764,7 +761,7 @@ function classifyReplanConsumption(plans: SupervisorPlanHistory): ReplanConsumpt
  * to review just because its final, reviewed plan happened to be rejected.
  */
 function exhaustedAttentionReason(
-  latest: SupervisorPlanRecord,
+  latest: GovernorPlanRecord,
   consumption: ReplanConsumption,
 ): string {
   const fallback = latest.reason ?? `plan ${latest.request.id} requires attention`;
@@ -782,33 +779,33 @@ function replanBudgetReason(base: string, consumption: ReplanConsumption): strin
   return `${base}; ${count} replan${count === 1 ? "" : "s"} ended with the planner producing no proposal`;
 }
 
-function readSupervisorIntent(coordRoot: string, goalId: string): SupervisorIntent {
-  assertSupervisorId(goalId);
-  const path = supervisorIntentPath(coordRoot, goalId);
-  if (!existsSync(path)) throw new Error(`supervisor ${goalId} does not exist`);
+function readGovernorIntent(coordRoot: string, goalId: string): GovernorIntent {
+  assertGovernorId(goalId);
+  const path = governorIntentPath(coordRoot, goalId);
+  if (!existsSync(path)) throw new Error(`governor ${goalId} does not exist`);
   const size = statSync(path).size;
   if (size <= 0 || size > MAX_INTENT_BYTES) {
-    throw new Error(`supervisor intent has invalid size ${size}`);
+    throw new Error(`governor intent has invalid size ${size}`);
   }
-  let intent: SupervisorIntent;
+  let intent: GovernorIntent;
   try {
-    intent = JSON.parse(readFileSync(path, "utf8")) as SupervisorIntent;
+    intent = JSON.parse(readFileSync(path, "utf8")) as GovernorIntent;
   } catch (error) {
-    throw new Error(`cannot parse supervisor intent ${goalId}: ${(error as Error).message}`);
+    throw new Error(`cannot parse governor intent ${goalId}: ${(error as Error).message}`);
   }
   validateIntent(intent, goalId);
   return intent;
 }
 
-function validateIntent(intent: SupervisorIntent, goalId: string): void {
+function validateIntent(intent: GovernorIntent, goalId: string): void {
   if (
-    intent.schema_version !== SUPERVISOR_INTENT_SCHEMA_VERSION ||
+    intent.schema_version !== GOVERNOR_INTENT_SCHEMA_VERSION ||
     intent.id !== goalId ||
     !validTimestamp(intent.created_at)
   ) {
-    throw new Error(`supervisor intent ${goalId} has an unsupported or mismatched schema`);
+    throw new Error(`governor intent ${goalId} has an unsupported or mismatched schema`);
   }
-  bounded(intent.title, "supervisor title", MAX_TITLE);
+  bounded(intent.title, "governor title", MAX_TITLE);
   assertWorkId(intent.root_work_id);
   if (intent.mission) {
     const normalizedMission = normalizeMission({
@@ -817,79 +814,79 @@ function validateIntent(intent: SupervisorIntent, goalId: string): void {
       maxMilestones: intent.mission.max_milestones,
     });
     if (JSON.stringify(normalizedMission) !== JSON.stringify(intent.mission)) {
-      throw new Error(`supervisor intent ${goalId} mission is not canonical`);
+      throw new Error(`governor intent ${goalId} mission is not canonical`);
     }
     if (!intent.replanning) {
-      throw new Error(`supervisor intent ${goalId} mission requires replanning`);
+      throw new Error(`governor intent ${goalId} mission requires replanning`);
     }
   }
   const specialists = normalizeWorkflowSpecialists(intent.specialists);
   if (JSON.stringify(specialists) !== JSON.stringify(intent.specialists)) {
-    throw new Error(`supervisor intent ${goalId} specialists are not canonical`);
+    throw new Error(`governor intent ${goalId} specialists are not canonical`);
   }
   if (JSON.stringify(normalizeLimits(intent.limits)) !== JSON.stringify(intent.limits)) {
-    throw new Error(`supervisor intent ${goalId} limits are not canonical`);
+    throw new Error(`governor intent ${goalId} limits are not canonical`);
   }
   if (
     JSON.stringify(normalizeAutomation(intent.automation)) !== JSON.stringify(intent.automation)
   ) {
-    throw new Error(`supervisor intent ${goalId} automation policy is not canonical`);
+    throw new Error(`governor intent ${goalId} automation policy is not canonical`);
   }
   if (intent.replanning) validateReplanning(intent.replanning, specialists, intent.limits, goalId);
 }
 
-function normalizeMission(input: CreateSupervisorMissionInput): SupervisorMission {
+function normalizeMission(input: CreateGovernorMissionInput): GovernorMission {
   if (!Array.isArray(input.acceptance)) {
-    throw new Error("supervisor mission acceptance must be an array");
+    throw new Error("governor mission acceptance must be an array");
   }
   if (input.acceptance.length < 1 || input.acceptance.length > MAX_ACCEPTANCE) {
-    throw new Error(`supervisor mission acceptance must contain 1 to ${MAX_ACCEPTANCE} criteria`);
+    throw new Error(`governor mission acceptance must contain 1 to ${MAX_ACCEPTANCE} criteria`);
   }
   const acceptance = input.acceptance.map((criterion, index) =>
-    bounded(criterion, `supervisor mission acceptance[${index}]`, 500),
+    bounded(criterion, `governor mission acceptance[${index}]`, 500),
   );
   if (new Set(acceptance).size !== acceptance.length) {
-    throw new Error("supervisor mission acceptance criteria must be unique");
+    throw new Error("governor mission acceptance criteria must be unique");
   }
   return {
-    objective: bounded(input.objective, "supervisor mission objective", MAX_OBJECTIVE),
+    objective: bounded(input.objective, "governor mission objective", MAX_OBJECTIVE),
     acceptance,
-    max_milestones: positive(input.maxMilestones ?? 4, "supervisor mission max_milestones", 20),
+    max_milestones: positive(input.maxMilestones ?? 4, "governor mission max_milestones", 20),
   };
 }
 
-function missionTitle(mission: SupervisorMission): string {
+function missionTitle(mission: GovernorMission): string {
   return mission.objective.length <= MAX_TITLE
     ? mission.objective
     : `${mission.objective.slice(0, MAX_TITLE - 1).trimEnd()}…`;
 }
 
-function normalizeLimits(input: Partial<SupervisorLimits> | undefined): SupervisorLimits {
+function normalizeLimits(input: Partial<GovernorLimits> | undefined): GovernorLimits {
   return {
-    max_cycles: positive(input?.max_cycles ?? 50, "supervisor max_cycles", 1_000),
+    max_cycles: positive(input?.max_cycles ?? 50, "governor max_cycles", 1_000),
     max_runtime_ms: positive(
       input?.max_runtime_ms ?? 4 * 60 * 60 * 1_000,
-      "supervisor max_runtime_ms",
+      "governor max_runtime_ms",
       7 * 24 * 60 * 60 * 1_000,
     ),
-    max_parallel_work: positive(input?.max_parallel_work ?? 1, "supervisor max_parallel_work", 20),
+    max_parallel_work: positive(input?.max_parallel_work ?? 1, "governor max_parallel_work", 20),
     max_total_attempts: positive(
       input?.max_total_attempts ?? 100,
-      "supervisor max_total_attempts",
+      "governor max_total_attempts",
       10_000,
     ),
     max_agents_per_work: positive(
       input?.max_agents_per_work ?? 20,
-      "supervisor max_agents_per_work",
+      "governor max_agents_per_work",
       1_000,
     ),
-    agent_concurrency: positive(input?.agent_concurrency ?? 4, "supervisor agent_concurrency", 100),
+    agent_concurrency: positive(input?.agent_concurrency ?? 4, "governor agent_concurrency", 100),
   };
 }
 
 function normalizeAutomation(
-  input: Partial<SupervisorAutomationPolicy> | undefined,
-): SupervisorAutomationPolicy {
+  input: Partial<GovernorAutomationPolicy> | undefined,
+): GovernorAutomationPolicy {
   return {
     accept_passing_proof: boolean(input?.accept_passing_proof ?? false, "accept_passing_proof"),
     resume_approved: boolean(input?.resume_approved ?? true, "resume_approved"),
@@ -898,10 +895,10 @@ function normalizeAutomation(
 }
 
 function normalizeReplanning(
-  input: CreateSupervisorReplanningInput,
+  input: CreateGovernorReplanningInput,
   specialistsInput: Readonly<Record<string, WorkflowSpecialistProfile>>,
-  limits: SupervisorLimits,
-): SupervisorReplanningPolicy {
+  limits: GovernorLimits,
+): GovernorReplanningPolicy {
   const specialists = normalizeWorkflowSpecialists(specialistsInput);
   const plannerSpecialist = bounded(input.plannerSpecialist, "planner specialist", 100);
   if (!specialists[plannerSpecialist]) {
@@ -965,17 +962,17 @@ function normalizeReplanning(
 }
 
 function normalizeReviewPolicy(
-  input: NonNullable<CreateSupervisorReplanningInput["review"]>,
+  input: NonNullable<CreateGovernorReplanningInput["review"]>,
   specialists: Record<string, WorkflowSpecialistProfile>,
   plannerSpecialist: string,
-  limits: SupervisorLimits,
-): NonNullable<SupervisorReplanningPolicy["review"]> {
+  limits: GovernorLimits,
+): NonNullable<GovernorReplanningPolicy["review"]> {
   if (!Array.isArray(input.reviewerSpecialists) || input.reviewerSpecialists.length < 1) {
     throw new Error("replanning review requires at least one reviewer specialist");
   }
-  if (input.reviewerSpecialists.length > MAX_SUPERVISOR_PLAN_REVIEWERS) {
+  if (input.reviewerSpecialists.length > MAX_GOVERNOR_PLAN_REVIEWERS) {
     throw new Error(
-      `replanning review cannot exceed ${MAX_SUPERVISOR_PLAN_REVIEWERS} reviewer specialists`,
+      `replanning review cannot exceed ${MAX_GOVERNOR_PLAN_REVIEWERS} reviewer specialists`,
     );
   }
   const reviewerSpecialists = input.reviewerSpecialists.map((specialist, index) =>
@@ -995,7 +992,7 @@ function normalizeReviewPolicy(
   const maxRevisionRounds = nonNegative(
     input.maxRevisionRounds,
     "replanning review max_revision_rounds",
-    MAX_SUPERVISOR_PLAN_REVISION_ROUNDS,
+    MAX_GOVERNOR_PLAN_REVISION_ROUNDS,
   );
   const worstCaseAgents =
     1 + reviewerSpecialists.length * (maxRevisionRounds + 1) + maxRevisionRounds;
@@ -1011,24 +1008,24 @@ function normalizeReviewPolicy(
 }
 
 function validateReplanning(
-  policy: SupervisorReplanningPolicy,
+  policy: GovernorReplanningPolicy,
   specialists: Record<string, WorkflowSpecialistProfile>,
-  limits: SupervisorLimits,
+  limits: GovernorLimits,
   goalId: string,
 ): void {
   if (!specialists[policy.planner_specialist]) {
-    throw new Error(`supervisor ${goalId} planner specialist is not in the frozen team`);
+    throw new Error(`governor ${goalId} planner specialist is not in the frozen team`);
   }
   boolean(policy.auto_apply, "replanning auto_apply");
   positive(policy.max_replans, "replanning max_replans", 100);
   positive(policy.max_work_items_per_plan, "replanning max_work_items_per_plan", 25);
   positive(policy.max_total_work_items, "replanning max_total_work_items", 100);
   if (policy.max_work_items_per_plan > policy.max_total_work_items) {
-    throw new Error(`supervisor ${goalId} replanning work-item bounds are inconsistent`);
+    throw new Error(`governor ${goalId} replanning work-item bounds are inconsistent`);
   }
   const entries = Object.entries(policy.templates ?? {});
   if (entries.length < 1 || entries.length > MAX_TEMPLATES) {
-    throw new Error(`supervisor ${goalId} has invalid replanning templates`);
+    throw new Error(`governor ${goalId} has invalid replanning templates`);
   }
   let rootCapable = false;
   for (const [id, template] of entries) {
@@ -1041,32 +1038,32 @@ function validateReplanning(
       template.max_attempts > 100 ||
       typeof template.root !== "boolean"
     ) {
-      throw new Error(`supervisor ${goalId} replanning template ${id} is invalid`);
+      throw new Error(`governor ${goalId} replanning template ${id} is invalid`);
     }
     rootCapable ||= template.root;
   }
-  if (!rootCapable) throw new Error(`supervisor ${goalId} has no root-capable replanning template`);
+  if (!rootCapable) throw new Error(`governor ${goalId} has no root-capable replanning template`);
   if (policy.review !== undefined) {
     const review = policy.review;
     if (
       !Array.isArray(review.reviewer_specialists) ||
       review.reviewer_specialists.length < 1 ||
-      review.reviewer_specialists.length > MAX_SUPERVISOR_PLAN_REVIEWERS ||
+      review.reviewer_specialists.length > MAX_GOVERNOR_PLAN_REVIEWERS ||
       !Number.isSafeInteger(review.max_revision_rounds) ||
       review.max_revision_rounds < 0 ||
-      review.max_revision_rounds > MAX_SUPERVISOR_PLAN_REVISION_ROUNDS
+      review.max_revision_rounds > MAX_GOVERNOR_PLAN_REVISION_ROUNDS
     ) {
-      throw new Error(`supervisor ${goalId} replanning review policy is invalid`);
+      throw new Error(`governor ${goalId} replanning review policy is invalid`);
     }
     if (new Set(review.reviewer_specialists).size !== review.reviewer_specialists.length) {
-      throw new Error(`supervisor ${goalId} replanning reviewers are not unique`);
+      throw new Error(`governor ${goalId} replanning reviewers are not unique`);
     }
     for (const specialist of review.reviewer_specialists) {
       if (!specialists[specialist]) {
-        throw new Error(`supervisor ${goalId} reviewer specialist is not in the frozen team`);
+        throw new Error(`governor ${goalId} reviewer specialist is not in the frozen team`);
       }
       if (specialist === policy.planner_specialist) {
-        throw new Error(`supervisor ${goalId} reviewer specialist cannot be planner`);
+        throw new Error(`governor ${goalId} reviewer specialist cannot be planner`);
       }
     }
     const worstCaseAgents =
@@ -1074,7 +1071,7 @@ function validateReplanning(
       review.reviewer_specialists.length * (review.max_revision_rounds + 1) +
       review.max_revision_rounds;
     if (worstCaseAgents > limits.max_agents_per_work) {
-      throw new Error(`supervisor ${goalId} review policy exceeds the agent budget`);
+      throw new Error(`governor ${goalId} review policy exceeds the agent budget`);
     }
   }
 }
@@ -1082,12 +1079,12 @@ function validateReplanning(
 function collectGovernedWork(
   coordRoot: string,
   originalRootWorkId: string,
-  plans: SupervisorPlanHistory,
+  plans: GovernorPlanHistory,
   active: WorkRecord[],
 ): WorkRecord[] {
   const governed = new Map<string, WorkRecord>();
   if (workIntentExists(coordRoot, originalRootWorkId)) {
-    for (const record of collectSupervisorWork(coordRoot, originalRootWorkId)) {
+    for (const record of collectGovernorWork(coordRoot, originalRootWorkId)) {
       governed.set(record.intent.id, record);
     }
   }
@@ -1105,17 +1102,17 @@ function missionRootId(goalId: string): string {
   return `${goalId.slice(0, 87)}-mission-root`;
 }
 
-function supervisorDir(coordRoot: string, goalId: string): string {
-  assertSupervisorId(goalId);
-  return join(resolve(coordRoot), ".harnery", "supervisors", goalId);
+function governorDir(coordRoot: string, goalId: string): string {
+  assertGovernorId(goalId);
+  return join(resolve(coordRoot), ".harnery", "governors", goalId);
 }
 
-function supervisorIntentPath(coordRoot: string, goalId: string): string {
-  return join(supervisorDir(coordRoot, goalId), "intent.json");
+function governorIntentPath(coordRoot: string, goalId: string): string {
+  return join(governorDir(coordRoot, goalId), "intent.json");
 }
 
-function supervisorLeaseIsLive(coordRoot: string, goalId: string): boolean {
-  const lease = readLease(join(supervisorDir(coordRoot, goalId), "lease.json"));
+function governorLeaseIsLive(coordRoot: string, goalId: string): boolean {
+  const lease = readLease(join(governorDir(coordRoot, goalId), "lease.json"));
   return lease ? leaseIsLive(lease) : false;
 }
 
@@ -1157,7 +1154,7 @@ function leaseIsLive(lease: { pid: number; host: string; created_at: string }): 
 function writePrivateJson(path: string, value: unknown): void {
   const body = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(body) > MAX_INTENT_BYTES) {
-    throw new Error(`supervisor intent exceeds ${MAX_INTENT_BYTES} bytes`);
+    throw new Error(`governor intent exceeds ${MAX_INTENT_BYTES} bytes`);
   }
   writeFileSync(path, body, { encoding: "utf8", flag: "wx", mode: 0o600 });
   chmodSync(path, 0o600);
@@ -1186,7 +1183,7 @@ function nonNegative(value: unknown, field: string, max: number): number {
 }
 
 function boolean(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") throw new Error(`supervisor ${field} must be boolean`);
+  if (typeof value !== "boolean") throw new Error(`governor ${field} must be boolean`);
   return value;
 }
 

@@ -2,21 +2,21 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import type {
-  SupervisorServiceConfig,
-  SupervisorServiceRuntime,
-  SupervisorServiceStatus,
-  SupervisorServiceStatusRecord,
+  GovernorServiceConfig,
+  GovernorServiceRuntime,
+  GovernorServiceStatus,
+  GovernorServiceStatusRecord,
 } from "./service.ts";
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_GOALS = 100;
 const FOREIGN_STATUS_STALE_MS = 30_000;
 
-export function readSupervisorServiceConfig(coordRootRaw: string): SupervisorServiceConfig {
+export function readGovernorServiceConfig(coordRootRaw: string): GovernorServiceConfig {
   const coordRoot = resolve(coordRootRaw);
-  const config = readBoundedJson<SupervisorServiceConfig>(
+  const config = readBoundedJson<GovernorServiceConfig>(
     join(serviceDir(coordRoot), "config.json"),
-    "supervisor service configuration",
+    "governor service configuration",
   );
   if (
     config.schema_version !== 1 ||
@@ -35,18 +35,18 @@ export function readSupervisorServiceConfig(coordRootRaw: string): SupervisorSer
     typeof config.engine.subscription_only !== "boolean" ||
     typeof config.engine.allow_api_billing !== "boolean"
   ) {
-    throw new Error("supervisor service configuration has an unsupported schema");
+    throw new Error("governor service configuration has an unsupported schema");
   }
   return config;
 }
 
-export function readSupervisorServiceRuntime(
+export function readGovernorServiceRuntime(
   coordRootRaw: string,
-): SupervisorServiceRuntime | undefined {
+): GovernorServiceRuntime | undefined {
   const coordRoot = resolve(coordRootRaw);
   const path = join(serviceDir(coordRoot), "runtime.json");
   if (!existsSync(path)) return undefined;
-  const runtime = readBoundedJson<SupervisorServiceRuntime>(path, "supervisor service runtime");
+  const runtime = readBoundedJson<GovernorServiceRuntime>(path, "governor service runtime");
   if (
     runtime.schema_version !== 1 ||
     !validTimestamp(runtime.config_created_at) ||
@@ -55,23 +55,23 @@ export function readSupervisorServiceRuntime(
     typeof runtime.goals !== "object" ||
     Array.isArray(runtime.goals)
   ) {
-    throw new Error("supervisor service runtime has an unsupported schema");
+    throw new Error("governor service runtime has an unsupported schema");
   }
   return runtime;
 }
 
-export function readSupervisorServiceStatus(coordRootRaw: string): SupervisorServiceStatus {
+export function readGovernorServiceStatus(coordRootRaw: string): GovernorServiceStatus {
   const coordRoot = resolve(coordRootRaw);
   const record = readStatusRecord(coordRoot);
-  let config: SupervisorServiceConfig | undefined;
-  let runtime: SupervisorServiceRuntime | undefined;
+  let config: GovernorServiceConfig | undefined;
+  let runtime: GovernorServiceRuntime | undefined;
   try {
-    config = readSupervisorServiceConfig(coordRoot);
+    config = readGovernorServiceConfig(coordRoot);
   } catch {
     // Unconfigured or corrupt service state is represented without throwing.
   }
   try {
-    runtime = readSupervisorServiceRuntime(coordRoot);
+    runtime = readGovernorServiceRuntime(coordRoot);
   } catch {
     // Runtime is recoverable and must not make the dashboard unreadable.
   }
@@ -80,15 +80,15 @@ export function readSupervisorServiceStatus(coordRootRaw: string): SupervisorSer
   return { running, stale: !running && record.state !== "stopped", record, config, runtime };
 }
 
-export function supervisorServiceLogPath(coordRoot: string): string {
+export function governorServiceLogPath(coordRoot: string): string {
   return join(serviceDir(resolve(coordRoot)), "service.log");
 }
 
-function readStatusRecord(coordRoot: string): SupervisorServiceStatusRecord | undefined {
+function readStatusRecord(coordRoot: string): GovernorServiceStatusRecord | undefined {
   const path = join(serviceDir(coordRoot), "status.json");
   if (!existsSync(path)) return undefined;
   try {
-    const value = readBoundedJson<SupervisorServiceStatusRecord>(path, "supervisor service status");
+    const value = readBoundedJson<GovernorServiceStatusRecord>(path, "governor service status");
     if (
       value.schema_version !== 1 ||
       !Number.isSafeInteger(value.pid) ||
@@ -106,7 +106,7 @@ function readStatusRecord(coordRoot: string): SupervisorServiceStatusRecord | un
   }
 }
 
-function statusOwnerIsLive(record: SupervisorServiceStatusRecord): boolean {
+function statusOwnerIsLive(record: GovernorServiceStatusRecord): boolean {
   if (record.state === "stopped") return false;
   if (record.host === hostname()) {
     try {
@@ -132,7 +132,7 @@ function readBoundedJson<T>(path: string, label: string): T {
 }
 
 function serviceDir(coordRoot: string): string {
-  return join(coordRoot, ".harnery", "supervisor-service");
+  return join(coordRoot, ".harnery", "governor-service");
 }
 
 function positive(value: unknown): value is number {

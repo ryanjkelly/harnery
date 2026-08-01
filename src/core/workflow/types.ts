@@ -308,7 +308,7 @@ export interface AgentOpts {
  * a package-owned union first. */
 export type HarnessName = string;
 
-/** Durable role defaults supplied by a goal supervisor or embedding host.
+/** Durable role defaults supplied by a goal governor or embedding host.
  * Profiles are frozen into a workflow run manifest before the first spawn. */
 export interface WorkflowSpecialistProfile {
   instructions: string;

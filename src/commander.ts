@@ -39,6 +39,7 @@ import { registerEmlCommand } from "./commands/eml.ts";
 import { registerEnvCommand } from "./commands/env.ts";
 import { registerFetchCommand } from "./commands/fetch.ts";
 import { registerFileHistoryCommand } from "./commands/file-history.ts";
+import { registerGovernorCommand } from "./commands/governor.ts";
 import { registerGrepCommand } from "./commands/grep.ts";
 import { registerHarnessCommand } from "./commands/harness.ts";
 import { registerInitCommand } from "./commands/init.ts";
@@ -48,7 +49,6 @@ import { registerPresenceCommand } from "./commands/presence.ts";
 import { registerReadCommand } from "./commands/read.ts";
 import { registerRelayCommand } from "./commands/relay.ts";
 import { registerScratchCommand } from "./commands/scratch.ts";
-import { registerSupervisorCommand } from "./commands/supervisor.ts";
 import { registerSyncCommand } from "./commands/sync.ts";
 import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
 import { registerTokensCommand } from "./commands/tokens.ts";
@@ -298,7 +298,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerSyncCommand(program, emit);
   registerWorkflowCommand(program, emit);
   registerWorkCommand(program, emit);
-  registerSupervisorCommand(program, emit);
+  registerGovernorCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);
 
   return program;
