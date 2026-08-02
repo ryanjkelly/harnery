@@ -6,6 +6,7 @@ import { StakesPill, StatusPill, TierPill, VerdictPill } from "@/components/deci
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { NavBar } from "@/components/NavBar";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
+import { formatDuration } from "@/lib/changelog-parser";
 import { hostInfo } from "@/lib/config";
 import {
   coordRoot,
@@ -52,7 +53,13 @@ export default function DecisionsPage() {
 
   const everyName = new Set<string>();
   const claimers: Record<string, ClaimerInfo> = {};
-  for (const d of [...snap.queue, ...reviewFeed, ...snap.reviewed, ...snap.closed]) {
+  for (const d of [
+    ...snap.waiting,
+    ...snap.queue,
+    ...reviewFeed,
+    ...snap.reviewed,
+    ...snap.closed,
+  ]) {
     const f = norm(d.filed_by);
     if (f) everyName.add(f);
     const r = norm(d.resolution?.resolved_by);
@@ -85,26 +92,48 @@ export default function DecisionsPage() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Decision docket</h1>
             <p className="text-xs text-muted-foreground mt-1 max-w-2xl">
-              Decisions an agent would otherwise route to a human. Tier 0/1 already proceeded on a
-              default; your review is calibration, not approval. Skim the highest-stakes first.
+              Decisions an agent would otherwise route to a human. Tier 2 is waiting on you and
+              nothing else will move it. Everything below it already proceeded on a default, so your
+              review there is calibration, not approval.
             </p>
           </div>
           <div className="text-xs text-muted-foreground flex gap-3">
+            <Count n={snap.waiting.length} label="waiting on you" />
             <Count n={reviewFeed.length} label="to review" />
             <Count n={snap.queue.length} label="in queue" />
             <Count n={snap.reviewed.length} label="reviewed" />
           </div>
         </header>
 
-        {reviewFeed.length > 0 && (
+        {/* Waiting outranks review for the alert: review is sampling the human
+            can batch, whereas a tier-2 decision has work parked behind it. */}
+        {snap.waiting.length > 0 ? (
           <Attention
             request={{
-              key: `decisions-review-${reviewFeed.length}`,
-              label: `${reviewFeed.length} decision(s) to review`,
+              key: `decisions-waiting-${snap.waiting.length}`,
+              label: `${snap.waiting.length} decision(s) waiting on you`,
             }}
           />
+        ) : (
+          reviewFeed.length > 0 && (
+            <Attention
+              request={{
+                key: `decisions-review-${reviewFeed.length}`,
+                label: `${reviewFeed.length} decision(s) to review`,
+              }}
+            />
+          )
         )}
 
+        <Section
+          title="Waiting on you"
+          hint="Tier 2: an agent judged this yours to call and stopped. Highest stakes first, then longest open."
+          tone="act"
+          decisions={snap.waiting}
+          claimers={claimers}
+          emptyText="Nothing is blocked on a ruling."
+          showAge
+        />
         <Section
           title="To review"
           hint="Resolved and already enacted. Ratify, override, or flag the tier."
@@ -115,7 +144,7 @@ export default function DecisionsPage() {
         />
         <Section
           title="Queue"
-          hint="Filed or in deliberation. Not yet resolved."
+          hint="Tier 0/1, filed or in deliberation. Work already proceeded on a default."
           tone="wait"
           decisions={snap.queue}
           claimers={claimers}
@@ -165,6 +194,7 @@ function Section({
   decisions,
   claimers,
   emptyText,
+  showAge,
 }: {
   title: string;
   hint: string;
@@ -172,6 +202,10 @@ function Section({
   decisions: DecisionManifest[];
   claimers: Record<string, ClaimerInfo>;
   emptyText?: string;
+  /** Render how long each entry has been open. Only the waiting list uses it:
+   * elsewhere age is trivia, but a decision blocking work reads very differently
+   * at three hours than at three weeks, and a filing date does not say which. */
+  showAge?: boolean;
 }) {
   if (decisions.length === 0) {
     if (!emptyText) return null;
@@ -185,9 +219,15 @@ function Section({
   return (
     <section className="mb-8">
       <SectionHeader title={title} hint={hint} count={decisions.length} />
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
         {decisions.map((d) => (
-          <DecisionCard key={d.decision_id} d={d} tone={tone} claimer={claimers[d.decision_id]} />
+          <DecisionCard
+            key={d.decision_id}
+            d={d}
+            tone={tone}
+            claimer={claimers[d.decision_id]}
+            showAge={showAge}
+          />
         ))}
       </div>
     </section>
@@ -216,12 +256,15 @@ function DecisionCard({
   d,
   tone,
   claimer,
+  showAge,
 }: {
   d: DecisionManifest;
   tone: Tone;
   claimer?: ClaimerInfo;
+  showAge?: boolean;
 }) {
   const who = norm(d.filed_by);
+  const age = showAge ? formatDuration(d.filed_at, new Date().toISOString()) : null;
   return (
     <Link
       href={`/decisions/${encodeURIComponent(d.decision_id)}`}
@@ -262,7 +305,14 @@ function DecisionCard({
               </span>
             );
           })()}
-        <FormattedDateTime iso={d.filed_at} className="ml-auto text-muted-foreground" />
+        <span className="ml-auto inline-flex items-center gap-2">
+          {age && (
+            <span className="rounded px-1.5 py-0.5 font-medium text-amber-300/90 bg-amber-400/10">
+              open {age}
+            </span>
+          )}
+          <FormattedDateTime iso={d.filed_at} className="text-muted-foreground" />
+        </span>
       </div>
     </Link>
   );

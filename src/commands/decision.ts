@@ -108,23 +108,45 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .option("--stakes <small|medium|high>", "Filter by stakes")
     .option("--open", "Only non-terminal decisions (the live queue)")
     .option("--archived", "Include archived (graduated/terminal) decisions")
+    .option(
+      "--waiting",
+      "Only what a human still has to rule on: tier 2, unresolved. Oldest-first within stakes.",
+    )
     .action((opts: ListOpts) => {
       const coordRoot = coordRootOrExit();
       const status = opts.status ? parseStatus(opts.status) : undefined;
       const tier = opts.tier !== undefined ? parseTier(opts.tier) : undefined;
       const stakes = opts.stakes ? parseStakes(opts.stakes) : undefined;
-      const rows = listDecisions(coordRoot, {
+      if (opts.waiting && tier !== undefined && tier !== 2) {
+        return fail(
+          "bad_request",
+          "--waiting is tier 2 by definition; drop --tier or pass --tier 2",
+        );
+      }
+      let rows = listDecisions(coordRoot, {
         status,
-        tier,
+        tier: opts.waiting ? 2 : tier,
         stakes,
-        openOnly: opts.open,
-        includeArchived: opts.archived,
+        // --waiting implies the live queue: an archived or resolved decision is
+        // not waiting on anyone.
+        openOnly: opts.open || opts.waiting,
+        includeArchived: opts.waiting ? false : opts.archived,
       }).map(summarize);
+      if (opts.waiting) {
+        rows = rows.filter((r) => !r.resolved).sort(byStakesThenAge);
+      }
       emit.data({
         rows,
         meta: {
           total: rows.length,
-          filter: { status, tier, stakes, open: !!opts.open, archived: !!opts.archived },
+          filter: {
+            status,
+            tier: opts.waiting ? 2 : tier,
+            stakes,
+            open: !!(opts.open || opts.waiting),
+            archived: opts.waiting ? false : !!opts.archived,
+            waiting: !!opts.waiting,
+          },
         },
       });
     });
@@ -351,6 +373,7 @@ interface ListOpts {
   stakes?: string;
   open?: boolean;
   archived?: boolean;
+  waiting?: boolean;
 }
 interface ResolveOpts {
   recommendation: string;
@@ -403,6 +426,17 @@ function collect(value: string, previous: string[]): string[] {
 }
 
 /** Compact row for list/search output — the full manifest is available via `show`. */
+const WAITING_STAKES_RANK: Record<string, number> = { high: 3, medium: 2, small: 1 };
+
+/** Highest stakes first, longest-open breaking ties. Stakes leads because it is
+ * the filer's own triage signal; age breaks ties so a question nobody has
+ * answered in three weeks does not sit behind an equally-weighted fresh one. */
+function byStakesThenAge(a: Record<string, unknown>, b: Record<string, unknown>): number {
+  const rank =
+    (WAITING_STAKES_RANK[String(b.stakes)] ?? 1) - (WAITING_STAKES_RANK[String(a.stakes)] ?? 1);
+  return rank !== 0 ? rank : String(a.filed_at ?? "").localeCompare(String(b.filed_at ?? ""));
+}
+
 function summarize(m: DecisionManifest): Record<string, unknown> {
   return {
     decision_id: m.decision_id,

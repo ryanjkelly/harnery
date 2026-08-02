@@ -95,7 +95,13 @@ function scan(dir: string): DecisionManifest[] {
 }
 
 export interface DecisionsSnapshot {
-  /** Non-terminal, not yet resolved (the live queue): filed / triaged / deliberating. */
+  /** Tier 2, filed and unresolved: the only entries where work is actually
+   * stopped pending a human. Kept apart from `queue` because everything else on
+   * this page has already proceeded on a default, and mixing the two teaches the
+   * reader to skim past the one class that is blocking. */
+  waiting: DecisionManifest[];
+  /** Non-terminal, not yet resolved, tier 0-1 (the live queue): filed / triaged
+   * / deliberating. Work carried on regardless; these are here for precedent. */
   queue: DecisionManifest[];
   /** Resolved or enacted but not yet reviewed (the review feed). */
   review: DecisionManifest[];
@@ -110,21 +116,35 @@ function byFiledDesc(a: DecisionManifest, b: DecisionManifest): number {
   return (b.filed_at ?? "").localeCompare(a.filed_at ?? "");
 }
 
+const WAITING_STAKES_RANK: Record<string, number> = { high: 3, medium: 2, small: 1 };
+
+function byStakesThenAge(a: DecisionManifest, b: DecisionManifest): number {
+  const rank = (WAITING_STAKES_RANK[b.stakes] ?? 1) - (WAITING_STAKES_RANK[a.stakes] ?? 1);
+  return rank !== 0 ? rank : (a.filed_at ?? "").localeCompare(b.filed_at ?? "");
+}
+
 export function readDecisions(): DecisionsSnapshot {
   const active = scan(decisionsDir());
   const archived = scan(archiveDir());
   const all = [...active, ...archived];
 
-  const queue = active
-    .filter((d) => d.status === "filed" || d.status === "triaged" || d.status === "deliberating")
-    .sort(byFiledDesc);
+  const open = active.filter(
+    (d) => d.status === "filed" || d.status === "triaged" || d.status === "deliberating",
+  );
+  // Highest stakes first, longest-open breaking ties. Stakes leads because it is
+  // the filer's own triage signal; age is the tiebreak rather than the primary
+  // key so a decision filed an hour ago at high stakes is not buried under old
+  // small ones. Neglect still shows regardless of position: the card carries how
+  // long it has been open, and a three-week badge is visible anywhere in a list.
+  const waiting = open.filter((d) => d.tier === 2).sort(byStakesThenAge);
+  const queue = open.filter((d) => d.tier !== 2).sort(byFiledDesc);
   const review = active
     .filter((d) => d.status === "resolved" || d.status === "enacted")
     .sort(byFiledDesc);
   const reviewed = active.filter((d) => d.status === "reviewed").sort(byFiledDesc);
   const closed = [...active.filter((d) => isTerminal(d.status)), ...archived].sort(byFiledDesc);
 
-  return { queue, review, reviewed, closed, meta: { count: all.length } };
+  return { waiting, queue, review, reviewed, closed, meta: { count: all.length } };
 }
 
 export interface DecisionDetail {

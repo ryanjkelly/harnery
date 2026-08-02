@@ -28,6 +28,7 @@ councils.
 ```
 harn decision file <question...>   # file a decision; --tier --stakes --context --default-taken --brief
 harn decision list                 # active queue, newest first; --status --tier --stakes --open --archived
+harn decision list --waiting       # only what a human still owes a ruling on (tier 2, unresolved)
 harn decision show <id>            # one decision: manifest + long-form bodies
 harn decision search <query...>    # substring search over questions/context/resolutions/bodies (incl. archive)
 harn decision claim <id>           # claim for deliberation (--owner to override)
@@ -96,6 +97,11 @@ harn decision file "Which retry backoff for the ingest cron?" \
 
 # The live queue, highest-tier first is up to the reader; default is newest-first
 harn decision list --open
+
+# What is actually blocked on a person: tier 2, unresolved, highest stakes first
+# and longest-open breaking ties. Everything else on the docket already proceeded
+# on a default, so this is the only list where work is stopped waiting.
+harn decision list --waiting
 
 # Deliberate + resolve with cited evidence
 harn decision claim <id>
