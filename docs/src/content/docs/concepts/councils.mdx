@@ -17,7 +17,7 @@ Use it to review the design of a hot-path migration, pick between two refactor a
 
 ```bash
 # Create a council with an objective + named members.
-harn agents council create "Pick the strangler-fig order" \
+harn council create "Pick the strangler-fig order" \
   --member Alpha --member Beta --member Gamma \
   --target-doc docs/migration-plan.md
 
@@ -25,19 +25,19 @@ harn agents council create "Pick the strangler-fig order" \
 #   .harnery/councils/<id>/round-N/<their-name>.md
 
 # Check who's contributed this round:
-harn agents council show <id>
+harn council show <id>
 
 # Once all members have contributed, advance to the next round.
 # (Or auto-advance by passing --auto-advance to create.)
-harn agents council advance <id>
+harn council advance <id>
 
 # When converged: close it. The status flips to "closed"; the manifest +
 # body stay on disk for the historical record.
-harn agents council close <id>
+harn council close <id>
 
 # Or archive (manifest + body moved to .harnery/councils/archive/) to keep
 # the active list lean.
-harn agents council archive <id>
+harn council archive <id>
 ```
 
 ## Manifest shape

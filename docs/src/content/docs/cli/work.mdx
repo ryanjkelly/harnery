@@ -113,7 +113,7 @@ synthesizing context. It remains the same attempt and retains its original
 `ctx.attempt`.
 
 When host policy parks the workflow, the work item derives
-`awaiting_approval`. Resolve the request with `harn workflow approvals`, then
+`awaiting_approval`. Resolve the request with `harn approval`, then
 run the work item again. Harnery resumes the same workflow run and does not
 charge another attempt. A failed or lost run derives `blocked`; only the
 explicit `retry` command creates a new attempt, and the immutable attempt

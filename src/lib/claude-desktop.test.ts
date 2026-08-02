@@ -113,7 +113,7 @@ describe("planMirror + applyMirror", () => {
   });
 
   test("session selectors match id exactly and title as substring", () => {
-    writeEntry(ACCT_A, "one", { title: "Agent Yann - Shopify Theme v2" });
+    writeEntry(ACCT_A, "one", { title: "Agent Yann - Storefront Rewrite" });
     writeEntry(ACCT_A, "two", { title: "Agent Beatrice - Rebuy Data Extraction" });
     // an empty second account to mirror into
     mkdirSync(join(dataDir, "claude-code-sessions", ACCT_B), { recursive: true });

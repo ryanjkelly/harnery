@@ -39,12 +39,12 @@ harn agents health              # one-screen coord-layer health rollup
 harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fixed drift)
 ```
 
-Two further subtrees live under `agents` for advanced use: `harn agents council`
-(convene a temporary group for structured multi-round deliberation) and
-`harn agents identity` (the durable per-agent persona registry). Two more are
-recovery tools: `harn agents heal` forces a specific recovery action on one
-agent, and `harn agents adapter-probe` diagnoses adapter wiring. Run
-`harn agents <sub> --help` for any of them.
+One further subtree lives under `agents` for advanced use: `harn agents identity`
+(the durable per-agent persona registry). Two more are recovery tools:
+`harn agents heal` forces a specific recovery action on one agent, and
+`harn agents adapter-probe` diagnoses adapter wiring. Run
+`harn agents <sub> --help` for any of them. Councils are their own top-level
+command — see [Councils](/concepts/councils/).
 
 ### identity assume
 

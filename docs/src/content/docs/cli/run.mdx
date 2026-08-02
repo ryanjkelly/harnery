@@ -1,29 +1,29 @@
 ---
-title: harn workflow
+title: harn run
 description: Run bounded, schema-gated, conditionally-routed multi-subagent workflow scripts. Subagents spawn as headless adapter-CLI subprocesses, registered in the coordination layer.
 sidebar:
   order: 30
 ---
 
 ```
-harn workflow run <script> [--adapter <name>] [--resume-from <run-id>]
+harn run <script> [--adapter <name>] [--resume-from <run-id>]
                            [--subscription-only] [--allow-api-billing]
                            [--policy <file>] [--isolation <mode>]
                            [--workspace-root <dir>] [--approval-to <address>]
                            [--max-agents <n>] [--concurrency <n>] [--cwd <dir>] [--json]
-harn workflow resume <run-id> [--json]
-harn workflow workspace <run-id> [--json]
-harn workflow workspaces [--json]
-harn workflow integration prepare <run-id> --policy <file> [--reviewer <name>]
+harn run resume <run-id> [--json]
+harn run workspace <run-id> [--json]
+harn run workspaces [--json]
+harn run integration prepare <run-id> --policy <file> [--reviewer <name>]
                                     [--reason <text>] [--target-root <dir>]
                                     [--accept-unknown <code>] [--approval-to <address>] [--json]
-harn workflow integration apply <run-id> --yes [--json]
-harn workflow cleanup <run-id> --yes [--json]
-harn workflow reclaim <run-id> --yes [--discard] [--json]
-harn workflow approvals list [--status pending|approved|denied] [--json]
-harn workflow approvals show <approval-id> [--json]
-harn workflow approvals approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
-harn workflow proof <run-id> [--json]
+harn run integration apply <run-id> --yes [--json]
+harn run cleanup <run-id> --yes [--json]
+harn run reclaim <run-id> --yes [--discard] [--json]
+harn approval list [--status pending|approved|denied] [--json]
+harn approval show <approval-id> [--json]
+harn approval approve|deny <approval-id> [--actor <name>] [--reason <text>] [--json]
+harn run proof <run-id> [--json]
 ```
 
 A workflow is a small throwaway JS script with staged fan-out: the **script**
@@ -257,6 +257,7 @@ prompt.
 | `log(message)` | Narrate progress (stderr + transcript). |
 | `evidence(input)` | Attach a bounded receipt to the run and optional acceptance IDs. Returns a stable ID such as `e1`. Kinds: `test`, `command`, `artifact`, `change`, `review`, `observation`. Statuses: `passed`, `failed`, `observed`, `unknown`. |
 | `authorize(input)` | Authorize one host-mediated external mutation before performing it. Input includes a short `action` plus optional `path`, `network`, `service`, and bounded `target`. Returns the final allow decision; denial or missing host policy throws before control returns. |
+| `blocked(input)` | Stop the run because a human must rule. Input is a `reason` sentence plus the docket `decision` id. Never returns. See [Blocking on a human](#blocking-on-a-human). |
 
 An evidence kind outside that set is caught before the run starts. `evidence()`
 sits near the end of a workflow by construction, so an invalid kind used to throw
@@ -271,6 +272,66 @@ only checked when the call executes.
 separate effort option through Harnery because its effort syntax is embedded
 inside some parameterized model ids. See [`harn adapter`](./adapter/) for the
 executable capability declaration.
+
+### Blocking on a human
+
+Some work cannot be finished by any agent, however good, because the open
+question belongs to a person: a product trade-off, a spend authorization, a
+call about risk. `ctx.blocked()` is how a script says so.
+
+```js
+export default async (ctx) => {
+  const verdict = await ctx.agent(reviewPrompt, { schema: VERDICT });
+  if (verdict.needsRuling) {
+    ctx.blocked({
+      reason: "which subsystem owns the cart is unsettled",
+      decision: "who-owns-the-cart-2026-08-01-beaf",
+    });
+  }
+  // …
+};
+```
+
+This is not an error path, and using it as one defeats it. A plain `throw` means
+*the work failed and a retry might do better*. `blocked()` means the opposite:
+the script was right, and the blocker is a person.
+
+The distinction is load-bearing because it changes what happens next:
+
+- The attempt is **uncharged**, so once the decision lands the item retries with
+  its full budget. The same three classes share this treatment — see
+  [failure classes](#failure-classes).
+- The work item goes to `blocked` with `next_action: "none"`, so a
+  [`harn governor`](./governor/) running with `retry_blocked` **cannot re-issue
+  it**. That automation exists to clear failures without a human; a correct
+  refusal is not a failure.
+- The goal's own reason names the decision rather than reporting a count of
+  items "needing intervention", and `decision_blocked_work` on the projection
+  carries the work/decision pairs for anything rendering a queue.
+
+Without a class of its own, a correct refusal and a botched attempt look
+identical to the engine. It re-issues the item, the next agent reaches the same
+correct conclusion, and the loop repeats until the budget is gone — with nobody
+told, because the thing it is waiting for is a person who was never asked.
+
+Pass the `decision` id whenever you have one; it is what turns "something needs
+a human" into a question someone can actually answer. File it first with
+[`harn decision`](./decision/). Blocking without an id still stops the item, but
+the operator gets prose and has to go find the question themselves.
+
+### Failure classes
+
+A failed run carries an optional class saying the failure was *uninformative
+about the work*. All three mean the attempt is not charged against
+`max_attempts`, because nothing was learned about whether the work is doable:
+
+| Class | Meaning | Retry |
+| --- | --- | --- |
+| `environment` | A precondition was missing; the run never started (the adapter CLI was absent). | Stops. Retrying an unchanged environment cannot help. |
+| `upstream` | The vendor was reached and refused (5xx, 429, circuit open). | Stays available, bounded by `max_uncharged_attempts`. |
+| `decision` | The script called `blocked()`: a human must rule. | Stops. Only a ruling clears it. |
+
+Absent class ⇒ an ordinary work failure, charged and retryable as before.
 
 ### Specialist profiles
 
@@ -348,7 +409,7 @@ instructions alone are not sufficient isolation.
 The local provider needs an explicit writable parent:
 
 ```bash
-harn workflow run ./review.mjs \
+harn run ./review.mjs \
   --isolation worktree \
   --workspace-root ../workflow-workspaces \
   --policy ./workflow-policy.json
@@ -368,9 +429,9 @@ shared execution.
 Inspect one run or list all isolated and compatibility decisions:
 
 ```bash
-harn workflow workspace wf-2026-07-24T02-10-00-000Z-a1b2c3
-harn workflow workspace wf-2026-07-24T02-10-00-000Z-a1b2c3 --json
-harn workflow workspaces
+harn run workspace wf-2026-07-24T02-10-00-000Z-a1b2c3
+harn run workspace wf-2026-07-24T02-10-00-000Z-a1b2c3 --json
+harn run workspaces
 ```
 
 The status reader validates the manifest, proof, provider event chain,
@@ -382,14 +443,14 @@ explicit invalid inspection.
 Finish a verified standalone run in explicit phases:
 
 ```bash
-harn workflow integration prepare <run-id> \
+harn run integration prepare <run-id> \
   --policy ./integration-policy.json \
   --reviewer sam \
   --reason "reviewed the exact proof and diff" \
   --accept-unknown network_not_attested
 
-harn workflow integration apply <run-id> --yes
-harn workflow cleanup <run-id> --yes
+harn run integration apply <run-id> --yes
+harn run cleanup <run-id> --yes
 ```
 
 Preparation previews the fast-forward and writes review, plan, and policy
@@ -423,8 +484,8 @@ Cleanup will keep finding the same dirty tree and preserving it again, so
 ([ADR 0042](/decisions/0042-dirty-workspace-reclaim/)):
 
 ```bash
-harn workflow reclaim <run-id> --yes             # salvage the work, then release
-harn workflow reclaim <run-id> --discard --yes   # throw the work away, then release
+harn run reclaim <run-id> --yes             # salvage the work, then release
+harn run reclaim <run-id> --discard --yes   # throw the work away, then release
 ```
 
 Salvage commits the uncommitted work to a durable `harnery/salvage/<run-id>`
@@ -436,7 +497,7 @@ hands off to the ordinary cleanup path, so cleanup stays the only thing that
 removes a worktree. A workspace whose directory is already gone reports
 `already_gone` instead of failing.
 
-`harn workflow workspace <run-id>` lists the dirty paths, so the choice between
+`harn run workspace <run-id>` lists the dirty paths, so the choice between
 salvaging and discarding can be made without leaving Harnery.
 
 ## Resume
@@ -455,11 +516,11 @@ A CLI run that reaches policy `ask` writes `run.parked`, prints its approval
 ID, and exits without `run.end` or a terminal proof. Inspect and resolve it:
 
 ```bash
-harn workflow approvals list --status pending
-harn workflow approvals show apr-0123456789abcdef0123
-harn workflow approvals approve apr-0123456789abcdef0123 \
+harn approval list --status pending
+harn approval show apr-0123456789abcdef0123
+harn approval approve apr-0123456789abcdef0123 \
   --actor ryan --reason "reviewed the release target"
-harn workflow resume wf-2026-07-21T12-00-00-000Z-a1b2c3
+harn run resume wf-2026-07-21T12-00-00-000Z-a1b2c3
 ```
 
 Requests are immutable private records. Resolution creates a separate
@@ -525,7 +586,7 @@ the declaration but does not claim it independently ran the command or test.
 Repository snapshots and packet integrity are marked separately as
 engine-observed.
 
-Inspect a packet with `harn workflow proof <run-id>`. Human mode renders the
+Inspect a packet with `harn run proof <run-id>`. Human mode renders the
 status, criteria, evidence count, repository drift, unknowns, and transcript
 digest. `--json` emits the stored schema unchanged. Failed `workflow run`
 commands include the proof path in their error output.

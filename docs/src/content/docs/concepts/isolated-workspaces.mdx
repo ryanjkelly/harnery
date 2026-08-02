@@ -19,7 +19,7 @@ review, approval, and policy records keep those decisions.
 Supply both the isolation mode and an explicit writable parent:
 
 ```bash
-harn workflow run ./workflow.mjs \
+harn run ./workflow.mjs \
   --isolation worktree \
   --workspace-root . \
   --policy ./workflow-policy.json
@@ -156,8 +156,8 @@ an incomplete release blocks cleanup and leaves evidence for another attempt.
 Use the CLI:
 
 ```bash
-harn workflow workspace <run-id>
-harn workflow workspaces
+harn run workspace <run-id>
+harn run workspaces
 ```
 
 Or use the product-tier reader:
