@@ -6,8 +6,10 @@ import {
   adapterProofInputs,
   createBuiltinAdapterRegistry,
   probeBinaryVersion,
+  readAttestation,
 } from "../core/adapters/index.ts";
 import { workflowSubscriptionOnly } from "../core/config.ts";
+import { inspectAdapterSpread } from "../core/governor/adapter-spread.ts";
 import {
   approveGovernorPlan,
   type CreateGovernorMissionInput,
@@ -39,6 +41,7 @@ import { loadPolicyFile } from "../core/policy/index.ts";
 import type { WorkflowSpecialistProfile } from "../core/workflow/index.ts";
 
 interface CreateOpts {
+  allowSingleAdapter?: boolean;
   team: string;
   id?: string;
   title?: string;
@@ -96,6 +99,10 @@ export function registerGovernorCommand(program: Command, emit: EmitContext): vo
     .option("--accept-passing-proof", "Allow the governor to explicitly accept passing proof")
     .option("--no-resume-approved", "Stop after an approval instead of resuming its parked run")
     .option("--retry-blocked", "Allow bounded retry of blocked work")
+    .option(
+      "--allow-single-adapter",
+      "Freeze a team even though every specialist lands on one adapter under subscription auth",
+    )
     .option("--replanning <file>", "Frozen planner policy and allowed workflow-template catalog")
     .option("--mission <file>", "Frozen objective, acceptance criteria, and milestone bound")
     .option("--json", "Emit the complete governor record as JSON")
@@ -107,6 +114,21 @@ export function registerGovernorCommand(program: Command, emit: EmitContext): vo
             throw new Error(
               `specialist ${id} names unknown adapter ${JSON.stringify(profile.adapter)}`,
             );
+          }
+        }
+        if (!opts.allowSingleAdapter) {
+          // Refuse a team that would put every child on one subscription seat
+          // while other adapters sit attested and idle. Checked here rather than
+          // at run time because the intent freezes on create with no amend path:
+          // catching it later means recreating the goal.
+          const spread = inspectAdapterSpread({
+            specialists,
+            defaultAdapter: "claude-code",
+            reachable: registry.ids().filter((id) => readAttestation(id) !== null),
+            subscriptionOnly: workflowSubscriptionOnly(coordRoot),
+          });
+          if (spread.concentrated) {
+            throw new Error(`refusing to freeze a single-adapter team: ${spread.reason}`);
           }
         }
         emitGovernor(

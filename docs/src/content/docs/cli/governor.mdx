@@ -12,7 +12,8 @@ harn governor create [root-work-id] --team <file>
                        [--max-parallel-work <n>] [--max-total-attempts <n>]
                        [--max-agents-per-work <n>] [--agent-concurrency <n>]
                        [--accept-passing-proof] [--no-resume-approved]
-                       [--retry-blocked] [--replanning <file>]
+                       [--retry-blocked] [--allow-single-adapter]
+                       [--replanning <file>]
                        [--mission <file>] [--json]
 harn governor list [--json]
 harn governor show <goal-id> [--json]
@@ -90,6 +91,36 @@ Instructions and defaults are copied into the private governor intent. Each
 workflow run freezes that same map in its run manifest, so a parked run resumes
 under exactly the team contract it started with. The original team file may be
 moved or edited without changing existing goals.
+
+### Every specialist on one adapter
+
+Harnery does not auto-spread. A specialist with no `adapter` inherits the run's
+default, so a team where nobody pins one puts every child on the same adapter.
+That is fine under metered billing and fine when nothing else is available. It
+is a trap under `subscriptionOnly`, because the concentration lands on a single
+seat's session meter: the seat hits its limit and the whole team stops at once,
+rather than degrading.
+
+`create` refuses that team. The refusal is narrow — it needs more than one
+specialist, all of them resolving to one adapter, subscription auth in force,
+and **another adapter that is attested reachable**:
+
+```
+refusing to freeze a single-adapter team: no specialist pins an adapter, so all 6
+inherit the default (claude-code), and children are confined to subscription auth
+— so one seat carries the whole team and every specialist stops together when it
+hits its limit. These adapters are attested and idle: codex, cursor.
+```
+
+Attested, not merely registered. A registered adapter that has never completed a
+turn on this machine is not an alternative, and recommending it would trade one
+failure for a quieter one — every child handed to it would fail closed. Only
+[`harn adapter attest`](./adapter/) records that an adapter actually ran, so only
+an attested adapter is grounds for the advice.
+
+It fires at `create` rather than at run time because the intent freezes with no
+amend path; catching it later means recreating the goal. Pass
+`--allow-single-adapter` when one seat is genuinely what you want.
 
 ## Create the graph and goal
 
