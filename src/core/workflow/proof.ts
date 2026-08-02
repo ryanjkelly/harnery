@@ -20,6 +20,7 @@ import type {
   AdapterEvidenceCapability,
   AdapterEvidenceCoverage,
   ResultDigest,
+  RunFailureClass,
   SpawnFailureClass,
   WorkflowAgentProof,
   WorkflowAttemptContext,
@@ -95,6 +96,9 @@ export interface BuildWorkflowProofInput {
     isolation: PolicyIsolation;
     networkAccess: PolicyNetworkAccess;
   };
+  /** Set when the script called ctx.blocked(): the run stopped because a human
+   * must rule. Forces run class "decision" regardless of the agents' classes. */
+  blocked?: { reason: string; decisionId?: string };
   workspaceBinding?: WorkspaceBinding;
   workspaceAttestation?: WorkspaceAttestation;
   workspaceFallback?: WorkspaceUnsupportedExecutionEvidence;
@@ -258,7 +262,13 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
   }));
   const adapters = buildAdapterCoverage(agents, input.adapterEvidence, input.adapterAttestations);
   const unknowns = buildUnknowns(agents, adapters, repository);
-  const runClass = deriveRunFailureClass(input.status, agents);
+  // A declared stop-on-human beats a derived spawn class. If the script said a
+  // human must rule, that is the true reason the run ended, even when some agent
+  // also happened to hit a flaky vendor on the way there.
+  const runClass: RunFailureClass | undefined =
+    input.status === "failed" && input.blocked
+      ? "decision"
+      : deriveRunFailureClass(input.status, agents);
   const transcript = readFileSync(input.transcriptPath);
   return {
     schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
@@ -276,6 +286,9 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
       error: clippedOptional(input.error, MAX_SUMMARY_CHARS),
       result: input.result === undefined ? undefined : digestResult(input.result),
       ...(runClass ? { class: runClass } : {}),
+      ...(runClass === "decision" && input.blocked?.decisionId
+        ? { decision_id: clipped(input.blocked.decisionId, MAX_REF_CHARS) }
+        : {}),
     },
     acceptance,
     agents,
@@ -357,7 +370,8 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
     proof.run?.id !== runId ||
     (proof.run.class !== undefined &&
       proof.run.class !== "environment" &&
-      proof.run.class !== "upstream") ||
+      proof.run.class !== "upstream" &&
+      proof.run.class !== "decision") ||
     (proof.run.work_context !== undefined &&
       (!proof.run.work_item_id ||
         proof.run.work_context.id !== proof.run.work_item_id ||

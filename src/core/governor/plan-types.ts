@@ -1,4 +1,4 @@
-import type { SpawnFailureClass } from "../workflow/types.ts";
+import type { RunFailureClass } from "../workflow/types.ts";
 
 export const GOVERNOR_PLAN_SCHEMA_VERSION = 1 as const;
 export const MAX_GOVERNOR_PLAN_REVIEWERS = 5 as const;
@@ -149,10 +149,11 @@ export interface GovernorPlanEvent {
   root_work_id?: string;
   work_ids?: string[];
   /** Set on a `plan.failed` event whose planner workflow was uninformative about
-   * the plan (ADR 0046): environment (the planner binary was absent) or upstream
-   * (the vendor refused). Read from the planner run's `run.class`. Absent ⇒ a
-   * charged replan, exactly as before. */
-  class?: SpawnFailureClass;
+   * the plan (ADR 0046): environment (the planner binary was absent), upstream
+   * (the vendor refused), or decision (the planner determined a human must rule
+   * before this can be planned). Read from the planner run's `run.class`.
+   * Absent ⇒ a charged replan, exactly as before. */
+  class?: RunFailureClass;
 }
 
 export type GovernorPlanStatus =
@@ -181,7 +182,7 @@ export interface GovernorPlanRecord {
   /** Set on a `failed` plan the planner run classified as uninformative about the
    * plan (ADR 0046). Drives the projection's do-not-charge / stop handling and
    * the consecutive-uncharged bound. Absent ⇒ a charged replan. */
-  class?: SpawnFailureClass;
+  class?: RunFailureClass;
 }
 
 export interface GovernorPlanHistory {

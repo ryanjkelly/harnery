@@ -60,6 +60,7 @@ import { appendWorkflowTranscriptEvent } from "./transcript.ts";
 import type {
   AdapterName,
   AgentOpts,
+  BlockedInput,
   EngineOpts,
   GitAdministrativeGrant,
   RunReport,
@@ -135,6 +136,27 @@ export class WorkflowParkedError extends Error {
     this.runId = runId;
     this.approvalId = approvalId;
     this.transcriptPath = transcriptPath;
+  }
+}
+
+/** Thrown by ctx.blocked(). Carries the run out of the script and into the
+ * failure path, where its presence — not its message — is what stamps the proof
+ * with class "decision". A script cannot fake this by throwing an ordinary
+ * Error with a suggestive message, which is the point: the class has to mean
+ * "the script deliberately declared this", not "the text looked like it". */
+export class WorkflowBlockedError extends Error {
+  readonly reason: string;
+  readonly decisionId?: string;
+
+  constructor(reason: string, decisionId?: string) {
+    super(
+      decisionId
+        ? `blocked on decision ${decisionId}: ${reason}`
+        : `blocked pending a human decision: ${reason}`,
+    );
+    this.name = "WorkflowBlockedError";
+    this.reason = reason;
+    this.decisionId = decisionId;
   }
 }
 
@@ -1079,6 +1101,16 @@ async function executeWorkflow(
     });
   };
 
+  const blocked = (input: BlockedInput): never => {
+    const reason = input.reason.trim();
+    if (!reason) throw new Error("ctx.blocked() requires a reason");
+    transcript("run.blocked", {
+      reason,
+      ...(input.decision ? { decision_id: input.decision } : {}),
+    });
+    throw new WorkflowBlockedError(reason, input.decision);
+  };
+
   const ctx: WorkflowContext = {
     work: workContext,
     attempt: attemptContext,
@@ -1088,6 +1120,7 @@ async function executeWorkflow(
     log,
     evidence,
     authorize,
+    blocked,
   };
   try {
     if (resumeState) {
@@ -1252,6 +1285,13 @@ async function executeWorkflow(
         workspaceAttestation,
         workspaceFallback,
         error: (err as Error).message,
+        // A deliberate stop-on-human, not a work failure. Overrides whatever the
+        // agents' own classes would have derived: the script's determination is
+        // the more specific fact about why this run ended.
+        blocked:
+          err instanceof WorkflowBlockedError
+            ? { reason: err.reason, decisionId: err.decisionId }
+            : undefined,
       });
       writeWorkflowProof(proofPath, proof);
     } catch (proofError) {

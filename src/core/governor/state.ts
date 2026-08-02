@@ -120,6 +120,10 @@ export interface GovernorProjection {
   resumable_work: string[];
   retryable_work: string[];
   attention_work: string[];
+  /** Work stopped because a human must rule, with the docket id when the script
+   * named one. Empty in the ordinary case. A reader that wants to tell an
+   * operator what is actually waiting on them should start here. */
+  decision_blocked_work: Array<{ work_id: string; decision_id?: string }>;
   attempts_used: number;
   attempts_remaining: number;
   specialists: string[];
@@ -348,8 +352,7 @@ function deriveProjection(
   // count: an uncharged planner failure (environment/upstream) does not spend
   // max_replans. replans_used stays the raw count for display.
   const unchargedReplans = plans.plans.filter(
-    (plan) =>
-      plan.status === "failed" && (plan.class === "environment" || plan.class === "upstream"),
+    (plan) => plan.status === "failed" && isUnchargedPlanClass(plan.class),
   ).length;
   const chargedReplans = plans.plans.length - unchargedReplans;
   // Attribute the consumed replans that did not advance the graph so the
@@ -391,6 +394,15 @@ function deriveProjection(
       (record) => record.projection.state === "blocked" && record.projection.next_action === "none",
     )
     .map((record) => record.intent.id);
+  // Work stopped on a person, kept apart from the rest of terminalBlocked. Every
+  // other terminal block is something an agent could in principle clear; this one
+  // can only be cleared by a ruling, so it is the thing worth saying out loud.
+  const decisionBlocked = work
+    .filter((record) => record.projection.blocked_on_decision !== undefined)
+    .map((record) => ({
+      work_id: record.intent.id,
+      decision_id: record.projection.blocked_on_decision || undefined,
+    }));
   const attentionWork = unique([
     ...pendingApproval,
     ...(intent.automation.accept_passing_proof ? [] : reviews),
@@ -422,6 +434,7 @@ function deriveProjection(
     resumable_work: resumableWork,
     retryable_work: retryableWork,
     attention_work: attentionWork,
+    decision_blocked_work: decisionBlocked,
     attempts_used: attemptsUsed,
     attempts_remaining: Math.max(0, intent.limits.max_total_attempts - chargedUsed),
     specialists: Object.keys(intent.specialists),
@@ -504,6 +517,17 @@ function deriveProjection(
       next_action: "none",
     };
   }
+  if (plans.latest?.status === "failed" && plans.latest.class === "decision") {
+    // The planner concluded that a human must rule before this can be planned.
+    // Stop and say so. Replanning would re-ask a question the planner already
+    // answered correctly, which is how a goal spins without a person noticing.
+    return {
+      ...base,
+      state: "blocked",
+      reason: `planning is waiting on a human decision: ${plans.latest.reason ?? "the planner did not say which"}`,
+      next_action: "none",
+    };
+  }
   if (plans.latest?.status === "failed" && plans.latest.class === "upstream") {
     // The vendor refused. Uncharged replans do not spend max_replans, so the
     // only brake on an unending outage is this consecutive bound; at the limit
@@ -511,7 +535,7 @@ function deriveProjection(
     let trailingUncharged = 0;
     for (let index = plans.plans.length - 1; index >= 0; index--) {
       const plan = plans.plans[index]!;
-      if (plan.status !== "failed" || (plan.class !== "environment" && plan.class !== "upstream")) {
+      if (plan.status !== "failed" || !isUnchargedPlanClass(plan.class)) {
         break;
       }
       trailingUncharged++;
@@ -702,12 +726,28 @@ function deriveProjection(
   return {
     ...base,
     state: "blocked",
+    // Lead with the decisions when there are any. "3 work items need
+    // intervention" reads as a queue an agent will get to; "waiting on you to
+    // rule on X" is the only phrasing that reaches the person who can clear it.
     reason:
-      attentionWork.length > 0
-        ? `${attentionWork.length} work item${attentionWork.length === 1 ? " needs" : "s need"} intervention`
-        : "goal graph has no legal progress action",
+      decisionBlocked.length > 0
+        ? `${decisionBlocked.length} work item${decisionBlocked.length === 1 ? " is" : "s are"} waiting on a human decision: ${describeDecisionBlocks(decisionBlocked)}`
+        : attentionWork.length > 0
+          ? `${attentionWork.length} work item${attentionWork.length === 1 ? " needs" : "s need"} intervention`
+          : "goal graph has no legal progress action",
     next_action: "none",
   };
+}
+
+/** Bounded, operator-readable list of what is waiting on a ruling. */
+function describeDecisionBlocks(
+  blocks: readonly { work_id: string; decision_id?: string }[],
+): string {
+  const shown = blocks
+    .slice(0, 3)
+    .map((b) => (b.decision_id ? `${b.work_id} (${b.decision_id})` : b.work_id))
+    .join(", ");
+  return blocks.length > 3 ? `${shown}, +${blocks.length - 3} more` : shown;
 }
 
 interface ReplanConsumption {
@@ -723,11 +763,18 @@ interface ReplanConsumption {
  * environment/upstream planner failures (ADR 0046) do not spend the replan
  * budget and are attributed to their outside precondition, not counted here.
  */
+/** Whether a failed plan told us nothing about the plan, and so must not spend
+ * a replan (ADR 0046). All three classes mean "replanning this cannot help":
+ * the binary is missing, the vendor is down, or a person has to rule. */
+function isUnchargedPlanClass(value: GovernorPlanRecord["class"]): boolean {
+  return value === "environment" || value === "upstream" || value === "decision";
+}
+
 function classifyReplanConsumption(plans: GovernorPlanHistory): ReplanConsumption {
   let reviewerRejection = 0;
   let plannerNoProposal = 0;
   for (const plan of plans.plans) {
-    if (plan.status === "failed" && (plan.class === "environment" || plan.class === "upstream")) {
+    if (plan.status === "failed" && isUnchargedPlanClass(plan.class)) {
       continue;
     }
     if (plan.review && plan.review.status !== "passed") {

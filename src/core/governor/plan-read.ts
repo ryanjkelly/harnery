@@ -568,7 +568,12 @@ function validateEvent(event: GovernorPlanEvent, planId: string, sequence: numbe
       throw new Error(`governor plan ${planId} event ${sequence} has invalid work ids`);
     }
   }
-  if (event.class !== undefined && event.class !== "environment" && event.class !== "upstream") {
+  if (
+    event.class !== undefined &&
+    event.class !== "environment" &&
+    event.class !== "upstream" &&
+    event.class !== "decision"
+  ) {
     throw new Error(`governor plan ${planId} event ${sequence} has an unknown failure class`);
   }
 }

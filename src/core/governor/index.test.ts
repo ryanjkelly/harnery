@@ -45,7 +45,15 @@ function fixture() {
     failing,
     `export default async () => { throw new Error("deterministic failure"); };\n`,
   );
-  return { root, passing, failing };
+  const blocking = join(root, "blocking.mjs");
+  writeFileSync(
+    blocking,
+    `export default async ({ blocked }) => blocked({\n` +
+      `  reason: "who owns the cart is unsettled",\n` +
+      `  decision: "fb-011-who-owns-the-cart",\n` +
+      `});\n`,
+  );
+  return { root, passing, failing, blocking };
 }
 
 const probeBilling = (adapter: string) => ({
@@ -262,6 +270,53 @@ describe("durable goal governor", () => {
     expect(report.dispatches).toBe(2);
     expect(readWorkItem(root, "failing").projection.attempts_used).toBe(2);
     expect(readWorkItem(root, "failing").projection.next_action).toBe("none");
+  });
+
+  // The whole point of the decision class. retry_blocked exists to clear
+  // failures without a human; a correct refusal is not a failure, so the flag
+  // must not reach it. Without this separation the same item is re-issued until
+  // the budget is gone, every agent refusing it correctly and none of them able
+  // to say so anywhere a human will look.
+  test("retry_blocked cannot re-issue work that stopped on a human decision", async () => {
+    const { root, blocking } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "needs-ruling",
+      title: "Needs ruling",
+      objective: "Cannot proceed without a product decision",
+      workflowPath: blocking,
+      maxAttempts: 3,
+    });
+    createGovernor({
+      coordRoot: root,
+      id: "goal-decision",
+      rootWorkId: "needs-ruling",
+      specialists: {},
+      automation: { retry_blocked: true },
+      limits: { max_total_attempts: 5 },
+    });
+    const report = await runGovernor({
+      coordRoot: root,
+      goalId: "goal-decision",
+      engine: { spawners: {}, probeBilling },
+    });
+
+    expect(report.stop_reason).toBe("blocked");
+    // One dispatch. The comparable failing-workflow test above spends two.
+    expect(report.dispatches).toBe(1);
+    expect(readWorkItem(root, "needs-ruling").projection.attempts_used).toBe(1);
+    // Uncharged, so the ruling can be followed by a full-budget retry.
+    expect(readWorkItem(root, "needs-ruling").projection.charged_attempts).toBe(0);
+
+    const projection = readGovernor(root, "goal-decision").projection;
+    // Not retryable — that list is what retry_blocked automates over.
+    expect(projection.retryable_work).not.toContain("needs-ruling");
+    expect(projection.decision_blocked_work).toEqual([
+      { work_id: "needs-ruling", decision_id: "fb-011-who-owns-the-cart" },
+    ]);
+    // And the goal says who it is waiting on, rather than "needs intervention".
+    expect(projection.reason).toContain("waiting on a human decision");
+    expect(projection.reason).toContain("fb-011-who-owns-the-cart");
   });
 
   test("an authorized governor retry receives the prior failure synopsis", async () => {

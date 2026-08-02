@@ -203,11 +203,16 @@ export interface WorkflowProof {
     error?: string;
     result?: ResultDigest;
     /** Set on a failed run that was uninformative about the work (ADR 0046):
-     * environment or upstream. Derived from the agents' classes when no agent
-     * produced a result; absent ⇒ the attempt is charged as before. The durable
-     * work projection reads this to decide charging, stopping, and the
-     * uncharged-attempt bound. */
-    class?: SpawnFailureClass;
+     * environment, upstream, or decision. The first two are derived from the
+     * agents' classes when no agent produced a result; `decision` is declared by
+     * the script through ctx.blocked(). Absent ⇒ the attempt is charged as
+     * before. The durable work projection reads this to decide charging,
+     * stopping, and the uncharged-attempt bound. */
+    class?: RunFailureClass;
+    /** Docket id of the decision this run stopped on. Only ever set alongside
+     * class "decision", and only when the script named one. Carried so the work
+     * projection can point a human at the exact question rather than at prose. */
+    decision_id?: string;
   };
   acceptance: {
     criteria: AcceptanceResult[];
@@ -333,6 +338,24 @@ export interface WorkflowSpecialistProfile {
  */
 export type SpawnFailureClass = "environment" | "upstream";
 
+/**
+ * Why a failed run was uninformative about the work. A superset of
+ * {@link SpawnFailureClass}: a spawn can fail for reasons outside the work, and
+ * so can the script itself.
+ *
+ * - `decision`: the script reached a correct conclusion and that conclusion is
+ *   that a human must rule before the work can proceed. Nothing about the work
+ *   was wrong, so the attempt is uncharged; nothing about a retry can help,
+ *   because the blocker is a person, so the item stops and names the decision.
+ *
+ * This class exists because without it a correct refusal and a botched attempt
+ * are the same outcome to the engine. Automatic retry then re-issues work an
+ * agent already answered correctly, once per attempt budget, and the answer is
+ * identical every time — the loop cannot converge, because the thing it is
+ * waiting for is a person who was never told.
+ */
+export type RunFailureClass = SpawnFailureClass | "decision";
+
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
   ok: boolean;
@@ -420,6 +443,25 @@ export interface WorkflowContext {
   evidence: (input: WorkflowEvidenceInput) => string;
   /** Authorize one host-mediated external mutation before performing it. */
   authorize: (input: ExternalMutationRequest) => Promise<PolicyDecision>;
+  /** Stop the run because a human must rule before the work can proceed.
+   *
+   * This is not a failure and must not be used as one. Reach for it only when
+   * the script determined something *correct* — that the question in front of
+   * it belongs to a person. The run ends uncharged and the work item stops
+   * naming the decision, so no automatic retry re-issues work that was already
+   * answered correctly. A plain `throw` means the opposite: the work failed and
+   * a retry might do better. */
+  blocked: (input: BlockedInput) => never;
+}
+
+/** Why a run stopped on a human. */
+export interface BlockedInput {
+  /** What a human has to settle, in one sentence. Shown verbatim to the
+   * operator as the work item's reason, so write it for them, not for a log. */
+  reason: string;
+  /** Docket id of the decision to resolve. Strongly preferred: without it the
+   * operator gets prose and has to go find the question themselves. */
+  decision?: string;
 }
 
 export interface WorkflowMeta {
