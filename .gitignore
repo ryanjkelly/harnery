@@ -9,6 +9,9 @@ coverage/
 *.tsbuildinfo
 .harnery/*
 !.harnery/config.jsonc
+# Runtime state + caches (harn tunnel writes .cache/tunnel/). Untracked but not
+# ignored is the dangerous combination: a blanket `git add -A` sweeps it in.
+.cache/
 
 # Editor + OS
 .idea/
