@@ -9,7 +9,7 @@
 #   curl -fsSL https://harnery.com/install.sh | bash
 #
 # This script (1) installs harnery's deps, (2) builds the Node dist/ when Bun
-# isn't present, (3) runs `harn init` to create .harnery/ + wire the harness
+# isn't present, (3) runs `harn init` to create .harnery/ + wire the adapter
 # hooks in your project, and (4) links the bins onto PATH (best-effort).
 #
 # To reverse everything this did, run the mirror:  ./scripts/teardown.sh
@@ -19,7 +19,7 @@
 #                          harnery's parent directory)
 #   --link-dir <dir>       where to symlink the bins (default: ~/.local/bin)
 #   --no-link              skip the PATH symlinks entirely
-#   --harness <id>         claude-code | cursor | codex (default: claude-code)
+#   --adapter <id>         claude-code | cursor | codex (default: claude-code)
 
 set -euo pipefail
 
@@ -37,13 +37,13 @@ HARNERY_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 PROJECT_ROOT=""
 LINK_DIR="$HOME/.local/bin"
 DO_LINK=1
-HARNESS="claude-code"
+ADAPTER="claude-code"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
     --link-dir)     LINK_DIR="$2"; shift 2 ;;
     --no-link)      DO_LINK=0; shift ;;
-    --harness)      HARNESS="$2"; shift 2 ;;
+    --adapter)      ADAPTER="$2"; shift 2 ;;
     -h|--help)      sed -n '2,22p' "$SOURCE"; exit 0 ;;
     *) echo "harnery setup: unknown argument '$1'" >&2; exit 1 ;;
   esac
@@ -79,9 +79,9 @@ else
 fi
 echo
 
-# ── 3. Wire the project: .harnery/ coord root + harness hooks ────────────────
+# ── 3. Wire the project: .harnery/ coord root + adapter hooks ────────────────
 echo "→ harn init"
-"$HARNERY_DIR/bin/harn" init --harness "$HARNESS" --project-root "$PROJECT_ROOT"
+"$HARNERY_DIR/bin/harn" init --adapter "$ADAPTER" --project-root "$PROJECT_ROOT"
 echo
 
 # ── 4. Put the bins on PATH (best-effort, never fatal) ───────────────────────

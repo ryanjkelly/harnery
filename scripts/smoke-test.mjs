@@ -96,22 +96,22 @@ try {
   // Durable workflow approvals must be reachable through the packed Node CLI.
   log("checking durable workflow approval CLI boots ...");
   mkdirSync(join(workdir, ".harnery"));
-  const approvalsOut = run(["workflow", "approvals", "list"]);
+  const approvalsOut = run(["approval", "list"]);
   if (!/no workflow approvals/.test(approvalsOut)) {
     fail("workflow approvals list did not render an empty durable inbox");
   }
   log("workflow approvals CLI OK");
 
   log("checking workflow workspace CLI boots ...");
-  const workspacesOut = run(["workflow", "workspaces"]);
+  const workspacesOut = run(["run", "workspaces"]);
   if (!/no isolated or shared-compatibility workspace runs/.test(workspacesOut)) {
     fail("workflow workspaces did not render an empty validated list");
   }
   log("workflow workspace CLI OK");
 
   log("checking phased workflow mutation CLI boots ...");
-  const integrationHelp = run(["workflow", "integration", "--help"]);
-  const cleanupHelp = run(["workflow", "cleanup", "--help"]);
+  const integrationHelp = run(["run", "integration", "--help"]);
+  const cleanupHelp = run(["run", "cleanup", "--help"]);
   if (!/prepare/.test(integrationHelp) || !/apply/.test(integrationHelp)) {
     fail("workflow integration help did not expose prepare and apply");
   }
@@ -164,7 +164,7 @@ try {
     }),
   );
   const supervisorCreateOut = run([
-    "supervisor",
+    "governor",
     "create",
     "work-smoke",
     "--team",
@@ -177,19 +177,19 @@ try {
   if (!/goal-smoke/.test(supervisorCreateOut) || !/ready/.test(supervisorCreateOut)) {
     fail("supervisor create did not produce a ready durable goal");
   }
-  const supervisorListOut = run(["supervisor", "list"]);
+  const supervisorListOut = run(["governor", "list"]);
   if (!/goal-smoke/.test(supervisorListOut) || !/Package smoke/.test(supervisorListOut)) {
     fail("supervisor list did not read the packed durable goal");
   }
-  const supervisorPlansOut = run(["supervisor", "plan", "list", "goal-smoke"]);
+  const supervisorPlansOut = run(["governor", "plan", "list", "goal-smoke"]);
   if (!/no replanning attempts/.test(supervisorPlansOut)) {
     fail("supervisor plan list did not render the packed empty history");
   }
-  const supervisorPlanHelp = run(["supervisor", "plan", "--help"]);
+  const supervisorPlanHelp = run(["governor", "plan", "--help"]);
   if (!/retry/.test(supervisorPlanHelp)) {
     fail("supervisor plan help did not expose attention recovery");
   }
-  const supervisorServiceOut = run(["supervisor", "service", "status"]);
+  const supervisorServiceOut = run(["governor", "service", "status"]);
   if (!/unconfigured/.test(supervisorServiceOut)) {
     fail("supervisor service status did not render its empty packed state");
   }
@@ -214,7 +214,7 @@ try {
     }),
   );
   const missionCreateOut = run([
-    "supervisor",
+    "governor",
     "create",
     "--team",
     teamFile,

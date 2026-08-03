@@ -77,8 +77,16 @@ rm -f "$TOKENS_TMP"
 
 # 4. harn artifacts manages a complete preview-before-delete lifecycle
 check "harn artifacts creates a managed workspace" \
-  "$HARN artifacts create integration-artifact --purpose 'integration smoke' --days 0.00000001" \
+  "$HARN artifacts create integration-artifact --purpose 'integration smoke' --days 1" \
   '"artifact_id"'
+
+# Retention is a whole number of days, so the expiry path is reached by
+# backdating the manifest rather than asking for a fractional day.
+expire_managed_artifacts() {
+  node -e 'const fs=require("fs"),p=require("path");const d=process.argv[1];if(!fs.existsSync(d))process.exit(0);for(const n of fs.readdirSync(d)){const f=p.join(d,n,".harnery-artifact.json");if(!fs.existsSync(f))continue;const m=JSON.parse(fs.readFileSync(f,"utf8"));m.retention.expires_at=new Date(Date.now()-86400000).toISOString();fs.writeFileSync(f,JSON.stringify(m,null,2));}' "$1"
+}
+expire_managed_artifacts "$TMPDIR_TEST/.harnery/artifacts"
+
 check "harn artifacts cleanup previews an expired unit" \
   "$HARN artifacts clean" '"managed-expired"'
 check "harn artifacts cleanup deletes only with confirmation" \
@@ -95,22 +103,22 @@ check "harn adapter bench makes no model calls" \
 check "harn adapter bench reports the basis of each result" \
   "$HARN adapter bench" "basis:" 1
 
-# 6. harn workflow --help exposes proof and durable approval operations
-check "harn workflow --help mentions proof" "$HARN workflow --help" "proof"
-check "harn workflow --help mentions resume" "$HARN workflow --help" "resume"
-check "harn workflow --help mentions approvals" "$HARN workflow --help" "approvals"
-check "harn workflow --help mentions integration" "$HARN workflow --help" "integration"
-check "harn workflow --help mentions cleanup" "$HARN workflow --help" "cleanup"
-check "harn workflow proof --help mentions JSON output" \
-  "$HARN workflow proof --help" "--json"
-check "harn workflow integration --help exposes phased apply" \
-  "$HARN workflow integration --help" "apply"
-check "harn workflow cleanup --help requires confirmation" \
-  "$HARN workflow cleanup --help" "--yes"
-check "harn workflow approvals --help exposes resolution" \
-  "$HARN workflow approvals --help" "approve"
-check "harn workflow approvals list starts with an empty inbox" \
-  "$HARN workflow approvals list" "no workflow approvals"
+# 6. harn run --help exposes proof and workspace operations; approval is top-level
+check "harn --help mentions approval" "$HARN --help" "approval"
+check "harn run --help mentions proof" "$HARN run --help" "proof"
+check "harn run --help mentions resume" "$HARN run --help" "resume"
+check "harn run --help mentions integration" "$HARN run --help" "integration"
+check "harn run --help mentions cleanup" "$HARN run --help" "cleanup"
+check "harn run proof --help mentions JSON output" \
+  "$HARN run proof --help" "--json"
+check "harn run integration --help exposes phased apply" \
+  "$HARN run integration --help" "apply"
+check "harn run cleanup --help requires confirmation" \
+  "$HARN run cleanup --help" "--yes"
+check "harn approval --help exposes resolution" \
+  "$HARN approval --help" "approve"
+check "harn approval list starts with an empty inbox" \
+  "$HARN approval list" "no workflow approvals"
 
 # 7. harn work exposes the complete daemonless lifecycle
 check "harn work --help mentions reconcile" "$HARN work --help" "reconcile"
@@ -127,11 +135,11 @@ WORK_CONTEXT_RUN_ID=$(
   "$HARN" work show integration-context --json |
     node -e 'let s=""; process.stdin.on("data", d => s += d).on("end", () => console.log(JSON.parse(s).projection.latest_run_id))'
 )
-check "harn workflow proof preserves the work context" \
-  "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
+check "harn run proof preserves the work context" \
+  "$HARN run proof '$WORK_CONTEXT_RUN_ID' --json" \
   '"work_context"'
-check "harn workflow proof preserves the attempt context" \
-  "$HARN workflow proof '$WORK_CONTEXT_RUN_ID' --json" \
+check "harn run proof preserves the attempt context" \
+  "$HARN run proof '$WORK_CONTEXT_RUN_ID' --json" \
   '"attempt_context"'
 
 # 8. harn governor exposes bounded goal execution
