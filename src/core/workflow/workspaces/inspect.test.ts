@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  descriptorPathsAvailable,
   git,
   gitFixture,
   hasGit,
@@ -61,6 +62,7 @@ describe("workflow workspace inspection", () => {
   });
 
   test("projects an isolated run from validated manifest, proof, and provider records", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-inspect-isolated");
     tracked(host);
@@ -103,6 +105,7 @@ describe("workflow workspace inspection", () => {
   });
 
   test("returns an explicit invalid inspection for corrupt provider history", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-inspect-corrupt");
     tracked(host);
@@ -129,6 +132,7 @@ describe("workflow workspace inspection", () => {
   });
 
   test("projects planned, applied, and released authority from durable receipts", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-inspect-integration");
     tracked(host);

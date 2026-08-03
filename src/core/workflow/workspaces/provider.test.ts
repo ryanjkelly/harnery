@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import {
+  descriptorPathsAvailable,
   git,
   gitFixture,
   hasGit,
@@ -305,6 +306,7 @@ describe("shared and explicit-provider compatibility", () => {
   });
 
   test("records terminal evidence for module import and metadata failures before cleanup", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     for (const [suffix, body, message] of [
       ["import", "export default async () => {\n", /Unexpected|expected/i],
@@ -373,6 +375,7 @@ describe("shared and explicit-provider compatibility", () => {
   });
 
   test("preserves the blocked terminal attestation that fails a run", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-terminal-attestation");
     tracked(host);
@@ -422,6 +425,7 @@ describe("shared and explicit-provider compatibility", () => {
   });
 
   test("post-import reattachment failure still writes a fallback manifest and proof", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-post-import-failure");
     tracked(host);
@@ -538,6 +542,7 @@ describe("shared and explicit-provider compatibility", () => {
   });
 
   test("revalidates frozen policy path authority before workspace cleanup", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-cleanup-policy-authority");
     tracked(host);
@@ -628,6 +633,7 @@ describe("shared and explicit-provider compatibility", () => {
   });
 
   test("bound resume without its provider fails before import or spawn and retains binding", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-resume-provider-required");
     tracked(host);
@@ -699,6 +705,7 @@ export default async ({ authorize, agent }) => {
   });
 
   test("records terminal evidence when isolated parked resume cannot reattach", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-resume-reattach-failure");
     tracked(host);
@@ -792,6 +799,7 @@ export default async ({ authorize, agent }) => {
   });
 
   test("blocks parked resume after source-root replacement without spawning or a new attempt", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-resume-source-replacement");
     tracked(host);
@@ -885,6 +893,7 @@ export default async ({ authorize, agent }) => {
   });
 
   test("durably binds provider cancellation to current host cancellation", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-cancellation");
     tracked(host);
@@ -950,6 +959,7 @@ export default async ({ authorize, agent }) => {
   });
 
   test("records an explicit unsupported result for a running isolated attempt", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-running-cancellation");
     tracked(host);
@@ -1020,6 +1030,7 @@ export default async ({ authorize, agent }) => {
   });
 
   test("does not cancel or clean up a resumed run without terminal proof", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-resumed-liveness");
     tracked(host);
@@ -1083,6 +1094,7 @@ export default async ({ authorize, agent }) => {
   });
 
   test("cooperatively cancels a parked isolated attempt", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-parked-cancellation");
     tracked(host);
@@ -1138,6 +1150,7 @@ export default async ({ authorize, agent }) => {
 
 describe("local Git worktree allocation and recovery", () => {
   test("rejects manifest substitution and proof contradictions across authority fields", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-authority-matrices");
     tracked(host);
@@ -1312,6 +1325,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("rejects bare and detached source repositories, accepts a linked worktree", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const fixture = gitFixture("workspace-repository-shapes");
     tracked(fixture.host);
@@ -1349,6 +1363,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("ignores inherited Git repository authority overrides", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const requested = gitFixture("workspace-requested-authority");
     const foreign = gitFixture("workspace-foreign-authority");
@@ -1425,6 +1440,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("returns byte-identical duplicate bindings and safely cleans a completed workspace", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-provider");
     tracked(host);
@@ -1677,6 +1693,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("maps a requested repository subdirectory into the isolated worktree", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-subdirectory-cwd");
     tracked(host);
@@ -1720,6 +1737,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("rejects a replaced source checkout even when the Git common dir is preserved", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-source-root-replacement");
     tracked(host);
@@ -1788,6 +1806,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("freezes the isolated manifest and child cwd before the first spawn", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-manifest-before-child");
     tracked(host);
@@ -1824,6 +1843,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("fails reattachment on token drift and preserves dirty cleanup", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-provider-drift");
     tracked(host);
@@ -1863,6 +1883,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("retries dirty and transiently blocked cleanup until one terminal receipt", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-cleanup-retry");
     tracked(host);
@@ -1943,6 +1964,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("resumes cleanup after the target advances beyond the frozen intent", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-cleanup-crash");
     tracked(host);
@@ -2007,6 +2029,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("keeps the frozen workspace ref as the cleanup deletion CAS", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-cleanup-ref-cas");
     tracked(host);
@@ -2055,6 +2078,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("holds the durable cleanup lease through core receipt persistence", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-cleanup-process-lease");
     tracked(host);
@@ -2126,6 +2150,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("rejects exact binding substitution across every repository identity field", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-binding-substitution");
     tracked(host);
@@ -2180,6 +2205,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("blocks replacement of workspace, active-root, common-dir, and gitdir identities", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     for (const target of ["workspace", "active", "common", "gitdir"] as const) {
       const { host, repo } = gitFixture(`workspace-replaced-${target}`);
@@ -2224,6 +2250,7 @@ GIT_DIR="$HARNERY_TEST_GIT_DIR" GIT_WORK_TREE="$HARNERY_TEST_WORK_TREE" exec "$H
   });
 
   test("rolls back registration and ref when the workspace parent is replaced during add", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-parent-replacement");
     tracked(host);
@@ -2281,6 +2308,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("fails closed on corrupt claim, binding, event chain, and cleanup attempts", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-corrupt-records");
     tracked(host);
@@ -2349,6 +2377,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("rejects a claim whose request no longer matches its immutable digest", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-corrupt-claim-request");
     tracked(host);
@@ -2376,6 +2405,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("rejects digest-consistent event transcripts with foreign claim authority", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-foreign-event-authority");
     tracked(host);
@@ -2413,6 +2443,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("recovers every supported pre-binding allocation crash boundary", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     for (const state of [
       "claim_only",
@@ -2434,6 +2465,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("allocates under a hidden parent that ignores itself", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     const { host, repo } = gitFixture("workspace-hidden-parent");
     tracked(host);
@@ -2459,6 +2491,7 @@ exec "$HARNERY_REAL_GIT" "$@"
   });
 
   test("keeps reconciling an allocation frozen under the legacy parent", async () => {
+    if (!descriptorPathsAvailable) return;
     if (!hasGit()) return;
     for (const state of ["claim_only", "worktree_registered"] as const) {
       const fixture = await allocationCrashFixture(state, "harnery-workspaces");

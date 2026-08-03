@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  descriptorPathsAvailable,
   git,
   gitFixture,
   hasGit,
@@ -44,7 +45,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("verification-gated fast-forward integration", () => {
+// Every case here drives a real isolated allocation and fast-forward, so the whole
+// suite needs a host with traversable descriptor paths.
+describe.skipIf(!descriptorPathsAvailable)("verification-gated fast-forward integration", () => {
   for (const recoveryState of ["current", "abandoned recovery"] as const) {
     test(`recovers a stale ${recoveryState} lease left by another run`, async () => {
       if (!hasGit()) return;

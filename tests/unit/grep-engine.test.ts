@@ -360,6 +360,32 @@ describe("NUL framing", () => {
     const rows = [...dec.push(Buffer.from("x-1-y.md\u000042\n", "utf8")), ...dec.flush()];
     expect(rows).toEqual([{ file: "x-1-y.md", line: 42, text: "" }]);
   });
+
+  // BSD grep (the system grep on macOS) applies --null to content and -l records
+  // but not to -c records, so the count decoder must also read `path:count`.
+  // Pinned here rather than only through a live search: on a GNU-grep host the
+  // engine never emits this shape, so nothing else would catch a regression.
+  test("count decoder also parses BSD grep's unframed path:count records", () => {
+    const dec = new NulDecoder("count");
+    const rows = [
+      ...dec.push(Buffer.from("comp/both.md:1\nodd:colon.txt:7\n", "utf8")),
+      ...dec.flush(),
+    ];
+    expect(rows).toEqual([
+      { file: "comp/both.md", line: 1, text: "" },
+      // Greedy last-colon split, so a colon inside the path stays in the path.
+      { file: "odd:colon.txt", line: 7, text: "" },
+    ]);
+  });
+
+  test("count decoder still rejects a record with no trailing count", () => {
+    const dec = new NulDecoder("count");
+    const rows = [
+      ...dec.push(Buffer.from("grep: comp/x.md: No such file or directory\n", "utf8")),
+      ...dec.flush(),
+    ];
+    expect(rows).toEqual([]);
+  });
 });
 
 describe("context materialization (-C/-A/-B)", () => {

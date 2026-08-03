@@ -209,12 +209,27 @@ function sweepStrays(gatePort: number, alreadyKilled: Set<number>): number {
   );
 }
 
-/** Ports currently bound by a LISTEN socket (best-effort via `ss`). */
+/**
+ * Ports currently bound by a LISTEN socket (best-effort, platform-dependent).
+ *
+ * `ss` (iproute2) is Linux-only. Without the lsof fallback this returns an empty
+ * set on macOS/BSD. That does not fail loudly. It reports every port as free, so
+ * `allocateGatePort` can hand out an occupied port and the reload port-release
+ * check becomes inert.
+ */
 function listeningPorts(): Set<number> {
   const ports = new Set<number>();
-  const r = spawnSync("ss", ["-tlnH"], { encoding: "utf-8" });
-  if (r.status === 0 && typeof r.stdout === "string") {
-    for (const m of r.stdout.matchAll(/:(\d+)\s/g)) ports.add(Number(m[1]));
+  const ss = spawnSync("ss", ["-tlnH"], { encoding: "utf-8" });
+  if (ss.status === 0 && typeof ss.stdout === "string") {
+    for (const m of ss.stdout.matchAll(/:(\d+)\s/g)) ports.add(Number(m[1]));
+    return ports;
+  }
+  // Rows look like: `bun 123 user 4u IPv4 0x… 0t0 TCP 127.0.0.1:58055 (LISTEN)`.
+  // Status can be nonzero while stdout still holds usable rows (lsof reports a
+  // failure when any single process is unreadable), so judge it on the output.
+  const lsof = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], { encoding: "utf-8" });
+  if (typeof lsof.stdout === "string") {
+    for (const m of lsof.stdout.matchAll(/:(\d+) \(LISTEN\)$/gm)) ports.add(Number(m[1]));
   }
   return ports;
 }

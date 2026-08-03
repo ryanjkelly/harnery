@@ -741,7 +741,7 @@ function buildFindArgs(
  * chunk-boundary tests. Record shapes (both engines, pinned by the parity
  * suite):
  *   content:    <path>NUL<line>:<text>LF
- *   count:      <path>NUL<count>LF
+ *   count:      <path>NUL<count>LF   (BSD grep ignores --null here: <path>:<count>LF)
  *   filesOnly:  <path>NUL            (NUL is the record terminator)
  *   plainLines: <path>LF             (files mode: rg --files / find)
  *
@@ -801,7 +801,24 @@ export class NulDecoder {
       return { file: normalizeFile(path), line: 0, text: "" };
     }
     const nul = record.indexOf(0);
-    if (nul < 0) return null; // not a NUL-framed record (stray engine chatter)
+    if (nul < 0) {
+      // BSD grep honours --null for content and -l records but IGNORES it under
+      // -c, emitting `<path>:<count>` where GNU grep emits `<path>NUL<count>`.
+      // Without this fallback every count row is dropped as unframed chatter, so
+      // `grep -c` returns nothing on a host whose only engine is BSD grep. The
+      // count is always a terminal run of digits, so a greedy match on the LAST
+      // colon recovers the path even when the path itself contains colons.
+      if (this.mode === "count") {
+        const bsd = /^(.*):(\d+)$/.exec(record.toString("utf8"));
+        if (!bsd) return null;
+        return {
+          file: normalizeFile(bsd[1] as string),
+          line: Number.parseInt(bsd[2] as string, 10),
+          text: "",
+        };
+      }
+      return null; // not a NUL-framed record (stray engine chatter)
+    }
     const file = normalizeFile(record.subarray(0, nul).toString("utf8"));
     const rest = record.subarray(nul + 1).toString("utf8");
     if (this.mode === "count") {

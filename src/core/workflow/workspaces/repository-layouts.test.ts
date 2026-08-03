@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { lstatSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  descriptorPathsAvailable,
   git,
   hasGit,
   quiet,
@@ -10,12 +11,22 @@ import {
 } from "../../../../tests/workspace-test-helpers.ts";
 import { runWorkflow } from "../engine.ts";
 import { createLocalGitWorktreeProvider, probe } from "./local-git.ts";
+import type { WorkspaceProbeInput, WorkspaceProbeResult } from "./types.ts";
 
 // These fixtures build every Git checkout shape with real `git` commands and drive
 // them through the provider's exported probe(). `git worktree add` — the provider's
 // allocation primitive — supports all four, so the only question this suite answers is
 // whether the provider's own inspection accepts each one, and refuses the shapes that
 // genuinely cannot be served safely.
+
+// Every probe here pins descriptor-path support ON: the verdict under test is about
+// repository SHAPE, and the host's descriptor capability is a separate axis that would
+// otherwise mask it. On a host lacking traversable descriptor paths (macOS) the
+// unpinned probe fails the "supported" cases for an unrelated reason, and worse, passes
+// the refusal cases for the wrong one.
+function probeShape(input: WorkspaceProbeInput): Promise<WorkspaceProbeResult> {
+  return probe(input, () => true);
+}
 
 const roots: string[] = [];
 
@@ -71,7 +82,7 @@ describe("local Git provider accepts every worktree and submodule checkout shape
     const repo = join(host, "repo");
     initRepo(repo, "plain\n");
     expect(lstatSync(join(repo, ".git")).isDirectory()).toBe(true);
-    const probed = await probe({ requested_cwd: repo, writable_roots: [host] });
+    const probed = await probeShape({ requested_cwd: repo, writable_roots: [host] });
     expect(probed.supported).toBe(true);
   });
 
@@ -81,7 +92,7 @@ describe("local Git provider accepts every worktree and submodule checkout shape
     // The submodule's Git authority lives in super/.git/modules/sub — a `.git` file,
     // not a directory — which the old directory check refused outright.
     expect(lstatSync(join(fixture.subCheckout, ".git")).isFile()).toBe(true);
-    const probed = await probe({
+    const probed = await probeShape({
       requested_cwd: fixture.subCheckout,
       writable_roots: [fixture.host],
     });
@@ -96,7 +107,7 @@ describe("local Git provider accepts every worktree and submodule checkout shape
     const linked = join(host, "linked");
     git(superRoot, "worktree", "add", "-q", "-b", "linked", linked);
     expect(lstatSync(join(linked, ".git")).isFile()).toBe(true);
-    const probed = await probe({ requested_cwd: linked, writable_roots: [host] });
+    const probed = await probeShape({ requested_cwd: linked, writable_roots: [host] });
     expect(probed.supported).toBe(true);
   });
 
@@ -109,7 +120,7 @@ describe("local Git provider accepts every worktree and submodule checkout shape
     // dir (…/modules/sub), so the git-dir ⊆ common-dir assertion is exercised on a
     // legitimate non-equal nesting rather than the trivial plain/submodule equal case.
     expect(lstatSync(join(subWorktree, ".git")).isFile()).toBe(true);
-    const probed = await probe({ requested_cwd: subWorktree, writable_roots: [fixture.host] });
+    const probed = await probeShape({ requested_cwd: subWorktree, writable_roots: [fixture.host] });
     expect(probed.supported).toBe(true);
   });
 });
@@ -122,7 +133,7 @@ describe("local Git provider refuses shapes it cannot serve safely", () => {
     initRepo(repo, "plain\n");
     renameSync(join(repo, ".git"), join(repo, ".gitdir"));
     symlinkSync(".gitdir", join(repo, ".git"));
-    const probed = await probe({ requested_cwd: repo, writable_roots: [host] });
+    const probed = await probeShape({ requested_cwd: repo, writable_roots: [host] });
     expect(probed.supported).toBe(false);
     const message = probed.unsupported.find(
       (item) => item.code === "repository_unsupported",
@@ -136,7 +147,7 @@ describe("local Git provider refuses shapes it cannot serve safely", () => {
     // The caller believes the layout is supported and declares only the inner checkout.
     // The refusal must name the common directory in the superproject and say why it is
     // outside — a generic containment message would leave the caller nothing to fix.
-    const probed = await probe({
+    const probed = await probeShape({
       requested_cwd: fixture.subCheckout,
       writable_roots: [fixture.subCheckout],
     });
@@ -170,12 +181,12 @@ describe("the gitdir cross-check is a consistency assertion, not spoof detection
 
     expect(git(repo, "rev-parse", "--git-dir")).toContain(join(decoy, ".git"));
 
-    const probed = await probe({ requested_cwd: repo, writable_roots: [host] });
+    const probed = await probeShape({ requested_cwd: repo, writable_roots: [host] });
     expect(probed.supported).toBe(true);
 
     // And the real boundary still bites: narrow the writable root to the checkout and
     // the decoy's authority is outside it, so the same layout is refused by name.
-    const narrowed = await probe({ requested_cwd: repo, writable_roots: [repo] });
+    const narrowed = await probeShape({ requested_cwd: repo, writable_roots: [repo] });
     expect(narrowed.supported).toBe(false);
     expect(
       narrowed.unsupported.find(
@@ -188,6 +199,7 @@ describe("the gitdir cross-check is a consistency assertion, not spoof detection
 describe("local Git provider allocates an isolated worktree from a submodule source", () => {
   test("a submodule source with the enclosing repo writable completes an isolated run", async () => {
     if (!hasGit()) return;
+    if (!descriptorPathsAvailable) return;
     const fixture = submoduleFixture("layout-submodule-allocate");
     // Keep .harnery out of the submodule's status so nothing muddies the checkout.
     writeFileSync(join(fixture.subCommonDir, "info", "exclude"), ".harnery/\n");

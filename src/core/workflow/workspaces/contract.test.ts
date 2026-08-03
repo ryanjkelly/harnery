@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tempRoot } from "../../../../tests/workspace-test-helpers.ts";
+import { descriptorPathsAvailable, tempRoot } from "../../../../tests/workspace-test-helpers.ts";
 import {
   canonicalJson,
   readJsonRecord,
@@ -89,6 +89,7 @@ describe("workspace path authority", () => {
   });
 
   test("creates only validated one-segment components and detects root replacement", () => {
+    if (!descriptorPathsAvailable) return;
     const base = tracked("workspace-components");
     const allowed = join(base, "allowed");
     mkdirSync(allowed);
@@ -100,6 +101,7 @@ describe("workspace path authority", () => {
   });
 
   test("detects a replaced contained parent before a leaf can be materialized", () => {
+    if (!descriptorPathsAvailable) return;
     const base = tracked("workspace-parent-replacement");
     const allowed = join(base, "allowed");
     const outside = join(base, "outside");
