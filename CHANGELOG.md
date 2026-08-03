@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.31.3
+
+### Patch Changes
+
+- 3fb97a0: Stop killed and swept heartbeats from coming back on the next event drain. `claim.release` and `health.heartbeat_swept` no longer seed a heartbeat when no live file exists, sweep telemetry sets `ended_at` without refreshing liveness, and `kill-heartbeat` emits a `health.heartbeat_swept` (`reason: killed`) terminal marker before its claim releases.
+
 ## 0.31.2
 
 ### Patch Changes
