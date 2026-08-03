@@ -17,6 +17,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
+import { coordBinPath } from "../../agents/coord-bin.ts";
 
 export type { CaptureContext } from "./image-capture.ts";
 export { captureImages, imageJanitor } from "./image-capture.ts";
@@ -62,8 +63,7 @@ export function soundForEvent(eventName: string): { sound: string; maxPlays: num
 }
 
 function harnBin(repoRoot: string): string | null {
-  const bin = join(repoRoot, "harnery", "bin", "harn");
-  return existsSync(bin) ? bin : null;
+  return coordBinPath("harn", repoRoot);
 }
 
 /** Prune stale journal archives + sweep orphans (global, fast). Fire-and-forget. */

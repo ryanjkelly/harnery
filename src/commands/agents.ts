@@ -28,6 +28,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { coordBinPath } from "../core/agents/coord-bin.ts";
 import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
   emitCanonical,
@@ -114,6 +115,44 @@ const SUBAGENT_NOTE =
  */
 export function coordHelperOpts(root: string): { cwd: string; env: NodeJS.ProcessEnv } {
   return { cwd: root, env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root } };
+}
+
+/**
+ * Resolve the bundled `agent-coord` helper, or exit with an error that names the
+ * problem. Every heartbeat mutation goes through that binary, so a caller who
+ * cannot find it has nothing useful to do — but it has to SAY so, because the
+ * alternative was spawning a path that did not exist and then crashing on the
+ * result (see `spawnFailureMessage`).
+ */
+function agentCoordOrExit(root: string): string {
+  const binary = coordBinPath("agent-coord", root);
+  if (!binary) {
+    emit.error({
+      code: "coord_helper_missing",
+      message: `agent-coord helper not found for coord root ${root}; reinstall or rebuild harnery`,
+    });
+    process.exit(1);
+  }
+  return binary;
+}
+
+/**
+ * Describe a failed `spawnSync` without assuming it ran.
+ *
+ * When the binary cannot be executed at all (ENOENT, EACCES) node reports
+ * `status: null` AND `stderr: null`, so the obvious `result.stderr.trim()`
+ * threw "null is not an object" — replacing a legible "helper not found" with a
+ * crash that pointed at the wrong layer entirely. `error` carries the real
+ * cause on that path, so prefer it.
+ */
+function spawnFailureMessage(
+  result: { status: number | null; stderr: string | null; error?: Error },
+  what: string,
+): string {
+  if (result.error) return `${what}: ${result.error.message}`;
+  const stderr = result.stderr?.trim();
+  if (stderr) return stderr;
+  return result.status === null ? `${what}: did not run` : `${what} exited ${result.status}`;
 }
 
 function formatPlatformLabel(platform?: string | null): string {
@@ -820,7 +859,7 @@ function runWhoami(opts: { json?: boolean }): void {
   if (!hb) {
     emit.error({
       code: "no_heartbeat",
-      message: `pid-map resolved owner=${myOwner.slice(0, 8)} but no heartbeat exists`,
+      message: noHeartbeatMessage(myOwner),
     });
     process.exit(1);
   }
@@ -1018,6 +1057,41 @@ function relationOf(
 function normalizeKind(kind: string | undefined | null): string {
   if (kind === undefined || kind === null || kind === "") return "unknown";
   return kind;
+}
+
+/**
+ * The `no_heartbeat` diagnostic, quoting the owner id in FULL.
+ *
+ * This id is actionable: the reader's next move is `agents heal --kind
+ * heartbeat --owner <id>`, and heartbeats are keyed by the whole
+ * `instance_id` (`.harnery/active/<instance_id>.json`). An abbreviated id
+ * here reads as complete, so it gets copy-pasted into `--owner` and mints a
+ * heartbeat at a filename no reader resolves — an orphan that leaves the
+ * session looking unhealable. Abbreviate ids for display elsewhere, never in
+ * a message whose whole purpose is to hand the reader an id to pass back.
+ */
+function noHeartbeatMessage(owner: string): string {
+  return `resolved owner=${owner} but no heartbeat exists at .harnery/active/${owner}.json`;
+}
+
+/**
+ * The instance_id of a live heartbeat that `prefix` strictly prefixes, or null.
+ *
+ * Used to recognize an abbreviated id handed back by a reader when the caller
+ * supplied no canonical id of their own. Ambiguity is treated as "no answer":
+ * two live sessions sharing the prefix means we cannot name the one intended,
+ * and refusing with the wrong id in the message would be worse than the orphan.
+ */
+function liveIdWithPrefix(root: string, prefix: string): string | null {
+  const activeDir = resolve(root, ".harnery", "active");
+  if (!existsSync(activeDir)) return null;
+  const matches = new Set<string>();
+  for (const file of readdirSync(activeDir)) {
+    if (!file.endsWith(".json")) continue;
+    const id = file.slice(0, -".json".length);
+    if (id !== prefix && id.startsWith(prefix)) matches.add(id);
+  }
+  return matches.size === 1 ? (matches.values().next().value as string) : null;
 }
 
 async function runWatch(pollMs: number): Promise<void> {
@@ -1333,8 +1407,8 @@ function ensureCursorSession(root: string): void {
 
   const sessionId = cursorEnvSessionId();
   if (!sessionId) return;
-  const agentHook = resolve(root, "harnery", "bin", "agent-hook");
-  if (!existsSync(agentHook)) return;
+  const agentHook = coordBinPath("agent-hook", root);
+  if (!agentHook) return;
 
   const payload = JSON.stringify({
     conversation_id: sessionId,
@@ -1383,7 +1457,7 @@ function runReleaseClaim(path: string): void {
   let canonical = path;
   if (path.startsWith(`${root}/`)) canonical = path.slice(root.length + 1);
 
-  const helper = resolve(root, "harnery", "bin", "agent-coord");
+  const helper = agentCoordOrExit(root);
   const result = spawnSync(helper, ["release-claim", myOwner, canonical], {
     encoding: "utf8",
     ...coordHelperOpts(root),
@@ -1391,7 +1465,7 @@ function runReleaseClaim(path: string): void {
   if (result.status !== 0) {
     emit.error({
       code: "release_claim_failed",
-      message: result.stderr.trim() || `agent-coord exited ${result.status}`,
+      message: spawnFailureMessage(result, "agent-coord"),
     });
     process.exit(1);
   }
@@ -1432,7 +1506,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   const firstOfSession = !priorHb?.task_updated_at;
 
   // Heartbeat mutation goes through agent-coord (atomic temp+rename).
-  const helper = resolve(root, "harnery", "bin", "agent-coord");
+  const helper = agentCoordOrExit(root);
   const result = spawnSync(helper, ["set-task", myOwner, task], {
     encoding: "utf8",
     ...coordHelperOpts(root),
@@ -1440,7 +1514,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   if (result.status !== 0) {
     emit.error({
       code: "set_task_failed",
-      message: result.stderr.trim() || `agent-coord exited ${result.status}`,
+      message: spawnFailureMessage(result, "agent-coord"),
     });
     process.exit(1);
   }
@@ -1577,7 +1651,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
   if (!hb) {
     emit.error({
       code: "no_heartbeat",
-      message: `pid-map resolved owner=${myOwner.slice(0, 8)} but no heartbeat exists`,
+      message: noHeartbeatMessage(myOwner),
     });
     process.exit(1);
   }
@@ -1587,7 +1661,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
   // populated for back-compat with consumers reading v1 directly. The stamp
   // goes through agent-coord (atomic write).
   try {
-    const helper = resolve(root, "harnery", "bin", "agent-coord");
+    const helper = agentCoordOrExit(root);
     spawnSync(helper, ["stamp-status-call", myOwner], {
       encoding: "utf8",
       timeout: 2000,
@@ -3578,6 +3652,44 @@ function runHeal(opts: {
   const action =
     kind === "pidmap" ? "heal-pidmap" : kind === "heartbeat" ? "heal-heartbeat" : "kill-heartbeat";
 
+  // Refuse to mint a heartbeat at a TRUNCATED owner id.
+  //
+  // Heartbeats are keyed by the whole instance_id, so healing at an
+  // abbreviated id writes `.harnery/active/<prefix>.json` while every reader
+  // (`status`, `set-task`, `whoami`) resolves `<instance_id>.json`. The heal
+  // reports success, the session stays broken, and an orphan file is left
+  // behind that the singleton fallback can then mis-resolve other callers to.
+  //
+  // A distinct instance_id (subagent, workflow child) is never a prefix of its
+  // own session_id, so a strict prefix is unambiguously an abbreviated id
+  // rather than a legitimately different owner. Only guard the create path: an
+  // existing heartbeat at `owner` means the id is real, whatever its shape.
+  //
+  // Two sources for the canonical id, because the reported failure arrives
+  // without `--session-id`: someone copies a truncated id out of a diagnostic
+  // and passes it as `--owner` alone. Comparing against `--session-id` alone
+  // therefore misses the exact path that produced the orphan; a live heartbeat
+  // whose instance_id this id is a prefix of settles it just as well, and is
+  // present in precisely the case that matters (the session the reader was
+  // trying to heal is registered, just not under the abbreviated name).
+  if (kind === "heartbeat" && !readHeartbeat(owner)) {
+    const canonical =
+      opts.sessionId && opts.sessionId.trim() !== owner && opts.sessionId.trim().startsWith(owner)
+        ? opts.sessionId.trim()
+        : liveIdWithPrefix(root, owner);
+    if (canonical) {
+      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live heartbeat";
+      emit.error({
+        code: "truncated_owner",
+        message:
+          `--owner ${owner} is a prefix of ${canonical} (${source}), and no heartbeat exists ` +
+          `at .harnery/active/${owner}.json. Healing here would create a heartbeat no reader ` +
+          `resolves. Re-run with --owner ${canonical}.`,
+      });
+      process.exit(1);
+    }
+  }
+
   // Build positional args. agent-coord's arg layout:
   //   heal-pidmap <instance_id> [<pid>]
   //   heal-heartbeat <instance_id> [<session_id>]
@@ -3587,8 +3699,8 @@ function runHeal(opts: {
   if (kind === "heartbeat" && opts.sessionId) helperArgs.push(opts.sessionId);
 
   // heal-pidmap / heal-heartbeat / kill-heartbeat are handled by the
-  // agent-coord binary at harnery/bin/agent-coord.
-  const helper = `${root}/harnery/bin/agent-coord`;
+  // bundled agent-coord binary.
+  const helper = agentCoordOrExit(root);
   const proc = spawnSync(helper, helperArgs, {
     encoding: "utf8",
     ...coordHelperOpts(root),
@@ -3597,7 +3709,7 @@ function runHeal(opts: {
   if (proc.status !== 0) {
     emit.error({
       code: "heal_failed",
-      message: proc.stderr?.trim() || `agent-coord ${action} exited non-zero`,
+      message: spawnFailureMessage(proc, `agent-coord ${action}`),
     });
     process.exit(1);
   }
@@ -3635,7 +3747,10 @@ function runHeal(opts: {
     ],
     meta: {
       kind,
-      helper: "harnery/bin/agent-coord",
+      // The path actually spawned, not a guess at the layout: the helper is
+      // resolved from harnery's own package location, which differs between a
+      // submodule, an installed dependency, and a standalone checkout.
+      helper,
     },
   });
   if (!opts.json) {
@@ -4430,7 +4545,7 @@ function runCouncilContribute(
     if (!myHb?.name) {
       emit.error({
         code: "no_self_name",
-        message: `resolved owner ${myOwner.slice(0, 8)} has no name on heartbeat (pass --as <member> to override)`,
+        message: `resolved owner ${myOwner} has no name on heartbeat (pass --as <member> to override)`,
       });
       process.exit(1);
     }

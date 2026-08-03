@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
 import { replayCodexJsonl } from "../agents/codex-replay.ts";
+import { coordBinPath } from "../agents/coord-bin.ts";
 import { consumeSince, writeCursor } from "../agents/events/consume.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
@@ -160,7 +161,7 @@ function assignNameViaAgentCoord(
   instanceId: string,
   kind: "session" | "subagent" | "transient",
 ): { name: string; kind: string } | null {
-  const binary = join(coordRoot, "harnery", "bin", "agent-coord");
+  const binary = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(binary)) return null;
   try {
     const result = spawnSync(binary, ["assign-name", instanceId, kind], {
@@ -719,7 +720,7 @@ async function main(): Promise<number> {
   // subagent (claude-code + cursor; codex doesn't fan out subagents today).
   if (norm.event_type === "subagent.start") {
     try {
-      const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+      const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
         spawnSync(agentCoordBin, ["project"], {
           encoding: "utf8",
@@ -747,7 +748,7 @@ async function main(): Promise<number> {
   if (norm.event_type === "subagent.stop") {
     try {
       cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
-      const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+      const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
         spawnSync(
           agentCoordBin,
@@ -1037,7 +1038,7 @@ async function runPreToolUseGuard(
     .filter((p): p is string => p !== null);
   if (targets.length === 0) return;
 
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
 
   // For apply_patch (multi-file), collect siblings so the deny reason names
@@ -1142,7 +1143,7 @@ function healHeartbeatViaCli(
   sessionId: string,
   adapter: string,
 ): void {
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
   // Pass the detected adapter so a pruned Cursor/Codex heartbeat is recreated
   // with the correct platform; without it, healHeartbeat defaults to
@@ -1255,7 +1256,7 @@ function stampToolActivity(
   instanceId: string,
   data: Record<string, unknown>,
 ): void {
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
   const toolName = (data.tool_name as string | undefined) ?? "";
   // Extract a 1-line target from the tool_input blob (file path / command head).
@@ -1327,7 +1328,7 @@ function releaseClaimOnFailure(
       : filePath;
   }
 
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
   spawnSync(agentCoordBin, ["release-claim", instanceId, canonical], {
     encoding: "utf8",
@@ -1368,7 +1369,7 @@ function cleanupSessionEnd(coordRoot: string, instanceId: string, reason: string
     }
   }
   // Activity log
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (existsSync(agentCoordBin)) {
     spawnSync(
       agentCoordBin,
@@ -1385,7 +1386,7 @@ async function emitUserPromptSubmitSystemMessage(
   adapter: Adapter,
   recoveryBriefing = "",
 ): Promise<boolean> {
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   let additionalContext = "";
 
   if (existsSync(agentCoordBin)) {
@@ -1445,7 +1446,7 @@ function emitSubagentStartContext(
   // Render peer table inline since the subagent might want to know who else
   // is around. Reuse prompt-context (which dedups against the per-owner hash);
   // first call will always emit.
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   let combined = message;
   if (existsSync(agentCoordBin)) {
     const result = spawnSync(
@@ -1477,7 +1478,7 @@ async function emitSessionStartSystemMessage(
   adapter: Adapter,
   recoveryBriefing = "",
 ): Promise<boolean> {
-  const agentCoordBin = join(coordRoot, "harnery", "bin", "agent-coord");
+  const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   let additionalContext = "";
   if (existsSync(agentCoordBin)) {
     // Sync-project so the heartbeat exists for downstream readers (peer table,

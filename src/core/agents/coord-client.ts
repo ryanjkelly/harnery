@@ -9,7 +9,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 // NOTE: kept dependency-free (node builtins only); this file is vendored verbatim into
 // a downstream consumer, so it cannot import the coordEnv helper.
@@ -86,56 +86,172 @@ export interface Heartbeat {
 /**
  * Resolve the monorepo root for coord-state purposes.
  *
- * Resolves the coordination root,
- * including the `--git-common-dir` fallback that strips
- * `<superproject>/.git/modules/<name>/` to recover the superproject for
- * submodule worktrees. Without that fallback, a TS coord caller running
- * inside a `harn worktree add-submodule` checkout would resolve a different
- * `.harnery/` than the bash hooks and the two layers would silently diverge.
+ * Thin alias for `resolveCoordRoot()`; kept because it is the name the CLI
+ * command modules and the vendored downstream consumer already import.
  */
 export function monorepoRoot(): string | null {
-  // Test-only override (matches bash HARNERY_COORD_ROOT_OVERRIDE). Lets tests
-  // seed `.harnery/pid-map/<pid>` + `.harnery/active/<owner>.json` fixtures
-  // in a tmpdir without needing a real git repo.
-  const rootOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
-  if (rootOverride) {
-    return rootOverride;
-  }
-
-  // 1. Superproject working tree (when running from inside a submodule).
-  const sup = spawnSync("git", ["rev-parse", "--show-superproject-working-tree"], {
-    encoding: "utf8",
-  });
-  if (sup.status === 0 && sup.stdout.trim() !== "") {
-    return sup.stdout.trim();
-  }
-
-  // 2. --git-common-dir fallback for submodule worktrees. `git worktree add`
-  // inside a submodule produces a worktree whose --show-superproject-working-
-  // tree is empty (the worktree has no submodule relationship of its own),
-  // but --git-common-dir points at <superproject>/.git/modules/<name>/, so
-  // we recover the superproject by stripping that suffix.
-  const common = spawnSync("git", ["rev-parse", "--git-common-dir"], {
-    encoding: "utf8",
-  });
-  if (common.status === 0) {
-    const cd = common.stdout.trim();
-    const idx = cd.indexOf("/.git/modules/");
-    if (idx !== -1) {
-      return cd.substring(0, idx);
-    }
-  }
-
-  // 3. Top-level fallback (regular checkout).
-  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-  });
-  if (top.status === 0 && top.stdout.trim() !== "") {
-    return top.stdout.trim();
-  }
-
-  return null;
+  return resolveCoordRoot();
 }
+
+/**
+ * THE coordination-root resolution. Every surface — the hooks, the CLI's reads,
+ * and the CLI's canonical emits — resolves through this one function, because a
+ * root the two layers disagree about is a root that silently breaks the
+ * end-of-turn rules: the hook evaluates `state.status_checked` from the stream
+ * it reads, so an emit into a different `.harnery/events.ndjson` is invisible
+ * and rule 1/3 blocks a turn that did run `agents status`, with no sequence of
+ * CLI commands able to satisfy it.
+ *
+ * Precedence:
+ *   1. `HARNERY_COORD_ROOT_OVERRIDE` — explicit pin (tests, git hooks, and the
+ *      root every coord-helper spawn pins for its child).
+ *   2. `CLAUDE_PROJECT_DIR` — the adapter stating which project it opened. Hook
+ *      processes inherit the session's *shell* cwd, which follows `cd` into a
+ *      subdirectory or submodule that may carry a `.harnery/` of its own (or
+ *      none at all), so the adapter's own statement outranks the cwd walk.
+ *   3. The candidate root that already holds THIS session's heartbeat.
+ *   4. The nearest enclosing `.harnery/`, then a git-derived root.
+ *
+ * Step 3 is what makes CLI/hook disagreement structurally impossible rather
+ * than a coin flip. Choosing either root unconditionally is wrong in one
+ * direction each: preferring the git superproject strands a session whose
+ * adapter opened the submodule itself (its heartbeat lives in the submodule,
+ * so status/set-task wrote events the hook never read), while walking up from
+ * cwd alone strands the opposite case, a session opened on the superproject
+ * whose shell has cd'd into a submodule that carries its own `.harnery/`
+ * (regression-tested in tests/unit/coord-helper-root-pin.test.ts). The session's
+ * own heartbeat settles it: whichever root the hook registered this session in
+ * is the root the CLI must use, and the adapter-exported session id needed to
+ * recognize it is available to a plain tool-call subprocess even though
+ * `CLAUDE_PROJECT_DIR` is not.
+ */
+export function resolveCoordRoot(start: string = process.cwd()): string | null {
+  const rootOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+  if (rootOverride) return rootOverride;
+
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  if (projectDir) {
+    const fromProject = nearestCoordRoot(projectDir);
+    if (fromProject) return fromProject;
+  }
+
+  // Nearest-first, so the fallback at the end keeps the historical cwd-walk
+  // behavior for a shell that has no registered session at all.
+  const ancestors = ancestorCoordRoots(start);
+  for (const candidate of ancestors) {
+    if (rootKnowsSession(candidate)) return candidate;
+  }
+
+  // Only reached when no enclosing root knows this session: a submodule
+  // worktree (`harn worktree add-submodule`) has no ancestor relationship with
+  // the superproject that registered the session, so ask git for it.
+  const gitRoots = gitCoordRoots(start).filter((r) => !ancestors.includes(r));
+  for (const candidate of gitRoots) {
+    if (rootKnowsSession(candidate)) return candidate;
+  }
+
+  if (ancestors.length > 0) return ancestors[0] as string;
+  if (gitRoots.length > 0) return gitRoots[0] as string;
+  // Nothing carries `.harnery/` yet. Hand back the enclosing checkout so a
+  // first run (`harn init`, agent-hook's session.start) has somewhere to
+  // create it.
+  return gitToplevel(start);
+}
+
+/** Nearest enclosing directory carrying `.harnery/`, or null. */
+export function nearestCoordRoot(start: string): string | null {
+  return ancestorCoordRoots(start)[0] ?? null;
+}
+
+/** Every enclosing directory carrying `.harnery/`, nearest first. */
+function ancestorCoordRoots(start: string): string[] {
+  const found: string[] = [];
+  let dir = resolve(start);
+  while (true) {
+    if (existsSync(join(dir, ".harnery"))) found.push(dir);
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return found;
+}
+
+/**
+ * Does this root's `.harnery/` already know the process asking?
+ *
+ * Two discriminators, both genuinely about *this* session: the adapter-exported
+ * session id matching a live heartbeat, and a pid-map row on our own ppid
+ * chain. Deliberately NOT the single-live-agent fallback that owner resolution
+ * ends with — a lone stranger in the wrong root is exactly how `whoami` came to
+ * report another agent's name and task as its own.
+ */
+export function rootKnowsSession(root: string): boolean {
+  if (resolveOwnerBySessionEnv(root)) return true;
+  return resolveOwnerByPidmap(root).owner !== null;
+}
+
+/**
+ * Git-derived candidate roots for `start`, in preference order, filtered to
+ * those that actually carry `.harnery/`.
+ *
+ * Spawns run with `cwd: start` rather than the process cwd so an injected
+ * start dir resolves its own repository — without that, a call about some
+ * unrelated directory inherits this process's repo and can resolve a root that
+ * has nothing to do with the question asked.
+ */
+function gitCoordRoots(start: string): string[] {
+  const roots: string[] = [];
+  const push = (value: string | null) => {
+    if (value && existsSync(join(value, ".harnery")) && !roots.includes(value)) roots.push(value);
+  };
+
+  // Superproject working tree (running from inside a submodule).
+  push(gitRevParse(start, "--show-superproject-working-tree"));
+
+  // `--git-common-dir` fallback for submodule worktrees: `git worktree add`
+  // inside a submodule produces a worktree whose superproject working tree is
+  // empty (the worktree has no submodule relationship of its own), but the
+  // common dir points at `<superproject>/.git/modules/<name>/`, so the
+  // superproject is recoverable by stripping that suffix.
+  const common = gitRevParse(start, "--git-common-dir");
+  if (common) {
+    const idx = common.indexOf("/.git/modules/");
+    if (idx !== -1) push(common.substring(0, idx));
+  }
+
+  // Top-level (regular checkout).
+  push(gitRevParse(start, "--show-toplevel"));
+  return roots;
+}
+
+function gitToplevel(start: string): string | null {
+  return gitRevParse(start, "--show-toplevel");
+}
+
+function gitRevParse(cwd: string, flag: string): string | null {
+  const key = `${cwd} ${flag}`;
+  const cached = gitRevParseCache.get(key);
+  if (cached !== undefined) return cached;
+  let value: string | null = null;
+  try {
+    // `cwd` must exist or the spawn itself fails; callers pass paths that may
+    // not (a project dir from a stale env var), so treat any failure as "no
+    // answer" rather than letting it throw.
+    const r = spawnSync("git", ["rev-parse", flag], { encoding: "utf8", cwd });
+    if (r.status === 0) value = r.stdout.trim() || null;
+  } catch {
+    value = null;
+  }
+  gitRevParseCache.set(key, value);
+  return value;
+}
+
+/**
+ * Memoized because git spawns are the expensive part of resolution and every
+ * CLI command resolves the root many times per invocation. Keyed by (cwd, flag);
+ * a repository's identity does not change under a running process.
+ */
+const gitRevParseCache = new Map<string, string | null>();
 
 /** Parse owner from a pid-map row (`owner` or `owner\tplatform`). */
 export function parsePidmapRowOwner(row: string): string {
@@ -296,6 +412,34 @@ export function resolveOwnerWithSource(): {
     }
   }
 
+  if (!existsSync(resolve(root, ".harnery", "pid-map"))) return { owner: null, source: "none" };
+
+  const byPidmap = resolveOwnerByPidmap(root);
+  if (byPidmap.owner) return byPidmap;
+
+  // Last resort: if exactly one agent is live in this coord root, it's
+  // unambiguously us — resolve to it. This is what lets the bare `agents
+  // status` / `set-task` the stop hook recommends work without a `--session-id`
+  // flag in the common single-agent case. With 0 or 2+ live agents it would be
+  // a guess, so we stay null and require the explicit flag.
+  const singleton = resolveSingleActiveOwner(root);
+  if (singleton) {
+    return { owner: singleton, source: "active_singleton" };
+  }
+
+  return { owner: null, source: "none" };
+}
+
+/**
+ * Walk our own ppid chain for a pid-map row in ONE given root.
+ *
+ * Root-parameterized (rather than resolving the root itself) so root resolution
+ * can use it as a discriminator without recursing back into itself.
+ */
+export function resolveOwnerByPidmap(root: string): {
+  owner: string | null;
+  source: "pidmap" | "pidmap_fallback" | "none";
+} {
   const pidmapDir = resolve(root, ".harnery", "pid-map");
   if (!existsSync(pidmapDir)) return { owner: null, source: "none" };
 
@@ -319,17 +463,6 @@ export function resolveOwnerWithSource(): {
   if (fallbackOwner) {
     return { owner: fallbackOwner, source: "pidmap_fallback" };
   }
-
-  // Last resort: if exactly one agent is live in this coord root, it's
-  // unambiguously us — resolve to it. This is what lets the bare `agents
-  // status` / `set-task` the stop hook recommends work without a `--session-id`
-  // flag in the common single-agent case. With 0 or 2+ live agents it would be
-  // a guess, so we stay null and require the explicit flag.
-  const singleton = resolveSingleActiveOwner(root);
-  if (singleton) {
-    return { owner: singleton, source: "active_singleton" };
-  }
-
   return { owner: null, source: "none" };
 }
 

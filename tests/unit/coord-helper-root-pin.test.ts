@@ -16,7 +16,7 @@ import { coordHelperOpts } from "../../src/commands/agents.ts";
 
 const AGENT_COORD = resolve(import.meta.dir, "..", "..", "bin", "agent-coord");
 
-let dirs: string[] = [];
+const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
@@ -78,12 +78,18 @@ describe("agent-coord root pinning (coordHelperOpts)", () => {
 });
 
 describe("resolveEmitRoot (canonical-emit root resolution)", () => {
-  // The emitCanonical instance of the same bug: a cwd inside a nested
-  // directory carrying its own `.harnery/` (e.g. the embedded harnery
-  // checkout) made the old cwd-walk resolve the NESTED root, from which
-  // `<root>/harnery/bin/agent-coord` doesn't exist — so `agents status` /
-  // `set-task` canonical emits silently vanished and the Stop-hook's
-  // rule 1/3 blocked turns that had done the ritual.
+  // The emitCanonical instance of the same bug: a cwd inside a nested directory
+  // carrying its own `.harnery/` (e.g. an embedded harnery checkout) made the
+  // old cwd-walk resolve the NESTED root, so `agents status` / `set-task`
+  // canonical emits landed where the Stop hook never read and rule 1/3 blocked
+  // turns that had done the ritual.
+  //
+  // Two things have since changed, and both matter for reading these tests.
+  // The helper is resolved from harnery's own package location rather than
+  // `<root>/harnery/bin/agent-coord`, so a nested root no longer makes the
+  // binary vanish; and resolution follows the session's heartbeat rather than
+  // preferring one root by shape, so the fix no longer depends on the emit and
+  // the hook happening to agree.
 
   test("override env wins unconditionally", async () => {
     const { resolveEmitRoot } = await import("../../src/core/agents/canonical-emit.ts");
@@ -97,31 +103,30 @@ describe("resolveEmitRoot (canonical-emit root resolution)", () => {
     }
   });
 
-  test("resolves the git superproject root, not a nested .harnery on the cwd walk", async () => {
+  test("resolves the root holding this session, not the nested .harnery under cwd", async () => {
+    // Originally this asserted "always the git superproject", which fixed the
+    // symptom by over-correcting: preferring the superproject unconditionally
+    // strands the mirror-image session, one whose adapter opened the SUBMODULE
+    // itself, so its heartbeat lives there and the CLI's emits went to a stream
+    // the hook never read (same blocked rule 1/3, opposite cause). Resolution
+    // now follows the session's own heartbeat, which satisfies both directions;
+    // this test keeps the direction THIS file exists to protect, and does it
+    // with a fixture instead of the ambient checkout.
     const { resolveEmitRoot } = await import("../../src/core/agents/canonical-emit.ts");
-    const prev = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    const { outer, nested, owner } = makeNestedRoots();
+    const prevOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    const prevSession = process.env.HARNERY_AGENT_COORD_SESSION_ID;
+    const prevProject = process.env.CLAUDE_PROJECT_DIR;
     delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+    delete process.env.CLAUDE_PROJECT_DIR;
+    process.env.HARNERY_AGENT_COORD_SESSION_ID = owner;
     try {
-      // This test runs from inside the harnery checkout, which carries its
-      // own .harnery/ — the buggy cwd-walk would resolve the harnery dir.
-      // The git-aware path must resolve the SUPERPROJECT root instead
-      // (standalone checkout: toplevel == this repo, which is also correct).
-      const repo = resolve(import.meta.dir, "..", "..");
-      const got = resolveEmitRoot(repo);
-      const sup = spawnSync("git", ["rev-parse", "--show-superproject-working-tree"], {
-        cwd: repo,
-        encoding: "utf8",
-      });
-      const expected =
-        sup.status === 0 && sup.stdout.trim() !== ""
-          ? sup.stdout.trim()
-          : spawnSync("git", ["rev-parse", "--show-toplevel"], {
-              cwd: repo,
-              encoding: "utf8",
-            }).stdout.trim();
-      expect(got).toBe(expected);
+      expect(resolveEmitRoot(nested)).toBe(outer);
     } finally {
-      if (prev !== undefined) process.env.HARNERY_COORD_ROOT_OVERRIDE = prev;
+      if (prevOverride !== undefined) process.env.HARNERY_COORD_ROOT_OVERRIDE = prevOverride;
+      if (prevProject !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProject;
+      if (prevSession === undefined) delete process.env.HARNERY_AGENT_COORD_SESSION_ID;
+      else process.env.HARNERY_AGENT_COORD_SESSION_ID = prevSession;
     }
   });
 });

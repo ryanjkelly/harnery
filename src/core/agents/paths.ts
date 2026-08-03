@@ -1,16 +1,12 @@
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { resolveCoordRoot } from "./coord-client.ts";
 
 /**
- * Walk up from `start` looking for a directory containing `.harnery/`, so
- * adapter + legacy code agree on the same monorepo root.
+ * Resolve the coordination root.
+ *
+ * Delegates to `resolveCoordRoot()`. This was a third, independent copy of the
+ * walk-up — the kind of duplication that let the hooks and the CLI drift onto
+ * different roots in the first place; keep resolution in one place.
  */
 export function findCoordRoot(start: string = process.cwd()): string | null {
-  let dir = resolve(start);
-  while (true) {
-    if (existsSync(join(dir, ".harnery"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
+  return resolveCoordRoot(start);
 }

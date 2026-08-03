@@ -156,7 +156,17 @@ function buildSelf(): SelfSection {
   const owner = resolveOwner();
   if (!owner) throw new Error("not in an agent session (no pid-map entry)");
   const hb = readHeartbeat(owner);
-  if (!hb) throw new Error(`pid-map resolved owner=${owner.slice(0, 8)}… but no heartbeat`);
+  // Full id, never abbreviated: this message exists to hand the reader an id to
+  // pass back (to `agents heal --owner`, say), and an 8-char prefix is not that
+  // id. Healing the truncated form writes `.harnery/active/<prefix>.json`, a
+  // heartbeat no reader ever resolves — so the session still looks unhealable
+  // and now has a junk file shadowing it. Same rule as `noHeartbeatMessage` in
+  // the agents command.
+  if (!hb) {
+    throw new Error(
+      `pid-map resolved owner=${owner} but no heartbeat exists at .harnery/active/${owner}.json`,
+    );
+  }
   const startedMs = Date.parse(hb.started_at);
   const ageSecs = Number.isFinite(startedMs)
     ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000))

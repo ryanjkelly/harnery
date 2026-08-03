@@ -10,9 +10,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { monorepoRoot } from "./coord-client.ts";
+import { coordBinPath } from "./coord-bin.ts";
+import { resolveCoordRoot } from "./coord-client.ts";
 
 export interface CanonicalEmitInput {
   type: string;
@@ -28,37 +27,21 @@ export interface CanonicalEmitInput {
 /**
  * Resolve the coord root for a canonical emit.
  *
- * Order: explicit `HARNERY_COORD_ROOT_OVERRIDE` → git-superproject-aware
- * `monorepoRoot()` (must actually carry `.harnery/`) → cwd walk (non-git
- * hosts). The git-aware step is load-bearing: a shell cd'd into a nested
- * directory that carries its own `.harnery/` (e.g. an embedded harnery
- * checkout) made the old cwd-walk resolve the NESTED root, from which
- * `<root>/harnery/bin/agent-coord` doesn't exist — so `agents status` /
- * `set-task` emits silently vanished and the Stop-hook's rule 1/3
- * (`state.status_checked` in-turn) blocked turns that had done the ritual.
- * Same bug class as the coordHelperOpts root-pin fix; this closes the
- * emitCanonical instance of it.
+ * Delegates to `resolveCoordRoot()`, the single resolution the hooks and the
+ * CLI's reads also use. An emit resolved any other way is an emit the Stop hook
+ * cannot see: the hook reads `state.status_checked` from the stream under ITS
+ * root, so a divergent emit root blocks rule 1/3 on a turn that did run
+ * `agents status`, and no sequence of CLI commands can satisfy it.
  */
 export function resolveEmitRoot(start: string = process.cwd()): string | null {
-  const override = process.env.HARNERY_COORD_ROOT_OVERRIDE;
-  if (override) return override;
-  // Memoized per start-dir: the session-tee middleware resolves once per
-  // emitted event, and monorepoRoot() spawns git — cache so a streaming
-  // command doesn't pay 1-3 subprocess spawns per output line.
-  if (cachedRoot && cachedRoot.start === start) return cachedRoot.root;
-  const gitRoot = monorepoRoot();
-  const root = gitRoot && existsSync(join(gitRoot, ".harnery")) ? gitRoot : findRepoRoot(start);
-  cachedRoot = { start, root };
-  return root;
+  return resolveCoordRoot(start);
 }
-
-let cachedRoot: { start: string; root: string | null } | undefined;
 
 export function emitCanonical(input: CanonicalEmitInput): void {
   const root = resolveEmitRoot();
   if (!root) return;
-  const binary = resolve(root, "harnery", "bin", "agent-coord");
-  if (!existsSync(binary)) return;
+  const binary = coordBinPath("agent-coord", root);
+  if (!binary) return;
   try {
     const args = [
       "emit-event",
@@ -102,14 +85,4 @@ export function normalizeAdapter(platform: string | undefined): "claude-code" | 
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
-}
-
-function findRepoRoot(start: string): string | null {
-  let dir = resolve(start);
-  while (true) {
-    if (existsSync(join(dir, ".harnery"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
 }

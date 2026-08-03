@@ -1,47 +1,25 @@
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { coordEnv } from "../../../lib/env.ts";
+import { resolveCoordRoot } from "../../agents/coord-client.ts";
 
 /**
- * Walk up from `start` looking for a directory containing `.harnery/`. The
- * single coord-root resolution so every adapter agrees on the same root.
+ * The hooks-side name for THE coordination-root resolution.
  *
- * Resolution precedence:
+ * Delegates to `resolveCoordRoot()` so the hooks and the CLI cannot resolve
+ * different roots. They used to: this walked up from `CLAUDE_PROJECT_DIR` or
+ * cwd while the CLI's `monorepoRoot()` asked git for the superproject first, so
+ * with a shell inside a submodule that carries its own `.harnery/`, the CLI's
+ * `state.status_checked` landed in a stream this side never read and rule 1/3
+ * blocked every turn.
+ *
+ * Resolution precedence (see `resolveCoordRoot` for the full rationale):
  *   1. HARNERY_COORD_ROOT_OVERRIDE — explicit pin (tests, git hooks).
- *   2. The adapter's project dir (CLAUDE_PROJECT_DIR) — hook processes
- *      inherit the session's *shell* cwd, which follows `cd` into
- *      subdirectories/submodules that may carry a `.harnery/` of their own
- *      (or none at all, e.g. a journal dir under /tmp). The session's
- *      coordination home is the project the adapter opened, not wherever the
- *      shell happens to sit, so a project dir that resolves to a coord root
- *      wins over the cwd walk.
- *   3. Walk up from `start` (default cwd).
+ *   2. The adapter's project dir (CLAUDE_PROJECT_DIR) — hook processes inherit
+ *      the session's *shell* cwd, which follows `cd` into subdirectories or
+ *      submodules that may carry a `.harnery/` of their own (or none at all,
+ *      e.g. a journal dir under /tmp). The session's coordination home is the
+ *      project the adapter opened, not wherever the shell happens to sit.
+ *   3. The root that already holds this session's heartbeat.
+ *   4. The nearest enclosing `.harnery/`, then a git-derived root.
  */
 export function findCoordRoot(start: string = process.cwd()): string | null {
-  // HARNERY_COORD_ROOT_OVERRIDE: explicit pin matched by agent-coord and the
-  // bash side. Lets the sandboxed coord-test suite run against a temp
-  // directory rather than the real monorepo root. agent-hook's session.start
-  // handler may be the FIRST thing to create .harnery/ in a fresh sandbox,
-  // so the override is honored unconditionally (we don't require .harnery/
-  // to pre-exist).
-  const override = coordEnv("COORD_ROOT_OVERRIDE");
-  if (override) return override;
-  // Claude Code exports CLAUDE_PROJECT_DIR to every hook process; other
-  // adapters don't set it, so this is inert outside claude-code hooks.
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  if (projectDir) {
-    const fromProject = walkUp(projectDir);
-    if (fromProject) return fromProject;
-  }
-  return walkUp(start);
-}
-
-function walkUp(start: string): string | null {
-  let dir = resolve(start);
-  while (true) {
-    if (existsSync(join(dir, ".harnery"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
+  return resolveCoordRoot(start);
 }
