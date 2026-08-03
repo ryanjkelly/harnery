@@ -504,12 +504,14 @@ function rowFor(
 }
 
 function normalizeSlug(value: string): string {
-  return value
+  // Collapsing every non-alphanumeric run to a single "-" leaves no two
+  // adjacent dashes, so trimming the edges needs fixed-length patterns rather
+  // than "-+", whose backtracking is polynomial on a long run of dashes.
+  const collapsed = value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
+    .replace(/[^a-z0-9]+/g, "-");
+  return collapsed.replace(/^-/, "").replace(/-$/, "").slice(0, 64);
 }
 
 function positiveDays(value: number): number {
