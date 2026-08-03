@@ -16,10 +16,11 @@ import type {
   AcceptanceCriterion,
   AcceptanceResult,
   AcceptanceSummary,
-  HarnessAttestationCitation,
-  HarnessEvidenceCapability,
-  HarnessEvidenceCoverage,
+  AdapterAttestationCitation,
+  AdapterEvidenceCapability,
+  AdapterEvidenceCoverage,
   ResultDigest,
+  RunFailureClass,
   SpawnFailureClass,
   WorkflowAgentProof,
   WorkflowAttemptContext,
@@ -34,7 +35,7 @@ import type {
   WorkflowSandboxProjectionEvidence,
   WorkflowWorkContext,
 } from "./types.ts";
-import { WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
+import { EVIDENCE_KINDS, WORKFLOW_PROOF_SCHEMA_VERSION } from "./types.ts";
 import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAttestation,
@@ -78,23 +79,26 @@ export interface BuildWorkflowProofInput {
   startedAt: string;
   endedAt: string;
   durationMs: number;
-  journalPath: string;
+  transcriptPath: string;
   before: RepoSnapshot;
   after: RepoSnapshot;
   agents: WorkflowAgentProof[];
   evidence: WorkflowEvidenceRecord[];
-  harnessEvidence?: Readonly<Record<string, HarnessEvidenceCapability | undefined>>;
+  adapterEvidence?: Readonly<Record<string, AdapterEvidenceCapability | undefined>>;
   /** Filesystem policy actually projected into children (ADR 0039). */
   sandboxProjection?: WorkflowSandboxProjectionEvidence;
-  /** Live attestations backing each harness's claims (ADR 0038). Injected by
+  /** Live attestations backing each adapter's claims (ADR 0038). Injected by
    * the caller so proof stays free of filesystem lookups. */
-  harnessAttestations?: Readonly<Record<string, HarnessAttestationCitation | undefined>>;
+  adapterAttestations?: Readonly<Record<string, AdapterAttestationCitation | undefined>>;
   policy?: {
     config: Readonly<NormalizedPolicy>;
     decisions: readonly PolicyDecision[];
     isolation: PolicyIsolation;
     networkAccess: PolicyNetworkAccess;
   };
+  /** Set when the script called ctx.blocked(): the run stopped because a human
+   * must rule. Forces run class "decision" regardless of the agents' classes. */
+  blocked?: { reason: string; decisionId?: string };
   workspaceBinding?: WorkspaceBinding;
   workspaceAttestation?: WorkspaceAttestation;
   workspaceFallback?: WorkspaceUnsupportedExecutionEvidence;
@@ -167,11 +171,7 @@ export function createEvidenceRecord(input: {
     id: `e${input.sequence}`,
     source: "workflow",
     recorded_at: input.recordedAt ?? new Date().toISOString(),
-    kind: enumValue(
-      value.kind,
-      ["test", "command", "artifact", "change", "review", "observation"],
-      "evidence kind",
-    ),
+    kind: enumValue(value.kind, EVIDENCE_KINDS, "evidence kind"),
     status: enumValue(value.status, ["passed", "failed", "observed", "unknown"], "evidence status"),
     label: boundedRequired(value.label, "evidence label", MAX_LABEL_CHARS),
     summary: boundedOptional(value.summary, "evidence summary", MAX_SUMMARY_CHARS),
@@ -260,10 +260,16 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
     session_id: clippedOptional(agent.session_id, MAX_REF_CHARS),
     error: clippedOptional(agent.error, MAX_SUMMARY_CHARS),
   }));
-  const harnesses = buildHarnessCoverage(agents, input.harnessEvidence, input.harnessAttestations);
-  const unknowns = buildUnknowns(agents, harnesses, repository);
-  const runClass = deriveRunFailureClass(input.status, agents);
-  const journal = readFileSync(input.journalPath);
+  const adapters = buildAdapterCoverage(agents, input.adapterEvidence, input.adapterAttestations);
+  const unknowns = buildUnknowns(agents, adapters, repository);
+  // A declared stop-on-human beats a derived spawn class. If the script said a
+  // human must rule, that is the true reason the run ended, even when some agent
+  // also happened to hit a flaky vendor on the way there.
+  const runClass: RunFailureClass | undefined =
+    input.status === "failed" && input.blocked
+      ? "decision"
+      : deriveRunFailureClass(input.status, agents);
+  const transcript = readFileSync(input.transcriptPath);
   return {
     schema_version: WORKFLOW_PROOF_SCHEMA_VERSION,
     run: {
@@ -280,6 +286,9 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
       error: clippedOptional(input.error, MAX_SUMMARY_CHARS),
       result: input.result === undefined ? undefined : digestResult(input.result),
       ...(runClass ? { class: runClass } : {}),
+      ...(runClass === "decision" && input.blocked?.decisionId
+        ? { decision_id: clipped(input.blocked.decisionId, MAX_REF_CHARS) }
+        : {}),
     },
     acceptance,
     agents,
@@ -291,13 +300,13 @@ export function buildWorkflowProof(input: BuildWorkflowProofInput): WorkflowProo
         : input.workspaceFallback,
     repository,
     ...(input.sandboxProjection ? { sandbox_projection: input.sandboxProjection } : {}),
-    harnesses,
+    adapters,
     unknowns,
     integrity: {
-      journal: {
-        path: "journal.jsonl",
-        sha256: createHash("sha256").update(journal).digest("hex"),
-        bytes: journal.byteLength,
+      transcript: {
+        path: "transcript.jsonl",
+        sha256: createHash("sha256").update(transcript).digest("hex"),
+        bytes: transcript.byteLength,
       },
     },
   };
@@ -361,7 +370,8 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
     proof.run?.id !== runId ||
     (proof.run.class !== undefined &&
       proof.run.class !== "environment" &&
-      proof.run.class !== "upstream") ||
+      proof.run.class !== "upstream" &&
+      proof.run.class !== "decision") ||
     (proof.run.work_context !== undefined &&
       (!proof.run.work_item_id ||
         proof.run.work_context.id !== proof.run.work_item_id ||
@@ -454,7 +464,7 @@ export function renderWorkflowProof(proof: WorkflowProof): string {
     lines.push(`unknowns: ${proof.unknowns.length}`);
     for (const unknown of proof.unknowns) lines.push(`  - ${unknown.message}`);
   }
-  lines.push(`journal sha256: ${proof.integrity.journal.sha256}`);
+  lines.push(`transcript sha256: ${proof.integrity.transcript.sha256}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -496,47 +506,47 @@ function normalizeRepoSnapshot(snapshot: RepoSnapshot): WorkflowRepoSnapshot {
   };
 }
 
-function buildHarnessCoverage(
+function buildAdapterCoverage(
   agents: WorkflowAgentProof[],
-  claims: Readonly<Record<string, HarnessEvidenceCapability | undefined>> | undefined,
-  attestations: Readonly<Record<string, HarnessAttestationCitation | undefined>> | undefined,
-): HarnessEvidenceCoverage[] {
-  return [...new Set(agents.map((agent) => agent.harness))].map((harness) => {
-    const harnessAgents = agents.filter((agent) => agent.harness === harness);
+  claims: Readonly<Record<string, AdapterEvidenceCapability | undefined>> | undefined,
+  attestations: Readonly<Record<string, AdapterAttestationCitation | undefined>> | undefined,
+): AdapterEvidenceCoverage[] {
+  return [...new Set(agents.map((agent) => agent.adapter))].map((adapter) => {
+    const adapterAgents = agents.filter((agent) => agent.adapter === adapter);
     return {
-      harness,
-      tool_evidence: claims?.[harness]?.toolEvidence ?? {
+      adapter,
+      tool_evidence: claims?.[adapter]?.toolEvidence ?? {
         support: "unknown",
-        note: "No harness capability claim was supplied to this workflow run.",
+        note: "No adapter capability claim was supplied to this workflow run.",
       },
       observed: {
-        final_results: harnessAgents.filter((agent) => agent.result).length,
-        session_ids: harnessAgents.filter((agent) => agent.session_id).length,
-        costs: harnessAgents.filter((agent) => agent.cost_usd !== undefined).length,
+        final_results: adapterAgents.filter((agent) => agent.result).length,
+        session_ids: adapterAgents.filter((agent) => agent.session_id).length,
+        costs: adapterAgents.filter((agent) => agent.cost_usd !== undefined).length,
       },
-      ...(attestations?.[harness] ? { attestation: attestations[harness] } : {}),
+      ...(attestations?.[adapter] ? { attestation: attestations[adapter] } : {}),
     };
   });
 }
 
 function buildUnknowns(
   agents: WorkflowAgentProof[],
-  harnesses: HarnessEvidenceCoverage[],
+  adapters: AdapterEvidenceCoverage[],
   repository: WorkflowRepoEvidence,
 ): WorkflowProofUnknown[] {
   const unknowns: WorkflowProofUnknown[] = [];
-  for (const harness of harnesses) {
-    if (harness.tool_evidence.support === "unknown") {
+  for (const adapter of adapters) {
+    if (adapter.tool_evidence.support === "unknown") {
       unknowns.push({
-        code: "harness_capability_unregistered",
-        harness: harness.harness,
-        message: `${harness.harness}: tool-evidence capability was not registered for this run.`,
+        code: "adapter_capability_unregistered",
+        adapter: adapter.adapter,
+        message: `${adapter.adapter}: tool-evidence capability was not registered for this run.`,
       });
-    } else if (harness.tool_evidence.support !== "supported") {
+    } else if (adapter.tool_evidence.support !== "supported") {
       unknowns.push({
         code: "tool_evidence_unavailable",
-        harness: harness.harness,
-        message: `${harness.harness}: adapter-native tool evidence is ${harness.tool_evidence.support}.`,
+        adapter: adapter.adapter,
+        message: `${adapter.adapter}: adapter-native tool evidence is ${adapter.tool_evidence.support}.`,
       });
     }
   }
@@ -544,17 +554,17 @@ function buildUnknowns(
     if (agent.cost_usd === undefined) {
       unknowns.push({
         code: "agent_cost_unreported",
-        harness: agent.harness,
+        adapter: agent.adapter,
         agent_id: agent.id,
-        message: `${agent.id}: ${agent.harness} did not report per-run cost.`,
+        message: `${agent.id}: ${agent.adapter} did not report per-run cost.`,
       });
     }
     if (!agent.session_id) {
       unknowns.push({
         code: "agent_session_unreported",
-        harness: agent.harness,
+        adapter: agent.adapter,
         agent_id: agent.id,
-        message: `${agent.id}: ${agent.harness} did not report a child session id.`,
+        message: `${agent.id}: ${agent.adapter} did not report a child session id.`,
       });
     }
   }

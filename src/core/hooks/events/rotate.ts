@@ -63,7 +63,7 @@ function resolveRollBytes(): number {
 }
 
 /** `YYYY-MM-DD` (UTC) from a millisecond timestamp. Uses the file's own mtime
- * rather than `Date.now()` so it's deterministic and independent of the harness
+ * rather than `Date.now()` so it's deterministic and independent of the adapter
  * runtime's clock surface. */
 function utcDateStamp(mtimeMs: number): string {
   const d = new Date(mtimeMs);

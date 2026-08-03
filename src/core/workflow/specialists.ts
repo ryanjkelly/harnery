@@ -29,7 +29,7 @@ export function normalizeWorkflowSpecialists(
         `workflow specialist ${id} instructions`,
         MAX_INSTRUCTIONS,
       ),
-      harness: optional(profile.harness, `workflow specialist ${id} harness`),
+      adapter: optional(profile.adapter, `workflow specialist ${id} adapter`),
       model: optional(profile.model, `workflow specialist ${id} model`),
       effort: optional(profile.effort, `workflow specialist ${id} effort`),
       maxAttempts: positiveOptional(
@@ -64,7 +64,7 @@ export function resolveSpecialistAssignment(
     prompt: `${profile.instructions}\n\nAssignment:\n${prompt}`,
     opts: {
       specialist: opts.specialist,
-      harness: opts.harness ?? profile.harness,
+      adapter: opts.adapter ?? profile.adapter,
       model: opts.model ?? profile.model,
       effort: opts.effort ?? profile.effort,
       maxAttempts: opts.maxAttempts ?? profile.maxAttempts,

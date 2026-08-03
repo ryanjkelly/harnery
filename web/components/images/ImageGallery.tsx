@@ -129,7 +129,7 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
           created_at: "",
           aliases: [],
           instance_id: instanceId || undefined,
-          platform: row.harness ?? null,
+          platform: row.adapter ?? null,
         };
       }
       const existing = mapRef.current.get(d.hash);

@@ -6,10 +6,10 @@
  */
 
 export {
+  type Adapter,
   type Event,
   type EventEnvelope,
   type EventType,
-  type Harness,
   type RedactionMarker,
   SCHEMA_VERSION,
   type Source,

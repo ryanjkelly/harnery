@@ -3,7 +3,7 @@ import type { EmitContext } from "../commander.ts";
 import { monorepoRoot } from "../core/agents/coord-client.ts";
 import {
   emitCanonical,
-  normalizeHarness,
+  normalizeAdapter,
   readHeartbeat,
   resolveOwner,
 } from "../core/agents/index.ts";
@@ -252,7 +252,7 @@ function emitPresenceChange(
     type: "state.presence_change",
     owner,
     session: hb?.session_id ?? owner,
-    harness: normalizeHarness(hb?.platform),
+    adapter: normalizeAdapter(hb?.platform),
     data: { from, to, source },
   });
 }

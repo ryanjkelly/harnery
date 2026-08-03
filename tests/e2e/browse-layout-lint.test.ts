@@ -47,6 +47,14 @@ describe("browse layout lint", () => {
           { selector: ".overlap-good", tolerancePx: 0 },
           { selector: ".overlap-bad", tolerancePx: 0 },
         ],
+        crowd: [
+          { selector: ".crowd-good", minGapPx: 6 },
+          { selector: ".crowd-bad", minGapPx: 6 },
+          { selector: ".crowd-plain", minGapPx: 6 },
+          { selector: ".crowd-composite-bad", minGapPx: 6 },
+          { selector: ".crowd-composite-good", minGapPx: 6 },
+          { selector: ".crowd-composite-deep", minGapPx: 6 },
+        ],
       });
 
       expect(result.align.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
@@ -54,6 +62,24 @@ describe("browse layout lint", () => {
       expect(result.gap.map((entry) => entry.outcome)).toEqual(["pass", "fail", "unknown"]);
       expect(result.clip.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
       expect(result.overlap.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
+      // crowd-good: panels 16px apart pass. crowd-bad: flush panels fail.
+      // crowd-plain: flush but non-panel paragraphs must NOT flag (panel gate).
+      // crowd-composite-bad: wrapper-of-panels flush to a panel fails (nearest faces).
+      // crowd-composite-good: same structure with 16px gap passes.
+      // crowd-composite-deep: tall wrapper flush to next panel but inner face far — pass.
+      expect(result.crowd.map((entry) => entry.outcome)).toEqual([
+        "pass",
+        "fail",
+        "pass",
+        "fail",
+        "pass",
+        "pass",
+      ]);
+      expect(result.crowd[1]?.issues[0]?.axis).toBe("y");
+      expect(result.crowd[1]?.issues[0]?.separationPx ?? 99).toBeLessThan(6);
+      expect(result.crowd[3]?.issues[0]?.beforeKind).toBe("composite");
+      expect(result.crowd[3]?.issues[0]?.afterKind).toBe("panel");
+      expect(result.crowd[3]?.issues[0]?.separationPx ?? 99).toBeLessThan(6);
     } finally {
       await browser.close();
     }
@@ -92,6 +118,8 @@ describe("browse layout lint", () => {
         ".clip-good",
         "--check-overlap",
         ".overlap-good",
+        "--check-crowd",
+        ".crowd-bad",
         "--check-hit",
         ".hit-good",
       ],
@@ -106,6 +134,7 @@ describe("browse layout lint", () => {
     expect(stdout).toContain('"gap"');
     expect(stdout).toContain('"clip"');
     expect(stdout).toContain('"overlap"');
+    expect(stdout).toContain('"crowd"');
     expect(stdout).toContain('"hit"');
   });
 

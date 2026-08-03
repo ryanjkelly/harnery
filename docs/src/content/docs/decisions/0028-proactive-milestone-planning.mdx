@@ -3,7 +3,7 @@ title: "0028: Missions advance through reviewed milestone plans"
 description: "ADR: accept a bounded objective before work exists, plan one immutable milestone at a time, and reassess before declaring mission success."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, background service)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/governor`, governor CLI, dashboard, background service)
 
 ## Context
 
@@ -22,7 +22,7 @@ boundary with satisfaction of the operator's objective.
 
 ## Decision
 
-Add an optional immutable `mission` to supervisor intent. A mission freezes:
+Add an optional immutable `mission` to governor intent. A mission freezes:
 
 - one bounded objective;
 - one or more mission acceptance criteria;
@@ -30,7 +30,7 @@ Add an optional immutable `mission` to supervisor intent. A mission freezes:
 
 Mission creation also requires the existing replanning policy and its frozen
 planner specialist, workflow-template catalog, application policy, and bounds.
-`harn supervisor create --mission <file> --replanning <file> --team <file>` may
+`harn governor create --mission <file> --replanning <file> --team <file>` may
 omit the root work ID. In that form Harnery writes intent first and derives an
 initial planning action without creating placeholder executable work.
 
@@ -64,15 +64,15 @@ closed, and `plan.applied` advances authority only after work exists. Earlier
 generations, attempts, proofs, and planner decisions stay visible and keep
 counting against cumulative limits.
 
-For mission supervisors, accepting a milestone root does not make the goal
+For mission governors, accepting a milestone root does not make the goal
 terminal. Projection becomes `ready/plan_milestone`. The next planner receives
 the frozen mission, remaining bounds, prior plan outcome, active work state, and
 bounded proof summaries. A reviewed `plan.completed` event is the only new path
-to mission success. Supervisors without a mission retain the existing rule that
+to mission success. Governors without a mission retain the existing rule that
 an accepted root succeeds immediately.
 
 The background service gains no planner daemon. Mission planning is another
-derived supervisor action under the existing goal lease. Mission phase and
+derived governor action under the existing goal lease. Mission phase and
 milestone counters enter the service fingerprint, so a plan or acceptance
 transition wakes one ordinary bounded tick and unchanged attention states remain
 quiescent.
@@ -113,4 +113,4 @@ quiescent.
   does not claim that a syntactically valid decomposition is strategically good.
 - Project memory is intentionally structured and bounded: mission intent,
   immutable plans, work/proof summaries, attempts, and operator decisions. Raw
-  prompts and replies do not enter supervisor projection or the dashboard.
+  prompts and replies do not enter governor projection or the dashboard.

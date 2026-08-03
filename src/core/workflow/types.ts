@@ -1,6 +1,6 @@
 /**
  * Workflow engine contracts. A workflow is a small throwaway JS script with
- * bounded, schema-gated stages that fan work out to headless harness-CLI
+ * bounded, schema-gated stages that fan work out to headless adapter-CLI
  * subagents; the SCRIPT (deterministic code), not any model, decides routing
  * between stages, and the run always terminates when the script returns.
  *
@@ -28,7 +28,18 @@ export const WORKFLOW_PROOF_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_WORK_CONTEXT_SCHEMA_VERSION = 1 as const;
 export const WORKFLOW_ATTEMPT_CONTEXT_SCHEMA_VERSION = 1 as const;
 
-export type EvidenceKind = "test" | "command" | "artifact" | "change" | "review" | "observation";
+/** The evidence vocabulary, as a value so the runtime validator and the
+ * pre-flight source scan cannot drift from the type or from each other. */
+export const EVIDENCE_KINDS = [
+  "test",
+  "command",
+  "artifact",
+  "change",
+  "review",
+  "observation",
+] as const;
+
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 export type EvidenceStatus = "passed" | "failed" | "observed" | "unknown";
 export type EvidenceSource = "workflow" | "engine";
 export type AcceptanceStatus = "satisfied" | "unsatisfied" | "unknown";
@@ -90,7 +101,7 @@ export interface WorkflowAgentProof {
   label: string;
   stage?: string;
   specialist?: string;
-  harness: HarnessName;
+  adapter: AdapterName;
   model?: string;
   status: "succeeded" | "failed" | "cached";
   attempts: number;
@@ -131,16 +142,16 @@ export interface WorkflowRepoEvidence {
   };
 }
 
-/** Bounded pointer to the live attestation backing a harness's claims
+/** Bounded pointer to the live attestation backing a adapter's claims
  * (ADR 0038). Structural facts only: no prompt text, no host paths. */
-export interface HarnessAttestationCitation {
+export interface AdapterAttestationCitation {
   binary_version: string;
   observed_at: string;
   record_digest: string;
 }
 
-export interface HarnessEvidenceCoverage {
-  harness: HarnessName;
+export interface AdapterEvidenceCoverage {
+  adapter: AdapterName;
   tool_evidence: {
     support: "supported" | "partial" | "unsupported" | "unknown";
     note?: string;
@@ -150,10 +161,10 @@ export interface HarnessEvidenceCoverage {
     session_ids: number;
     costs: number;
   };
-  /** What backs this harness's capability claims (ADR 0038). Absent when the
+  /** What backs this adapter's capability claims (ADR 0038). Absent when the
    * host recorded no live attestation, which is the common case and is not by
    * itself a proof unknown. */
-  attestation?: HarnessAttestationCitation;
+  attestation?: AdapterAttestationCitation;
 }
 
 export interface WorkflowSandboxProjectionEvidence {
@@ -166,12 +177,12 @@ export interface WorkflowSandboxProjectionEvidence {
 export interface WorkflowProofUnknown {
   code:
     | "tool_evidence_unavailable"
-    | "harness_capability_unregistered"
+    | "adapter_capability_unregistered"
     | "agent_cost_unreported"
     | "agent_session_unreported"
     | "repository_drift_incomplete";
   message: string;
-  harness?: HarnessName;
+  adapter?: AdapterName;
   agent_id?: string;
 }
 
@@ -192,11 +203,16 @@ export interface WorkflowProof {
     error?: string;
     result?: ResultDigest;
     /** Set on a failed run that was uninformative about the work (ADR 0046):
-     * environment or upstream. Derived from the agents' classes when no agent
-     * produced a result; absent ⇒ the attempt is charged as before. The durable
-     * work projection reads this to decide charging, stopping, and the
-     * uncharged-attempt bound. */
-    class?: SpawnFailureClass;
+     * environment, upstream, or decision. The first two are derived from the
+     * agents' classes when no agent produced a result; `decision` is declared by
+     * the script through ctx.blocked(). Absent ⇒ the attempt is charged as
+     * before. The durable work projection reads this to decide charging,
+     * stopping, and the uncharged-attempt bound. */
+    class?: RunFailureClass;
+    /** Docket id of the decision this run stopped on. Only ever set alongside
+     * class "decision", and only when the script named one. Carried so the work
+     * projection can point a human at the exact question rather than at prose. */
+    decision_id?: string;
   };
   acceptance: {
     criteria: AcceptanceResult[];
@@ -212,11 +228,11 @@ export interface WorkflowProof {
    * Absent means no projection was applied, which is the default. Present means
    * the run can be audited for exactly what its children could write. */
   sandbox_projection?: WorkflowSandboxProjectionEvidence;
-  harnesses: HarnessEvidenceCoverage[];
+  adapters: AdapterEvidenceCoverage[];
   unknowns: WorkflowProofUnknown[];
   integrity: {
-    journal: {
-      path: "journal.jsonl";
+    transcript: {
+      path: "transcript.jsonl";
       sha256: string;
       bytes: number;
     };
@@ -239,8 +255,8 @@ export interface WorkflowPolicyProof {
   };
 }
 
-export interface HarnessEvidenceCapability {
-  toolEvidence: HarnessEvidenceCoverage["tool_evidence"];
+export interface AdapterEvidenceCapability {
+  toolEvidence: AdapterEvidenceCoverage["tool_evidence"];
 }
 
 /** JSON-schema *subset* accepted by stage gates (see validate.ts). */
@@ -272,36 +288,36 @@ export interface AgentOpts {
    * validate; the engine retries with the validation error appended, up to
    * `maxAttempts`. Without it, `agent()` resolves to the raw reply text. */
   schema?: StageSchema;
-  /** Model slug passed through to the harness CLI (default: the CLI's default). */
+  /** Model slug passed through to the adapter CLI (default: the CLI's default). */
   model?: string;
-  /** Reasoning effort mapped through the selected harness profile. Unsupported
+  /** Reasoning effort mapped through the selected adapter profile. Unsupported
    * values fail before the vendor process starts. */
   effort?: string;
   /** Attempt ceiling for the schema-retry loop (default 2). */
   maxAttempts?: number;
   /** Subprocess timeout ms (default 300_000). */
   timeoutMs?: number;
-  /** Harness-turn ceiling for the child (default 25; use 1 for pure
+  /** Adapter-turn ceiling for the child (default 25; use 1 for pure
    * classification stages — cheaper and faster). */
   maxTurns?: number;
-  /** Display label in the journal (default: prompt head). */
+  /** Display label in the transcript (default: prompt head). */
   label?: string;
-  /** Which harness runs this agent (default: the run's default harness).
-   * Mixed-harness workflows are legal: triage on one CLI, deep work on
+  /** Which adapter runs this agent (default: the run's default adapter).
+   * Mixed-adapter workflows are legal: triage on one CLI, deep work on
    * another. */
-  harness?: HarnessName;
+  adapter?: AdapterName;
 }
 
 /** Open registry key. The built-in catalog currently contains Claude Code,
  * Codex, and Cursor; consumers may register another adapter without widening
  * a package-owned union first. */
-export type HarnessName = string;
+export type AdapterName = string;
 
-/** Durable role defaults supplied by a goal supervisor or embedding host.
+/** Durable role defaults supplied by a goal governor or embedding host.
  * Profiles are frozen into a workflow run manifest before the first spawn. */
 export interface WorkflowSpecialistProfile {
   instructions: string;
-  harness?: HarnessName;
+  adapter?: AdapterName;
   model?: string;
   effort?: string;
   maxAttempts?: number;
@@ -322,12 +338,30 @@ export interface WorkflowSpecialistProfile {
  */
 export type SpawnFailureClass = "environment" | "upstream";
 
+/**
+ * Why a failed run was uninformative about the work. A superset of
+ * {@link SpawnFailureClass}: a spawn can fail for reasons outside the work, and
+ * so can the script itself.
+ *
+ * - `decision`: the script reached a correct conclusion and that conclusion is
+ *   that a human must rule before the work can proceed. Nothing about the work
+ *   was wrong, so the attempt is uncharged; nothing about a retry can help,
+ *   because the blocker is a person, so the item stops and names the decision.
+ *
+ * This class exists because without it a correct refusal and a botched attempt
+ * are the same outcome to the engine. Automatic retry then re-issues work an
+ * agent already answered correctly, once per attempt budget, and the answer is
+ * identical every time — the loop cannot converge, because the thing it is
+ * waiting for is a person who was never told.
+ */
+export type RunFailureClass = SpawnFailureClass | "decision";
+
 /** What a spawn adapter returns for one subagent run. */
 export interface SpawnResult {
   ok: boolean;
   /** The model's final reply text (envelope-unwrapped). */
   text: string;
-  /** Child harness session id when the envelope carries one. */
+  /** Child adapter session id when the envelope carries one. */
   sessionId?: string;
   costUsd?: number;
   durationMs: number;
@@ -348,6 +382,10 @@ export interface SpawnRequest {
   /** Run id, stamped into the child env (HARNERY_WORKFLOW_RUN_ID) so the
    * coord layer can associate child sessions with their workflow run. */
   runId?: string;
+  /** Transcript agent id (`a1`, `a2`, …), stamped into the child env
+   * (HARNERY_WORKFLOW_AGENT_ID) so in-flight child activity attributes to one
+   * agent row rather than only to the run. */
+  agentId?: string;
   /** Scrub all API-key vars from the child env so it can only authenticate
    * via its stored (subscription) login. See billing.ts. */
   subscriptionOnly?: boolean;
@@ -397,14 +435,33 @@ export interface WorkflowContext {
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>;
   /** Run thunks with bounded concurrency; a rejected thunk resolves to null. */
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<Array<T | null>>;
-  /** Declare the current stage (journal + progress grouping). */
+  /** Declare the current stage (transcript + progress grouping). */
   stage: (title: string) => void;
-  /** Narrate progress (stderr + journal). */
+  /** Narrate progress (stderr + transcript). */
   log: (message: string) => void;
   /** Attach a bounded, sourced receipt to the run and optional acceptance criteria. */
   evidence: (input: WorkflowEvidenceInput) => string;
   /** Authorize one host-mediated external mutation before performing it. */
   authorize: (input: ExternalMutationRequest) => Promise<PolicyDecision>;
+  /** Stop the run because a human must rule before the work can proceed.
+   *
+   * This is not a failure and must not be used as one. Reach for it only when
+   * the script determined something *correct* — that the question in front of
+   * it belongs to a person. The run ends uncharged and the work item stops
+   * naming the decision, so no automatic retry re-issues work that was already
+   * answered correctly. A plain `throw` means the opposite: the work failed and
+   * a retry might do better. */
+  blocked: (input: BlockedInput) => never;
+}
+
+/** Why a run stopped on a human. */
+export interface BlockedInput {
+  /** What a human has to settle, in one sentence. Shown verbatim to the
+   * operator as the work item's reason, so write it for them, not for a log. */
+  reason: string;
+  /** Docket id of the decision to resolve. Strongly preferred: without it the
+   * operator gets prose and has to go find the question themselves. */
+  decision?: string;
 }
 
 export interface WorkflowMeta {
@@ -469,18 +526,18 @@ export interface WorkflowOperatorFinding {
 }
 
 export interface EngineOpts {
-  /** Repo root whose .harnery/ receives the run journal. */
+  /** Repo root whose .harnery/ receives the run transcript. */
   coordRoot: string;
-  /** Spawner registry keyed by harness. A single-harness caller registers one
-   * entry and names it in `defaultHarness`. */
-  spawners: Readonly<Record<HarnessName, Spawner | undefined>>;
-  /** Harness used when an agent() call doesn't name one (default "claude-code"). */
-  defaultHarness?: HarnessName;
+  /** Spawner registry keyed by adapter. A single-adapter caller registers one
+   * entry and names it in `defaultAdapter`. */
+  spawners: Readonly<Record<AdapterName, Spawner | undefined>>;
+  /** Adapter used when an agent() call doesn't name one (default "claude-code"). */
+  defaultAdapter?: AdapterName;
   /** Named specialist roles available to agent(..., { specialist }). */
   specialists?: Readonly<Record<string, WorkflowSpecialistProfile>>;
-  /** Resume: run id of a prior run whose journal supplies cached results.
+  /** Resume: run id of a prior run whose transcript supplies cached results.
    * agent() calls whose (stage, prompt, model, maxTurns, schema) key matches a
-   * completed prior agent return the journaled result without spawning. */
+   * completed prior agent return the transcripted result without spawning. */
   resumeFrom?: string;
   /** Continue a parked run in its original directory after its durable
    * approval has been resolved. The frozen run manifest supplies execution
@@ -505,7 +562,7 @@ export interface EngineOpts {
   /** Progress sink (default: process.stderr). */
   onLog?: (line: string) => void;
   /** Guarantee subscription billing: API-key vars are scrubbed from every
-   * child env, and a harness whose stored login is provably absent fails
+   * child env, and a adapter whose stored login is provably absent fails
    * loud before spawning. */
   subscriptionOnly?: boolean;
   /** Permit the api-key-override billing state (an exported API key silently
@@ -517,10 +574,10 @@ export interface EngineOpts {
   probeBilling?: BillingProber;
   /** Capability claims used to state whether adapter-native tool evidence was
    * available. Missing claims remain unknown. */
-  harnessEvidence?: Readonly<Record<HarnessName, HarnessEvidenceCapability | undefined>>;
-  /** Live attestations backing each harness's claims (ADR 0038). Read once by
+  adapterEvidence?: Readonly<Record<AdapterName, AdapterEvidenceCapability | undefined>>;
+  /** Live attestations backing each adapter's claims (ADR 0038). Read once by
    * the host and injected, so the engine performs no capability lookups. */
-  harnessAttestations?: Readonly<Record<HarnessName, HarnessAttestationCitation | undefined>>;
+  adapterAttestations?: Readonly<Record<AdapterName, AdapterAttestationCitation | undefined>>;
   /** Filesystem policy projected into every child's own vendor sandbox
    * (ADR 0039). Validated against the workspace binding before the first spawn,
    * and recorded in proof. Absent leaves every adapter invocation unchanged. */
@@ -551,7 +608,7 @@ export interface EngineOpts {
   approvalAddressee?: string;
   /** Execution boundary created by the host (default shared). */
   isolation?: PolicyIsolation;
-  /** Network state of spawned harness subprocesses (default unknown). */
+  /** Network state of spawned adapter subprocesses (default unknown). */
   networkAccess?: PolicyNetworkAccess;
   /** Explicit provider and host-owned roots. Omit for shared or declaration-only execution. */
   workspace?: {
@@ -567,19 +624,19 @@ export interface RunReport {
   /** What the script's default export returned. */
   result: unknown;
   agentsSpawned: number;
-  /** agent() calls satisfied from the resumeFrom journal without spawning. */
+  /** agent() calls satisfied from the resumeFrom transcript without spawning. */
   agentsCached: number;
   costUsd: number;
   durationMs: number;
-  journalPath: string;
+  transcriptPath: string;
   proofPath: string;
   acceptance: AcceptanceSummary;
   /** Estimated tokens of repo instructions (CLAUDE.md/AGENTS.md at the child
    * cwd) that EVERY child cache-writes on spawn — the fixed per-child context
    * overhead a fan-out multiplies. bytes/4 heuristic; 0 when no such file. */
   contextTokensPerChildEstimate: number;
-  /** Billing mode per harness actually used this run (probed on first use). */
-  billing: Array<{ harness: HarnessName; mode: BillingMode }>;
+  /** Billing mode per adapter actually used this run (probed on first use). */
+  billing: Array<{ adapter: AdapterName; mode: BillingMode }>;
   /** Policy verdict totals when the host supplied a policy. */
   policy?: WorkflowPolicyProof["summary"];
   /** Isolated workspace binding when this run requested a provider capability. */

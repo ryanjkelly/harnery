@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import type { PolicyEvaluation, PolicyRequestSummary, PolicyVerdict } from "../policy/index.ts";
-import { appendWorkflowJournalEvent } from "./journal.ts";
+import { appendWorkflowTranscriptEvent } from "./transcript.ts";
 
 export const WORKFLOW_APPROVAL_SCHEMA_VERSION = 1 as const;
 
@@ -148,7 +148,7 @@ export function resolveWorkflowApproval(input: ResolveWorkflowApprovalInput): {
       `approval ${input.approvalId} is already ${resolved.status}; conflicting ${input.verdict === "allow" ? "approval" : "denial"} refused`,
     );
   }
-  if (applied) appendResolutionJournal(input.coordRoot, resolved);
+  if (applied) appendResolutionTranscript(input.coordRoot, resolved);
   return { approval: resolved, applied };
 }
 
@@ -214,16 +214,16 @@ export function assertWorkflowRunId(runId: string): void {
   assertRunId(runId);
 }
 
-function appendResolutionJournal(coordRoot: string, approval: WorkflowApproval): void {
-  const journalPath = join(
+function appendResolutionTranscript(coordRoot: string, approval: WorkflowApproval): void {
+  const transcriptPath = join(
     coordRoot,
     ".harnery",
     "workflows",
     approval.request.run_id,
-    "journal.jsonl",
+    "transcript.jsonl",
   );
-  if (!existsSync(journalPath) || !approval.decision) return;
-  appendWorkflowJournalEvent(coordRoot, approval.request.run_id, "approval.resolved", {
+  if (!existsSync(transcriptPath) || !approval.decision) return;
+  appendWorkflowTranscriptEvent(coordRoot, approval.request.run_id, "approval.resolved", {
     ts: approval.decision.decided_at,
     stage: "",
     approval_id: approval.request.id,

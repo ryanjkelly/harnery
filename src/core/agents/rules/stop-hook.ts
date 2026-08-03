@@ -2,6 +2,10 @@
  * Stop-hook verdict: rule 1/3, 2/3, 3/3 enforcement evaluated
  * from the canonical event stream alone (no transcript scan).
  *
+ * Codex is observe-only: its Stop continuation can replace the user-facing
+ * answer in clients that retain only the final continuation response.
+ *
+ * Enforced adapters:
  * Rule 1/3: `state.status_checked` event with matching turn boundary exists.
  * Rule 2/3: latest `turn.stop` event has `status_box_present: true` (or the
  *            stop currently firing carries that field via the in-flight event
@@ -17,12 +21,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBinName } from "../../config.ts";
 
-export type VerdictResult = {
-  allow: boolean;
-  exit_code: 0 | 2;
-  rule: string;
-  reason?: string;
-};
+export type { VerdictResult } from "./verdict.ts";
+
+import type { VerdictResult } from "./verdict.ts";
 
 interface CanonicalEvent {
   event_id: string;
@@ -31,7 +32,7 @@ interface CanonicalEvent {
   instance_id: string;
   session_id: string;
   turn_id?: string;
-  harness: string;
+  adapter: string;
   source: string;
   data: Record<string, unknown>;
 }
@@ -40,9 +41,9 @@ export interface StopHookRequest {
   rule: "stop-hook";
   instance_id: string;
   session_id?: string;
-  /** Firing harness. Selects the end-of-turn ack signal (see `ackSignalFor`).
+  /** Firing adapter. Selects the end-of-turn ack signal (see `ackSignalFor`).
    * Undefined → Claude Code semantics (transcript-scanned status box). */
-  harness?: string;
+  adapter?: string;
   /** Wall-clock cutoff for the current turn; events strictly after this are not yet relevant. */
   now_ms?: number;
   /** Override the turn-window discovery (used by tests). */
@@ -51,7 +52,7 @@ export interface StopHookRequest {
   bypass?: boolean;
   /** Headless child spawned by `harn workflow` (HARNERY_WORKFLOW_CHILD=1).
    * The end-of-turn ritual exists to surface status to a HUMAN reader; a
-   * workflow child reports to the engine's journal instead, so the ritual is
+   * workflow child reports to the engine's transcript instead, so the ritual is
    * meaningless there — worse, blocking burns the child's turn budget on
    * re-prompts (observed as error_max_turns in the Phase 1 spike). Exempting
    * here, rather than disabling the child's hooks wholesale, keeps heartbeat +
@@ -61,7 +62,7 @@ export interface StopHookRequest {
 
 /**
  * The end-of-turn "I surfaced my status" signal, detected differently per
- * harness because the ritual's *goal* (status visible to the human) is reached
+ * adapter because the ritual's *goal* (status visible to the human) is reached
  * by different means:
  *
  * - **Claude Code / Codex** collapse tool calls in the UI, so the human-visible
@@ -78,12 +79,12 @@ export interface StopHookRequest {
  * This is why the fix is not "relax 2/3 because we can't see it": it's "2/3
  * and 1/3 are two detections of the same thing, and Cursor's inline UI makes
  * 1/3 the right one." The enforcement *channel* (exit-2+stderr vs Cursor's
- * `followup_message`) is handled separately in hooks/harness/output.ts.
+ * `followup_message`) is handled separately in hooks/adapter/output.ts.
  */
 type AckSignal = "status_box_present" | "status_checked";
 
-function ackSignalFor(harness?: string): AckSignal {
-  return harness === "cursor" ? "status_checked" : "status_box_present";
+function ackSignalFor(adapter?: string): AckSignal {
+  return adapter === "cursor" ? "status_checked" : "status_box_present";
 }
 
 const RECENT_EVENT_WINDOW_LINES = 5_000;
@@ -109,6 +110,21 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
       exit_code: 0,
       rule: "stop-hook.workflow_child",
       reason: "HARNERY_WORKFLOW_CHILD=1: headless workflow child; ritual not applicable",
+    };
+  }
+
+  // A blocked Codex Stop does not reject the turn. Codex creates a continuation
+  // prompt and asks the model to answer again. Some clients retain only that
+  // final continuation response, so a coordination reminder can replace a
+  // correct user-facing answer with status output. The Stop path has already
+  // emitted turn.stop and projected the coordination state before this verdict
+  // runs. Keep that telemetry, but never continue a Codex turn for this ritual.
+  if (req.adapter === "codex") {
+    return {
+      allow: true,
+      exit_code: 0,
+      rule: "stop-hook.codex_observe_only",
+      reason: "Codex Stop continuations must not replace the user-facing answer",
     };
   }
 
@@ -160,16 +176,16 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   const latestTurnStop = [...inTurn].reverse().find((e) => e.event_type === "turn.stop");
   const boxPresent = latestTurnStop ? Boolean(latestTurnStop.data.status_box_present) : false;
 
-  // Harness-aware end-of-turn ack signal (see `ackSignalFor`). On Cursor the
+  // Adapter-aware end-of-turn ack signal (see `ackSignalFor`). On Cursor the
   // ack is `status_checked` (running `harn agents status` shows the box inline);
   // on Claude Code / Codex it's the transcript-scanned `status_box_present`.
   // The matching block helper carries the right "how to fix" message.
-  const ackSignal = ackSignalFor(req.harness);
+  const ackSignal = ackSignalFor(req.adapter);
   const ackPresent = ackSignal === "status_checked" ? statusChecked : boxPresent;
   const ackBlock = ackSignal === "status_checked" ? rule13Block : rule23Block;
 
   // Pure-prose-turn exemption: only the ack signal applies. Parity
-  // across harnesses: CC requires the box; Cursor requires status_checked.
+  // across adapters: CC requires the box; Cursor requires status_checked.
   if (!toolPreUseInTurn) {
     if (!ackPresent) {
       return ackBlock();

@@ -184,16 +184,16 @@ function sampleProof(): WorkflowProof {
         incomplete: false,
       },
     },
-    harnesses: [],
+    adapters: [],
     unknowns: [],
-    integrity: { journal: { path: "journal.jsonl", sha256: "a".repeat(64), bytes: 10 } },
+    integrity: { transcript: { path: "transcript.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };
 }
 
-describe("harness attestation citation (ADR 0038)", () => {
+describe("adapter attestation citation (ADR 0038)", () => {
   const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
-  function journal(): string {
-    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+  function transcript(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
     return path;
   }
@@ -204,7 +204,7 @@ describe("harness attestation citation (ADR 0038)", () => {
     startedAt: "2026-07-24T19:00:00.000Z",
     endedAt: "2026-07-24T19:00:01.000Z",
     durationMs: 1_000,
-    journalPath: "",
+    transcriptPath: "",
     before: snapshot,
     after: snapshot,
     evidence: [],
@@ -212,7 +212,7 @@ describe("harness attestation citation (ADR 0038)", () => {
       {
         id: "a1",
         label: "probe",
-        harness: "claude-code",
+        adapter: "claude-code",
         status: "succeeded" as const,
         attempts: 1,
         duration_ms: 10,
@@ -220,14 +220,14 @@ describe("harness attestation citation (ADR 0038)", () => {
         cost_usd: 0.01,
       },
     ],
-    harnessEvidence: { "claude-code": { toolEvidence: { support: "unsupported" as const } } },
+    adapterEvidence: { "claude-code": { toolEvidence: { support: "unsupported" as const } } },
   };
 
-  test("a run cites the attestation backing the harness it used", () => {
+  test("a run cites the attestation backing the adapter it used", () => {
     const proof = buildWorkflowProof({
       ...baseInput,
-      journalPath: journal(),
-      harnessAttestations: {
+      transcriptPath: transcript(),
+      adapterAttestations: {
         "claude-code": {
           binary_version: "2.1.197",
           observed_at: "2026-07-24T19:00:00.000Z",
@@ -235,7 +235,7 @@ describe("harness attestation citation (ADR 0038)", () => {
         },
       },
     });
-    expect(proof.harnesses[0]?.attestation).toEqual({
+    expect(proof.adapters[0]?.attestation).toEqual({
       binary_version: "2.1.197",
       observed_at: "2026-07-24T19:00:00.000Z",
       record_digest: "abc123",
@@ -243,30 +243,30 @@ describe("harness attestation citation (ADR 0038)", () => {
   });
 
   test("no attestation means no citation and no new unknown", () => {
-    const proof = buildWorkflowProof({ ...baseInput, journalPath: journal() });
-    expect(proof.harnesses[0]?.attestation).toBeUndefined();
+    const proof = buildWorkflowProof({ ...baseInput, transcriptPath: transcript() });
+    expect(proof.adapters[0]?.attestation).toBeUndefined();
     // Deliberate: an unattested host must not have every run gated on a new
     // unknown it cannot clear without spending tokens.
     expect(proof.unknowns.map((item) => item.code)).toEqual(["tool_evidence_unavailable"]);
   });
 
-  test("a citation for an unused harness is not attached", () => {
+  test("a citation for an unused adapter is not attached", () => {
     const proof = buildWorkflowProof({
       ...baseInput,
-      journalPath: journal(),
-      harnessAttestations: {
+      transcriptPath: transcript(),
+      adapterAttestations: {
         cursor: { binary_version: "x", observed_at: "y", record_digest: "z" },
       },
     });
-    expect(proof.harnesses).toHaveLength(1);
-    expect(proof.harnesses[0]?.attestation).toBeUndefined();
+    expect(proof.adapters).toHaveLength(1);
+    expect(proof.adapters[0]?.attestation).toBeUndefined();
   });
 });
 
 describe("sandbox projection evidence (ADR 0039)", () => {
   const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
-  function journalFile(): string {
-    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+  function transcriptFile(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
     return path;
   }
@@ -286,7 +286,7 @@ describe("sandbox projection evidence (ADR 0039)", () => {
   test("an applied projection is recorded so the run can be audited", () => {
     const proof = buildWorkflowProof({
       ...input,
-      journalPath: journalFile(),
+      transcriptPath: transcriptFile(),
       sandboxProjection: {
         mode: "workspace-write",
         writable_roots: ["/srv/ws/repo/.git"],
@@ -301,7 +301,7 @@ describe("sandbox projection evidence (ADR 0039)", () => {
   });
 
   test("no projection leaves the field absent rather than empty", () => {
-    const proof = buildWorkflowProof({ ...input, journalPath: journalFile() });
+    const proof = buildWorkflowProof({ ...input, transcriptPath: transcriptFile() });
     expect(proof.sandbox_projection).toBeUndefined();
   });
 });
@@ -314,7 +314,7 @@ describe("run failure class derivation (ADR 0046)", () => {
     return {
       id: "a",
       label: "worker",
-      harness: "codex",
+      adapter: "codex",
       status,
       attempts: 1,
       duration_ms: 1,
@@ -365,8 +365,8 @@ describe("run failure class derivation (ADR 0046)", () => {
 
 describe("run-level class in the proof packet (ADR 0046)", () => {
   const snapshot = { cwd: "/repo", dirty_paths: [] as string[] };
-  function journalFile(): string {
-    const path = join(root, ".harnery", "workflows", "wf-test", "journal.jsonl");
+  function transcriptFile(): string {
+    const path = join(root, ".harnery", "workflows", "wf-test", "transcript.jsonl");
     writeFileSync(path, "{}\n");
     return path;
   }
@@ -386,12 +386,12 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
   test("a failed run whose only agent hit a missing binary records run.class environment", () => {
     const proof = buildWorkflowProof({
       ...failing,
-      journalPath: journalFile(),
+      transcriptPath: transcriptFile(),
       agents: [
         {
           id: "a1",
           label: "worker",
-          harness: "codex",
+          adapter: "codex",
           status: "failed",
           attempts: 1,
           duration_ms: 1,
@@ -405,12 +405,12 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
   test("a failed run with no classifiable agent leaves run.class absent (charged)", () => {
     const proof = buildWorkflowProof({
       ...failing,
-      journalPath: journalFile(),
+      transcriptPath: transcriptFile(),
       agents: [
         {
           id: "a1",
           label: "worker",
-          harness: "codex",
+          adapter: "codex",
           status: "failed",
           attempts: 1,
           duration_ms: 1,

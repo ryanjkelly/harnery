@@ -11,7 +11,7 @@ sidebar:
 ## Context
 
 harnery ships a coordination *engine*: decision docket (ADR 0007), councils,
-scratch journals, agent heartbeats, harness hooks. But it ships no agent-facing
+journals, agent heartbeats, adapter hooks. But it ships no agent-facing
 *guidance*. `harn init` wires hooks and creates the coord root, and the runtime
 injects dynamic session context (identity, peer table), yet nothing tells the
 consumer's agent that these surfaces exist or when to reach for them. "Start a
@@ -24,25 +24,25 @@ skill on top") without giving the *generic* half of that layer a vehicle.
 
 Two kinds of guidance want two different lifetimes:
 
-- **Always-on orientation.** An agent must know the docket/councils/scratch
+- **Always-on orientation.** An agent must know the docket/councils/journal
   exist *before* it can decide to use them, so this must sit in the project
   instructions file that loads every session.
 - **On-demand procedure.** How to run a council round, how to resolve a
   decision with evidence: long, and only needed when invoked. This is what
-  harness skills are for.
+  adapter skills are for.
 
 ## Alternatives considered
 
 - **Document it on the docs site / README only.** Rejected: agents don't read
-  the docs site. Guidance has to land in the harness's own discovery path
+  the docs site. Guidance has to land in the adapter's own discovery path
   (instructions file + skills) to exist at all from the agent's view.
 - **Inject the orientation at runtime via hooks** (SessionStart extra context)
   instead of a file block. Rejected as the primary channel: invisible to the
   consumer's repo (nothing to review, diff, or commit), re-paid in tokens every
-  session, and each harness caps injected context differently. Runtime
+  session, and each adapter caps injected context differently. Runtime
   injection stays for what's genuinely dynamic (identity, peers); the static
   orientation belongs in a committed file. A file block is also the only
-  channel that reaches a harness whose hooks aren't wired yet.
+  channel that reaches a adapter whose hooks aren't wired yet.
 - **One big skill instead of an instructions block.** Rejected: skills load
   only when invoked, and an agent that doesn't know the docket exists never
   invokes the docket skill. It is a chicken-and-egg problem: the *existence*
@@ -98,7 +98,7 @@ Two kinds of guidance want two different lifetimes:
   on its own, and double-injection would duplicate it.
 - **Content budget: orientation, not procedure.** What exists (identity +
   peer awareness via `agents whoami|status|set-task`, intent declaration,
-  scratch journal, decision docket, councils), one line of *when*, and a
+  journal, decision docket, councils), one line of *when*, and a
   pointer to the skill or `--help` for *how*. Target ≤ 80 rendered lines.
   The block costs every agent context on every turn; procedures live in
   skills precisely so it stays small.
@@ -107,7 +107,7 @@ Two kinds of guidance want two different lifetimes:
   `.harnery/config.jsonc`. Static markdown can't call `resolveBinName()` at
   runtime, so re-running `init` after a bin rename re-renders the block.
 
-**2. Generic skills**, written where the harness has a native skill primitive:
+**2. Generic skills**, written where the adapter has a native skill primitive:
 
 - v1 targets Claude Code: `.claude/skills/harn-decide/SKILL.md` (file, search,
   claim, resolve-with-evidence mechanics for the docket) and
@@ -121,7 +121,7 @@ Two kinds of guidance want two different lifetimes:
   natively, so the injected block carries the orientation and the CLI's
   `--help` carries the procedure. Native registration (Codex skill metadata,
   Cursor rules) is a tracked follow-on once those conventions are pinned.
-- Deferred skills: scratch (a block one-liner suffices), handoff and
+- Deferred skills: journal (a block one-liner suffices), handoff and
   docs-sweep (their procedures embed host doc-layout policy the engine
   doesn't own, the same boundary as the triage rubric).
 - `.harnery/config.jsonc` gains `skills.exclude` so a host with its own
@@ -137,7 +137,7 @@ an upgrade shows up as `--check` drift until `init` is re-run.
 
 **4. Deinit symmetry.** Splice the block out of `AGENTS.md`/`CLAUDE.md`
 (deleting the file only when `init` created it and nothing outside the block
-remains, mirroring the harness-only settings-file removal), delete marked
+remains, mirroring the adapter-only settings-file removal), delete marked
 skill files, leave everything else. `--purge-state` semantics are unchanged.
 
 ## Consequences
@@ -147,11 +147,11 @@ skill files, leave everything else. `--purge-state` semantics are unchanged.
   `--check` wiring, tests, changeset; (2) dry-run against a copy of the first
   host's instructions file and diff which hand-authored sections the block
   subsumes; (3) the first host de-tangles: generic sections (intent capture,
-  command capture, coord surface, scratch journal, docket engine mechanics,
+  command capture, coord surface, journal, docket engine mechanics,
   council procedure) retire in favor of the injected block + shipped skills,
   while host policy (triage rubric, escalation targets, prose gates, the host
   CLI reference) stays hand-authored, gated on its config-sync and
-  `init --check` pre-commit checks; (4) a second host adopts from scratch and
+  `init --check` pre-commit checks; (4) a second host adopts from journal and
   validates the bare-consumer experience end-to-end. Do not start (3) before
   (1) ships and (2) is diffed.
 - The first host keeps its own policy `decide` skill and excludes
@@ -172,3 +172,45 @@ skill files, leave everything else. `--purge-state` semantics are unchanged.
 - Not decided here: runtime *enforcement* of any ritual the block describes
   (host hook policy), web-UI surfacing of drift, and auto-refresh on version
   bump (re-running `init` stays manual).
+
+## Addendum: where a consumer's own policy lives (2026-07-26)
+
+The block is generic by design, and the ~80-line budget above is a ceiling on
+*engine* content. That left a gap this ADR did not answer: a consumer with real
+coordination policy of its own has nowhere machine-managed to put it. In
+practice it lands next to the block, hand-maintained, with nothing keeping the
+two in step and nothing reporting when the hand-written half goes stale.
+
+Two shapes were considered.
+
+Exporting `spliceRegion` as a public primitive looks smaller, and it is not.
+`init` and `deinit` are registered inside harnery, so a host that wanted a
+managed region of its own would have to wrap or replace both commands and
+reimplement apply, refresh, drift-check, and remove. Every consumer would write
+that lifecycle again, slightly differently.
+
+The chosen shape is declarative. A consumer names a file:
+
+```jsonc
+{ "instructions": { "hostAddendumFile": ".agents/host-instructions.md" } }
+```
+
+and harnery splices that file's contents into a second managed region,
+`host-addendum`, with the same lifecycle as its own block. One implementation of
+apply, check, and remove serves every consumer.
+
+This keeps the boundary this ADR already draws. Host policy stays outside
+harnery's templates: harnery never parses, renders, or reasons about the
+content, so nothing host-specific enters the package and the portability guard
+has nothing new to catch. What harnery owns is what it already owned, region
+placement, hash versioning, drift detection, and deinit symmetry.
+
+Two properties are load-bearing. Validation runs before the first write, so a
+mistyped or escaping path aborts the run rather than leaving `AGENTS.md`
+half-updated and quietly missing a section the host believes is there. And an
+unconfigured region is drift, not a no-op: deleting the config key and re-running
+`init` is how a consumer removes the addendum, so `--check` has to notice a
+region whose config entry is gone.
+
+`spliceRegion` stays internal. It gets exported if a second, genuinely
+independent consumer needs it, not before.

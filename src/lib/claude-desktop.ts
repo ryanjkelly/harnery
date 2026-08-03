@@ -226,7 +226,10 @@ export interface MirrorOptions {
 
 export function entryMatchesSelector(entry: DesktopSessionEntry, selector: string): boolean {
   if (entry.cliSessionId === selector || entry.sessionId === selector) return true;
-  return entry.title !== null && entry.title.toLowerCase().includes(selector.toLowerCase());
+  // Optional chain rather than a null guard: the reader normalises a missing
+  // title to null, but this is exported, and a hand-built entry with an absent
+  // title would slip past `!== null` and then throw on the method call.
+  return entry.title?.toLowerCase().includes(selector.toLowerCase()) ?? false;
 }
 
 /**

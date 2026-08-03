@@ -8,8 +8,9 @@
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
  * `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
- * `coord` (heartbeat freshness), `backup` (restic repo/password/prune policy),
- * and `sync` (rclone remote/prefix) sections. The `files` deny/override section
+ * `coord` (heartbeat freshness), `artifacts` (working-file retention),
+ * `backup` (restic repo/password/prune policy), and `sync` (rclone
+ * remote/prefix) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
  *
  * Env vars and CLI flags override any config value per invocation (each accessor
@@ -72,6 +73,11 @@ interface HarneryConfig {
    * the sweeper prunes an agent (default 600). Read via `coordFreshnessSeconds()`.
    */
   coord?: { freshness_seconds?: number };
+  /**
+   * Managed working-artifact defaults. `default_retention_days` is the
+   * create-time TTL when the caller does not pass `artifacts create --days`.
+   */
+  artifacts?: { default_retention_days?: number };
   /**
    * `harn backup` (restic) defaults: `repo` path/URL, `password_file`, and the
    * `keep_daily`/`keep_weekly`/`keep_monthly` prune policy. Read via `backupConfig()`.
@@ -357,6 +363,28 @@ export function coordFreshnessSeconds(coordRoot?: string | null): number {
   const root = coordRoot ?? findCoordRoot();
   if (root) return posIntOr(readConfig(root).coord?.freshness_seconds, DEFAULT_FRESHNESS_SECS);
   return DEFAULT_FRESHNESS_SECS;
+}
+
+/**
+ * Default retention for a newly-created working artifact. Precedence:
+ * `HARNERY_ARTIFACT_RETENTION_DAYS` -> project/user config
+ * `artifacts.default_retention_days` -> 3 days.
+ */
+export function artifactDefaultRetentionDays(coordRoot?: string | null): number {
+  const env = coordEnv("ARTIFACT_RETENTION_DAYS");
+  if (env !== undefined) {
+    const n = Number(env);
+    if (Number.isFinite(n) && n > 0 && n <= 3650) return n;
+  }
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return 3;
+  const configured = readConfig(root).artifacts?.default_retention_days;
+  return typeof configured === "number" &&
+    Number.isFinite(configured) &&
+    configured > 0 &&
+    configured <= 3650
+    ? configured
+    : 3;
 }
 
 /** Resolved `harn backup` defaults (restic repo/password + prune policy). */

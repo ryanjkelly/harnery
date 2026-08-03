@@ -1,12 +1,12 @@
 /**
- * Cross-harness binary-integration fixtures: end-to-end CLI plumbing tests for
+ * Cross-adapter binary-integration fixtures: end-to-end CLI plumbing tests for
  * the `agent-hook` / `agent-coord` binaries. They exercise the wiring that the
  * function-level unit tests (names-pool, coord-resolve, claim-conflict,
  * commit-conflict, coord-reader, heartbeat-writer-heal) don't reach: that a real
  * Cursor sessionStart payload routed through the real `agent-hook` binary writes
- * a heartbeat to the override coord-root, that a Codex stop verdict fails when
- * set-task is missing, etc. We spawn the production entry points the way the
- * harnesses' hooks.json / settings.json do.
+ * a heartbeat to the override coord-root, that a Codex Stop remains non-blocking
+ * when ritual signals are missing, etc. We spawn the production entry points the
+ * way the adapters' hooks.json / settings.json do.
  *
  * Why spawn the real binaries instead of importing the TS: this is the only
  * coverage that exercises the wrapper-script → bun → cli.ts → shelled-out
@@ -170,7 +170,7 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
       extra: { kind: "session" },
     });
     expect(existsSync(path.join(root, ".harnery", "pid-map", "77777"))).toBe(false);
-    run(AGENT_HOOK, ["pre-tool-use", "--harness", "claude-code"], payload, root, anchor);
+    run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
     expect(readFileSync(path.join(root, ".harnery", "pid-map", "77777"), "utf8")).toBe(
       "owner-B\tclaude_code",
     );
@@ -179,10 +179,10 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
   test("second call is a no-op (idempotent pid-map, mtime unchanged)", () => {
     const root = makeSandbox();
     seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude_code" });
-    run(AGENT_HOOK, ["pre-tool-use", "--harness", "claude-code"], payload, root, anchor);
+    run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
     const rowPath = path.join(root, ".harnery", "pid-map", "77777");
     const before = statSync(rowPath).mtimeMs;
-    run(AGENT_HOOK, ["pre-tool-use", "--harness", "claude-code"], payload, root, anchor);
+    run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
     expect(statSync(rowPath).mtimeMs).toBe(before);
   });
 
@@ -191,7 +191,7 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
     seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude_code" });
     const rowPath = path.join(root, ".harnery", "pid-map", "77777");
     writeFileSync(rowPath, "owner-OLD\tclaude_code\n");
-    run(AGENT_HOOK, ["pre-tool-use", "--harness", "claude-code"], payload, root, anchor);
+    run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
     expect(readFileSync(rowPath, "utf8")).toBe("owner-B\tclaude_code");
   });
 });
@@ -217,7 +217,7 @@ describe("agent-hook pre-tool-use cross-client deny", () => {
       cursor_version: "3.5.17",
       workspace_roots: [root],
     });
-    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--harness", "cursor"], payload, root);
+    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--adapter", "cursor"], payload, root);
     expect(stdout).toContain('"permission":"deny"');
     expect(stdout).toContain("agent-Adelaide");
   });
@@ -240,7 +240,7 @@ describe("agent-hook pre-tool-use cross-client deny", () => {
       tool_input: { command: patch },
       tool_use_id: "call_codex_test",
     });
-    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--harness", "codex"], payload, root);
+    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--adapter", "codex"], payload, root);
     expect(stdout).toContain('"permissionDecision":"deny"');
   });
 });
@@ -265,7 +265,7 @@ describe("agent-hook session-start", () => {
       cursor_version: "3.5.17",
       workspace_roots: [root],
     });
-    run(AGENT_HOOK, ["session-start", "--harness", "cursor"], payload, root);
+    run(AGENT_HOOK, ["session-start", "--adapter", "cursor"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", "stale-cc.json"))).toBe(false);
     expect(existsSync(path.join(root, ".harnery", "active", "fresh-cc.json"))).toBe(true);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
@@ -285,7 +285,7 @@ describe("agent-hook session-start", () => {
       composer_mode: "agent",
       is_background_agent: false,
     });
-    const { status } = run(AGENT_HOOK, ["session-start", "--harness", "cursor"], payload, root);
+    const { status } = run(AGENT_HOOK, ["session-start", "--adapter", "cursor"], payload, root);
     expect(status).toBe(0);
     expect(activeCount(root)).toBe(1);
   });
@@ -301,7 +301,7 @@ describe("agent-hook session-start", () => {
       permission_mode: "bypassPermissions",
       source: "startup",
     });
-    run(AGENT_HOOK, ["session-start", "--harness", "codex"], payload, root);
+    run(AGENT_HOOK, ["session-start", "--adapter", "codex"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
   });
 });
@@ -330,7 +330,7 @@ describe("agent-hook context continuity", () => {
       },
     });
     expect(
-      run(AGENT_HOOK, ["pre-compact", "--harness", "claude-code"], pre, root, env).status,
+      run(AGENT_HOOK, ["pre-compact", "--adapter", "claude-code"], pre, root, env).status,
     ).toBe(0);
     expect(continuityState(root)).toMatchObject({
       session_id: owner,
@@ -341,7 +341,7 @@ describe("agent-hook context continuity", () => {
 
     const resumed = run(
       AGENT_HOOK,
-      ["session-start", "--harness", "claude-code"],
+      ["session-start", "--adapter", "claude-code"],
       JSON.stringify({
         session_id: owner,
         cwd: root,
@@ -372,14 +372,14 @@ describe("agent-hook context continuity", () => {
     const base = { session_id: owner, cwd: root, model: "gpt-5.6-sol" };
     run(
       AGENT_HOOK,
-      ["pre-compact", "--harness", "codex"],
+      ["pre-compact", "--adapter", "codex"],
       JSON.stringify({ ...base, hook_event_name: "PreCompact" }),
       root,
       env,
     );
     const beforeCompletion = run(
       AGENT_HOOK,
-      ["user-prompt-submit", "--harness", "codex"],
+      ["user-prompt-submit", "--adapter", "codex"],
       JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "not compacted" }),
       root,
       env,
@@ -388,7 +388,7 @@ describe("agent-hook context continuity", () => {
     expect(continuityState(root).phase).toBe("checkpointed");
     run(
       AGENT_HOOK,
-      ["post-compact", "--harness", "codex"],
+      ["post-compact", "--adapter", "codex"],
       JSON.stringify({ ...base, hook_event_name: "PostCompact" }),
       root,
       env,
@@ -397,7 +397,7 @@ describe("agent-hook context continuity", () => {
 
     const prompt = run(
       AGENT_HOOK,
-      ["user-prompt-submit", "--harness", "codex"],
+      ["user-prompt-submit", "--adapter", "codex"],
       JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "continue" }),
       root,
       env,
@@ -409,7 +409,7 @@ describe("agent-hook context continuity", () => {
 
     const status = run(
       HARN,
-      ["context", "status", "--session", owner, "--instance", owner, "--json"],
+      ["checkpoint", "status", "--session", owner, "--instance", owner, "--json"],
       "",
       root,
       env,
@@ -548,7 +548,7 @@ describe("agent-hook user-prompt-submit", () => {
     });
     const { stdout } = run(
       AGENT_HOOK,
-      ["user-prompt-submit", "--harness", "cursor"],
+      ["user-prompt-submit", "--adapter", "cursor"],
       payload,
       root,
     );
@@ -556,9 +556,84 @@ describe("agent-hook user-prompt-submit", () => {
     expect(stdout).toContain("agent-Adelaide");
   });
 
-  test("cursor nudges when task is null", () => {
+  test("every adapter gets the first-session naming instructions from the shared hook", () => {
+    const fixtures = [
+      {
+        adapter: "claude-code",
+        owner: "claude-name-first",
+        platform: "claude_code",
+        payload: (root: string) => ({
+          session_id: "claude-name-first",
+          cwd: root,
+          hook_event_name: "UserPromptSubmit",
+          prompt: "start work",
+        }),
+        envelope: '"hookEventName":"UserPromptSubmit"',
+      },
+      {
+        adapter: "cursor",
+        owner: "cursor-name-first",
+        platform: "cursor",
+        payload: (root: string) => ({
+          conversation_id: "cursor-name-first",
+          session_id: "cursor-name-first",
+          cwd: root,
+          hook_event_name: "beforeSubmitPrompt",
+          cursor_version: "3.5.17",
+          workspace_roots: [root],
+          prompt: "start work",
+        }),
+        envelope: '"additional_context"',
+      },
+      {
+        adapter: "codex",
+        owner: "codex-name-first",
+        platform: "codex",
+        payload: (root: string) => ({
+          session_id: "codex-name-first",
+          cwd: root,
+          hook_event_name: "UserPromptSubmit",
+          model: "gpt-5.5",
+          permission_mode: "bypassPermissions",
+          prompt: "start work",
+        }),
+        envelope: '"hookEventName":"UserPromptSubmit"',
+      },
+    ] as const;
+
+    for (const fixture of fixtures) {
+      const root = makeSandbox();
+      writeFileSync(
+        path.join(root, ".harnery", "config.jsonc"),
+        JSON.stringify({ binName: "acme" }),
+      );
+      seedHeartbeat(root, fixture.owner, {
+        name: "Bertha",
+        platform: fixture.platform,
+        extra: { kind: "session" },
+      });
+      const { stdout } = run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--adapter", fixture.adapter],
+        JSON.stringify(fixture.payload(root)),
+        root,
+        { HARNERY_BIN: "" },
+      );
+      expect(stdout).toContain(fixture.envelope);
+      expect(stdout).toContain('acme agents set-task \\"<2-5 word session topic>\\"');
+      expect(stdout).toContain("first_of_session: true");
+      expect(stdout).toContain("suggested_session_name");
+      expect(stdout).toContain("fenced code block");
+    }
+  });
+
+  test("cursor nudges when task was cleared after the first set-task", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, "cursor-task-null", { name: "Bertha", platform: "cursor" });
+    seedHeartbeat(root, "cursor-task-null", {
+      name: "Bertha",
+      platform: "cursor",
+      extra: { task_updated_at: nowIso() },
+    });
     const payload = JSON.stringify({
       conversation_id: "cursor-task-null",
       session_id: "cursor-task-null",
@@ -569,7 +644,7 @@ describe("agent-hook user-prompt-submit", () => {
     });
     const { stdout } = run(
       AGENT_HOOK,
-      ["user-prompt-submit", "--harness", "cursor"],
+      ["user-prompt-submit", "--adapter", "cursor"],
       payload,
       root,
     );
@@ -594,7 +669,7 @@ describe("agent-hook user-prompt-submit", () => {
       });
     const first = run(
       AGENT_HOOK,
-      ["user-prompt-submit", "--harness", "cursor"],
+      ["user-prompt-submit", "--adapter", "cursor"],
       mk("continue"),
       root,
     );
@@ -603,16 +678,20 @@ describe("agent-hook user-prompt-submit", () => {
     // same state hit again → hash dedupe, no re-nudge.
     const second = run(
       AGENT_HOOK,
-      ["user-prompt-submit", "--harness", "cursor"],
+      ["user-prompt-submit", "--adapter", "cursor"],
       mk("still continuing"),
       root,
     );
     expect(second.stdout).not.toContain("hasn't changed in");
   });
 
-  test("codex nudges when task is null", () => {
+  test("codex nudges when task was cleared after the first set-task", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, "codex-task-null", { name: "Bertha", platform: "codex" });
+    seedHeartbeat(root, "codex-task-null", {
+      name: "Bertha",
+      platform: "codex",
+      extra: { task_updated_at: nowIso() },
+    });
     const payload = JSON.stringify({
       session_id: "codex-task-null",
       cwd: root,
@@ -621,8 +700,50 @@ describe("agent-hook user-prompt-submit", () => {
       permission_mode: "bypassPermissions",
       prompt: "do something",
     });
-    const { stdout } = run(AGENT_HOOK, ["user-prompt-submit", "--harness", "codex"], payload, root);
+    const { stdout } = run(AGENT_HOOK, ["user-prompt-submit", "--adapter", "codex"], payload, root);
     expect(stdout).toContain("task` field is unset");
+  });
+
+  test("codex gets the safe status-footer reminder on every prompt", () => {
+    const root = makeSandbox();
+    writeFileSync(
+      path.join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({ binName: "acme" }),
+    );
+    seedHeartbeat(root, "codex-status-footer", {
+      name: "Bertha",
+      platform: "codex",
+      extra: { kind: "session", task: "active work", task_updated_at: nowIso() },
+    });
+    const payload = (prompt: string) =>
+      JSON.stringify({
+        session_id: "codex-status-footer",
+        cwd: root,
+        hook_event_name: "UserPromptSubmit",
+        model: "gpt-5.5",
+        permission_mode: "bypassPermissions",
+        prompt,
+      });
+
+    const first = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--adapter", "codex"],
+      payload("first turn"),
+      root,
+    );
+    const second = run(
+      AGENT_HOOK,
+      ["user-prompt-submit", "--adapter", "codex"],
+      payload("second turn"),
+      root,
+    );
+
+    for (const result of [first, second]) {
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("acme agents status");
+      expect(result.stdout).toContain("bottom of the same substantive reply");
+      expect(result.stdout).toContain("Stop hook is observe-only");
+    }
   });
 });
 
@@ -641,7 +762,7 @@ describe("codex stop + shell-warn via agent-hook", () => {
       tool_input: { command: "echo hi > docs/shell-write-target.md" },
       tool_use_id: "call_codex_test",
     });
-    run(AGENT_HOOK, ["pre-tool-use", "--harness", "codex"], payload, root);
+    run(AGENT_HOOK, ["pre-tool-use", "--adapter", "codex"], payload, root);
     const ev = events(root);
     expect(ev).toContain('"event_type":"decision.warn"');
     expect(ev).toContain("shell_mutation_candidate");
@@ -682,10 +803,10 @@ describe("codex stop + shell-warn via agent-hook", () => {
       transcript_path: tp,
       last_assistant_message: `reply with box:\n${BOX}`,
     });
-    expect(run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root).status).toBe(0);
+    expect(run(AGENT_HOOK, ["stop", "--adapter", "codex"], payload, root).status).toBe(0);
   });
 
-  test("codex stop FAILS (exit 2, rule 3/3) when set-task missing from JSONL", () => {
+  test("codex stop stays non-blocking when set-task is missing from JSONL", () => {
     const root = makeSandbox();
     const tp = codexTranscript(root, [
       META,
@@ -702,9 +823,15 @@ describe("codex stop + shell-warn via agent-hook", () => {
       transcript_path: tp,
       last_assistant_message: `reply:\n${BOX}`,
     });
-    const { status, stderr } = run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root);
-    expect(status).toBe(2);
-    expect(stderr).toContain("rule (3/3)");
+    const { status, stdout, stderr } = run(
+      AGENT_HOOK,
+      ["stop", "--adapter", "codex"],
+      payload,
+      root,
+    );
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
   });
 
   test("codex stop matches wrapped invocations (cd && harn; PATH= harn)", () => {
@@ -725,10 +852,10 @@ describe("codex stop + shell-warn via agent-hook", () => {
       transcript_path: tp,
       last_assistant_message: `reply with box:\n${BOX}`,
     });
-    expect(run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root).status).toBe(0);
+    expect(run(AGENT_HOOK, ["stop", "--adapter", "codex"], payload, root).status).toBe(0);
   });
 
-  test("codex stop passes with the box in last_assistant_message (text-only)", () => {
+  test("codex text-only stop passes without a status box", () => {
     const root = makeSandbox();
     const payload = JSON.stringify({
       session_id: "codex-textonly",
@@ -737,9 +864,17 @@ describe("codex stop + shell-warn via agent-hook", () => {
       model: "gpt-5.5",
       permission_mode: "bypassPermissions",
       stop_hook_active: false,
-      last_assistant_message: `Here is the agent status:\n\n${BOX}`,
+      last_assistant_message: "The requested answer remains visible.",
     });
-    expect(run(AGENT_HOOK, ["stop", "--harness", "codex"], payload, root).status).toBe(0);
+    const { status, stdout, stderr } = run(
+      AGENT_HOOK,
+      ["stop", "--adapter", "codex"],
+      payload,
+      root,
+    );
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
   });
 });
 
@@ -761,7 +896,7 @@ describe("cursor before-shell-execution shell-warn", () => {
       cursor_version: "3.5.17",
       workspace_roots: [root],
     });
-    run(AGENT_HOOK, ["before-shell-execution", "--harness", "cursor"], payload, root, {
+    run(AGENT_HOOK, ["before-shell-execution", "--adapter", "cursor"], payload, root, {
       HARNERY_AGENT_COORD_OFF: "0",
     });
     const count = events(root)
@@ -808,7 +943,7 @@ describe("claude-code pre-tool-use deny + session-start", () => {
       cwd: root,
       hook_event_name: "PreToolUse",
     });
-    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--harness", "claude-code"], payload, root);
+    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root);
     expect(stdout).toContain('"permissionDecision":"deny"');
     expect(stdout).toContain("agent-other-ow");
   });
@@ -828,7 +963,7 @@ describe("claude-code pre-tool-use deny + session-start", () => {
       cwd: root,
       hook_event_name: "PreToolUse",
     });
-    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--harness", "claude-code"], payload, root);
+    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root);
     expect(stdout).toContain('"permissionDecision":"deny"');
     expect(stdout).toContain("agent-Bertha");
   });
@@ -837,24 +972,24 @@ describe("claude-code pre-tool-use deny + session-start", () => {
     const root = makeSandbox();
     const sid = "cc-fixture-sess";
     // The production SessionStart entry is `agent-hook session-start
-    // --harness claude-code` directly.
+    // --adapter claude-code` directly.
     const payload = JSON.stringify({
       session_id: sid,
       model: "claude-sonnet-4-6",
       source: "startup",
     });
-    run(AGENT_HOOK, ["session-start", "--harness", "claude-code"], payload, root);
+    run(AGENT_HOOK, ["session-start", "--adapter", "claude-code"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
   });
 });
 
-// ── harn agents harness-probe ───────────────────────────────────────────────
+// ── harn agents adapter-probe ───────────────────────────────────────────────
 // The probe is TS-native (resolveOwner + an inline /proc walk). This test locks
 // the wiring: it emits valid JSON with all the expected keys and a
 // dispatch_entry that points at the live agent-hook entry.
-describe("harn agents harness-probe (TS-native)", () => {
+describe("harn agents adapter-probe (TS-native)", () => {
   test("emits valid JSON with all keys + the corrected dispatch_entry", () => {
-    const r = spawnSync("bash", [HARN, "agents", "harness-probe", "claude_code", "--json"], {
+    const r = spawnSync("bash", [HARN, "agents", "adapter-probe", "claude_code", "--json"], {
       cwd: HARNERY_DIR,
       encoding: "utf8",
       env: { ...process.env },
@@ -863,7 +998,7 @@ describe("harn agents harness-probe (TS-native)", () => {
     const data = JSON.parse((r.stdout ?? "").trim());
     // Shape: the 8 fields the probe has always reported.
     for (const key of [
-      "harness",
+      "adapter",
       "anchor_pid",
       "hook_pid",
       "resolved_owner",
@@ -874,7 +1009,7 @@ describe("harn agents harness-probe (TS-native)", () => {
       expect(data).toHaveProperty(key);
     }
     // dispatch_entry points at the live agent-hook entry.
-    expect(data.dispatch_entry).toBe("harnery/bin/agent-hook session-start --harness claude-code");
+    expect(data.dispatch_entry).toBe("harnery/bin/agent-hook session-start --adapter claude-code");
   });
 });
 
@@ -947,7 +1082,7 @@ describe("agent-coord release-claim / kill-heartbeat: stream-durable releases", 
     expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
     for (const rel of releases) {
       expect((rel.data as Record<string, unknown>).reason).toBe("heal");
-      expect(rel.harness).toBe("codex");
+      expect(rel.adapter).toBe("codex");
     }
   });
 });

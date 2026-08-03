@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { canonicalize } from "./guard-path.ts";
 
 // canonicalize decides which write-tool targets enter the claim guard. The key
-// regression: out-of-repo paths (a /tmp scratchpad, session-temp files) must NOT
+// regression: out-of-repo paths (a /tmp journal, session-temp files) must NOT
 // be claimed. If they were, the ordering rule (which compares raw path strings)
 // would sort an absolute "/tmp/…" before every repo-relative path ("/" = 0x2F <
 // any letter) and spuriously block a legitimately-held repo file.
@@ -17,8 +17,8 @@ describe("canonicalize (claim-guard path)", () => {
     expect(canonicalize(root, root)).toBe(".");
   });
 
-  test("out-of-repo absolute path (scratchpad) → null (not claimed)", () => {
-    expect(canonicalize(root, "/tmp/claude-1000/abc/scratchpad/fix-agents.py")).toBeNull();
+  test("out-of-repo absolute path (journal) → null (not claimed)", () => {
+    expect(canonicalize(root, "/tmp/claude-1000/abc/journal/fix-agents.py")).toBeNull();
     expect(canonicalize(root, "/var/folders/xy/T/session/notes.md")).toBeNull();
   });
 
@@ -37,13 +37,13 @@ describe("canonicalize (claim-guard path)", () => {
   });
 
   test("regression: out-of-repo path can never sort-block a held repo file", () => {
-    // This is the whole point: the scratchpad path is dropped before it ever
+    // This is the whole point: the journal path is dropped before it ever
     // reaches the ordering comparison against a held repo-relative claim.
     const held = "app-web/docs/notes.md";
-    const scratch = canonicalize(root, "/tmp/x/scratchpad/fix.py");
-    expect(scratch).toBeNull();
+    const journal = canonicalize(root, "/tmp/x/journal/fix.py");
+    expect(journal).toBeNull();
     // Sanity-check the hazard the null guards against: had it passed through raw,
     // the string compare would have ranked it before the held repo file.
-    expect("/tmp/x/scratchpad/fix.py" < held).toBe(true);
+    expect("/tmp/x/journal/fix.py" < held).toBe(true);
   });
 });

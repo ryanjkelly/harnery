@@ -74,7 +74,7 @@ describe("verification-gated fast-forward integration", () => {
             };
           },
         },
-        harnessEvidence: {
+        adapterEvidence: {
           "claude-code": { toolEvidence: { support: "supported" } },
         },
         isolation: "worktree",
@@ -184,7 +184,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -382,13 +382,13 @@ describe("verification-gated fast-forward integration", () => {
     ).rejects.toThrow(/cannot parse/);
     writeFileSync(authorizationPath, authorizationBody);
 
-    const journalPath = join(repo, ".harnery", "workflows", report.runId, "journal.jsonl");
-    const journalBody = readFileSync(journalPath, "utf8");
-    writeFileSync(journalPath, `${journalBody}{corrupt\n`);
+    const transcriptPath = join(repo, ".harnery", "workflows", report.runId, "transcript.jsonl");
+    const transcriptBody = readFileSync(transcriptPath, "utf8");
+    writeFileSync(transcriptPath, `${transcriptBody}{corrupt\n`);
     await expect(
       applyIntegration({ coordRoot: repo, runId: report.runId, provider, plan }),
-    ).rejects.toThrow(/workflow journal is corrupt/);
-    writeFileSync(journalPath, journalBody);
+    ).rejects.toThrow(/workflow transcript is corrupt/);
+    writeFileSync(transcriptPath, transcriptBody);
 
     const receiptPath = join(
       repo,
@@ -427,7 +427,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -505,7 +505,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",
@@ -605,7 +605,7 @@ describe("verification-gated fast-forward integration", () => {
             return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
           },
         },
-        harnessEvidence: {
+        adapterEvidence: {
           "claude-code": { toolEvidence: { support: "supported" } },
         },
         ...quiet,
@@ -669,7 +669,7 @@ describe("verification-gated fast-forward integration", () => {
             return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
           },
         },
-        harnessEvidence: {
+        adapterEvidence: {
           "claude-code": { toolEvidence: { support: "supported" } },
         },
         ...quiet,
@@ -746,7 +746,7 @@ describe("verification-gated fast-forward integration", () => {
           return { ok: true, text: "done", durationMs: 1, costUsd: 0, sessionId: "fixture" };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       ...quiet,

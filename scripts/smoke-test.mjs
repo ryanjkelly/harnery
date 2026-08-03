@@ -96,22 +96,22 @@ try {
   // Durable workflow approvals must be reachable through the packed Node CLI.
   log("checking durable workflow approval CLI boots ...");
   mkdirSync(join(workdir, ".harnery"));
-  const approvalsOut = run(["workflow", "approvals", "list"]);
+  const approvalsOut = run(["approval", "list"]);
   if (!/no workflow approvals/.test(approvalsOut)) {
     fail("workflow approvals list did not render an empty durable inbox");
   }
   log("workflow approvals CLI OK");
 
   log("checking workflow workspace CLI boots ...");
-  const workspacesOut = run(["workflow", "workspaces"]);
+  const workspacesOut = run(["run", "workspaces"]);
   if (!/no isolated or shared-compatibility workspace runs/.test(workspacesOut)) {
     fail("workflow workspaces did not render an empty validated list");
   }
   log("workflow workspace CLI OK");
 
   log("checking phased workflow mutation CLI boots ...");
-  const integrationHelp = run(["workflow", "integration", "--help"]);
-  const cleanupHelp = run(["workflow", "cleanup", "--help"]);
+  const integrationHelp = run(["run", "integration", "--help"]);
+  const cleanupHelp = run(["run", "cleanup", "--help"]);
   if (!/prepare/.test(integrationHelp) || !/apply/.test(integrationHelp)) {
     fail("workflow integration help did not expose prepare and apply");
   }
@@ -143,8 +143,8 @@ try {
   }
   log("durable work CLI OK");
 
-  // A durable supervisor must freeze a team around packed durable work.
-  log("checking durable supervisor CLI boots ...");
+  // A durable governor must freeze a team around packed durable work.
+  log("checking durable governor CLI boots ...");
   const teamFile = join(workdir, "team.json");
   writeFileSync(
     teamFile,
@@ -163,8 +163,8 @@ try {
       },
     }),
   );
-  const supervisorCreateOut = run([
-    "supervisor",
+  const governorCreateOut = run([
+    "governor",
     "create",
     "work-smoke",
     "--team",
@@ -174,24 +174,24 @@ try {
     "--replanning",
     replanningFile,
   ]);
-  if (!/goal-smoke/.test(supervisorCreateOut) || !/ready/.test(supervisorCreateOut)) {
-    fail("supervisor create did not produce a ready durable goal");
+  if (!/goal-smoke/.test(governorCreateOut) || !/ready/.test(governorCreateOut)) {
+    fail("governor create did not produce a ready durable goal");
   }
-  const supervisorListOut = run(["supervisor", "list"]);
-  if (!/goal-smoke/.test(supervisorListOut) || !/Package smoke/.test(supervisorListOut)) {
-    fail("supervisor list did not read the packed durable goal");
+  const governorListOut = run(["governor", "list"]);
+  if (!/goal-smoke/.test(governorListOut) || !/Package smoke/.test(governorListOut)) {
+    fail("governor list did not read the packed durable goal");
   }
-  const supervisorPlansOut = run(["supervisor", "plan", "list", "goal-smoke"]);
-  if (!/no replanning attempts/.test(supervisorPlansOut)) {
-    fail("supervisor plan list did not render the packed empty history");
+  const governorPlansOut = run(["governor", "plan", "list", "goal-smoke"]);
+  if (!/no replanning attempts/.test(governorPlansOut)) {
+    fail("governor plan list did not render the packed empty history");
   }
-  const supervisorPlanHelp = run(["supervisor", "plan", "--help"]);
-  if (!/retry/.test(supervisorPlanHelp)) {
-    fail("supervisor plan help did not expose attention recovery");
+  const governorPlanHelp = run(["governor", "plan", "--help"]);
+  if (!/retry/.test(governorPlanHelp)) {
+    fail("governor plan help did not expose attention recovery");
   }
-  const supervisorServiceOut = run(["supervisor", "service", "status"]);
-  if (!/unconfigured/.test(supervisorServiceOut)) {
-    fail("supervisor service status did not render its empty packed state");
+  const governorServiceOut = run(["governor", "service", "status"]);
+  if (!/unconfigured/.test(governorServiceOut)) {
+    fail("governor service status did not render its empty packed state");
   }
   const missionFile = join(workdir, "mission.json");
   writeFileSync(
@@ -214,7 +214,7 @@ try {
     }),
   );
   const missionCreateOut = run([
-    "supervisor",
+    "governor",
     "create",
     "--team",
     teamFile,
@@ -229,9 +229,9 @@ try {
     !/goal-smoke-mission/.test(missionCreateOut) ||
     !/next: plan_initial/.test(missionCreateOut)
   ) {
-    fail("supervisor mission create did not produce an objective-first planning state");
+    fail("governor mission create did not produce an objective-first planning state");
   }
-  log("durable supervisor CLI OK");
+  log("durable governor CLI OK");
 
   // outline on PHP: works without the `typescript` dep.
   log("checking `outline` on a PHP file ...");
@@ -260,6 +260,24 @@ try {
   // Public subpaths must resolve from the packed artifact, not just from the
   // source checkout. Keep this focused on the newest product-tier export so a
   // missing dist file or exports-map mismatch fails before publish.
+  log("checking public `harnery/core/artifacts` import ...");
+  const artifactsProbe = join(workdir, "artifacts-import.mjs");
+  writeFileSync(
+    artifactsProbe,
+    [
+      'import { ARTIFACT_SCHEMA_VERSION, createArtifact } from "harnery/core/artifacts";',
+      'if (ARTIFACT_SCHEMA_VERSION !== 1) throw new Error("unexpected artifact schema version");',
+      'const created = createArtifact(process.cwd(), { slug: "packed-smoke", purpose: "Verify the packed artifacts API", retentionDays: 1, id: "artifact_packed_smoke" });',
+      'if (created.manifest.schema_version !== 1 || !created.path.includes(".harnery")) throw new Error("artifact creation failed");',
+    ].join("\n"),
+  );
+  execFileSync(nodePath, [artifactsProbe], {
+    cwd: workdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
+  log("harnery/core/artifacts import OK");
+
   log("checking public `harnery/core/workflow` import ...");
   const workflowProbe = join(workdir, "workflow-import.mjs");
   writeFileSync(
@@ -336,34 +354,34 @@ try {
   });
   log("harnery/core/work import OK");
 
-  log("checking public `harnery/core/supervisor` import ...");
-  const supervisorProbe = join(workdir, "supervisor-import.mjs");
+  log("checking public `harnery/core/governor` import ...");
+  const governorProbe = join(workdir, "governor-import.mjs");
   writeFileSync(
-    supervisorProbe,
+    governorProbe,
     [
-      'import { SUPERVISOR_INTENT_SCHEMA_VERSION, SUPERVISOR_PLAN_SCHEMA_VERSION, SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION, approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, retrySupervisorPlan, runSupervisor, runSupervisorServiceSweep } from "harnery/core/supervisor";',
-      'if (SUPERVISOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor schema version");',
-      'if (SUPERVISOR_PLAN_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor plan schema version");',
-      'if (SUPERVISOR_SERVICE_CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected supervisor service schema version");',
-      "for (const fn of [approveSupervisorPlan, configureSupervisorService, createSupervisor, readSupervisor, readSupervisorPlans, rejectSupervisorPlan, retrySupervisorPlan, runSupervisor, runSupervisorServiceSweep]) {",
-      '  if (typeof fn !== "function") throw new Error("supervisor function missing");',
+      'import { GOVERNOR_INTENT_SCHEMA_VERSION, GOVERNOR_PLAN_SCHEMA_VERSION, GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION, approveGovernorPlan, configureGovernorService, createGovernor, readGovernor, readGovernorPlans, rejectGovernorPlan, retryGovernorPlan, runGovernor, runGovernorServiceSweep } from "harnery/core/governor";',
+      'if (GOVERNOR_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected governor schema version");',
+      'if (GOVERNOR_PLAN_SCHEMA_VERSION !== 1) throw new Error("unexpected governor plan schema version");',
+      'if (GOVERNOR_SERVICE_CONFIG_SCHEMA_VERSION !== 1) throw new Error("unexpected governor service schema version");',
+      "for (const fn of [approveGovernorPlan, configureGovernorService, createGovernor, readGovernor, readGovernorPlans, rejectGovernorPlan, retryGovernorPlan, runGovernor, runGovernorServiceSweep]) {",
+      '  if (typeof fn !== "function") throw new Error("governor function missing");',
       "}",
-      'const readonly = await import("harnery/core/supervisor/state");',
-      'if (typeof readonly.readSupervisor !== "function" || typeof readonly.readSupervisorServiceStatus !== "function") throw new Error("read-only supervisor state export missing");',
-      'if (typeof readonly.readSupervisorPlanReviewReceipt !== "function" || readonly.MAX_SUPERVISOR_PLAN_REVIEWERS !== 5) throw new Error("read-only supervisor review export missing");',
-      'for (const forbidden of ["approveSupervisorPlan", "rejectSupervisorPlan", "retrySupervisorPlan", "runSupervisor", "runSupervisorServiceDaemon", "spawnSupervisorService"]) {',
-      '  if (forbidden in readonly) throw new Error("read-only supervisor state export gained execution: " + forbidden);',
+      'const readonly = await import("harnery/core/governor/state");',
+      'if (typeof readonly.readGovernor !== "function" || typeof readonly.readGovernorServiceStatus !== "function") throw new Error("read-only governor state export missing");',
+      'if (typeof readonly.readGovernorPlanReviewReceipt !== "function" || readonly.MAX_GOVERNOR_PLAN_REVIEWERS !== 5) throw new Error("read-only governor review export missing");',
+      'for (const forbidden of ["approveGovernorPlan", "rejectGovernorPlan", "retryGovernorPlan", "runGovernor", "runGovernorServiceDaemon", "spawnGovernorService"]) {',
+      '  if (forbidden in readonly) throw new Error("read-only governor state export gained execution: " + forbidden);',
       "}",
-      'const plans = await import("harnery/core/supervisor/plans");',
-      'if (typeof plans.readSupervisorPlanReviewReceipt !== "function") throw new Error("supervisor plans export missing");',
+      'const plans = await import("harnery/core/governor/plans");',
+      'if (typeof plans.readGovernorPlanReviewReceipt !== "function") throw new Error("governor plans export missing");',
     ].join("\n"),
   );
-  execFileSync(nodePath, [supervisorProbe], {
+  execFileSync(nodePath, [governorProbe], {
     cwd: workdir,
     encoding: "utf8",
     env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
-  log("harnery/core/supervisor import OK");
+  log("harnery/core/governor import OK");
 
   log("checking public `harnery/core/policy` import ...");
   const policyProbe = join(workdir, "policy-import.mjs");

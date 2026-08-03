@@ -182,13 +182,13 @@ async function emitClaimRelease(
     const { emit } = await import("./events/emit.ts");
     const canonical = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
     const platform = hb.platform;
-    const harness =
+    const adapter =
       platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
     emit(root, {
       event_type: "claim.release",
       instance_id: owner,
       session_id: hb.session_id ?? owner,
-      harness,
+      adapter,
       source: "agent-coord",
       data: { path: canonical, reason },
     });
@@ -291,16 +291,16 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       return 0;
     }
     case "heal-heartbeat": {
-      // harness arrives as a `--harness=<h>` flag (not positional) so the live
+      // adapter arrives as a `--adapter=<h>` flag (not positional) so the live
       // tool.pre_use heal and the manual `harn agents heal` path (which pass
       // different positional counts) can both supply it without arg-order
       // fragility. Positionals (sessionId, model) stay as-is once flags are
       // filtered out.
-      const harness = args.find((a) => a.startsWith("--harness="))?.slice("--harness=".length);
+      const adapter = args.find((a) => a.startsWith("--adapter="))?.slice("--adapter=".length);
       const positional = args.filter((a) => !a.startsWith("--"));
       const sessionId = positional[0];
       const model = positional[1];
-      const hb = writer.healHeartbeat(root, owner, sessionId, model, harness);
+      const hb = writer.healHeartbeat(root, owner, sessionId, model, adapter);
       process.stdout.write(`${JSON.stringify({ instance_id: owner, recreated: !!hb })}\n`);
       return hb ? 0 : 1;
     }
@@ -324,19 +324,19 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
   }
 }
 
-async function handleScratchAction(root: string, action: string, rest: string[]): Promise<number> {
-  const scratch = await import("./state/scratch.ts");
+async function handleJournalAction(root: string, action: string, rest: string[]): Promise<number> {
+  const journal = await import("./state/journal.ts");
 
-  if (action === "append-scratch") {
+  if (action === "append-journal") {
     const [owner, category, ...bodyParts] = rest;
     const body = bodyParts.join(" ");
     if (!owner || !category || !body) {
-      process.stderr.write("agent-coord append-scratch <instance_id> <category> <body>\n");
+      process.stderr.write("agent-coord append-journal <instance_id> <category> <body>\n");
       return 2;
     }
-    const result = scratch.appendScratch(root, owner, category, body);
+    const result = journal.appendJournal(root, owner, category, body);
     if (!result.ok) {
-      process.stderr.write(`agent-coord append-scratch: ${result.reason}\n`);
+      process.stderr.write(`agent-coord append-journal: ${result.reason}\n`);
       return 1;
     }
     process.stdout.write(
@@ -345,24 +345,22 @@ async function handleScratchAction(root: string, action: string, rest: string[])
     return 0;
   }
 
-  if (action === "edit-scratchpad") {
+  if (action === "edit-journal") {
     const [owner, newBodyFile, ...summaryParts] = rest;
     const summary = summaryParts.join(" ");
     if (!owner || !newBodyFile) {
-      process.stderr.write(
-        "agent-coord edit-scratchpad <instance_id> <new-body-file> [<summary>]\n",
-      );
+      process.stderr.write("agent-coord edit-journal <instance_id> <new-body-file> [<summary>]\n");
       return 2;
     }
     if (!existsSync(newBodyFile)) {
-      process.stderr.write(`agent-coord edit-scratchpad: file not found: ${newBodyFile}\n`);
+      process.stderr.write(`agent-coord edit-journal: file not found: ${newBodyFile}\n`);
       return 2;
     }
     const { readFileSync } = await import("node:fs");
     const newBody = readFileSync(newBodyFile, "utf8");
-    const result = scratch.editScratchpad(root, owner, newBody, summary);
+    const result = journal.editJournal(root, owner, newBody, summary);
     if (!result.ok) {
-      process.stderr.write(`agent-coord edit-scratchpad: ${result.reason}\n`);
+      process.stderr.write(`agent-coord edit-journal: ${result.reason}\n`);
       return 1;
     }
     process.stdout.write(
@@ -371,7 +369,7 @@ async function handleScratchAction(root: string, action: string, rest: string[])
     return 0;
   }
 
-  process.stderr.write(`agent-coord: unknown scratch action ${action}\n`);
+  process.stderr.write(`agent-coord: unknown journal action ${action}\n`);
   return 2;
 }
 
@@ -566,7 +564,7 @@ async function handleShellMutationClaimLog(root: string, rest: string[]): Promis
   // in a log file; now a canonical decision.warn so the
   // signal survives in events.ndjson. (The blocking claim-conflict path is
   // separate: claim.conflict / verdict, and unaffected.)
-  const harness = platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
+  const adapter = platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
   const hb = owner ? readHeartbeat(root, owner) : null;
   for (const p of paths) {
     try {
@@ -574,7 +572,7 @@ async function handleShellMutationClaimLog(root: string, rest: string[]): Promis
         event_type: "decision.warn",
         instance_id: owner ?? "unknown",
         session_id: hb?.session_id ?? owner ?? "unknown",
-        harness,
+        adapter,
         data: {
           rule: "shell_mutation_candidate",
           reason: `path=${p} cmd=${truncated} platform=${platform}`,
@@ -612,10 +610,12 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
   const instanceId = args.instance;
   const sessionId = args.session ?? instanceId;
   const agentName = args.name;
+  const sessionNameNudge = args["session-name-nudge"] === "true";
   const taskNudge = args["task-nudge"] === "true";
+  const statusFooterNudge = args["status-footer-nudge"] === "true";
   if (!instanceId) {
     process.stderr.write(
-      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--task-nudge]\n",
+      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge] [--status-footer-nudge]\n",
     );
     return 2;
   }
@@ -625,7 +625,9 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     instanceId,
     sessionId: sessionId!,
     agentName,
+    sessionNameNudge,
     taskNudge,
+    statusFooterNudge,
   });
   process.stdout.write(text);
   return 0;
@@ -743,12 +745,12 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   const eventType = args.type;
   const instanceId = args.owner;
   const sessionId = args.session;
-  const harness = args.harness as "claude-code" | "cursor" | "codex" | undefined;
+  const adapter = args.adapter as "claude-code" | "cursor" | "codex" | undefined;
   const dataJson = args["data-json"] ?? "{}";
 
-  if (!eventType || !instanceId || !sessionId || !harness) {
+  if (!eventType || !instanceId || !sessionId || !adapter) {
     process.stderr.write(
-      "agent-coord emit-event --type <T> --owner <id> --session <id> --harness <h> [--data-json '<json>']\n",
+      "agent-coord emit-event --type <T> --owner <id> --session <id> --adapter <h> [--data-json '<json>']\n",
     );
     return 2;
   }
@@ -774,7 +776,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
       event_type: eventType,
       instance_id: instanceId,
       session_id: sessionId,
-      harness,
+      adapter,
       turn_id: args["turn-id"],
       parent_session_id: args["parent-session-id"],
       parent_turn_id: args["parent-turn-id"],
@@ -822,8 +824,8 @@ async function main(): Promise<number> {
     return handleStateAction(root, subcommand, rest);
   }
 
-  if (subcommand === "append-scratch" || subcommand === "edit-scratchpad") {
-    return handleScratchAction(root, subcommand, rest);
+  if (subcommand === "append-journal" || subcommand === "edit-journal") {
+    return handleJournalAction(root, subcommand, rest);
   }
 
   if (

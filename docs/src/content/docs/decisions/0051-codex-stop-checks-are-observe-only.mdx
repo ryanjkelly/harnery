@@ -1,0 +1,68 @@
+---
+title: "0051: Codex Stop checks are observe-only"
+description: "ADR: Harnery records Codex end-of-turn coordination state without blocking the turn, because a Stop continuation can replace the answer the user was meant to receive."
+---
+
+**Status:** accepted (2026-07-29) · **Scope:** product tier (`core/agents`, hooks)
+
+## Context
+
+Harnery's end-of-turn check asks an agent to show its status and declare its
+task. Claude Code can enforce that check with an exit-2 Stop hook. Codex accepts
+the same wire shape. On Codex, a blocked Stop creates a continuation prompt and
+runs the model again.
+
+That continuation is part of the same turn. Some Codex clients retain only the
+last assistant response when the turn finishes. In a live mobile session, the
+model first returned the requested answer, then the Stop hook continued the turn
+twice for missing coordination output. The client displayed only the final retry,
+which contained the status box. The requested answer disappeared from the
+conversation.
+
+Removing only the visible box requirement would leave the same failure mode.
+A missing `agents status` call or `agents set-task` event would still continue the
+turn and could replace the answer with a ritual-only retry.
+
+## Decision
+
+Codex Stop checks are observe-only. `evaluateStopHook` returns
+`stop-hook.codex_observe_only` before it evaluates the three ritual rules.
+The Stop path still emits `turn.stop`, replays the Codex transcript, projects
+heartbeats, and publishes presence before it asks for the verdict. Coordination
+telemetry therefore remains intact.
+
+`emitStopBlock` also returns success without stdout or stderr for Codex. The
+verdict should make that branch unreachable, but the adapter-level guard prevents
+a future caller from accidentally turning a coordination finding into a Codex
+continuation.
+
+Claude Code keeps exit-2 enforcement. Cursor keeps its `followup_message`
+contract. Their behavior does not change.
+
+## Alternatives considered
+
+**Require the model to follow the ritual more reliably.** Rejected because the
+hook exists precisely because prose instructions are not reliable. Any missed
+step can still destroy the useful response.
+
+**Stop requiring the pasted box but keep the other rules.** Rejected because
+`state.status_checked` and `state.task_set` failures use the same continuation
+channel. The visible box was the symptom, not the cause.
+
+**Append the status box to the completed answer inside the hook.** Rejected
+because a Stop hook can continue or stop a turn, but it cannot edit the assistant
+message that has already been produced.
+
+**Disable Codex hooks.** Rejected because the lifecycle events, transcript replay,
+heartbeat projection, presence publication, and other hook policies remain
+useful. Only the destructive Stop enforcement needs to fail open.
+
+## Consequences
+
+Harnery no longer guarantees that a Codex agent runs `agents status` or refreshes
+its task on every turn. Session-start guidance still asks for a task declaration,
+while `turn.stop` continues to refresh the coordination state.
+
+This tradeoff protects the completed answer. If Codex later exposes a
+non-destructive way to append metadata to a finished turn, Harnery can surface
+missed rituals through that channel without restoring Stop continuations.

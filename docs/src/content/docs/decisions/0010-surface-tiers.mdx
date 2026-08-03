@@ -1,6 +1,6 @@
 ---
 title: "ADR 0010: two-tier public surface"
-description: The exports map splits into a product tier (coordination, ./core/*) and a toolkit tier (./lib/* utilities for embedding hosts), with a CI layering guard and a reuse-driven promotion rule. Why one package, and why scratch moved to core.
+description: The exports map splits into a product tier (coordination, ./core/*) and a toolkit tier (./lib/* utilities for embedding hosts), with a CI layering guard and a reuse-driven promotion rule. Why one package, and why journal moved to core.
 sidebar:
   order: 10
 ---
@@ -30,8 +30,8 @@ Without an explicit boundary, three drifts were likely:
 3. The toolkit accretes speculative helpers ("might be useful") instead of
    growing by demonstrated reuse.
 
-One export already violated any clean boundary: `./lib/scratch` was a
-coordination feature (agent scratchpads, imports `core/agents`) shipped under
+One export already violated any clean boundary: `./lib/journal` was a
+coordination feature (agent journals, imports `core/agents`) shipped under
 the utility namespace.
 
 ## Alternatives considered
@@ -62,8 +62,8 @@ the utility namespace.
    harnery, full semver discipline. Toolkit tier: every `./lib/*` subpath, the
    supporting utilities for embedding hosts, supported but secondary, may
    evolve faster. Anything unexported is internal regardless of directory.
-2. **`./lib/scratch` becomes `./core/scratch`** (source physically moved to
-   `src/core/scratch/`). Scratchpads are a coordination feature; the export
+2. **`./lib/journal` becomes `./core/journal`** (source physically moved to
+   `src/core/journal/`). Journals are a coordination feature; the export
    said otherwise. Pre-1.0 hard rename, no alias left behind; the only
    affected importers were harnery's own CLI and web app.
 3. **Layering guard:** `scripts/check-layering.ts` + `tests/unit/layering.test.ts`
@@ -92,7 +92,7 @@ the utility namespace.
   working as intended.
 - The `bun` condition of each export points at `src/*.ts`, so the guard walks
   source, not `dist/`, and runs without a build.
-- Gotcha discovered during the scratch move: the first embedding host's CLI
+- Gotcha discovered during the journal move: the first embedding host's CLI
   runs harnery from workspace source, so breaking harnery imports mid-refactor
   breaks that host's tooling *while you're using it to do the refactor*. Use
   plain `sed`/editor for multi-step harnery source moves; the host CLI comes

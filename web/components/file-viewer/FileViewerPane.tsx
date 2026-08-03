@@ -8,9 +8,15 @@
  * file type renders identically to the overlay.
  */
 
-import { Check, Copy, Download, ExternalLink, FileText } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, Eye, FileText } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { type FetchResult, fetchMeta, rawUrl } from "@/lib/file-viewer/client";
+import {
+  type FetchResult,
+  fetchMeta,
+  isHtmlPreviewPath,
+  rawUrl,
+  renderUrl,
+} from "@/lib/file-viewer/client";
 import type { FileMeta } from "@/lib/file-viewer/types";
 import { RendererRegistry } from "./RendererRegistry";
 import {
@@ -54,6 +60,11 @@ export function FileViewerPane({ path }: { path: string | null }) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
+          {isHtmlPreviewPath(path) && (
+            <IconLink href={renderUrl(path)} target="_blank" title="Open on files origin (HTML with scripts)">
+              <Eye className="size-4" />
+            </IconLink>
+          )}
           <IconLink href={rawUrl(path)} target="_blank" title="Open raw in new tab">
             <ExternalLink className="size-4" />
           </IconLink>

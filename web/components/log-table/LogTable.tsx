@@ -35,6 +35,29 @@ import { useLiveSignal } from "@/lib/useLiveSignal";
 const MAX_BUFFER = 5000;
 const SEARCH_DEBOUNCE_MS = 120;
 
+/*
+ * Below `sm` the four-column table stacks into one block per row: time, kind and
+ * agent share the first line, and the summary takes a full-width line beneath.
+ *
+ * Why, measured at 390px: the columns that must not wrap (a timestamp, a kind
+ * badge) came to 317px of a 397px table, so the summary got 80px and every row
+ * grew to 108px of shredded text. Four fifths of the width went to metadata and
+ * the content it described got the rest. Stacking gives the summary the full
+ * width instead.
+ *
+ * The alternative, shortening the timestamp on narrow screens, treats the
+ * symptom and quietly overrides the operator's datetime format preference. This
+ * keeps the preference and fixes the cause.
+ *
+ * CSS-only, via responsive `display`: one DOM, no breakpoint state to hydrate,
+ * and no second render path for 5000 rows. Cells set no `display` of their own,
+ * so they blockify as flex items below `sm` and revert to `table-cell` above it.
+ */
+const STACKED_ROW = "flex flex-wrap items-center gap-x-2 px-3 py-2 sm:table-row sm:gap-0 sm:p-0";
+const STACKED_CELL = "p-0 sm:px-3 sm:py-1.5";
+/** `basis-full` is what pushes the summary onto its own line while wrapping. */
+const STACKED_SUMMARY_CELL = "basis-full p-0 sm:basis-auto sm:px-3 sm:py-1.5";
+
 interface Props<E> {
   /** Server-rendered initial batch (already sorted in any order; the table
    * sorts client-side, descending by ts). */
@@ -731,8 +754,8 @@ export function LogTable<E>({
         onScroll={onScroll}
         className="rounded-md border border-border/60 bg-background/40 overflow-y-auto overflow-x-auto flex-1 min-h-0"
       >
-        <table className="w-full text-xs border-separate border-spacing-0">
-          <thead className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/80">
+        <table className="block w-full text-xs sm:table border-separate border-spacing-0">
+          <thead className="hidden sm:table-header-group sticky top-0 z-10 bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/80">
             <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
               <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[14ch]">
                 time
@@ -748,12 +771,12 @@ export function LogTable<E>({
               </th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block sm:table-row-group">
             {filteredRows.length === 0 ? (
-              <tr>
+              <tr className="block sm:table-row">
                 <td
                   colSpan={4}
-                  className="px-3 py-12 text-center text-muted-foreground italic"
+                  className="block px-3 py-12 text-center text-muted-foreground italic sm:table-cell"
                 >
                   {sortedRows.length === 0
                     ? (emptyStateHint ??
@@ -859,6 +882,7 @@ function LogRowInner<E>({
       <tr
         className={cn(
           rowBaseCls,
+          STACKED_ROW,
           expanded && "bg-muted/70 hover:bg-muted/70",
           // Highlighted row stays for ~1.5s after append, then the parent
           // drops `flashing`; the existing `transition-colors` on the row
@@ -870,10 +894,15 @@ function LogRowInner<E>({
         onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
       >
-        <td className="py-1.5 px-3 font-mono text-muted-foreground whitespace-nowrap">
+        <td
+          className={cn(
+            STACKED_CELL,
+            "font-mono text-muted-foreground whitespace-nowrap",
+          )}
+        >
           <LogTimestamp iso={ts} timeZone={timeZone} />
         </td>
-        <td className="py-1.5 px-3">
+        <td className={STACKED_CELL}>
           <Badge
             variant={variant}
             className="font-mono normal-case tracking-normal"
@@ -882,7 +911,7 @@ function LogRowInner<E>({
           </Badge>
         </td>
         <td
-          className="py-1.5 px-3 font-mono"
+          className={cn(STACKED_CELL, "font-mono")}
           onClick={(e) => e.stopPropagation()}
         >
           {agentName ? (
@@ -898,13 +927,23 @@ function LogRowInner<E>({
             <span className="text-muted-foreground/40">{NO_DATA}</span>
           )}
         </td>
-        <td className="py-1.5 px-3 text-muted-foreground whitespace-pre-wrap wrap-break-word">
+        {/* `wrap-anywhere`, not `wrap-break-word`: only `anywhere` counts
+            toward min-content, and this table sizes its columns from content.
+            With `break-word` a single long unbroken token (a JSON payload, a
+            URL) inflated the summary column's min-content past the container
+            and the whole table grew a horizontal scrollbar. */}
+        <td
+          className={cn(
+            STACKED_SUMMARY_CELL,
+            "text-muted-foreground whitespace-pre-wrap wrap-anywhere",
+          )}
+        >
           {renderer.renderSummary(row)}
         </td>
       </tr>
       {expanded && (
-        <tr className="bg-muted/20 border-b border-border/40">
-          <td colSpan={4} className="px-3 py-3">
+        <tr className="block bg-muted/20 border-b border-border/40 sm:table-row">
+          <td colSpan={4} className="block px-3 py-3 sm:table-cell">
             <ExpandedRow row={row} renderer={renderer} />
           </td>
         </tr>
@@ -976,16 +1015,22 @@ function LogRowGroupInner<E>({
       <tr
         className={cn(
           rowBaseCls,
+          STACKED_ROW,
           expanded && "bg-muted/70 hover:bg-muted/70",
           flashing && "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
         )}
         onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
       >
-        <td className="py-1.5 px-3 font-mono text-muted-foreground whitespace-nowrap">
+        <td
+          className={cn(
+            STACKED_CELL,
+            "font-mono text-muted-foreground whitespace-nowrap",
+          )}
+        >
           <LogTimestamp iso={startTs} timeZone={timeZone} />
         </td>
-        <td className="py-1.5 px-3">
+        <td className={STACKED_CELL}>
           <span className="inline-flex items-center gap-1.5">
             <ChevronRight
               className={cn(
@@ -1005,7 +1050,7 @@ function LogRowGroupInner<E>({
           </span>
         </td>
         <td
-          className="py-1.5 px-3 font-mono"
+          className={cn(STACKED_CELL, "font-mono")}
           onClick={(e) => e.stopPropagation()}
         >
           {agentName ? (
@@ -1018,7 +1063,7 @@ function LogRowGroupInner<E>({
             <span className="text-muted-foreground/40">{NO_DATA}</span>
           )}
         </td>
-        <td className="py-1.5 px-3 text-muted-foreground">
+        <td className={cn(STACKED_SUMMARY_CELL, "min-w-0 text-muted-foreground")}>
           {expanded ? (
             <span className="text-muted-foreground/50 italic text-[11px]">
               {count} lines, click to collapse
@@ -1036,8 +1081,8 @@ function LogRowGroupInner<E>({
         </td>
       </tr>
       {expanded && (
-        <tr className="bg-muted/20 border-b border-border/40">
-          <td colSpan={4} className="px-3 py-2">
+        <tr className="block bg-muted/20 border-b border-border/40 sm:table-row">
+          <td colSpan={4} className="block px-3 py-2 sm:table-cell">
             <div className="rounded border border-border/40 bg-background/60 font-mono text-xs">
               {chrono.map((r, i) => (
                 <div

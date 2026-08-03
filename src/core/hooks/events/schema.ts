@@ -12,7 +12,11 @@
 
 export const SCHEMA_VERSION = 1 as const;
 
-export type Harness = "claude-code" | "cursor" | "codex";
+/** The adapters harnery ships first-party hook wiring for. The registry's open
+ * `AdapterId` covers any adapter a host registers; this is the closed set, and
+ * it is declared exactly once. Re-exported by the two event modules that used
+ * to keep their own byte-identical copy. */
+export type Adapter = "claude-code" | "cursor" | "codex";
 
 export type Source = "agent-hooks" | "agent-coord" | "user" | "system";
 
@@ -28,11 +32,11 @@ export interface EventEnvelope<TType extends string, TData> {
   event_type: TType;
   ts: string; // ISO-8601 with milliseconds
   instance_id: string; // resolved by agent-hooks
-  session_id: string; // harness-level session
+  session_id: string; // adapter-level session
   parent_session_id?: string; // present iff event is from a subagent
   turn_id?: string; // present when event is bound to an assistant turn
   parent_turn_id?: string; // present iff this turn is nested under another
-  harness: Harness;
+  adapter: Adapter;
   source: Source;
   data: TData;
 }
@@ -48,9 +52,13 @@ export type SessionStart = EventEnvelope<
     model?: string;
     pid: number;
     /** Present iff this session is a `workflow run` child: the run id whose
-     * journal owns it (child env HARNERY_WORKFLOW_RUN_ID). Optional-field
+     * transcript owns it (child env HARNERY_WORKFLOW_RUN_ID). Optional-field
      * addition per the schema evolution rules (minor bump). */
     workflow_run_id?: string;
+    /** Which agent row of that run this session is running (`a1`, `a2`, …), from
+     * child env HARNERY_WORKFLOW_AGENT_ID. Lets a dashboard attribute in-flight
+     * child activity to one agent instead of only to the run. */
+    workflow_agent_id?: string;
   }
 >;
 
@@ -288,8 +296,8 @@ export type StateStatusChecked = EventEnvelope<
   }
 >;
 
-export type StateScratchAppend = EventEnvelope<
-  "state.scratch_append",
+export type StateJournalAppend = EventEnvelope<
+  "state.journal_append",
   {
     category: "note" | "plan" | "decision" | "blocker" | "question" | "done" | "handoff";
     body_summary: string;
@@ -470,7 +478,7 @@ export type Event =
   | ClaimConflict
   | StateTaskSet
   | StateStatusChecked
-  | StateScratchAppend
+  | StateJournalAppend
   | StatePresenceChange
   | StateHeartbeat
   | IdentityAssumed

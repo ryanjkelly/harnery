@@ -1,9 +1,9 @@
 ---
 title: "0039: Tell the child's sandbox what the host already decided"
-description: "ADR: project the workspace writable-root policy into each harness's native sandbox through a declared per-adapter mapping that can refuse."
+description: "ADR: project the workspace writable-root policy into each adapter's native sandbox through a declared per-adapter mapping that can refuse."
 ---
 
-**Status:** accepted (2026-07-25) · **Scope:** product tier (`core/workflow` spawn adapters, `core/harnesses` profiles, workflow proof)
+**Status:** accepted (2026-07-25) · **Scope:** product tier (`core/workflow` spawn adapters, `core/adapters` profiles, workflow proof)
 
 ## Context
 
@@ -70,14 +70,14 @@ working directory in one topology, and was excluded regardless in the other.
 
 ### The declaration
 
-Each `HarnessProfile` declares what it can represent, per mode, and may declare
-that it cannot represent something at all. A `null` entry means "this harness
-does not distinguish that", which is a fact about the harness, not a defect to
+Each `AdapterProfile` declares what it can represent, per mode, and may declare
+that it cannot represent something at all. A `null` entry means "this adapter
+does not distinguish that", which is a fact about the adapter, not a defect to
 paper over.
 
 As shipped:
 
-| Harness | `read-only` | `workspace-write` | Writable roots |
+| Adapter | `read-only` | `workspace-write` | Writable roots |
 | --- | --- | --- | --- |
 | `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `sandbox_workspace_write.writable_roots` |
 | `claude-code` | not representable | not representable | not representable |
@@ -136,7 +136,7 @@ rather than the worktree's private one.
   behalf. Rejected as a default. It moves commit authority away from the agent
   that made the change, and adds a second actor to every run, to route around a
   restriction that one declared path lifts. It remains available if a future
-  harness can neither commit nor accept a projection.
+  adapter can neither commit nor accept a projection.
 - **Derive the writable set from the working directory.** Rejected. The
   directory that needs writing is routinely outside it.
 - **Project only a mode, no paths.** Rejected on evidence. The correct mode was
@@ -147,7 +147,7 @@ rather than the worktree's private one.
   guarantee.
 - **Have Harnery supply its own sandbox instead of the vendor's.** Rejected.
   Harnery drives official vendor CLIs under the user's own stored login;
-  substituting our own confinement would mean working around the harness rather
+  substituting our own confinement would mean working around the adapter rather
   than through it.
 - **Grant the Git directory by default whenever a workspace is provider-owned.**
   Rejected. Most children do not need to commit, and the grant is the power to

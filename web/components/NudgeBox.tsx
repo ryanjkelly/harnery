@@ -7,11 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
  * Operator nudge: appends a `handoff`-category entry to an agent's
- * scratchpad. The receiving agent reads its scratchpad at session start
- * and on `harn scratch read`, so a nudge surfaces in the next turn's recovery
+ * journal. The receiving agent reads its journal at session start
+ * and on `harn journal read`, so a nudge surfaces in the next turn's recovery
  * cue or whenever the agent checks in. Mirrors the upstream app's NudgeBox; reuses
  * the existing /api/actions/ping route which goes through harnery's
- * appendEntry into .harnery/scratch/<owner>.md.
+ * appendEntry into .harnery/journal/<owner>.md.
  */
 export function NudgeBox({
   instanceId,
@@ -82,8 +82,8 @@ export function NudgeBox({
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          Appends a <code>handoff</code> entry to {agentName}&apos;s scratchpad.
-          Visible to the agent on next <code>{`${binName} scratch read`}</code> or
+          Appends a <code>handoff</code> entry to {agentName}&apos;s journal.
+          Visible to the agent on next <code>{`${binName} journal read`}</code> or
           SessionStart recovery cue.
         </p>
 

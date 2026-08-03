@@ -25,7 +25,7 @@ output file exists = false
 This surfaced during a real run. The failure reported was:
 
 ```
-agent Review journal bound v2: schema validation failed after 2 attempt(s)
+agent Review transcript bound v2: schema validation failed after 2 attempt(s)
 ```
 
 Wrong agent and wrong cause. The reviewer failed only because it was handed an
@@ -58,7 +58,7 @@ it still relies on reading intent out of an exit code.
 ## Decision
 
 The process that fires the timer is the one that knows. `exec()` records that it
-killed the child and reports `timedOut: true` on its result. `HarnessRawResult`
+killed the child and reports `timedOut: true` on its result. `AdapterRawResult`
 carries the same flag, and every adapter's normalizer checks it **before** any
 exit-code branch, returning a failure with the elapsed time in the message.
 

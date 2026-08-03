@@ -12,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 // Kept dependency-light: vendored verbatim into a downstream consumer, so no coordEnv import.
-import { normalizeHarness, resolveEmitRoot } from "./canonical-emit.ts";
+import { normalizeAdapter, resolveEmitRoot } from "./canonical-emit.ts";
 import { emit } from "./events/emit.ts";
 
 /** Event types accepted by `writeSessionEvent`. Only the command stream +
@@ -98,7 +98,7 @@ const CANONICAL_TYPE: Partial<Record<SessionEventType, string>> = {
 
 interface HeartbeatEnrichment {
   session_id: string;
-  harness: "claude-code" | "cursor" | "codex";
+  adapter: "claude-code" | "cursor" | "codex";
   at: number;
 }
 /** Cache heartbeat-derived envelope fields per instance_id so a burst of
@@ -121,7 +121,7 @@ function enrichFromHeartbeat(coordRoot: string, instanceId: string): HeartbeatEn
     };
     const enrichment: HeartbeatEnrichment = {
       session_id: hb.session_id || instanceId,
-      harness: normalizeHarness(hb.platform),
+      adapter: normalizeAdapter(hb.platform),
       at: now,
     };
     enrichCache.set(instanceId, enrichment);
@@ -173,7 +173,7 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
       event_type: eventType,
       instance_id: instanceId,
       session_id: enrich.session_id,
-      harness: enrich.harness,
+      adapter: enrich.adapter,
       data: canonicalData(type, fields),
     });
   } catch {

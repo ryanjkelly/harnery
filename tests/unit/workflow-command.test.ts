@@ -25,7 +25,7 @@ beforeEach(() => {
       repository_before: { cwd: root, dirty_paths: [] },
       execution: {
         cwd: root,
-        default_harness: "claude-code",
+        default_adapter: "claude-code",
         max_agents: 1,
         concurrency: 1,
         subscription_only: false,
@@ -52,7 +52,7 @@ afterEach(() => {
 describe("workflow proof command", () => {
   test("renders the human proof summary", async () => {
     const output: string[] = [];
-    await runCommand(["workflow", "proof", "wf-command"], {
+    await runCommand(["run", "proof", "wf-command"], {
       text: (value) => output.push(value),
       data: () => {},
       config: () => {},
@@ -66,7 +66,7 @@ describe("workflow proof command", () => {
 
   test("emits the stored packet unchanged in JSON mode", async () => {
     let captured: unknown;
-    await runCommand(["workflow", "proof", "wf-command", "--json"], {
+    await runCommand(["run", "proof", "wf-command", "--json"], {
       text: () => {},
       data: (value) => {
         captured = value;
@@ -132,8 +132,8 @@ function sampleProof(): WorkflowProof {
         incomplete: false,
       },
     },
-    harnesses: [],
+    adapters: [],
     unknowns: [],
-    integrity: { journal: { path: "journal.jsonl", sha256: "a".repeat(64), bytes: 10 } },
+    integrity: { transcript: { path: "transcript.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };
 }

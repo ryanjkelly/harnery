@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
-import { harneryVersion, loadHarnessWiring } from "../../hooks/harness/wiring.ts";
+import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
 
 interface HeartbeatRow {
@@ -34,7 +34,7 @@ export interface RenderOpts {
   instanceId: string;
   sessionId: string;
   agentName?: string;
-  /** Harness label rendered in parens after the self-name (e.g. "Cursor", "Codex").
+  /** Adapter label rendered in parens after the self-name (e.g. "Cursor", "Codex").
    * Claude Code omits it. */
   platformLabel?: string;
 }
@@ -84,11 +84,11 @@ export function renderSessionContext(opts: RenderOpts): string {
     messages.push(wiringSummary);
   }
 
-  // 5. Harness-hook drift: a harnery upgrade changed the hook set, but this
-  // project's settings file hasn't been re-wired. Only fires for a harness the
+  // 5. Adapter-hook drift: a harnery upgrade changed the hook set, but this
+  // project's settings file hasn't been re-wired. Only fires for a adapter the
   // project already opted into (≥1 hook wired), so it never nags a project that
   // simply has a settings file. Remedy is always `<bin> init` (idempotent).
-  const drift = loadHarnessWiring(coordRoot);
+  const drift = loadAdapterWiring(coordRoot);
   if (drift.length > 0) {
     const bin = resolveBinName(coordRoot);
     const ver = harneryVersion();
@@ -101,7 +101,7 @@ export function renderSessionContext(opts: RenderOpts): string {
       return `  - ${d.settingsFile} — ${bits.join("; ")}`;
     });
     messages.push(
-      `Harnery hook wiring is out of date${verPart}: an upgrade changed the hook set but the harness ` +
+      `Harnery hook wiring is out of date${verPart}: an upgrade changed the hook set but the adapter ` +
         `settings file hasn't been re-wired, so the new hook(s) won't fire. Run \`${bin} init\` to wire them ` +
         `(idempotent, additive).\n${lines.join("\n")}`,
     );

@@ -65,7 +65,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
   const agentNames = Array.from(namesInEvents).sort();
   // Hover cards, lowest-priority first: ended main agents (session.start) and
   // subagents (subagent.start) from the durable log, then live/recent main
-  // agents from heartbeats + scratch, which override the rest on any name
+  // agents from heartbeats + journal, which override the rest on any name
   // collision so a live agent always shows its richer card.
   const summaries = {
     ...buildEndedAgentSummaries(identities),

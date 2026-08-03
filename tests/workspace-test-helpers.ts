@@ -57,8 +57,8 @@ export function replaceSourceCheckout(root: string): () => void {
 
 export const quiet = {
   onLog: () => {},
-  probeBilling: (harness: string) => ({
-    harness,
+  probeBilling: (adapter: string) => ({
+    adapter,
     apiKeySource: null,
     apiKeyPresent: false,
     login: "present" as const,

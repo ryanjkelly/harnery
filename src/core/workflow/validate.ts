@@ -114,7 +114,7 @@ export function validateAgainstSchema(value: unknown, schema: StageSchema, path 
 /**
  * Parse one schema-gated JSON value.
  *
- * Exact JSON and a whole fenced value remain the normal paths. Some harnesses
+ * Exact JSON and a whole fenced value remain the normal paths. Some adapters
  * prepend a short narration despite an explicit JSON-only contract. Accept
  * that drift only when the reply contains exactly one unambiguous top-level
  * object or array, the value reaches the end of the reply, and JSON.parse

@@ -41,7 +41,7 @@ export function renderPolicy(policy: Readonly<NormalizedPolicy>, digest: string)
     `unknown cost: ${policy.unknown_cost}`,
     `network: ${policy.network}`,
     `external actions: ${policy.external_actions}`,
-    `harnesses: ${policy.allowed_harnesses?.join(", ") ?? "any"}`,
+    `adapters: ${policy.allowed_adapters?.join(", ") ?? "any"}`,
     `models: ${policy.allowed_models?.join(", ") ?? "any"}`,
     `paths: ${policy.allowed_paths?.join(", ") ?? "any"}`,
     `isolation: ${policy.allowed_isolation?.join(", ") ?? "any"}`,

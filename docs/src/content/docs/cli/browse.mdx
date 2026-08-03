@@ -101,6 +101,10 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-overlap-threshold <px>` | Allowed overlap depth on either axis. Default `0`. |
 | `--check-overlap-fail` | Exit 2 when an overlap target fails or is missing. |
 | `--no-check-overlap-annotate` | Skip overlap annotations. |
+| `--check-crowd <selector>` | Flag adjacent card panels (a full border, a modest corner radius, or a box-shadow) that touch or nearly touch. Wrappers that contain panels count as peers too; separation uses the nearest face panels inside them. Walks the whole subtree, so one selector catches nested cases. Repeatable. |
+| `--check-crowd-min <px>` | Minimum acceptable edge gap between adjacent panel faces. Default `6`. Negative separation (overlap) always flags. |
+| `--check-crowd-fail` | Exit 2 when a crowd target fails or is missing. |
+| `--no-check-crowd-annotate` | Skip crowd annotations. |
 | `--check-hit [selector]` | Check interactive target size and spacing in the document or optional scope. Repeatable. |
 | `--check-hit-profile <profile>` | `wcag-aa` uses 24px; `comfortable` uses 44px as a product-quality policy. Default `wcag-aa`. |
 | `--check-hit-fail` | Exit 2 on target-size `fail`, `unknown`, or a missing scope. |
@@ -116,11 +120,100 @@ non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
 are reported as `unknown`, not certified. Overlap covers sibling geometry;
 paint-order and sticky-layer obstruction remain `--check-visible` concerns.
 
+Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
+flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd
+targets exactly that — distinct panels with no breathing room. Peers are
+card-like panels (a full border, a modest corner radius, or a box-shadow) **or
+wrappers that contain at least one panel**. Separation is measured between the
+nearest face panels inside each peer, not the wrapper boxes, so a tall section
+with a card near the top and prose below does not false-fail against the next
+sibling, while a card-grid flush against the next card still fails. Plain blocks
+with no panel chrome stay out of the peer list. Table cells, list and definition
+rows, and divided segments carry no card boundary of their own and are skipped,
+as are pills, chips, and badges (corner radius at least half their shorter side).
+Per-pair results carry the two face panels, `beforeKind` / `afterKind`
+(`panel` or `composite`), the edge `separationPx`, the `axis` (`x` side-by-side,
+`y` stacked, `overlap` intersecting), and the shared `parentLabel`.
+
 All requested checks run before one screenshot is captured. Fail gates are
 evaluated only after JSON and screenshot evidence is complete. Missing selectors
 always fail their enabled gate. Target-size `unknown` also fails closed; other
 layout `unknown` results stay visible without making common curved containers or
 two-item groups unusable.
+
+### Content checks
+
+These cover failures a human catches at a glance even when the geometry is
+perfect: leaked template tokens, broken images, clipped text, unreadable
+contrast. Each takes an optional selector (default: the whole body).
+
+| Flag | Description |
+| --- | --- |
+| `--check-placeholder [selector]` | Flag unrendered tells in the visible text: `{{x}}` and JS template tokens, `[object Object]`, `Invalid Date`, `NaN`, or an element whose whole text is literally "undefined" / "null". |
+| `--check-placeholder-fail` | Exit 2 if any placeholder tell is found. |
+| `--check-images [selector]` | Audit `<img>` for a failed load (naturalWidth 0), a still-loading image, or a stretched one (rendered aspect far from intrinsic, uncorrected by object-fit). |
+| `--check-images-tolerance <ratio>` | Aspect-ratio deviation above which an image counts as stretched. Default `0.1`. |
+| `--check-images-fail` | Exit 2 if any image failed to load or is stretched. |
+| `--check-truncation [selector]` | Flag text actively cut off by an ellipsis or `-webkit-line-clamp`. Stays quiet on plain `overflow: hidden`. |
+| `--check-truncation-tolerance <px>` | Overflow past the clip box, in px, above which truncation counts. Default `2`. |
+| `--check-truncation-fail` | Exit 2 if any text is actively truncated. |
+| `--check-contrast [selector]` | Flag rendered text below the WCAG AA ratio (4.5:1 normal, 3:1 large) against its effective background. |
+| `--check-contrast-fail` | Exit 2 if any text fails the contrast ratio. |
+| `--no-check-<name>-annotate` | Skip that check's screenshot annotations (JSON still emitted). |
+
+Placeholder is prose-safe: bare "undefined" / "null" only flag when they are an
+element's whole text, not the word inside a sentence. Do not point it at a page
+that documents template syntax. Contrast resolves the effective background by
+walking ancestors to the first opaque color; text over an image or gradient is
+`unknown`, not failed, and the check reads whatever theme the page is in, so
+toggle the theme with `--batch` to cover light and dark. Truncation is
+deliberately narrow — an active ellipsis or line-clamp only — so a decorative
+`overflow: hidden` does not read as a bug.
+
+### Vision critique
+
+Heuristic checks only catch what you can enumerate. `--check-critique` hands the
+rendered page to a vision model for the long tail — the thing that looks off
+without tripping a named rule.
+
+| Flag | Description |
+| --- | --- |
+| `--check-critique [selector]` | Send the page to a vision model, tile by tile. Default tiling cuts overlapping vertical bands; a selector tiles one screenshot per matching element. |
+| `--check-critique-band <px>` | Band height for default tiling. Default `1400`. |
+| `--check-critique-overlap <px>` | Vertical overlap between bands so a seam finding stays visible. Default `120`. |
+| `--check-critique-max-tiles <n>` | Cap on tiles sent to the model, to bound cost. Default `24`. |
+| `--check-critique-rubric <text>` | Override the default rubric. |
+| `--check-critique-fail` | Exit 2 on any high-severity finding. |
+
+The page is tiled because a tall screenshot downscaled to a model's input budget
+loses the detail the critique depends on; each tile is captured at full
+resolution and judged on its own, and findings carry their tile and scroll
+offset for locality. harnery ships no model client, so a host injects a
+`critiqueProvider` into `HarneryProgramContext` (the `extraHeaders` pattern);
+without one the check reports `skipped`, never a false pass. A provider that
+throws becomes a high-severity finding for that tile rather than aborting the
+run.
+
+### Value assertions
+
+The layout and content checks answer "does the page look right"; `--assert`
+answers "does it say the right thing". One repeatable flag,
+`<op> <selector> => <expected>`:
+
+| Op | Passes when |
+| --- | --- |
+| `text` | the first match's trimmed text equals `<expected>` |
+| `contains` | the first match's text includes `<expected>` |
+| `matches` | the first match's text matches the `<expected>` regex |
+| `count` | the match count equals `<expected>`, or satisfies a `>=` / `<=` / `>` / `<` comparator |
+| `exists` / `absent` | at least one / zero matches (no `=> expected`) |
+
+For example `--assert 'text h1 => Welcome'`, `--assert 'count .card => >=3'`,
+`--assert 'absent .error'`. Results land under `asserts` in the JSON envelope
+(each carries the observed `actual`); `--assert-fail` exits 2 on any failure. A
+malformed spec reports an `error` and fails rather than throwing. This is the
+portable primitive a host layers domain assertions on (funnel totals, warehouse
+reconciliation).
 
 ### Visual regression
 

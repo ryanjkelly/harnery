@@ -32,23 +32,23 @@ harn agents identity assume <name-or-id> # continue a durable role in this sessi
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
 harn agents watch               # stream peer state changes in real time
-harn agents ping <name> <msg>   # leave a handoff note in a peer's scratchpad
+harn agents ping <name> <msg>   # leave a handoff note in a peer's journal
 harn agents wait <name>         # block until a peer releases its files (or exits)
 harn agents release-claim <path> # drop a file claim from your own heartbeat (escape hatch)
 harn agents health              # one-screen coord-layer health rollup
 harn agents heal-events         # PIDMAP_HEAL telemetry (how often self-heal fixed drift)
 ```
 
-Two further subtrees live under `agents` for advanced use: `harn agents council`
-(convene a temporary group for structured multi-round deliberation) and
-`harn agents identity` (the durable per-agent persona registry). Two more are
-recovery tools: `harn agents heal` forces a specific recovery action on one
-agent, and `harn agents harness-probe` diagnoses harness wiring. Run
-`harn agents <sub> --help` for any of them.
+One further subtree lives under `agents` for advanced use: `harn agents identity`
+(the durable per-agent persona registry). Two more are recovery tools:
+`harn agents heal` forces a specific recovery action on one agent, and
+`harn agents adapter-probe` diagnoses adapter wiring. Run
+`harn agents <sub> --help` for any of them. Councils are their own top-level
+command — see [Councils](/concepts/councils/).
 
 ### identity assume
 
-Use `identity assume` when a new harness session is continuing a durable role
+Use `identity assume` when a new adapter session is continuing a durable role
 from a predecessor:
 
 ```bash
@@ -60,7 +60,7 @@ harn agents identity assume Yann --session-id <instance-id>
 The target may be a persona name, an `agent-Name` display name, or a persona
 UUID. Harnery reuses the durable persona UUID when it exists and creates it when
 a new name is first adopted. If another local session still has a fresh
-heartbeat for that name but its harness process is gone (crash, abandoned
+heartbeat for that name but its adapter process is gone (crash, abandoned
 tab, healed zombie), assume reclaims that heartbeat and continues. It refuses
 only when another live local process still holds the name, or when cached
 remote presence reports it.
@@ -96,18 +96,23 @@ The three orientation commands.
 Declares a short description of your current focus, stored on your heartbeat and
 shown to peers in the per-prompt snapshot and on the dashboard. Pass an empty
 string (`''`) to clear it. Like `status`, it accepts `--session-id <id>` for
-harnesses where the process walk can't resolve self.
+adapters where the process walk can't resolve self.
 
 **First-of-session session name.** The first time you declare a focus in a
 session (detected by the absence of a prior `task_updated_at` stamp), the JSON
 result additionally carries `first_of_session: true` and a
 `suggested_session_name` (`Agent <you> - <your task>`) for the operator to set
-as their harness's session/tab title:
+as their adapter's session/tab title:
 
 ```json
 { "task": "Auth Refactor", "first_of_session": true,
   "suggested_session_name": "Agent Hollis - Auth Refactor", ... }
 ```
+
+With hooks installed, Harnery injects a reminder on the first prompt in Claude
+Code, Cursor, and Codex. It tells the agent to run `set-task` before task work
+and copy the returned name into a fenced code block. The reminder fires once
+and skips subagents and workflow children.
 
 The single focus declaration feeds both the peer-visible task and the tab name,
 so there's one source of truth. Reproduce `suggested_session_name` inside a fenced
@@ -157,7 +162,7 @@ The coordination-in-motion commands.
   `.harnery/active/`), printing one line per delta: started, ended, activity,
   file claim, task change. `--poll-ms <n>` tunes the debounce (default `200`).
 - **`ping <name> <message...>`** appends a `handoff` entry to a peer's
-  scratchpad, prefixed `from agent-<me>:`. Use it to leave an actionable note
+  journal, prefixed `from agent-<me>:`. Use it to leave an actionable note
   for a peer holding a file you need.
 - **`wait <name>`** blocks until a peer releases its files (its `files_touched`
   empties) or exits. Scope it to specific paths with `--file <path>`
@@ -234,7 +239,7 @@ reply so a human (and peers) can see your state at a glance:
 
 `task` is what you declared with `set-task`; `last turn` is an auto-generated
 summary of your previous turn; `peers` lists the other active agents with their
-harness and file counts.
+adapter and file counts.
 
 ## Notes
 

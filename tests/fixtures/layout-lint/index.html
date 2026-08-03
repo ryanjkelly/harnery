@@ -25,6 +25,18 @@
       .hit-good button { width: 28px; height: 28px; padding: 0; }
       .hit-bad { display: flex; gap: 0; }
       .hit-bad button { width: 12px; height: 12px; min-width: 0; padding: 0; }
+      .panel { border: 1px solid #999; background: #eee; height: 20px; }
+      .crowd-good .panel + .panel { margin-top: 16px; }
+      .crowd-bad .panel + .panel { margin-top: 0; }
+      .crowd-plain p { margin: 0; }
+      /* Composite: wrapper-of-panels is not itself a panel. */
+      .crowd-composite-bad .group,
+      .crowd-composite-good .group,
+      .crowd-composite-deep .group { display: block; }
+      .crowd-composite-bad > .panel { margin-top: 0; }
+      .crowd-composite-good > .panel { margin-top: 16px; }
+      .crowd-composite-deep .group p { margin: 0; height: 40px; }
+      .crowd-composite-deep > .panel { margin-top: 0; }
     </style>
   </head>
   <body>
@@ -57,6 +69,31 @@
     <section class="hit-bad">
       <button type="button" aria-label="Small target one"></button>
       <button type="button" aria-label="Small target two"></button>
+    </section>
+    <section class="crowd-good">
+      <div class="panel"></div><div class="panel"></div>
+    </section>
+    <section class="crowd-bad">
+      <div class="panel"></div><div class="panel"></div>
+    </section>
+    <section class="crowd-plain">
+      <p>Plain block one, no border or background.</p>
+      <p>Plain block two, flush against the first but not a panel.</p>
+    </section>
+    <section class="crowd-composite-bad">
+      <div class="group"><div class="panel"></div></div>
+      <div class="panel"></div>
+    </section>
+    <section class="crowd-composite-good">
+      <div class="group"><div class="panel"></div></div>
+      <div class="panel"></div>
+    </section>
+    <section class="crowd-composite-deep">
+      <div class="group">
+        <div class="panel"></div>
+        <p>Prose keeps the inner panel away from the next sibling.</p>
+      </div>
+      <div class="panel"></div>
     </section>
   </body>
 </html>

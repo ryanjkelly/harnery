@@ -39,14 +39,14 @@ export default async function ImagesPage() {
   //   1. observed-from-feed fallback: guarantees a card for every agent in the
   //      feed even when its heartbeat + start-event are both gone (resilience);
   //   2. ended-main + subagent identities from the durable log;
-  //   3. live/recent main agents (heartbeat/scratch): richest, win on collision.
+  //   3. live/recent main agents (heartbeat/journal): richest, win on collision.
   const agentNames = Array.from(new Set(images.flatMap((img) => img.agents))).sort();
   const observed = images.flatMap((img) =>
     img.touches.map((t) => ({
       name: t.agent,
       last_seen: t.ts,
       instance_id: t.instance_id || undefined,
-      platform: t.harness ?? null,
+      platform: t.adapter ?? null,
     })),
   );
   const summaries = {

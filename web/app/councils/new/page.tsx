@@ -48,7 +48,7 @@ export default async function NewCouncilPage({
       return a.age_seconds - b.age_seconds;
     });
 
-  // Dedupe by bare name: multiple harnesses can share a name (e.g. detached
+  // Dedupe by bare name: multiple adapters can share a name (e.g. detached
   // subagents); the picker shows one row per identity.
   const seen = new Set<string>();
   const dedupedAgents: AgentRegistryRow[] = [];
@@ -79,7 +79,7 @@ export default async function NewCouncilPage({
             the council via{" "}
             <code className="font-mono text-xs">harn agents council create</code>{" "}
             and routes you to its detail page. Members get pinged via their
-            scratchpads if currently active; others see the invite on next
+            journals if currently active; others see the invite on next
             SessionStart.
           </p>
         </header>

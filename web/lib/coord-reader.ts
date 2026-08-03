@@ -5,7 +5,7 @@
  *   1. `HARNERY_COORD_ROOT` env var (set by `harn web up` to the user's cwd)
  *   2. Walk up from process.cwd() looking for a `.harnery/` directory
  *
- * Reads heartbeats, councils, events, and scratchpads. Invalid entries are
+ * Reads heartbeats, councils, events, and journals. Invalid entries are
  * reported as `meta.invalid` rather than crashing the page.
  */
 
@@ -70,8 +70,8 @@ export function councilsDir(): string {
   return path.join(harneryDir(), "councils");
 }
 
-export function scratchDir(): string {
-  return path.join(harneryDir(), "scratch");
+export function journalDir(): string {
+  return path.join(harneryDir(), "journal");
 }
 
 export function eventsPath(): string {
@@ -254,7 +254,7 @@ export function readEndedAgent(instanceId: string): Heartbeat | null {
   };
 }
 
-export interface ScratchEntry {
+export interface JournalEntry {
   ts_chicago: string;
   ts_iso: string | null;
   category: string;
@@ -278,31 +278,31 @@ function parseChicagoStampToIso(s: string): string | null {
   return `${y}-${mo}-${d}T${h.toString().padStart(2, "0")}:${min}:00${offset}`;
 }
 
-export interface ScratchDoc {
+export interface JournalDoc {
   exists: boolean;
   path: string;
   bytes: number;
-  entries: ScratchEntry[];
+  entries: JournalEntry[];
 }
 
-// Scratchpad entries look like: `## 2026-05-27 10:39 AM CDT · handoff`
-// (see src/core/scratch/index.ts; appendEntry emits this format).
-const SCRATCH_HEADER_RE =
+// Journal entries look like: `## 2026-05-27 10:39 AM CDT · handoff`
+// (see src/core/journal/index.ts; appendEntry emits this format).
+const JOURNAL_HEADER_RE =
   /^##\s+(?<ts>.+?)\s+·\s+(?<cat>note|plan|decision|blocker|question|done|handoff)\s*$/i;
 
-export function readScratch(instanceId: string): ScratchDoc {
-  const p = path.join(scratchDir(), `${instanceId}.md`);
+export function readJournal(instanceId: string): JournalDoc {
+  const p = path.join(journalDir(), `${instanceId}.md`);
   if (!existsSync(p)) {
     return { exists: false, path: p, bytes: 0, entries: [] };
   }
   const text = readFileSync(p, "utf-8");
   const bytes = Buffer.byteLength(text, "utf-8");
-  const entries: ScratchEntry[] = [];
+  const entries: JournalEntry[] = [];
   const lines = text.split("\n");
-  let current: ScratchEntry | null = null;
+  let current: JournalEntry | null = null;
   const bodyBuf: string[] = [];
   for (const line of lines) {
-    const m = SCRATCH_HEADER_RE.exec(line);
+    const m = JOURNAL_HEADER_RE.exec(line);
     if (m) {
       if (current) {
         current.body = bodyBuf.join("\n").trim();
@@ -329,7 +329,7 @@ export function readScratch(instanceId: string): ScratchDoc {
   return { exists: true, path: p, bytes, entries };
 }
 
-export interface ScratchArchive {
+export interface JournalArchive {
   filename: string;
   path: string;
   bytes: number;
@@ -338,8 +338,8 @@ export interface ScratchArchive {
 }
 
 /**
- * List archived scratchpads for one owner. Archive filenames follow two
- * shapes from `harnery/src/core/scratch/index.ts`:
+ * List archived journals for one owner. Archive filenames follow two
+ * shapes from `harnery/src/core/journal/index.ts`:
  *
  *   <owner>-<iso>.md            auto-archive on SessionEnd
  *   <owner>-pre-ui-<iso>.md     pre-edit snapshot from the web UI's wholesale Replace
@@ -347,8 +347,8 @@ export interface ScratchArchive {
  * Both use `2026-05-28T14-06-19-123Z` style ISO with `:` swapped to `-` for
  * filesystem safety; we revert that to a real ISO for `archived_at`.
  */
-export function listScratchArchives(instanceId: string): ScratchArchive[] {
-  const dir = path.join(scratchDir(), "archived");
+export function listJournalArchives(instanceId: string): JournalArchive[] {
+  const dir = path.join(journalDir(), "archived");
   if (!existsSync(dir)) return [];
   const prefix = `${instanceId}-`;
   let names: string[];
@@ -357,7 +357,7 @@ export function listScratchArchives(instanceId: string): ScratchArchive[] {
   } catch {
     return [];
   }
-  const out: ScratchArchive[] = [];
+  const out: JournalArchive[] = [];
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith(".md")) continue;
     const full = path.join(dir, name);
@@ -393,7 +393,7 @@ export function listScratchArchives(instanceId: string): ScratchArchive[] {
   return out;
 }
 
-export function readScratchArchive(instanceId: string, filename: string): string | null {
+export function readJournalArchive(instanceId: string, filename: string): string | null {
   // Tight whitelist: must start with the owner prefix and end in `.md`, no slashes.
   if (
     !filename.startsWith(`${instanceId}-`) ||
@@ -403,7 +403,7 @@ export function readScratchArchive(instanceId: string, filename: string): string
   ) {
     return null;
   }
-  const p = path.join(scratchDir(), "archived", filename);
+  const p = path.join(journalDir(), "archived", filename);
   if (!existsSync(p)) return null;
   try {
     return readFileSync(p, "utf-8");
@@ -419,7 +419,7 @@ export interface EventRow {
   ts: string;
   instance_id?: string;
   session_id?: string;
-  harness?: string;
+  adapter?: string;
   source?: string;
   data?: Record<string, unknown>;
 }
@@ -449,8 +449,7 @@ const EVENTS_MAX_SCAN_BYTES = 64_000_000;
  * boundary. Sorted by mtime (not filename) so the manual `events-legacy.ndjson`
  * and same-day `.N` dedupe suffixes order correctly. The naming convention is
  * produced by src/core/hooks/events/rotate.ts — kept in sync with it. */
-function archiveFilesNewestFirst(): string[] {
-  const dir = harneryDir();
+function archiveFilesNewestFirst(dir: string = harneryDir()): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -553,14 +552,22 @@ function scanFileBackward(
  */
 export function scanEventsTail(
   onRow: (row: EventRow) => boolean | void,
-  opts: { chunkBytes?: number; maxScanBytes?: number } = {},
+  opts: {
+    chunkBytes?: number;
+    maxScanBytes?: number;
+    /** Repo root to read from, when it is not the one being scanned. A workflow
+     * child emits to the coord root it runs in, which for a run driven from a
+     * sibling checkout is not this one. */
+    root?: string;
+  } = {},
 ): { linesScanned: number } {
   const chunkBytes = opts.chunkBytes ?? EVENTS_CHUNK_BYTES;
   const maxScanBytes = opts.maxScanBytes ?? EVENTS_MAX_SCAN_BYTES;
   let linesScanned = 0;
   let bytesConsumed = 0;
 
-  const files = [eventsPath(), ...archiveFilesNewestFirst()];
+  const dir = opts.root ? path.join(opts.root, ".harnery") : harneryDir();
+  const files = [path.join(dir, "events.ndjson"), ...archiveFilesNewestFirst(dir)];
   for (const p of files) {
     if (bytesConsumed >= maxScanBytes) break;
     if (!existsSync(p)) continue;
@@ -577,29 +584,34 @@ export function readEvents(
     limit?: number;
     instanceId?: string;
     type?: string;
-    /** Session-id allowlist. A main harness session carries the same id in
+    /** Session-id allowlist. A main adapter session carries the same id in
      * `session_id` and `instance_id`, so either matching is a hit. */
     sessions?: Set<string>;
+    /** Read another checkout's stream (see `scanEventsTail`). */
+    root?: string;
   } = {},
 ): EventsResponse {
-  const p = eventsPath();
+  const p = opts.root ? path.join(opts.root, ".harnery", "events.ndjson") : eventsPath();
   const limit = opts.limit ?? 200;
   const out: EventRow[] = [];
-  const { linesScanned } = scanEventsTail((row) => {
-    if (opts.instanceId && row.instance_id !== opts.instanceId) return;
-    if (opts.type && row.event_type !== opts.type) return;
-    if (
-      opts.sessions &&
-      !(
-        (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
-        (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
-      )
-    ) {
-      return;
-    }
-    out.push(row);
-    if (out.length >= limit) return false;
-  });
+  const { linesScanned } = scanEventsTail(
+    (row) => {
+      if (opts.instanceId && row.instance_id !== opts.instanceId) return;
+      if (opts.type && row.event_type !== opts.type) return;
+      if (
+        opts.sessions &&
+        !(
+          (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
+          (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
+        )
+      ) {
+        return;
+      }
+      out.push(row);
+      if (out.length >= limit) return false;
+    },
+    { root: opts.root },
+  );
   return { rows: out, meta: { path: p, total_lines: linesScanned, returned: out.length } };
 }
 
@@ -786,7 +798,7 @@ function loadPersistedIndex(indexPath: string): IdentityIndex {
       };
     }
   } catch {
-    // missing or corrupt → rebuild from scratch
+    // missing or corrupt → rebuild from journal
   }
   // Missing, corrupt, or built by an older parser version → one full re-scan.
   return { offset: 0, foldedArchives: [], identities: {} };

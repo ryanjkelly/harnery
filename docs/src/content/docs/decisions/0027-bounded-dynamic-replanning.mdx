@@ -3,7 +3,7 @@ title: "0027: Dynamic replanning advances immutable graph generations"
 description: "ADR: let a bounded planner recover terminal goals without rewriting work, resetting budgets, or selecting arbitrary execution code."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, background service)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/governor`, governor CLI, dashboard, background service)
 
 ## Context
 
@@ -21,12 +21,12 @@ hide a materially different execution decision.
 
 ## Decision
 
-Make replanning optional immutable goal authority. `harn supervisor create
+Make replanning optional immutable goal authority. `harn governor create
 --replanning <file>` freezes:
 
 - one planner specialist already present in the goal's frozen team;
 - whether valid proposals require explicit review (`auto_apply: false`, the
-  default) or may be applied by the supervisor;
+  default) or may be applied by the governor;
 - maximum planner invocations, work items per proposal, and cumulative
   planner-created work;
 - a named workflow-template catalog. Each template freezes an absolute path,
@@ -35,7 +35,7 @@ Make replanning optional immutable goal authority. `harn supervisor create
 The planner is eligible only when the active graph has no legal scheduling
 action. Pending work review, workflow approval, explicit cancellation,
 unauthorized retry, and exhausted graph-wide attempt budget retain their
-existing stop behavior. A planner invocation is one supervisor cycle and one
+existing stop behavior. A planner invocation is one governor cycle and one
 schema-gated workflow child using the frozen planner profile.
 
 Planner output is either `attention` with a bounded rationale or `apply` with
@@ -52,7 +52,7 @@ not the model, validates these invariants:
 
 Store each request, generated planner script, proposal, and append-only event
 log privately under
-`.harnery/supervisors/<goal-id>/plans/<plan-id>/`. A parked planner dispatch
+`.harnery/governors/<goal-id>/plans/<plan-id>/`. A parked planner dispatch
 records its durable workflow approval and resumes the same run after the
 decision. Interrupted non-parked runs consume a replan slot and may start a new
 request; they cannot leave a mutable half-request as truth.
@@ -64,7 +64,7 @@ verify and reuse exact matches before appending `plan.applied`. Conflicting
 partial work fails closed.
 
 `plan.applied` advances the goal's active root. The original graph and every
-prior generation remain on disk. The supervisor derives its attempt total from
+prior generation remain on disk. The governor derives its attempt total from
 all governed generations rather than only the active closure, preventing a
 replacement graph from resetting `max_total_attempts`.
 
@@ -112,5 +112,5 @@ projection fingerprint and wakes the enrolled goal.
   unchanged graph quiescent, preventing model churn around judgment the planner
   has already declared unresolved.
 - A plan template changing on disk does not corrupt goal reads, but applying a
-  proposal that names it fails until a new supervisor with new frozen authority
+  proposal that names it fails until a new governor with new frozen authority
   is created.

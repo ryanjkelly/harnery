@@ -1,4 +1,11 @@
 export {
+  type AssertOp,
+  type AssertResult,
+  type AssertSpec,
+  buildAssertCheck,
+  parseAssertSpec,
+} from "./asserts.js";
+export {
   Browser,
   type BrowserOptions,
   type ConsoleEvent,
@@ -7,6 +14,31 @@ export {
   type NavigateResult,
   type PageErrorEvent,
 } from "./client.js";
+export type {
+  CheckRect,
+  ContentAnnotationBox,
+  ContentChecksRequest,
+  ContentChecksResult,
+  ContrastHit,
+  ContrastResult,
+  ImageHealthResult,
+  ImageHit,
+  PlaceholderHit,
+  PlaceholderResult,
+  TruncationHit,
+  TruncationResult,
+} from "./content-checks.js";
+export {
+  bandRects,
+  type CritiqueFinding,
+  type CritiqueProvider,
+  type CritiqueResult,
+  type CritiqueTile,
+  DEFAULT_CRITIQUE_RUBRIC,
+  normalizeFindings,
+  runCritique,
+  tilesFromFullPage,
+} from "./critique.js";
 export {
   captureDevOverlay,
   type DevOverlayError,
@@ -18,6 +50,8 @@ export type {
   AlignResult,
   ClipIssue,
   ClipResult,
+  CrowdPair,
+  CrowdResult,
   GapCluster,
   GapPair,
   GapResult,

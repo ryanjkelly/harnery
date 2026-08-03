@@ -5,7 +5,7 @@ import { acquireNoClobberLease } from "./leases.ts";
 import { containsPath } from "./paths.ts";
 import {
   appendCleanupAttempt,
-  appendWorkflowJournalEvent,
+  appendWorkflowTranscriptEvent,
   readCleanupAttempts,
   readWorkflowSupplement,
   stableDigest,
@@ -112,7 +112,7 @@ async function cleanupWorkspaceUnderLease(
     reason: result.reason,
     recorded_at: result.recorded_at,
   });
-  appendWorkflowJournalEvent(input.coordRoot, input.runId, "workspace.cleanup", {
+  appendWorkflowTranscriptEvent(input.coordRoot, input.runId, "workspace.cleanup", {
     binding_id: binding.binding_id,
     provider_id: binding.provider.id,
     operation_id: intent.operation_id,

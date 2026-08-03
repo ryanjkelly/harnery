@@ -3,7 +3,7 @@ title: "0031: Plan attention recovery is an addressed durable transition"
 description: "ADR: let an operator attach bounded guidance to the latest attention plan and authorize one new planner attempt without mutating prior evidence."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/supervisor`, supervisor CLI, dashboard, public package APIs)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/governor`, governor CLI, dashboard, public package APIs)
 
 ## Context
 
@@ -20,26 +20,26 @@ stopped. Reusing the prior model session would make recovery depend on hidden
 provider state and would blur the boundary between a completed judgment and a
 new attempt. Treating any comment or graph change as authority would allow
 accidental wakeups. Resetting limits on recovery would turn a bounded
-supervisor into an unbounded loop.
+governor into an unbounded loop.
 
 ## Decision
 
 Add an explicit addressed transition for the latest attention plan:
 
 ```bash
-harn supervisor plan retry <goal-id> <plan-id> \
+harn governor plan retry <goal-id> <plan-id> \
   --actor <name> --reason <bounded-guidance>
 ```
 
 The operation acquires the existing per-goal lease and re-reads durable state.
 It accepts only the latest plan, only when that plan is in `attention`, only
-while its frozen root and graph fingerprint still match current supervisor
+while its frozen root and graph fingerprint still match current governor
 state, and only while another frozen replan slot remains. The reason is required
 and uses the existing 2,000-character plan-event bound.
 
 Acceptance appends one `plan.retry_requested` event to the addressed plan. It
 does not edit the request, proposal, review receipt, attention event, workflow
-journal, or existing work graph. The plan derives the new
+transcript, or existing work graph. The plan derives the new
 `retry_requested` status from that event. Repeating the same operation after a
 successful append is idempotent and returns the existing outcome without
 appending a second event.
@@ -57,7 +57,7 @@ reviewers, workflow templates, mission, and all cumulative budgets. It consumes
 the next existing replan slot and receives the same structural validation and
 independent-review treatment as any other plan.
 
-Recovery is never inferred. A background supervisor remains quiescent until the
+Recovery is never inferred. A background governor remains quiescent until the
 operator event exists. Historical plans, non-attention plans, changed graph
 truth, completed missions, blank or overlong reasons, and exhausted replan
 budgets reject the transition.
@@ -94,5 +94,5 @@ budgets reject the transition.
 - Replan counts remain cumulative. An attention plan that used the final slot
   can be inspected but cannot be retried.
 - Process loss before the event append changes nothing. Process loss after the
-  append is recoverable from the event journal and ordinary supervisor
+  append is recoverable from the event transcript and ordinary governor
   projection.

@@ -32,6 +32,41 @@ function webRoot(): string {
   return path.resolve(here, "..", "..", "web");
 }
 
+/** Default V8 old-space ceiling (MB) for the dashboard server. */
+const DEFAULT_MAX_OLD_SPACE_MB = 2048;
+
+/**
+ * Resolve the V8 old-space ceiling for the dashboard process.
+ *
+ * Next sizes `--max-old-space-size` to roughly half of system RAM when the
+ * flag is absent, which on a large machine hands a long-lived dashboard a
+ * ceiling it will never approach — so V8 never feels enough pressure to run a
+ * major GC and the process settles at a multi-gigabyte working set made mostly
+ * of collectable garbage. Pinning a modest ceiling restores that pressure.
+ *
+ * Precedence: explicit flag → `HARNERY_WEB_MAX_OLD_SPACE` → the default.
+ * `0` (or any non-positive value) opts out and restores Next's own sizing.
+ */
+export function resolveMaxOldSpaceMb(flag?: string): number {
+  const raw = flag ?? process.env.HARNERY_WEB_MAX_OLD_SPACE;
+  if (raw === undefined || raw === "") return DEFAULT_MAX_OLD_SPACE_MB;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
+}
+
+/**
+ * Append the heap ceiling to any inherited `NODE_OPTIONS`. Next only supplies
+ * its own `--max-old-space-size` when the flag is absent, so appending here
+ * wins without clobbering flags the caller set (source maps, inspector, …).
+ */
+export function nodeOptionsWithHeapCap(mb: number): string | undefined {
+  const inherited = process.env.NODE_OPTIONS ?? "";
+  if (mb <= 0) return inherited || undefined;
+  if (/--max-old-space-size[=\s]/.test(inherited)) return inherited;
+  return `${inherited} --max-old-space-size=${mb}`.trim();
+}
+
 /**
  * Resolve the web app root. A local `web/` (source checkout / submodule) wins.
  * Otherwise, on an npm install, lazy-fetch it (clone + install) unless the
@@ -57,6 +92,7 @@ interface UpOpts {
   coordRoot?: string;
   prod?: boolean;
   fetch?: boolean;
+  maxOldSpace?: string;
 }
 
 export function registerWebCommand(program: Command, emit: EmitContext): void {
@@ -77,6 +113,10 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
     )
     .option("--prod", "Use next start instead of next dev (requires prior build)")
     .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
+    .option(
+      "--max-old-space <mb>",
+      `V8 old-space ceiling in MB; 0 restores Next's own sizing (default ${DEFAULT_MAX_OLD_SPACE_MB}, env HARNERY_WEB_MAX_OLD_SPACE)`,
+    )
     .action(async (opts: UpOpts) => {
       const root = resolveWebRoot(emit, opts.fetch !== false);
       if (!root) {
@@ -101,8 +141,11 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
         }
       }
 
+      const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       emit.log(`harn web · http://localhost:${port} (${mode})`, "info");
+      emit.log(`files origin · http://harnery-files.localhost:${port}`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
+      if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", mode], {
         cwd: root,
@@ -110,6 +153,9 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
           ...process.env,
           HARNERY_COORD_ROOT: coordRoot,
           HARNERY_WEB_PORT: port,
+          ...(nodeOptionsWithHeapCap(heapMb)
+            ? { NODE_OPTIONS: nodeOptionsWithHeapCap(heapMb) as string }
+            : {}),
         },
         stdio: "inherit",
       });
@@ -154,7 +200,11 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
     .option("-p, --port <port>", "Listen port", "9000")
     .option("--coord-root <dir>", "Override the coord root")
     .option("--no-fetch", "Don't auto-fetch the dashboard if it's missing (npm installs)")
-    .action((opts: { port: string; coordRoot?: string; fetch?: boolean }) => {
+    .option(
+      "--max-old-space <mb>",
+      `V8 old-space ceiling in MB; 0 restores Next's own sizing (default ${DEFAULT_MAX_OLD_SPACE_MB}, env HARNERY_WEB_MAX_OLD_SPACE)`,
+    )
+    .action((opts: { port: string; coordRoot?: string; fetch?: boolean; maxOldSpace?: string }) => {
       const root = resolveWebRoot(emit, opts.fetch !== false);
       if (!root) {
         process.exitCode = 1;
@@ -172,8 +222,10 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
       }
       const coordRoot = opts.coordRoot ?? process.cwd();
       const port = String(opts.port);
+      const heapMb = resolveMaxOldSpaceMb(opts.maxOldSpace);
       emit.log(`harn web · http://localhost:${port} (start)`, "info");
       emit.log(`reading .harnery/ from: ${coordRoot}`, "info");
+      if (heapMb > 0) emit.log(`heap ceiling · ${heapMb} MB`, "info");
 
       const child = spawn(webRunner(), ["run", "start"], {
         cwd: root,
@@ -181,6 +233,9 @@ export function registerWebCommand(program: Command, emit: EmitContext): void {
           ...process.env,
           HARNERY_COORD_ROOT: coordRoot,
           HARNERY_WEB_PORT: port,
+          ...(nodeOptionsWithHeapCap(heapMb)
+            ? { NODE_OPTIONS: nodeOptionsWithHeapCap(heapMb) as string }
+            : {}),
         },
         stdio: "inherit",
       });

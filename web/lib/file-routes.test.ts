@@ -24,7 +24,7 @@ import { GET as textGET } from "../app/api/file/text/route.ts";
 import { GET as imageGET } from "../app/api/image/[hash]/route.ts";
 import { __resetCoordRootCache } from "./coord-reader.ts";
 import { parseRange } from "./file-routes.ts";
-import { TEXT_ENDPOINT_MAX_BYTES, TEXT_ENDPOINT_MAX_LINES, __resetFilesCaches } from "./files.ts";
+import { __resetFilesCaches, TEXT_ENDPOINT_MAX_BYTES, TEXT_ENDPOINT_MAX_LINES } from "./files.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture: a coord root the routes resolve via HARNERY_COORD_ROOT
@@ -61,11 +61,22 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function req(p: string, extra: { headers?: Record<string, string>; download?: string } = {}) {
+function req(
+  p: string,
+  extra: {
+    headers?: Record<string, string>;
+    download?: string;
+    render?: boolean;
+    host?: string;
+  } = {},
+) {
   const u = new URL("http://localhost/api/file");
   u.searchParams.set("path", p);
   if (extra.download !== undefined) u.searchParams.set("download", extra.download);
-  return new Request(u, { headers: extra.headers });
+  if (extra.render) u.searchParams.set("render", "1");
+  const headers = { ...extra.headers };
+  if (extra.host) headers.host = extra.host;
+  return new Request(u, { headers });
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +167,86 @@ describe("GET /api/file", () => {
     expect(cd).toStartWith("attachment;");
     expect(cd).not.toContain("\r");
     expect(cd).not.toContain("/");
+  });
+
+  test("?render=1 serves .html as text/html under CSP sandbox", async () => {
+    w("docs/page.html", "<!doctype html><title>Hi</title><h1>Hi</h1>");
+    const res = rawGET(req("docs/page.html", { render: true }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("content-security-policy")).toBe("sandbox");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await res.text()).toContain("<h1>Hi</h1>");
+  });
+
+  test("?render=1 without the flag leaves html as text/plain", () => {
+    w("docs/page.html", "<!doctype html><h1>Hi</h1>");
+    const res = rawGET(req("docs/page.html"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toStartWith("text/plain");
+  });
+
+  test("?render=1 rejects non-html and xml", async () => {
+    const md = rawGET(req("docs/plans/plan.md", { render: true }));
+    expect(md.status).toBe(400);
+    expect((await md.json()).error).toBe("render_not_allowed");
+    w("docs/config.xml", "<root/>");
+    const xml = rawGET(req("docs/config.xml", { render: true }));
+    expect(xml.status).toBe(400);
+  });
+
+  test("files origin Host serves navigable HTML without CSP sandbox", async () => {
+    w("docs/page.html", "<!doctype html><script>window.__x=1</script><h1>Hi</h1>");
+    const res = rawGET(
+      req("docs/page.html", {
+        host: "harnery-files.localhost:9000",
+        headers: { "x-harnery-files-path": "docs/page.html" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(res.headers.get("content-security-policy")).toBeNull();
+    expect(await res.text()).toContain("<script>");
+  });
+
+  test("files origin Host serves .js as text/javascript", () => {
+    w("assets/app.js", "console.log(1)");
+    const res = rawGET(
+      req("assets/app.js", {
+        host: "harnery-files.localhost",
+        headers: { "x-harnery-files-path": "assets/app.js" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect(res.headers.get("content-security-policy")).toBeNull();
+  });
+
+  test("files origin prefers path header over query (middleware carrier)", async () => {
+    w("docs/real.html", "<h1>real</h1>");
+    w("docs/decoy.html", "<h1>decoy</h1>");
+    const res = rawGET(
+      req("docs/decoy.html", {
+        host: "harnery-files.localhost",
+        headers: { "x-harnery-files-path": "docs/real.html" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("real");
+  });
+
+  test("dashboard Host ignores a path header smuggle — uses query path only", async () => {
+    w("docs/real.html", "<h1>real</h1>");
+    w("docs/decoy.html", "<h1>decoy</h1>");
+    const res = rawGET(
+      req("docs/decoy.html", {
+        host: "localhost:9000",
+        headers: { "x-harnery-files-path": "docs/real.html" },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toStartWith("text/plain");
+    expect(await res.text()).toContain("decoy");
   });
 
   test("HEAD returns headers only", async () => {

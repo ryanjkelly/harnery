@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { HarnessSandboxProjection } from "../harnesses/types.ts";
+import type { AdapterSandboxProjection } from "../adapters/types.ts";
 import {
   assertProjectionWithinWorkspace,
   resolveGitGrantRoots,
@@ -11,7 +11,7 @@ import { buildCodexInvocation } from "./spawn-codex.ts";
 import { buildCursorInvocation } from "./spawn-cursor.ts";
 import type { SpawnRequest } from "./types.ts";
 
-const CAPABLE: HarnessSandboxProjection = {
+const CAPABLE: AdapterSandboxProjection = {
   modes: { "read-only": "read-only", "workspace-write": "workspace-write" },
   writableRoots: true,
 };
@@ -39,7 +39,7 @@ describe("resolveSandboxProjection", () => {
   });
 
   test("an undistinguished mode refuses rather than downgrading", () => {
-    const partial: HarnessSandboxProjection = {
+    const partial: AdapterSandboxProjection = {
       modes: { "read-only": "read-only", "workspace-write": null },
       writableRoots: true,
     };
@@ -54,8 +54,8 @@ describe("resolveSandboxProjection", () => {
     expect(caught?.message).toContain("cannot be enforced");
   });
 
-  test("writable roots are refused when the harness cannot carry them", () => {
-    const noRoots: HarnessSandboxProjection = { ...CAPABLE, writableRoots: false };
+  test("writable roots are refused when the adapter cannot carry them", () => {
+    const noRoots: AdapterSandboxProjection = { ...CAPABLE, writableRoots: false };
     let caught: SandboxProjectionError | undefined;
     try {
       resolveSandboxProjection("no-roots", noRoots, {
@@ -68,8 +68,8 @@ describe("resolveSandboxProjection", () => {
     expect(caught?.reason).toBe("writable_roots_unrepresentable");
   });
 
-  test("a harness without writable-root support still accepts a bare mode", () => {
-    const noRoots: HarnessSandboxProjection = { ...CAPABLE, writableRoots: false };
+  test("a adapter without writable-root support still accepts a bare mode", () => {
+    const noRoots: AdapterSandboxProjection = { ...CAPABLE, writableRoots: false };
     expect(resolveSandboxProjection("no-roots", noRoots, { mode: "read-only" }).nativeMode).toBe(
       "read-only",
     );

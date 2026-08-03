@@ -2,13 +2,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
+import { checkPidToken } from "../../agents/state/proc-start.ts";
 
 /**
  * Resolve the canonical `instance_id` for the current hook invocation.
  *
  * Precedence:
  *
- *   1. `HARNERY_AGENT_COORD_OWNER` env var. Set by harness adapters when they know
+ *   1. `HARNERY_AGENT_COORD_OWNER` env var. Set by adapter adapters when they know
  *      the owner identity at spawn time (Codex's apply_patch tool path uses
  *      this).
  *   2. Hook payload fields, in order: `agent_id` → `subagent_id` →
@@ -40,7 +41,7 @@ export function resolveOwner(opts: {
   }
 
   // Pid-map ancestor walk. Start at own pid (the bash wrapper's bun child),
-  // walk up through ppids. The pid-map is stamped keyed by the harness PID, so
+  // walk up through ppids. The pid-map is stamped keyed by the adapter PID, so
   // we'll usually find it 1-3 hops up.
   const pidmap = join(opts.coordRoot, ".harnery", "pid-map");
   if (existsSync(pidmap)) {
@@ -51,9 +52,14 @@ export function resolveOwner(opts: {
       if (existsSync(file)) {
         try {
           const row = readFileSync(file, "utf8").trim();
-          // Row shape: "<instance_id>" or "<instance_id>\t<platform>"
-          const owner = row.split("\t")[0];
-          if (owner && owner.length > 0) {
+          // Row shape: "<instance_id>", "<instance_id>\t<platform>", or
+          // "<instance_id>\t<platform>\t<start_token>".
+          const [owner, , startToken] = row.split("\t");
+          // A row whose start token disagrees with the process now holding this
+          // pid is about a different, earlier process. Believing it hands this
+          // session another agent's identity, so walk past it.
+          const recycled = checkPidToken(pid, startToken || undefined) === "mismatch";
+          if (owner && owner.length > 0 && !recycled) {
             return {
               instance_id: owner,
               source: hops === 0 ? "pidmap-self" : "pidmap-ancestor",

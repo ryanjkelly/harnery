@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { HARNESS_SPECS } from "../core/hooks/harness/events.ts";
+import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
 import { engineRemovalHint, shouldPromptForState } from "./deinit.ts";
 import { type SettingsFile, unwireHooks, wireHooks } from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
-const CLAUDE = HARNESS_SPECS["claude-code"];
-const CURSOR = HARNESS_SPECS.cursor;
+const CLAUDE = ADAPTER_SPECS["claude-code"];
+const CURSOR = ADAPTER_SPECS.cursor;
 
 describe("unwireHooks", () => {
   test("round-trips wireHooks: removes exactly what init wired", () => {
@@ -21,7 +21,7 @@ describe("unwireHooks", () => {
     const settings: SettingsFile = {
       hooks: {
         Stop: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }] },
+          { hooks: [{ type: "command", command: `bash ${HOOK} stop --adapter claude-code` }] },
           { hooks: [{ type: "command", command: "echo keep-me" }] },
         ],
         Notification: [{ hooks: [{ type: "command", command: "echo also-keep" }] }],
@@ -41,7 +41,7 @@ describe("unwireHooks", () => {
     const settings: SettingsFile = {
       hooks: {
         Stop: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }] },
+          { hooks: [{ type: "command", command: `bash ${HOOK} stop --adapter claude-code` }] },
         ],
         Notification: [{ hooks: [{ type: "command", command: "echo keep" }] }],
       },

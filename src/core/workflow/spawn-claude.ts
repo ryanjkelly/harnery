@@ -19,10 +19,10 @@
  */
 
 import { exec } from "../../lib/exec.ts";
-import { builtinHarnessProfile, validateHarnessEffort } from "../harnesses/profiles.ts";
-import type { HarnessInvocation, HarnessRawResult } from "../harnesses/types.ts";
+import { builtinAdapterProfile, validateAdapterEffort } from "../adapters/profiles.ts";
+import type { AdapterInvocation, AdapterRawResult } from "../adapters/types.ts";
+import { notFoundError } from "./adapters.ts";
 import { buildChildEnv } from "./child-env.ts";
-import { notFoundError } from "./harnesses.ts";
 import { resolveSandboxProjection } from "./sandbox-projection.ts";
 import { isUpstreamFailureText, vendorFailureText } from "./spawn-failure.ts";
 import type { Spawner, SpawnRequest, SpawnResult } from "./types.ts";
@@ -37,13 +37,13 @@ interface ClaudeEnvelope {
   errors?: string[];
 }
 
-export function buildClaudeInvocation(req: SpawnRequest): HarnessInvocation {
-  validateHarnessEffort("claude-code", req.effort);
+export function buildClaudeInvocation(req: SpawnRequest): AdapterInvocation {
+  validateAdapterEffort("claude-code", req.effort);
   if (req.filesystemPolicy) {
     // Declared unrepresentable: refuse rather than drop it silently (ADR 0039).
     resolveSandboxProjection(
       "claude-code",
-      builtinHarnessProfile("claude-code")?.sandboxProjection,
+      builtinAdapterProfile("claude-code")?.sandboxProjection,
       req.filesystemPolicy,
     );
   }
@@ -61,7 +61,7 @@ export function buildClaudeInvocation(req: SpawnRequest): HarnessInvocation {
   return { argv };
 }
 
-export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
+export function normalizeClaudeResult(raw: AdapterRawResult): SpawnResult {
   if (raw.timedOut) {
     return {
       ok: false,
@@ -124,7 +124,7 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
       sessionId: envelope.session_id,
       costUsd: envelope.total_cost_usd,
       durationMs: raw.durationMs,
-      error: `harness error (${envelope.subtype ?? "unknown"}): ${(envelope.errors ?? []).join("; ") || "see envelope"}`,
+      error: `adapter error (${envelope.subtype ?? "unknown"}): ${(envelope.errors ?? []).join("; ") || "see envelope"}`,
       ...(isUpstreamFailureText(envelopeError) ? { class: "upstream" as const } : {}),
     };
   }
@@ -140,7 +140,7 @@ export function normalizeClaudeResult(raw: HarnessRawResult): SpawnResult {
 
 export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<SpawnResult> => {
   const t0 = Date.now();
-  let invocation: HarnessInvocation;
+  let invocation: AdapterInvocation;
   try {
     invocation = buildClaudeInvocation(req);
   } catch (error) {
@@ -148,7 +148,10 @@ export const claudeCodeSpawner: Spawner = async (req: SpawnRequest): Promise<Spa
   }
   const r = await exec(invocation.argv, {
     cwd: req.cwd,
-    env: buildChildEnv(req.runId, { subscriptionOnly: req.subscriptionOnly }),
+    env: buildChildEnv(req.runId, {
+      subscriptionOnly: req.subscriptionOnly,
+      agentId: req.agentId,
+    }),
     timeout: req.timeoutMs,
   });
   return normalizeClaudeResult({ ...r, durationMs: Date.now() - t0 });

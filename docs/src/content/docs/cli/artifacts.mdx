@@ -1,0 +1,86 @@
+---
+title: harn artifacts
+description: Managed workspaces for screenshots, exports, audits, and other short-lived files that should not enter Git.
+sidebar:
+  order: 6
+---
+
+```
+harn artifacts <subcommand> [options]
+```
+
+Working artifacts sit between the journal and tracked project files.
+Use them for screenshots, exports, browser captures, audit dumps, experiments,
+and rollback inputs that need to survive a session but should expire later.
+Each workspace lives under `.harnery/artifacts/` with a versioned manifest.
+
+## Subcommands
+
+```bash
+harn artifacts create <slug> --purpose <text> [--days <n>]
+harn artifacts list
+harn artifacts show <ref>
+harn artifacts renew <ref> --days <n> --reason <text>
+harn artifacts release <ref>
+harn artifacts clean [--yes]
+```
+
+`<ref>` can be an artifact ID, a direct-child directory name, or a path to one
+direct child of `.harnery/artifacts/`.
+
+## Typical workflow
+
+```bash
+# Create a workspace. The result includes an absolute path and artifact ID.
+harn artifacts create checkout-audit \
+  --purpose "Compare checkout screenshots across viewports"
+
+# Write screenshots and reports under the returned path.
+
+# Stop treating the creating agent's heartbeat as active-use protection.
+harn artifacts release <artifact-id>
+
+# Preview cleanup. This never changes the filesystem.
+harn artifacts clean
+
+# Delete only entries still classified managed-expired after a final recheck.
+harn artifacts clean --yes
+```
+
+New workspaces expire after three days by default. Set a project default in
+`.harnery/config.jsonc`:
+
+```json
+{
+  "artifacts": {
+    "default_retention_days": 7
+  }
+}
+```
+
+`HARNERY_ARTIFACT_RETENTION_DAYS` overrides the config value for one process.
+`create --days` overrides both.
+
+## Cleanup classes
+
+| Classification | Meaning | `clean --yes` |
+| --- | --- | --- |
+| `managed-active` | The creating agent has a fresh heartbeat and has not released the unit. | Keep |
+| `managed-current` | Retention has not expired. | Keep |
+| `managed-expired` | Retention expired and no protection remains. | Delete |
+| `managed-tracked` | Git tracks at least one path inside the unit. | Keep |
+| `invalid-manifest` | The manifest is unreadable, invalid, or uses an unknown schema. | Keep |
+| `unmanaged` | The entry has no managed manifest or is not a directory. | Keep |
+| `symlink` | The direct child is a symlink. | Keep without traversing |
+| `unknown` | Harnery could not establish a safe classification. | Keep |
+
+Cleanup previews by default. Even with `--yes`, Harnery rechecks every deletion
+candidate and refuses to delete entries that changed classification.
+
+## Journal, artifacts, and durable files
+
+Use `harn journal` for short text breadcrumbs that help with context recovery
+or peer handoff. Use `harn artifacts` for file trees that can expire. If a
+report, input, or piece of evidence becomes part of the project's record, copy
+it to the appropriate tracked path and document what it contains. Local
+artifact retention is not durable storage.

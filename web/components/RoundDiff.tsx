@@ -25,7 +25,7 @@ interface SnapshotEntry {
  * the operator step through adjacent pairs.
  *
  * Rendering delegates to <SnapshotDiff>, the same shared component the
- * scratchpad replace-editor uses, so council + scratchpad diffs are visually
+ * journal replace-editor uses, so council + journal diffs are visually
  * identical (line numbers, inline word-level highlights, collapsed unchanged
  * runs, per-side Copy buttons, removed/added stats with rich tooltips).
  */

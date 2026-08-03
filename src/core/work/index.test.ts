@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { resolveWorkflowApproval, type Spawner, WorkflowParkedError } from "../workflow/index.ts";
-import { WORKFLOW_JOURNAL_EVENT_BYTES } from "../workflow/journal.ts";
+import { WORKFLOW_TRANSCRIPT_EVENT_BYTES } from "../workflow/transcript.ts";
 import {
   acceptWorkItem,
   cancelWorkItem,
@@ -298,7 +298,7 @@ describe("durable work ledger", () => {
     });
   });
 
-  test("lists work when a legacy workflow journal record exceeds the reader bound", () => {
+  test("lists work when a legacy workflow transcript record exceeds the reader bound", () => {
     const { root, workflowPath } = fixture();
     createWorkItem({
       coordRoot: root,
@@ -309,54 +309,54 @@ describe("durable work ledger", () => {
     });
     createWorkItem({
       coordRoot: root,
-      id: "oversized-journal",
-      title: "Oversized journal",
+      id: "oversized-transcript",
+      title: "Oversized transcript",
       objective: "Surface the unreadable attempt",
       workflowPath,
       maxAttempts: 2,
     });
     appendFileSync(
-      join(root, ".harnery", "work", "oversized-journal", "events.jsonl"),
+      join(root, ".harnery", "work", "oversized-transcript", "events.jsonl"),
       `${JSON.stringify({
         schema_version: 1,
-        work_id: "oversized-journal",
+        work_id: "oversized-transcript",
         seq: 2,
         ts: new Date().toISOString(),
         event: "attempt.started",
         actor: "legacy-runner",
         reason: "workflow attempt started",
-        run_id: "wf-oversized-journal",
+        run_id: "wf-oversized-transcript",
         attempt: 1,
         trigger: "initial",
       })}\n`,
     );
-    const runDir = join(root, ".harnery", "workflows", "wf-oversized-journal");
+    const runDir = join(root, ".harnery", "workflows", "wf-oversized-transcript");
     mkdirSync(runDir, { recursive: true });
     const oversizedLine = `${JSON.stringify({
       schema_version: 1,
-      run_id: "wf-oversized-journal",
+      run_id: "wf-oversized-transcript",
       ts: new Date().toISOString(),
       event: "agent.end",
       stage: "",
-      result: "x".repeat(WORKFLOW_JOURNAL_EVENT_BYTES),
+      result: "x".repeat(WORKFLOW_TRANSCRIPT_EVENT_BYTES),
     })}\n`;
     expect(Buffer.byteLength(oversizedLine.trimEnd())).toBeGreaterThan(
-      WORKFLOW_JOURNAL_EVENT_BYTES,
+      WORKFLOW_TRANSCRIPT_EVENT_BYTES,
     );
-    writeFileSync(join(runDir, "journal.jsonl"), oversizedLine, "utf8");
+    writeFileSync(join(runDir, "transcript.jsonl"), oversizedLine, "utf8");
 
     const records = listWorkItems(root);
     expect(records.map((record) => record.intent.id).sort()).toEqual([
-      "oversized-journal",
+      "oversized-transcript",
       "unaffected",
     ]);
-    const affected = records.find((record) => record.intent.id === "oversized-journal");
+    const affected = records.find((record) => record.intent.id === "oversized-transcript");
     const unaffected = records.find((record) => record.intent.id === "unaffected");
     expect(unaffected?.projection.state).toBe("ready");
     expect(affected?.projection.state).toBe("blocked");
     expect(affected?.projection.next_action).toBe("retry");
-    expect(affected?.projection.attempts.at(-1)?.status).toBe("journal_unreadable");
-    expect(affected?.projection.reason).toContain("journal is unreadable");
+    expect(affected?.projection.attempts.at(-1)?.status).toBe("transcript_unreadable");
+    expect(affected?.projection.reason).toContain("transcript is unreadable");
     expect(affected?.projection.reason).toContain("oversized record");
   });
 
@@ -686,6 +686,80 @@ describe("durable work ledger", () => {
     expect(record.projection.charged_attempts).toBe(0);
     expect(record.projection.attempts_remaining).toBe(3);
     expect(record.projection.attempts[0]?.uncharged).toBe("environment");
+  });
+
+  // A script that stops on a human is the third uncharged class. It has to be
+  // told apart from a work failure, because to an engine that only sees "the run
+  // threw" the two are identical — and conflating them means a correct refusal
+  // gets re-issued until the attempt budget runs out.
+  const blockingWorkflow =
+    `export default async ({ blocked }) => blocked({\n` +
+    `  reason: "who owns the cart is unsettled",\n` +
+    `  decision: "fb-011-who-owns-the-cart-2026-08-01-beaf",\n` +
+    `});\n`;
+
+  test("a script that blocks on a human stops, uncharged, naming the decision", async () => {
+    const { root, workflowPath } = fixture(blockingWorkflow);
+    createWorkItem({
+      coordRoot: root,
+      id: "decision-stop",
+      title: "Decision stop",
+      objective: "Work that cannot proceed without a ruling",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    await expect(
+      runWorkItem({ coordRoot: root, workId: "decision-stop", engine: { spawners: {} } }),
+    ).rejects.toThrow(/blocked on decision/);
+
+    const record = readWorkItem(root, "decision-stop");
+    // Terminal: a retry cannot change a person's mind, so next_action is none.
+    expect(record.projection.state).toBe("blocked");
+    expect(record.projection.next_action).toBe("none");
+    // The operator gets the script's own sentence and a docket id to act on,
+    // not the engine's wrapper prose repeated twice.
+    expect(record.projection.reason).toBe(
+      "a human must rule before this can proceed: who owns the cart is unsettled " +
+        "(decision fb-011-who-owns-the-cart-2026-08-01-beaf)",
+    );
+    // Uncharged: once the decision lands, the item retries with a full budget.
+    expect(record.projection.attempts_used).toBe(1);
+    expect(record.projection.charged_attempts).toBe(0);
+    expect(record.projection.attempts_remaining).toBe(3);
+    expect(record.projection.attempts[0]?.uncharged).toBe("decision");
+    expect(record.projection.attempts[0]?.blocked_on).toBe(
+      "fb-011-who-owns-the-cart-2026-08-01-beaf",
+    );
+    // Machine-readable, so a reader never has to parse the reason prose.
+    expect(record.projection.blocked_on_decision).toBe("fb-011-who-owns-the-cart-2026-08-01-beaf");
+  });
+
+  test("blocking without naming a decision still stops rather than retrying", async () => {
+    const { root, workflowPath } = fixture(
+      `export default async ({ blocked }) => blocked({ reason: "needs a product call" });\n`,
+    );
+    createWorkItem({
+      coordRoot: root,
+      id: "decision-unnamed",
+      title: "Decision unnamed",
+      objective: "Blocked with no docket id",
+      workflowPath,
+      maxAttempts: 3,
+    });
+    await expect(
+      runWorkItem({ coordRoot: root, workId: "decision-unnamed", engine: { spawners: {} } }),
+    ).rejects.toThrow();
+
+    const record = readWorkItem(root, "decision-unnamed");
+    expect(record.projection.state).toBe("blocked");
+    expect(record.projection.next_action).toBe("none");
+    expect(record.projection.charged_attempts).toBe(0);
+    // Present but empty: still positively "waiting on a person", just without a
+    // question to point at — which is the degraded case, not a different one.
+    expect(record.projection.blocked_on_decision).toBe("");
+    expect(record.projection.reason).toBe(
+      "a human must rule before this can proceed: needs a product call",
+    );
   });
 
   test("an upstream failure is uncharged but stays retryable (ADR 0046)", async () => {

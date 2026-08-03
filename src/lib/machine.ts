@@ -5,12 +5,12 @@ import { coordEnv } from "./env.ts";
 
 /**
  * Resolve a human-friendly label for the current machine. Used to tag
- * coordination artifacts (scratch-doc headers, session telemetry) by the host
+ * coordination artifacts (journal-doc headers, session telemetry) by the host
  * they originated on.
  *
  * Precedence (first non-empty wins):
  *   1. HARNERY_MACHINE env var:          transient / per-launch / CI override
- *   2. ~/.config/harnery/machine file:   persistent, harness-neutral identity
+ *   2. ~/.config/harnery/machine file:   persistent, adapter-neutral identity
  *   3. os.hostname() (normalized):       automatic floor; never empty
  *
  * The env var sits on top for ad-hoc overrides; the file is the durable home for

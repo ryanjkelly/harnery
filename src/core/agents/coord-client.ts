@@ -73,7 +73,7 @@ export interface Heartbeat {
   last_tool_target?: string;
   /** Free-form task/intent string set via `harn agents set-task`. Phase 2. */
   task?: string;
-  /** UTC ISO-8601 timestamp when task was last set/cleared. Used by harnesses without Stop enforcement to compute staleness. 2026-05-24. */
+  /** UTC ISO-8601 timestamp when task was last set/cleared. Used by adapters without Stop enforcement to compute staleness. 2026-05-24. */
   task_updated_at?: string | null;
   /** Auto-generated per-turn summary written by the Stop hook via Haiku. 2026-05-23. */
   turn_summary?: string | null;
@@ -146,9 +146,93 @@ export function parsePidmapRowOwner(row: string): string {
 
 /** Parse platform from a pid-map row; legacy rows default to `claude_code`. */
 export function parsePidmapRowPlatform(row: string): string {
-  const trimmed = row.trim();
-  const tab = trimmed.indexOf("\t");
-  return tab >= 0 ? trimmed.slice(tab + 1).trim() : "claude_code";
+  const platform = row.trim().split("\t")[1]?.trim();
+  return platform || "claude_code";
+}
+
+/** Parse the start token from a pid-map row; rows written before it carry none. */
+export function parsePidmapRowStartToken(row: string): string | undefined {
+  return row.trim().split("\t")[2]?.trim() || undefined;
+}
+
+/**
+ * Is the process now holding `pid` the one this row was written for?
+ *
+ * A pid is a number the OS re-issues, and quickly: a `pid_max` of 99999 against
+ * ~100 new processes a second recycles the whole space about every quarter
+ * hour. Believing a row past that point resolves this session to whichever
+ * agent last held the number — which is what made `whoami` report a stranger's
+ * name and files. The start token settles it, since two processes may share a
+ * pid but never a pid and a start instant.
+ *
+ * Deliberately inlined rather than imported from `state/proc-start.ts`: this
+ * file is vendored verbatim into a downstream consumer and stays on node
+ * builtins only. The token is a wire format shared with that module and with
+ * the host's commit guard, so the copies must agree byte for byte; exported so
+ * a test can hold this one against `processStartToken` and fail on drift.
+ */
+export function pidStartToken(pid: number): string | null {
+  const forced = process.env.HARNERY_PID_PROBE;
+  const useProcfs = forced === "procfs" || (forced !== "ps" && existsSync("/proc/self/stat"));
+  // One machine, one probe. Falling back to the other on a read failure would
+  // answer in the wrong dialect and read as a recycled pid.
+  if (useProcfs) {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const afterComm = stat.slice(stat.lastIndexOf(") ") + 2);
+      // Fields after comm, 0-based: 0 is state (field 3), starttime (22) is 19.
+      const ticks = afterComm.split(" ")[19];
+      if (!ticks || !/^\d+$/.test(ticks)) return null;
+      // Ticks count from boot, so they repeat across reboots; the boot id scopes
+      // them. Rows written before it carry ticks alone and still compare.
+      let boot = "";
+      try {
+        const raw = readFileSync("/proc/sys/kernel/random/boot_id", "utf8")
+          .trim()
+          .replace(/-/g, "");
+        if (/^[0-9a-f]{8,}$/.test(raw)) boot = `${raw.slice(0, 8)}.`;
+      } catch {
+        /* unnamed boot: fall back to the tick-only shape */
+      }
+      return `l${boot}${ticks}`;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    // TZ and locale are pinned because `ps` renders the date through them, and
+    // two callers with different environments must not disagree about one
+    // process.
+    const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 2000,
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
+    });
+    if (out.status !== 0) return null;
+    const lstart = (out.stdout ?? "").split("\n")[0]?.trim().replace(/\s+/g, " ");
+    return lstart ? `p${lstart}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function pidWasRecycled(pid: number, row: string): boolean {
+  const recorded = parsePidmapRowStartToken(row);
+  if (!recorded) return false; // pre-token row: unverifiable, behave as before
+  const current = pidStartToken(pid);
+  if (!current) return false;
+  if (current === recorded) return false;
+  // A row predating the boot segment recorded ticks alone; compare it on what
+  // it recorded rather than pruning every live row on the first upgraded run.
+  if (
+    recorded[0] === "l" &&
+    current[0] === "l" &&
+    recorded.includes(".") !== current.includes(".")
+  ) {
+    const ticks = (t: string) => (t.includes(".") ? t.slice(t.indexOf(".") + 1) : t.slice(1));
+    return ticks(recorded) !== ticks(current);
+  }
+  return true;
 }
 
 function readPidmapRow(pidmapDir: string, pid: number): string | null {
@@ -197,9 +281,14 @@ export function resolveOwnerWithSource(): {
   const root = monorepoRoot();
   if (!root) return { owner: null, source: "none" };
 
-  // Cursor's Glass/Agents UI can run several chats under one long-lived node
-  // process, so the pid-map row for that shared ancestor is last-writer-wins.
-  // Prefer the per-chat session id when Cursor exposes one in the tool env.
+  // Every supported adapter exports its session id into the env of the
+  // subprocess it spawns for a tool call, and each heartbeat records the
+  // session id it was minted under. Matching the two names us outright, even
+  // with many live agents, so it goes ahead of the ppid walk rather than
+  // catching what the walk drops. Cursor needed this first because its
+  // Glass/Agents UI runs several chats under one node ancestor, making that row
+  // last-writer-wins; pid recycling generalises the same hazard to every
+  // adapter.
   if (shouldPreferSessionEnv()) {
     const bySession = resolveOwnerBySessionEnv(root);
     if (bySession) {
@@ -217,7 +306,7 @@ export function resolveOwnerWithSource(): {
   for (let hop = 0; hop < 20; hop++) {
     if (pid === null) break;
     const row = readPidmapRow(pidmapDir, pid);
-    if (row) {
+    if (row && !pidWasRecycled(pid, row)) {
       const rowOwner = parsePidmapRowOwner(row);
       const rowPlat = parsePidmapRowPlatform(row);
       if (rowPlat === prefer) {
@@ -229,18 +318,6 @@ export function resolveOwnerWithSource(): {
   }
   if (fallbackOwner) {
     return { owner: fallbackOwner, source: "pidmap_fallback" };
-  }
-
-  // The ppid walk found nothing (e.g. a Bash-tool subshell whose process tree
-  // doesn't climb back to the harness anchor). Before guessing, try the
-  // harness-provided session id from the environment: every supported harness
-  // exports its session id into the tool subprocess env, and each heartbeat
-  // records the `session_id` it was minted under. Matching the two resolves us
-  // unambiguously even with multiple live agents, which is the case the
-  // singleton fallback below cannot handle.
-  const bySession = resolveOwnerBySessionEnv(root);
-  if (bySession) {
-    return { owner: bySession, source: "session_env" };
   }
 
   // Last resort: if exactly one agent is live in this coord root, it's
@@ -257,8 +334,8 @@ export function resolveOwnerWithSource(): {
 }
 
 /**
- * Harness-exported session-id environment variables, in precedence order. Each
- * supported harness propagates its session id into the env of the subprocess it
+ * Adapter-exported session-id environment variables, in precedence order. Each
+ * supported adapter propagates its session id into the env of the subprocess it
  * spawns for a tool call (Claude Code's Bash tool, Cursor's terminal, Codex's
  * shell). A coord CLI invoked as such a tool can therefore recover its own
  * identity from the env even when the ppid walk misses.
@@ -274,7 +351,7 @@ const SESSION_ID_ENV_VARS = [
   "CODEX_SESSION_ID",
 ] as const;
 
-/** Read normalized candidates from the first non-empty harness session-id env var. */
+/** Read normalized candidates from the first non-empty adapter session-id env var. */
 function sessionIdsFromEnv(): string[] {
   for (const key of SESSION_ID_ENV_VARS) {
     const v = process.env[key]?.trim();
@@ -287,19 +364,33 @@ function sessionIdsFromEnv(): string[] {
   return [];
 }
 
-/** Read the first non-empty harness session-id env var, or null. */
+/** Read the first non-empty adapter session-id env var, or null. */
 function sessionIdFromEnv(): string | null {
   return sessionIdsFromEnv()[0] ?? null;
 }
 
+/**
+ * Should the adapter-exported session id be consulted before the ppid walk?
+ *
+ * Yes, whenever one is exported. The env var is the adapter stating its own
+ * identity; the walk is a guess over a namespace the OS recycles. On a box with
+ * `pid_max` of 99999 and ~100 pids allocated per second the whole pid space
+ * turns over about every quarter hour, so a row written before that can name a
+ * pid some unrelated process now holds. Pruning cannot save the walk here:
+ * it removes rows whose pid is dead, and a recycled pid is alive. Letting a
+ * guess outrank a statement of fact is what made `agents whoami` report another
+ * agent's name and file list.
+ *
+ * This only reorders the two. Session-env resolution still requires a live
+ * heartbeat carrying that session id, so when it does not match, the walk runs
+ * exactly as before.
+ */
 function shouldPreferSessionEnv(): boolean {
-  if (!sessionIdFromEnv()) return false;
-  const platform = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim();
-  return process.env.CURSOR_AGENT === "1" || platform === "cursor";
+  return sessionIdFromEnv() !== null;
 }
 
 /**
- * Resolve the owner by matching the harness session-id env var against the
+ * Resolve the owner by matching the adapter session-id env var against the
  * `session_id` of a live heartbeat in this coord root. Returns the matching
  * `instance_id`, or null if there's no session-id env var or no live heartbeat
  * carries it. "Live" reuses the same 10-minute freshness window the singleton

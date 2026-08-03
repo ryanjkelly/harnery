@@ -21,7 +21,7 @@ export type ContributionType = "Substantive" | "Trivial" | "Unknown";
 export interface ChangelogEntry {
   ts: string;
   model: string;
-  harness: string;
+  adapter: string;
   round: number;
   summary: string;
   type: ContributionType;
@@ -30,7 +30,7 @@ export interface ChangelogEntry {
 export interface MemberMapping {
   member: string;
   model: string;
-  harness: string;
+  adapter: string;
 }
 
 export interface MatrixCell {
@@ -63,7 +63,7 @@ export function parseMembersTable(body: string): MemberMapping[] {
     out.push({
       member: m[1].trim(),
       model: normalizeModelKey(m[2]),
-      harness: m[3].trim(),
+      adapter: m[3].trim(),
     });
   }
   return out;
@@ -94,17 +94,17 @@ export function parseChangelog(body: string): ChangelogEntry[] {
     const parts = entry.split(" · ");
     if (parts.length < 4) continue;
     const ts = parts[0].trim();
-    const modelHarness = parts[1].match(/^([^\s(][^()]*?)\s*\(([^)]+)\)\s*$/);
-    if (!modelHarness) continue;
-    const model = normalizeModelKey(modelHarness[1]);
-    const harness = modelHarness[2].trim();
+    const modelAdapter = parts[1].match(/^([^\s(][^()]*?)\s*\(([^)]+)\)\s*$/);
+    if (!modelAdapter) continue;
+    const model = normalizeModelKey(modelAdapter[1]);
+    const adapter = modelAdapter[2].trim();
     const roundMatch = parts[2].match(/^round\s+(\d+)$/i);
     if (!roundMatch) continue;
     const round = Number.parseInt(roundMatch[1], 10);
     if (!Number.isFinite(round)) continue;
     const summary = parts.slice(3).join(" · ").trim();
     const type = extractType(summary);
-    out.push({ ts, model, harness, round, summary, type });
+    out.push({ ts, model, adapter, round, summary, type });
   }
   return out;
 }

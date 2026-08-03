@@ -23,7 +23,7 @@ Settings resolve from these sources, lowest precedence first (later wins):
 2. `<project>/.harnery/config.jsonc`: the project settings file, which overrides the user-global file **field by field** (a project that sets only `web.port` keeps a user-global `web.bind`)
 3. CLI flags + environment variables: per-invocation overrides (see each field's env note)
 
-The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only. A user-global `binName` is a display fallback, never a project pin.
+The config reader (`src/core/config.ts`) merges the two files and owns `binName`, `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, `coord`, `artifacts`, `backup`, and `sync`; the web layer reads `files`. One deliberate exception: the `binName` **pin** that `harn init` guards against re-stamping is read from the project file only. A user-global `binName` is a display fallback, never a project pin.
 
 ## Top-level fields
 
@@ -33,9 +33,11 @@ The config reader (`src/core/config.ts`) merges the two files and owns `binName`
 | `project_name` | string  | repo basename    | Display name surfaced in log lines and to peers |
 | `binName`      | string  | `harn`           | Host CLI bin name used in agent-facing prompts (see below) |
 | `coord`        | object  | see below        | Coord-layer settings |
+| `artifacts`    | object  | see below        | Working-artifact retention |
 | `tools`        | object  | see below        | Managed-tool provisioning consent (`tools.ripgrep.autoInstall`) |
 | `workflow`     | object  | see below        | Workflow-engine defaults |
 | `skills`       | object  | see below        | Shipped-skill suppression (`skills.exclude`) |
+| `instructions` | object  | see below        | Host-owned addendum spliced into `AGENTS.md` (`instructions.hostAddendumFile`) |
 | `presence`     | object  | see below        | Cross-machine presence transports |
 | `files`        | object  | see below        | Web file-viewer path policy (additive deny/allow globs) |
 | `web`          | object  | see below        | Standalone Next.js dashboard |
@@ -54,13 +56,22 @@ The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) 
 
 Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env (canonical; `HARNERY_AGENT_FRESHNESS` is a legacy alias) → this `config.jsonc` key → `600`.
 
+## `artifacts`
+
+| Field                    | Type   | Default | Description |
+| ------------------------ | ------ | ------- | ----------- |
+| `default_retention_days` | number | `3`     | Retention used by `harn artifacts create` when `--days` is absent |
+
+Resolution: `HARNERY_ARTIFACT_RETENTION_DAYS` env → this `config.jsonc` key →
+`3`. See [`harn artifacts`](/cli/artifacts/) for cleanup behavior.
+
 ## `workflow`
 
 | Field              | Type | Default | Description |
 | ------------------ | ---- | ------- | ----------- |
-| `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the harness CLI's stored login |
+| `subscriptionOnly` | bool | `false` (engine) / `true` (stamped by `harn init`) | Pin `workflow run` to subscription billing: API-key vars are scrubbed from every child env, so children can only authenticate via the adapter CLI's stored login |
 
-`harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [workflow → billing safeguards](/cli/workflow/#billing-safeguards).
+`harn init` stamps `{ "subscriptionOnly": true }` into any project without a committed `workflow` key; an existing `workflow` key of any shape is never touched (set `false` for key-only CI hosts). Env override per process: `HARNERY_WORKFLOW_SUBSCRIPTION_ONLY=1|0`. See [run → billing safeguards](/cli/run/#billing-safeguards).
 
 ## `tools`
 
@@ -75,6 +86,18 @@ Env override per process: `HARNERY_TOOLS_AUTOINSTALL=1|0`.
 | Field     | Type       | Default | Description |
 | --------- | ---------- | ------- | ----------- |
 | `exclude` | string[]   | `[]`    | Shipped harnery skills this repo suppresses, e.g. `["harn-decide", "harn-council"]` when the host keeps its own richer versions. The injected AGENTS.md block points at `--help` instead of an excluded skill |
+
+## `instructions`
+
+| Field              | Type   | Default | Description |
+| ------------------ | ------ | ------- | ----------- |
+| `hostAddendumFile` | string | none    | Repo-relative path to a markdown file holding this project's own coordination policy. [`init`](/cli/init/) splices its contents into a second managed region in `AGENTS.md`, `init --check` reports drift against it, and `deinit` (or deleting this key) removes the region. Harnery never parses the content |
+
+The path must be repo-relative and resolve inside the project, and the file must exist and be non-empty; anything else fails the run before the first write. Delete the key and re-run `init` to take the region back out.
+
+```jsonc
+{ "instructions": { "hostAddendumFile": ".agents/host-instructions.md" } }
+```
 
 ## `presence`
 
@@ -115,7 +138,7 @@ Env overrides: `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE`.
 
 Env overrides: `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX`.
 
-Sync subset is fixed: `identities/`, `scratch/archived/`, `councils/`. Heartbeats and event logs are intentionally machine-local and won't sync.
+Sync subset is fixed: `identities/`, `journal/archived/`, `councils/`. Heartbeats and event logs are intentionally machine-local and won't sync.
 
 ## `files`
 
@@ -133,6 +156,7 @@ Every section above is read from `config.jsonc` (both the user-global and projec
 | Section | Config keys | Env override | Other |
 | --- | --- | --- | --- |
 | `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` (alias `HARNERY_AGENT_FRESHNESS`) | — |
+| `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
 | `files` | `deny_globs`, `allow_overrides` | — | read by the web layer, not the core reader |
@@ -149,6 +173,10 @@ Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env �
 
   "coord": {
     "freshness_seconds": 900
+  },
+
+  "artifacts": {
+    "default_retention_days": 3
   },
 
   "web": {

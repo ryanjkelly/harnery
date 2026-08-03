@@ -21,12 +21,9 @@ import { emit } from "../events/emit.ts";
 
 const FRESHNESS_SECS = 600;
 
-export type VerdictResult = {
-  allow: boolean;
-  exit_code: 0 | 2;
-  rule: string;
-  reason?: string;
-};
+export type { VerdictResult } from "./verdict.ts";
+
+import type { VerdictResult } from "./verdict.ts";
 
 interface PeerView {
   instance_id: string;
@@ -329,7 +326,7 @@ function pruneClaimFromPeer(coordRoot: string, instanceId: string, relPath: stri
         event_type: "claim.release",
         instance_id: instanceId,
         session_id: (body.session_id as string | undefined) ?? instanceId,
-        harness: platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code",
+        adapter: platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code",
         source: "agent-coord",
         data: { path: target, reason: "heal" },
         // eslint-disable-next-line @typescript-eslint/consistent-type-assertions

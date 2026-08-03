@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { stripJsonComments } from "../../core/config.ts";
+import { readHostAddendum } from "./host-addendum.ts";
 import {
   checkOwnedSkill,
   checkRegion,
@@ -39,6 +40,7 @@ import {
 } from "./splice.ts";
 import {
   type BlockSkills,
+  HOST_ADDENDUM_REGION,
   IMPORT_REGION,
   INSTRUCTIONS_REGION,
   renderInstructionsBlock,
@@ -81,8 +83,8 @@ export function readSkillsExclude(projectRoot: string): Set<string> {
  * codex get the block but no skill files, so both read false there. Kept in one
  * place so `applyInstructions` and `checkInstructions` render byte-identical blocks.
  */
-function blockSkills(projectRoot: string, harness: string): BlockSkills {
-  const claudeCode = harness === "claude-code";
+function blockSkills(projectRoot: string, adapter: string): BlockSkills {
+  const claudeCode = adapter === "claude-code";
   const exclude = readSkillsExclude(projectRoot);
   return {
     decide: claudeCode && !exclude.has("harn-decide"),
@@ -92,7 +94,7 @@ function blockSkills(projectRoot: string, harness: string): BlockSkills {
 
 interface ApplyOpts {
   binName: string;
-  harness: string;
+  adapter: string;
   dryRun: boolean;
 }
 
@@ -109,26 +111,60 @@ export interface ApplyResult {
 export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyResult {
   const actions: string[] = [];
   const warnings: string[] = [];
-  const claudeCode = opts.harness === "claude-code";
+  const claudeCode = opts.adapter === "claude-code";
   // dry-run narrates the future ("would create"); a real run narrates the past.
   const verbed = (base: string, past: string) => (opts.dryRun ? `would ${base}` : past);
+
+  // Resolve the host addendum before touching a single file, so a bad path
+  // aborts the whole run instead of leaving AGENTS.md half-updated.
+  const addendum = readHostAddendum(projectRoot);
 
   // ── AGENTS.md orientation block ─────────────────────────────────────────
   const agentsPath = join(projectRoot, AGENTS_FILE);
   const agentsExisted = existsSync(agentsPath);
   const agentsBefore = agentsExisted ? readFileSync(agentsPath, "utf8") : "";
-  const body = renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.harness));
+  const body = renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.adapter));
   const spliced = spliceRegion(agentsBefore, INSTRUCTIONS_REGION, body);
   if (!spliced.changed) {
     actions.push(`· ${AGENTS_FILE} instructions block already current`);
+  } else if (!agentsExisted) {
+    actions.push(`+ ${verbed("create", "created")} ${AGENTS_FILE} with the instructions block`);
+  } else if (!spliced.had) {
+    actions.push(`+ ${verbed("inject", "injected")} the instructions block into ${AGENTS_FILE}`);
   } else {
-    if (!opts.dryRun) writeFileSync(agentsPath, spliced.text);
-    if (!agentsExisted)
-      actions.push(`+ ${verbed("create", "created")} ${AGENTS_FILE} with the instructions block`);
-    else if (!spliced.had)
-      actions.push(`+ ${verbed("inject", "injected")} the instructions block into ${AGENTS_FILE}`);
-    else actions.push(`~ ${verbed("update", "updated")} the instructions block in ${AGENTS_FILE}`);
+    actions.push(`~ ${verbed("update", "updated")} the instructions block in ${AGENTS_FILE}`);
   }
+
+  // ── host addendum (a second region, content the host owns) ──────────────
+  // Harnery places and versions it; what it says is none of harnery's business.
+  // No configured source means any region left behind belongs to a config entry
+  // that has since been deleted, so init takes it back out.
+  let agentsAfter = spliced.text;
+  if (addendum.configured) {
+    const withAddendum = spliceRegion(agentsAfter, HOST_ADDENDUM_REGION, addendum.body);
+    agentsAfter = withAddendum.text;
+    if (!withAddendum.changed) {
+      actions.push(`· ${AGENTS_FILE} host addendum already current (${addendum.relPath})`);
+    } else if (!withAddendum.had) {
+      actions.push(
+        `+ ${verbed("splice", "spliced")} the host addendum into ${AGENTS_FILE} (${addendum.relPath})`,
+      );
+    } else {
+      actions.push(
+        `~ ${verbed("update", "updated")} the host addendum in ${AGENTS_FILE} (${addendum.relPath})`,
+      );
+    }
+  } else {
+    const dropped = removeRegion(agentsAfter, HOST_ADDENDUM_REGION);
+    if (dropped.removed) {
+      agentsAfter = dropped.text;
+      actions.push(
+        `+ ${verbed("remove", "removed")} the host addendum from ${AGENTS_FILE} (no longer configured)`,
+      );
+    }
+  }
+
+  if (!opts.dryRun && agentsAfter !== agentsBefore) writeFileSync(agentsPath, agentsAfter);
 
   // ── CLAUDE.md import shim (claude-code only) ────────────────────────────
   if (claudeCode) {
@@ -185,7 +221,7 @@ export function applyInstructions(projectRoot: string, opts: ApplyOpts): ApplyRe
 }
 
 interface RemoveOpts {
-  harness: string;
+  adapter: string;
   dryRun: boolean;
 }
 
@@ -198,22 +234,36 @@ interface RemoveOpts {
 export function removeInstructions(projectRoot: string, opts: RemoveOpts): ApplyResult {
   const actions: string[] = [];
   const warnings: string[] = [];
-  const claudeCode = opts.harness === "claude-code";
+  const claudeCode = opts.adapter === "claude-code";
 
-  // ── AGENTS.md block ─────────────────────────────────────────────────────
+  // ── AGENTS.md block + host addendum ─────────────────────────────────────
   const agentsPath = join(projectRoot, AGENTS_FILE);
   if (existsSync(agentsPath)) {
-    const { text, removed } = removeRegion(readFileSync(agentsPath, "utf8"), INSTRUCTIONS_REGION);
-    if (!removed) {
-      actions.push(`· no instructions block in ${AGENTS_FILE}`);
-    } else if (text === "") {
-      if (!opts.dryRun) rmSync(agentsPath);
-      actions.push(`+ ${opts.dryRun ? "would remove" : "removed"} ${AGENTS_FILE} (was block-only)`);
-    } else {
-      if (!opts.dryRun) writeFileSync(agentsPath, text);
+    // Both regions are harnery-placed, so deinit leaves neither behind. The
+    // addendum's *source file* is the host's and stays where it is.
+    const addendumGone = removeRegion(readFileSync(agentsPath, "utf8"), HOST_ADDENDUM_REGION);
+    if (addendumGone.removed) {
+      actions.push(
+        `+ ${opts.dryRun ? "would remove" : "removed"} the host addendum from ${AGENTS_FILE}`,
+      );
+    }
+    const { text, removed } = removeRegion(addendumGone.text, INSTRUCTIONS_REGION);
+    if (removed) {
       actions.push(
         `+ ${opts.dryRun ? "would remove" : "removed"} the instructions block from ${AGENTS_FILE}`,
       );
+    } else if (!addendumGone.removed) {
+      actions.push(`· no instructions block in ${AGENTS_FILE}`);
+    }
+    if (removed || addendumGone.removed) {
+      if (text === "") {
+        if (!opts.dryRun) rmSync(agentsPath);
+        actions.push(
+          `+ ${opts.dryRun ? "would remove" : "removed"} ${AGENTS_FILE} (nothing left but ours)`,
+        );
+      } else if (!opts.dryRun) {
+        writeFileSync(agentsPath, text);
+      }
     }
   }
 
@@ -277,7 +327,7 @@ export interface CheckResult {
  */
 export function checkInstructions(
   projectRoot: string,
-  opts: { binName: string; harness: string },
+  opts: { binName: string; adapter: string },
 ): CheckResult {
   const issues: string[] = [];
   let errored = false;
@@ -295,11 +345,23 @@ export function checkInstructions(
       checkRegion(
         content,
         INSTRUCTIONS_REGION,
-        renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.harness)),
+        renderInstructionsBlock(opts.binName, blockSkills(projectRoot, opts.adapter)),
       ),
     );
 
-    if (opts.harness === "claude-code") {
+    // A configured addendum is checked against its source; an unconfigured one
+    // still sitting in the file is drift too, since init would take it out.
+    const addendum = readHostAddendum(projectRoot);
+    if (addendum.configured) {
+      note(
+        `${AGENTS_FILE} host addendum (${addendum.relPath})`,
+        checkRegion(content, HOST_ADDENDUM_REGION, addendum.body),
+      );
+    } else if (checkRegion(content, HOST_ADDENDUM_REGION, "") !== "missing") {
+      issues.push(`${AGENTS_FILE} host addendum: present but no longer configured (re-run init)`);
+    }
+
+    if (opts.adapter === "claude-code") {
       const exclude = readSkillsExclude(projectRoot);
       for (const skill of SKILLS) {
         if (exclude.has(skill.id)) continue;

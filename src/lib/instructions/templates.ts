@@ -11,13 +11,20 @@
  * Node — no `files`-field copy or package-path guesswork.
  */
 
-import { SCRATCH_CATEGORIES } from "../../core/scratch/index.ts";
+import { JOURNAL_CATEGORIES } from "../../core/journal/index.ts";
 import { buildOwnedSkill } from "./splice.ts";
 
 /** Managed-region name for the AGENTS.md orientation block. */
 export const INSTRUCTIONS_REGION = "instructions";
 /** Managed-region name for the CLAUDE.md `@AGENTS.md` import shim. */
 export const IMPORT_REGION = "import";
+/**
+ * Managed-region name for the consumer's own coordination policy, spliced from
+ * the file named by `instructions.hostAddendumFile`. Harnery places and
+ * versions the region; the content is the host's and is never rendered here.
+ * See `host-addendum.ts`.
+ */
+export const HOST_ADDENDUM_REGION = "host-addendum";
 
 /** Which shipped skills exist in the project the block is rendered for. */
 export interface BlockSkills {
@@ -35,7 +42,7 @@ export interface BlockSkills {
  * `harn-council`) even for a renamed bin; only command strings track `binName`.
  *
  * The block only points at a skill that actually exists here: a host that
- * excludes one via `skills.exclude`, or a harness with no skill primitive
+ * excludes one via `skills.exclude`, or a adapter with no skill primitive
  * (cursor/codex get the block but no skill files), gets a `--help` pointer
  * instead of a dangling reference to a skill it doesn't have.
  */
@@ -51,26 +58,27 @@ export function renderInstructionsBlock(
   const deeper =
     named.length > 0
       ? `Procedures for the deeper flows live in the ${named.join(" and ")} skill${named.length > 1 ? "s" : ""}.`
-      : `See \`${b} decision --help\` and \`${b} council --help\` for the deeper procedures.`;
+      : `See \`${b} decision --help\` and \`${b} agents council --help\` for the deeper procedures.`;
   const decidePointer = skills.decide
     ? "The `harn-decide` skill has the file / claim / resolve-with-evidence procedure."
     : `See \`${b} decision --help\` for the file / claim / resolve-with-evidence procedure.`;
   const councilPointer = skills.council
     ? "The `harn-council` skill has the steward and member flow."
-    : `See \`${b} council --help\` for the steward and member flow.`;
-  // Render the scratch categories from the canonical enum so this prose can
-  // never drift from what `scratch add` actually accepts (the "note, plan…" list
+    : `See \`${b} agents council --help\` for the steward and member flow.`;
+  // Render the journal categories from the canonical enum so this prose can
+  // never drift from what `journal add` actually accepts (the "note, plan…" list
   // silently lagged the tool by two categories before this).
-  const scratchCats =
-    SCRATCH_CATEGORIES.length > 1
-      ? `${SCRATCH_CATEGORIES.slice(0, -1).join(", ")}, or ${SCRATCH_CATEGORIES.at(-1)}`
-      : SCRATCH_CATEGORIES[0];
+  const journalCats =
+    JOURNAL_CATEGORIES.length > 1
+      ? `${JOURNAL_CATEGORIES.slice(0, -1).join(", ")}, or ${JOURNAL_CATEGORIES.at(-1)}`
+      : JOURNAL_CATEGORIES[0];
 
   return `## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
 You share this checkout with other agents; the surfaces below keep you oriented
-and out of each other's way. Run \`${b} <command> --help\` for any command's full
+and out of each other's way, and let you dispatch a team of your own when a job
+is bigger than one session. Run \`${b} <command> --help\` for any command's full
 surface. ${deeper}
 
 **Identity + peers.** You are one of several agents in this repo.
@@ -78,6 +86,20 @@ surface. ${deeper}
 active peers and the files they've claimed; \`${b} agents set-task "<focus>"\`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
+
+**Dispatching a team.** Everything else here coordinates the agents already
+present. These three start new ones, and they differ by how long the objective
+outlives a single execution. \`${b} run <script>\` is one bounded pass:
+plain JS stages fan out to headless subagents that are born
+coordination-registered, with deterministic code deciding the routing between
+stages. \`${b} work create <title> <workflow>\` wraps an objective that has to
+survive many such passes, holding it across retries, failures, and review.
+\`${b} governor create\` drives a whole graph of work toward a goal, choosing
+what runs next and how much it may settle without asking a human. Reach for the
+first when one pass will do, the second when the objective must outlive the
+attempt, and the third when a human would otherwise have to babysit the loop. A
+run that needs authorization parks durably instead of failing, so check
+\`${b} approval list\` when one appears to be waiting rather than stuck.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run \`${b} agents identity assume <name>\` before declaring your task.
@@ -90,10 +112,17 @@ coordination ledger. Lead a shell command with a \`# intent: <why>\` comment (or
 the tool's description) so the recorded event carries a reason instead of
 \`(no intent)\`.
 
-**Scratch journal.** \`${b} scratch add <category> "<text>"\` (category = ${scratchCats})
+**Journal.** \`${b} journal add <category> "<text>"\` (category = ${journalCats})
 leaves breadcrumbs that survive context compaction;
-\`${b} scratch read\` reads yours, \`${b} scratch read --name <peer>\` reads a peer's.
+\`${b} journal read\` reads yours, \`${b} journal read --name <peer>\` reads a peer's.
 Use it for anything future-you or a peer will need to pick up your thread.
+
+**Working artifacts.** For screenshots, exports, audit dumps, rollback inputs,
+and other untracked files that must survive a session, create a managed workspace
+with \`${b} artifacts create <slug> --purpose "<why>"\`. Write files under the
+returned path, then run \`${b} artifacts release <id>\` when active work is done.
+Do not create a repo-root temp directory; \`${b} artifacts clean\` previews
+expired cleanup and requires \`--yes\` to delete anything.
 
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. \`${b} decision file "<question>"\`
@@ -106,10 +135,10 @@ surfaces prior decisions, so check for precedent before re-deciding. ${decidePoi
 
 // ── Skills ──────────────────────────────────────────────────────────────────
 
-/** A shipped skill: its harness-relative file path + a bin-name-aware renderer. */
+/** A shipped skill: its adapter-relative file path + a bin-name-aware renderer. */
 export interface SkillTemplate {
   id: string;
-  /** path under the harness skill dir, e.g. `harn-decide/SKILL.md` */
+  /** path under the adapter skill dir, e.g. `harn-decide/SKILL.md` */
   relPath: string;
   render: (binName: string) => string;
 }

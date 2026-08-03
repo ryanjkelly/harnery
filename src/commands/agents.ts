@@ -27,13 +27,13 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
-import type { EmitContext } from "../commander.ts";
+import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
   emitCanonical,
   type Heartbeat,
   monorepoRoot,
-  normalizeHarness,
+  normalizeAdapter,
   readHeartbeat,
   resolveOwner,
   resolveOwnerBySessionEnv,
@@ -41,6 +41,7 @@ import {
 } from "../core/agents/index.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
+import { registerContextCommand } from "./context.ts";
 
 /** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
  * under V8's ~512MB max string length so a `readFileSync` of the whole file can
@@ -48,7 +49,7 @@ import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.t
 const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
-import { appendEntry, resolveOwnerByName } from "../core/scratch/index.ts";
+import { appendEntry, resolveOwnerByName } from "../core/journal/index.ts";
 import {
   buildCouncilId,
   buildInviteMarkdown,
@@ -145,11 +146,19 @@ interface Row {
 
 let emit: EmitContext;
 
-export function registerAgentsCommand(program: Command, emitParam: EmitContext): void {
+export function registerAgentsCommand(
+  program: Command,
+  emitParam: EmitContext,
+  programContext?: HarneryProgramContext,
+): void {
   emit = emitParam;
   const cmd = program
     .command("agents")
-    .description("Query the multi-agent coordination layer (whoami / list / status / health)");
+    .description(
+      "The live agent sessions in this project: who is running now, what they hold, and their coordination state (whoami / list / status / health).",
+    );
+
+  registerContextCommand(cmd, emitParam, programContext);
 
   cmd
     .command("whoami")
@@ -187,7 +196,7 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
     .command("suggest-name [description...]")
     .description(
       'Reprint a session name ("Agent <you> - <description>") for the operator to set as their ' +
-        "harness tab title. With no arg, derives it from your current task. The primary naming path " +
+        "adapter tab title. With no arg, derives it from your current task. The primary naming path " +
         "is set-task (it suggests a name on the first focus declaration); reach for this to reprint " +
         "or re-suggest after a topic pivot. Read-only.",
     )
@@ -273,7 +282,7 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
   cmd
     .command("ping <name> <message...>")
     .description(
-      "Append a 'handoff' entry to a peer agent's scratchpad. Body prefixed with " +
+      "Append a 'handoff' entry to a peer agent's journal. Body prefixed with " +
         "`from agent-<me>:`. Use to leave actionable coordination notes for peers " +
         "currently holding files you need.",
     )
@@ -344,9 +353,9 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
     });
 
   cmd
-    .command("harness-probe <id>")
+    .command("adapter-probe <id>")
     .description(
-      "Harness wiring probe: ppid chain, comm names, pid-map anchor, sample payload paths. " +
+      "Adapter wiring probe: ppid chain, comm names, pid-map anchor, sample payload paths. " +
         "With --replay-samples, also replays every checked-in sample payload against the live " +
         "adapter in an isolated sandbox to catch adapter / payload-shape drift. " +
         "Complements heal-events (drift telemetry). Id: claude_code | cursor.",
@@ -354,7 +363,7 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
     .option("--json", "JSON envelope output")
     .option(
       "--replay-samples",
-      "Replay docs/api/<harness>-hooks/samples/*.json against the live adapter in an isolated sandbox. " +
+      "Replay docs/api/<adapter>-hooks/samples/*.json against the live adapter in an isolated sandbox. " +
         "Exits non-zero if any sample crashes the adapter.",
     )
     .option(
@@ -362,7 +371,7 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
       "Replay only the named sample file (basename match). Implies --replay-samples.",
     )
     .action((id: string, opts: { json?: boolean; replaySamples?: boolean; sample?: string }) => {
-      runHarnessProbe(id, opts);
+      runAdapterProbe(id, opts);
     });
 
   cmd
@@ -395,8 +404,6 @@ export function registerAgentsCommand(program: Command, emitParam: EmitContext):
         runHeal(opts);
       },
     );
-
-  registerCouncilCommands(cmd);
   registerIdentityCommands(cmd);
 }
 
@@ -551,7 +558,7 @@ function runIdentityAssume(target: string, opts: { json?: boolean; sessionId?: s
   }
 }
 
-function registerCouncilCommands(parent: Command): void {
+export function registerCouncilCommands(parent: Command): void {
   const council = parent
     .command("council")
     .description(
@@ -685,7 +692,7 @@ function registerCouncilCommands(parent: Command): void {
         "(or omit [steward]) to drop the field and revert to the default " +
         "(the convener). Refuses to mutate archived councils. By default, " +
         "rejects names not in the known-agents list (active heartbeats + " +
-        "scratchpads archived in the last 30 days); pass --allow-unknown " +
+        "journals archived in the last 30 days); pass --allow-unknown " +
         "to bypass when bootstrapping.",
     )
     .option("--clear", "Clear the steward field, reverting to created_by default")
@@ -711,7 +718,7 @@ function registerCouncilCommands(parent: Command): void {
         "Pass either --message <inline> or --file <path>. Writes to " +
         ".harnery/councils/<id>/round-<N>/<agent-Name>.md. Pass --as <member> " +
         "to contribute under a council seat name that differs from the running " +
-        "agent's heartbeat name (useful for cross-harness councils where each " +
+        "agent's heartbeat name (useful for cross-adapter councils where each " +
         "reviewer has a different auto-generated session name).",
     )
     .option("--message <text>", "Inline contribution text (caps at 4KB)")
@@ -1339,7 +1346,7 @@ function ensureCursorSession(root: string): void {
     is_background_agent: false,
   });
 
-  spawnSync("bash", [agentHook, "session-start", "--harness", "cursor"], {
+  spawnSync("bash", [agentHook, "session-start", "--adapter", "cursor"], {
     input: payload,
     cwd: root,
     encoding: "utf8",
@@ -1443,12 +1450,12 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     type: "state.task_set",
     owner: myOwner,
     session: hb?.session_id ?? myOwner,
-    harness: normalizeHarness(hb?.platform),
+    adapter: normalizeAdapter(hb?.platform),
     data: { task, cleared: !task || task.length === 0 },
   });
 
   // On the first focus declaration of a session, surface a suggested session
-  // name for the operator to set as their harness tab title. Read the result
+  // name for the operator to set as their adapter tab title. Read the result
   // (`suggested_session_name`) and reproduce it in a fenced code block so the
   // UI's Copy button hands over the exact string. null on every later call.
   const built =
@@ -1593,7 +1600,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
     type: "state.status_checked",
     owner: myOwner,
     session: hb.session_id ?? myOwner,
-    harness: normalizeHarness(hb.platform),
+    adapter: normalizeAdapter(hb.platform),
     data: {
       format: opts.json ? "json" : "box",
       agent_count: 0, // computed below, not yet available here; Phase 5 verdict reads owner-scope only
@@ -2039,7 +2046,7 @@ interface CanonicalEvent {
   event_type: string;
   ts: string;
   instance_id?: string;
-  harness?: string;
+  adapter?: string;
   data?: Record<string, unknown>;
 }
 
@@ -2073,12 +2080,12 @@ function readCanonicalEventsInWindow(root: string, cutoffMs: number): CanonicalE
   return out;
 }
 
-/** harness ("claude-code") → legacy platform label ("claude_code") so the
+/** adapter ("claude-code") → legacy platform label ("claude_code") so the
  * existing formatPlatformLabel rendering keeps working unchanged. */
-function harnessToPlatform(harness: string | undefined): string {
-  if (harness === "claude-code") return "claude_code";
-  if (harness === "cursor") return "cursor";
-  if (harness === "codex") return "codex";
+function adapterToPlatform(adapter: string | undefined): string {
+  if (adapter === "claude-code") return "claude_code";
+  if (adapter === "cursor") return "cursor";
+  if (adapter === "codex") return "codex";
   return "claude_code";
 }
 
@@ -2100,7 +2107,7 @@ function canonicalToHealEvent(ev: CanonicalEvent, nameById: Map<string, string>)
     agent,
     kind,
     reason,
-    platform: harnessToPlatform(ev.harness),
+    platform: adapterToPlatform(ev.adapter),
   };
   if (kind === "pidmap" && data.pid !== undefined && data.pid !== null) {
     out.pid = String(data.pid);
@@ -2982,17 +2989,17 @@ interface SampleReplayResult {
   message?: string;
 }
 
-function runHarnessProbe(
+function runAdapterProbe(
   id: string,
   opts: { json?: boolean; replaySamples?: boolean; sample?: string },
 ): void {
   if (opts.json) emit.config({ format: "json" });
 
-  const harness = id.trim();
-  if (harness !== "claude_code" && harness !== "cursor") {
+  const adapter = id.trim();
+  if (adapter !== "claude_code" && adapter !== "cursor") {
     emit.error({
-      code: "bad_harness",
-      message: "harness id must be claude_code or cursor",
+      code: "bad_adapter",
+      message: "adapter id must be claude_code or cursor",
     });
     process.exit(1);
   }
@@ -3007,16 +3014,16 @@ function runHarnessProbe(
   }
 
   const subagentDir =
-    harness === "cursor" ? ".harnery/.cursor-subagent-map" : `.harnery/.subagent-map/${harness}`;
+    adapter === "cursor" ? ".harnery/.cursor-subagent-map" : `.harnery/.subagent-map/${adapter}`;
   const sampleDir =
-    harness === "cursor" ? "docs/api/cursor-hooks/samples" : "docs/api/claude-code-hooks/samples";
+    adapter === "cursor" ? "docs/api/cursor-hooks/samples" : "docs/api/claude-code-hooks/samples";
   const dispatchEntry =
-    harness === "cursor"
-      ? "harnery/bin/agent-hook session-start --harness cursor"
-      : "harnery/bin/agent-hook session-start --harness claude-code";
+    adapter === "cursor"
+      ? "harnery/bin/agent-hook session-start --adapter cursor"
+      : "harnery/bin/agent-hook session-start --adapter claude-code";
 
   // TS-native probe. The owner + anchor-pid resolution it reports lives in
-  // `findHarnessAnchorPid` (core/hooks/cli.ts, the /proc walk mirrored below)
+  // `findAdapterAnchorPid` (core/hooks/cli.ts, the /proc walk mirrored below)
   // and `resolveOwner` here, so the probe reports exactly what the live hot
   // path resolves.
   const anchorTokens = new Set(["claude", "claude-code", "cursor", "codex"]);
@@ -3054,7 +3061,7 @@ function runHarnessProbe(
   }
 
   const data: Record<string, unknown> = {
-    harness,
+    adapter,
     anchor_pid: anchorPid,
     hook_pid: String(process.pid),
     resolved_owner: resolveOwner() ?? "",
@@ -3062,14 +3069,14 @@ function runHarnessProbe(
     subagent_map_dir: subagentDir,
     sample_ref: sampleDir,
     dispatch_entry: dispatchEntry,
-    note: "heal-events counts drift; harness-probe answers wiring",
+    note: "heal-events counts drift; adapter-probe answers wiring",
   };
 
   const wantReplay = opts.replaySamples || !!opts.sample;
   let samples: SampleReplayResult[] = [];
   let replayExitCode = 0;
   if (wantReplay) {
-    const result = replayHarnessSamples(harness, root, sampleDir, opts.sample);
+    const result = replayAdapterSamples(adapter, root, sampleDir, opts.sample);
     samples = result.samples;
     replayExitCode = result.exitCode;
     data.samples = samples;
@@ -3079,7 +3086,7 @@ function runHarnessProbe(
   emit.data(data);
   if (process.stdout.isTTY && !opts.json) {
     const lines = [
-      `Harness probe: ${harness}`,
+      `Adapter probe: ${adapter}`,
       `  anchor_pid:    ${String(data.anchor_pid) || "(empty, expected in sandbox/non-IDE)"}`,
       `  hook_pid:      ${String(data.hook_pid)}`,
       `  resolved_owner: ${String(data.resolved_owner) || "(none)"}`,
@@ -3125,11 +3132,11 @@ function runHarnessProbe(
 }
 
 /**
- * Replay every JSON fixture in <root>/<sampleDir> against the live harness
+ * Replay every JSON fixture in <root>/<sampleDir> against the live adapter
  * dispatcher in an isolated sandbox.
  *
  * Sandbox isolation strategy:
- *   - mkdtempSync(tmpdir(), "harn-harness-probe-") creates a non-git tmp dir.
+ *   - mkdtempSync(tmpdir(), "harn-adapter-probe-") creates a non-git tmp dir.
  *   - The dispatcher's coord-root resolution falls back to
  *     `HARNERY_COORD_ROOT_OVERRIDE` when git rev-parse fails. We set it to the sandbox.
  *   - We rewrite the payload's `cwd` field (Cursor cds to it) to the sandbox,
@@ -3141,8 +3148,8 @@ function runHarnessProbe(
  * payload with `.hook_event_name`. Event name resolution falls back to the
  * filename (without `.json`) when neither field exists.
  */
-function replayHarnessSamples(
-  harness: string,
+function replayAdapterSamples(
+  adapter: string,
   root: string,
   relativeSampleDir: string,
   filter?: string,
@@ -3174,7 +3181,7 @@ function replayHarnessSamples(
   }
 
   // agent-hook is the single entry point. Replay sample payloads against it,
-  // mapping the harness-native hook_event_name to the agent-hook CLI subcommand.
+  // mapping the adapter-native hook_event_name to the agent-hook CLI subcommand.
   const agentHook = resolve(root, "harnery/bin/agent-hook");
   if (!existsSync(agentHook)) {
     return {
@@ -3212,9 +3219,9 @@ function replayHarnessSamples(
     stopFailure: "stop-failure",
     StopFailure: "stop-failure",
   };
-  const harnessFlag = harness === "claude_code" ? "claude-code" : harness;
+  const adapterFlag = adapter === "claude_code" ? "claude-code" : adapter;
 
-  const sandbox = mkdtempSync(join(tmpdir(), "harn-harness-probe-"));
+  const sandbox = mkdtempSync(join(tmpdir(), "harn-adapter-probe-"));
   const results: SampleReplayResult[] = [];
 
   try {
@@ -3255,7 +3262,7 @@ function replayHarnessSamples(
       }
 
       const subcommand = EVENT_SUBCOMMAND[event] ?? event;
-      const dispatch = spawnSync("bash", [agentHook, subcommand, "--harness", harnessFlag], {
+      const dispatch = spawnSync("bash", [agentHook, subcommand, "--adapter", adapterFlag], {
         cwd: sandbox,
         encoding: "utf8",
         input: JSON.stringify(payloadObj),
@@ -3263,8 +3270,8 @@ function replayHarnessSamples(
         env: {
           ...process.env,
           HARNERY_COORD_ROOT_OVERRIDE: sandbox,
-          HARNERY_AGENT_COORD_HARNESS: harness,
-          HARNERY_AGENT_COORD_PLATFORM: harness,
+          HARNERY_AGENT_COORD_ADAPTER: adapter,
+          HARNERY_AGENT_COORD_PLATFORM: adapter,
           HARNERY_AGENT_COORD_OFF: "0",
         },
       });
@@ -3405,8 +3412,8 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     peer_instance_id: peerOwner,
     from: fromName,
     body,
-    scratch_path: doc.path,
-    scratch_bytes: doc.bytes,
+    journal_path: doc.path,
+    journal_bytes: doc.bytes,
   };
 
   if (opts.json) {
@@ -3663,7 +3670,7 @@ function emitCouncilStateEvent(
     type,
     owner: myOwner,
     session: hb?.session_id ?? myOwner,
-    harness: normalizeHarness(hb?.platform),
+    adapter: normalizeAdapter(hb?.platform),
     data: { council_id: manifest.council_id, ...extraData },
   });
 }
@@ -3787,7 +3794,7 @@ function runCouncilCreate(
       type: "council.open",
       owner: myOwner,
       session: myHbForEmit?.session_id ?? myOwner,
-      harness: normalizeHarness(myHbForEmit?.platform),
+      adapter: normalizeAdapter(myHbForEmit?.platform),
       data: {
         council_id: councilId,
         topic: trimmedObjective,
@@ -3797,7 +3804,7 @@ function runCouncilCreate(
     });
   }
 
-  // Best-effort: ping each currently-active member's scratchpad with a
+  // Best-effort: ping each currently-active member's journal with a
   // handoff entry pointing them at the council. Members not currently active
   // get nothing here; the Phase 2 SessionStart adapter will surface the
   // invite on their next session.
@@ -4269,7 +4276,7 @@ function runCouncilSetSteward(
         const known_names = known.map((a) => a.name).join(", ") || "(none)";
         emit.error({
           code: "steward_not_known",
-          message: `'${steward}' is not a known agent (active heartbeats + scratchpads archived in the last 30 days). Pass --allow-unknown to bootstrap. Known: ${known_names}`,
+          message: `'${steward}' is not a known agent (active heartbeats + journals archived in the last 30 days). Pass --allow-unknown to bootstrap. Known: ${known_names}`,
         });
         process.exit(1);
       }
@@ -4304,7 +4311,7 @@ function runCouncilSetSteward(
   }
 }
 
-/** Build a markdown transcript of every round's contributions on disk. */
+/** Build a markdown journal of every round's contributions on disk. */
 function buildTranscript(manifest: CouncilManifest): {
   markdown: string;
   rounds: Array<{ round: number; contributions: number }>;
@@ -4382,7 +4389,7 @@ function runCouncilContribute(
 
   // Resolve the contributor name. Two paths:
   // 1. --as <member> override: caller explicitly names the council seat. Used
-  //    for cross-harness councils where each reviewer agent has a different
+  //    for cross-adapter councils where each reviewer agent has a different
   //    auto-generated session name from a different name pool; they can
   //    contribute under a fixed seat name without renaming the session.
   // 2. Heartbeat-derived (default): resolve owner via ppid walk + read the
@@ -4576,7 +4583,7 @@ function runCouncilPrompt(
   }
 
   // Resolve caller identity (steward authority check). Same --as override
-  // shape as `contribute` for cross-harness scripting.
+  // shape as `contribute` for cross-adapter scripting.
   let callerName: string;
   let actualName: string | null = null;
   if (opts.as) {
@@ -4798,7 +4805,7 @@ function runCouncilAdvance(id: string, opts: { force?: boolean; json?: boolean }
  * Shared advance helper used by both `advance` and auto-advance from
  * `contribute`. Increments current_round, flips round_status back to open,
  * creates the new round directory, writes the manifest, and pings each
- * member's scratchpad with the advance notification.
+ * member's journal with the advance notification.
  */
 function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManifest {
   const nextRound = manifest.current_round + 1;
@@ -4812,7 +4819,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
   if (rd && !existsSync(rd)) mkdirSync(rd, { recursive: true });
   writeManifest(next);
 
-  // Ping each member's scratchpad with the advance notification.
+  // Ping each member's journal with the advance notification.
   // (Convener already knows; we skip pinging them if they convened it from
   // their own session.)
   const myOwner = resolveOwner();
@@ -4829,7 +4836,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
         `from council advance (${manifest.council_id}): round ${nextRound} is now open${force ? " (advanced with --force; some round-N members dropped)" : ""}. Run 'harn agents council show ${manifest.council_id}' to read prior round + 'harn agents council contribute ${manifest.council_id}' to weigh in.`,
       );
     } catch {
-      /* best-effort; member scratchpad may not exist yet */
+      /* best-effort; member journal may not exist yet */
     }
   }
   return next;

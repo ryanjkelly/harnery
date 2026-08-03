@@ -6,7 +6,7 @@
  *
  *   - `"date"`:      date-only labels (e.g., column headers).
  *   - `"datetime"`:  full date + time (the most common surface: agent
- *                    cards, council manifests, scratchpad entries).
+ *                    cards, council manifests, journal entries).
  *   - `"timestamp"`: dense time-of-day for log rows / streaming feeds.
  *
  * Each kind has its own preset catalog and its own localStorage key so the
@@ -183,9 +183,19 @@ export const FORMAT_PRESETS: Record<FormatKind, ReadonlyArray<FormatPreset>> = {
     },
   ],
   timestamp: [
+    // 12-hour by default. Log rows are the densest timestamps in the UI, which
+    // makes 24-hour tempting, but a reader who has to convert in their head
+    // misreads them, so the default matches how the rest of the dashboard and
+    // every operator-facing surface states a time.
     {
       id: "default",
       label: "Default",
+      template: "h:mm:ss.SSS A",
+      example: "8:56:23.123 AM",
+    },
+    {
+      id: "24-millis",
+      label: "24-hour with millis",
       template: "HH:mm:ss.SSS",
       example: "08:56:23.123",
     },
@@ -213,12 +223,9 @@ export const FORMAT_PRESETS: Record<FormatKind, ReadonlyArray<FormatPreset>> = {
       template: "h:mm:ss A",
       example: "8:56:23 AM",
     },
-    {
-      id: "12-millis",
-      label: "12-hour with millis",
-      template: "h:mm:ss.SSS A",
-      example: "8:56:23.123 AM",
-    },
+    // No plain "12-hour with millis" entry: it is what `default` now renders,
+    // and a stored id that no longer exists falls back to the default template,
+    // so anyone who had picked it keeps the same output.
     {
       id: "12-millis-zone",
       label: "12-hour with millis + zone",

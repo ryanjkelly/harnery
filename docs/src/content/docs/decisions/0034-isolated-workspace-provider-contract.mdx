@@ -1,14 +1,14 @@
 ---
 title: "0034: Isolated workspace providers bind to durable workflow attempts"
-description: "ADR: add an optional workspace-provider contract without replacing durable work, proof, policy, approval, or supervisor authority."
+description: "ADR: add an optional workspace-provider contract without replacing durable work, proof, policy, approval, or governor authority."
 ---
 
-**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/workflow`, `core/work`, `core/policy`, `core/supervisor`)
+**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/workflow`, `core/work`, `core/policy`, `core/governor`)
 
 ## Context
 
 Harnery already has durable work items, bounded attempts, workflow proof,
-policy checks, approvals, and supervisor projections. Those records decide
+policy checks, approvals, and governor projections. Those records decide
 what was requested, which attempt ran, whether verification passed, and what
 requires review.
 
@@ -37,12 +37,12 @@ Record ownership is physically separated:
 ```text
 .harnery/
   work/...                                  durable work authority
-  supervisors/...                           supervisor projections
+  governors/...                           governor projections
   approvals/...                             approval authority
   workflows/<run-id>/
     workspace-request.json                  immutable workflow request
     run.json                                immutable run manifest
-    journal.jsonl                           append-only workflow journal
+    transcript.jsonl                           append-only workflow transcript
     proof.json                              immutable terminal proof
     integration/
       review.json                           immutable standalone review
@@ -67,7 +67,7 @@ Record ownership is physically separated:
 ```
 
 Providers do not write work, attempt, proof, review, approval, integration
-receipt, supervisor, or budget records. Workflow core does not infer a
+receipt, governor, or budget records. Workflow core does not infer a
 provider or writable root. A new non-shared isolation declaration without a
 provider records an explicit compatibility selection: the requested
 isolation, effective shared execution, and `provider_not_configured` reason.
@@ -75,7 +75,7 @@ It creates no provider records. Allocation requires an explicitly supplied
 provider and writable root. A configured but unsupported provider can fall
 back to the shared checkout only when the frozen host policy explicitly
 allows shared execution. Workflow core writes
-the immutable request and allocation-start journal record before invoking a
+the immutable request and allocation-start transcript record before invoking a
 supported provider. The provider creates its ownership claim before changing
 a branch, ref, directory, or worktree. Workflow core compares the returned
 binding with the provider's immutable binding record and reattaches before
@@ -87,7 +87,7 @@ realpaths, and filesystem identities rather than lexical policy strings.
 Workspace and active-root device and inode identities are frozen in the
 binding alongside their paths. The manifest containing that binding is durable before
 isolated module import or child spawn. Import, metadata, and post-import
-reattachment failures still produce a durable manifest, terminal journal,
+reattachment failures still produce a durable manifest, terminal transcript,
 attestation, and proof.
 
 Resume reads the frozen manifest before considering current provider
@@ -170,7 +170,7 @@ Contradictory supplement evidence fails closed.
 
 Provider cleanup and cancellation use a shared workflow-liveness reader. A
 terminal proof counts only after the normal proof reader validates it against
-the frozen manifest. When proof has not been written yet, journal recovery
+the frozen manifest. When proof has not been written yet, transcript recovery
 requires a boolean `run.end` outcome and treats a durable
 `workspace.reattach.failed` record as terminal. Lifecycle projection also
 fails closed during the gap between `run.end` and proof persistence. It does
@@ -204,7 +204,7 @@ rewriting it.
 - Missing Git affects only the local Git provider.
 - Provider recovery, cancellation, cleanup, integration, and replay do not
   append `attempt.started` or reset cumulative budgets.
-- The supervisor remains a projection over work and proof; it gains no
+- The governor remains a projection over work and proof; it gains no
   workspace queue, scheduler, lease, or cleanup loop.
 - Named provider APIs extend only the existing `harnery/core/workflow`
   subpath.
@@ -224,7 +224,7 @@ rewriting it.
 
 ## Consequences
 
-Isolation can be added without changing supervisor scheduling or shared
+Isolation can be added without changing governor scheduling or shared
 checkout behavior. Recovery and cleanup are conservative and may preserve a
 workspace for operator action. Integration requires more durable records, but
 those records make authorization loss, replay drift, and crash-after-apply

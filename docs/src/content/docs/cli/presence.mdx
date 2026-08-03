@@ -81,7 +81,7 @@ harn presence clear
 ## Notes
 
 - The file path (`~/.claude/presence`) is a Claude Code convention, but the
-  read/set/clear logic is generic, so any agent harness can adopt the same file.
+  read/set/clear logic is generic, so any agent adapter can adopt the same file.
 - Writes are atomic (temp file + rename), so a concurrent read never sees a
   half-written record.
 - A malformed or unreadable file falls back to the default `office` rather than

@@ -3,11 +3,11 @@ title: "0033: Bounded work retries receive prior terminal evidence"
 description: "ADR: bind a fresh durable-work attempt to a small immutable synopsis of the attempt it follows without adding hidden retry authority."
 ---
 
-**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/work`, `core/workflow`, `core/supervisor`)
+**Status:** accepted (2026-07-23) · **Scope:** product tier (`core/work`, `core/workflow`, `core/governor`)
 
 ## Context
 
-Durable work can already survive failed workflow runs and supervisors can
+Durable work can already survive failed workflow runs and governors can
 optionally retry blocked items under fixed work and goal-wide attempt ceilings.
 The retry is safe but informationally identical to the first attempt: reusable
 workflow code receives the exact work assignment, but it cannot tell that a
@@ -55,15 +55,15 @@ immediately preceding failure.
 
 Retry context is data, not an automatic prompt prefix. The deterministic
 workflow script decides whether the next specialist needs it and how to render
-it. Existing explicit `--retry`, supervisor `retry_blocked`, work
-`max_attempts`, and supervisor `max_total_attempts` rules remain unchanged.
+it. Existing explicit `--retry`, governor `retry_blocked`, work
+`max_attempts`, and governor `max_total_attempts` rules remain unchanged.
 
 ## Alternatives considered
 
 - **Automatically prepend the prior error to every agent prompt.** Rejected
   because it would silently change prompt identity, duplicate context across
   stages, and elevate terminal text without script control.
-- **Let a reviewer model decide whether the supervisor may retry.** Rejected
+- **Let a reviewer model decide whether the governor may retry.** Rejected
   because immutable host policy and attempt budgets already own that decision.
   Another model call would add nondeterminism, cost, recovery state, and an
   override path before evidence shows it is needed.
@@ -74,8 +74,8 @@ it. Existing explicit `--retry`, supervisor `retry_blocked`, work
   this layer. Explicit foreground work has no polling timer, and background
   service failures already have separate backoff. A workflow that waits on
   external state must model that condition directly.
-- **Make only supervisor retries context-aware.** Rejected because manual and
-  supervisor dispatch share the same durable-work transition and evidence
+- **Make only governor retries context-aware.** Rejected because manual and
+  governor dispatch share the same durable-work transition and evidence
   contract. Different retry semantics would make proof depend on the caller.
 - **Treat approval resume as a retry.** Rejected because the parked workflow has
   not reached terminal evidence and must continue under its original frozen

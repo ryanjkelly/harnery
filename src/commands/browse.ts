@@ -5,16 +5,25 @@ import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
+  type AssertResult,
   Browser,
+  type ContentAnnotationBox,
+  type ContentChecksResult,
+  type CritiqueResult,
+  type CritiqueTile,
   captureDevOverlay,
+  DEFAULT_CRITIQUE_RUBRIC,
   type DevOverlayResult,
   type Diagnostics,
   type LayoutAxis,
   type LayoutLintResult,
   type OverflowResult,
+  parseAssertSpec,
   type RuntsResult,
+  runCritique,
   type TargetSizeProfile,
   type TargetSizeResult,
+  tilesFromFullPage,
   type VisibilityResult,
   type WidthResult,
   wslHeadedLaunchArgs,
@@ -121,6 +130,35 @@ interface BrowseOpts {
   checkOverlapThreshold?: string;
   checkOverlapFail?: boolean;
   checkOverlapAnnotate?: boolean;
+  checkCrowd?: string[];
+  checkCrowdMin?: string;
+  checkCrowdFail?: boolean;
+  checkCrowdAnnotate?: boolean;
+  // Content checks (optional selector scope; true = whole body)
+  checkPlaceholder?: boolean | string;
+  checkPlaceholderFail?: boolean;
+  checkPlaceholderAnnotate?: boolean;
+  checkImages?: boolean | string;
+  checkImagesTolerance?: string;
+  checkImagesFail?: boolean;
+  checkImagesAnnotate?: boolean;
+  checkTruncation?: boolean | string;
+  checkTruncationTolerance?: string;
+  checkTruncationFail?: boolean;
+  checkTruncationAnnotate?: boolean;
+  checkContrast?: boolean | string;
+  checkContrastFail?: boolean;
+  checkContrastAnnotate?: boolean;
+  // Vision-model critique (optional selector = semantic per-element tiling)
+  checkCritique?: boolean | string;
+  checkCritiqueBand?: string;
+  checkCritiqueOverlap?: string;
+  checkCritiqueMaxTiles?: string;
+  checkCritiqueRubric?: string;
+  checkCritiqueFail?: boolean;
+  // Value assertions
+  assert?: string[];
+  assertFail?: boolean;
   // Optional selector; null means the full document. Repeatable.
   checkHit?: Array<string | null>;
   checkHitProfile?: string;
@@ -358,6 +396,105 @@ export function registerBrowseCommand(
     .option("--check-overlap-fail", "Exit 2 when an overlap target fails or is missing.")
     .option("--no-check-overlap-annotate", "Skip overlap screenshot annotations.")
     .option(
+      "--check-crowd <selector>",
+      "Flag adjacent card panels (full border, modest corner radius, or box-shadow) " +
+        "that touch or nearly touch. Also treats wrappers that contain panels as " +
+        "peers, measuring the nearest face panels inside them so a card-grid " +
+        "flush against the next card is caught. Walks the whole subtree under the " +
+        "selector, so one --check-crowd .wrap catches nested cases. Fills the gap " +
+        "between --check-overlap (needs a 2D intersection) and --check-gap (flags " +
+        "uneven spacing, so a uniformly-flush stack passes). Repeatable.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--check-crowd-min <px>",
+      "Minimum acceptable edge gap between adjacent panel faces in CSS px (default 6). " +
+        "Pairs closer than this are flagged; negative separation (overlap) always flags.",
+      "6",
+    )
+    .option("--check-crowd-fail", "Exit 2 when a crowd target fails or is missing.")
+    .option("--no-check-crowd-annotate", "Skip crowd screenshot annotations.")
+    .option(
+      "--check-placeholder [selector]",
+      "Scan rendered text for unrendered template tokens and bound-value tells: " +
+        "JS template literals, `{{x}}` handlebars, `[object Object]`, `Invalid Date`, " +
+        "`NaN`, or an element whose whole text is literally 'undefined' / 'null'. Optional selector " +
+        "scopes the sweep (default: whole body). Catches the most common generation " +
+        "bug on funnels and reports. Do not point it at a page that documents template " +
+        "syntax in prose.",
+    )
+    .option("--check-placeholder-fail", "Exit 2 if any placeholder tell is found.")
+    .option("--no-check-placeholder-annotate", "Skip placeholder screenshot annotations.")
+    .option(
+      "--check-images [selector]",
+      "Audit <img> elements for load + aspect health: a failed load (naturalWidth 0), " +
+        "a still-loading image, or a stretched image (rendered aspect ratio far from the " +
+        "intrinsic one, with an object-fit that does not correct it). Optional selector " +
+        "scopes the sweep (default: whole body).",
+    )
+    .option(
+      "--check-images-tolerance <ratio>",
+      "Aspect-ratio deviation above which an image counts as stretched (0–1, default 0.1 = 10%).",
+      "0.1",
+    )
+    .option("--check-images-fail", "Exit 2 if any image failed to load or is stretched.")
+    .option("--no-check-images-annotate", "Skip image screenshot annotations.")
+    .option(
+      "--check-truncation [selector]",
+      "Flag text actively cut off by an ellipsis or -webkit-line-clamp — the author asked " +
+        "to truncate AND the content overflows. High precision: it does not flag plain " +
+        "overflow:hidden clips. Optional selector scopes the sweep (default: whole body).",
+    )
+    .option(
+      "--check-truncation-tolerance <px>",
+      "Overflow past the clip box, in CSS px, above which truncation counts (default 2).",
+      "2",
+    )
+    .option("--check-truncation-fail", "Exit 2 if any text is actively truncated.")
+    .option("--no-check-truncation-annotate", "Skip truncation screenshot annotations.")
+    .option(
+      "--check-contrast [selector]",
+      "Flag rendered text below the WCAG AA contrast ratio (4.5:1 normal, 3:1 large) against " +
+        "its effective background. Runs at whatever theme the page is in, so toggle the theme " +
+        "with --batch to cover light and dark. Text over an image or gradient is reported as " +
+        "`unknown`, not failed. Optional selector scopes the sweep (default: whole body).",
+    )
+    .option("--check-contrast-fail", "Exit 2 if any text fails the contrast ratio.")
+    .option("--no-check-contrast-annotate", "Skip contrast screenshot annotations.")
+    .option(
+      "--check-critique [selector]",
+      "Hand the rendered page to a vision model for a visual-defect review, tile by " +
+        "tile. Catches the long tail heuristic checks can't enumerate. Default tiling " +
+        "cuts the page into overlapping vertical bands; pass a selector to tile one " +
+        "screenshot per matching element (semantic tiling). Requires the host to inject " +
+        "a critiqueProvider (harnery ships no model client) — without one the check " +
+        "reports `skipped`. Findings land under `critique` in the JSON envelope.",
+    )
+    .option("--check-critique-band <px>", "Band height for default tiling (default 1400).", "1400")
+    .option(
+      "--check-critique-overlap <px>",
+      "Vertical overlap between bands so a finding at a seam stays visible (default 120).",
+      "120",
+    )
+    .option(
+      "--check-critique-max-tiles <n>",
+      "Cap on tiles sent to the model, to bound cost (default 24).",
+      "24",
+    )
+    .option("--check-critique-rubric <text>", "Override the default critique rubric.")
+    .option("--check-critique-fail", "Exit 2 if the critique returns any high-severity finding.")
+    .option(
+      "--assert <expr>",
+      "Assert a page value (repeatable). Grammar: '<op> <selector> => <expected>', where op is " +
+        "text (trimmed text equals), contains (text includes), matches (text matches a regex), " +
+        "count (match count vs a number or >=/<=/>/< comparator), exists / absent (no => needed). " +
+        "e.g. --assert 'text h1 => Welcome' --assert 'count .card => >=3' --assert 'absent .error'.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option("--assert-fail", "Exit 2 if any --assert fails.")
+    .option(
       "--check-hit [selector]",
       "Check pointer-target size and spacing in the document or optional scope (repeatable).",
       (value: string | boolean, previous: Array<string | null> = []) => [
@@ -437,6 +574,7 @@ async function runBrowse(
     opts.checkOverlapThreshold ?? "0",
     "--check-overlap-threshold",
   );
+  const crowdMin = parseNonNegativeNumber(opts.checkCrowdMin ?? "6", "--check-crowd-min");
   const hitProfile = parseTargetSizeProfile(opts.checkHitProfile ?? "wcag-aa");
 
   // Commander: `--no-cookies` turns `opts.cookies` into `false`. Default is `true`.
@@ -523,7 +661,8 @@ async function runBrowse(
       (opts.checkAlign?.length ?? 0) > 0 ||
       (opts.checkGap?.length ?? 0) > 0 ||
       (opts.checkClip?.length ?? 0) > 0 ||
-      (opts.checkOverlap?.length ?? 0) > 0;
+      (opts.checkOverlap?.length ?? 0) > 0 ||
+      (opts.checkCrowd?.length ?? 0) > 0;
     let layoutLint: LayoutLintResult | undefined;
     if (hasLayoutLint) {
       layoutLint = await browser.checkLayoutLint({
@@ -546,11 +685,68 @@ async function runBrowse(
           selector,
           tolerancePx: overlapThreshold,
         })),
+        crowd: (opts.checkCrowd ?? []).map((selector) => ({
+          selector,
+          minGapPx: crowdMin,
+        })),
       });
     }
     let hit: TargetSizeResult[] | undefined;
     if (opts.checkHit && opts.checkHit.length > 0) {
       hit = await browser.checkTargetSize(opts.checkHit, hitProfile);
+    }
+    const hasContentChecks =
+      opts.checkPlaceholder !== undefined ||
+      opts.checkImages !== undefined ||
+      opts.checkTruncation !== undefined ||
+      opts.checkContrast !== undefined;
+    let content: ContentChecksResult | undefined;
+    if (hasContentChecks) {
+      content = await browser.checkContent({
+        placeholder:
+          opts.checkPlaceholder !== undefined
+            ? { scope: contentScope(opts.checkPlaceholder) }
+            : null,
+        image:
+          opts.checkImages !== undefined
+            ? {
+                scope: contentScope(opts.checkImages),
+                tolerance: parseNonNegativeNumber(
+                  opts.checkImagesTolerance ?? "0.1",
+                  "--check-images-tolerance",
+                ),
+              }
+            : null,
+        truncation:
+          opts.checkTruncation !== undefined
+            ? {
+                scope: contentScope(opts.checkTruncation),
+                tolerance: parseNonNegativeNumber(
+                  opts.checkTruncationTolerance ?? "2",
+                  "--check-truncation-tolerance",
+                ),
+              }
+            : null,
+        contrast:
+          opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
+      });
+    }
+    // Vision critique. Capture tiles BEFORE any annotation overlays are injected
+    // so the model sees the real page, not our boxes.
+    let critique: CritiqueResult | undefined;
+    if (opts.checkCritique !== undefined) {
+      const tiles = await captureCritiqueTiles(browser, opts);
+      critique = await runCritique({
+        url: navResult.url,
+        rubric: opts.checkCritiqueRubric ?? DEFAULT_CRITIQUE_RUBRIC,
+        tiles,
+        provider: context?.critiqueProvider,
+      });
+    }
+    let asserts: AssertResult[] | undefined;
+    if (opts.assert && opts.assert.length > 0) {
+      const specs = opts.assert.map(parseAssertSpec);
+      asserts = await browser.checkAsserts(specs);
     }
     const widthThreshold = Number.parseFloat(opts.checkWidthThreshold ?? "0.9");
     const annotateWidth = widths && opts.checkWidthAnnotate !== false;
@@ -572,6 +768,7 @@ async function runBrowse(
           gap: opts.checkGapAnnotate === false ? [] : layoutLint.gap,
           clip: opts.checkClipAnnotate === false ? [] : layoutLint.clip,
           overlap: opts.checkOverlapAnnotate === false ? [] : layoutLint.overlap,
+          crowd: opts.checkCrowdAnnotate === false ? [] : layoutLint.crowd,
         }
       : undefined;
     if (
@@ -579,13 +776,18 @@ async function runBrowse(
       (annotateLayoutLint.align.length > 0 ||
         annotateLayoutLint.gap.length > 0 ||
         annotateLayoutLint.clip.length > 0 ||
-        annotateLayoutLint.overlap.length > 0)
+        annotateLayoutLint.overlap.length > 0 ||
+        annotateLayoutLint.crowd.length > 0)
     ) {
       await browser.annotateLayoutLint(annotateLayoutLint);
     }
     const annotateHit = hit && opts.checkHitAnnotate !== false;
     if (annotateHit) {
       await browser.annotateTargetSize(hit!);
+    }
+    const contentBoxes = content ? collectContentBoxes(content, opts) : [];
+    if (contentBoxes.length > 0) {
+      await browser.annotateContent(contentBoxes);
     }
 
     if (opts.login) {
@@ -627,6 +829,9 @@ async function runBrowse(
         runts,
         layoutLint,
         hit,
+        content,
+        critique,
+        asserts,
         devOverlay,
         batchResult,
       );
@@ -642,6 +847,9 @@ async function runBrowse(
         runts,
         layoutLint,
         hit,
+        content,
+        critique,
+        asserts,
         devOverlay,
         batchResult,
       );
@@ -661,6 +869,9 @@ async function runBrowse(
     }
     if (annotateHit) {
       await browser.clearTargetSizeAnnotations();
+    }
+    if (contentBoxes.length > 0) {
+      await browser.clearContentAnnotations();
     }
 
     if (opts.checkVisibleFail && visibility) {
@@ -723,6 +934,22 @@ async function runBrowse(
     }
 
     applyLayoutLintFailGates(opts, layoutLint, hit);
+    applyContentFailGates(opts, content);
+    if (opts.checkCritiqueFail && critique && critique.outcome === "fail") {
+      const high = critique.findings.filter((f) => f.severity === "high").length;
+      emit.log(`check-critique FAIL: ${high} high-severity finding(s)`, "warn");
+      process.exitCode = 2;
+    }
+    if (opts.assertFail && asserts) {
+      const failed = asserts.filter((a) => a.outcome === "fail");
+      for (const a of failed) {
+        emit.log(
+          `assert FAIL: ${a.op} ${a.selector} → "${a.actual}"${a.error ? ` (${a.error})` : ""}`,
+          "warn",
+        );
+      }
+      if (failed.length > 0) process.exitCode = 2;
+    }
   } finally {
     await browser.close();
   }
@@ -847,6 +1074,9 @@ async function runPrintMode(
   runts: RuntsResult | undefined,
   layoutLint: LayoutLintResult | undefined,
   hit: TargetSizeResult[] | undefined,
+  content: ContentChecksResult | undefined,
+  critique: CritiqueResult | undefined,
+  asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -876,8 +1106,12 @@ async function runPrintMode(
       result.gap = layoutLint.gap;
       result.clip = layoutLint.clip;
       result.overlap = layoutLint.overlap;
+      result.crowd = layoutLint.crowd;
     }
     if (hit) result.hit = hit;
+    if (content) assignContent(result, content);
+    if (critique) result.critique = critique;
+    if (asserts) result.asserts = asserts;
     if (devOverlay) result.devOverlay = devOverlay;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
@@ -910,6 +1144,9 @@ async function runTrioMode(
   runts: RuntsResult | undefined,
   layoutLint: LayoutLintResult | undefined,
   hit: TargetSizeResult[] | undefined,
+  content: ContentChecksResult | undefined,
+  critique: CritiqueResult | undefined,
+  asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
 ): Promise<void> {
@@ -979,8 +1216,12 @@ async function runTrioMode(
     envelope.gap = layoutLint.gap;
     envelope.clip = layoutLint.clip;
     envelope.overlap = layoutLint.overlap;
+    envelope.crowd = layoutLint.crowd;
   }
   if (hit) envelope.hit = hit;
+  if (content) assignContent(envelope, content);
+  if (critique) envelope.critique = critique;
+  if (asserts) envelope.asserts = asserts;
   if (devOverlay) envelope.devOverlay = devOverlay;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
@@ -1098,6 +1339,23 @@ async function runTrioMode(
     });
     emit.log(`check-hit:\n${lines.join("\n")}`, "info");
   }
+  if (content) {
+    logContentSummary(content);
+  }
+  if (critique) {
+    logCritiqueSummary(critique);
+  }
+  if (asserts && asserts.length > 0) {
+    const lines = asserts.map((a) => {
+      const detail =
+        a.error ??
+        (a.op === "count" || a.op === "exists" || a.op === "absent"
+          ? `${a.selector} → ${a.actual}${a.expected ? ` (want ${a.expected})` : ""}`
+          : `${a.selector} → "${a.actual.slice(0, 60)}"${a.expected ? ` (want ${a.op} "${a.expected}")` : ""}`);
+      return `  [${a.outcome.toUpperCase()}] ${a.op} ${detail}`;
+    });
+    emit.log(`asserts:\n${lines.join("\n")}`, "info");
+  }
 
   if (savedBaseline) {
     emit.log(
@@ -1185,6 +1443,15 @@ function logLayoutLintSummary(result: LayoutLintResult): void {
       `  [${check.outcome.toUpperCase()}] overlap ${check.selector}: ${check.issues.length} collisions, worst ${worst.toFixed(0)}px²`,
     );
   }
+  for (const check of result.crowd) {
+    const tightest =
+      check.issues.length > 0
+        ? Math.min(...check.issues.map((issue) => issue.separationPx))
+        : check.minGapPx;
+    lines.push(
+      `  [${check.outcome.toUpperCase()}] crowd ${check.selector}: ${check.issues.length} tight pair${check.issues.length === 1 ? "" : "s"} (min gap ${check.minGapPx}px, tightest ${tightest.toFixed(1)}px)`,
+    );
+  }
   if (lines.length > 0) emit.log(`layout-lint:\n${lines.join("\n")}`, "info");
 }
 
@@ -1213,6 +1480,7 @@ function applyLayoutLintFailGates(
   gate(opts.checkGapFail, "gap", layoutLint?.gap);
   gate(opts.checkClipFail, "clip", layoutLint?.clip);
   gate(opts.checkOverlapFail, "overlap", layoutLint?.overlap);
+  gate(opts.checkCrowdFail, "crowd", layoutLint?.crowd);
 
   if (opts.checkHitFail && hit) {
     const failed = hit.filter(
@@ -1226,6 +1494,174 @@ function applyLayoutLintFailGates(
     }
     if (failed.length > 0) process.exitCode = 2;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Content checks (placeholder / image / truncation / contrast)
+// ---------------------------------------------------------------------------
+
+const CONTENT_COLORS = {
+  placeholder: "#dc2626",
+  image: "#f97316",
+  truncation: "#a855f7",
+  contrast: "#0891b2",
+} as const;
+
+// Optional-selector flags resolve to a scope: a string selector, or null for
+// the whole body when the flag was passed bare.
+function contentScope(value: boolean | string): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function assignContent(target: Record<string, unknown>, content: ContentChecksResult): void {
+  if (content.placeholder) target.placeholder = content.placeholder;
+  if (content.image) target.image = content.image;
+  if (content.truncation) target.truncation = content.truncation;
+  if (content.contrast) target.contrast = content.contrast;
+}
+
+function collectContentBoxes(
+  content: ContentChecksResult,
+  opts: BrowseOpts,
+): ContentAnnotationBox[] {
+  const boxes: ContentAnnotationBox[] = [];
+  if (content.placeholder && opts.checkPlaceholderAnnotate !== false) {
+    for (const hit of content.placeholder.hits) {
+      boxes.push({
+        rect: hit.rect,
+        label: `placeholder ${hit.token}`,
+        color: CONTENT_COLORS.placeholder,
+      });
+    }
+  }
+  if (content.image && opts.checkImagesAnnotate !== false) {
+    for (const issue of content.image.issues) {
+      boxes.push({ rect: issue.rect, label: `image ${issue.reason}`, color: CONTENT_COLORS.image });
+    }
+  }
+  if (content.truncation && opts.checkTruncationAnnotate !== false) {
+    for (const hit of content.truncation.hits) {
+      boxes.push({
+        rect: hit.rect,
+        label: `truncated ${hit.how}`,
+        color: CONTENT_COLORS.truncation,
+      });
+    }
+  }
+  if (content.contrast && opts.checkContrastAnnotate !== false) {
+    for (const hit of content.contrast.hits) {
+      if (hit.outcome !== "fail") continue;
+      boxes.push({
+        rect: hit.rect,
+        label: `contrast ${hit.ratio}:1 < ${hit.required}`,
+        color: CONTENT_COLORS.contrast,
+      });
+    }
+  }
+  return boxes;
+}
+
+function logContentSummary(content: ContentChecksResult): void {
+  const lines: string[] = [];
+  if (content.placeholder) {
+    const c = content.placeholder;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] placeholder: ${c.hits.length} tell(s) in ${c.scanned} node(s)`,
+    );
+  }
+  if (content.image) {
+    const c = content.image;
+    const missing = c.issues.filter((i) => i.reason === "missing").length;
+    const stretched = c.issues.filter((i) => i.reason === "stretched").length;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] image: ${missing} missing, ${stretched} stretched of ${c.scanned}`,
+    );
+  }
+  if (content.truncation) {
+    const c = content.truncation;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] truncation: ${c.hits.length} clipped of ${c.scanned}`,
+    );
+  }
+  if (content.contrast) {
+    const c = content.contrast;
+    const fails = c.hits.filter((h) => h.outcome === "fail").length;
+    const unknown = c.hits.filter((h) => h.outcome === "unknown").length;
+    lines.push(
+      `  [${c.outcome.toUpperCase()}] contrast: ${fails} fail, ${unknown} unknown of ${c.scanned}`,
+    );
+  }
+  if (lines.length > 0) emit.log(`content-checks:\n${lines.join("\n")}`, "info");
+}
+
+function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | undefined): void {
+  if (!content) return;
+  const gate = (
+    enabled: boolean | undefined,
+    rule: string,
+    result: { found: boolean; outcome: string } | undefined,
+  ): void => {
+    if (!enabled || !result) return;
+    if (!result.found || result.outcome === "fail") {
+      emit.log(`check-${rule} FAIL: ${result.found ? "issues found" : "scope not found"}`, "warn");
+      process.exitCode = 2;
+    }
+  };
+  gate(opts.checkPlaceholderFail, "placeholder", content.placeholder);
+  gate(opts.checkImagesFail, "images", content.image);
+  gate(opts.checkTruncationFail, "truncation", content.truncation);
+  gate(opts.checkContrastFail, "contrast", content.contrast);
+}
+
+// ---------------------------------------------------------------------------
+// Vision critique tiling
+// ---------------------------------------------------------------------------
+
+async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise<CritiqueTile[]> {
+  const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));
+  const band = Math.max(200, Number.parseInt(opts.checkCritiqueBand ?? "1400", 10));
+  const overlap = Math.max(0, Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10));
+
+  // Capture the whole page ONCE, then crop tiles from the pixels. Playwright's
+  // clip is viewport-relative, so a below-fold band clip throws ("clipped area
+  // outside the resulting image") — cropping the full-page image sidesteps that
+  // and keeps every tile at full resolution.
+  const buffer = await browser.fullPageScreenshotBuffer();
+  const elementRects =
+    typeof opts.checkCritique === "string"
+      ? await browser.elementTiles(opts.checkCritique)
+      : undefined;
+  const tiles = tilesFromFullPage(buffer, { elementRects, bandHeight: band, overlap, maxTiles });
+
+  if (elementRects && elementRects.length > maxTiles) {
+    emit.log(
+      `check-critique: ${elementRects.length} elements matched, capped to ${maxTiles} tiles`,
+      "warn",
+    );
+  } else if (!elementRects && tiles.length >= maxTiles) {
+    emit.log(
+      `check-critique: page banded to the ${maxTiles}-tile cap (raise --check-critique-max-tiles for full coverage)`,
+      "warn",
+    );
+  }
+  return tiles;
+}
+function logCritiqueSummary(critique: CritiqueResult): void {
+  if (critique.outcome === "skipped") {
+    emit.log(`check-critique: SKIPPED (${critique.error ?? "no provider"})`, "warn");
+    return;
+  }
+  const high = critique.findings.filter((f) => f.severity === "high").length;
+  const med = critique.findings.filter((f) => f.severity === "medium").length;
+  const low = critique.findings.filter((f) => f.severity === "low").length;
+  const lines = critique.findings
+    .slice(0, 20)
+    .map((f) => `  [${f.severity}] tile ${f.tile} ${f.category}: ${f.description}`);
+  emit.log(
+    `check-critique [${critique.outcome.toUpperCase()}] ${critique.tiles} tiles → ${high} high / ${med} med / ${low} low` +
+      (lines.length ? `\n${lines.join("\n")}` : ""),
+    critique.outcome === "fail" ? "warn" : "info",
+  );
 }
 
 function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {

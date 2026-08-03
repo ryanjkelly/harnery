@@ -1,0 +1,119 @@
+---
+title: "0037: A capability claim states the basis it was checked on"
+description: "ADR: separate adapter-checked conformance from live vendor attestation so a clean bench can no longer mean nothing was measured."
+---
+
+**Status:** accepted (2026-07-24) · **Scope:** product tier (`core/adapters`, `adapter` CLI)
+
+## Context
+
+[ADR 0018](/decisions/0018-adapter-registry-conformance-bench/) made adapter
+support an executable claim. Each registered adapter owns a profile with
+capability claims, the production invocation planner, the production result
+normalizer, and one deterministic fixture. `harn adapter bench` reconciles the
+declared claim against an observed value and reports drift.
+
+That bench is honest about what it runs. It is not honest about what its result
+means. Every dimension it checks is proved against the adapter's own code: the
+planner builds an argv, the normalizer parses a committed fixture. Both are
+Harnery artifacts. Neither involves the installed vendor CLI. So a green report
+proves that Harnery's parser can read a session id out of the fixture's shape.
+It does not prove the vendor still emits that shape.
+
+The report presents both kinds of result in one vocabulary. A dimension checked
+against a fixture and a dimension never checked at all both arrive as a
+`BenchVerdict`, and the summary counts them alongside each other. `drift: 0`
+therefore reads as "no disagreement found" when the accurate reading is "no
+vendor behavior was observed."
+
+One field was supposed to carry the live half of the story. `AdapterProfile`
+has an optional `verified: { date, version }` recording the last real vendor
+CLI contract used to validate the declaration. Nothing reads it. It is typed,
+declared for all three built-in adapters, and inert. Meanwhile the bench
+already runs `binary --version` on every invocation to decide whether a adapter
+is installed, then discards the version string into a note.
+
+The result is a system holding the two halves of a check and never performing
+it. A host can run a vendor CLI several versions away from the one its
+declaration was validated against, and the bench will report a clean matrix.
+When a vendor changes a result envelope, the fixture keeps passing and every
+live run quietly loses session ids and costs.
+
+## Decision
+
+A bench result carries the **basis** it was established on, and the bench
+performs the version check it already has the inputs for.
+
+### Basis
+
+Every `BenchResult` gains a `basis` field:
+
+| Basis | Meaning |
+| --- | --- |
+| `adapter` | Established against Harnery's own planner, normalizer, or fixture. Proves the adapter contract, says nothing about the installed vendor CLI. |
+| `attested` | Established by observing the installed vendor CLI on this host. |
+| `declared` | Not established. The value is the declaration, repeated. |
+
+The verdict vocabulary is unchanged. Basis is orthogonal to verdict: it answers
+"how do we know" rather than "what is true". A report can now separate a
+dimension that survived a real check from one that was echoed back, without
+inventing a verdict for each combination.
+
+### The contract dimension
+
+The bench adds a `contract` dimension per adapter. Its declared value is
+`profile.verified.version`; its observed value is the version string already
+probed from the installed binary. It reports:
+
+- `supported` when the observed version matches the recorded one;
+- `drift` when they differ, because the declaration was validated against a
+  vendor contract that is not the one installed;
+- `unknown` when the profile records no verified version, or records a value
+  that is not a version;
+- `skipped` when the binary is absent.
+
+`contract` is the only dimension whose basis is `attested` without a live model
+turn, because a version string is a vendor fact obtainable for free.
+
+### Consequences for existing behavior
+
+`harn adapter bench` keeps its current surface, its `--json` shape (extended,
+not changed), its `--require-installed` flag, and its non-zero exit on drift. A
+host with no vendor CLI installed still gets a clean offline run. The change is
+that a clean run now states its basis rather than implying an attestation it
+never performed.
+
+## Alternatives considered
+
+- **Leave the bench alone and document the caveat.** Rejected because that kind
+  of caveat lives in one person's head and expires. The bench exists so a
+  capability question has an executable answer, and a report that overstates its
+  own authority is worse than no report.
+- **Add verdicts such as `fixture_supported` and `attested_supported`.**
+  Rejected because it multiplies the vocabulary by the basis and makes every
+  consumer learn a cross product. Basis is a second axis, so it belongs in a
+  second field.
+- **Spawn a live model turn for every dimension.** Rejected for this decision.
+  Live turns cost money, flake, and need credentials, so they cannot sit on the
+  path of an ordinary offline run. The `contract` dimension shows how much is
+  attestable for free, and a later decision can add opt-in live probes on top of
+  the basis field this one introduces.
+- **Treat a version mismatch as failure rather than drift.** Rejected because a
+  newer vendor CLI is not automatically broken. Drift is the accurate statement:
+  the declaration is no longer backed by an observation, and someone should
+  look.
+- **Infer support from the version when the contract drifts.** Rejected
+  explicitly. Deciding that a newer CLI probably still supports a dimension
+  converts an unknown into a claim, which is the failure this ADR repairs.
+
+## Verification
+
+- Unit tests cover basis assignment per dimension, `contract` verdicts across
+  match, mismatch, missing, and unparseable recorded versions, and the
+  unchanged reconciliation of existing dimensions.
+- A negative test asserts that no dimension reports `basis: "attested"` without
+  an observation of the installed binary.
+- A regression test asserts a bench run with no binary present still exits 0 in
+  the default mode and marks `contract` as `skipped`.
+- The existing bench, CLI, and doctor tests pass unchanged apart from the added
+  field.

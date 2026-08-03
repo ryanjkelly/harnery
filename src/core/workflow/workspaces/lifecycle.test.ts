@@ -181,7 +181,7 @@ describe("workspace lifecycle projection", () => {
     const projection = deriveWorkspaceLifecycle({
       binding: workspaceBinding,
       provider_events: [allocated, allocating, bound, cleanupPending, released],
-      workflow_journal: [{ event: "run.start" }, { event: "run.end", ok: true }],
+      workflow_transcript: [{ event: "run.start" }, { event: "run.end", ok: true }],
       proof: proof(workspaceBinding),
       cleanup_attempts: [cleanupAttempt(workspaceBinding, releasedAttestation)],
       cleanup_receipt: cleanupReceipt(workspaceBinding, releasedAttestation),
@@ -195,7 +195,7 @@ describe("workspace lifecycle projection", () => {
       deriveWorkspaceLifecycle({
         binding: workspaceBinding,
         provider_events: [allocated, allocating, bound, cleanupPending, released],
-        workflow_journal: [{ event: "run.start" }, { event: "run.end", ok: true }],
+        workflow_transcript: [{ event: "run.start" }, { event: "run.end", ok: true }],
       }).state,
     ).toBe("cleanup_pending");
   });
@@ -210,7 +210,7 @@ describe("workspace lifecycle projection", () => {
       deriveWorkspaceLifecycle({
         binding: workspaceBinding,
         provider_events: [allocated, allocating, bound],
-        workflow_journal: [{ event: "run.start" }, { event: "run.end", ok: false }],
+        workflow_transcript: [{ event: "run.start" }, { event: "run.end", ok: false }],
       }),
     ).toMatchObject({
       state: "blocked",
@@ -220,7 +220,7 @@ describe("workspace lifecycle projection", () => {
       deriveWorkspaceLifecycle({
         binding: workspaceBinding,
         provider_events: [allocated, allocating, bound],
-        workflow_journal: [{ event: "run.start" }, { event: "run.end", ok: true }],
+        workflow_transcript: [{ event: "run.start" }, { event: "run.end", ok: true }],
       }),
     ).toMatchObject({
       state: "blocked",
@@ -252,7 +252,7 @@ describe("workspace lifecycle projection", () => {
       deriveWorkspaceLifecycle({
         binding: workspaceBinding,
         provider_events: [allocated, allocating, bound],
-        workflow_journal: [
+        workflow_transcript: [
           { event: "run.start" },
           { event: "run.parked" },
           { event: "run.resume" },
@@ -319,7 +319,7 @@ describe("workspace lifecycle projection", () => {
       deriveWorkspaceLifecycle({
         provider_events: [allocated, cancellation],
         work_events: [{ event: "work.cancelled", seq: 4 } as never],
-        workflow_journal: [
+        workflow_transcript: [
           {
             event: "workspace.cancel",
             status: "cancelled",
@@ -336,7 +336,7 @@ describe("workspace lifecycle projection", () => {
           { event: "work.cancelled", seq: 4 } as never,
           { event: "work.reopened", seq: 5 } as never,
         ],
-        workflow_journal: [
+        workflow_transcript: [
           {
             event: "workspace.cancel",
             status: "cancelled",

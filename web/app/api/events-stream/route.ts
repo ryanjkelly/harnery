@@ -15,8 +15,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { coordRoot, eventsPath, type EventRow } from "@/lib/coord-reader";
-import { readWorkflowChildSessions } from "@/lib/workflow-reader";
+import { coordRoot, eventsPath, type EventRow, readEvents } from "@/lib/coord-reader";
+import { readWorkflowChildSessions, resolveRunCoordRoot } from "@/lib/workflow-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -36,20 +36,22 @@ export async function GET(request: Request): Promise<Response> {
   const initialLines = Number(url.searchParams.get("initial") ?? 500);
 
   /**
-   * Session-id allowlist for `?run=<runId>`: the run's child harness sessions.
+   * Session-id allowlist for `?run=<runId>`: the run's child adapter sessions.
    *
    * Re-resolved on every drain rather than pinned at connect, because a run
-   * spawns children over its whole life — a stage-3 agent that starts twenty
+   * spawns children over its whole life. A stage-3 agent that starts twenty
    * minutes in would be invisible to a set captured at page load, and pushing
-   * the set through the query string instead would reconnect the stream (and
-   * re-snapshot) every time an agent started or ended.
+   * the set through the query string instead would reconnect the stream, and
+   * re-snapshot, every time an agent started or ended.
    */
   let runSessions: Set<string> | undefined;
   function resolveRunSessions(): Set<string> | undefined {
     if (!runFilter) return undefined;
     try {
       runSessions = new Set(
-        readWorkflowChildSessions(coordRoot(), runFilter).map((c) => c.sessionId),
+        readWorkflowChildSessions(coordRoot(), runFilter, {
+          heartbeatRoot: runRoot?.root,
+        }).map((c) => c.sessionId),
       );
     } catch {
       // Keep the previous allowlist on a transient read failure; an empty set
@@ -59,7 +61,18 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   const encoder = new TextEncoder();
-  const filePath = eventsPath();
+  /*
+   * Which stream to tail. A workflow child writes to the coord root it runs in,
+   * so a run driven from a sibling checkout, a submodule, or a temporary
+   * workspace transcripts here and emits there. Tailing the local file for such a
+   * run yields nothing forever, which reads as an idle run rather than as a
+   * stream being watched in the wrong place. Everything downstream (offset pin,
+   * watcher, filesize poll, drain) already takes the path as a parameter.
+   */
+  const runRoot = runFilter ? resolveRunCoordRoot(coordRoot(), runFilter) : undefined;
+  const filePath = runRoot?.foreign
+    ? path.join(runRoot.root, ".harnery", "events.ndjson")
+    : eventsPath();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -111,13 +124,29 @@ export async function GET(request: Request): Promise<Response> {
       }
 
       // 1. Snapshot: last N rows, applying server-side filters if present.
+      //
+      // A run filter takes the budgeted scanner rather than the byte-window tail
+      // below. The tail reads a fixed slice off the end of the file, which is
+      // fine for an unfiltered feed but starves a narrow filter: on a 200MB
+      // event log, a run that finished an hour ago sits far outside the window,
+      // so the snapshot came back empty and replaced the page's server-rendered
+      // rows with nothing. `readEvents` walks backward on a byte budget and
+      // continues into rotated archives, so it finds the run wherever it is.
       try {
-        const snapshot = await readEventsTail({
-          lines: initialLines,
-          instanceId: instanceFilter,
-          type: typeFilter,
-          sessions: resolveRunSessions(),
-        });
+        const sessions = resolveRunSessions();
+        const snapshot = sessions
+          ? readEvents({
+              limit: initialLines,
+              sessions,
+              type: typeFilter,
+              root: runRoot?.foreign ? runRoot.root : undefined,
+            }).rows
+          : await readEventsTail({
+              filePath,
+              lines: initialLines,
+              instanceId: instanceFilter,
+              type: typeFilter,
+            });
         send("snapshot", { events: snapshot });
       } catch {
         send("snapshot", { events: [] });
@@ -225,13 +254,16 @@ export async function GET(request: Request): Promise<Response> {
 /* ────────────────────────────────────────────────────────────────────── */
 
 interface TailOpts {
+  /** Stream to tail. Not always this checkout's, for a run that executed in
+   * another one. */
+  filePath: string;
   lines: number;
   instanceId?: string;
   type?: string;
   sessions?: Set<string>;
 }
 
-/** A workflow child is a main harness session, so its rows carry the same id in
+/** A workflow child is a main adapter session, so its rows carry the same id in
  * `session_id` and `instance_id`; accept either so the filter does not depend on
  * which one a given producer stamped. */
 function inSessions(ev: EventRow, sessions?: Set<string>): boolean {
@@ -243,7 +275,7 @@ function inSessions(ev: EventRow, sessions?: Set<string>): boolean {
 }
 
 async function readEventsTail(opts: TailOpts): Promise<EventRow[]> {
-  const filePath = eventsPath();
+  const { filePath } = opts;
   try {
     const stat = await fs.promises.stat(filePath);
     let text: string;
@@ -328,7 +360,6 @@ async function readEventsAfter(
 }
 
 async function currentFileSize(filePath: string): Promise<number> {
-  void path;
   try {
     const stat = await fs.promises.stat(filePath);
     return stat.size;

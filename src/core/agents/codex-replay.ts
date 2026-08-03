@@ -4,7 +4,7 @@
  * Production codex sessions emit canonical events from each `harn` invocation
  * via the in-process session-tee middleware (which calls `agent-coord
  * emit-event` for state.task_set / state.status_checked). But the codex
- * harness itself doesn't wire agent-hook on preToolUse, so user_prompt.submit
+ * adapter itself doesn't wire agent-hook on preToolUse, so user_prompt.submit
  * + tool.pre_use + turn.stop aren't emitted live.
  *
  * This module parses the Codex JSONL transcript at stop time and emits the
@@ -71,7 +71,7 @@ export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number } {
         event_type: "user_prompt.submit",
         instance_id: instanceId,
         session_id: sessionId,
-        harness: "codex",
+        adapter: "codex",
         ts,
         data: {
           prompt_text: clamp(entry.payload.message ?? "", 4000),
@@ -97,7 +97,7 @@ export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number } {
         event_type: "tool.pre_use",
         instance_id: instanceId,
         session_id: sessionId,
-        harness: "codex",
+        adapter: "codex",
         ts,
         data: {
           tool_name: name === "exec_command" ? "Bash" : name,
@@ -117,7 +117,7 @@ export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number } {
           event_type: "state.status_checked",
           instance_id: instanceId,
           session_id: sessionId,
-          harness: "codex",
+          adapter: "codex",
           ts,
           data: { source: "codex-replay" },
         });
@@ -128,7 +128,7 @@ export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number } {
           event_type: "state.task_set",
           instance_id: instanceId,
           session_id: sessionId,
-          harness: "codex",
+          adapter: "codex",
           ts,
           data: { source: "codex-replay" },
         });
@@ -145,7 +145,7 @@ export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number } {
     event_type: "turn.stop",
     instance_id: instanceId,
     session_id: sessionId,
-    harness: "codex",
+    adapter: "codex",
     data: {
       status_box_present: boxPresent,
       tool_call_count: -1,

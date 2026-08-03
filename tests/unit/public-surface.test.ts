@@ -48,7 +48,7 @@ describe("public-surface provenance guard", () => {
     ).toEqual([{ scope: "fixture.md", line: 1, kind: "restricted_identifier" }]);
   });
 
-  test("supported harness names and source-neutral rationale remain valid", () => {
+  test("supported adapter names and source-neutral rationale remain valid", () => {
     expect(
       scanPublicText(
         "Claude Code, Codex, and Cursor expose different verified lifecycle capabilities.",

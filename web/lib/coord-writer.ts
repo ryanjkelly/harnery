@@ -13,16 +13,16 @@ import path from "node:path";
 import { isSafeInstanceId, resolveContainedFile } from "harnery/core/agents";
 import {
   appendEntry,
-  archiveScratch,
-  parseScratch,
-  SCRATCH_CATEGORIES,
-  type ScratchCategory,
-  scratchPath,
-  serializeScratch,
-} from "harnery/core/scratch";
+  archiveJournal,
+  parseJournal,
+  JOURNAL_CATEGORIES,
+  type JournalCategory,
+  journalPath,
+  serializeJournal,
+} from "harnery/core/journal";
 import { activeDir, coordRoot } from "./coord-reader";
 
-export { SCRATCH_CATEGORIES, type ScratchCategory };
+export { JOURNAL_CATEGORIES, type JournalCategory };
 
 interface HelperResult {
   ok: boolean;
@@ -80,25 +80,25 @@ export async function healAgent(
 }
 
 /**
- * Replace an agent's scratchpad via the audit-marker pattern. Shells to
- * `agent-coord edit-scratchpad <owner> <body-file> <summary>` which writes
- * the prior body to `.harnery/scratch/archived/<owner>-pre-ui-<ts>.md` and
+ * Replace an agent's journal via the audit-marker pattern. Shells to
+ * `agent-coord edit-journal <owner> <body-file> <summary>` which writes
+ * the prior body to `.harnery/journal/archived/<owner>-pre-ui-<ts>.md` and
  * appends a synthetic `note` entry containing the new body to the live
- * scratchpad. Body comes in as a string here; the helper expects a file
+ * journal. Body comes in as a string here; the helper expects a file
  * path, so we mkdtemp + write + invoke + cleanup.
  */
-export async function editScratchpad(
+export async function editJournal(
   owner: string,
   newBody: string,
   summary: string,
 ): Promise<HelperResult> {
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "harnery-scratch-"));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "harnery-journal-"));
   const tmpFile = path.join(tmpDir, "body.md");
   try {
     await fs.writeFile(tmpFile, newBody, "utf-8");
-    return await runHelper(["edit-scratchpad", owner, tmpFile, summary]);
+    return await runHelper(["edit-journal", owner, tmpFile, summary]);
   } finally {
     try {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -109,12 +109,12 @@ export async function editScratchpad(
 }
 
 /**
- * Append one well-formed entry to an agent's scratchpad. Uses the same
+ * Append one well-formed entry to an agent's journal. Uses the same
  * `appendEntry` helper the in-process middleware uses, so the resulting
  * header matches the parser's expectation (`## YYYY-MM-DD H:MM AM/PM CDT · cat`),
  * so entries created here show up in the entries timeline immediately.
  *
- * Distinct from `editScratchpad`: the latter does wholesale replace (audit
+ * Distinct from `editJournal`: the latter does wholesale replace (audit
  * archive + synthetic note), which is what created the corrupted-looking
  * nested files. Operators should append by default; replace is the escape
  * hatch.
@@ -126,13 +126,13 @@ export interface AppendEntryResult {
   error?: string;
 }
 
-export function appendScratchEntry(
+export function appendJournalEntry(
   owner: string,
-  category: ScratchCategory,
+  category: JournalCategory,
   body: string,
 ): AppendEntryResult {
   ensureCoordRootEnv();
-  if (!SCRATCH_CATEGORIES.includes(category)) {
+  if (!JOURNAL_CATEGORIES.includes(category)) {
     return { ok: false, error: `invalid category: ${category}` };
   }
   const trimmed = body.trim();
@@ -148,7 +148,7 @@ export function appendScratchEntry(
 }
 
 /**
- * Edit an existing scratchpad entry by its newest-first index. Archives the
+ * Edit an existing journal entry by its newest-first index. Archives the
  * current file first (audit trail), then rewrites with the edited body /
  * category. `expectedTsDisplay` is a sanity check: if another writer raced
  * in between view and submit, we refuse to clobber the wrong entry.
@@ -160,27 +160,27 @@ export interface MutateEntryResult {
   error?: string;
 }
 
-export function editScratchEntry(
+export function editJournalEntry(
   owner: string,
   index: number,
   expectedTsDisplay: string,
-  newCategory: ScratchCategory,
+  newCategory: JournalCategory,
   newBody: string,
 ): MutateEntryResult {
   ensureCoordRootEnv();
-  if (!SCRATCH_CATEGORIES.includes(newCategory)) {
+  if (!JOURNAL_CATEGORIES.includes(newCategory)) {
     return { ok: false, error: `invalid category: ${newCategory}` };
   }
   const trimmed = newBody.trim();
   if (!trimmed) return { ok: false, error: "body is empty" };
 
-  const filePath = scratchPath(owner);
+  const filePath = journalPath(owner);
   if (!existsSync(filePath)) {
-    return { ok: false, error: "scratchpad not found" };
+    return { ok: false, error: "journal not found" };
   }
   try {
     const content = readFileSync(filePath, "utf-8");
-    const doc = parseScratch(filePath, content);
+    const doc = parseJournal(filePath, content);
     if (index < 0 || index >= doc.entries.length) {
       return { ok: false, error: `index ${index} out of range` };
     }
@@ -191,11 +191,11 @@ export function editScratchEntry(
         error: `entry at index ${index} no longer matches (someone else may have edited)`,
       };
     }
-    archiveScratch(owner);
+    archiveJournal(owner);
     target.category = newCategory;
     target.body = trimmed;
     // Don't touch ts_iso / ts_display; the edit preserves identity.
-    const serialized = serializeScratch(doc);
+    const serialized = serializeJournal(doc);
     writeFileSync(filePath, serialized, "utf-8");
     return {
       ok: true,
@@ -207,19 +207,19 @@ export function editScratchEntry(
   }
 }
 
-export function deleteScratchEntry(
+export function deleteJournalEntry(
   owner: string,
   index: number,
   expectedTsDisplay: string,
 ): MutateEntryResult {
   ensureCoordRootEnv();
-  const filePath = scratchPath(owner);
+  const filePath = journalPath(owner);
   if (!existsSync(filePath)) {
-    return { ok: false, error: "scratchpad not found" };
+    return { ok: false, error: "journal not found" };
   }
   try {
     const content = readFileSync(filePath, "utf-8");
-    const doc = parseScratch(filePath, content);
+    const doc = parseJournal(filePath, content);
     if (index < 0 || index >= doc.entries.length) {
       return { ok: false, error: `index ${index} out of range` };
     }
@@ -229,9 +229,9 @@ export function deleteScratchEntry(
         error: `entry at index ${index} no longer matches (someone else may have edited)`,
       };
     }
-    archiveScratch(owner);
+    archiveJournal(owner);
     doc.entries.splice(index, 1);
-    const serialized = serializeScratch(doc);
+    const serialized = serializeJournal(doc);
     writeFileSync(filePath, serialized, "utf-8");
     return {
       ok: true,
@@ -243,7 +243,7 @@ export function deleteScratchEntry(
   }
 }
 
-// harnery's scratch lib reads monorepoRoot() via git rev-parse. The web
+// harnery's journal lib reads monorepoRoot() via git rev-parse. The web
 // server runs from the harnery/web/ workspace, so overriding lets it write
 // into the same .harnery/ the page is reading from, without depending on
 // git's view (and without spawning git per request).

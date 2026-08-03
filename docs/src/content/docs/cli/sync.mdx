@@ -18,7 +18,7 @@ Doesn't wrap OAuth: `rclone config` handles Google Drive setup, and `harn sync i
 A deliberately small subset:
 
 - `.harnery/identities/`: durable persona UUIDs + machine labels
-- `.harnery/scratch/archived/`: historical scratchpads
+- `.harnery/journal/archived/`: historical journals
 - `.harnery/councils/`: manifests + invites + per-round contributions
 
 What stays put (machine-local, by design):
@@ -57,7 +57,7 @@ harn sync push -v
 ## Day-to-day
 
 ```bash
-# On machine A: capture today's scratchpad archive + council work
+# On machine A: capture today's journal archive + council work
 harn sync push
 
 # On machine B: pull A's state down

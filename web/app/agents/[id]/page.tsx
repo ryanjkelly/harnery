@@ -13,17 +13,17 @@ import { NavBar } from "@/components/NavBar";
 import { NudgeBox } from "@/components/NudgeBox";
 import { RecentActivity } from "@/components/RecentActivity";
 import { ReleaseClaimButton } from "@/components/ReleaseClaimButton";
-import { ScratchpadPanel } from "@/components/scratchpad/ScratchpadPanel";
+import { JournalPanel } from "@/components/journal/JournalPanel";
 import { NO_DATA } from "@/lib/format/no-data";
 import {
   ageLabel,
   coordRoot,
-  listScratchArchives,
+  listJournalArchives,
   readAgent,
   readEndedAgent,
   readEvents,
-  readScratch,
-  scratchDir,
+  readJournal,
+  journalDir,
 } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
@@ -44,12 +44,12 @@ export default async function AgentDetailPage({
   const hb = live ?? readEndedAgent(decoded);
   if (!hb) notFound();
 
-  const scratch = readScratch(decoded);
-  const scratchPath = path.join(scratchDir(), `${decoded}.md`);
-  const scratchBody = existsSync(scratchPath)
-    ? readFileSync(scratchPath, "utf-8")
+  const journal = readJournal(decoded);
+  const journalPath = path.join(journalDir(), `${decoded}.md`);
+  const journalBody = existsSync(journalPath)
+    ? readFileSync(journalPath, "utf-8")
     : null;
-  const archives = listScratchArchives(decoded);
+  const archives = listJournalArchives(decoded);
   const events = readEvents({ instanceId: decoded, limit: 60 });
 
   return (
@@ -190,11 +190,11 @@ export default async function AgentDetailPage({
         )}
 
         <div className="mb-4">
-          <ScratchpadPanel
+          <JournalPanel
             instanceId={hb.instance_id}
             agentName={`agent-${hb.name}`}
-            scratch={scratch}
-            rawBody={scratchBody}
+            journal={journal}
+            rawBody={journalBody}
             archiveCount={archives.length}
             readOnly={!isLive}
           />

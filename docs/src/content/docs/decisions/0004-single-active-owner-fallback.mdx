@@ -14,13 +14,13 @@ Owner resolution (`resolveOwnerWithSource` in
 [src/core/agents/coord-client.ts](https://github.com/ryanjkelly/harnery/blob/next/src/core/agents/coord-client.ts))
 tries, in order: the `HARNERY_AGENT_COORD_OWNER` env var, then a ppid walk up
 the process tree looking for a `.harnery/pid-map/<pid>` entry. The pid-map
-anchor is written for the harness session process; a subagent or a Bash-tool
+anchor is written for the adapter session process; a subagent or a Bash-tool
 subshell does not write its own entry and is expected to climb back to the
 parent's.
 
 In practice the climb often fails. A host CLI that wraps commands in a session
 runner (so the user can follow along in a log) spawns each command as a
-detached child whose process tree does **not** reach the harness anchor. The
+detached child whose process tree does **not** reach the adapter anchor. The
 ppid walk then finds nothing and resolution returns null, so `agents status`,
 `agents set-task`, and `whoami` all exit with `no_pidmap_entry`.
 

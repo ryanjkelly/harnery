@@ -17,7 +17,7 @@ Use it to review the design of a hot-path migration, pick between two refactor a
 
 ```bash
 # Create a council with an objective + named members.
-harn agents council create "Pick the strangler-fig order" \
+harn council create "Pick the strangler-fig order" \
   --member Alpha --member Beta --member Gamma \
   --target-doc docs/migration-plan.md
 
@@ -25,19 +25,19 @@ harn agents council create "Pick the strangler-fig order" \
 #   .harnery/councils/<id>/round-N/<their-name>.md
 
 # Check who's contributed this round:
-harn agents council show <id>
+harn council show <id>
 
 # Once all members have contributed, advance to the next round.
 # (Or auto-advance by passing --auto-advance to create.)
-harn agents council advance <id>
+harn council advance <id>
 
 # When converged: close it. The status flips to "closed"; the manifest +
 # body stay on disk for the historical record.
-harn agents council close <id>
+harn council close <id>
 
 # Or archive (manifest + body moved to .harnery/councils/archive/) to keep
 # the active list lean.
-harn agents council archive <id>
+harn council archive <id>
 ```
 
 ## Manifest shape
@@ -72,7 +72,7 @@ Councils converge on what the prompts ask for, so the steward's round prompts do
 
 - **Charge a completeness critic in round 1.** Give at least one member (or add it as a second charge to one member's lens) the explicit question: *"What important thing is NOT in this document at all — a missing dimension, not a flaw in what's written?"* Lens-scoped reviewers reliably improve what exists and reliably miss whole absent dimensions; a council can unanimously approve a plan whose biggest problem is a chapter that was never written. Name the charge in the prompt — don't assume a security or ops lens covers it implicitly.
 - **Spell out the status marker.** Convergence detection parses a `<trivial>` / `<substantive>` tag on each contribution (bare words on the final line work as a fallback, but the angle-bracket form is the contract). A council whose members write free-form "nothing major" endings reads as untagged, and the exit criterion never fires.
-- **Keep phrasing consistent across members.** Contributions are only comparable when every member answered the same question through their own lens. Draft one round prompt, then specialize per member, rather than writing each from scratch.
+- **Keep phrasing consistent across members.** Contributions are only comparable when every member answered the same question through their own lens. Draft one round prompt, then specialize per member, rather than writing each from journal.
 
 ## Web UI
 

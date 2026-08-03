@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Content checks</title>
+    <style>
+      body { margin: 24px; font: 16px/1.4 system-ui, sans-serif; background: #fff; }
+      section { margin: 16px 0; }
+      .ellip { width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ellip-ok { width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .clamp {
+        width: 200px; overflow: hidden; display: -webkit-box;
+        -webkit-box-orient: vertical; -webkit-line-clamp: 1;
+      }
+      .stretch { width: 120px; height: 20px; object-fit: fill; }
+      .natural { width: 40px; height: 40px; object-fit: fill; }
+      .ct-bad { background: #ffffff; color: #bcbcbc; }
+      .ct-good { background: #ffffff; color: #111111; }
+      .grad { background-image: linear-gradient(90deg, #000, #fff); }
+      .grad span { color: #808080; }
+    </style>
+  </head>
+  <body>
+    <!-- placeholder -->
+    <section class="ph-bad">
+      <p>Hello ${name}, you have {{count}} items.</p>
+      <p>Serialized: [object Object] at NaN%.</p>
+      <dd>undefined</dd>
+    </section>
+    <section class="ph-good">
+      <p>Price is $5 and 100% effective. The term "undefined behavior" is discussed below.</p>
+    </section>
+
+    <!-- image: 1x1 red PNG data URI. Natural aspect 1:1. -->
+    <section class="img-bad">
+      <img class="stretch" alt="stretched" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" />
+      <img class="natural-broken" width="40" height="40" alt="broken" src="./this-image-does-not-exist-xyz.png" />
+    </section>
+    <section class="img-good">
+      <img class="natural" alt="ok" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" />
+    </section>
+
+    <!-- truncation -->
+    <section class="trunc-bad">
+      <div class="ellip">This line is far too long for its narrow box and gets clipped.</div>
+      <div class="clamp">This clamped paragraph has more than one line worth of text so the clamp actually cuts it.</div>
+    </section>
+    <section class="trunc-good">
+      <div class="ellip-ok">Short enough.</div>
+    </section>
+
+    <!-- contrast -->
+    <section class="ct-bad"><p>Faint gray text on white, well under AA.</p></section>
+    <section class="ct-good"><p>Strong dark text on white, well over AA.</p></section>
+    <section class="grad"><p><span>Text sitting on a gradient background.</span></p></section>
+  </body>
+</html>

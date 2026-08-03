@@ -22,7 +22,7 @@ const POLICY_FIELDS = new Set([
   "name",
   "max_cost_usd",
   "unknown_cost",
-  "allowed_harnesses",
+  "allowed_adapters",
   "allowed_models",
   "allowed_paths",
   "network",
@@ -59,7 +59,7 @@ export function normalizePolicy(
     name: boundedString(input.name ?? "workflow policy", "policy name", MAX_NAME),
     max_cost_usd: optionalMoney(input.max_cost_usd, "max_cost_usd"),
     unknown_cost: enumValue(input.unknown_cost ?? "deny", ["ask", "deny"], "unknown_cost"),
-    allowed_harnesses: optionalStringList(input.allowed_harnesses, "allowed_harnesses"),
+    allowed_adapters: optionalStringList(input.allowed_adapters, "allowed_adapters"),
     allowed_models: optionalStringList(input.allowed_models, "allowed_models"),
     allowed_paths: optionalPathList(input.allowed_paths, baseDir),
     network: enumValue(input.network ?? "deny", VERDICTS, "network"),
@@ -83,12 +83,12 @@ export function evaluatePolicy(
     rules.push({ code, verdict, reason });
   };
 
-  if (policy.allowed_harnesses && request.phase === "dispatch") {
-    if (!request.harness || !policy.allowed_harnesses.includes(request.harness)) {
+  if (policy.allowed_adapters && request.phase === "dispatch") {
+    if (!request.adapter || !policy.allowed_adapters.includes(request.adapter)) {
       add(
-        "harness_not_allowed",
+        "adapter_not_allowed",
         "deny",
-        `harness ${JSON.stringify(request.harness ?? "unknown")} is not allowed`,
+        `adapter ${JSON.stringify(request.adapter ?? "unknown")} is not allowed`,
       );
     }
   }
@@ -172,7 +172,7 @@ export function evaluatePolicy(
   };
 }
 
-/** Bound and normalize the receipt-safe subset before it reaches a journal or proof. */
+/** Bound and normalize the receipt-safe subset before it reaches a transcript or proof. */
 export function summarizePolicyRequest(input: PolicyRequest): PolicyRequestSummary {
   if (!isRecord(input)) throw new Error("policy request must be an object");
   const phase = enumValue(input.phase, ["dispatch", "external_mutation"], "policy phase");
@@ -186,7 +186,7 @@ export function summarizePolicyRequest(input: PolicyRequest): PolicyRequestSumma
     phase,
     action: boundedString(input.action, "policy action", MAX_FIELD),
     path: optionalBounded(input.path, "policy path"),
-    harness: optionalBounded(input.harness, "policy harness"),
+    adapter: optionalBounded(input.adapter, "policy adapter"),
     model: optionalBounded(input.model, "policy model"),
     effort: optionalBounded(input.effort, "policy effort"),
     max_attempts: optionalWholeNumber(input.max_attempts, "policy max_attempts", 1),

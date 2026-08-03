@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import { writeWorkflowRunManifest } from "harnery/core/workflow";
-import { readWorkflowChildSessions, readWorkflowRun } from "./workflow-reader";
+import {
+  readWorkflowChildSessions,
+  readWorkflowRun,
+  readWorkflowRuns,
+  resolveRunCoordRoot,
+} from "./workflow-reader";
 
 let root: string;
 let runDir: string;
@@ -13,7 +18,7 @@ beforeEach(() => {
   runDir = join(root, ".harnery", "workflows", "wf-reader");
   mkdirSync(runDir, { recursive: true });
   writeFileSync(
-    join(runDir, "journal.jsonl"),
+    join(runDir, "transcript.jsonl"),
     `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
       `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "run.end", ok: true })}\n`,
     "utf8",
@@ -25,7 +30,7 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 describe("workflow proof reader", () => {
   test("keeps a durable approval park distinct from stale and clears it on resume", () => {
     writeFileSync(
-      join(runDir, "journal.jsonl"),
+      join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "run.parked", approval_id: "apr-123" })}\n`,
       "utf8",
@@ -35,14 +40,14 @@ describe("workflow proof reader", () => {
       parkedApprovalId: "apr-123",
     });
     writeFileSync(
-      join(runDir, "journal.jsonl"),
+      join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:02.000Z", event: "run.resume" })}\n`,
       { encoding: "utf8", flag: "a" },
     );
     expect(readWorkflowRun(root, "wf-reader")?.status).toBe("running");
   });
 
-  test("attaches a matching terminal proof packet to the journal summary", () => {
+  test("attaches a matching terminal proof packet to the transcript summary", () => {
     writeFileSync(join(runDir, "proof.json"), JSON.stringify(sampleProof()), "utf8");
     const run = readWorkflowRun(root, "wf-reader");
     expect(run?.proof?.run.objective).toBe("Show proof in the dashboard");
@@ -52,7 +57,7 @@ describe("workflow proof reader", () => {
 
   test("uses total retry cost instead of only the final attempt cost", () => {
     writeFileSync(
-      join(runDir, "journal.jsonl"),
+      join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "retry" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "agent.end", id: "a1", cost_usd: 0.2, total_cost_usd: 0.45 })}\n` +
@@ -64,7 +69,7 @@ describe("workflow proof reader", () => {
     expect(run?.agents[0]?.costUsd).toBe(0.45);
   });
 
-  test("ignores malformed and mismatched packets without hiding the journal run", () => {
+  test("ignores malformed and mismatched packets without hiding the transcript run", () => {
     writeFileSync(join(runDir, "proof.json"), "{bad", "utf8");
     expect(readWorkflowRun(root, "wf-reader")?.proof).toBeUndefined();
     writeFileSync(
@@ -75,19 +80,19 @@ describe("workflow proof reader", () => {
     expect(readWorkflowRun(root, "wf-reader")?.proof).toBeUndefined();
   });
 
-  test("keeps a run with a live child running however long the journal stays quiet", () => {
-    // The failure this locks: liveness read from journal mtime alone, so an
+  test("keeps a run with a live child running however long the transcript stays quiet", () => {
+    // The failure this locks: liveness read from transcript mtime alone, so an
     // agent working longer than STALE_MS badged the run STALE. The quiet is the
     // work, not a dead orchestrator.
     writeFileSync(
-      join(runDir, "journal.jsonl"),
+      join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "slow" })}\n`,
       "utf8",
     );
-    // Journal untouched for an hour, well past STALE_MS.
+    // Transcript untouched for an hour, well past STALE_MS.
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    utimesSync(join(runDir, "journal.jsonl"), hourAgo, hourAgo);
+    utimesSync(join(runDir, "transcript.jsonl"), hourAgo, hourAgo);
     expect(readWorkflowRun(root, "wf-reader")?.status).toBe("stale");
 
     writeHeartbeat("child-live", { workflow_run_id: "wf-reader", session_id: "s-live" });
@@ -104,7 +109,7 @@ describe("workflow proof reader", () => {
 
   test("records the agent start and end timestamps a live elapsed timer needs", () => {
     writeFileSync(
-      join(runDir, "journal.jsonl"),
+      join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "one" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:00.200Z", event: "agent.start", id: "a2", label: "two" })}\n` +
@@ -126,9 +131,9 @@ describe("workflow proof reader", () => {
     });
   });
 
-  test("unions live child heartbeats with journaled sessions and lets the journal name the agent", () => {
+  test("unions live child heartbeats with transcripted sessions and lets the transcript name the agent", () => {
     writeFileSync(
-      join(runDir, "journal.jsonl"),
+      join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "done-one" })}\n` +
         `${JSON.stringify({ ts: "2026-07-21T12:00:01.000Z", event: "agent.end", id: "a1", session_id: "s-ended" })}\n` +
@@ -136,7 +141,7 @@ describe("workflow proof reader", () => {
       "utf8",
     );
     // A live child with no agent stamp, an unrelated run's child, and a live
-    // heartbeat for the session the journal already closed.
+    // heartbeat for the session the transcript already closed.
     writeHeartbeat("live", { workflow_run_id: "wf-reader", session_id: "s-live" });
     writeHeartbeat("other", { workflow_run_id: "wf-other", session_id: "s-other" });
     writeHeartbeat("ended-but-warm", { workflow_run_id: "wf-reader", session_id: "s-ended" });
@@ -145,7 +150,7 @@ describe("workflow proof reader", () => {
       a.sessionId.localeCompare(b.sessionId),
     );
     expect(children).toEqual([
-      // Journal names the agent; the heartbeat still says it is running.
+      // Transcript names the agent; the heartbeat still says it is running.
       { sessionId: "s-ended", agentId: "a1", live: true },
       { sessionId: "s-live", agentId: undefined, live: true },
     ]);
@@ -171,6 +176,125 @@ describe("workflow proof reader", () => {
   });
 });
 
+describe("run coord-root resolution", () => {
+  test("follows the manifest cwd to the checkout that holds the child events", () => {
+    // The sibling is a real checkout: it has its own `.harnery/`.
+    const sibling = join(root, "..", `${basename(root)}-sibling`);
+    mkdirSync(join(sibling, ".harnery"), { recursive: true });
+    try {
+      writeManifestWithCwd(join(sibling, "packages", "inner"));
+      mkdirSync(join(sibling, "packages", "inner"), { recursive: true });
+
+      // Resolution walks up from the cwd, so a subdirectory of the checkout
+      // resolves to the checkout, not to itself.
+      const resolved = resolveRunCoordRoot(root, "wf-reader");
+      expect(resolved.foreign).toBe(true);
+      expect(resolved.root).toBe(sibling);
+      expect(resolved.fallback).toBeUndefined();
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test("stays local when the run ran here", () => {
+    writeSharedManifest();
+    const resolved = resolveRunCoordRoot(root, "wf-reader");
+    expect(resolved).toMatchObject({ root, foreign: false });
+    expect(resolved.fallback).toBeUndefined();
+  });
+
+  test("stays local when no checkout encloses the cwd within the walk limit", () => {
+    // A cwd with no `.harnery/` above it is not a lost root: the run was
+    // transcripted here because the orchestrator's own root was here. The walk is
+    // bounded, so a cwd buried deeper than the limit reads the same way, which
+    // is what this fixture exercises (a shallower one would find the temp root).
+    const deep = join(root, "a", "b", "c", "d", "e", "f", "g", "h", "i");
+    mkdirSync(deep, { recursive: true });
+    writeManifestWithCwd(deep);
+    expect(resolveRunCoordRoot(root, "wf-reader")).toMatchObject({
+      root,
+      foreign: false,
+      fallback: "no-coord-root",
+    });
+  });
+
+  test("reports a deleted workspace distinctly, since its activity is unrecoverable", () => {
+    writeManifestWithCwd(join(root, "workspaces", "ws-deleted"));
+    expect(resolveRunCoordRoot(root, "wf-reader")).toMatchObject({
+      root,
+      foreign: false,
+      fallback: "cwd-missing",
+      recordedCwd: join(root, "workspaces", "ws-deleted"),
+    });
+  });
+
+  test("falls back quietly when there is no manifest at all", () => {
+    expect(resolveRunCoordRoot(root, "wf-reader")).toMatchObject({
+      root,
+      foreign: false,
+      fallback: "no-cwd",
+    });
+  });
+
+  test("the list judges liveness against the root a run executed in", () => {
+    // Same defect as the STALE fix above, one checkout over: a run driven from a
+    // sibling repo has no heartbeat here, so scanning only this root called a
+    // working run dead.
+    writeFileSync(
+      join(runDir, "transcript.jsonl"),
+      `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
+        `${JSON.stringify({ ts: "2026-07-21T12:00:00.100Z", event: "agent.start", id: "a1", label: "slow" })}\n`,
+      "utf8",
+    );
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(join(runDir, "transcript.jsonl"), hourAgo, hourAgo);
+
+    const sibling = join(root, "..", `${basename(root)}-live`);
+    mkdirSync(join(sibling, ".harnery", "active"), { recursive: true });
+    try {
+      writeManifestWithCwd(sibling);
+      expect(readWorkflowRuns(root)[0]?.status).toBe("stale");
+
+      writeFileSync(
+        join(sibling, ".harnery", "active", "child.json"),
+        JSON.stringify({ workflow_run_id: "wf-reader", session_id: "s-remote" }),
+        "utf8",
+      );
+      expect(readWorkflowRuns(root)[0]?.status).toBe("running");
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+
+  test("reads child heartbeats from the run's own root", () => {
+    const sibling = join(root, "..", `${basename(root)}-hb`);
+    mkdirSync(join(sibling, ".harnery", "active"), { recursive: true });
+    try {
+      writeFileSync(
+        join(sibling, ".harnery", "active", "child.json"),
+        JSON.stringify({
+          workflow_run_id: "wf-reader",
+          workflow_agent_id: "a1",
+          session_id: "s-remote",
+        }),
+        "utf8",
+      );
+      // Local scan sees nothing; pointed at the run's root it sees the child.
+      expect(readWorkflowChildSessions(root, "wf-reader")).toEqual([]);
+      expect(readWorkflowChildSessions(root, "wf-reader", { heartbeatRoot: sibling })).toEqual([
+        { sessionId: "s-remote", agentId: "a1", live: true },
+      ]);
+    } finally {
+      rmSync(sibling, { recursive: true, force: true });
+    }
+  });
+});
+
+/** A manifest whose recorded execution cwd is `cwd`, everything else minimal. */
+function writeManifestWithCwd(cwd: string): void {
+  writeFileSync(join(runDir, "run.json"), JSON.stringify({ execution: { cwd } }), "utf8");
+}
+
 /** One `.harnery/active/` heartbeat file, the shape the reader's child-session
  * scan consumes. */
 function writeHeartbeat(
@@ -194,7 +318,7 @@ function writeSharedManifest(): void {
       repository_before: { cwd: root, dirty_paths: [] },
       execution: {
         cwd: root,
-        default_harness: "claude-code",
+        default_adapter: "claude-code",
         max_agents: 1,
         concurrency: 1,
         subscription_only: false,
@@ -281,8 +405,8 @@ function sampleProof(): WorkflowProof {
         incomplete: false,
       },
     },
-    harnesses: [],
+    adapters: [],
     unknowns: [],
-    integrity: { journal: { path: "journal.jsonl", sha256: "a".repeat(64), bytes: 10 } },
+    integrity: { transcript: { path: "transcript.jsonl", sha256: "a".repeat(64), bytes: 10 } },
   };
 }

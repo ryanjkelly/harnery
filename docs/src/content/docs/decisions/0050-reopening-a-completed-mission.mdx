@@ -1,0 +1,86 @@
+---
+title: "0050: A completed mission reopens by appending"
+description: "ADR: an operator finding on work beneath a succeeded mission reopens the mission through a superseding plan event, so the correction reaches the governor instead of stranding."
+---
+
+**Status:** accepted (2026-07-26) · **Scope:** product tier (`core/governor`, work CLI, public package APIs)
+
+## Context
+
+[ADR 0043](/decisions/0043-operator-findings/) made `work reopen
+--finding` the governed way to correct work that passed while being wrong. A failing run
+already carries its evidence forward; the gap that ADR closed was the passing run nobody
+could argue with.
+
+A mission that completes is the strongest form of that gap. The machine has declared the
+whole objective met, so it is the state where an operator is most likely to read the
+output and find something. It is also the state where the correction did not arrive.
+
+Reopening an item beneath a succeeded mission did everything it claimed. The item moved to
+`ready`, the findings landed on the `work.reopened` event, and the item appeared in the
+goal's `ready_work`. Then nothing dispatched it. The goal projection returned `succeeded`
+with `next_action: none` as soon as `intent.mission && plans.completed`, ahead of the
+branch that reads `plans.latest` and ahead of any `ready_work` evaluation. `harn governor
+run` reported the mission already complete and exited without a cycle.
+
+Observed on a real goal:
+
+```
+goal state: succeeded | next: none
+ready_work: ["plan-0002-bf9e35f3-fix-stopping-reason"]
+```
+
+The conflict was projection precedence, not a broken correction payload. `harn work run
+<id>` on the same item worked and carried both findings into the attempt. So the channel
+was sound and only the governor path was closed, which is the worst shape for this
+failure: the reopen reports success, and the operator has no way to learn from any CLI
+output that the work will never be picked up.
+
+## Decision
+
+A governed work reopen beneath a succeeded mission reopens the mission, by appending.
+
+`plan.reopened` joins the plan event vocabulary. When it follows a `plan.completed` event
+on the same plan, the plan derives as `reopened` rather than `completed`, which drops
+`plans.completed` and returns the goal to ordinary dispatch. The accepted completion stays
+in the log verbatim.
+
+The projection gains one branch, placed immediately after the completion check: a mission
+whose latest plan is `reopened` and which has dispatchable work returns `ready` / `run`.
+Without it the goal falls through to the milestone branch, which still sees a succeeded
+root when the reopened item is one of its children, and would spend a replan reassessing a
+mission whose real remaining work is already sitting in `ready_work`.
+
+`work reopen` resolves the governing goal before it touches the work item, so a refusal
+leaves nothing half-done, and reports on stderr when it reopened a mission. Reopening an
+already-reopened mission is idempotent rather than a second event. A mission that never
+completed refuses.
+
+## Alternatives considered
+
+**Refuse the reopen and name the workaround.** Cheapest and honest: exit non-zero with
+"this item's goal has completed; reopen the goal first or run the item directly." Rejected
+because ADR 0043 defines reopen as *the* governed correction path. Sending the operator to
+`harn work run` routes the correction around the governor, which is where the attempt
+budget, the acceptance policy, and the audit live.
+
+**Allow the reopen and warn.** The smallest change, and the only option ruled out on
+principle. It leaves the projection internally inconsistent — an item reported ready under
+a goal reported finished — and a warning does not make a stranded correction less
+stranded.
+
+**Rewrite the completion event.** Would produce the same projection with less machinery,
+and was never seriously on the table. The plan log is append-only; a completion that can be
+edited after the fact is not a record of what was accepted.
+
+## Consequences
+
+`milestones_completed` can decrease when a reopened item was a milestone root. That is
+honest rather than surprising: the milestone is no longer complete.
+
+The reverse lookup from a work item to its governing goal is a scan, because a work item
+holds no back-reference to a goal. It runs once per `work reopen` on a completed-mission
+item and reads projections that are already cheap to build.
+
+Revisit if reopened missions produce duplicate milestones, spend a fresh mission budget, or
+lose the ability to tell the latest completion epoch from the accepted historical one.

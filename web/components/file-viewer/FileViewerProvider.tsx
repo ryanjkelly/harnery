@@ -25,11 +25,10 @@
  * unaffected.
  */
 
-import type { FileViewerState, OpenOptions } from "@/lib/file-viewer/types";
 import {
-  Suspense,
   createContext,
   lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -37,6 +36,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { FileViewerState, OpenOptions } from "@/lib/file-viewer/types";
 
 const FileViewerOverlay = lazy(() => import("./FileViewerOverlay"));
 
@@ -50,6 +50,16 @@ const FileViewerContext = createContext<FileViewerApi | null>(null);
 function readPathParam(): string | null {
   if (typeof window === "undefined") return null;
   return new URLSearchParams(window.location.search).get("path");
+}
+
+/** `/files/view` is its own full-page viewer; don't also pop the modal overlay
+ * when that route carries `?path=`. */
+function isStandaloneViewPath(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.location.pathname === "/files/view" ||
+    window.location.pathname.startsWith("/files/view/")
+  );
 }
 
 /** Build a URL string for the current location with `path` set or removed,
@@ -116,7 +126,9 @@ export function FileViewerProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   // row d: auto-open on mount if the URL already carries ?path=. Runs once.
+  // Skip on /files/view — that page renders StandaloneFileViewer instead.
   useEffect(() => {
+    if (isStandaloneViewPath()) return;
     const initial = readPathParam();
     if (initial) {
       sessionPushed.current = false; // the entry already exists
@@ -129,6 +141,10 @@ export function FileViewerProvider({ children }: { children: React.ReactNode }) 
   // ?path= → close; Forward into a deep link → open.
   useEffect(() => {
     const onPop = () => {
+      if (isStandaloneViewPath()) {
+        setState(null);
+        return;
+      }
       const param = readPathParam();
       sessionPushed.current = false; // a popstate target's entry already exists
       setState((prev) => {

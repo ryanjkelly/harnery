@@ -52,6 +52,55 @@ describe("renderPromptContext", () => {
     expect(out).toBe("");
   });
 
+  test("Codex status footer is fresh on every prompt and preserves the answer", () => {
+    const opts = {
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      statusFooterNudge: true,
+    };
+
+    const first = renderPromptContext(opts);
+    const second = renderPromptContext(opts);
+
+    for (const out of [first, second]) {
+      expect(out).toContain("complete the user's request first");
+      expect(out).toContain("harn agents status");
+      expect(out).toContain("bottom of the same substantive reply");
+      expect(out).toContain("Keep the answer intact");
+      expect(out).toContain("Stop hook is observe-only");
+    }
+  });
+
+  test("Codex status footer skips subagents and workflow children", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
+      writeFileSync(
+        join(activeDir, "self.json"),
+        JSON.stringify({
+          schema_version: 1,
+          instance_id: "self",
+          name: "Maya",
+          session_id: "self",
+          files_touched: [],
+          last_heartbeat: now,
+          started_at: now,
+          ...extra,
+        }),
+        "utf8",
+      );
+      const out = renderPromptContext({
+        coordRoot: root,
+        instanceId: "self",
+        sessionId: "self",
+        agentName: "Maya",
+        statusFooterNudge: true,
+      });
+      expect(out).not.toContain("Codex status footer");
+    }
+  });
+
   test("hash dedup: second call with no changes returns empty", () => {
     // Seed a peer
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -108,6 +157,122 @@ describe("renderPromptContext", () => {
       taskNudge: true,
     });
     expect(out).toContain("task");
+  });
+
+  test("first-session nudge tells every adapter how to print the suggested name", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    writeFileSync(
+      join(activeDir, "self.json"),
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "self",
+        name: "Maya",
+        session_id: "self",
+        kind: "session",
+        files_touched: [],
+        last_heartbeat: now,
+        started_at: now,
+      }),
+      "utf8",
+    );
+    const out = renderPromptContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      sessionNameNudge: true,
+    });
+    expect(out).toContain('harn agents set-task "<2-5 word session topic>"');
+    expect(out).toContain("first_of_session: true");
+    expect(out).toContain("`suggested_session_name`");
+    expect(out).toContain("fenced code block");
+  });
+
+  test("first-session nudge dedupes while the first set-task is still pending", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    writeFileSync(
+      join(activeDir, "self.json"),
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "self",
+        name: "Maya",
+        session_id: "self",
+        kind: "session",
+        files_touched: [],
+        last_heartbeat: now,
+        started_at: now,
+      }),
+      "utf8",
+    );
+    const opts = {
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      sessionNameNudge: true,
+      taskNudge: true,
+    };
+    expect(renderPromptContext(opts)).toContain("suggested_session_name");
+    const second = renderPromptContext(opts);
+    expect(second).not.toContain("suggested_session_name");
+    expect(second).not.toContain("task` field is unset");
+  });
+
+  test("first-session nudge does not fire after any set-task, including a clear", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    writeFileSync(
+      join(activeDir, "self.json"),
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "self",
+        name: "Maya",
+        session_id: "self",
+        kind: "session",
+        task_updated_at: now,
+        files_touched: [],
+        last_heartbeat: now,
+        started_at: now,
+      }),
+      "utf8",
+    );
+    const out = renderPromptContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      sessionNameNudge: true,
+    });
+    expect(out).not.toContain("suggested_session_name");
+  });
+
+  test("first-session nudge skips subagents and workflow children", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
+      writeFileSync(
+        join(activeDir, "self.json"),
+        JSON.stringify({
+          schema_version: 1,
+          instance_id: "self",
+          name: "Maya",
+          session_id: "self",
+          files_touched: [],
+          last_heartbeat: now,
+          started_at: now,
+          ...extra,
+        }),
+        "utf8",
+      );
+      const out = renderPromptContext({
+        coordRoot: root,
+        instanceId: "self",
+        sessionId: "self",
+        agentName: "Maya",
+        sessionNameNudge: true,
+        taskNudge: true,
+      });
+      expect(out).not.toContain("suggested_session_name");
+      expect(out).not.toContain("task` field is unset");
+    }
   });
 
   test("task nudge does NOT fire when taskNudge=false (cc default)", () => {

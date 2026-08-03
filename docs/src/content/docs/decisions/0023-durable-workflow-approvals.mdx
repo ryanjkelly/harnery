@@ -1,6 +1,6 @@
 ---
 title: "0023: Policy approvals park workflows durably"
-description: "ADR: persist ASK requests and first-writer decisions, park without a terminal result, and resume deterministic workflow scripts from their journaled agent cache."
+description: "ADR: persist ASK requests and first-writer decisions, park without a terminal result, and resume deterministic workflow scripts from their transcripted agent cache."
 ---
 
 **Status:** accepted (2026-07-21) · **Scope:** product tier (`core/workflow`, workflow CLI, dashboard)
@@ -19,7 +19,7 @@ as an ordinary failure would also lose an important distinction: the workflow
 has not failed, completed, or received authorization. It is waiting.
 
 Harnery workflows are plain asynchronous JavaScript functions, not persisted
-graphs. The engine can replay completed `agent()` calls from its journal, but
+graphs. The engine can replay completed `agent()` calls from its transcript, but
 it cannot serialize a JavaScript stack or make arbitrary script side effects
 idempotent. The durable design must preserve that capability boundary.
 
@@ -51,14 +51,14 @@ proof packet because it is not terminal.
 
 Each workflow run also receives a private, frozen resume manifest before its
 first dispatch. It records the script path and SHA-256, original start time,
-repository-before snapshot, normalized policy, working directory, harness and
+repository-before snapshot, normalized policy, working directory, adapter and
 bounded execution options. `harn workflow resume <run-id>` acquires an
 exclusive, crash-recoverable lease before loading the workflow module, refuses
-script drift, reuses the same run ID and journal, reconstructs completed agent
+script drift, reuses the same run ID and transcript, reconstructs completed agent
 results and committed cost, appends `run.resume`, and reruns the deterministic
 script from its entry point. A concurrent resume attempt fails visibly.
 
-During replay, completed `agent()` calls return their journaled results without
+During replay, completed `agent()` calls return their transcripted results without
 spawning. The matching policy slot consumes the durable decision. Approval
 continues; denial throws before the protected action. A later unresolved `ask`
 creates another approval and parks the same run again. Only terminal success or
@@ -72,9 +72,9 @@ Add:
 - `harn workflow approvals deny <approval-id> [--actor <name>] [--reason <text>]`;
 - `harn workflow resume <run-id>`.
 
-Journal the request, resolution, consumption, park, and resume as separate
+Transcript the request, resolution, consumption, park, and resume as separate
 events. Resolution is authoritative when `decision.json` exists. If a process
-crashes after the decision file is created but before its journal receipt, a
+crashes after the decision file is created but before its transcript receipt, a
 later read or resume still observes the decision and can append consumption
 evidence. Approval never auto-spawns work; an operator or embedding host must
 invoke resume deliberately.
@@ -95,7 +95,7 @@ invoke resume deliberately.
   runtime. Harnery has no always-on trusted daemon, and approval should not
   smuggle in background process execution. A host may build an explicit wakeup
   service on the exported API.
-- **Create a new run for every continuation.** Rejected because the journal,
+- **Create a new run for every continuation.** Rejected because the transcript,
   approval slots, cost ledger, proof, and operator mental model all describe
   one workflow attempt. The same run ID may have multiple execution segments
   before its single terminal result.
@@ -124,7 +124,7 @@ invoke resume deliberately.
 - Only one resume segment may execute at once. Same-host process liveness and a
   bounded foreign-host lease allow stale locks to recover without treating a
   live continuation as abandoned.
-- A parked run intentionally has no terminal proof. Its journal and approval
+- A parked run intentionally has no terminal proof. Its transcript and approval
   record are the inspectable non-terminal evidence; the final packet covers the
   complete run after success or failure.
 - Crash-safe resume applies to Harnery-owned effects. Plain JavaScript executed

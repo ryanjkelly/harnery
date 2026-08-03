@@ -126,7 +126,7 @@ function HookEventSummary({
     );
   }
   return (
-    <span className="text-muted-foreground/70 font-mono">
+    <span className="text-muted-foreground/70 font-mono break-all">
       {truncate(JSON.stringify(data), 300)}
     </span>
   );
@@ -245,7 +245,7 @@ function hookEventSearchText(e: EventRow, instanceToName: Record<string, string>
     name,
     e.instance_id ?? "",
     e.session_id ?? "",
-    e.harness ?? "",
+    e.adapter ?? "",
     e.source ?? "",
     e.data ? JSON.stringify(e.data) : "",
   ]

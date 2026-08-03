@@ -164,4 +164,19 @@ describe("buildChildEnv billing behavior", () => {
     expect(env.ANTHROPIC_API_KEY).toBe("a");
     expect(env.OPENAI_API_KEY).toBe("b");
   });
+
+  test("stamps the agent id so in-flight activity attributes to one agent row", () => {
+    // A child cannot be identified by its session id while it is running: the
+    // adapter mints that and reports it only in the result envelope, once the
+    // work is over. Passing the orchestrator's own id inward is what makes live
+    // attribution possible at all.
+    const env = buildChildEnv("wf-1", { agentId: "a2" });
+    expect(env.HARNERY_WORKFLOW_RUN_ID).toBe("wf-1");
+    expect(env.HARNERY_WORKFLOW_AGENT_ID).toBe("a2");
+  });
+
+  test("omits the agent id when the caller has none", () => {
+    const env = buildChildEnv("wf-1");
+    expect(env.HARNERY_WORKFLOW_AGENT_ID).toBeUndefined();
+  });
 });

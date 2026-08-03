@@ -10,7 +10,7 @@ description: A durable-work attempt spends its budget only when it produced info
 Every durable-work item has a fixed attempt budget (`max_attempts`, default 3).
 Every failure spent one, including failures that never touched the work at all.
 
-Re-counted from every supervisor plan record on one host (32 failures):
+Re-counted from every governor plan record on one host (32 failures):
 
 - **19 (59%)** `codex CLI not found on PATH`, retried against an unchanged
   `PATH` until the budget ran out.
@@ -83,7 +83,7 @@ proof (`run.class`) and read by the durable-work projection:
   reports it is blocked **waiting on an outside service**, which is distinct from
   blocked on the work.
 
-The same rule governs the supervisor's **replan** budget. The 59% "not found"
+The same rule governs the governor's **replan** budget. The 59% "not found"
 bleed in the measured data came from the planner replanning an unchanged
 environment, so the charging logic lands there too, not only in durable work: an
 `environment` planner failure stops the goal and names the precondition, and
@@ -105,7 +105,7 @@ Two safety properties, both required and both enforced by tests:
 ### Detection, in order of durability
 
 - **environment is structural.** `exec()` surfaces `spawnErrno`;
-  `HarnessRawResult` carries it; each adapter maps `ENOENT` to
+  `AdapterRawResult` carries it; each adapter maps `ENOENT` to
   `class: "environment"`. A bare 127 with no errno is *not* classed, because it is
   indistinguishable from a legitimate shell 127, so it stays a charged work
   failure.
@@ -140,7 +140,7 @@ real work before an environment failure is not written off.
 Gotchas worth knowing:
 
 - **Scope: both budgets.** This changes durable work (`src/core/work/`) **and**
-  the supervisor replan budget (`src/core/supervisor/`). The 59% "not found"
+  the governor replan budget (`src/core/governor/`). The 59% "not found"
   bleed came from the planner replanning an unchanged environment, so the
   charging/stopping logic had to land there too, and the shared errno/class
   plumbing serves both. The planner classifies its own failure by reading its workflow

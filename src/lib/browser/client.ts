@@ -11,6 +11,15 @@ import {
   type Request,
 } from "playwright";
 import type { CookieJar, Cookie as JarCookie } from "../cookies/index.ts";
+import { type AssertResult, type AssertSpec, buildAssertCheck } from "./asserts.js";
+import {
+  buildClearContentAnnotationsScript,
+  buildContentAnnotateScript,
+  buildContentChecks,
+  type ContentAnnotationBox,
+  type ContentChecksRequest,
+  type ContentChecksResult,
+} from "./content-checks.js";
 import {
   buildClearLayoutLintAnnotationsScript,
   buildLayoutLintAnnotateScript,
@@ -141,6 +150,38 @@ export interface Diagnostics {
 
 const DEFAULT_PROFILE = resolve(homedir(), ".cache", "harnery", "browser-profile");
 
+// Bound how many Chromium processes SPAWN at the same moment. When many Browser
+// instances open at once — a full test suite, a fan-out of browse calls — the
+// simultaneous `child_process.spawn`s exhaust the OS's stdio-pipe/socket
+// resources and Chromium launch dies with an unhandled ENOENT that a per-call
+// retry can't catch. Serializing only the brief launch phase (never the
+// browser's lifetime, so N browsers still run concurrently) removes the burst
+// that causes it. Overridable via HARNERY_MAX_BROWSER_LAUNCHES.
+const MAX_CONCURRENT_LAUNCHES = Math.max(
+  1,
+  Number.parseInt(process.env.HARNERY_MAX_BROWSER_LAUNCHES ?? "3", 10) || 3,
+);
+let activeLaunches = 0;
+const launchWaiters: Array<() => void> = [];
+
+async function acquireLaunchSlot(): Promise<void> {
+  if (activeLaunches < MAX_CONCURRENT_LAUNCHES) {
+    activeLaunches++;
+    return;
+  }
+  // Queue; the releaser transfers its slot to us (activeLaunches unchanged).
+  await new Promise<void>((resolve) => launchWaiters.push(resolve));
+}
+
+function releaseLaunchSlot(): void {
+  const next = launchWaiters.shift();
+  if (next) {
+    next();
+  } else {
+    activeLaunches = Math.max(0, activeLaunches - 1);
+  }
+}
+
 export class Browser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
@@ -161,20 +202,27 @@ export class Browser {
     return this.page;
   }
 
-  async open(): Promise<void> {
-    if (this.context) return;
-    mkdirSync(this.profileDir, { recursive: true });
-
-    this.context = await chromium.launchPersistentContext(this.profileDir, {
-      headless: !this.opts.headed,
-      viewport: this.opts.viewport ?? { width: 1280, height: 800 },
-      ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
-        ? { args: this.opts.launchArgs }
-        : {}),
-      ...(this.opts.recordHarPath
-        ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
-        : {}),
-    });
+  /**
+   * Launch the context and wire up the first page. Factored out of `open()` so
+   * the whole sequence — not just the launch — can be retried as a unit.
+   */
+  private async openOnce(): Promise<void> {
+    // Hold a launch slot only across the spawn itself, not the browser's life.
+    await acquireLaunchSlot();
+    try {
+      this.context = await chromium.launchPersistentContext(this.profileDir, {
+        headless: !this.opts.headed,
+        viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+        ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
+          ? { args: this.opts.launchArgs }
+          : {}),
+        ...(this.opts.recordHarPath
+          ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
+          : {}),
+      });
+    } finally {
+      releaseLaunchSlot();
+    }
     this.context.setDefaultNavigationTimeout(this.opts.navigationTimeout ?? 30_000);
 
     if (this.opts.jar) {
@@ -200,6 +248,54 @@ export class Browser {
     const pages = this.context.pages();
     this.page = pages[0] ?? (await this.context.newPage());
     this.attachDiagnosticListeners(this.page);
+  }
+
+  /**
+   * Open the browser, retrying a few times on a transient startup failure.
+   * Chromium occasionally fails to hand off its CDP port ("Failed to connect",
+   * "Target closed") when many instances launch at once — a busy CI box or a
+   * full test suite — and the failure can surface on the launch OR on a
+   * follow-up call (addCookies, newPage) when the process dies right after
+   * spawning. So the entire open sequence retries as a unit, tearing down any
+   * half-built context between attempts. A genuinely broken config fails every
+   * attempt and throws with the underlying message.
+   */
+  async open(): Promise<void> {
+    if (this.context) return;
+    mkdirSync(this.profileDir, { recursive: true });
+
+    const maxAttempts = 3;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.openOnce();
+        return;
+      } catch (err) {
+        lastErr = err;
+        // Tear down a partial context + reset diagnostics collected on the
+        // failed attempt, so the retry starts clean. (openOnce() reassigns
+        // this.context, which TS can't see across the call, so re-widen.)
+        const partial = this.context as BrowserContext | null;
+        if (partial) {
+          try {
+            await partial.close();
+          } catch {
+            // ignore — the process is likely already gone
+          }
+        }
+        this.context = null;
+        this.page = null;
+        this.consoleEvents = [];
+        this.pageErrors = [];
+        this.failedRequests = [];
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+        }
+      }
+    }
+    throw new Error(
+      `Failed to open browser after ${maxAttempts} attempts: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+    );
   }
 
   /**
@@ -293,6 +389,65 @@ export class Browser {
     const page = this.currentPage;
     const buf = await page.screenshot({ path, fullPage: opts.fullPage ?? true, type: "png" });
     return buf.length;
+  }
+
+  /** Full document + viewport dimensions, for tiling a page into bands. */
+  async pageMetrics(): Promise<{
+    scrollWidth: number;
+    scrollHeight: number;
+    viewportWidth: number;
+    viewportHeight: number;
+  }> {
+    return await this.currentPage.evaluate(() => ({
+      scrollWidth: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+      scrollHeight: Math.max(
+        document.documentElement.scrollHeight,
+        document.body?.scrollHeight ?? 0,
+      ),
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    }));
+  }
+
+  /** Full-page PNG as a Buffer, for cropping critique tiles in pixel space. */
+  async fullPageScreenshotBuffer(): Promise<Buffer> {
+    return await this.currentPage.screenshot({ type: "png", fullPage: true });
+  }
+
+  /** Base64 PNG of a document-space clip rect. Used to capture one critique tile. */
+  async screenshotClipBase64(rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): Promise<string> {
+    const buf = await this.currentPage.screenshot({ type: "png", clip: rect });
+    return buf.toString("base64");
+  }
+
+  /** Document-space rects + labels for each element matching `selector` (semantic tiling). */
+  async elementTiles(
+    selector: string,
+  ): Promise<Array<{ label: string; x: number; y: number; width: number; height: number }>> {
+    return await this.currentPage.evaluate((sel) => {
+      const out: Array<{ label: string; x: number; y: number; width: number; height: number }> = [];
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+      for (const el of Array.from(document.querySelectorAll(sel))) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const tag = el.tagName.toLowerCase();
+        const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/)[0] : "";
+        out.push({
+          label: el.id ? `${tag}#${el.id}` : cls ? `${tag}.${cls}` : tag,
+          x: Math.max(0, r.x + sx),
+          y: Math.max(0, r.y + sy),
+          width: r.width,
+          height: r.height,
+        });
+      }
+      return out;
+    }, selector);
   }
 
   /**
@@ -598,6 +753,26 @@ export class Browser {
   /** Remove rendered-geometry annotations. */
   async clearLayoutLintAnnotations(): Promise<void> {
     await this.currentPage.evaluate(buildClearLayoutLintAnnotationsScript());
+  }
+
+  /** Run the requested content checks (placeholder/image/truncation/contrast) in one evaluation. */
+  async checkContent(request: ContentChecksRequest): Promise<ContentChecksResult> {
+    return await this.currentPage.evaluate(buildContentChecks(), request);
+  }
+
+  /** Evaluate value assertions (text/contains/matches/count/exists/absent) against the page. */
+  async checkAsserts(specs: AssertSpec[]): Promise<AssertResult[]> {
+    return await this.currentPage.evaluate(buildAssertCheck(), specs);
+  }
+
+  /** Draw one document-space annotation layer for content-check hits. */
+  async annotateContent(boxes: ContentAnnotationBox[]): Promise<void> {
+    await this.currentPage.evaluate(buildContentAnnotateScript(), { boxes });
+  }
+
+  /** Remove content-check annotations. */
+  async clearContentAnnotations(): Promise<void> {
+    await this.currentPage.evaluate(buildClearContentAnnotationsScript());
   }
 
   /**

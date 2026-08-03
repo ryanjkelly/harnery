@@ -17,16 +17,16 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
+import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
-import { BUILTIN_HARNESS_IDS } from "../core/harnesses/index.ts";
-import { loadHarnessWiring } from "../core/hooks/harness/wiring.ts";
-import { probeBilling } from "../core/workflow/billing.ts";
+import { loadAdapterWiring } from "../core/hooks/adapter/wiring.ts";
 import {
-  HARNESS_BINARIES,
-  HARNESS_INSTALL_HINTS,
-  HARNESS_LOGIN_HINTS,
-} from "../core/workflow/harnesses.ts";
-import type { HarnessName } from "../core/workflow/types.ts";
+  ADAPTER_BINARIES,
+  ADAPTER_INSTALL_HINTS,
+  ADAPTER_LOGIN_HINTS,
+} from "../core/workflow/adapters.ts";
+import { probeBilling } from "../core/workflow/billing.ts";
+import type { AdapterName } from "../core/workflow/types.ts";
 import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
 type Severity = "ok" | "warn" | "fail";
@@ -103,8 +103,8 @@ export function runChecks(): Check[] {
     checkBun(),
     checkRipgrep(),
     checkHarneryDir(),
-    checkHarnessHooks(),
-    ...BUILTIN_HARNESS_IDS.map(checkWorkflowHarness),
+    checkAdapterHooks(),
+    ...BUILTIN_ADAPTER_IDS.map(checkWorkflowAdapter),
     checkRestic(),
     checkRclone(),
     checkPlaywright(),
@@ -154,29 +154,29 @@ function whichVersion(bin: string, args: string[] = ["--version"]): { ok: boolea
 }
 
 /**
- * One workflow spawn target: is the harness CLI installed, and how will its
+ * One workflow spawn target: is the adapter CLI installed, and how will its
  * headless children bill (subscription login vs API key — see billing.ts)?
- * Missing is a warn, not a fail: workflows degrade to the harnesses you have.
+ * Missing is a warn, not a fail: workflows degrade to the adapters you have.
  */
-function checkWorkflowHarness(harness: HarnessName): Check {
-  const bin = HARNESS_BINARIES[harness];
-  const name = `workflow:${harness}`;
+function checkWorkflowAdapter(adapter: AdapterName): Check {
+  const bin = ADAPTER_BINARIES[adapter];
+  const name = `workflow:${adapter}`;
   const r = whichVersion(bin);
   if (!r.ok) {
     return {
       name,
       severity: "warn",
-      detail: `${bin} missing (workflow --harness ${harness} unavailable)`,
-      hint: `${HARNESS_INSTALL_HINTS[harness]}  then: ${HARNESS_LOGIN_HINTS[harness]}`,
+      detail: `${bin} missing (workflow --adapter ${adapter} unavailable)`,
+      hint: `${ADAPTER_INSTALL_HINTS[adapter]}  then: ${ADAPTER_LOGIN_HINTS[adapter]}`,
     };
   }
-  const probe = probeBilling(harness);
+  const probe = probeBilling(adapter);
   if (probe.login === "absent" && !probe.apiKeyPresent) {
     return {
       name,
       severity: "warn",
       detail: `${r.out} — installed, but no stored login or API key detected`,
-      hint: HARNESS_LOGIN_HINTS[harness],
+      hint: ADAPTER_LOGIN_HINTS[adapter],
     };
   }
   const billing =
@@ -324,21 +324,21 @@ function checkHarneryDir(): Check {
 }
 
 /**
- * Compare the project's wired harness hooks against HARNESS_SPECS. Catches the
+ * Compare the project's wired adapter hooks against ADAPTER_SPECS. Catches the
  * post-upgrade case where a harnery release added (or renamed) a hook event but
- * the consumer's settings file hasn't been re-wired. Only fires for a harness
+ * the consumer's settings file hasn't been re-wired. Only fires for a adapter
  * the project has opted into (≥1 harnery hook already wired) — see
- * loadHarnessWiring — so a bare settings file never false-warns. The remedy is
+ * loadAdapterWiring — so a bare settings file never false-warns. The remedy is
  * always the same: re-run `<bin> init` (idempotent, additive).
  */
-function checkHarnessHooks(): Check {
+function checkAdapterHooks(): Check {
   const root = findCoordProjectRoot();
   if (!root) {
-    return { name: "harness hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
+    return { name: "adapter hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
   }
-  const drift = loadHarnessWiring(root);
+  const drift = loadAdapterWiring(root);
   if (drift.length === 0) {
-    return { name: "harness hooks", severity: "ok", detail: "wired + current" };
+    return { name: "adapter hooks", severity: "ok", detail: "wired + current" };
   }
   const bin = resolveBinName(root);
   const parts = drift.map((d) => {
@@ -360,9 +360,9 @@ function checkHarnessHooks(): Check {
     (d) => d.parseError || d.invalidTopLevelKeys.length > 0 || d.invalidEventKeys.length > 0,
   );
   const hint = needsManualRepair
-    ? `repair the invalid harness settings, then run \`${bin} init\` to migrate harnery hooks`
+    ? `repair the invalid adapter settings, then run \`${bin} init\` to migrate harnery hooks`
     : `run \`${bin} init\` to migrate the hook set (idempotent)`;
-  return { name: "harness hooks", severity: "warn", detail: parts.join("  |  "), hint };
+  return { name: "adapter hooks", severity: "warn", detail: parts.join("  |  "), hint };
 }
 
 function macOrLinux(mac: string, linux: string): string {

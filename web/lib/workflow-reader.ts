@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import {
   inspectWorkflowWorkspace,
@@ -7,8 +7,8 @@ import {
 } from "harnery/core/workflow/workspaces/inspect";
 
 /**
- * Journal-driven reader for workflow runs (`.harnery/workflows/<run-id>/
- * journal.jsonl`). The journal is the source of truth for run structure —
+ * Transcript-driven reader for workflow runs (`.harnery/workflows/<run-id>/
+ * transcript.jsonl`). The transcript is the source of truth for run structure —
  * heartbeats only add live color — so this reader needs nothing but fs.
  */
 
@@ -16,7 +16,7 @@ export interface WorkflowAgentRow {
   id: string;
   label: string;
   stage: string;
-  harness?: string;
+  adapter?: string;
   model?: string | null;
   status: "running" | "done" | "failed" | "cached";
   attempts?: number;
@@ -25,7 +25,7 @@ export interface WorkflowAgentRow {
   sessionId?: string;
   /** `agent.start` ts. The anchor for a live elapsed timer, which is the only
    * thing distinguishing a working agent from a hung one mid-run: a child that
-   * works for 18 minutes writes nothing to the journal between its two ends. */
+   * works for 18 minutes writes nothing to the transcript between its two ends. */
   startedAt?: string;
   /** `agent.end` / `agent.failed` ts. Absent while the agent is in flight. */
   endedAt?: string;
@@ -43,17 +43,22 @@ export interface WorkflowRunSummary {
   agents: WorkflowAgentRow[];
   agentsCached: number;
   costUsd: number;
-  /** "harness=mode" per harness used (from billing.probe journal events). */
+  /** "adapter=mode" per adapter used (from billing.probe transcript events). */
   billing: string[];
   /** Terminal proof packet, absent for live and pre-proof runs. */
   proof?: WorkflowProof;
   /** Validated workspace projection, including an explicit error on bad authority. */
   workspace?: WorkflowWorkspaceInspection;
-  /** Journal mtime — the liveness signal for status=running vs stale. */
+  /** Transcript mtime — the liveness signal for status=running vs stale. */
   lastActivityAt: string;
+  /** Durable work item this run is an attempt at, from `run.json`. Absent for a
+   * run launched directly from a script rather than against a work item. */
+  workItemId?: string;
+  /** Which attempt at that work item this run is, and what triggered it. */
+  attempt?: { number?: number; trigger?: string };
 }
 
-interface JournalLine {
+interface TranscriptLine {
   ts?: string;
   event?: string;
   stage?: string;
@@ -61,7 +66,7 @@ interface JournalLine {
   label?: string;
   title?: string;
   name?: string;
-  harness?: string;
+  adapter?: string;
   model?: string | null;
   mode?: string;
   attempts?: number;
@@ -74,15 +79,15 @@ interface JournalLine {
   approval_id?: string;
 }
 
-/** A run with no journal writes for this long, and no run.end, is "stale"
+/** A run with no transcript writes for this long, and no run.end, is "stale"
  * (orchestrator likely killed) rather than "running". */
 const STALE_MS = 10 * 60 * 1000;
 
-/** One child harness session belonging to a workflow run. */
+/** One child adapter session belonging to a workflow run. */
 export interface WorkflowChildSession {
   sessionId: string;
   /** The agent row this session ran, when known: from the heartbeat's
-   * `workflow_agent_id` while live, or the journal's `agent.end` once ended. */
+   * `workflow_agent_id` while live, or the transcript's `agent.end` once ended. */
   agentId?: string;
   /** A heartbeat for this session is present and unterminated. */
   live: boolean;
@@ -120,21 +125,27 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
 }
 
 /**
- * Every child harness session of a run — live and finished.
+ * Every child adapter session of a run, live and finished.
  *
- * The two sources are complementary rather than redundant, and the union has no
- * gap: a live child is only in `.harnery/active/` (the journal does not learn
- * its session id until `agent.end`, because the harness mints the id and only
- * reports it in the result envelope), and a finished child is only in the
- * journal (its heartbeat is deleted on session end).
+ * Both sources are needed, and together they leave no gap: a live child appears
+ * only in `.harnery/active/` (the transcript does not learn its session id until
+ * `agent.end`, because the adapter mints the id and only reports it in the
+ * result envelope), and a finished child appears only in the transcript (its
+ * heartbeat is deleted on session end).
  *
  * This is the join key for run-scoped activity: child sessions write ordinary
  * `tool.pre_use` / `tool.post_use` events to the run's coord root, so filtering
- * `events.ndjson` to these session ids yields the run's real activity.
+ * `events.ndjson` to these session ids yields what the run actually did.
  */
-export function readWorkflowChildSessions(root: string, runId: string): WorkflowChildSession[] {
+export function readWorkflowChildSessions(
+  root: string,
+  runId: string,
+  /** Root holding the children's heartbeats, when the run executed in another
+   * checkout. The transcript stays in `root`; only `.harnery/active/` moves. */
+  opts: { heartbeatRoot?: string } = {},
+): WorkflowChildSession[] {
   const byId = new Map<string, WorkflowChildSession>();
-  const heartbeats = readWorkflowChildHeartbeats(root);
+  const heartbeats = readWorkflowChildHeartbeats(opts.heartbeatRoot ?? root);
   for (const hb of heartbeats.get(runId) ?? []) {
     if (!hb.session_id) continue;
     byId.set(hb.session_id, {
@@ -147,7 +158,7 @@ export function readWorkflowChildSessions(root: string, runId: string): Workflow
   for (const agent of run?.agents ?? []) {
     if (!agent.sessionId) continue;
     const existing = byId.get(agent.sessionId);
-    // The journal is authoritative for which agent ran a session; the heartbeat
+    // The transcript is authoritative for which agent ran a session; the heartbeat
     // is authoritative for whether it is still running.
     byId.set(agent.sessionId, {
       sessionId: agent.sessionId,
@@ -162,9 +173,20 @@ export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
   const dir = join(root, ".harnery", "workflows");
   if (!existsSync(dir)) return [];
   const runs: WorkflowRunSummary[] = [];
-  const heartbeats = readWorkflowChildHeartbeats(root);
+  // Liveness comes from the heartbeats in the root a run actually executed in,
+  // so a run driven from a sibling checkout is judged against its own children
+  // rather than being called stale for the absence of local ones. Roots are
+  // scanned once each: a repo has a handful of them across many runs.
+  const heartbeatsByRoot = new Map<string, Map<string, ChildHeartbeat[]>>();
+  const heartbeatsFor = (r: string): Map<string, ChildHeartbeat[]> => {
+    const cached = heartbeatsByRoot.get(r);
+    if (cached) return cached;
+    const fresh = readWorkflowChildHeartbeats(r);
+    heartbeatsByRoot.set(r, fresh);
+    return fresh;
+  };
   for (const runId of readdirSync(dir)) {
-    const run = readWorkflowRun(root, runId, heartbeats);
+    const run = readWorkflowRun(root, runId, heartbeatsFor(resolveRunCoordRoot(root, runId).root));
     if (run) runs.push(run);
   }
   // Newest first (run ids embed an ISO timestamp, but sort on startedAt to be safe).
@@ -179,12 +201,12 @@ export function readWorkflowRun(
    * instead of once per run. Read on demand when omitted. */
   heartbeats?: Map<string, ChildHeartbeat[]>,
 ): WorkflowRunSummary | null {
-  const journalPath = join(root, ".harnery", "workflows", runId, "journal.jsonl");
-  if (!existsSync(journalPath)) return null;
+  const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");
+  if (!existsSync(transcriptPath)) return null;
 
   let mtimeIso = new Date(0).toISOString();
   try {
-    mtimeIso = statSync(journalPath).mtime.toISOString();
+    mtimeIso = statSync(transcriptPath).mtime.toISOString();
   } catch {
     /* keep epoch */
   }
@@ -201,12 +223,13 @@ export function readWorkflowRun(
   const billing: string[] = [];
   const proof = readProof(root, runId);
   const workspace = readWorkspaceInspection(root, runId);
+  const manifest = readRunManifestFacts(root, runId);
 
-  for (const line of readFileSync(journalPath, "utf8").split("\n")) {
+  for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    let e: JournalLine;
+    let e: TranscriptLine;
     try {
-      e = JSON.parse(line) as JournalLine;
+      e = JSON.parse(line) as TranscriptLine;
     } catch {
       continue;
     }
@@ -225,7 +248,7 @@ export function readWorkflowRun(
         if (e.title && !stages.includes(e.title)) stages.push(e.title);
         break;
       case "billing.probe":
-        if (e.harness && e.mode) billing.push(`${e.harness}=${e.mode}`);
+        if (e.adapter && e.mode) billing.push(`${e.adapter}=${e.mode}`);
         break;
       case "agent.start":
         if (e.id) {
@@ -233,7 +256,7 @@ export function readWorkflowRun(
             id: e.id,
             label: e.label ?? e.id,
             stage: e.stage ?? "",
-            harness: e.harness,
+            adapter: e.adapter,
             model: e.model ?? null,
             status: "running",
             startedAt: e.ts,
@@ -283,9 +306,9 @@ export function readWorkflowRun(
     }
   }
 
-  // A live child heartbeat outranks journal quiet. Journal mtime alone reported
+  // A live child heartbeat outranks transcript quiet. Transcript mtime alone reported
   // a healthy run as STALE, because an agent that works for longer than
-  // STALE_MS writes nothing between `agent.start` and `agent.end` — the quiet
+  // STALE_MS writes nothing between `agent.start` and `agent.end`. The quiet
   // is the work, not a dead orchestrator.
   const hbIndex = heartbeats ?? readWorkflowChildHeartbeats(root);
   const hasLiveChild = (hbIndex.get(runId) ?? []).some((hb) => !hb.ended_at);
@@ -315,6 +338,8 @@ export function readWorkflowRun(
     proof,
     workspace,
     lastActivityAt: mtimeIso,
+    workItemId: manifest.workItemId,
+    attempt: manifest.attempt,
   };
 }
 
@@ -327,6 +352,102 @@ function readProof(root: string, runId: string): WorkflowProof | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Work item + attempt facts from the run manifest.
+ *
+ * Kept separate from the workspace inspection, which reads the same file for a
+ * different purpose: these are plain identity fields, and a manifest that fails
+ * workspace validation should still be able to say which attempt it was.
+ */
+function readRunManifestFacts(
+  root: string,
+  runId: string,
+): { workItemId?: string; attempt?: { number?: number; trigger?: string } } {
+  const path = join(root, ".harnery", "workflows", runId, "run.json");
+  if (!existsSync(path)) return {};
+  try {
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+      work_item_id?: string;
+      attempt_context?: { number?: number; trigger?: string };
+    };
+    const attempt = manifest.attempt_context;
+    return {
+      workItemId: manifest.work_item_id,
+      // Only surface an attempt when it says something; early manifests carry
+      // a work item with no attempt context at all.
+      attempt:
+        attempt && (attempt.number !== undefined || attempt.trigger !== undefined)
+          ? { number: attempt.number, trigger: attempt.trigger }
+          : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/** Where a run's child activity lives, and how confidently we know it. */
+export interface RunCoordRoot {
+  /** Repo root whose `.harnery/` holds this run's child events. */
+  root: string;
+  /** The resolved root is not the one the dashboard is scanning. */
+  foreign: boolean;
+  /** `execution.cwd` from the manifest, when it recorded one. */
+  recordedCwd?: string;
+  /**
+   * Why the local root was used instead of the recorded one.
+   *
+   * `cwd-missing` is the one worth showing an operator: the run really did
+   * execute somewhere else and that somewhere is gone, so its activity is
+   * unrecoverable rather than merely elsewhere. The other two are ordinary.
+   */
+  fallback?: "no-cwd" | "cwd-missing" | "no-coord-root";
+}
+
+/** How far up from the run's cwd to look for an enclosing `.harnery/`. Matches
+ * the depth `coordRoot()` walks. */
+const COORD_ROOT_WALK_LIMIT = 8;
+
+/**
+ * Resolve the coord root that holds a run's child events.
+ *
+ * A workflow child writes its events to whichever coord root it runs in, which
+ * is not always the root holding the run transcript: a run driven from a sibling
+ * checkout, a submodule, or a temporary workspace transcripts here and emits
+ * there. Reading the local stream for such a run finds nothing, which the page
+ * used to present as "this run did nothing".
+ *
+ * The recorded cwd is a directory, not a coord root, so this walks up from it
+ * the same way `coordRoot()` does. When that walk comes up empty the local root
+ * is the right answer and not a consolation prize: a run whose cwd sits outside
+ * any checkout was transcripted here because the orchestrator's own root was here.
+ */
+export function resolveRunCoordRoot(localRoot: string, runId: string): RunCoordRoot {
+  const manifestPath = join(localRoot, ".harnery", "workflows", runId, "run.json");
+  let cwd: string | undefined;
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      execution?: { cwd?: string };
+    };
+    cwd = manifest.execution?.cwd?.trim() || undefined;
+  } catch {
+    // No manifest, or unreadable. Local root, no explanation owed.
+  }
+  if (!cwd) return { root: localRoot, foreign: false, fallback: "no-cwd" };
+  if (!existsSync(cwd)) {
+    return { root: localRoot, foreign: false, recordedCwd: cwd, fallback: "cwd-missing" };
+  }
+  let dir = cwd;
+  for (let i = 0; i < COORD_ROOT_WALK_LIMIT; i++) {
+    if (existsSync(join(dir, ".harnery"))) {
+      return { root: dir, foreign: dir !== localRoot, recordedCwd: cwd };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return { root: localRoot, foreign: false, recordedCwd: cwd, fallback: "no-coord-root" };
 }
 
 function readWorkspaceInspection(

@@ -24,7 +24,7 @@ export function PingForm({ instanceId }: { instanceId: string }) {
       });
       const json = (await res.json()) as { ok: boolean; error?: string; bytes?: number };
       if (json.ok) {
-        setFeedback({ ok: true, msg: `pinged · scratchpad now ${json.bytes ?? "?"} bytes` });
+        setFeedback({ ok: true, msg: `pinged · journal now ${json.bytes ?? "?"} bytes` });
         setMessage("");
       } else {
         setFeedback({ ok: false, msg: json.error ?? "failed" });
@@ -41,7 +41,7 @@ export function PingForm({ instanceId }: { instanceId: string }) {
       <textarea
         value={message}
         onChange={(e) => setMessage(e.target.value)}
-        placeholder="message to append to their scratchpad (prefixed with `from web-ui:`)"
+        placeholder="message to append to their journal (prefixed with `from web-ui:`)"
         rows={3}
         disabled={busy}
         className="w-full bg-background border border-border rounded p-2 text-sm font-mono disabled:opacity-50"

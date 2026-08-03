@@ -54,7 +54,7 @@ describe("projectHeartbeats: coercion of writer-produced heartbeats", () => {
         ts: "2026-06-04T00:01:00Z",
         instance_id: "healed-x",
         session_id: "healed-x",
-        harness: "cursor",
+        adapter: "cursor",
         source: "test",
         data: {},
       },
@@ -89,7 +89,7 @@ describe("projectHeartbeats: coercion of writer-produced heartbeats", () => {
         ts: "2026-06-04T00:00:00Z",
         instance_id: "fresh-y",
         session_id: "fresh-y",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: {},
       },
@@ -109,7 +109,7 @@ describe("projectHeartbeats: coercion of writer-produced heartbeats", () => {
         ts: "2026-06-04T00:00:00Z",
         instance_id: "wf-child-1",
         session_id: "wf-child-1",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: { workflow_run_id: "wf-2026-06-04T00-00-00-000Z-abc123" },
       },
@@ -133,7 +133,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
         ts: "2026-06-04T00:00:00Z",
         instance_id: "ghost-sub",
         session_id: "parent-uuid",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: { exit_status: "ok" },
       },
@@ -154,7 +154,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
         ts: "2026-06-04T00:00:00Z",
         instance_id: "ghost-sess",
         session_id: "ghost-sess",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: { clean_exit: true },
       },
@@ -181,7 +181,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
         ts: "2026-06-04T01:00:00Z",
         instance_id: "live-z",
         session_id: "live-z",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: { clean_exit: true },
       },
@@ -207,7 +207,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
         ts: "2026-06-10T01:18:07Z",
         instance_id: "swept-ghost",
         session_id: "swept-ghost",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "agent-coord",
         data: { reason: "stale", age_secs: 700 },
       },
@@ -230,7 +230,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
     const base = {
       instance_id: "replayed-sub",
       session_id: "parent-uuid",
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
     };
     const events = [
@@ -272,7 +272,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
     const base = {
       instance_id: "inflight-sub",
       session_id: "parent-uuid",
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
     };
     const events = [
@@ -302,7 +302,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
     const base = {
       instance_id: "replayed-sess",
       session_id: "replayed-sess",
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
     };
     const events = [
@@ -340,7 +340,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
         ts: "2026-06-10T01:00:00Z",
         instance_id: "seed-arr",
         session_id: "seed-arr",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: {},
       },
@@ -362,7 +362,7 @@ describe("projectHeartbeats: seeds identity from .name-history (no agent-unknown
       ts: "2026-06-04T00:00:01Z",
       instance_id: instanceId,
       session_id: sessionId,
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
       data: { tool_name: "Bash", tool_input: JSON.stringify({ command: "git status" }) },
     };
@@ -434,7 +434,7 @@ describe("projectHeartbeats: last_tool_target intent-comment clipping", () => {
       ts: "2026-06-04T00:00:01Z",
       instance_id: instanceId,
       session_id: instanceId,
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
       data: { tool_name: "Bash", tool_input: JSON.stringify({ command }) },
     };
@@ -473,7 +473,7 @@ describe("projectHeartbeats: last_tool_target intent-comment clipping", () => {
       ts: "2026-06-04T00:00:01Z",
       instance_id: "read-owner",
       session_id: "read-owner",
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
       data: { tool_name: "Read", tool_input: JSON.stringify({ file_path: "/repo/x.ts" }) },
     };
@@ -501,7 +501,7 @@ describe("projectHeartbeats: claim.release durability + path-form normalization"
       ts,
       instance_id: OWNER,
       session_id: OWNER,
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "test",
       data: { tool_name: "Edit", tool_input: JSON.stringify({ file_path: file }) },
     };
@@ -514,7 +514,7 @@ describe("projectHeartbeats: claim.release durability + path-form normalization"
       ts,
       instance_id: OWNER,
       session_id: OWNER,
-      harness: "claude-code",
+      adapter: "claude-code",
       source: "agent-coord",
       data: { path: p, reason: "explicit" },
     };

@@ -26,7 +26,7 @@ export function resolveIntent(opts: {
 }): { intent: string; source: "command-comment" | "description" | "stamp" | "none" } {
   const stampPath = join(opts.coordRoot, ".harnery", `.last-intent.${opts.instanceId}`);
 
-  // 1. Fresh from the command itself (most reliable, cross-harness).
+  // 1. Fresh from the command itself (most reliable, cross-adapter).
   if (opts.commandIntentComment) {
     const cleaned = clamp(opts.commandIntentComment);
     if (cleaned) {

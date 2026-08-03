@@ -1,7 +1,7 @@
 /**
  * Council manifest helpers: file-based multi-agent coordination primitives.
  *
- * Lives under .harnery/councils/ alongside heartbeats + scratchpads. Council
+ * Lives under .harnery/councils/ alongside heartbeats + journals. Council
  * lifecycle commands serialize manifest mutations through a shared flock;
  * round contribution files are per-member and don't need shared locking.
  */
@@ -242,7 +242,7 @@ export interface KnownAgent {
   /** `agent-<Name>` canonical handle. */
   name: string;
   /** `active` = currently has a heartbeat in `.harnery/active/`. `stale` =
-   * recently ended (scratchpad archived within the lookback window). */
+   * recently ended (journal archived within the lookback window). */
   state: "active" | "stale";
   /** ISO timestamp of the most-recent signal. */
   last_seen: string;
@@ -253,7 +253,7 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Active heartbeats + recently-archived scratchpads, deduped by name.
+ * Active heartbeats + recently-archived journals, deduped by name.
  * Used by `agents council set-steward` to refuse arbitrary names;
  * pass `--allow-unknown` to bypass when bootstrapping a new agent.
  */
@@ -261,7 +261,7 @@ export function listKnownAgents(): KnownAgent[] {
   const root = monorepoRoot();
   if (!root) return [];
   const activeDir = resolve(root, ".harnery", "active");
-  const archiveDir = resolve(root, ".harnery", "scratch", "archived");
+  const archiveDir = resolve(root, ".harnery", "journal", "archived");
   const byName = new Map<string, KnownAgent>();
 
   if (existsSync(activeDir)) {
@@ -296,7 +296,7 @@ export function listKnownAgents(): KnownAgent[] {
       if (Number.isNaN(ts) || ts < cutoff) continue;
       try {
         const head = readFileSync(resolve(archiveDir, f), "utf8").slice(0, 200);
-        const nameMatch = head.match(/^#\s+Scratchpad:\s+(agent-[A-Za-z][A-Za-z0-9_-]*)/m);
+        const nameMatch = head.match(/^#\s+Journal:\s+(agent-[A-Za-z][A-Za-z0-9_-]*)/m);
         if (!nameMatch) continue;
         const name = nameMatch[1]!;
         const existing = byName.get(name);
@@ -588,7 +588,7 @@ export function writeContribution(
  * Path to the round-N prompts directory: `.harnery/councils/<id>/round-N/prompts/`.
  * Sibling to the contribution files. Holds one `<member>.md` per non-self
  * council member, drafted by the steward, read by the operator (copy-paste
- * into each agent harness) and the web UI (per-member panel).
+ * into each agent adapter) and the web UI (per-member panel).
  */
 export function promptsDir(councilId: string, round: number): string | null {
   const rd = roundDir(councilId, round);
@@ -636,9 +636,9 @@ const SUBMIT_FOOTER_MARKER = "<!-- council-submit-footer -->";
  * Build the submit footer appended to every steward-drafted prompt. This is the
  * load-bearing instruction that a contribution composed in chat is NOT recorded;
  * the agent must run the command below. It rides on the prompt (the one
- * artifact the operator always pastes) so it reaches every harness regardless of
+ * artifact the operator always pastes) so it reaches every adapter regardless of
  * whether the convene-time invitation was delivered or a `/council` skill is
- * available. Without it, agents (esp. non-Claude harnesses with no skill) write
+ * available. Without it, agents (esp. non-Claude adapters with no skill) write
  * their take as a reply and end the turn, leaving the council showing them as
  * still-pending. Visible markdown (not an HTML comment) so the agent reads it.
  */
@@ -654,7 +654,7 @@ export function buildSubmitFooter(councilId: string): string {
     `# longer write-up? ${bin} agents council contribute ${councilId} --file <path>`,
     "```",
     "",
-    '_(Or invoke the `council` skill in your harness: `/council contribute` in Claude Code, `$council` / "use the council skill" in Codex/Cursor, for the same flow with routing guards.)_',
+    '_(Or invoke the `council` skill in your adapter: `/council contribute` in Claude Code, `$council` / "use the council skill" in Codex/Cursor, for the same flow with routing guards.)_',
   ].join("\n");
 }
 

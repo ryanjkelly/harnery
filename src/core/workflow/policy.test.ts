@@ -43,11 +43,11 @@ describe("workflow policy enforcement", () => {
       runWorkflow(script(`export default ({ agent }) => agent("work")`), {
         coordRoot: root,
         spawners: { "claude-code": spawner },
-        policy: { allowed_harnesses: ["codex"], network: "allow" },
+        policy: { allowed_adapters: ["codex"], network: "allow" },
         probeBilling: () => {
           probes++;
           return {
-            harness: "claude-code",
+            adapter: "claude-code",
             apiKeySource: null,
             apiKeyPresent: false,
             login: "present",
@@ -61,7 +61,7 @@ describe("workflow policy enforcement", () => {
     expect(spawns).toBe(0);
     const proof = latestProof();
     expect(proof.policy?.summary).toEqual({ allowed: 0, denied: 1, asked: 0, total: 1 });
-    expect(proof.policy?.decisions[0]?.rule_codes).toContain("harness_not_allowed");
+    expect(proof.policy?.decisions[0]?.rule_codes).toContain("adapter_not_allowed");
   });
 
   test("ASK is fail-closed without a host resolver", async () => {
@@ -94,7 +94,7 @@ describe("workflow policy enforcement", () => {
         "claude-code": async () => ({ ok: true, text: "done", durationMs: 1, costUsd: 0.1 }),
       },
       probeBilling: () => ({
-        harness: "claude-code",
+        adapter: "claude-code",
         apiKeySource: null,
         apiKeyPresent: false,
         login: "present",
@@ -132,7 +132,7 @@ describe("workflow policy enforcement", () => {
           },
         },
         probeBilling: () => ({
-          harness: "claude-code",
+          adapter: "claude-code",
           apiKeySource: null,
           apiKeyPresent: false,
           login: "present",
@@ -179,10 +179,10 @@ describe("workflow policy enforcement", () => {
     expect(proof.policy?.decisions.find((decision) => decision.id === "p2")?.resolved_by).toBe(
       "approval",
     );
-    const journal = readFileSync(report.journalPath, "utf8");
-    expect(journal).toContain('"event":"run.parked"');
-    expect(journal).toContain('"event":"run.resume"');
-    expect(journal).toContain('"event":"approval.consumed"');
+    const transcript = readFileSync(report.transcriptPath, "utf8");
+    expect(transcript).toContain('"event":"run.parked"');
+    expect(transcript).toContain('"event":"run.resume"');
+    expect(transcript).toContain('"event":"approval.consumed"');
   });
 
   test("unknown pricing under a ceiling denies before spawn", async () => {
@@ -224,7 +224,7 @@ describe("workflow policy enforcement", () => {
           },
         },
         probeBilling: () => ({
-          harness: "claude-code",
+          adapter: "claude-code",
           apiKeySource: null,
           apiKeyPresent: false,
           login: "present",

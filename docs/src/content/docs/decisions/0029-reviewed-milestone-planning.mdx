@@ -3,7 +3,7 @@ title: "0029: Milestone proposals receive independent bounded review"
 description: "ADR: review one planner candidate through frozen specialists, revise it under hard bounds, and preserve ordinary plan authority."
 ---
 
-**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/supervisor`, supervisor CLI, dashboard, public package APIs)
+**Status:** accepted (2026-07-22) · **Scope:** product tier (`core/workflow`, `core/governor`, governor CLI, dashboard, public package APIs)
 
 ## Context
 
@@ -17,22 +17,22 @@ good next move.
 An operator can reject a proposal and supply guidance, but that occurs after
 the planner workflow and depends on a human noticing every defect. Letting the
 planner certify its own work would add ceremony without independence. Allowing
-an unbounded debate would weaken the supervisor's budget and quiescence
+an unbounded debate would weaken the governor's budget and quiescence
 guarantees. Letting reviewer approval directly execute work would collapse the
 existing distinction between evidence and authority.
 
 The workflow engine also has a related contract gap. A stage may declare a
-schema that Harnery validates, but the child harness is not shown that schema.
+schema that Harnery validates, but the child adapter is not shown that schema.
 Simple stages often infer the expected shape from prose; larger planner
 responses can repeatedly omit required fields without ever seeing the complete
 output contract.
 
 ## Decision
 
-Add an optional immutable review policy to supervisor replanning. It freezes a
+Add an optional immutable review policy to governor replanning. It freezes a
 small ordered set of distinct review specialists and a maximum number of
 revision rounds. Every specialist must exist in the frozen team, no reviewer may
-also be the planner, and supervisor creation rejects a worst-case review loop
+also be the planner, and governor creation rejects a worst-case review loop
 that exceeds the existing per-work agent ceiling.
 
 The planner first returns one schema-gated candidate exactly as it does today.
@@ -78,7 +78,7 @@ revision rounds moves the plan to human attention.
 Review produces an immutable private receipt beside the plan request and
 proposal. It records candidate digests, review rounds, specialist verdicts,
 bounded findings, outcome, and the final candidate needed for recovery and
-inspection. Raw transcripts do not enter supervisor projection. Plan events add
+inspection. Raw transcripts do not enter governor projection. Plan events add
 a reviewed boundary, while CLI, dashboard, and package APIs expose bounded
 review status and counts.
 
@@ -91,7 +91,7 @@ Schema-gated workflow calls now receive their full output contract on the first
 dispatch. If validation fails, the bounded retry prompt includes the rejected
 reply, exact validation problems, and the same schema, and requires a complete
 replacement JSON value. Retry ceilings, dispatch policy, billing safeguards,
-journal evidence, and resume identity remain unchanged.
+transcript evidence, and resume identity remain unchanged.
 
 The crash contract follows existing durable boundaries. A completed workflow
 proof can reconstruct a receipt that was not yet written. An existing exact
@@ -126,23 +126,23 @@ attempt; it cannot invent approval or duplicate executable work.
 - Independent review is opt-in. Existing replanning policies retain their exact
   single-planner behavior and persisted shape.
 - The review panel is deliberately small and frozen. Changing specialists or
-  revision bounds requires a new supervisor, not mutation of durable intent.
+  revision bounds requires a new governor, not mutation of durable intent.
 - Every configured reviewer is required. A missing or malformed verdict fails
   closed rather than shrinking the panel at runtime.
 - Reviewer approval establishes contract-compliant evidence, not strategic
-  correctness. Quality still depends on specialist instructions and harness
+  correctness. Quality still depends on specialist instructions and adapter
   behavior.
 - Existing work IDs and newly proposed keys occupy different namespaces. Any
   model-authored finding that requires `proposal.root` to equal `active_root`
   contradicts the frozen plan contract.
 - Agent counts are hard-bounded and reported costs remain truthful where a
-  harness supplies them. Harnery does not claim a universal token budget for
-  subscription harnesses that do not expose one.
+  adapter supplies them. Harnery does not claim a universal token budget for
+  subscription adapters that do not expose one.
 - Completed durable boundaries are recoverable, but Harnery cannot make an
   arbitrary in-flight provider request exactly-once after process death.
 - Review receipts contain bounded structured findings, not hidden project
   memory or full conversation history.
-- A harness may add a short leading sentence even after receiving the explicit
+- A adapter may add a short leading sentence even after receiving the explicit
   JSON-only contract. Harnery accepts that drift only when the reply contains
   exactly one unambiguous top-level object or array and the value reaches the
   end of the reply. Trailing prose, multiple candidates, malformed values, and

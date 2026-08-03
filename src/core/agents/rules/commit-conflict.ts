@@ -21,8 +21,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { instanceHasLivePid } from "../state/pidmap.ts";
 
@@ -198,12 +198,38 @@ function findOverlap(
   return null;
 }
 
+/**
+ * Repository-discovery environment that git exports to its own hooks.
+ *
+ * A hook runs with GIT_DIR (and friends) already pointing at the repository
+ * being committed, and every child inherits them. That silently outranks `cwd`,
+ * so a probe launched from some other directory still interrogates the hook's
+ * repository. Committing inside a submodule therefore asked the submodule about
+ * superproject paths and vice versa, and the answers were wrong in whichever
+ * direction did not match. Scrubbing these lets git rediscover the repository
+ * from `cwd`, which is the whole point of choosing a `cwd` per path.
+ */
+const GIT_DISCOVERY_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE",
+] as const;
+
+/** Run a read-only git probe in `cwd`, free of the caller's repo environment. */
+function gitProbe(args: string[], cwd: string): { status: number; stdout: string } {
+  const env = { ...process.env };
+  for (const v of GIT_DISCOVERY_VARS) delete env[v];
+  const result = spawnSync("git", args, { cwd, env, encoding: "utf8", timeout: 2000 });
+  return { status: result.status ?? 1, stdout: result.stdout ?? "" };
+}
+
 function isGitlinkInIndex(coordRoot: string, path: string): boolean {
-  const result = spawnSync("git", ["ls-files", "--stage", "--", path], {
-    cwd: coordRoot,
-    encoding: "utf8",
-    timeout: 2000,
-  });
+  const result = gitProbe(["ls-files", "--stage", "--", path], coordRoot);
   if (result.status !== 0) return false;
   // ls-files --stage emits "<mode> <sha> <stage>\t<path>"; mode 160000 = gitlink.
   return result.stdout.trim().startsWith("160000 ");
@@ -216,19 +242,71 @@ function isHolderSelfAttributed(
   peers: readonly PeerHeartbeat[],
 ): boolean {
   // Gate B (cheaper): live foreign pid-map entry blocks self-attribution.
-  if (holderHasLiveForeignPid(coordRoot, holderId)) return false;
+  if (holderHasLiveForeignPid(coordRoot, holderId)) {
+    debugGate(coordRoot, { holder: holderId, gate: "B", reason: "live_pid_anchor" });
+    return false;
+  }
 
   // Gate A: every held path is either in the staged set or already clean in HEAD.
   const holder = peers.find((p) => p.instance_id === holderId);
-  if (!holder) return false;
+  if (!holder) {
+    debugGate(coordRoot, { holder: holderId, gate: "A", reason: "holder_not_found" });
+    return false;
+  }
   const files = holder.files_touched ?? [];
-  if (files.length === 0) return false;
+  if (files.length === 0) {
+    debugGate(coordRoot, { holder: holderId, gate: "A", reason: "holder_holds_nothing" });
+    return false;
+  }
   for (const held of files) {
     if (stagedSet.has(held)) continue;
     if (isPathCleanInHead(coordRoot, held)) continue;
+    if (isPathIgnoredByGit(coordRoot, held)) continue;
+    debugGate(coordRoot, { holder: holderId, gate: "A", reason: "path_unverifiable", path: held });
     return false;
   }
   return true;
+}
+
+/**
+ * Append one line explaining a refused gate, when HARNERY_COORD_DEBUG is set.
+ *
+ * Worth carrying permanently: the deciding state lives inside a git hook, whose
+ * stderr the caller discards and whose process is gone before anyone can look.
+ * Reconstructing a refusal afterwards means guessing, because the holder's claim
+ * set has moved on by then. This turns that into evidence.
+ */
+function debugGate(coordRoot: string, detail: Record<string, string>): void {
+  if (!process.env.HARNERY_COORD_DEBUG) return;
+  try {
+    appendFileSync(
+      join(coordRoot, ".harnery", "coord-debug.ndjson"),
+      `${JSON.stringify({ event: "self_attribution_refused", pid: process.pid, ...detail })}\n`,
+      "utf8",
+    );
+  } catch {
+    /* diagnostics never break a verdict */
+  }
+}
+
+/**
+ * Does git ignore this path?
+ *
+ * Such a claim is safe to look past. Agents write journal files into ignored
+ * directories constantly, and each one used to leave a claim that Gate A could
+ * never vouch for: not staged, not tracked, therefore "unknown", therefore
+ * blocked. That defeated self-attribution for the rest of a session and taught
+ * agents to reach for the bypass. An ignored path cannot enter anyone's commit,
+ * so it cannot be work this commit might clobber. A merely untracked path is a
+ * different matter and still counts against the holder, since anybody could add
+ * it.
+ */
+function isPathIgnoredByGit(coordRoot: string, relPath: string): boolean {
+  const abs = join(coordRoot, relPath);
+  const cwd = dirname(abs);
+  if (!existsSync(cwd)) return false;
+  // check-ignore exits 0 when the path is ignored, 1 when it is not.
+  return gitProbe(["check-ignore", "--quiet", "--", basename(abs)], cwd).status === 0;
 }
 
 function holderHasLiveForeignPid(coordRoot: string, holderId: string): boolean {
@@ -238,18 +316,21 @@ function holderHasLiveForeignPid(coordRoot: string, holderId: string): boolean {
 function isPathCleanInHead(coordRoot: string, relPath: string): boolean {
   // Path is tracked + diff-clean against HEAD = "already committed, holder
   // hasn't released the claim yet". Counts as self-attributable.
-  const tracked = spawnSync("git", ["ls-files", "--error-unmatch", "--", relPath], {
-    cwd: coordRoot,
-    encoding: "utf8",
-    timeout: 2000,
-  });
-  if (tracked.status !== 0) return false;
-  const diff = spawnSync("git", ["diff", "--quiet", "HEAD", "--", relPath], {
-    cwd: coordRoot,
-    encoding: "utf8",
-    timeout: 2000,
-  });
-  return diff.status === 0;
+  //
+  // Ask the repository that actually tracks the path, by running git from the
+  // file's own directory instead of the coord root. Claims are recorded
+  // monorepo-relative, so a submodule file arrives here as `sub/src/x.ts`, and
+  // the superproject does not track submodule contents: asking it always
+  // answered "not tracked". Gate A therefore failed for every submodule path,
+  // self-attribution never suppressed a submodule commit, and the operator paid
+  // a HARNERY_AGENT_COORD_BYPASS=1 per commit. Running from the file's directory
+  // lands in the submodule's own repo and handles any nesting depth.
+  const abs = join(coordRoot, relPath);
+  const cwd = dirname(abs);
+  const base = basename(abs);
+  if (!existsSync(cwd)) return false;
+  if (gitProbe(["ls-files", "--error-unmatch", "--", base], cwd).status !== 0) return false;
+  return gitProbe(["diff", "--quiet", "HEAD", "--", base], cwd).status === 0;
 }
 
 function readActivePeers(coordRoot: string): PeerHeartbeat[] {

@@ -353,7 +353,7 @@ export interface IntegrationAuthorization {
   approval_id?: string;
   approval_actor?: string;
   approval_sha256?: string;
-  journal_anchor: {
+  transcript_anchor: {
     event: "integration.plan";
     plan_sha256: string;
   };

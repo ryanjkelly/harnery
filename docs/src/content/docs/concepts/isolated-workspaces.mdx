@@ -19,15 +19,53 @@ review, approval, and policy records keep those decisions.
 Supply both the isolation mode and an explicit writable parent:
 
 ```bash
-harn workflow run ./workflow.mjs \
+harn run ./workflow.mjs \
   --isolation worktree \
-  --workspace-root ../workflow-workspaces \
+  --workspace-root . \
   --policy ./workflow-policy.json
 ```
 
 The explicit root is part of the authority record. Harnery resolves it, records
 its filesystem identity, and refuses a later resume if the path or identity no
 longer matches.
+
+### The writable root must contain the repository's Git directory
+
+Allocating a worktree makes Git write to the repository's administrative
+directory as well as to the new checkout, so that directory has to sit inside
+the root you declared. A sibling directory does not qualify, however tidy it
+looks:
+
+```
+repository_authority_outside_writable_root:
+  Git keeps this checkout's administrative files in /repo/.git,
+  which is outside the declared writable root
+```
+
+For an ordinary repository, the repository itself is the right answer, and its
+parent also works. For a **submodule**, Git keeps the administrative files in
+the superproject's `.git/modules/…`, so the writable root must be the
+**superproject**, not the submodule. The same applies to a linked worktree,
+whose common directory belongs to the repository it was created from.
+
+Workspaces are allocated under `<workspace-root>/.harnery-workspaces/<binding-id>`.
+That directory holds real checkouts rather than coordination state, so it is a
+sibling of `.harnery/` and never a child of it. `harn deinit --purge-state`
+deletes `.harnery/` outright, and a preserved worktree carrying unintegrated work
+has no business somewhere a purge is allowed to reach.
+
+The provider writes a `.gitignore` containing `*` into that parent the first time
+it allocates. The rule covers the ignore file itself, so the directory stays out
+of `git status` in whatever repository happens to contain it, and you never have
+to maintain an ignore rule of your own.
+
+Workspaces allocated by an earlier version live under `harnery-workspaces/`,
+without the leading dot. Those paths are frozen in their bindings and keep
+working, so nothing has to move. Only new allocations use the hidden parent.
+
+You do not need to clone a repository by hand to get an isolated run. If you
+find yourself making a journal copy so agents have somewhere safe to write, the
+provider is what you actually want.
 
 When Git or the required filesystem behavior is unavailable, the provider
 reports an unsupported capability. Shared fallback happens only when the
@@ -43,7 +81,7 @@ Allocation creates two related records:
   digest-chained event history.
 
 The provider cannot update work outcomes, proof, review decisions, approvals,
-supervisor state, or budgets. It reports workspace facts to workflow core.
+governor state, or budgets. It reports workspace facts to workflow core.
 
 ## Verification and recovery
 
@@ -118,8 +156,8 @@ an incomplete release blocks cleanup and leaves evidence for another attempt.
 Use the CLI:
 
 ```bash
-harn workflow workspace <run-id>
-harn workflow workspaces
+harn run workspace <run-id>
+harn run workspaces
 ```
 
 Or use the product-tier reader:

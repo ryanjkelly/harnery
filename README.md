@@ -19,9 +19,9 @@
 
 `harnery` keeps multiple AI coding agents from stepping on each other in a shared checkout. It was extracted from years of running several Claude Code / Cursor / Codex sessions at once against the same monorepo:
 
-- **Multi-agent coordination:** per-agent heartbeats in `.harnery/active/`, claim-time and commit-time guards, the canonical event stream, councils, a decision docket, per-agent scratchpads, and harness adapters for Claude Code / Cursor / Codex.
+- **Multi-agent coordination:** per-agent heartbeats in `.harnery/active/`, claim-time and commit-time guards, the canonical event stream, councils, a decision docket, per-agent journals, and adapter adapters for Claude Code / Cursor / Codex.
 - **Cross-machine presence:** sessions on every machine that shares a repo see each other, labeled by machine. Zero-config over the repo's own git remote (presence refs), with an optional live-socket upgrade via an end-to-end-encrypted relay — the public `relay.harnery.com`, or self-host with `harn relay serve` / the bundled Cloudflare Worker (`relay/worker/`). The relay sees only ciphertext in opaquely-named rooms.
-- **Coordination-aware workflows:** `harn workflow run <script>` executes bounded, schema-gated multi-subagent workflow scripts — plain JS stages fanning out to headless harness-CLI subagents that are born coordination-registered (heartbeats, events, claim guards), with deterministic code deciding the routing between stages. An optional host-owned policy gates dispatch and declared external mutations with `ALLOW`, `ASK`, and `DENY`; CLI `ASK` requests park durably for an explicit approve/deny and same-run resume, while library callers remain fail-closed by default.
+- **Coordination-aware workflows:** `harn workflow run <script>` executes bounded, schema-gated multi-subagent workflow scripts — plain JS stages fanning out to headless adapter-CLI subagents that are born coordination-registered (heartbeats, events, claim guards), with deterministic code deciding the routing between stages. An optional host-owned policy gates dispatch and declared external mutations with `ALLOW`, `ASK`, and `DENY`; CLI `ASK` requests park durably for an explicit approve/deny and same-run resume, while library callers remain fail-closed by default.
 - **Optional isolated workspaces:** add `--isolation worktree --workspace-root <dir>` to run a workflow in a host-owned local Git worktree. Harnery freezes the allocation and provider identity, verifies the workspace before execution and resume, requires review and policy authority before fast-forward integration, and keeps cleanup conservative. Inspect with `harn workflow workspace`, then use the separate `workflow integration prepare`, `integration apply`, and `cleanup` phases; shared execution remains the default.
 - **Durable work above attempts:** `harn work` preserves an objective across bounded workflow attempts, dependencies, approval parks, failures, and review. Reusable workflow code receives the exact work ID, title, objective, acceptance criteria, and attempt identity as frozen typed context. A retry also receives the prior run's bounded error and unresolved proof criteria, while retry authority and attempt ceilings remain unchanged. The manifest, proof, and append-only ledger bind the same context, and the one-shot reconciler reports the next explicit action without silently spawning, retrying, or accepting work.
 - **Bounded goal supervision:** `harn supervisor` freezes a mission or existing root graph, specialist team, and safety limits, then runs scheduling cycles until reviewed mission success, human attention, no progress, or budget exhaustion. Its optional planner can create the first milestone, reassess accepted milestone proof, or recover a terminal graph using only a frozen workflow-template catalog. Plans can require independent bounded specialist review before ordinary approval or auto-apply authority, old generations remain immutable evidence, and all attempts still consume the goal budget. Use explicit foreground ticks or enroll goals in the optional heartbeat-backed background service.
@@ -39,7 +39,7 @@ curl -fsSL https://harnery.com/install.sh | bash
 One line, no clone: it installs the `harn` CLI globally (npm preferred, Bun fallback), puts it on your `PATH`, and verifies it. Or drive your package manager directly — `npm install -g harnery` / `bun add -g harnery` (or `npm install harnery` for a project dep). Then wire a project:
 
 ```bash
-harn init     # creates .harnery/ + registers the harness hooks
+harn init     # creates .harnery/ + registers the adapter hooks
 harn doctor   # optional: one-time runtime + dependency check
 ```
 
@@ -52,7 +52,7 @@ harn doctor   # optional: one-time runtime + dependency check
 Two layers. **Unwire a project** (keeps `.harnery/` history by default; on a terminal it asks before deleting it):
 
 ```bash
-harn deinit                 # unwire the harness hooks
+harn deinit                 # unwire the adapter hooks
 harn deinit --purge-state   # also delete .harnery/ (destructive)
 ```
 

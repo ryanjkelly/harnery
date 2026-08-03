@@ -146,7 +146,7 @@ describe("spawn failure classification (ADR 0046)", () => {
     }
   });
 
-  test("a Claude harness envelope that carries an overloaded error classes upstream", () => {
+  test("a Claude adapter envelope that carries an overloaded error classes upstream", () => {
     const result = normalizeClaudeResult({
       stdout: JSON.stringify({
         is_error: true,

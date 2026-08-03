@@ -3,16 +3,16 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripJsonComments } from "../core/config.ts";
-import { HARNESS_SPECS } from "../core/hooks/harness/events.ts";
+import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
 import { stampBinName, stampWorkflowDefaults, wireHooks } from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 // Claude Code exports CLAUDE_PROJECT_DIR to hook processes; init anchors the
 // path on it so hooks survive the session shell `cd`ing away from the root.
 const CLAUDE_HOOK = `"\${CLAUDE_PROJECT_DIR:-.}"/${HOOK}`;
-const CLAUDE = HARNESS_SPECS["claude-code"];
-const CURSOR = HARNESS_SPECS.cursor;
-const CODEX = HARNESS_SPECS.codex;
+const CLAUDE = ADAPTER_SPECS["claude-code"];
+const CURSOR = ADAPTER_SPECS.cursor;
+const CODEX = ADAPTER_SPECS.codex;
 
 describe("wireHooks: Claude Code", () => {
   test("wires every event into an empty settings object", () => {
@@ -23,7 +23,7 @@ describe("wireHooks: Claude Code", () => {
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(Object.keys(hooks).length).toBe(CLAUDE.events.length);
     expect(hooks.Stop[0]).toEqual({
-      hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --harness claude-code` }],
+      hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --adapter claude-code` }],
     });
   });
 
@@ -43,7 +43,7 @@ describe("wireHooks: Claude Code", () => {
       hooks: {
         Stop: [
           {
-            hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --harness claude-code` }],
+            hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --adapter claude-code` }],
           },
         ],
         Notification: [{ hooks: [{ type: "command", command: "echo keep-me" }] }],
@@ -61,7 +61,7 @@ describe("wireHooks: Claude Code", () => {
     const settings = {
       hooks: {
         Stop: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} stop --harness claude-code` }] },
+          { hooks: [{ type: "command", command: `bash ${HOOK} stop --adapter claude-code` }] },
         ],
       },
     };
@@ -70,7 +70,7 @@ describe("wireHooks: Claude Code", () => {
     expect(upgraded).toBe(1);
     expect(settings.hooks.Stop.length).toBe(1);
     expect(settings.hooks.Stop[0].hooks[0].command).toBe(
-      `bash ${CLAUDE_HOOK} stop --harness claude-code`,
+      `bash ${CLAUDE_HOOK} stop --adapter claude-code`,
     );
   });
 
@@ -79,7 +79,7 @@ describe("wireHooks: Claude Code", () => {
       hooks: {
         Stop: [
           {
-            hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --harness claude-code` }],
+            hooks: [{ type: "command", command: `bash ${CLAUDE_HOOK} stop --adapter claude-code` }],
           },
         ],
       },
@@ -99,9 +99,9 @@ describe("wireHooks: Cursor", () => {
     expect((settings as { version: number }).version).toBe(1);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     // Flat `{ command }`, no inner `hooks` array.
-    expect(hooks.stop[0]).toEqual({ command: `bash ${HOOK} stop --harness cursor` });
+    expect(hooks.stop[0]).toEqual({ command: `bash ${HOOK} stop --adapter cursor` });
     expect(hooks.beforeShellExecution[0]).toEqual({
-      command: `bash ${HOOK} before-shell-execution --harness cursor`,
+      command: `bash ${HOOK} before-shell-execution --adapter cursor`,
     });
     expect(hooks.StopFailure).toBeUndefined(); // Cursor has no StopFailure event
   });
@@ -125,7 +125,7 @@ describe("wireHooks: Codex", () => {
     expect((settings as { version?: number }).version).toBeUndefined();
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(hooks.SessionStart[0]).toEqual({
-      hooks: [{ type: "command", command: `bash ${HOOK} session-start --harness codex` }],
+      hooks: [{ type: "command", command: `bash ${HOOK} session-start --adapter codex` }],
     });
   });
 
@@ -134,11 +134,11 @@ describe("wireHooks: Codex", () => {
       description: "coord hooks",
       hooks: {
         SessionEnd: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} session-end --harness codex` }] },
+          { hooks: [{ type: "command", command: `bash ${HOOK} session-end --adapter codex` }] },
           { hooks: [{ type: "command", command: "echo keep-me" }] },
         ],
         StopFailure: [
-          { hooks: [{ type: "command", command: `bash ${HOOK} stop-failure --harness codex` }] },
+          { hooks: [{ type: "command", command: `bash ${HOOK} stop-failure --adapter codex` }] },
         ],
       },
     };

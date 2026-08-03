@@ -1,5 +1,5 @@
 /**
- * Shared failure-text extraction for the harness spawn adapters.
+ * Shared failure-text extraction for the adapter spawn adapters.
  *
  * A vendor CLI prints its banner, resolved config, and startup warnings first,
  * and the reason it actually failed last. Every adapter used to keep the FIRST

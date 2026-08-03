@@ -65,30 +65,30 @@ describe("work command", () => {
     expect(failure).toContain("--workspace-root requires --isolation worktree");
   });
 
-  test("work show explains why an attempt journal is unreadable", async () => {
+  test("work show explains why an attempt transcript is unreadable", async () => {
     const root = mkdtempSync(join("/tmp", "harnery-work-command-"));
     roots.push(root);
     const workflowPath = join(root, "workflow.mjs");
     writeFileSync(workflowPath, "export default async () => 'ok';\n");
     createWorkItem({
       coordRoot: root,
-      id: "journal-detail",
-      title: "Journal detail",
-      objective: "Surface unreadable journal details",
+      id: "transcript-detail",
+      title: "Transcript detail",
+      objective: "Surface unreadable transcript details",
       workflowPath,
       maxAttempts: 2,
     });
-    appendAttemptStarted(root, "journal-detail", 2, "wf-unreadable", 1);
-    appendAttemptStarted(root, "journal-detail", 3, "wf-lost", 2);
+    appendAttemptStarted(root, "transcript-detail", 2, "wf-unreadable", 1);
+    appendAttemptStarted(root, "transcript-detail", 3, "wf-lost", 2);
     mkdirSync(join(root, ".harnery", "workflows", "wf-unreadable"), { recursive: true });
-    writeFileSync(join(root, ".harnery", "workflows", "wf-unreadable", "journal.jsonl"), "[]\n");
+    writeFileSync(join(root, ".harnery", "workflows", "wf-unreadable", "transcript.jsonl"), "[]\n");
 
     const output: string[] = [];
     const previousOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
     try {
       await createHarneryProgram({ emit: captureText(output) }).parseAsync(
-        ["work", "show", "journal-detail"],
+        ["work", "show", "transcript-detail"],
         { from: "user" },
       );
     } finally {
@@ -99,7 +99,7 @@ describe("work command", () => {
     const text = output.join("");
     expect(text).toContain("reason: workflow attempt 2 ended without terminal evidence");
     expect(text).toContain(
-      "  1. wf-unreadable  journal_unreadable: cannot parse workflow run wf-unreadable journal: expected object",
+      "  1. wf-unreadable  transcript_unreadable: cannot parse workflow run wf-unreadable transcript: expected object",
     );
     expect(text).toContain("  2. wf-lost  lost");
   });
@@ -122,14 +122,14 @@ describe("work command", () => {
     expect(renderAttemptBudget(record(0, 2, 3))).toBe("0/3 (+2 uncharged)");
   });
 
-  test("work show keeps multiline journal errors on one attempt row", () => {
+  test("work show keeps multiline transcript errors on one attempt row", () => {
     const attempts: WorkAttempt[] = [
       {
         number: 1,
         run_id: "wf-multiline",
         started_at: "2026-07-25T12:00:00.000Z",
-        status: "journal_unreadable",
-        journal_error: "first line\nsecond line\tthird  line",
+        status: "transcript_unreadable",
+        transcript_error: "first line\nsecond line\tthird  line",
       },
       {
         number: 2,
@@ -143,24 +143,24 @@ describe("work command", () => {
 
     expect(block.split("\n")).toEqual([
       "attempts:",
-      "  1. wf-multiline  journal_unreadable: first line second line third line",
+      "  1. wf-multiline  transcript_unreadable: first line second line third line",
       "  2. wf-next  lost",
     ]);
   });
 
-  test("work show truncates long journal errors in human attempt rows", () => {
+  test("work show truncates long transcript errors in human attempt rows", () => {
     const row = renderAttemptRow({
       number: 1,
       run_id: "wf-long",
       started_at: "2026-07-25T12:00:00.000Z",
-      status: "journal_unreadable",
-      journal_error: `start ${"x".repeat(300)} end`,
+      status: "transcript_unreadable",
+      transcript_error: `start ${"x".repeat(300)} end`,
     });
 
-    expect(row.startsWith("  1. wf-long  journal_unreadable: start ")).toBe(true);
+    expect(row.startsWith("  1. wf-long  transcript_unreadable: start ")).toBe(true);
     expect(row.endsWith("...")).toBe(true);
     expect(row).not.toContain(" end");
-    expect(row.length).toBeLessThanOrEqual("  1. wf-long  journal_unreadable: ".length + 240);
+    expect(row.length).toBeLessThanOrEqual("  1. wf-long  transcript_unreadable: ".length + 240);
   });
 });
 

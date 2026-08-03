@@ -31,6 +31,54 @@ describe("evaluateStopHook", () => {
     expect(v.rule).toBe("stop-hook.bypass");
   });
 
+  test("codex is observe-only even when every ritual signal is missing", () => {
+    const now = Date.now();
+    const ts = (offset: number) => new Date(now + offset).toISOString();
+    writeEvents([
+      {
+        event_id: "1",
+        event_type: "user_prompt.submit",
+        ts: ts(-10000),
+        instance_id: "codex-agent",
+        session_id: "codex-session",
+        adapter: "codex",
+        source: "test",
+        data: {},
+      },
+      {
+        event_id: "2",
+        event_type: "tool.pre_use",
+        ts: ts(-8000),
+        instance_id: "codex-agent",
+        session_id: "codex-session",
+        adapter: "codex",
+        source: "test",
+        data: {},
+      },
+      {
+        event_id: "3",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        instance_id: "codex-agent",
+        session_id: "codex-session",
+        adapter: "codex",
+        source: "test",
+        data: { status_box_present: false },
+      },
+    ]);
+
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "codex-agent",
+      adapter: "codex",
+      now_ms: now,
+    });
+
+    expect(v.allow).toBe(true);
+    expect(v.exit_code).toBe(0);
+    expect(v.rule).toBe("stop-hook.codex_observe_only");
+  });
+
   test("missing events.ndjson → no_history (empty stream allows)", () => {
     // readRecentEvents returns [] when the file doesn't exist; no events for
     // owner → defer-allow under "stop-hook.no_history".
@@ -47,7 +95,7 @@ describe("evaluateStopHook", () => {
         ts: new Date().toISOString(),
         instance_id: "other",
         session_id: "s",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: {},
       },
@@ -67,7 +115,7 @@ describe("evaluateStopHook", () => {
         ts: ts(-10000),
         instance_id: "a",
         session_id: "a",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: {},
       },
@@ -77,7 +125,7 @@ describe("evaluateStopHook", () => {
         ts: ts(-1000),
         instance_id: "a",
         session_id: "a",
-        harness: "claude-code",
+        adapter: "claude-code",
         source: "test",
         data: { status_box_present: true },
       },
@@ -86,7 +134,7 @@ describe("evaluateStopHook", () => {
     expect(v.allow).toBe(true);
   });
 
-  // --- Harness-aware ack signal (Cursor) ---
+  // --- Adapter-aware ack signal (Cursor) ---
   // Cursor renders Shell output inline, so running `harn agents status`
   // (state.status_checked) is the end-of-turn ack signal; the verbatim box
   // paste (rule 2/3, transcript-scanned) is a Claude-Code-collapsed-UI remedy
@@ -96,7 +144,7 @@ describe("evaluateStopHook", () => {
   test("cursor tool-turn: status_checked + task_set pass WITHOUT a box (rule 2/3 not required)", () => {
     const now = Date.now();
     const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", harness: "cursor", source: "test" };
+    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
     writeEvents([
       { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
       { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
@@ -113,7 +161,7 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, {
       rule: "stop-hook",
       instance_id: "c",
-      harness: "cursor",
+      adapter: "cursor",
       now_ms: now,
     });
     expect(v.allow).toBe(true);
@@ -123,7 +171,7 @@ describe("evaluateStopHook", () => {
   test("cursor tool-turn: missing task_set → block rule 3/3", () => {
     const now = Date.now();
     const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", harness: "cursor", source: "test" };
+    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
     writeEvents([
       { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
       { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
@@ -139,7 +187,7 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, {
       rule: "stop-hook",
       instance_id: "c",
-      harness: "cursor",
+      adapter: "cursor",
       now_ms: now,
     });
     expect(v.allow).toBe(false);
@@ -149,7 +197,7 @@ describe("evaluateStopHook", () => {
   test("cursor: status_checked is the ack signal, missing it blocks rule 1/3 (not 2/3)", () => {
     const now = Date.now();
     const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", harness: "cursor", source: "test" };
+    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
     writeEvents([
       { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
       { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
@@ -164,7 +212,7 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, {
       rule: "stop-hook",
       instance_id: "c",
-      harness: "cursor",
+      adapter: "cursor",
       now_ms: now,
     });
     expect(v.allow).toBe(false);
@@ -174,7 +222,7 @@ describe("evaluateStopHook", () => {
   test("cursor pure-prose turn (no tools, no status) → block rule 1/3 (parity: every turn)", () => {
     const now = Date.now();
     const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "c", session_id: "c", harness: "cursor", source: "test" };
+    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
     writeEvents([
       { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
       {
@@ -188,7 +236,7 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, {
       rule: "stop-hook",
       instance_id: "c",
-      harness: "cursor",
+      adapter: "cursor",
       now_ms: now,
     });
     expect(v.allow).toBe(false);
@@ -198,7 +246,7 @@ describe("evaluateStopHook", () => {
   test("claude-code tool-turn still requires the box (rule 2/3); cursor change doesn't leak", () => {
     const now = Date.now();
     const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "d", session_id: "d", harness: "claude-code", source: "test" };
+    const base = { instance_id: "d", session_id: "d", adapter: "claude-code", source: "test" };
     writeEvents([
       { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
       { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
@@ -215,7 +263,7 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, {
       rule: "stop-hook",
       instance_id: "d",
-      harness: "claude-code",
+      adapter: "claude-code",
       now_ms: now,
     });
     expect(v.allow).toBe(false);

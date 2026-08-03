@@ -6,7 +6,7 @@ Multi-agent coordination for AI coding agents — Claude Code, Cursor, and Codex
 
 ## Portability is the prime constraint
 
-This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`events.ndjson`, `active/`, `councils/`, `scratch/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
+This package serves arbitrary host projects. Nothing host-specific may land in `src/`, `web/`, `docs/`, or `schemas/`: no host names, hostnames, business vocabulary, hardcoded `/home/<user>/...` paths, or single-bin assumptions. Bin name, project context, and event emit are injected by the host CLI; anything project-specific belongs in the host, not here. Runtime state lives in the **host project's** `.harnery/` directory (`events.ndjson`, `active/`, `councils/`, `journal/`, `identities/`, `pid-map/`), resolved via `coordRoot()`, never a hardcoded location.
 
 **Enforced, not just documented.** [scripts/check-portability.ts](scripts/check-portability.ts) scans committable source for host-specific tokens (a consumer's bin abbreviation, business name, submodule paths, dbt marts, skills, and `BP_`-style env prefixes) and fails on any hit. It runs as `bun run check:portability`, as the CI-gating [tests/unit/portability.test.ts](tests/unit/portability.test.ts), and (host-side) in the embedding monorepo's pre-commit hook. Env vars are the sneakiest leak: read every coord var through `coordEnv()` (which prepends `HARNERY_`), never a bare `process.env.BP_*`. Escape hatch for a genuine non-host use: `portability-allow: <reason>` on the line (rare — prefer a neutral token).
 
@@ -24,7 +24,7 @@ The `package.json` exports map is the public-API tier boundary. **Product tier**
 
 Two rules follow, both enforced:
 
-1. **Layering:** no `./lib/*` export may reach `src/core/`, directly or transitively. [scripts/check-layering.ts](scripts/check-layering.ts) walks each toolkit export's import graph and fails on any core path; [tests/unit/layering.test.ts](tests/unit/layering.test.ts) gates CI. No per-line waiver exists — a toolkit module that needs the core gets its export moved under `./core/*` (that's how `./lib/scratch` became `./core/scratch`). Product importing toolkit is fine; only the upward direction is forbidden.
+1. **Layering:** no `./lib/*` export may reach `src/core/`, directly or transitively. [scripts/check-layering.ts](scripts/check-layering.ts) walks each toolkit export's import graph and fails on any core path; [tests/unit/layering.test.ts](tests/unit/layering.test.ts) gates CI. No per-line waiver exists — a toolkit module that needs the core gets its export moved under `./core/*` (that's how `./lib/journal` became `./core/journal`). Product importing toolkit is fine; only the upward direction is forbidden.
 2. **Promotion:** utilities are born in the host CLI and get promoted into the toolkit only when a second consumer needs them or harnery's own commands do. Never add a `./lib/*` export speculatively.
 
 When writing README/docs/marketing copy, coordination leads and the toolkit is framed as batteries for embedders. Full rationale: [docs/src/content/docs/decisions/0010-surface-tiers.mdx](docs/src/content/docs/decisions/0010-surface-tiers.mdx); user-facing story: [docs/src/content/docs/concepts/embedding.mdx](docs/src/content/docs/concepts/embedding.mdx).
@@ -32,7 +32,7 @@ When writing README/docs/marketing copy, coordination leads and the toolkit is f
 ## Layout
 
 - `src/commands/`: portable CLI commands (Commander pattern). New-command recipe: [CONTRIBUTING.md](CONTRIBUTING.md) § Adding a new command (register fn → wire in `src/commander.ts` → test → docs `.mdx` → changeset).
-- `src/core/`: coord layer (agents state, session events, hooks, scratch).
+- `src/core/`: coord layer (agents state, session events, hooks, journal).
 - `src/lib/`: shared libs — a mix of exported toolkit modules and unexported internals (see Surface tiers above). Notables: `lib/council/` (council state machine: `writePrompt` auto-prepends the `<!-- council-route -->` header and auto-appends the `<!-- council-submit-footer -->` block, both idempotent; never hand-write those markers) and `lib/docs-lint.ts` / `docs-sweep.ts` (powers `harn docs`).
 - `bin/`: `harn`, `agent-coord`, `agent-hook` entrypoints.
 - `relay/`: the presence relay's Cloudflare Workers host (`relay/worker/`, deployed with wrangler; ADR 0016). The Bun self-host lives in `src/commands/relay.ts`; the shared wire protocol in `src/core/presence/relay-protocol.ts`.
@@ -89,12 +89,13 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=019fd432 -->
+<!-- harnery:begin instructions v=c28c3573 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
 You share this checkout with other agents; the surfaces below keep you oriented
-and out of each other's way. Run `harn <command> --help` for any command's full
+and out of each other's way, and let you dispatch a team of your own when a job
+is bigger than one session. Run `harn <command> --help` for any command's full
 surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` skills.
 
 **Identity + peers.** You are one of several agents in this repo.
@@ -102,6 +103,20 @@ surface. Procedures for the deeper flows live in the `harn-decide` and `harn-cou
 active peers and the files they've claimed; `harn agents set-task "<focus>"`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
+
+**Dispatching a team.** Everything else here coordinates the agents already
+present. These three start new ones, and they differ by how long the objective
+outlives a single execution. `harn run <script>` is one bounded pass:
+plain JS stages fan out to headless subagents that are born
+coordination-registered, with deterministic code deciding the routing between
+stages. `harn work create <title> <workflow>` wraps an objective that has to
+survive many such passes, holding it across retries, failures, and review.
+`harn governor create` drives a whole graph of work toward a goal, choosing
+what runs next and how much it may settle without asking a human. Reach for the
+first when one pass will do, the second when the objective must outlive the
+attempt, and the third when a human would otherwise have to babysit the loop. A
+run that needs authorization parks durably instead of failing, so check
+`harn approval list` when one appears to be waiting rather than stuck.
 
 **Durable role handoff.** When you are replacing a prior session in the same
 named role, run `harn agents identity assume <name>` before declaring your task.
@@ -114,10 +129,17 @@ coordination ledger. Lead a shell command with a `# intent: <why>` comment (or s
 the tool's description) so the recorded event carries a reason instead of
 `(no intent)`.
 
-**Scratch journal.** `harn scratch add <category> "<text>"` (category = note, plan, decision, blocker, question, done, or handoff)
+**Journal.** `harn journal add <category> "<text>"` (category = note, plan, decision, blocker, question, done, or handoff)
 leaves breadcrumbs that survive context compaction;
-`harn scratch read` reads yours, `harn scratch read --name <peer>` reads a peer's.
+`harn journal read` reads yours, `harn journal read --name <peer>` reads a peer's.
 Use it for anything future-you or a peer will need to pick up your thread.
+
+**Working artifacts.** For screenshots, exports, audit dumps, rollback inputs,
+and other untracked files that must survive a session, create a managed workspace
+with `harn artifacts create <slug> --purpose "<why>"`. Write files under the
+returned path, then run `harn artifacts release <id>` when active work is done.
+Do not create a repo-root temp directory; `harn artifacts clean` previews
+expired cleanup and requires `--yes` to delete anything.
 
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. `harn decision file "<question>"`

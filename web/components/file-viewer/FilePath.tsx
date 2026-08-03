@@ -8,7 +8,7 @@
  *
  * Phase 1 wires this onto STRUCTURED event-log tool targets only (Read/Edit/
  * Write file_path, Grep/Glob path: typed JSON fields, zero regex risk). Prose
- * linkify (ping bodies, scratchpad, Bash command_head) is Phase 4.
+ * linkify (ping bodies, journal, Bash command_head) is Phase 4.
  */
 
 import { useFileViewer } from "./FileViewerProvider";

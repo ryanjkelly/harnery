@@ -8,7 +8,7 @@
  *
  * Local collision policy: a fresh heartbeat alone is not enough to block.
  * If the namesake has no live pid-map process (crashed session, healed
- * zombie, or abandoned harness), reclaim that heartbeat and continue.
+ * zombie, or abandoned adapter), reclaim that heartbeat and continue.
  * Refuse only when another process is still alive, or when cached remote
  * presence reports the name.
  */
@@ -126,7 +126,7 @@ export function findIdentityConflict(
 }
 
 /**
- * Drop a local namesake whose harness process is gone. Fresh heartbeats can
+ * Drop a local namesake whose adapter process is gone. Fresh heartbeats can
  * linger after a crash (or after heartbeat heal without a live pid-map), and
  * `identity assume` is the supported takeover path — operators should not
  * need a separate kill/sweep step.
@@ -139,13 +139,13 @@ export function reclaimAbandonedLocalConflict(
   if (instanceHasLivePid(coordRoot, conflict.instance_id)) return false;
 
   const hbPath = join(coordRoot, ".harnery", "active", `${conflict.instance_id}.json`);
-  let harness: "claude-code" | "cursor" | "codex" = "claude-code";
+  let adapter: "claude-code" | "cursor" | "codex" = "claude-code";
   let sessionId = conflict.instance_id;
   let ageSecs: number | undefined;
   if (existsSync(hbPath)) {
     try {
       const hb = JSON.parse(readFileSync(hbPath, "utf8")) as Heartbeat;
-      harness = harnessOf(hb.platform);
+      adapter = adapterOf(hb.platform);
       sessionId = hb.session_id || conflict.instance_id;
       const ts = Date.parse(hb.last_heartbeat);
       if (Number.isFinite(ts)) ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -164,7 +164,7 @@ export function reclaimAbandonedLocalConflict(
       event_type: "health.heartbeat_swept",
       instance_id: conflict.instance_id,
       session_id: sessionId,
-      harness,
+      adapter,
       source: "agent-coord",
       data: {
         reason: "stale",
@@ -244,7 +244,7 @@ function acquireLock(coordRoot: string): () => void {
   );
 }
 
-function harnessOf(platform: string | undefined): "claude-code" | "cursor" | "codex" {
+function adapterOf(platform: string | undefined): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
@@ -320,7 +320,7 @@ export function assumeIdentity(
         event_type: "identity.assumed",
         instance_id: instanceId,
         session_id: hb.session_id,
-        harness: harnessOf(hb.platform),
+        adapter: adapterOf(hb.platform),
         data: {
           name: identity.name,
           agent_id: identity.agent_id,

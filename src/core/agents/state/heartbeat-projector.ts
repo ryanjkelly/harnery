@@ -16,7 +16,7 @@ import type { CanonicalEvent } from "../events/consume.ts";
 export interface V2Heartbeat {
   instance_id: string;
   session_id: string;
-  harness: string;
+  adapter: string;
   agent_id?: string;
   name?: string;
   kind?: "session" | "subagent" | "transient";
@@ -24,8 +24,9 @@ export interface V2Heartbeat {
   platform?: string;
   subagent_call_id?: string;
   parent_session_id?: string;
-  /** Set iff this owner is a `workflow run` child (joins to the run journal). */
+  /** Set iff this owner is a `workflow run` child (joins to the run transcript). */
   workflow_run_id?: string;
+  workflow_agent_id?: string;
   started_at?: string;
   last_heartbeat: string;
   last_tool?: string;
@@ -120,7 +121,7 @@ function seed(ev: CanonicalEvent, coordRoot: string): V2Heartbeat {
   const hb: V2Heartbeat = {
     instance_id: ev.instance_id,
     session_id: ev.session_id,
-    harness: ev.harness,
+    adapter: ev.adapter,
     last_heartbeat: ev.ts,
     last_event_id: ev.event_id,
     events_applied: 0,
@@ -167,11 +168,11 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
   switch (ev.event_type) {
     case "session.start":
       hb.started_at = pickStr(d, "started_at") ?? ev.ts;
-      hb.harness = ev.harness;
+      hb.adapter = ev.adapter;
       {
         const model = pickStr(d, "model");
         if (model) hb.model = model;
-        const platform = pickStr(d, "platform") ?? harnessToPlatform(ev.harness);
+        const platform = pickStr(d, "platform") ?? adapterToPlatform(ev.adapter);
         hb.platform = platform;
         const name = pickStr(d, "name");
         if (name) hb.name = name;
@@ -189,6 +190,8 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
         if (parentSession) hb.parent_session_id = parentSession;
         const workflowRunId = pickStr(d, "workflow_run_id");
         if (workflowRunId) hb.workflow_run_id = workflowRunId;
+        const workflowAgentId = pickStr(d, "workflow_agent_id");
+        if (workflowAgentId) hb.workflow_agent_id = workflowAgentId;
         if (!hb.files_touched) hb.files_touched = [];
       }
       break;
@@ -209,7 +212,7 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       hb.agent_id = ev.instance_id;
       hb.started_at = ev.ts;
       if (!hb.files_touched) hb.files_touched = [];
-      hb.platform = harnessToPlatform(ev.harness);
+      hb.platform = adapterToPlatform(ev.adapter);
       break;
     }
 
@@ -231,7 +234,7 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
           hb.turn_summary = summary;
           hb.turn_summary_updated_at = ev.ts;
         }
-        // Backfill model for harnesses that omit it at session.start (Claude
+        // Backfill model for adapters that omit it at session.start (Claude
         // Code). The Stop hook resolves it from the transcript by this point;
         // only set when present so we never clobber a known model.
         const model = pickStr(d, "model");
@@ -320,11 +323,11 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
   }
 }
 
-function harnessToPlatform(harness: string): string {
-  if (harness === "claude-code") return "claude_code";
-  if (harness === "cursor") return "cursor";
-  if (harness === "codex") return "codex";
-  return harness;
+function adapterToPlatform(adapter: string): string {
+  if (adapter === "claude-code") return "claude_code";
+  if (adapter === "cursor") return "cursor";
+  if (adapter === "codex") return "codex";
+  return adapter;
 }
 
 function extractFilePath(data: Record<string, unknown>): string | undefined {
@@ -458,6 +461,7 @@ function writeHeartbeat(coordRoot: string, instanceId: string, hb: V2Heartbeat):
     setIfDefined(merged, "agent_id", hb.agent_id);
     setIfDefined(merged, "subagent_call_id", hb.subagent_call_id);
     setIfDefined(merged, "workflow_run_id", hb.workflow_run_id);
+    setIfDefined(merged, "workflow_agent_id", hb.workflow_agent_id);
     setIfDefined(merged, "model", hb.model);
     setIfDefined(merged, "platform", hb.platform);
     setIfDefined(merged, "started_at", hb.started_at);

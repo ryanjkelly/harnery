@@ -58,7 +58,7 @@ export interface WorkflowRunManifest {
   repository_before: RepoSnapshot;
   execution: {
     cwd: string;
-    default_harness: string;
+    default_adapter: string;
     max_agents: number;
     concurrency: number;
     subscription_only: boolean;
@@ -149,11 +149,11 @@ export function assertWorkflowRunResumable(
   runId: string,
 ): { manifest: WorkflowRunManifest; approvalId: string } {
   const manifest = readWorkflowRunManifest(coordRoot, runId);
-  const journalPath = join(coordRoot, ".harnery", "workflows", runId, "journal.jsonl");
-  if (!existsSync(journalPath)) throw new Error(`workflow run ${runId} has no journal`);
+  const transcriptPath = join(coordRoot, ".harnery", "workflows", runId, "transcript.jsonl");
+  if (!existsSync(transcriptPath)) throw new Error(`workflow run ${runId} has no transcript`);
   let approvalId: string | undefined;
   let terminal = false;
-  for (const line of readFileSync(journalPath, "utf8").split("\n")) {
+  for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
       const event = JSON.parse(line) as { event?: string; approval_id?: string };
@@ -162,7 +162,7 @@ export function assertWorkflowRunResumable(
       }
       if (event.event === "run.end") terminal = true;
     } catch {
-      throw new Error(`workflow run ${runId} has a malformed journal line`);
+      throw new Error(`workflow run ${runId} has a malformed transcript line`);
     }
   }
   if (terminal) throw new Error(`workflow run ${runId} is already terminal`);
@@ -270,8 +270,8 @@ function validExecution(value: WorkflowRunManifest["execution"]): boolean {
   if (!value || typeof value !== "object") return false;
   return (
     isAbsolute(value.cwd) &&
-    typeof value.default_harness === "string" &&
-    value.default_harness.length > 0 &&
+    typeof value.default_adapter === "string" &&
+    value.default_adapter.length > 0 &&
     positiveSafeInteger(value.max_agents) &&
     positiveSafeInteger(value.concurrency) &&
     typeof value.subscription_only === "boolean" &&

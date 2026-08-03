@@ -67,7 +67,7 @@ describe("image-capture: viewed (Read)", () => {
       payload: { raw: { cwd: root } } as never,
       instanceId: "iid-1",
       sessionId: "sid-1",
-      harness: "claude-code",
+      adapter: "claude-code",
     });
 
     const events = readCaptured(root);
@@ -91,7 +91,7 @@ describe("image-capture: viewed (Read)", () => {
       payload: { raw: { cwd: root } } as never,
       instanceId: "iid",
       sessionId: "sid",
-      harness: "claude-code",
+      adapter: "claude-code",
     });
     expect(readCaptured(root).length).toBe(0);
   });
@@ -107,7 +107,7 @@ describe("image-capture: viewed (Read)", () => {
         payload: { raw: { cwd: root } } as never,
         instanceId: "iid",
         sessionId: "sid",
-        harness: "claude-code",
+        adapter: "claude-code",
       });
     }
     expect(readCaptured(root).length).toBe(2); // two touches
@@ -128,7 +128,7 @@ describe("image-capture: produced (Bash)", () => {
       } as never,
       instanceId: "iid",
       sessionId: "sid",
-      harness: "claude-code",
+      adapter: "claude-code",
     });
     const events = readCaptured(root);
     expect(events.length).toBe(1);
@@ -151,7 +151,7 @@ describe("image-capture: produced (Bash)", () => {
       } as never,
       instanceId: "iid",
       sessionId: "sid",
-      harness: "claude-code",
+      adapter: "claude-code",
     });
     expect(readCaptured(root).length).toBe(0);
   });

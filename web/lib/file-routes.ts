@@ -1,9 +1,14 @@
 /**
  * Route logic for the universal-file-viewer API surface:
  *
- *   GET /api/file?path=<rel>        raw bytes (Range/206, ETag/304, ?download=)
- *   GET /api/file/meta?path=<rel>   JSON metadata for renderer dispatch
- *   GET /api/file/text?path=<rel>   capped UTF-8 body for text-family renderers
+ *   GET /api/file?path=<rel>           raw bytes (Range/206, ETag/304, ?download=)
+ *   GET /api/file?path=<rel>&render=1  HTML only on the dashboard origin: text/html +
+ *                                      CSP sandbox (no scripts; unique opaque origin)
+ *   Host harnery-files.localhost/…     same /api/file handler via middleware rewrite:
+ *                                      navigable MIME, no CSP sandbox (scripts OK;
+ *                                      isolated from localhost cookies)
+ *   GET /api/file/meta?path=<rel>      JSON metadata for renderer dispatch
+ *   GET /api/file/text?path=<rel>      capped UTF-8 body for text-family renderers
  *
  * All three reuse `resolveFile` and READ FROM THE FD IT RETURNS, never a
  * second path-open (TOCTOU; a path-reopen passes every functional test and
@@ -15,15 +20,17 @@ import { closeSync, createReadStream, readSync } from "node:fs";
 import { Readable } from "node:stream";
 import { type ArchiveListing, listArchive } from "./file-viewer/archive";
 import {
-  type ResolveReject,
+  isTextCategory,
+  navigableMimeFor,
   type ResolvedFile,
+  type ResolveReject,
+  resolveFile,
+  scanChunk,
   TEXT_ENDPOINT_MAX_BYTES,
   TEXT_ENDPOINT_MAX_LINES,
   TEXT_INLINE_CAP_BYTES,
-  isTextCategory,
-  resolveFile,
-  scanChunk,
 } from "./files";
+import { FILES_ORIGIN_HEADER, isFilesOriginHost } from "./files-origin";
 
 /** Cap the archive bytes read into memory for listing (zip-bomb / OOM guard). */
 const ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
@@ -33,6 +40,12 @@ const ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 const NOSNIFF = "nosniff";
+
+/** .html / .htm only — category "html" also covers .xml, which stays source-only. */
+function isRenderableHtmlPath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return lower.endsWith(".html") || lower.endsWith(".htm");
+}
 
 export function fileErrorResponse(r: ResolveReject): Response {
   return Response.json(
@@ -57,7 +70,10 @@ function etagFor(f: ResolvedFile): string {
   return `W/"${f.size}-${Math.round(f.mtimeMs)}"`;
 }
 
-function baseHeaders(f: ResolvedFile): Record<string, string> {
+function baseHeaders(
+  f: ResolvedFile,
+  opts: { filesOrigin?: boolean } = {},
+): Record<string, string> {
   const headers: Record<string, string> = {
     "content-type": f.mime,
     "accept-ranges": "bytes",
@@ -65,6 +81,13 @@ function baseHeaders(f: ResolvedFile): Record<string, string> {
     "cache-control": "private, no-cache",
     "x-content-type-options": NOSNIFF,
   };
+  if (opts.filesOrigin) {
+    // Isolated host: real browser MIME (set by caller) and no CSP sandbox so
+    // HTML/JS on this origin can run. Dashboard XSS is prevented by host split.
+    const ext = f.relPath.includes(".") ? (f.relPath.split(".").pop() ?? "") : "";
+    headers["content-type"] = navigableMimeFor(f.category, ext);
+    return headers;
+  }
   // CSP sandbox: a directly-navigated response gets a unique origin with
   // scripts disabled, the svg/html escape hatch ("never become
   // same-origin script"). PDF is the one exemption: Chrome's PDF viewer
@@ -160,7 +183,13 @@ export function parseRange(header: string | null, size: number): RangeParse {
 
 export function serveRawFile(req: Request, opts: { headOnly?: boolean } = {}): Response {
   const url = new URL(req.url);
-  const pathParam = url.searchParams.get("path");
+  // Files-origin middleware sets x-harnery-files-path (Host-gated). Query
+  // ?path= remains the dashboard / embed path. Never accept the header on a
+  // non-files Host — that would let a client smuggle a path past the URL.
+  const filesOrigin = isFilesOriginHost(req.headers.get("host"));
+  const pathParam = filesOrigin
+    ? (req.headers.get(FILES_ORIGIN_HEADER) ?? url.searchParams.get("path"))
+    : url.searchParams.get("path");
   if (!pathParam) return missingPathResponse();
   const r = resolveFile(pathParam);
   if (!r.ok) return fileErrorResponse(r);
@@ -186,8 +215,34 @@ function serveRawResolved(
   r: ResolvedFile,
   opts: { headOnly?: boolean },
 ): Response {
-  const headers = baseHeaders(r);
+  // Host is authoritative: never trust a ?filesOrigin= query (that would let
+  // dashboard-origin callers opt into navigable HTML/JS and XSS themselves).
+  const filesOrigin = isFilesOriginHost(req.headers.get("host"));
+  const headers = baseHeaders(r, { filesOrigin });
   const download = url.searchParams.get("download");
+  const wantRender = !filesOrigin && url.searchParams.get("render") === "1";
+
+  // Opt-in browser document for self-contained HTML on the dashboard origin.
+  // Default stays text/plain so a bare /api/file link can never become a
+  // same-origin navigable page. CSP sandbox (already on baseHeaders) gives
+  // the response a unique opaque origin with scripts disabled.
+  if (wantRender && download === null) {
+    if (r.category !== "html" || !isRenderableHtmlPath(r.relPath)) {
+      closeSync(r.fd);
+      return Response.json(
+        {
+          error: "render_not_allowed",
+          detail: "?render=1 is only for .html / .htm files",
+        },
+        {
+          status: 400,
+          headers: { "x-content-type-options": NOSNIFF, "cache-control": "no-store" },
+        },
+      );
+    }
+    headers["content-type"] = "text/html; charset=utf-8";
+  }
+
   if (download !== null) {
     headers["content-disposition"] = contentDisposition(
       download,

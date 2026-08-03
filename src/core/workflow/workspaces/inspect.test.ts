@@ -170,7 +170,7 @@ describe("workflow workspace inspection", () => {
           };
         },
       },
-      harnessEvidence: {
+      adapterEvidence: {
         "claude-code": { toolEvidence: { support: "supported" } },
       },
       isolation: "worktree",

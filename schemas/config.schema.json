@@ -35,6 +35,20 @@
         }
       }
     },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Defaults for repository-local working artifacts under .harnery/artifacts/.",
+      "properties": {
+        "default_retention_days": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 3650,
+          "default": 3,
+          "description": "Retention for `harn artifacts create` when --days is absent. Env override: HARNERY_ARTIFACT_RETENTION_DAYS."
+        }
+      }
+    },
     "web": {
       "type": "object",
       "additionalProperties": false,
@@ -113,6 +127,17 @@
         }
       }
     },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Agent-facing instructions harnery manages in AGENTS.md.",
+      "properties": {
+        "hostAddendumFile": {
+          "type": "string",
+          "description": "Repo-relative path to a markdown file holding this project's own coordination policy. `harn init` splices its contents into a second managed region in AGENTS.md, `init --check` reports drift against it, and `deinit` (or removing this key) takes the region back out. Harnery never parses the content. Must resolve inside the project and be non-empty."
+        }
+      }
+    },
     "presence": {
       "type": "object",
       "additionalProperties": false,
@@ -165,7 +190,7 @@
     "sync": {
       "type": "object",
       "additionalProperties": false,
-      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, scratch/archived/, councils/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
+      "description": "`harn sync` (rclone) defaults for the curated cross-machine subset (identities/, journal/archived/, councils/). Env overrides: HARNERY_SYNC_REMOTE, HARNERY_SYNC_PREFIX. `harn sync init` also records these in ~/.config/harnery/sync.json (a lower-precedence fallback than this section).",
       "properties": {
         "remote": {
           "type": "string",

@@ -25,21 +25,21 @@ import {
 import { dirname, join } from "node:path";
 import { emit } from "../events/emit.ts";
 
-/** Inline harness normalizer (mirrors canonical-emit.normalizeHarness), kept
+/** Inline adapter normalizer (mirrors canonical-emit.normalizeAdapter), kept
  * local so the writer's only cross-module dep is the in-process emit(). */
-function harnessOf(platform: string | undefined): "claude-code" | "cursor" | "codex" {
+function adapterOf(platform: string | undefined): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
 }
 
-/** Inverse of harnessOf: maps the canonical harness ("claude-code"/"cursor"/
+/** Inverse of adapterOf: maps the canonical adapter ("claude-code"/"cursor"/
  * "codex") to the legacy underscore platform label stored on the heartbeat.
- * Mirrors heartbeat-projector.harnessToPlatform so a healed heartbeat carries
+ * Mirrors heartbeat-projector.adapterToPlatform so a healed heartbeat carries
  * the same platform value projection would have written. */
-function harnessToPlatform(harness: string | undefined): string {
-  if (harness === "cursor") return "cursor";
-  if (harness === "codex") return "codex";
+function adapterToPlatform(adapter: string | undefined): string {
+  if (adapter === "cursor") return "cursor";
+  if (adapter === "codex") return "codex";
   return "claude_code";
 }
 
@@ -63,7 +63,7 @@ function emitHealthHeal(
       event_type: type,
       instance_id: instanceId,
       session_id: hb?.session_id ?? instanceId,
-      harness: harnessOf(hb?.platform),
+      adapter: adapterOf(hb?.platform),
       source: "agent-coord",
       data,
     });
@@ -290,7 +290,7 @@ export function healHeartbeat(
   instanceId: string,
   sessionId?: string,
   model?: string,
-  harness?: string,
+  adapter?: string,
 ): Heartbeat | null {
   const path = heartbeatPath(coordRoot, instanceId);
   if (existsSync(path)) {
@@ -330,11 +330,11 @@ export function healHeartbeat(
     started_at: now,
     last_heartbeat: now,
     files_touched: [],
-    // Default to claude_code only when the caller can't tell us the harness
+    // Default to claude_code only when the caller can't tell us the adapter
     // (e.g. manual `harn agents heal`). The live tool.pre_use heal threads the
-    // detected harness so a pruned Cursor/Codex heartbeat is recreated with
+    // detected adapter so a pruned Cursor/Codex heartbeat is recreated with
     // the correct platform instead of being mislabeled claude_code.
-    platform: harnessToPlatform(harness),
+    platform: adapterToPlatform(adapter),
   };
   atomicWrite(path, JSON.stringify(hb, null, 2));
   // Write-only telemetry: only the actual-recreate branch reaches here (the

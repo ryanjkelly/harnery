@@ -1,7 +1,7 @@
 /**
- * Context continuity: durable, structured state around native harness
- * compaction. Harnery does not decide when a harness compacts. It records
- * context telemetry when the harness exposes it, checkpoints external work
+ * Context continuity: durable, structured state around native adapter
+ * compaction. Harnery does not decide when a adapter compacts. It records
+ * context telemetry when the adapter exposes it, checkpoints external work
  * state before compaction, and renders a verified recovery briefing after it.
  */
 
@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Harness } from "../hooks/events/schema.ts";
+import type { Adapter } from "../hooks/events/schema.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;
@@ -23,7 +23,7 @@ export type CheckpointReason = "manual" | "pressure" | "pre_compact" | "session_
 
 export interface ContextSample {
   session_id: string;
-  harness: Harness;
+  adapter: Adapter;
   model?: string;
   used_tokens?: number;
   window_tokens?: number;
@@ -65,7 +65,7 @@ export interface ContinuityCapsule {
   session: {
     session_id: string;
     instance_id: string;
-    harness: Harness;
+    adapter: Adapter;
     model?: string;
   };
   context?: ContextSample;
@@ -83,7 +83,7 @@ export interface ContinuityCapsule {
 
 export interface ExtractContextSampleOptions {
   sessionId: string;
-  harness: Harness;
+  adapter: Adapter;
   model?: string;
   source?: ContextSampleSource;
   confidence?: ContextSampleConfidence;
@@ -93,7 +93,7 @@ export interface ExtractContextSampleOptions {
 export interface CheckpointContextInput {
   sessionId: string;
   instanceId: string;
-  harness: Harness;
+  adapter: Adapter;
   cwd: string;
   reason: CheckpointReason;
   model?: string;
@@ -129,7 +129,7 @@ interface HeartbeatSnapshot {
   last_tool_target?: string;
 }
 
-/** Parse the context-window shapes exposed by current harness hook/status data. */
+/** Parse the context-window shapes exposed by current adapter hook/status data. */
 export function extractContextSample(
   payload: Record<string, unknown>,
   options: ExtractContextSampleOptions,
@@ -177,7 +177,7 @@ export function extractContextSample(
 
   return {
     session_id: options.sessionId,
-    harness: options.harness,
+    adapter: options.adapter,
     model,
     used_tokens: usedTokens,
     window_tokens: windowTokens,
@@ -245,7 +245,7 @@ export function checkpointContext(
     session: {
       session_id: input.sessionId,
       instance_id: input.instanceId,
-      harness: input.harness,
+      adapter: input.adapter,
       model: input.model ?? current.latest_context?.model ?? heartbeat?.model,
     },
     context: current.latest_context,
@@ -271,7 +271,7 @@ export function checkpointContext(
   return { capsule, path: absolutePath, state: next, reused: false };
 }
 
-/** Prepare a briefing without claiming that a harness has accepted it yet. */
+/** Prepare a briefing without claiming that a adapter has accepted it yet. */
 export function prepareContextRecovery(
   coordRoot: string,
   input: { sessionId: string; instanceId: string; cwd: string },
@@ -298,7 +298,7 @@ export function prepareContextRecovery(
   return { state: current, capsule, briefing };
 }
 
-/** Advance continuity only after the harness context channel accepted the briefing. */
+/** Advance continuity only after the adapter context channel accepted the briefing. */
 export function completeContextRecovery(
   coordRoot: string,
   input: { sessionId: string; instanceId: string },
@@ -319,7 +319,7 @@ export function completeContextRecovery(
   return recovered;
 }
 
-/** Record that the harness, rather than Harnery, reported compaction complete. */
+/** Record that the adapter, rather than Harnery, reported compaction complete. */
 export function markContextCompactionCompleted(
   coordRoot: string,
   input: { sessionId: string; instanceId: string; observedAt?: string },
@@ -532,7 +532,7 @@ function git(cwd: string, args: string[]): string | undefined {
 function sameMeasurement(a: ContextSample | undefined, b: ContextSample): boolean {
   if (!a) return false;
   return (
-    a.harness === b.harness &&
+    a.adapter === b.adapter &&
     a.model === b.model &&
     a.used_tokens === b.used_tokens &&
     a.window_tokens === b.window_tokens &&

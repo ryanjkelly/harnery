@@ -16,9 +16,9 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { readWorkflowApproval } from "../workflow/approvals.ts";
 import { stableDigest } from "../workflow/durable-record.ts";
-import { WORKFLOW_JOURNAL_EVENT_BYTES, workflowJournalPath } from "../workflow/journal.ts";
 import { readWorkflowProof } from "../workflow/proof.ts";
 import { readWorkflowRunManifest, workflowScriptDigest } from "../workflow/run-state.ts";
+import { WORKFLOW_TRANSCRIPT_EVENT_BYTES, workflowTranscriptPath } from "../workflow/transcript.ts";
 import { isWorkspaceBoundExecutionEvidence } from "../workflow/workspaces/validate.ts";
 
 export const WORK_INTENT_SCHEMA_VERSION = 1 as const;
@@ -42,7 +42,7 @@ const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
 /** Default ceiling on consecutive uncharged attempts (ADR 0046). Kept low: each
  * one is a real vendor round-trip, so a handful gives a transient outage room
  * to recover before the item stops and names the outside service. There is no
- * backoff between them beyond the cadence of the supervisor and the vendor's own
+ * backoff between them beyond the cadence of the governor and the vendor's own
  * responses, which is why the bound stays small. */
 const DEFAULT_MAX_UNCHARGED_ATTEMPTS = 3;
 
@@ -136,14 +136,17 @@ export interface WorkAttempt {
   run_id: string;
   started_at: string;
   trigger?: WorkAttemptTrigger;
-  status: "running" | "parked" | "succeeded" | "failed" | "lost" | "journal_unreadable";
+  status: "running" | "parked" | "succeeded" | "failed" | "lost" | "transcript_unreadable";
   approval_id?: string;
   proof_path?: string;
-  journal_error?: string;
+  transcript_error?: string;
   /** Why this failed attempt was uninformative about the work (ADR 0046), read
    * from the proof's run.class. Absent ⇒ the attempt is charged, exactly as
    * before ADR 0046 (which is also how a proof without a class reads). */
-  uncharged?: "environment" | "upstream";
+  uncharged?: "environment" | "upstream" | "decision";
+  /** Docket id this attempt stopped on, when uncharged is "decision" and the
+   * script named one. Lets the projection point at the question itself. */
+  blocked_on?: string;
 }
 
 export interface WorkProjection {
@@ -165,6 +168,11 @@ export interface WorkProjection {
   latest_run_id?: string;
   approval_id?: string;
   proof_path?: string;
+  /** Set when this item stopped because a human must rule. The value is the
+   * docket id when the script named one, else the empty string — present either
+   * way, so a reader can distinguish "waiting on a person" from every other
+   * terminal block without parsing the reason prose. */
+  blocked_on_decision?: string;
   updated_at: string;
 }
 
@@ -500,12 +508,12 @@ function deriveWorkProjection(
     };
   }
   const attemptsRemaining = intent.max_attempts - chargedAttempts;
-  if (latest.status === "journal_unreadable") {
+  if (latest.status === "transcript_unreadable") {
     return {
       ...base,
       state: "blocked",
-      reason: `workflow attempt ${latest.number} journal is unreadable: ${
-        latest.journal_error ?? "unknown journal read error"
+      reason: `workflow attempt ${latest.number} transcript is unreadable: ${
+        latest.transcript_error ?? "unknown transcript read error"
       }`,
       next_action: attemptsRemaining > 0 ? "retry" : "none",
     };
@@ -516,13 +524,27 @@ function deriveWorkProjection(
   if (latest.status === "failed" && latest.uncharged === "environment") {
     // A missing precondition. The operator chose to STOP the item immediately
     // rather than retry an unchanged environment (ADR 0046); next_action "none"
-    // stops the supervisor. A human who fixes the environment can still force a
+    // stops the governor. A human who fixes the environment can still force a
     // retry — the attempt was uncharged, so the budget is intact.
     return {
       ...base,
       state: "blocked",
       reason: environmentBlockedReason(latest),
       next_action: "none",
+    };
+  }
+  if (latest.status === "failed" && latest.uncharged === "decision") {
+    // The script did its job and the answer was "a person has to settle this".
+    // Terminal for the same reason "environment" is terminal — retrying cannot
+    // change the blocker — but the fix is a ruling, not a repair, so the reason
+    // names the decision instead of a precondition. Uncharged, so once the
+    // decision lands the item can be retried with its budget intact.
+    return {
+      ...base,
+      state: "blocked",
+      reason: decisionBlockedReason(latest),
+      next_action: "none",
+      blocked_on_decision: latest.blocked_on ?? "",
     };
   }
   if (latest.status === "failed" && latest.uncharged === "upstream") {
@@ -574,7 +596,7 @@ function unchargedProofError(attempt: WorkAttempt): string | undefined {
     const run = proof.run;
     const error =
       run && typeof run === "object" ? (run as Record<string, unknown>).error : undefined;
-    return typeof error === "string" && error.trim() ? boundedJournalError(error) : undefined;
+    return typeof error === "string" && error.trim() ? boundedTranscriptError(error) : undefined;
   } catch {
     return undefined;
   }
@@ -589,6 +611,21 @@ function environmentBlockedReason(attempt: WorkAttempt): string {
 
 function upstreamReason(attempt: WorkAttempt): string {
   return unchargedProofError(attempt) ?? "the vendor was reached and refused";
+}
+
+/** Operator-facing reason for a run that stopped on a human. Reads the script's
+ * own sentence out of the proof and drops the WorkflowBlockedError prefix the
+ * engine added, so the projection says the thing once rather than twice. */
+function decisionBlockedReason(attempt: WorkAttempt): string {
+  const raw = unchargedProofError(attempt);
+  const detail = raw
+    ?.replace(/^blocked on decision \S+: /, "")
+    .replace(/^blocked pending a human decision: /, "")
+    .trim();
+  const named = attempt.blocked_on ? ` (decision ${attempt.blocked_on})` : "";
+  return detail
+    ? `a human must rule before this can proceed: ${detail}${named}`
+    : `a human must rule before this can proceed${named}`;
 }
 
 function inspectAttempt(
@@ -659,24 +696,29 @@ function inspectAttempt(
     // failed attempt: a succeeded run never carries a class.
     if (
       attempt.status === "failed" &&
-      (proof.run.class === "environment" || proof.run.class === "upstream")
+      (proof.run.class === "environment" ||
+        proof.run.class === "upstream" ||
+        proof.run.class === "decision")
     ) {
       attempt.uncharged = proof.run.class;
+      if (proof.run.class === "decision" && typeof proof.run.decision_id === "string") {
+        attempt.blocked_on = proof.run.decision_id;
+      }
     }
     return attempt;
   }
-  const journalPath = workflowJournalPath(coordRoot, runId);
-  if (existsSync(journalPath)) {
+  const transcriptPath = workflowTranscriptPath(coordRoot, runId);
+  if (existsSync(transcriptPath)) {
     let parked: string | undefined;
     let resumed = false;
     try {
       for (const line of readBoundedLines(
-        journalPath,
+        transcriptPath,
         MAX_EVENTS_BYTES,
-        WORKFLOW_JOURNAL_EVENT_BYTES,
-        "workflow journal",
+        WORKFLOW_TRANSCRIPT_EVENT_BYTES,
+        "workflow transcript",
       )) {
-        const value = parseObject(line, `workflow run ${runId} journal`);
+        const value = parseObject(line, `workflow run ${runId} transcript`);
         if (value.event === "run.parked" && typeof value.approval_id === "string") {
           parked = value.approval_id;
           resumed = false;
@@ -692,8 +734,8 @@ function inspectAttempt(
       if (workflowResumeLeaseIsLive(coordRoot, runId)) {
         attempt.status = "running";
       } else {
-        attempt.status = "journal_unreadable";
-        attempt.journal_error = boundedJournalError((error as Error).message);
+        attempt.status = "transcript_unreadable";
+        attempt.transcript_error = boundedTranscriptError((error as Error).message);
       }
       return attempt;
     }
@@ -1171,13 +1213,13 @@ export function acquireWorkLease(coordRoot: string, workId: string): () => void 
   return acquireWorkFileLease(coordRoot, workId, "lease.json", "is already active");
 }
 
-/** @internal Work journal mutation seam. */
+/** @internal Work transcript mutation seam. */
 export function acquireWorkEventLease(coordRoot: string, workId: string): () => void {
   return acquireWorkFileLease(
     coordRoot,
     workId,
     "events.lease.json",
-    "event journal is already active",
+    "event transcript is already active",
   );
 }
 
@@ -1308,8 +1350,8 @@ function readBoundedLines(
   return lines;
 }
 
-function boundedJournalError(message: string): string {
-  const normalized = message.trim() || "unknown journal read error";
+function boundedTranscriptError(message: string): string {
+  const normalized = message.trim() || "unknown transcript read error";
   return normalized.length > MAX_REASON ? normalized.slice(0, MAX_REASON) : normalized;
 }
 

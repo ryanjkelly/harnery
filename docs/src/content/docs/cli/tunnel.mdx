@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```
-harn tunnel up | down | status | logs | allow [...]
+harn tunnel up | down | reload | status | logs | allow [...]
 ```
 
 `harn tunnel` puts a local reverse-proxy gate in front of a provider tunnel, so you can reach a local service (the [web UI](/concepts/web-ui/), a dev server, etc.) from your phone or another machine without opening a firewall port or deploying. The gate rewrites the upstream `Host` header and forwards the request. Cloudflare mode uses a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) plus an IP allowlist checked against `CF-Connecting-IP`; Tailscale mode uses [Tailscale Serve/Funnel](https://tailscale.com/docs/reference/tailscale-cli/serve) and lets Tailscale own the access boundary.
@@ -27,6 +27,7 @@ harn tunnel up --provider tailscale --visibility public # public Tailscale Funne
 harn tunnel up --provider tailscale --name web --path /web # named instance at a path
 harn tunnel status                   # table of running instances + their URLs
 harn tunnel down [--name <id>|--all] # stop one / all
+harn tunnel reload [--name <id>|--all]  # pick up allowlist edits, keeping the URL
 harn tunnel logs [-f]                # tail the gate log (--provider for the provider log)
 ```
 
@@ -46,13 +47,37 @@ The Cloudflare provider denies every request whose origin IP isn't on the allowl
 
 ```bash
 harn tunnel allow              # list allowed IPs
-harn tunnel allow add 1.2.3.4  # add (restart running tunnels to apply)
+harn tunnel allow add 1.2.3.4  # add, then `harn tunnel reload --all` to apply
 harn tunnel allow rm 1.2.3.4   # remove
 ```
 
+Each gate reads the allowlist once, when it starts, so editing the config alone changes nothing for a tunnel that is already running.
+
+## Reload
+
+`harn tunnel reload` restarts an instance's gate in place and leaves the provider process alone:
+
+```bash
+harn tunnel reload             # the default instance
+harn tunnel reload --name web  # one named instance
+harn tunnel reload --all       # every live instance
+```
+
+The reason to reach for this instead of `down` then `up` is the URL. A Cloudflare quick tunnel's hostname is minted by `cloudflared` when it starts, so a full restart hands back a different `*.trycloudflare.com` address and invalidates every link you have already shared. `cloudflared` only ever forwards to the gate's local port, so swapping the gate underneath it keeps the hostname intact and the edge reconnects on its own.
+
+Denied requests are logged with the client IP, so the usual sequence after someone hits a 403 is to read the IP out of the gate log, add it, and reload:
+
+```bash
+harn tunnel logs               # find the `deny: ... ip=<addr>` line
+harn tunnel allow add <addr>
+harn tunnel reload --all
+```
+
+`--all` covers live instances only. Stale state files from earlier runs are counted and skipped rather than reported as failures. Reloading a single stale instance refuses instead, because a dead provider means the public URL is already gone and only `harn tunnel up` can mint a new one.
+
 ## Caveats
 
-- **Quick tunnels reroll their hostname on every restart.** A stable URL would need a named Cloudflare tunnel tied to a domain, which isn't built today.
+- **Quick tunnels reroll their hostname on every restart.** Use `harn tunnel reload` for allowlist changes so the URL survives. A hostname that persists across a full `down`/`up` would need a named Cloudflare tunnel tied to a domain, which isn't built today.
 - `cloudflared` auto-installs to `~/.local/bin/` on first run (Linux); on macOS, `brew install cloudflared`.
 - Tailscale mode requires the `tailscale` CLI to be installed, signed in, and reporting a MagicDNS name from `tailscale status --json`.
 - Tailscale Funnel is public internet exposure. Use Tailscale Serve when the reviewing device is in the tailnet.

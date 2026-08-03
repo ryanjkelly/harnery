@@ -12,7 +12,7 @@ workflow script currently receives only the work ID. A static workflow can
 therefore prove that it ran for the right ledger item while still being unable
 to read what that item asks it to accomplish.
 
-That gap is most visible when a supervisor materializes several planned work
+That gap is most visible when a governor materializes several planned work
 items against one reusable workflow template. The template is selected through
 frozen host authority, but it would need a separate hard-coded script for each
 objective.
@@ -76,7 +76,7 @@ needs and how externally authored text should be framed.
 ## Result and gotchas
 
 - One workflow template can execute distinct human-created or
-  supervisor-created objectives without becoming planner-authored code.
+  governor-created objectives without becoming planner-authored code.
 - `ctx.work` is deeply frozen at runtime, but its fields may still contain
   externally authored text. A script that includes them in a model prompt must
   preserve the host's policy and instruction hierarchy.

@@ -7,7 +7,7 @@
 # Removing just the CLI (installed via the hosted one-liner / npm)? Use:
 #   curl -fsSL https://harnery.com/uninstall.sh | bash
 #
-# This always (1) runs `harn deinit` to unwire the harness hooks and (2)
+# This always (1) runs `harn deinit` to unwire the adapter hooks and (2)
 # removes the bin symlinks scripts/setup.sh put on your PATH. Then, when run in
 # a terminal, it asks about the two destructive extras:
 #   - deleting this project's .harnery/ state (your coordination history), and
@@ -22,7 +22,7 @@
 #   --keep-links           leave the PATH symlinks in place
 #   --purge-state          delete the .harnery/ coord root (skips its prompt)
 #   --remove-clone         delete the harnery clone too (skips its prompt)
-#   --harness <id>         claude-code | cursor | codex (default: claude-code)
+#   --adapter <id>         claude-code | cursor | codex (default: claude-code)
 #   --dry-run              show what would change without writing (never prompts)
 
 set -euo pipefail
@@ -44,7 +44,7 @@ DO_UNLINK=1
 PURGE_STATE=0
 REMOVE_CLONE=0
 DRY_RUN=0
-HARNESS="claude-code"
+ADAPTER="claude-code"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project-root) PROJECT_ROOT="$2"; shift 2 ;;
@@ -52,7 +52,7 @@ while [ $# -gt 0 ]; do
     --keep-links)   DO_UNLINK=0; shift ;;
     --purge-state)  PURGE_STATE=1; shift ;;
     --remove-clone) REMOVE_CLONE=1; shift ;;
-    --harness)      HARNESS="$2"; shift 2 ;;
+    --adapter)      ADAPTER="$2"; shift 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
     -h|--help)      sed -n '2,26p' "$SOURCE"; exit 0 ;;
     *) echo "harnery teardown: unknown argument '$1'" >&2; exit 1 ;;
@@ -102,10 +102,10 @@ if [ "$INTERACTIVE" -eq 1 ] && [ "$REMOVE_CLONE" -eq 0 ]; then
   echo
 fi
 
-# ── 1. Unwire the project: harness hooks (+ optional .harnery/ purge) ────────
+# ── 1. Unwire the project: adapter hooks (+ optional .harnery/ purge) ────────
 # Delegate to `harn deinit` so the unwiring logic lives in one place (it keeps
 # any non-harnery hooks and only purges .harnery/ when asked).
-DEINIT_ARGS=(deinit --harness "$HARNESS" --project-root "$PROJECT_ROOT")
+DEINIT_ARGS=(deinit --adapter "$ADAPTER" --project-root "$PROJECT_ROOT")
 [ "$PURGE_STATE" -eq 1 ] && DEINIT_ARGS+=(--purge-state)
 [ "$DRY_RUN" -eq 1 ] && DEINIT_ARGS+=(--dry-run)
 echo "→ harn deinit"

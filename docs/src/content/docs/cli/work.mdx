@@ -51,13 +51,13 @@ item becomes ready. Dependencies are immutable in the first schema.
 ## Run, park, and retry
 
 ```bash
-harn work run <work-id> --harness codex --subscription-only
+harn work run <work-id> --adapter codex --subscription-only
 harn work retry <work-id>
 ```
 
 `run` starts ready work. It records an attempt and stable workflow run ID
 before loading the workflow script. Standard workflow options are available:
-`--harness`, `--max-agents`, `--concurrency`, `--cwd`,
+`--adapter`, `--max-agents`, `--concurrency`, `--cwd`,
 `--subscription-only`, `--allow-api-billing`, `--policy`, `--isolation`,
 `--workspace-root`, and `--approval-to`.
 
@@ -113,7 +113,7 @@ synthesizing context. It remains the same attempt and retains its original
 `ctx.attempt`.
 
 When host policy parks the workflow, the work item derives
-`awaiting_approval`. Resolve the request with `harn workflow approvals`, then
+`awaiting_approval`. Resolve the request with `harn approval`, then
 run the work item again. Harnery resumes the same workflow run and does not
 charge another attempt. A failed or lost run derives `blocked`; only the
 explicit `retry` command creates a new attempt, and the immutable attempt
@@ -154,7 +154,7 @@ harn work reconcile <work-id>
 harn work accept <work-id> --actor reviewer --reason "proof and artifacts reviewed"
 ```
 
-Reconciliation compares the ledger with dependency state, workflow journals,
+Reconciliation compares the ledger with dependency state, workflow transcripts,
 approval records, leases, and proof. It records a changed state and next action
 but never executes that action. Running it repeatedly over unchanged evidence
 does not append duplicate events.
@@ -164,7 +164,7 @@ A passing workflow proof derives `in_review`. It does not derive `succeeded`.
 `reopen` retains every event and attempt while making a future attempt possible.
 
 The local dashboard exposes the same projection at `/work`, with links to each
-attempt's workflow journal and current approval or proof.
+attempt's workflow transcript and current approval or proof.
 
 ## Sending a correction back
 
@@ -201,3 +201,20 @@ Deferring requires a reason, and both the finding and its disposition stay in th
 event log. The team that missed a defect does not get to certify that it was
 fixed; that judgement stays with the operator who raised it. See
 [ADR 0043](/decisions/0043-operator-findings/).
+
+### Correcting work under a finished mission
+
+A mission that reached `succeeded` is where you are most likely to read the output
+and find something, so reopening work beneath one is the ordinary case rather than
+an edge. It reopens the mission along with the item:
+
+```bash
+harn work reopen <work-id> --actor reviewer --finding "..."
+# mission goal-ship-it had completed; its completion was reopened so <work-id>
+# can be dispatched
+```
+
+The accepted completion stays in the plan log. A superseding `plan.reopened` event
+is appended beside it, the goal returns to `ready`, and `harn governor run`
+dispatches the reopened item ahead of any milestone reassessment. Run it twice and
+nothing further happens. See [ADR 0050](/decisions/0050-reopening-a-completed-mission/).

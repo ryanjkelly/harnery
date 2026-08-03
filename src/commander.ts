@@ -18,15 +18,17 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { registerAgentsCommand } from "./commands/agents.ts";
+import { registerAdapterCommand } from "./commands/adapter.ts";
+import { registerAgentsCommand, registerCouncilCommands } from "./commands/agents.ts";
+import { registerArtifactsCommand } from "./commands/artifacts.ts";
 import { registerBackupCommand } from "./commands/backup.ts";
 import { registerBrowseCommand } from "./commands/browse.ts";
 import { registerBrowseAiCommand } from "./commands/browse-ai.ts";
 import { registerCallersCommand } from "./commands/callers.ts";
+import { registerCheckpointCommand } from "./commands/checkpoint.ts";
 import { registerClaudeDesktopCommand } from "./commands/claude-desktop.ts";
 import { registerCompletionCommand } from "./commands/completion.ts";
 import { registerConfigGetCommand } from "./commands/config-get.ts";
-import { registerContextCommand } from "./commands/context.ts";
 import { registerCookiesCommand } from "./commands/cookies.ts";
 import { registerDecisionCommand } from "./commands/decision.ts";
 import { registerDeinitCommand } from "./commands/deinit.ts";
@@ -38,17 +40,15 @@ import { registerEmlCommand } from "./commands/eml.ts";
 import { registerEnvCommand } from "./commands/env.ts";
 import { registerFetchCommand } from "./commands/fetch.ts";
 import { registerFileHistoryCommand } from "./commands/file-history.ts";
+import { registerGovernorCommand } from "./commands/governor.ts";
 import { registerGrepCommand } from "./commands/grep.ts";
-import { registerHarnessCommand } from "./commands/harness.ts";
 import { registerInitCommand } from "./commands/init.ts";
+import { registerJournalCommand } from "./commands/journal.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
 import { registerPolicyCommand } from "./commands/policy.ts";
 import { registerPresenceCommand } from "./commands/presence.ts";
 import { registerReadCommand } from "./commands/read.ts";
 import { registerRelayCommand } from "./commands/relay.ts";
-import { registerScratchCommand } from "./commands/scratch.ts";
-import { registerSessionCommand } from "./commands/session.ts";
-import { registerSupervisorCommand } from "./commands/supervisor.ts";
 import { registerSyncCommand } from "./commands/sync.ts";
 import { registerSectionCommand, registerTocCommand } from "./commands/toc.ts";
 import { registerTokensCommand } from "./commands/tokens.ts";
@@ -143,6 +143,14 @@ export interface HarneryProgramContext {
    * zones behind a WAF). harn standalone skips the callback entirely.
    */
   extraHeaders?: (url: string) => Record<string, string>;
+  /**
+   * Host-injected vision-model call for `browse --check-critique`. harnery
+   * ships no model client or API key; a consumer wires this to its own
+   * multimodal provider (OpenAI/Anthropic/etc). Given one page tile + the
+   * rubric, it returns that tile's findings. When omitted, `--check-critique`
+   * reports `skipped` rather than a false pass.
+   */
+  critiqueProvider?: import("./lib/browser/critique.ts").CritiqueProvider;
   /**
    * Shell-completion provider-key lookup. Consumers wire this to a function
    * mapping (commandPath, option/positional) to a provider key, so that
@@ -250,7 +258,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
 
   program
     .name(opts.binName ?? "harn")
-    .description("Multi-agent coordination + harness adapters + portable CLI utilities.")
+    .description("Multi-agent coordination + adapter adapters + portable CLI utilities.")
     .version(readVersion());
 
   registerTokensCommand(program, emit);
@@ -266,22 +274,23 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCallersCommand(program, emit, opts.context);
   registerEditBatchCommand(program, emit);
   registerGrepCommand(program, emit, opts.context);
-  registerHarnessCommand(program, emit);
+  registerAdapterCommand(program, emit);
   registerPolicyCommand(program, emit);
   registerCookiesCommand(program, emit);
   registerFetchCommand(program, emit, opts.context);
   registerReadCommand(program, emit);
   registerBrowseCommand(program, emit, opts.context);
   registerBrowseAiCommand(program, emit);
-  registerSessionCommand(program, emit);
   registerCompletionCommand(program, emit, opts.context);
-  registerContextCommand(program, emit, opts.context);
-  registerScratchCommand(program, emit);
+  registerCheckpointCommand(program, emit, opts.context);
+  registerJournalCommand(program, emit);
+  registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);
   registerDevtoolsCommand(program, emit);
   registerTunnelCommand(program, emit, opts.context);
   registerDocsCommand(program, emit, opts.context);
-  registerAgentsCommand(program, emit);
+  registerAgentsCommand(program, emit, opts.context);
+  registerCouncilCommands(program);
   registerDoctorCommand(program, emit);
   registerInitCommand(program, emit, opts.binName);
   registerDeinitCommand(program, emit, opts.binName);
@@ -290,7 +299,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerSyncCommand(program, emit);
   registerWorkflowCommand(program, emit);
   registerWorkCommand(program, emit);
-  registerSupervisorCommand(program, emit);
+  registerGovernorCommand(program, emit);
   if (include("web")) registerWebCommand(program, emit);
 
   return program;

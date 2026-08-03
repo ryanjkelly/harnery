@@ -83,3 +83,24 @@ export function rawUrl(path: string, opts: { download?: string } = {}): string {
   if (opts.download !== undefined) url += `&download=${encodeURIComponent(opts.download)}`;
   return url;
 }
+
+/**
+ * Open on the isolated files origin (`harnery-files.localhost`) so HTML/JS run
+ * in a real browser document without sharing the dashboard cookie jar.
+ * Same allowlisted tree; relative asset URLs resolve on that host.
+ */
+export { filesOriginUrl as renderUrl } from "../files-origin";
+
+/** Dashboard chrome viewer (`/files/view`) with Source | Preview. Prefer
+ * `renderUrl` for a real browser tab of just the HTML page. */
+export function viewUrl(path: string, opts: { mode?: "source" | "preview" } = {}): string {
+  let url = `/files/view?${qs(path)}`;
+  if (opts.mode) url += `&mode=${opts.mode}`;
+  return url;
+}
+
+/** True when a path should offer the HTML render open-in-tab (.html / .htm). */
+export function isHtmlPreviewPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith(".html") || lower.endsWith(".htm");
+}

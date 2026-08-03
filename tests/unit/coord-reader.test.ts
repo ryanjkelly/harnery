@@ -18,7 +18,7 @@ beforeAll(() => {
   const h = path.join(ROOT, ".harnery");
   mkdirSync(path.join(h, "active"), { recursive: true });
   mkdirSync(path.join(h, "councils"), { recursive: true });
-  mkdirSync(path.join(h, "scratch"), { recursive: true });
+  mkdirSync(path.join(h, "journal"), { recursive: true });
 
   const now = new Date();
   const fresh = new Date(now.getTime() - 30_000).toISOString();
@@ -99,8 +99,8 @@ beforeAll(() => {
   );
 
   writeFileSync(
-    path.join(h, "scratch", "abc-fresh.md"),
-    `# Scratchpad: Alpha\nsession_id: abc-fresh\nstarted: 2026-05-27 10:00 AM CDT\nlast_updated: 2026-05-27 10:01 AM CDT\n\n---\n\n## 2026-05-27 10:01 AM CDT · plan\nfirst entry\n\n## 2026-05-27 10:00 AM CDT · note\nsecond entry\n`,
+    path.join(h, "journal", "abc-fresh.md"),
+    `# Journal: Alpha\nsession_id: abc-fresh\nstarted: 2026-05-27 10:00 AM CDT\nlast_updated: 2026-05-27 10:01 AM CDT\n\n---\n\n## 2026-05-27 10:01 AM CDT · plan\nfirst entry\n\n## 2026-05-27 10:00 AM CDT · note\nsecond entry\n`,
   );
 });
 
@@ -155,20 +155,20 @@ describe("coord-reader", () => {
       .toBe(true);
   });
 
-  test("readScratch parses entries and inverts to newest-first display", () => {
-    const sc = reader.readScratch("abc-fresh");
+  test("readJournal parses entries and inverts to newest-first display", () => {
+    const sc = reader.readJournal("abc-fresh");
     expect(sc.exists).toBe(true);
     expect(sc.entries.length).toBe(2);
-    // Scratch files are newest-first on disk (appendEntry unshifts the new
-    // header to the top), and readScratch preserves that file order. So the
+    // Journal files are newest-first on disk (appendEntry unshifts the new
+    // header to the top), and readJournal preserves that file order. So the
     // top entry (10:01 · plan) is newest and renders first; 10:00 · note is
-    // second. See readScratch's "File is newest-first" note.
+    // second. See readJournal's "File is newest-first" note.
     expect(sc.entries[0].category).toBe("plan");
     expect(sc.entries[1].category).toBe("note");
   });
 
-  test("readScratch on missing instance returns empty doc", () => {
-    const sc = reader.readScratch("not-here");
+  test("readJournal on missing instance returns empty doc", () => {
+    const sc = reader.readJournal("not-here");
     expect(sc.exists).toBe(false);
     expect(sc.entries.length).toBe(0);
   });

@@ -47,7 +47,7 @@ export function emitAndProject(
             parent_session_id: envelope.parent_session_id,
             turn_id: envelope.turn_id,
             parent_turn_id: envelope.parent_turn_id,
-            harness: envelope.harness,
+            adapter: envelope.adapter,
             source: envelope.source,
             data: envelope.data,
           },
