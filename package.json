@@ -82,20 +82,20 @@
       "types": "./dist/core/work/read.d.ts",
       "import": "./dist/core/work/read.js"
     },
-    "./core/supervisor": {
-      "bun": "./src/core/supervisor/index.ts",
-      "types": "./dist/core/supervisor/index.d.ts",
-      "import": "./dist/core/supervisor/index.js"
+    "./core/governor": {
+      "bun": "./src/core/governor/index.ts",
+      "types": "./dist/core/governor/index.d.ts",
+      "import": "./dist/core/governor/index.js"
     },
-    "./core/supervisor/state": {
-      "bun": "./src/core/supervisor/read.ts",
-      "types": "./dist/core/supervisor/read.d.ts",
-      "import": "./dist/core/supervisor/read.js"
+    "./core/governor/state": {
+      "bun": "./src/core/governor/read.ts",
+      "types": "./dist/core/governor/read.d.ts",
+      "import": "./dist/core/governor/read.js"
     },
-    "./core/supervisor/plans": {
-      "bun": "./src/core/supervisor/plan-read.ts",
-      "types": "./dist/core/supervisor/plan-read.d.ts",
-      "import": "./dist/core/supervisor/plan-read.js"
+    "./core/governor/plans": {
+      "bun": "./src/core/governor/plan-read.ts",
+      "types": "./dist/core/governor/plan-read.d.ts",
+      "import": "./dist/core/governor/plan-read.js"
     },
     "./core/policy": {
       "bun": "./src/core/policy/index.ts",
