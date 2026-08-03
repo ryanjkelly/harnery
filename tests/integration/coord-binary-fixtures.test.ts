@@ -304,6 +304,21 @@ describe("agent-hook session-start", () => {
     run(AGENT_HOOK, ["session-start", "--adapter", "codex"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
   });
+
+  test("Codex sessionStart accepts hook wiring from pre-rename releases", () => {
+    const root = makeSandbox();
+    const sid = "codex-legacy-harness-flag";
+    const payload = JSON.stringify({
+      session_id: sid,
+      cwd: root,
+      hook_event_name: "SessionStart",
+      model: "gpt-5.5",
+      permission_mode: "bypassPermissions",
+      source: "startup",
+    });
+    run(AGENT_HOOK, ["session-start", "--harness", "codex"], payload, root);
+    expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
+  });
 });
 
 // ── native compaction continuity ──────────────────────────────────────────

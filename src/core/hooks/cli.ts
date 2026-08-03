@@ -80,11 +80,11 @@ function parseArgv(argv: string[]): Argv {
   const out: Argv = { eventName: null, extra: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--adapter") {
+    if (arg === "--adapter" || arg === "--harness") {
       i++; // detectAdapter will re-parse; just consume the value here.
       continue;
     }
-    if (arg.startsWith("--adapter=")) continue;
+    if (arg.startsWith("--adapter=") || arg.startsWith("--harness=")) continue;
     if (!out.eventName && !arg.startsWith("--")) {
       out.eventName = arg;
     } else {

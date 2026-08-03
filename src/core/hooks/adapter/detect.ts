@@ -3,21 +3,26 @@ import type { Adapter } from "../events/schema.ts";
 
 /**
  * Resolve the adapter firing the hook. The dispatcher binary is always
- * invoked with `--adapter <name>` per the wiring in each adapter's settings
- * file (Phase 1). Returns null when the flag is missing; caller falls
+ * invoked with `--adapter <name>` per the current wiring in each adapter's
+ * settings file. `--harness` remains an accepted alias because settings files
+ * written by older releases survive a package upgrade until the consumer
+ * re-runs `harn init`. Returns null when neither flag is present; caller falls
  * through to the env-based fallback or skips emission.
  */
 export function detectAdapter(argv: readonly string[]): Adapter | null {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--adapter") {
+    if (a === "--adapter" || a === "--harness") {
       return validate(argv[i + 1]);
     }
     if (a.startsWith("--adapter=")) {
       return validate(a.slice("--adapter=".length));
     }
+    if (a.startsWith("--harness=")) {
+      return validate(a.slice("--harness=".length));
+    }
   }
-  return validate(coordEnv("AGENT_COORD_ADAPTER"));
+  return validate(coordEnv("AGENT_COORD_ADAPTER") ?? coordEnv("AGENT_COORD_HARNESS"));
 }
 
 function validate(v: string | undefined): Adapter | null {
