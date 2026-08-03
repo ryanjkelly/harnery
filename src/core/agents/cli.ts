@@ -164,6 +164,48 @@ async function handleProject(root: string, rest: string[]): Promise<number> {
   return 0;
 }
 
+function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
+  if (platform === "cursor") return "cursor";
+  if (platform === "codex") return "codex";
+  return "claude-code";
+}
+
+/**
+ * Append a canonical `health.heartbeat_swept` event after an operator kill.
+ * Same envelope stale-sweep emits, so the projector's terminal / ended_at
+ * guards treat kill and sweep identically. Soft-fails: the unlink already
+ * happened.
+ */
+async function emitHeartbeatSwept(
+  root: string,
+  owner: string,
+  hb: { session_id?: string; platform?: string; last_heartbeat?: string },
+): Promise<void> {
+  try {
+    const { emit } = await import("./events/emit.ts");
+    let ageSecs: number | undefined;
+    if (hb.last_heartbeat) {
+      const ts = Date.parse(hb.last_heartbeat);
+      if (Number.isFinite(ts)) {
+        ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      }
+    }
+    emit(root, {
+      event_type: "health.heartbeat_swept",
+      instance_id: owner,
+      session_id: hb.session_id ?? owner,
+      adapter: adapterFromPlatform(hb.platform),
+      source: "agent-coord",
+      data: {
+        reason: "killed",
+        ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}),
+      },
+    });
+  } catch {
+    /* soft-fail: never break the caller */
+  }
+}
+
 /**
  * Append a canonical `claim.release` event for a path dropped from an owner's
  * files_touched. The path is canonicalized to repo-relative (matching the
@@ -181,14 +223,11 @@ async function emitClaimRelease(
   try {
     const { emit } = await import("./events/emit.ts");
     const canonical = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
-    const platform = hb.platform;
-    const adapter =
-      platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
     emit(root, {
       event_type: "claim.release",
       instance_id: owner,
       session_id: hb.session_id ?? owner,
-      adapter,
+      adapter: adapterFromPlatform(hb.platform),
       source: "agent-coord",
       data: { path: canonical, reason },
     });
@@ -269,9 +308,17 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       // killing only the file leaves the claims resurrectable from the
       // permanent Edit/Write events on the next full replay (observed: a
       // 6-day-dead agent's claims returning after its heartbeat was killed).
+      //
+      // Also emit health.heartbeat_swept so the stream records a terminal
+      // marker. Without it, a later drain that replays [session.start …
+      // tools … claim.release] treats the owner as still in-flight and
+      // re-creates the file (kill→resurrect loop observed 2026-08-03: 21
+      // killed zombies back within a minute via claim.release seeding +
+      // historical replay).
       const before = writer.readHeartbeat(root, owner);
       const ok = writer.killHeartbeat(root, owner);
       if (ok && before) {
+        await emitHeartbeatSwept(root, owner, before);
         for (const held of before.files_touched ?? []) {
           await emitClaimRelease(root, owner, before, held, "heal");
         }

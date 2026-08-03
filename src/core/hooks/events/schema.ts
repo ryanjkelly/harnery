@@ -419,18 +419,19 @@ export type HealthPidmapHeal = EventEnvelope<
 >;
 
 /**
- * A heartbeat file was removed by stale-sweep. Symmetric with
- * `health.heartbeat_heal` so the full lifecycle (created → healed → swept) is
- * auditable from the event stream alone. Sweeps were silent before, which
- * made "why did this agent vanish?" un-answerable without guesswork.
+ * A heartbeat file was removed by stale-sweep or an operator kill. Symmetric
+ * with `health.heartbeat_heal` so the full lifecycle (created → healed →
+ * swept) is auditable from the event stream alone. Sweeps were silent before,
+ * which made "why did this agent vanish?" un-answerable without guesswork.
  * `reason`: "stale" (last_heartbeat past the freshness cutoff) | "unparseable"
  * (JSON.parse failed AND mtime was old) | "missing_ts" (no last_heartbeat AND
- * mtime was old). Fresh-mtime files are never swept regardless of content.
+ * mtime was old) | "killed" (operator `kill-heartbeat` / `agents heal --kind
+ * kill`). Fresh-mtime files are never auto-swept regardless of content.
  */
 export type HealthHeartbeatSwept = EventEnvelope<
   "health.heartbeat_swept",
   {
-    reason: "stale" | "unparseable" | "missing_ts";
+    reason: "stale" | "unparseable" | "missing_ts" | "killed";
     age_secs?: number;
   }
 >;

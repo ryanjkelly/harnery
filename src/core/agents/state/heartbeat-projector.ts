@@ -65,30 +65,30 @@ export function projectHeartbeats(
 ): { written: string[]; perOwner: Record<string, V2Heartbeat> } {
   const perOwner: Record<string, V2Heartbeat> = {};
 
-  // Terminal events for an owner we've never seen must NOT seed a new heartbeat:
-  // that resurrects a dead agent as a nameless, started_at-less zombie (the
-  // `agent-unknown (20608d ago)` ghost). It happens when a subagent.stop /
-  // session.end drains without (or after) its matching start: seed() then
-  // apply(stop) writes a bare tombstone the sweep+readers then choke on. If
-  // there's no existing heartbeat and the first event we see for an owner is
-  // terminal, skip it entirely.
+  // Events that must NOT seed a heartbeat for an owner with no live file.
+  // Terminal lifecycle events (session.end / subagent.stop /
+  // health.heartbeat_swept) used to be the whole set — a stop without a
+  // matching start resurrected a nameless `agent-unknown` tombstone, and a
+  // lone health.heartbeat_swept re-created the file stale-sweep had just
+  // deleted (self-perpetuating zombie loop, same instance swept 18×).
   //
-  // `health.heartbeat_swept` is terminal for the same reason, and was the
-  // sharper bug: stale-sweep deletes a dead heartbeat then emits this event,
-  // which the projector replayed to RE-CREATE the very file the sweep just
-  // removed (minus files_touched, since no start event ever ran for it). The
-  // reader then flagged it "missing required fields", and the resurrected file,
-  // carrying a fresh last_heartbeat = the swept-event ts, survived one
-  // freshness window before the next sweep deleted-and-resurrected it again. A
-  // self-perpetuating zombie loop (same instance swept 18×). A swept event must
-  // never seed a heartbeat.
-  const TERMINAL = new Set(["session.end", "subagent.stop", "health.heartbeat_swept"]);
+  // `claim.release` joins them: kill-heartbeat unlinks the file THEN emits
+  // claim.release for each held path so replay honors the drop. Projecting
+  // those releases alone used to seed a fresh heartbeat (name recovered from
+  // .name-history, last_heartbeat = release ts), undoing the kill. Side-effect
+  // events must never birth an owner.
+  const NEVER_SEED = new Set([
+    "session.end",
+    "subagent.stop",
+    "health.heartbeat_swept",
+    "claim.release",
+  ]);
 
   // Seed from any existing v2 files so a partial replay doesn't reset state.
   for (const ev of events) {
     if (!perOwner[ev.instance_id]) {
       const existing = readExisting(coordRoot, ev.instance_id);
-      if (!existing && TERMINAL.has(ev.event_type)) continue;
+      if (!existing && NEVER_SEED.has(ev.event_type)) continue;
       perOwner[ev.instance_id] = existing ?? seed(ev, coordRoot);
     }
     apply(perOwner[ev.instance_id]!, ev, coordRoot);
@@ -158,7 +158,20 @@ function seed(ev: CanonicalEvent, coordRoot: string): V2Heartbeat {
 }
 
 function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
-  hb.last_heartbeat = ev.ts;
+  // Sweep telemetry must not refresh liveness. apply() used to stamp
+  // last_heartbeat = ev.ts for every event, so a drain that replayed
+  // [session.start … tools … health.heartbeat_swept] wrote a heartbeat whose
+  // last_heartbeat was the swept ts — looking freshly alive for another
+  // freshness window, which the next sweep deleted-and-re-emitted. Record the
+  // event for audit (last_event_id / events_applied) but keep the prior
+  // liveness stamp; also set ended_at so the mid-batch write guard skips
+  // re-creating a file the sweep/kill already removed.
+  const isSweepTelemetry = ev.event_type === "health.heartbeat_swept";
+  if (!isSweepTelemetry) {
+    hb.last_heartbeat = ev.ts;
+  } else if (!hb.last_heartbeat) {
+    hb.last_heartbeat = ev.ts;
+  }
   hb.last_event_id = ev.event_id;
   hb.events_applied += 1;
   hb.v2_meta.last_projected = new Date().toISOString();
@@ -199,6 +212,10 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
     case "session.end":
       hb.ended_at = pickStr(d, "ended_at") ?? ev.ts;
       hb.clean_exit = pickBool(d, "clean_exit");
+      break;
+
+    case "health.heartbeat_swept":
+      hb.ended_at = ev.ts;
       break;
 
     case "subagent.start": {

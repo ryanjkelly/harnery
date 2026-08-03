@@ -219,6 +219,115 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
     expect(existsSync(path.join(root, ".harnery", "active", "swept-ghost.json"))).toBe(false);
   });
 
+  test("a lone claim.release for an unseen owner does NOT resurrect it (the kill→resurrect loop)", () => {
+    // kill-heartbeat unlinks then emits claim.release for each held path. Those
+    // releases used to seed a fresh heartbeat (name from .name-history,
+    // last_heartbeat = release ts), undoing the kill within the next drain.
+    const root = freshRoot();
+    assignName(root, "killed-ghost", "session");
+    const events = [
+      {
+        event_id: "01KILLREL",
+        event_type: "claim.release",
+        ts: "2026-08-03T23:27:51Z",
+        instance_id: "killed-ghost",
+        session_id: "killed-ghost",
+        adapter: "cursor",
+        source: "agent-coord",
+        data: { path: "src/a.ts", reason: "heal" },
+      },
+    ] as unknown as Events;
+
+    const res = projectHeartbeats(root, events);
+    expect(res.written).toEqual([]);
+    expect(res.perOwner["killed-ghost"]).toBeUndefined();
+    expect(existsSync(path.join(root, ".harnery", "active", "killed-ghost.json"))).toBe(false);
+  });
+
+  test("replaying start…tools…swept after the file was deleted does NOT re-create it", () => {
+    // The mixed-batch form of the sweep→resurrect loop: cursor lag / replayAll
+    // drains historical activity plus the swept event. Seed from start used to
+    // win, apply() stamped last_heartbeat = swept ts, and the write loop
+    // re-created a "fresh" zombie. Sweep telemetry now sets ended_at without
+    // bumping liveness, so the mid-batch guard skips the write.
+    const root = freshRoot();
+    const base = {
+      instance_id: "swept-replay",
+      session_id: "swept-replay",
+      adapter: "cursor",
+      source: "test",
+    };
+    const events = [
+      {
+        ...base,
+        event_id: "01SR1",
+        event_type: "session.start",
+        ts: "2026-07-29T06:00:00Z",
+        data: { name: "Bertha", kind: "session", platform: "cursor" },
+      },
+      {
+        ...base,
+        event_id: "01SR2",
+        event_type: "tool.pre_use",
+        ts: "2026-07-29T06:05:00Z",
+        data: { tool_name: "Shell" },
+      },
+      {
+        ...base,
+        event_id: "01SR3",
+        event_type: "health.heartbeat_swept",
+        ts: "2026-08-03T23:20:56Z",
+        data: { reason: "stale", age_secs: 708 },
+      },
+    ] as unknown as Events;
+
+    const res = projectHeartbeats(root, events);
+    expect(res.written).toEqual([]);
+    expect(existsSync(path.join(root, ".harnery", "active", "swept-replay.json"))).toBe(false);
+    expect(res.perOwner["swept-replay"]!.ended_at).toBe("2026-08-03T23:20:56Z");
+    // Liveness stays on the last real activity, not the swept telemetry ts.
+    expect(res.perOwner["swept-replay"]!.last_heartbeat).toBe("2026-07-29T06:05:00Z");
+  });
+
+  test("kill trail (swept + claim.release) after unlink does NOT re-create the heartbeat", () => {
+    const root = freshRoot();
+    assignName(root, "kill-trail", "session");
+    const base = {
+      instance_id: "kill-trail",
+      session_id: "kill-trail",
+      adapter: "codex",
+      source: "agent-coord",
+    };
+    const events = [
+      {
+        ...base,
+        event_id: "01KT1",
+        event_type: "health.heartbeat_swept",
+        ts: "2026-08-03T23:28:00Z",
+        data: { reason: "killed", age_secs: 120 },
+      },
+      {
+        ...base,
+        event_id: "01KT2",
+        event_type: "claim.release",
+        ts: "2026-08-03T23:28:00Z",
+        data: { path: "src/a.ts", reason: "heal" },
+      },
+      {
+        ...base,
+        event_id: "01KT3",
+        event_type: "claim.release",
+        ts: "2026-08-03T23:28:00Z",
+        data: { path: "src/b.ts", reason: "heal" },
+      },
+    ] as unknown as Events;
+
+    const res = projectHeartbeats(root, events);
+    expect(res.written).toEqual([]);
+    expect(res.perOwner["kill-trail"]).toBeUndefined();
+    expect(existsSync(path.join(root, ".harnery", "active", "kill-trail.json"))).toBe(false);
+  });
+
   test("replaying a COMPLETED subagent run end-to-end does NOT re-create the deleted heartbeat (cursor-lag zombie)", () => {
     // The mid-batch variant the seed-time TERMINAL guard can't catch: a drain
     // whose shared cursor lags another consumer replays a finished subagent's

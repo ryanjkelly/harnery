@@ -1074,7 +1074,7 @@ describe("agent-coord release-claim / kill-heartbeat: stream-durable releases", 
     expect(events(root)).not.toContain("claim.release");
   });
 
-  test("kill-heartbeat releases every held claim durably (reason heal) before removing the file", () => {
+  test("kill-heartbeat emits swept + durable claim.release events, then removes the file", () => {
     const root = makeSandbox();
     const owner = "kill-bin-1";
     seedHeartbeat(root, owner, {
@@ -1091,6 +1091,12 @@ describe("agent-coord release-claim / kill-heartbeat: stream-durable releases", 
       .split("\n")
       .filter(Boolean)
       .map((l) => JSON.parse(l) as Record<string, unknown>);
+    // Terminal marker first so replay treats the owner as ended (kill→resurrect).
+    const swept = lines.filter((e) => e.event_type === "health.heartbeat_swept");
+    expect(swept.length).toBe(1);
+    expect((swept[0]!.data as Record<string, unknown>).reason).toBe("killed");
+    expect(swept[0]!.adapter).toBe("codex");
+
     const releases = lines.filter((e) => e.event_type === "claim.release");
     expect(releases.length).toBe(2);
     const paths = releases.map((e) => (e.data as Record<string, unknown>).path).sort();
