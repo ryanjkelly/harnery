@@ -1,5 +1,449 @@
 # Changelog
 
+## 0.31.0
+
+### Minor Changes
+
+- d81e92b: Give a consumer's own coordination policy the same lifecycle as harnery's block.
+
+  The instructions block harnery splices into `AGENTS.md` is generic on purpose, because it ships to every consumer. A project with real policy of its own therefore had nowhere machine-managed to put it, and hand-maintained it next to the block, where nothing kept the two in step and nothing reported when the hand-written half went stale.
+
+  Name a file instead:
+
+  ```jsonc
+  // .harnery/config.jsonc
+  { "instructions": { "hostAddendumFile": ".agents/host-instructions.md" } }
+  ```
+
+  `init` splices that file's contents into a second managed region right after its own block, `init --check` reports drift against the source, and `deinit` removes it. Deleting the config key and re-running `init` takes the region back out, so turning the addendum off needs no new command.
+
+  Harnery never parses or renders what the file says. That is what keeps one generic mechanism useful to consumers whose policies have nothing in common, and it is why the config key won over exporting the splicer as a primitive: `init` and `deinit` are registered inside harnery, so a host wiring its own region would have had to wrap both commands and reimplement apply, refresh, check, and remove.
+
+  A path that is absolute, escapes the project, is missing, or is empty fails the run before the first write, so a mistake leaves `AGENTS.md` exactly as it found it rather than silently dropping a section the host believes is still there.
+
+- d81e92b: Add `browse --assert`: assert page values without a human reading the page.
+
+  The layout and content checks answer "does the page look right"; `--assert` answers "does it SAY the right thing" — the heading text, a price, how many cards rendered, whether an error banner is absent. It lets an agent confirm the values it expects and gate on them, instead of a person reading the page back.
+
+  One repeatable flag with a small grammar, `<op> <selector> => <expected>`:
+
+  - `text` — first match's trimmed text equals the expected string
+  - `contains` — first match's text includes the expected substring
+  - `matches` — first match's text matches the expected regex
+  - `count` — number of matches vs a number or a `>=` / `<=` / `>` / `<` comparator
+  - `exists` / `absent` — at least one / zero matches (no `=> expected`)
+
+  For example `--assert 'text h1 => Welcome'`, `--assert 'count .card => >=3'`, `--assert 'absent .error'`. Results land under `asserts` in the JSON envelope (each carries the observed `actual`); `--assert-fail` exits 2 on any failure. A malformed spec (bad regex, bad count expression, invalid selector) reports an `error` and fails rather than throwing.
+
+  This is the portable half of a value-assertion capability — an embedding host can layer domain assertions (funnel cart totals, warehouse reconciliation) on top of the same primitive. New exports: `parseAssertSpec`, `buildAssertCheck`, the `AssertOp` / `AssertSpec` / `AssertResult` types, and `Browser.checkAsserts()`.
+
+- d81e92b: Add `browse --check-critique`: a vision-model page critic with tiling.
+
+  Heuristic checks only catch what we can enumerate. The reason a human still eyeballs a page is the long tail — the thing that looks off without tripping a named rule. `--check-critique` hands the rendered page to a vision model and asks for that judgement, structured.
+
+  Two design choices keep it useful and portable:
+
+  - **Tiling.** A tall page screenshotted whole and downscaled to a model's input budget loses the detail the critique depends on. The page is cut into overlapping vertical bands (`--check-critique-band` / `--check-critique-overlap`), or one tile per element when a selector is given (`--check-critique <selector>`), each captured at full resolution and judged on its own. Findings carry their tile and document scroll offset for locality, and `--check-critique-max-tiles` bounds cost.
+  - **Injection.** harnery ships no model client and no API key. The host wires a `critiqueProvider` into `HarneryProgramContext` (the same pattern as `extraHeaders`); given one tile plus the rubric it returns that tile's findings. Without a provider the check reports `skipped`, never a false pass, so the portable tiling/prompt/orchestration stays here and the model call stays in the host.
+
+  Findings land under `critique` in the JSON envelope; `--check-critique-fail` exits 2 on any high-severity finding. A provider throw becomes a high-severity error finding for that tile rather than aborting the run. `--check-critique-rubric` overrides the default rubric.
+
+  New exports: `bandRects`, `normalizeFindings`, `runCritique`, `DEFAULT_CRITIQUE_RUBRIC`, and the `CritiqueTile` / `CritiqueFinding` / `CritiqueResult` / `CritiqueProvider` types, plus `Browser.pageMetrics()`, `Browser.screenshotClipBase64()`, and `Browser.elementTiles()`.
+
+- d81e92b: Add `browse --check-crowd`: flag adjacent card panels that touch.
+
+  A page full of callouts stacked flush against each other had no gate to catch it. `--check-overlap` needs a real 2D intersection, and `--check-gap` flags _uneven_ spacing, so a uniformly-flush stack of cards passes both. Nothing measured "these two distinct panels have no breathing room between them," the single most common standalone-page layout bug.
+
+  `--check-crowd <selector>` fills that hole. It walks the whole subtree under the selector, finds card-like panels (a full border box, a modest corner radius, or a box-shadow), and flags any adjacent same-parent pair separated by less than `--check-crowd-min` CSS px (default 6; negative separation always flags). One `--check-crowd .wrap` catches nested cases like callouts inside an accordion body.
+
+  The panel test is deliberately narrow so it does not fire on things that are flush by design. Table cells, list and definition rows, and divided segments (a background-only cell in a `gap:1px` strip) carry no card boundary of their own and are skipped. Pills, chips, and badges (corner radius at least half their shorter side) are inline controls, not layout cards, and are skipped too.
+
+  Results land in the JSON envelope under `crowd` (per pair: the two panels, the edge `separationPx`, the `axis`, and the shared `parentLabel`), annotate the screenshot with a teal seam along the touching edge, and gate the exit code with `--check-crowd-fail`.
+
+- d81e92b: Add four content checks to `browse`: placeholder, image, truncation, contrast.
+
+  The layout checks cover rendered geometry, but a page can be geometrically perfect and still ship a bug a human catches at a glance: a leaked template token, a broken image, a clipped label, unreadable text. These four checks close that gap so an agent can verify its own output without a person eyeballing a screenshot. Each runs in one page evaluation, lands in the JSON envelope, annotates the screenshot, and gates the exit code with its `-fail` flag.
+
+  - `--check-placeholder [selector]` flags unrendered tells in the visible text: `{{x}}` and JS template tokens, `[object Object]`, `Invalid Date`, `NaN`, or an element whose whole text is literally "undefined" or "null". Bare "undefined"/"null" only flag when they are an element's entire text, so the word in ordinary prose does not trip it.
+  - `--check-images [selector]` audits `<img>` for a failed load (naturalWidth 0), a still-loading image, or a stretched one (rendered aspect ratio far from the intrinsic ratio, with an object-fit that does not correct it). `--check-images-tolerance` sets the aspect deviation (default 0.1).
+  - `--check-truncation [selector]` flags text actively cut off by an ellipsis or a `-webkit-line-clamp` — the author asked to truncate and the content overflows. It stays quiet on plain `overflow: hidden` clips, which are usually intentional. `--check-truncation-tolerance` sets the overflow slack in px (default 2).
+  - `--check-contrast [selector]` flags rendered text below the WCAG AA ratio (4.5:1 normal, 3:1 large) against its effective background, resolved by walking ancestors to the first opaque color. Text over an image or gradient is reported as `unknown`, not failed. It runs at whatever theme the page is in, so toggle the theme with `--batch` to cover light and dark.
+
+  Each check takes an optional selector (default: the whole body), adds `--check-<name>-fail` and `--no-check-<name>-annotate`, and reports per-hit rects, labels, and snippets.
+
+- d81e92b: Delete the command wrapper.
+
+  `harn session "<intent>" -- <cmd>` ran one shell command, forwarded its output, and emitted `command.start` / `command.output` / `command.end`. It is gone.
+
+  Two things made it removable. Bare commands have been captured canonically for months: the PostToolUse tap emits `tool.pre_use` / `tool.post_use` carrying the same declared intent, so wrapping was already documented as optional for its main use case. And nothing reads `command.output` programmatically — the four references in the tree are the schema union member, two display-side name mappings, and the emitter itself. No logic branches on it.
+
+  What made it worth removing rather than leaving alone is that the slot could not be named. Blind naming panels rejected two different candidates for two different reasons: one collided with the command that runs a bounded execution, the other was unreadable to two thirds of first-time readers and drew the strongest confusable pair in the whole command set against the checkpoint command. A name that fails twice against two different neighbours is usually reporting a scope problem rather than a vocabulary problem.
+
+  The residual loss is real but narrow: long-running commands no longer stream per-line into the live viewer. Everything a run did is still on the ledger, one event at each end instead of one per line.
+
+  The retired no-op subcommands (`tail`, `clear`, `path`, `trim`) go with it. `trim` existed so an older SessionStart hook would not error; no shipped hook calls it now.
+
+- d81e92b: Distinguish planner no-proposal replan exhaustion from reviewer rejection.
+
+  A durable goal can spend its replan budget two ways that used to look identical
+  once the budget ran out: a planner run that produced no proposal at all, and a
+  proposal that independent review then rejected across its bounded rounds. Both
+  left the goal quiescent with an undifferentiated exhaustion reason, so an
+  operator could not tell a planner that never proposed anything apart from
+  review-round exhaustion.
+
+  Governor projection now attributes each consumed replan through the existing
+  plan seams — a review receipt is present exactly when a proposal was produced
+  and reviewed, so its presence separates the two causes with no new record field
+  or planner mechanism. When any replan was a planner no-proposal outcome, the
+  projection carries a `replan_consumption` breakdown, the exhaustion reason names
+  the planner explicitly instead of reading as review-round exhaustion, and
+  `harn governor list` / `harn governor show` surface the distinction.
+
+  Budget accounting, cumulative counters, and append-only record authority are
+  unchanged. Records written before this change stay meaningful — a goal with no
+  planner no-proposal history projects and displays exactly as before, and the
+  new field is simply absent.
+
+- d81e92b: Rename the `./core/supervisor` export subpaths to `./core/governor`.
+
+  Renaming the supervisor to the governor moved `src/core/supervisor/` to
+  `src/core/governor/` and renamed every symbol in it, but three export subpaths kept
+  the old name and the old path: `./core/supervisor`, `./core/supervisor/state`, and
+  `./core/supervisor/plans`. All three resolved to files that no longer exist, so on a
+  fresh build any import of `harnery/core/supervisor` failed outright, and the
+  `Supervisor*` symbols those subpaths advertised were already gone.
+
+  They are now `./core/governor`, `./core/governor/state`, and
+  `./core/governor/plans`, pointing at the governor module and exporting `Governor*`.
+  A consumer importing the old subpath updates the specifier and the symbol names
+  together; nothing that worked before stops working, because the old subpath could
+  not resolve.
+
+  A `tsc` rebuild does not delete output for a source file that moved, so the stale
+  `dist/core/supervisor/` left behind by the rename kept satisfying the built path on
+  the machine that made it. Two guards close that gap: a unit test asserts every
+  export subpath's source target exists, and the published-package smoke test builds
+  from clean and imports the renamed subpath on Node.
+
+- d81e92b: Isolated workspace checkouts now allocate under `<writable-root>/.harnery-workspaces/`
+  instead of the visible `harnery-workspaces/`, and the provider writes a
+  `.gitignore` containing `*` into that parent on first allocation. The rule covers
+  the ignore file itself, so the directory no longer appears in `git status` and
+  consumers do not have to add an ignore rule by hand.
+
+  The parent stays a sibling of `.harnery/` rather than moving inside it, because
+  `harn deinit --purge-state` deletes `.harnery/` recursively and that directory can
+  hold a preserved worktree with unintegrated work.
+
+  Existing bindings keep the path they froze at allocation time. Reconciliation and
+  retries follow the recorded parent, so a workspace created under the old name
+  still reattaches, integrates, and cleans up.
+
+- d81e92b: Add manifest-backed working artifact workspaces with agent-aware retention,
+  safe cleanup previews, and a public embedding API.
+- d81e92b: Rename the rest of the command surface so one word means one thing.
+
+  Four changes land together because they are one vocabulary, and there are no aliases or deprecation windows: pre-1.0 is when a hard rename is free.
+
+  **`harn harness` becomes `harn adapter`.** Blind naming panels could not read `harness` at all — every run called it guesswork, and more than one noted the word has to be defended against its own connotation before it can be understood. The panel's own favourite replacement was `provider`, and that was the plan of record until the collision was counted: `provider` already carries five unrelated meanings in this tree, two of which reach user-visible output. `adapter` carries exactly one. Every occurrence of it in the source was already this concept, so the command name now matches the word the implementation had picked for itself.
+
+  **`harn workflow run <script>` becomes `harn run <script>`.** One bounded execution should not need two verbs to start. The run-scoped subcommands stay where they were, under `run`.
+
+  **`harn context` splits.** Its continuity half becomes a top-level `harn checkpoint` with `status`, `create`, and `show`. Its orientation snapshot moves to `harn agents context`, unchanged and with every flag intact — it belongs under the noun for live sessions, which is what it reports on.
+
+  **`harn agents council` becomes `harn council`, and `harn workflow approvals` becomes `harn approval`.** Both were buried where nobody found them. Deliberation and authorization are things a reader looks for by name at the top level, not features they stumble into three levels down.
+
+  One implementation note worth recording, because it will look like a mistake to anyone reading the source. Executing a script is a hidden default subcommand of `run` rather than an action on `run` itself. Commander binds an option to the nearest command that declares it, and `run` shares several option names with its own subcommands, so a parent-level action silently swallowed the child's copy of `--policy` and `--json`.
+
+- d81e92b: Refuse to freeze a specialist team that would run entirely on one subscription seat.
+
+  Harnery does not auto-spread, and it never claimed to: a specialist with no `adapter` inherits the run's default. What was missing is that omitting the pin is silent. A team where nobody pins one reads as a multi-adapter team and behaves as a single-adapter team, and under `subscriptionOnly` that difference is a cliff rather than a curve — the concentration lands on one seat's session meter, so the seat hits its limit and every specialist stops at once instead of the team degrading.
+
+  `governor create` now refuses that shape and says which adapters are sitting idle. The check is deliberately narrow, because a false refusal is worse than the miss it prevents: it needs more than one specialist, all of them resolving to a single adapter, subscription auth in force, and another adapter that is **attested reachable**.
+
+  That last condition is the one that matters. Counting registered adapters would recommend spreading onto a seat that cannot start, which trades a loud failure for a quiet one — every child handed to it fails closed. Only `harn adapter attest` records that an adapter completed a real turn on this machine, so only an attestation is grounds for the advice.
+
+  It fires at `create` because the intent freezes there with no amend path; discovering it at run time means recreating the goal. `--allow-single-adapter` says one seat is what you want.
+
+- d81e92b: Reject an unusable evidence kind before a workflow spends anything
+
+  `evidence()` is near the end of a workflow by construction, so a kind outside the accepted
+  vocabulary threw at the finish line. A measured run lost roughly fifty minutes and three
+  completed agents to `kind: "design"`: the work item went to blocked, the attempt was
+  charged, and nothing in the proof could recover the result.
+
+  The engine now reads the script before either import path and refuses any literal `kind` it
+  will not accept, naming the offending value and its line. Comments, quoted code, and a
+  `kind` property that is not an `evidence()` argument are all ignored, and a kind computed at
+  runtime is left to the existing validation rather than guessed at.
+
+- d81e92b: Let an operator finding reach work beneath a completed mission
+
+  `harn work reopen --finding` on an item whose goal had already succeeded moved the item to
+  `ready` and then went nowhere. The goal projection short-circuited to `succeeded` /
+  `next_action: none` the moment a mission had an accepted completion, so the governor
+  never dispatched the reopened item and no CLI output said why.
+
+  A reopen under a succeeded mission now reopens the mission. A superseding `plan.reopened`
+  event is appended beside the accepted `plan.completed`, which stays in the log unchanged,
+  and the goal returns to ordinary dispatch with the reopened work ahead of any milestone
+  reassessment. Reopening twice is idempotent, and a mission that never completed refuses.
+
+- d81e92b: Separate what is waiting on a human from what merely wants their opinion.
+
+  The docket mixes two things that read alike and behave nothing alike. Tier 0 and 1 already proceeded on a default, so a human looking at them is sampling for calibration and can skip any of it. Tier 2 stopped: work is parked until someone rules. Both sat in one undifferentiated queue, under a page that opens by saying review here is calibration and not approval — so the entries that genuinely need a person were filed behind a banner telling the reader nothing needs them.
+
+  `decision list --waiting` returns only tier 2, unresolved, highest stakes first with longest-open breaking ties. The web docket leads with the same set as its own section, above the review feed, and it is what the page's attention alert now fires on, since review is a batch a human can defer and a blocked decision is not.
+
+  Waiting cards also show how long they have been open. A filing date does not read as neglect; `open 19d 17h` does.
+
+- d81e92b: Let a workflow stop because a human must rule, and tell that apart from failing.
+
+  A script that concluded correctly — "this needs a person" — had no way to say so. Its only exit was `throw`, which means the opposite: the work failed, and a retry might do better. So a correct refusal and a botched attempt reached the engine as the same outcome, and everything downstream treated them the same way. A goal running with `retry_blocked` re-issued the item, the next agent reached the same correct conclusion, and the loop repeated until the attempt budget was gone. Nobody was told, because the thing it was waiting on was a person nobody had asked.
+
+  `ctx.blocked()` names that outcome:
+
+  ```js
+  ctx.blocked({
+    reason: "which subsystem owns the cart is unsettled",
+    decision: "who-owns-the-cart-2026-08-01-beaf",
+  });
+  ```
+
+  The run fails with class `decision`, a third member of the `environment` / `upstream` family from ADR 0046. Like those, it means the attempt was uninformative about the work, so it is uncharged and the item retries with a full budget once the ruling lands. Unlike a work failure, it is terminal: the work item goes to `blocked` with `next_action: "none"`, which is what puts it out of `retry_blocked`'s reach. That automation exists to clear failures without a human, and a correct refusal is not a failure.
+
+  A planner can block the same way, and the goal stops rather than replanning a question the planner already answered.
+
+  The point of the class is that a human finds out. A goal holding blocked work says what it is waiting on and names the decision, instead of reporting a count of items "needing intervention" — a phrasing that reads like a queue an agent will get to. `GovernorProjection.decision_blocked_work` carries the work/decision pairs, and `WorkProjection.blocked_on_decision` marks the item, so a dashboard or digest never has to parse reason prose to find what is parked on a person.
+
+  Passing the docket id is what turns "something needs a human" into a question someone can answer. Blocking without one still stops the item; the operator just has to go find the question themselves.
+
+- d81e92b: Tell agents that the orchestration commands exist.
+
+  The block harnery splices into `AGENTS.md` is the only thing every agent in a consuming project is guaranteed to read. It described identity, peers, intent, the journal journal, artifacts, the decision docket, and councils. It never mentioned `workflow`, `work`, or `governor`.
+
+  The effect was not subtle. Ask an agent in a harnery project to put a team together and build something, and it reaches for whatever multi-agent primitive its own adapter happens to hand it, because as far as its onboarding is concerned harnery does not have one. The three commands that exist for exactly that job stayed invisible, and no amount of README or docs-site coverage reaches an agent that never reads them.
+
+  The block now carries a short section naming all three and, more usefully, saying when each applies: `workflow run` for one bounded pass, `work` when the objective has to outlive the attempt, `governor` when a human would otherwise babysit the loop. It also points at `workflow approvals list`, because a run that parks for authorization looks identical to a stuck one until you know to check.
+
+  Placement is deliberate. The section sits second, directly after identity and peers, rather than at the end of the list. Being last is close enough to absent for something a reader is skimming, and absence is the defect being fixed.
+
+  The opening line changes with it: the block previously framed itself entirely as staying out of other agents' way, which is an accurate description of a coordination layer and an incomplete description of this one.
+
+- d81e92b: The scratchpad is now the journal, and the run record is now the transcript.
+
+  `harn scratch` becomes `harn journal`. The command's own help had been calling it a journal for as long as it has existed, because that is what it is: dated entries an agent writes about its own work, in categories like note, plan, decision, and blocker. `scratch` promised something disposable and the feature is the opposite — it is the one thing that survives context compaction, and peers read it on purpose. The state directory moves from `.harnery/scratch/` to `.harnery/journal/`, the `./core/scratch` export subpath becomes `./core/journal`, and the dashboard panel follows.
+
+  Taking that word meant giving up another use of it. A workflow run wrote its append-only record to `journal.jsonl`, sha256-hashed into the run proof, and one word covering both a hand-written notebook and a machine-written integrity record is exactly the collision this rename set out to remove. The run record becomes `transcript.jsonl`, which is the better name on its own merits: its parent directory was already called the transcript directory, and a transcript is precisely the record of what an execution said and did.
+
+  Two breaking shapes for anyone reading state directly. Runtime state under `.harnery/` is untracked, so an existing checkout renames `.harnery/scratch/` by hand or starts fresh. And the run proof's integrity block now reports `transcript` where it reported `journal`, with the file at `transcript.jsonl`; a stored proof from an earlier version will not match a re-derivation.
+
+- d81e92b: Rename the supervisor to the governor.
+
+  `harn supervisor` becomes `harn governor`. No alias, no deprecation window — the repo is pre-1.0 and a hard rename is cheaper now than a vocabulary split later.
+
+  The old name asked readers to hold a hierarchy in their heads. A supervisor supervises somebody, so the first question it raises is who reports to whom, and the answer is nobody: the command drives a graph of durable work toward a goal and decides how much it may settle before a human is needed. That is authority over a process, not management of people. Blind naming panels read `supervisor` as a manager of agents in every run; they read `governor` as the thing that bounds how far something runs on its own, which is what it does.
+
+  The code had already reached for the word without anyone deciding to. The subsystem talks about governance events, governed work, and what governs what. The command name now matches the vocabulary the implementation had picked for itself.
+
+  Everything moves with it: `SupervisorRecord` and its family become `Governor*`, the `.harnery/supervisors/` and `.harnery/supervisor-service/` state directories become `.harnery/governors/` and `.harnery/governor-service/`, the dashboard route becomes `/governors`, and the docs page moves. Runtime state under `.harnery/` is untracked, so an existing checkout needs its two directories renamed by hand or simply left behind.
+
+  Decision records 0025 and 0026 keep their titles. They are historical, and "supervision" is still an accurate English description of what a governor does to a goal.
+
+- d81e92b: Add `harn tunnel reload` so an allowlist change no longer costs you the tunnel URL.
+
+  Each gate reads the Cloudflare IP allowlist once, from its environment, when it starts. Editing the config therefore did nothing to a tunnel already running, and the only remedy on offer was a full `down`/`up`. That is a bad trade: a quick tunnel's hostname is minted by `cloudflared` at startup, so restarting to admit one new IP hands back a different `*.trycloudflare.com` address and breaks every link already shared. The fix for "I cannot reach this link" destroyed the link.
+
+  `reload` restarts the gate in place and leaves the provider process running. `cloudflared` only ever forwards to the gate's local port, so the hostname survives and the edge reconnects on its own:
+
+  ```bash
+  harn tunnel allow add 1.2.3.4
+  harn tunnel reload --all
+  ```
+
+  Three details are deliberate. `--all` targets live instances only, counting and skipping stale state files rather than failing on them, because a long-running machine accumulates those and the common path after `allow add` should exit clean. Reloading a single stale instance refuses instead of proceeding, since a dead provider means the URL is already gone and no gate restart can bring it back. And the refusal is checked before anything is killed, so it cannot leave an instance with a broken URL _and_ a stopped proxy, nor reap a live gate that happens to have inherited a stale instance's recorded port.
+
+  `allow add` and `allow rm` now point at `reload` and name only the tunnels that are actually running, instead of listing every state file ever written.
+
+### Patch Changes
+
+- d81e92b: The pid-map now anchors on the adapter process, not on whatever shell happened
+  to run the hook.
+
+  Anchor selection recognised a adapter by the name of its binary, and one Claude
+  Code build installs its CLI under a version-numbered filename, so the ancestor
+  walk matched nothing. Callers then fell back to the hook's own parent shell,
+  which exits within seconds of being recorded. Every row for such a session was
+  dead almost immediately, the identity walk found nothing, and sessions resolved
+  as unattributed. It also meant a steady drip of dead rows, one per hook shell.
+
+  Two ways in. A adapter that exports its own pid is believed outright, which
+  Claude Code does. Failing that, the ancestor walk gets a second pass over
+  executable paths, matching whole path segments so an install directory
+  identifies a binary whose own name does not. The existing name match still runs
+  first, so this only ever adds matches.
+
+  Observed on the environment that prompted it: three live, correctly attributed
+  rows where there had previously been none, one per agent session.
+
+- d81e92b: Teach `browse --check-crowd` to treat wrappers of panels as peers.
+
+  A card grid or flow of cards wrapped in a borderless container sitting flush
+  against the next card used to pass crowd: only leaf panels counted, so the
+  wrapper was invisible and the seam went unmeasured. Crowd peers are now leaf
+  panels **or** in-flow siblings that contain at least one panel. Separation uses
+  the nearest face panels inside each peer (not the wrapper boxes), so a tall
+  section with a card near the top and prose below does not false-fail. Issues
+  carry `beforeKind` / `afterKind` (`panel` | `composite`) so the JSON says when
+  a composite peer was involved.
+
+- d81e92b: Fix flaky Chromium launches under heavy concurrency.
+
+  When many `Browser` instances opened at once — a full test suite, a fan-out of `browse` calls — the simultaneous `child_process.spawn`s exhausted the OS's stdio-pipe resources and Chromium launch died with an unhandled `ENOENT` that a per-call try/catch couldn't catch (it surfaced "between tests", not through the launch promise). `Browser.open()` now bounds concurrent launches with a module-level semaphore (default 3, override via `HARNERY_MAX_BROWSER_LAUNCHES`), gating only the brief spawn phase so N browsers still run concurrently, and retries the whole open sequence up to three times with teardown between attempts for genuinely transient connect failures. A 3×-back-to-back full-suite stress run that previously flaked now passes clean.
+
+- d81e92b: Fix `browse --check-critique` tiling on pages taller than the viewport.
+
+  The tiler captured each tile with Playwright's `clip`, which is viewport-relative — so any band or element below the fold threw "Clipped area is either empty or outside the resulting image", and critique only worked on pages that fit one screen. It now captures one full-page screenshot and crops every tile from that image in pixel space (`tilesFromFullPage`, exported), which is below-fold-safe and keeps each tile at full resolution. The crop uses a manual RGBA row copy rather than pngjs `bitblt`, which isn't available under every runtime. Verified end to end on a ~9000px page (previously errored; now tiles and critiques clean) with regression tests over a synthetic tall buffer.
+
+- d81e92b: Declare each shared type once.
+
+  Three types were declared more than once with byte-identical bodies, which is how two modules quietly drift into disagreeing about a shape they are supposed to share. The closed adapter-id union and the event `Source` union now live only in the hooks event schema, re-exported by the two event modules that kept their own copies. The rule verdict shape moves to `core/agents/rules/verdict.ts`, imported by both the claim-conflict and stop-hook rules. No shape changed, so nothing observable moves.
+
+  The `Heartbeat` interface is deliberately left alone. Its two declarations look like duplicates but are not: the writer's view has optional fields the reader's view requires, so unifying them is a behaviour change rather than a cleanup.
+
+- d81e92b: Make end-of-turn coordination checks observe-only on Codex. Harnery still records
+  the turn and projects agent state, but it no longer uses a Stop continuation that
+  can replace the completed user-facing answer with a status retry.
+- d81e92b: Trim artifact slug edges with fixed-length patterns.
+
+  `normalizeSlug` trimmed leading and trailing dashes with `/^-+|-+$/g`. Collapsing
+  every non-alphanumeric run to a single `-` already runs first, so no input reaching
+  that pattern can hold two adjacent dashes and the quantifier never had more than one
+  character to match. The pattern was still polynomial when read on its own, which is
+  how static analysis reports it and how it would behave if the collapse above it ever
+  moved or changed. The edges are now trimmed with `/^-/` and `/-$/`, which cannot
+  backtrack. Output is unchanged on every input.
+
+- d81e92b: Pid-map rows now record which _run_ of a pid they were written for.
+
+  A pid is a number the operating system hands back out. Measured on one
+  development machine: `pid_max` of 99999 against roughly 100 new processes a
+  second, so the whole space turns over about every quarter hour. Past that point
+  a row can name a pid an unrelated process now holds, and everything that trusts
+  the row inherits the mistake. `agents whoami` reports another agent's name and
+  file list. A departed agent still reads as live, so a commit guard treats its
+  claims as a live peer's and `identity assume` refuses to reclaim its name.
+
+  Sweeping dead rows does not reach this. The sweep removes rows whose pid has
+  exited; a recycled pid is alive, so the rows it removes are the harmless ones
+  and the row it keeps is the wrong one.
+
+  Each row now carries a start token alongside the instance and platform, and
+  every place that believes a row checks it: the sweep, the liveness query, and
+  both identity walks. The token is opaque and compared only for equality. Linux
+  reads start ticks from `/proc` with no subprocess, BSD pays one `ps -o lstart=`,
+  and a platform that will not say writes no token at all. Rows without one, which
+  is every row on disk today, keep behaving exactly as they did.
+
+  Also fixes platform parsing, which took everything after the first tab and so
+  would have swallowed the new field.
+
+- d81e92b: Harden the pid start token against three ways it could name the wrong process.
+
+  The token that tells a pid-map row apart from a recycled pid had gaps on the paths that are hardest to notice, because each one produces a _false_ mismatch: a live row gets pruned, and the identity walk lands on the same wrong answer the token was added to prevent.
+
+  The `ps` probe read a date formatted through the caller's timezone and locale, so a hook running under `LC_ALL=C` and a shell running under the user's settings described one live process two different ways. Both are now pinned, and a regression test checks it through subprocesses launched under different timezones, since assigning `process.env.TZ` never reaches a child and a test written that way passes either way.
+
+  The Linux token counted ticks from boot, and pid-map rows live in the working tree and outlive reboots, so a stale row could match a fresh process that landed on the same pid at the same moment of a later boot. The count is now scoped to the boot it came from. Rows written before this recorded ticks alone and are still compared on what they recorded, so upgrading does not prune a working machine's live rows.
+
+  The two probes could also mix: a procfs read that failed fell through to `ps` and answered in the other dialect. The probe is now chosen once per machine and never fallen back from.
+
+  The `ps` path is the same code wherever `ps` exists, so `HARNERY_PID_PROBE` forces it and the tests exercise the whole pid-map lifecycle through it rather than leaving that branch to be discovered on somebody's laptop. A parity test holds `coord-client`'s inlined copy of the probe against the canonical one, so the two cannot drift apart in silence.
+
+  One upgrade note for machines without procfs: rows already holding a `ps` token written in the local timezone read as mismatches once, since a shifted date cannot be told from a different one without parsing it. Those rows are pruned and rewritten on the next hook, costing one invocation that resolves identity through the session environment instead of the pid walk. Every failure path in the probe still ends in "unverifiable", which trusts a live pid exactly as it did before tokens existed, so no platform ends up worse off than it started.
+
+- d81e92b: Point the injected instructions block at a council command that exists
+
+  When a consumer excludes the `harn-council` skill, the generated AGENTS.md block
+  fell back to telling agents to run `<bin> council --help`. There is no top-level
+  `council` command; the surface is `<bin> agents council`, so that pointer sent
+  every agent on such a project to a command that does not resolve. The fallback
+  now names `<bin> agents council --help`. Consumers that ship the skill were
+  unaffected, since they get the skill pointer instead of the fallback.
+
+- d81e92b: Point the injected instructions block at the renamed commands.
+
+  The block spliced into a consuming project's `AGENTS.md` still told agents to run `workflow run <script>` and `workflow approvals list`. Both moved in the same release that added those lines. They are now `run <script>` and `approval list`.
+
+- d81e92b: Remind human-facing Codex sessions on every prompt to append the live agent
+  status after the substantive answer. Stop enforcement remains observe-only, so a
+  missed footer cannot trigger a status-only replacement response.
+- d81e92b: Stop the pre-commit guard blocking a session against its own commit, which had
+  made `HARNERY_AGENT_COORD_BYPASS=1` routine even though that flag also disables
+  the genuine conflict check.
+
+  The read-only git probes behind the self-attribution gates now run with git's
+  repository-discovery environment scrubbed. A git hook exports `GIT_DIR` and
+  `GIT_WORK_TREE`, children inherit them, and they outrank `cwd`, so every probe
+  questioned the repository being committed rather than the one owning the path it
+  asked about. Those probes also now run from the path's own directory, so a claim
+  recorded monorepo-relative resolves against the repository that actually tracks
+  it at any nesting depth, and a git-ignored path no longer counts against the
+  holder, since an ignored path cannot enter anyone's commit.
+
+  Also bounds the pid-map. Rows are written per hook shell, those shells exit
+  immediately, and nothing pruned them, so the map only grew. Stale rows are not
+  only clutter: pids get recycled, and an identity walk that lands on a reused pid
+  resolves to a long-gone agent. Writes now sweep dead rows once the directory
+  passes 200, liveness treats `EPERM` as alive instead of counting another user's
+  process as gone, and the hook path calls the shared writer rather than its own
+  copy, so the sweep reaches the only hot write path in the system.
+
+- d81e92b: Tell every interactive adapter how to surface Harnery's suggested session name
+  on its first prompt.
+
+  The shared prompt hook now detects that no `set-task` call has occurred, asks
+  the agent to declare its focus first, and tells it to reproduce the returned
+  `suggested_session_name` in a fenced code block. The reminder uses the host
+  CLI's configured binary name, fires once per session, and skips subagents and
+  workflow children.
+
+- d81e92b: Identity resolution now asks the adapter before it guesses from the process tree.
+
+  Every supported adapter exports its session id into the environment of the
+  subprocess it spawns for a tool call, and every heartbeat records the session id
+  it was minted under. Matching the two names an agent outright. That check used to
+  run only for Cursor, and only after the ppid walk had already failed, so on every
+  other adapter a pid-map row outranked it.
+
+  Rows name pids, and pids get recycled. Measured on one development machine:
+  `pid_max` of 99999 against roughly 100 new processes a second, so the whole pid
+  space turns over about every quarter hour. A row older than that can name a pid
+  some unrelated process now holds, and the walk resolves to whoever wrote it. That
+  is how `agents whoami` came to report another agent's name and file list.
+  Sweeping dead rows does not address this: it removes rows whose pid has exited,
+  and a recycled pid is alive.
+
+  Only the order changed. Session-env resolution still requires a live heartbeat
+  carrying that session id, so when it does not match, the walk runs exactly as
+  before.
+
+- d81e92b: Stamp `HARNERY_WORKFLOW_AGENT_ID` into workflow children, so a dashboard can tell
+  which agent row a live child session belongs to rather than only which run.
+
+  A child cannot be identified by its session id while it is working: the adapter
+  mints that id and reports it back only in the result envelope, which is to say
+  only once the work is over. Passing in the id the orchestrator already owns is
+  what makes live per-agent attribution possible. The engine supplies it at
+  dispatch, every spawn adapter forwards it, `session.start` carries it as
+  `workflow_agent_id`, and the heartbeat projector puts it on the child's heartbeat
+  beside `workflow_run_id`.
+
+- d81e92b: `harn web up` and `harn web start` now pin a V8 old-space ceiling (2048 MB by default) instead of letting Next size it to roughly half of system RAM.
+
+  On a large machine Next's own ceiling is one the dashboard never approaches, so V8 never feels enough pressure to run a major GC and a long-lived server settles at a multi-gigabyte working set of mostly collectable garbage. Tune with `--max-old-space <mb>` or `HARNERY_WEB_MAX_OLD_SPACE`; pass `0` to restore Next's sizing. A ceiling already present in `NODE_OPTIONS` is left untouched.
+
 ## 0.30.0
 
 ### Minor Changes
