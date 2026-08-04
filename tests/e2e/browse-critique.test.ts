@@ -124,30 +124,54 @@ describe("critique tiling + orchestration", () => {
     expect(result.findings[0]?.category).toBe("provider-error");
   });
 
-  // Chromium cold-start on GHA regularly exceeds Bun's 5s default; the two
-  // recent release-CI reds (runs #67 / #69) were this test timing out at ~5002ms.
+  // Chromium cold-start on GHA is flaky (release CI #67/#69 hit Bun's 5s
+  // default; #71 hung the full navigation budget). An internal budget lets
+  // `finally` close the browser before Bun's uncatchable test-timeout kills
+  // the fiber — otherwise a wedged Chromium survives into the retry and
+  // every attempt hangs. Prefer domcontentloaded for the local fixture.
   test(
     "Browser tiling: metrics + clip screenshot + element tiles",
     async () => {
       const browser = new Browser({
         profileDir: profile(),
         viewport: { width: 800, height: 600 },
+        waitUntil: "domcontentloaded",
+        navigationTimeout: 10_000,
+        launchTimeout: 10_000,
       });
+      const budgetMs = 25_000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await browser.open();
-        await browser.navigate(fixtureUrl);
-        const m = await browser.pageMetrics();
-        expect(m.scrollHeight).toBeGreaterThan(0);
-        const png = await browser.screenshotClipBase64({ x: 0, y: 0, width: 200, height: 100 });
-        expect(png.length).toBeGreaterThan(100); // non-empty base64
-        const tiles = await browser.elementTiles("section");
-        expect(tiles.length).toBeGreaterThan(0);
-        expect(tiles[0]?.width).toBeGreaterThan(0);
+        await Promise.race([
+          (async () => {
+            await browser.open();
+            await browser.navigate(fixtureUrl);
+            const m = await browser.pageMetrics();
+            expect(m.scrollHeight).toBeGreaterThan(0);
+            const png = await browser.screenshotClipBase64({
+              x: 0,
+              y: 0,
+              width: 200,
+              height: 100,
+            });
+            expect(png.length).toBeGreaterThan(100); // non-empty base64
+            const tiles = await browser.elementTiles("section");
+            expect(tiles.length).toBeGreaterThan(0);
+            expect(tiles[0]?.width).toBeGreaterThan(0);
+          })(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`browser tiling budget exceeded (${budgetMs}ms)`)),
+              budgetMs,
+            );
+          }),
+        ]);
       } finally {
+        if (timer !== undefined) clearTimeout(timer);
         await browser.close();
       }
     },
-    { timeout: 30_000 },
+    { timeout: 60_000, retry: 1 },
   );
 
   test("CLI --check-critique reports skipped when no provider is injected", () => {

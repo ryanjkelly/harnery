@@ -82,6 +82,12 @@ export interface BrowserOptions {
   /** Default navigation timeout in ms. Default 30000. */
   navigationTimeout?: number;
   /**
+   * Max ms to wait for Chromium to start (`launchPersistentContext` timeout).
+   * When unset, Playwright's default (30s) applies. Tests that need a faster
+   * fail→retry loop should set this explicitly (e.g. 10_000).
+   */
+  launchTimeout?: number;
+  /**
    * `wait_until` strategy for `navigate`. Default `"load"`.
    * Use `"domcontentloaded"` for sites with long-running analytics scripts
    * that never let `"load"` fire.
@@ -213,6 +219,7 @@ export class Browser {
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: !this.opts.headed,
         viewport: this.opts.viewport ?? { width: 1280, height: 800 },
+        ...(this.opts.launchTimeout !== undefined ? { timeout: this.opts.launchTimeout } : {}),
         ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
           ? { args: this.opts.launchArgs }
           : {}),
