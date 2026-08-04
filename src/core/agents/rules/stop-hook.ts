@@ -106,6 +106,18 @@ const RECENT_EVENT_WINDOW_LINES = 5_000;
  */
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
 
+/**
+ * The pre-marker message shape, still recognized on purpose.
+ *
+ * A followup already sitting in the stream was written by whichever build was
+ * running when it fired. An agent whose session spans an upgrade would otherwise
+ * keep alternating until the first new-format followup appeared, which is the
+ * exact failure this change removes. Recognizing the older trailing form closes
+ * that rollout window at no cost: it only ever appears in a `prompt_text`
+ * because Harnery put it there.
+ */
+const STOP_REMEDIATION_LEGACY_MARKER = "[agent-hook stop]: rule=";
+
 /** How far back the remediation walk may travel. Adapters cap their own
  * followup chains (Cursor's `loop_limit`), and each prompt can appear once per
  * observing adapter, so this only guards a pathological stream. */
@@ -113,7 +125,8 @@ const MAX_REMEDIATION_WALK_BACK = 16;
 
 function isStopRemediationPrompt(event: CanonicalEvent): boolean {
   const text = event.data.prompt_text;
-  return typeof text === "string" && text.includes(STOP_REMEDIATION_MARKER);
+  if (typeof text !== "string") return false;
+  return text.includes(STOP_REMEDIATION_MARKER) || text.includes(STOP_REMEDIATION_LEGACY_MARKER);
 }
 
 /**
@@ -133,8 +146,20 @@ function isStopRemediationPrompt(event: CanonicalEvent): boolean {
  * A genuine human prompt always anchors a fresh window, so this cannot be used
  * to inherit ritual credit across real turns.
  */
-function resolveTurnStartMs(ownerEvents: CanonicalEvent[], fallbackMs: number): number {
-  const prompts = ownerEvents.filter((e) => e.event_type === "user_prompt.submit");
+function resolveTurnStartMs(
+  ownerEvents: CanonicalEvent[],
+  nowMs: number,
+  fallbackMs: number,
+): number {
+  // Honor the cutoff: `now_ms` marks what is relevant yet, so a prompt after it
+  // cannot anchor this turn. In production the cutoff is the clock and nothing
+  // follows it, but a replay over recorded history passes a past cutoff, and an
+  // unclamped search would anchor on a later turn and hand back an empty window.
+  const prompts = ownerEvents.filter((e) => {
+    if (e.event_type !== "user_prompt.submit") return false;
+    const t = Date.parse(e.ts);
+    return Number.isFinite(t) && t <= nowMs;
+  });
   if (prompts.length === 0) return fallbackMs;
 
   let index = prompts.length - 1;
@@ -221,7 +246,7 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   const nowMs = req.now_ms ?? Date.now();
   const startMs = req.turn_window
     ? req.turn_window.start_ms
-    : resolveTurnStartMs(ownerEvents, nowMs - 5 * 60 * 1000);
+    : resolveTurnStartMs(ownerEvents, nowMs, nowMs - 5 * 60 * 1000);
   const endMs = req.turn_window ? req.turn_window.end_ms : nowMs;
 
   const inTurn = ownerEvents.filter((e) => {

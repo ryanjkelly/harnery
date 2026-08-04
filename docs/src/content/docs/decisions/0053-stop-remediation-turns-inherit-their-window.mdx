@@ -52,6 +52,20 @@ clamped when recorded and a trailing marker could be truncated off a long
 reason. It also tells the operator in the chat log that the message came from
 Harnery rather than from them.
 
+The message shape that preceded the marker is recognized too. A followup already
+in the stream was written by whichever build fired it, so a session spanning an
+upgrade would otherwise keep alternating until the first new-format followup
+arrived, which is the failure this change exists to remove. The older form only
+ever reaches a `prompt_text` because Harnery put it there, so accepting it costs
+nothing.
+
+The anchor search honors the verdict's own cutoff. `now_ms` is documented as the
+point past which events are not yet relevant, but the previous window discovery
+ignored it, which was harmless while the cutoff was always the clock. Replaying a
+recorded stop passes a past cutoff, and an unclamped search anchored on a later
+turn and returned an empty window. Verifying this change against recorded history
+surfaced that, and the replay is the reason the clamp is now in place.
+
 The Cursor followup additionally names both commands, with the failing rule kept
 as context. That is an optimization on top of the window fix, not the fix: it
 reduces the common case to a single followup, while the window guarantees
@@ -80,7 +94,13 @@ the common case ordered correctly.
 
 Unit coverage now includes the cross-turn cases, which no test previously
 exercised: a remediation followup that supplies the missing half passes, a chain
-of followups anchors on the last human prompt, and a second human prompt with no
-ritual still blocks. The remediation test also asserts the pre-fix behavior by
-pinning the window to the repair turn alone, so the alternation cannot return
-unnoticed.
+of followups anchors on the last human prompt, a pre-marker followup is still
+recognized, a later prompt cannot anchor an earlier stop, and a second human
+prompt with no ritual still blocks. The remediation test also asserts the pre-fix
+behavior by pinning the window to the repair turn alone, so the alternation
+cannot return unnoticed.
+
+Replayed against the recorded stream of the session that motivated this ADR, the
+first stop still blocks, because that agent genuinely skipped one command, and
+the second stop now passes where it previously demanded the signal it had already
+given. The chain that ran three followups ends after one.
