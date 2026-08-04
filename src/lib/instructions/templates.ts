@@ -146,7 +146,7 @@ export interface SkillTemplate {
 function decideBody(b: string): string {
   return `The decision docket is a persistent queue for decisions you would otherwise
 route to a human. It's built on the \`${b} decision\` engine. This skill is the
-mechanics — file, find precedent, claim, and resolve with evidence. *When* a
+mechanics: file, find precedent, claim, and resolve with evidence. *When* a
 decision needs a human at all (versus one you settle yourself) is host policy;
 if this project defines that rubric, follow it.
 
@@ -159,7 +159,7 @@ if this project defines that rubric, follow it.
 ## Capture (default)
 
 1. **Check precedent first.** \`${b} decision search "<key terms>"\`. If a resolved
-   decision already answers this, cite it — don't re-litigate.
+   decision already answers this, cite it; don't re-litigate.
 2. **File it** when the choice has a second consumer (a human will want to see it,
    or a future agent will face it again) or reversal is expensive. Skip the
    docket for pure local mechanics (a variable name, one of two equivalent idioms).
@@ -172,7 +172,7 @@ if this project defines that rubric, follow it.
 
    For a decision with real substance, write a brief to a file and pass
    \`--brief <path>\` so the reviewer sees options + evidence, not a cold prompt.
-3. **Proceed on your default.** Filing does not mean blocking — note the id in your
+3. **Proceed on your default.** Filing does not mean blocking. Note the id in your
    reply and keep working.
 
 ## Resolve (\`resolve <id>\`)
@@ -182,7 +182,7 @@ ${b} decision show <id>     # read the question + context + any brief
 ${b} decision claim <id>    # mark it deliberating (claimed by you)
 \`\`\`
 
-Research it for real — run the queries, read the files, compute the costs. Then
+Research it for real: run the queries, read the files, compute the costs. Then
 resolve with **cited evidence** (the engine rejects an evidence-free resolution):
 
 \`\`\`bash
@@ -242,7 +242,7 @@ ${b} council list --mine --json
 
 One section per council you're a member of: id + objective, round N (open /
 collected) with N/M contributors, and your status (awaiting prompt / prompt ready
-/ already contributed) with the next command to run. Stop after listing — don't
+/ already contributed) with the next command to run. Stop after listing; don't
 auto-route into contribute.
 
 ## Create (\`create <objective>\`)
@@ -256,18 +256,18 @@ http://localhost:9000/councils/new?objective=<encoded>
 
 If the dev server isn't up, start it with \`${b} web up\`.
 
-## Contribute (\`contribute <id>\`) — the guarded flow
+## Contribute (\`contribute <id>\`): the guarded flow
 
 Run these checks in order; refuse with a specific reason if any fails.
 
-1. **Membership.** If your \`whoami\` name isn't in \`manifest.members\`, refuse — the
-   router likely meant a different agent's session.
-2. **Already contributed.** If you're in \`current_round_contributors\`, refuse —
-   wait for the steward to advance the round.
+1. **Membership.** If your \`whoami\` name isn't in \`manifest.members\`, refuse.
+   The router likely meant a different agent's session.
+2. **Already contributed.** If you're in \`current_round_contributors\`, refuse.
+   Wait for the steward to advance the round.
 3. **Prompt routing.** Find your entry in \`current_round_prompts\`. If none is
    drafted for you, refuse (the steward must write one first). If the routed body
    carries a \`<!-- council-route … member: <name> -->\` header naming a *different*
-   agent, refuse — the wrong prompt was pasted into your session.
+   agent, refuse: the wrong prompt was pasted into your session.
 4. **Compose** per your prompt (read \`manifest.target_doc\` in full if set; strip
    the route header before treating the body as instructions).
 5. **Submit:**
@@ -282,20 +282,20 @@ Run these checks in order; refuse with a specific reason if any fails.
    \`<trivial>\` angle-bracket tag on the final line (the exit-criterion parser keys
    on it). When in doubt, lean \`<trivial>\`.
 
-## Prompts (\`prompts <id>\`) — steward
+## Prompts (\`prompts <id>\`): steward
 
 1. **Authority.** If your \`whoami\` name ≠ the council's \`steward\`, stop.
 2. **Plan the round** from the target doc + prior rounds. Round 1 must include a
-   completeness critic — assign one member the explicit charge: "What important
-   thing is NOT in this document at all — a missing dimension, not a flaw in what's
-   written?" Lens-scoped reviewers reliably miss whole absent dimensions.
+   completeness critic. Assign one member the explicit charge: "What important
+   thing is NOT in this document at all (a missing dimension, not a flaw in what's
+   written)?" Lens-scoped reviewers reliably miss whole absent dimensions.
 3. **Draft + write** one prompt per member missing from \`current_round_prompts\`:
 
    \`\`\`bash
    ${b} council prompt <id> agent-<Name> --message "..."   # or --file <path>
    \`\`\`
 
-   The CLI auto-prepends the \`<!-- council-route … -->\` header — never write it by
+   The CLI auto-prepends the \`<!-- council-route … -->\` header; never write it by
    hand. Every prompt must instruct the member to end with the literal
    \`<substantive>\` / \`<trivial>\` tag.
 
@@ -315,7 +315,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-decide",
         description:
-          "File a decision into the docket instead of blocking on a human — search precedent, file it, and proceed on a reversible default; or pick up and resolve an open decision with cited evidence. Use whenever you're about to ask a human a decision-shaped question you could resolve yourself.",
+          "File a decision into the docket instead of blocking on a human: search precedent, file it, and proceed on a reversible default; or pick up and resolve an open decision with cited evidence. Use whenever you're about to ask a human a decision-shaped question you could resolve yourself.",
         argumentHint: "[<the decision / question you're facing> | resolve <id> | review]",
         binName,
         body: decideBody(binName),
@@ -328,7 +328,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-council",
         description:
-          "Interact with the multi-agent council system: list / create / show / prompts (steward) / contribute (member). Guards against misrouting — refuses to contribute when you aren't a member, have already contributed, or weren't routed a prompt.",
+          "Interact with the multi-agent council system: list / create / show / prompts (steward) / contribute (member). Guards against misrouting: refuses to contribute when you aren't a member, have already contributed, or weren't routed a prompt.",
         argumentHint:
           "[<id-or-fragment> | create <objective> | contribute <id> | prompts <id> | show <id>]",
         binName,
