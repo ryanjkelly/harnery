@@ -124,14 +124,18 @@ describe("critique tiling + orchestration", () => {
     expect(result.findings[0]?.category).toBe("provider-error");
   });
 
-  // Chromium cold-start on GHA regularly exceeds Bun's 5s default; the two
-  // recent release-CI reds (runs #67 / #69) were this test timing out at ~5002ms.
+  // Chromium launch on a busy GHA runner is flaky: release CI #67/#69 timed
+  // out at Bun's 5s default, and post-merge #71 hung for the full 30s budget
+  // even though sibling e2e browser tests in the same job passed. Retry once,
+  // prefer domcontentloaded for the local fixture, and keep a generous budget.
   test(
     "Browser tiling: metrics + clip screenshot + element tiles",
     async () => {
       const browser = new Browser({
         profileDir: profile(),
         viewport: { width: 800, height: 600 },
+        waitUntil: "domcontentloaded",
+        navigationTimeout: 15_000,
       });
       try {
         await browser.open();
@@ -147,7 +151,7 @@ describe("critique tiling + orchestration", () => {
         await browser.close();
       }
     },
-    { timeout: 30_000 },
+    { timeout: 45_000, retry: 2 },
   );
 
   test("CLI --check-critique reports skipped when no provider is injected", () => {
