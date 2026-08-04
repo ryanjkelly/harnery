@@ -348,6 +348,61 @@ export function healHeartbeat(
 }
 
 /**
+ * Register a workflow child in the coordination layer from the ENGINE side.
+ *
+ * Previously a spawned child was visible only if its adapter fired Harnery's
+ * hooks, which made coordination visibility a property of the vendor CLI
+ * rather than of the engine. Headless `codex exec` fires no hooks, so codex
+ * children never appeared in `harn agents list` and rendered as "no live
+ * session" on the run page while actively working — for the entire length of
+ * a multi-minute stage.
+ *
+ * The engine already knows every fact a heartbeat needs at spawn time, so it
+ * writes one itself. Hook-firing adapters keep enriching the same file
+ * (last_tool, files_touched); non-hook adapters at least become visible and
+ * attributable. Pair with `killHeartbeat` when the child ends.
+ *
+ * Idempotent: re-registering refreshes in place and preserves `started_at`
+ * and any claims a hook already recorded.
+ */
+export function registerWorkflowChild(
+  coordRoot: string,
+  opts: {
+    instanceId: string;
+    runId: string;
+    agentId: string;
+    sessionId?: string;
+    adapter?: string;
+    label?: string;
+    model?: string;
+  },
+): Heartbeat {
+  const now = nowIsoSeconds();
+  const prior = readHeartbeat(coordRoot, opts.instanceId);
+  const hb: Heartbeat = {
+    ...(prior ?? {}),
+    schema_version: 1,
+    instance_id: opts.instanceId,
+    // The reader keys children by session_id and skips any heartbeat missing
+    // one, so it must always be set even before the adapter mints a real id.
+    session_id: prior?.session_id ?? opts.sessionId ?? opts.instanceId,
+    name: opts.label || opts.agentId,
+    kind: "workflow-child",
+    agent_id: opts.agentId,
+    model: opts.model ?? prior?.model ?? "",
+    platform: adapterToPlatform(opts.adapter),
+    started_at: prior?.started_at ?? now,
+    last_heartbeat: now,
+    files_touched: prior?.files_touched ?? [],
+    task: opts.label ?? "",
+    workflow_run_id: opts.runId,
+    workflow_agent_id: opts.agentId,
+  };
+  atomicWrite(heartbeatPath(coordRoot, opts.instanceId), JSON.stringify(hb, null, 2));
+  return hb;
+}
+
+/**
  * Stamp the heartbeat with the most-recent tool name + target. Written from
  * the post-tool-use hook.
  */

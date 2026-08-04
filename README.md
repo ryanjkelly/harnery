@@ -13,7 +13,7 @@
 [![npm version](https://img.shields.io/npm/v/harnery.svg)](https://www.npmjs.com/package/harnery)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> ⚠️ **Pre-1.0.** API surface is still settling. Pin a specific minor version (`harnery@^0.7.0`) and read the [CHANGELOG](CHANGELOG.md) before each upgrade.
+> ⚠️ **Pre-1.0.** API surface is still settling. Pin a specific minor version (`harnery@^0.31.0`) and read the [CHANGELOG](CHANGELOG.md) before each upgrade.
 
 ## What it is
 

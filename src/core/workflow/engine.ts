@@ -21,6 +21,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { killHeartbeat, registerWorkflowChild } from "../agents/state/heartbeat-writer.ts";
 import { snapshotRepo } from "../context/index.ts";
 import type {
   ExternalMutationRequest,
@@ -109,6 +110,17 @@ const DEFAULT_MAX_AGENTS = 50;
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * Deterministic coordination identity for a spawned child.
+ *
+ * Stable per (run, agent) so a re-register refreshes one heartbeat instead of
+ * accumulating duplicates, and so an orphan left by a killed engine is
+ * greppable straight back to the run that owned it.
+ */
+function childInstanceId(runId: string, agentId: string): string {
+  return `${runId}-${agentId}`;
+}
 const DEFAULT_MAX_TURNS = 25;
 const DEFAULT_POLICY_ASK_TIMEOUT_MS = 60_000;
 const MAX_POLICY_DECISIONS = 50;
@@ -935,6 +947,24 @@ async function executeWorkflow(
       });
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${adapter}] ${label}`);
 
+      // Register the child ourselves rather than trusting its adapter to fire
+      // Harnery's hooks. Headless `codex exec` fires none, so codex children
+      // were invisible to `harn agents list` and the run page for the whole
+      // duration of a stage. The engine knows everything the heartbeat needs.
+      // Best-effort: coordination visibility must never fail a run.
+      try {
+        registerWorkflowChild(opts.coordRoot, {
+          instanceId: childInstanceId(runId, id),
+          runId,
+          agentId: id,
+          adapter,
+          label,
+          model: agentOpts.model,
+        });
+      } catch {
+        /* visibility is not worth failing a spawn over */
+      }
+
       let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
       let agentCostUsd = 0;
@@ -1047,6 +1077,14 @@ async function executeWorkflow(
       throw error;
     } finally {
       reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
+      // Deregister on every exit path, including throw. A child heartbeat that
+      // outlives its process reads as a live agent forever and blocks peers on
+      // its stale claims. The transcript remains the durable record.
+      try {
+        killHeartbeat(opts.coordRoot, childInstanceId(runId, id));
+      } catch {
+        /* already gone, or swept */
+      }
       release();
     }
   };

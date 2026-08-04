@@ -173,7 +173,12 @@ export function createEvidenceRecord(input: {
     recorded_at: input.recordedAt ?? new Date().toISOString(),
     kind: enumValue(value.kind, EVIDENCE_KINDS, "evidence kind"),
     status: enumValue(value.status, ["passed", "failed", "observed", "unknown"], "evidence status"),
-    label: boundedRequired(value.label, "evidence label", MAX_LABEL_CHARS),
+    // Truncate rather than throw. A label is a display string; the substance
+    // lives in `summary` and `ref`. Throwing here discards the whole run at
+    // the point evidence is recorded, which is the END of the work — a real
+    // three-agent review was lost because its label ran 31 characters long.
+    // Same posture the transcript writer already takes: shrink and say so.
+    label: truncatedRequired(value.label, "evidence label", MAX_LABEL_CHARS),
     summary: boundedOptional(value.summary, "evidence summary", MAX_SUMMARY_CHARS),
     ref: boundedOptional(value.ref, "evidence ref", MAX_REF_CHARS),
     stage: boundedOptional(input.stage, "evidence stage", MAX_LABEL_CHARS),
@@ -582,6 +587,23 @@ function boundedRequired(value: unknown, field: string, max: number): string {
   const normalized = value.trim();
   if (normalized.length > max) throw new Error(`${field} exceeds ${max} characters`);
   return normalized;
+}
+
+/**
+ * Like `boundedRequired`, but shortens an over-long value instead of throwing.
+ *
+ * For fields where the string is a display label rather than load-bearing
+ * content: losing the tail of a label is trivial, losing the run that produced
+ * it is not. The marker keeps the truncation visible so a reader never mistakes
+ * a shortened label for the whole thing. Still throws when the value is missing
+ * or blank — that is a caller bug, not an overflow.
+ */
+function truncatedRequired(value: unknown, field: string, max: number): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} is required`);
+  const normalized = value.trim();
+  if (normalized.length <= max) return normalized;
+  const marker = "…[truncated]";
+  return `${normalized.slice(0, Math.max(0, max - marker.length))}${marker}`;
 }
 
 function boundedOptional(value: unknown, field: string, max: number): string | undefined {

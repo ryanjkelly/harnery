@@ -438,3 +438,39 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
     expect(readWorkflowProof(root, "wf-test").run.class).toBeUndefined();
   });
 });
+
+describe("evidence label overflow", () => {
+  const acceptanceIds = new Set<string>();
+
+  test("truncates an over-long label instead of discarding the run", () => {
+    // Regression: a completed three-agent review was thrown away because its
+    // evidence label ran 31 characters over. Evidence is recorded at the END
+    // of the work, so throwing here costs everything the run produced.
+    const record = createEvidenceRecord({
+      value: { kind: "review", status: "passed", label: "x".repeat(400) },
+      sequence: 1,
+      acceptanceIds,
+    });
+    expect(record.label.length).toBeLessThanOrEqual(200);
+    expect(record.label.endsWith("…[truncated]")).toBe(true);
+  });
+
+  test("leaves a label within bounds byte-identical", () => {
+    const record = createEvidenceRecord({
+      value: { kind: "review", status: "passed", label: "wf-1: accepted" },
+      sequence: 1,
+      acceptanceIds,
+    });
+    expect(record.label).toBe("wf-1: accepted");
+  });
+
+  test("still rejects a missing label, which is a caller bug not an overflow", () => {
+    expect(() =>
+      createEvidenceRecord({
+        value: { kind: "review", status: "passed", label: "   " },
+        sequence: 1,
+        acceptanceIds,
+      }),
+    ).toThrow(/evidence label is required/);
+  });
+});
