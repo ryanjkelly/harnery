@@ -107,3 +107,53 @@ approval decision.
 - Automatic acceptance means the governor writes an explicit governance
   event as its named actor after fully passing proof; it is not a reconciler
   side effect or an inference from process exit.
+- Specialist `adapter` is optional and inherits the run default when omitted.
+  Harnery does not auto-spread across adapters; see the addendum below.
+
+## Addendum: pin or inherit, no auto-spread (2026-08-03)
+
+The optional `adapter` field on a specialist profile means "pin this role to
+that seat." It does not mean "pick a seat for me." Resolution is:
+
+```
+opts.adapter ?? profile.adapter ?? default_adapter
+```
+
+A team that omits every pin therefore lands every child on one adapter. That
+is the contract, and it has always been the contract. What was missing is that
+omitting the pin is silent: a six-specialist team reads as multi-adapter work
+and behaves as single-adapter work.
+
+Under metered billing that concentration is a cost curve. Under
+`subscriptionOnly` it is a cliff: one seat's session meter carries the whole
+team, so when that seat hits its limit every specialist stops at once. A run
+that burned one subscription seat for about ninety minutes while two other
+attested adapters sat idle is what made the silence expensive.
+
+Two responses were considered.
+
+**Auto-spread** (round-robin / least-recently-used / per-role defaults when
+`adapter` is omitted) was rejected. Silently overriding an author who meant the
+default would hide the same miss under a different failure mode, and it would
+also hand children to a registered-but-dead seat. Reachability is not
+registration.
+
+**Refuse at `governor create`** was chosen. The check is narrow on purpose
+(false refusal is worse than the miss) and fires only when all four hold:
+
+1. more than one specialist,
+2. every specialist resolves to the same adapter,
+3. `subscriptionOnly` is on,
+4. another adapter is **attested reachable** (via `harn adapter attest`, not
+   the registry).
+
+Condition 4 is load-bearing. Counting declared adapters would recommend a seat
+that cannot start; every child handed to it would fail closed. Attestation is
+the only record that an adapter completed a real turn on this machine.
+
+The refusal happens at create because the intent freezes with no amend path.
+Discovering it at run time means recreating the goal. `--allow-single-adapter`
+is the opt-out when one seat is what you want.
+
+Operator-facing write-up: [governor CLI → Every specialist on one adapter](/cli/governor/#every-specialist-on-one-adapter).
+Implementation: `src/core/governor/adapter-spread.ts`.
