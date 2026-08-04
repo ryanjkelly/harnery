@@ -43,7 +43,7 @@ export interface ParsedPayload {
  * Parse the raw stdin payload string for any adapter. Returns null when JSON
  * parse fails (Cursor occasionally fires hooks with no payload).
  */
-export function parsePayload(raw: string, _adapter: Adapter): ParsedPayload | null {
+export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | null {
   if (!raw || raw.trim().length === 0) return null;
   let json: Record<string, unknown>;
   try {
@@ -52,13 +52,26 @@ export function parsePayload(raw: string, _adapter: Adapter): ParsedPayload | nu
     return null;
   }
 
+  const sessionId = normalizeSessionId(adapter, pickStr(json, "session_id"));
+  const conversationId = normalizeSessionId(adapter, pickStr(json, "conversation_id"));
+  const parentSessionId = normalizeSessionId(adapter, pickStr(json, "parent_session_id"));
+  const normalizedRaw =
+    adapter === "cursor"
+      ? {
+          ...json,
+          ...(sessionId ? { session_id: sessionId } : {}),
+          ...(conversationId ? { conversation_id: conversationId } : {}),
+          ...(parentSessionId ? { parent_session_id: parentSessionId } : {}),
+        }
+      : json;
+
   return {
     hook_event_name: pickStr(json, "hook_event_name"),
-    session_id: pickStr(json, "session_id"),
+    session_id: sessionId,
     agent_id: pickStr(json, "agent_id"),
     subagent_id: pickStr(json, "subagent_id"),
-    conversation_id: pickStr(json, "conversation_id"),
-    parent_session_id: pickStr(json, "parent_session_id"),
+    conversation_id: conversationId,
+    parent_session_id: parentSessionId,
     turn_id: pickStr(json, "turn_id"),
     parent_turn_id: pickStr(json, "parent_turn_id"),
     transcript_path: pickStr(json, "transcript_path"),
@@ -75,8 +88,14 @@ export function parsePayload(raw: string, _adapter: Adapter): ParsedPayload | nu
     clean_exit: pickBool(json, "clean_exit"),
     exit_status: pickStr(json, "exit_status"),
     reason: pickStr(json, "reason"),
-    raw: json,
+    raw: normalizedRaw,
   };
+}
+
+/** Cursor Glass prefixes conversation ids with `bc-`; coordination uses the bare id everywhere. */
+function normalizeSessionId(adapter: Adapter, value: string | undefined): string | undefined {
+  if (adapter !== "cursor" || !value?.startsWith("bc-") || value.length <= 3) return value;
+  return value.slice(3);
 }
 
 /**

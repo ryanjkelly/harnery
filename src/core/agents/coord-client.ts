@@ -528,7 +528,10 @@ function shouldPreferSessionEnv(): boolean {
  * `instance_id`, or null if there's no session-id env var or no live heartbeat
  * carries it. "Live" reuses the same 10-minute freshness window the singleton
  * fallback applies, so a stale heartbeat from a prior session of the same id
- * doesn't resolve.
+ * doesn't resolve. When legacy Cursor Glass state contains both the canonical
+ * bare id and its raw `bc-` alias, candidate order wins first; ties prefer a
+ * named heartbeat, then the newest heartbeat, with instance id as a stable
+ * final tie-breaker. Filesystem enumeration order never decides identity.
  *
  * Exported for unit testing with an injectable root.
  */
@@ -546,19 +549,40 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
   } catch {
     return null;
   }
+  const matches: Array<{
+    instanceId: string;
+    sessionPreference: number;
+    hasName: boolean;
+    lastHeartbeatMs: number;
+  }> = [];
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
     try {
       const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
-      if (!parsed || !sessionIds.includes(parsed.session_id)) continue;
+      if (!parsed) continue;
+      const sessionPreference = sessionIds.indexOf(parsed.session_id);
+      if (sessionPreference === -1) continue;
       if (typeof parsed.instance_id !== "string") continue;
       const ts = Date.parse(parsed.last_heartbeat);
-      if (Number.isFinite(ts) && ts >= cutoffMs) return parsed.instance_id;
+      if (!Number.isFinite(ts) || ts < cutoffMs) continue;
+      matches.push({
+        instanceId: parsed.instance_id,
+        sessionPreference,
+        hasName: typeof parsed.name === "string" && parsed.name.trim().length > 0,
+        lastHeartbeatMs: ts,
+      });
     } catch {
       // skip malformed
     }
   }
-  return null;
+  matches.sort(
+    (a, b) =>
+      a.sessionPreference - b.sessionPreference ||
+      Number(b.hasName) - Number(a.hasName) ||
+      b.lastHeartbeatMs - a.lastHeartbeatMs ||
+      a.instanceId.localeCompare(b.instanceId),
+  );
+  return matches[0]?.instanceId ?? null;
 }
 
 /**

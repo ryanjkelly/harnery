@@ -300,10 +300,15 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
 
   const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
 
-  function writeHeartbeat(id: string, sessionId: string, agoMs: number): void {
+  function writeHeartbeat(id: string, sessionId: string, agoMs: number, name?: string): void {
     writeFileSync(
       path.join(activeDir, `${id}.json`),
-      JSON.stringify({ instance_id: id, session_id: sessionId, last_heartbeat: isoAgo(agoMs) }),
+      JSON.stringify({
+        instance_id: id,
+        session_id: sessionId,
+        last_heartbeat: isoAgo(agoMs),
+        ...(name ? { name } : {}),
+      }),
     );
   }
 
@@ -363,6 +368,33 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     writeHeartbeat("agent-cur", "sess-cur", 30_000);
     process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
+  });
+
+  test("Cursor Glass dual heartbeats always prefer the bare session id", () => {
+    process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
+
+    writeHeartbeat("ghost-first", "bc-sess-cur", 1_000);
+    writeHeartbeat("named-bare", "sess-cur", 30_000, "Irene");
+    expect(resolveOwnerBySessionEnv(root)).toBe("named-bare");
+
+    rmSync(activeDir, { recursive: true, force: true });
+    mkdirSync(activeDir, { recursive: true });
+    writeHeartbeat("named-bare", "sess-cur", 30_000, "Irene");
+    writeHeartbeat("ghost-second", "bc-sess-cur", 1_000);
+    expect(resolveOwnerBySessionEnv(root)).toBe("named-bare");
+  });
+
+  test("same-session matches prefer named, then newest, independent of readdir order", () => {
+    process.env.CURSOR_SESSION_ID = "sess-cur";
+    writeHeartbeat("unnamed-newest", "sess-cur", 1_000);
+    writeHeartbeat("named-older", "sess-cur", 20_000, "Irene");
+    expect(resolveOwnerBySessionEnv(root)).toBe("named-older");
+
+    rmSync(activeDir, { recursive: true, force: true });
+    mkdirSync(activeDir, { recursive: true });
+    writeHeartbeat("older", "sess-cur", 20_000);
+    writeHeartbeat("newer", "sess-cur", 1_000);
+    expect(resolveOwnerBySessionEnv(root)).toBe("newer");
   });
 
   test("Claude Code session env wins over a recycled pid-map row", () => {

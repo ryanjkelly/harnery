@@ -290,6 +290,25 @@ describe("agent-hook session-start", () => {
     expect(activeCount(root)).toBe(1);
   });
 
+  test("Cursor Glass sessionStart writes only the canonical bare heartbeat", () => {
+    const root = makeSandbox();
+    const payload = JSON.stringify({
+      conversation_id: "bc-glass-session",
+      session_id: "bc-glass-session",
+      hook_event_name: "sessionStart",
+      workspace_roots: [root],
+      cwd: root,
+      composer_mode: "agent",
+      is_background_agent: false,
+    });
+
+    const { status } = run(AGENT_HOOK, ["session-start", "--adapter", "cursor"], payload, root);
+
+    expect(status).toBe(0);
+    expect(existsSync(path.join(root, ".harnery", "active", "glass-session.json"))).toBe(true);
+    expect(existsSync(path.join(root, ".harnery", "active", "bc-glass-session.json"))).toBe(false);
+  });
+
   test("Codex sessionStart creates a heartbeat", () => {
     const root = makeSandbox();
     const sid = "codex-fixture-sess";
