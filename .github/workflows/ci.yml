@@ -13,7 +13,10 @@ jobs:
   lint-typecheck-test:
     name: Lint + typecheck + test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Playwright Chromium install is usually ~1m cached, but an uncached
+    # download has taken ~9m (run #70), which cancelled the job under a 10m
+    # budget and painted the README CI badge red. Leave headroom for that.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 

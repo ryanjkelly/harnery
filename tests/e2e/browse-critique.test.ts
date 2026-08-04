@@ -124,22 +124,31 @@ describe("critique tiling + orchestration", () => {
     expect(result.findings[0]?.category).toBe("provider-error");
   });
 
-  test("Browser tiling: metrics + clip screenshot + element tiles", async () => {
-    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 600 } });
-    try {
-      await browser.open();
-      await browser.navigate(fixtureUrl);
-      const m = await browser.pageMetrics();
-      expect(m.scrollHeight).toBeGreaterThan(0);
-      const png = await browser.screenshotClipBase64({ x: 0, y: 0, width: 200, height: 100 });
-      expect(png.length).toBeGreaterThan(100); // non-empty base64
-      const tiles = await browser.elementTiles("section");
-      expect(tiles.length).toBeGreaterThan(0);
-      expect(tiles[0]?.width).toBeGreaterThan(0);
-    } finally {
-      await browser.close();
-    }
-  });
+  // Chromium cold-start on GHA regularly exceeds Bun's 5s default; the two
+  // recent release-CI reds (runs #67 / #69) were this test timing out at ~5002ms.
+  test(
+    "Browser tiling: metrics + clip screenshot + element tiles",
+    async () => {
+      const browser = new Browser({
+        profileDir: profile(),
+        viewport: { width: 800, height: 600 },
+      });
+      try {
+        await browser.open();
+        await browser.navigate(fixtureUrl);
+        const m = await browser.pageMetrics();
+        expect(m.scrollHeight).toBeGreaterThan(0);
+        const png = await browser.screenshotClipBase64({ x: 0, y: 0, width: 200, height: 100 });
+        expect(png.length).toBeGreaterThan(100); // non-empty base64
+        const tiles = await browser.elementTiles("section");
+        expect(tiles.length).toBeGreaterThan(0);
+        expect(tiles[0]?.width).toBeGreaterThan(0);
+      } finally {
+        await browser.close();
+      }
+    },
+    { timeout: 30_000 },
+  );
 
   test("CLI --check-critique reports skipped when no provider is injected", () => {
     const result = Bun.spawnSync({
