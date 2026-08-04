@@ -37,14 +37,8 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      # Serialize Chromium launches across the suite. Concurrent Playwright
-      # spawns on ubuntu-latest have hung the browse-critique Browser tiling
-      # e2e for the full per-test budget (CI #71 on main) while sibling browser
-      # tests in the same job passed — classic launch-contention flake.
       - name: Unit tests
         run: bun run test
-        env:
-          HARNERY_MAX_BROWSER_LAUNCHES: "1"
 
       # Integration tests are bash-based: they shell out to `bin/harn` and
       # assert on stdout/stderr + filesystem side effects. Skipped on PRs from
