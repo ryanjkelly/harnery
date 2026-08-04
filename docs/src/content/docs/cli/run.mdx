@@ -299,7 +299,7 @@ the script was right, and the blocker is a person.
 The distinction is load-bearing because it changes what happens next:
 
 - The attempt is **uncharged**, so once the decision lands the item retries with
-  its full budget. The same three classes share this treatment — see
+  its full budget. The same three classes share this treatment; see
   [failure classes](#failure-classes).
 - The work item goes to `blocked` with `next_action: "none"`, so a
   [`harn governor`](./governor/) running with `retry_blocked` **cannot re-issue
@@ -311,7 +311,7 @@ The distinction is load-bearing because it changes what happens next:
 
 Without a class of its own, a correct refusal and a botched attempt look
 identical to the engine. It re-issues the item, the next agent reaches the same
-correct conclusion, and the loop repeats until the budget is gone — with nobody
+correct conclusion, and the loop repeats until the budget is gone, with nobody
 told, because the thing it is waiting for is a person who was never asked.
 
 Pass the `decision` id whenever you have one; it is what turns "something needs

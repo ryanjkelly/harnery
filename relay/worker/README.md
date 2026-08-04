@@ -26,7 +26,7 @@ bunx wrangler deploy
 ```
 
 The committed `wrangler.toml` routes `relay.harnery.com` (the reference public
-deployment). To run your own: change or delete the `routes` entry — with no
+deployment). To run your own: change or delete the `routes` entry; with no
 route, wrangler prints a `*.workers.dev` URL, and clients point at it via
 `.harnery/config.jsonc` → `{ "presence": { "relay": "wss://<your-url>" } }`.
 

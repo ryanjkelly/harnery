@@ -1,6 +1,6 @@
 ---
 title: harn edit-batch
-description: One find/replace across many files in a single call — literal or regex, with a dry-run preview.
+description: One find/replace across many files in a single call: literal or regex, with a dry-run preview.
 sidebar:
   order: 23
 ---
@@ -61,8 +61,8 @@ zero_match_files[] }`, where each `files[]` entry has `path`, `matched`,
 
 ## Notes
 
-Writes are atomic per file — each file is written to a temp path and renamed
-into place — but the batch is **not** transactional across the set: if one file
+Writes are atomic per file (each file is written to a temp path and renamed
+into place), but the batch is **not** transactional across the set: if one file
 errors midway, the files already written stay written. Preview with `--dry-run`
 when that matters. A file that isn't found is reported as an error and skipped
 rather than aborting the whole run.

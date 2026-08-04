@@ -13,7 +13,7 @@ sidebar:
 The PreToolUse claim guard (`src/core/agents/rules/claim-conflict.ts`) runs two
 checks on every Edit/Write: a **conflict** check (is a fresh peer already
 holding this exact path?) and an **ordering** check (if you hold a claim on
-path A and now want path B where B sorts before A, block — acquiring locks in a
+path A and now want path B where B sorts before A, block: acquiring locks in a
 globally consistent order is the classic resource-ordering cure for circular
 wait).
 
@@ -52,7 +52,7 @@ contention while removing the dominant false positive.
 ## Result / measurement
 
 In one embedding host's ledger, genuine `ordering_violation` events fired only
-~2×/week — but agents routed around the *anticipated* block all session, writing
+~2×/week, but agents routed around the *anticipated* block all session, writing
 files via subprocess/heredoc escapes to dodge the tool guard. Those escapes are
 themselves uncoordinated, so the workaround defeated the guard's purpose. The
 cost of the rule was almost entirely its shadow, not its blocks.
@@ -63,7 +63,7 @@ Is the ordering rule needed at all?
 
 The guard is **non-blocking**: a denied acquisition returns exit 2 immediately;
 the agent does not hold a lock while waiting. Classic deadlock (Coffman) requires
-hold-and-wait, which this design lacks — a blocked agent gets an error and its
+hold-and-wait, which this design lacks. A blocked agent gets an error and its
 model decides what to do next. The one genuine stall the ordering rule prevents
 is two agents each holding one of two mutually-needed files and both refusing to
 commit until their multi-file edit finishes. But that scenario already surfaces

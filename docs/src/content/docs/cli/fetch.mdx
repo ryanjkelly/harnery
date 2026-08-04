@@ -9,7 +9,7 @@ sidebar:
 harn fetch [options] <url>
 ```
 
-An HTTP request that writes the response body to stdout and speaks to the **shared cookie jar**. By default it attaches any matching cookies from `~/.cache/harnery/cookies.json` to the request and persists `Set-Cookie` responses back — the same jar [`harn browse`](/cli/browse/) and [`harn cookies`](/cli/cookies/) use. So cookies established during a `harn browse --login` session flow naturally into later `harn fetch` calls, and vice versa. Pipe it into [`harn read`](/cli/read/) for the canonical scrape-to-markdown flow: `harn fetch <url> | harn read -`.
+An HTTP request that writes the response body to stdout and speaks to the **shared cookie jar**. By default it attaches any matching cookies from `~/.cache/harnery/cookies.json` to the request and persists `Set-Cookie` responses back (the same jar [`harn browse`](/cli/browse/) and [`harn cookies`](/cli/cookies/) use). So cookies established during a `harn browse --login` session flow naturally into later `harn fetch` calls, and vice versa. Pipe it into [`harn read`](/cli/read/) for the canonical scrape-to-markdown flow: `harn fetch <url> | harn read -`.
 
 ## Options
 
@@ -29,7 +29,7 @@ An HTTP request that writes the response body to stdout and speaks to the **shar
 
 ## Output
 
-The body goes to stdout (or the `--output` file) by default. Because the body is routed as text, binary responses should use `--output`. `--json` instead emits the whole `FetchResult` — `{ status, statusText, url, headers, body, cookiesSaved }` — as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
+The body goes to stdout (or the `--output` file) by default. Because the body is routed as text, binary responses should use `--output`. `--json` instead emits the whole `FetchResult` (`{ status, statusText, url, headers, body, cookiesSaved }`) as a single JSON object. When cookies are saved back to the jar, a note is logged to stderr.
 
 ## Examples
 

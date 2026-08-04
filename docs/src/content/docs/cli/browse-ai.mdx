@@ -9,9 +9,9 @@ sidebar:
 harn browse-ai [options] <url>
 ```
 
-Wraps Vercel Labs' `agent-browser` and returns an **accessibility-tree snapshot** with element refs (`@e1`, `@e2`) instead of raw DOM — a shape purpose-built for an LLM to read a page and then act on it by ref. It is the sister command of [`harn browse`](/cli/browse/) (Playwright): both share the cookie jar, but `browse-ai` returns the a11y tree while `browse` returns DOM/HTML/innerText.
+Wraps Vercel Labs' `agent-browser` and returns an **accessibility-tree snapshot** with element refs (`@e1`, `@e2`) instead of raw DOM: a shape purpose-built for an LLM to read a page and then act on it by ref. It is the sister command of [`harn browse`](/cli/browse/) (Playwright): both share the cookie jar, but `browse-ai` returns the a11y tree while `browse` returns DOM/HTML/innerText.
 
-Two behavioral differences worth knowing. First, it runs as a **daemon**: successive calls reuse the same browser instance until something closes it, so a snapshot's `@e` refs stay valid for the `--click`/`--fill` call that follows. Second, there is no `--login` flow here — use `harn browse --login` for one-time auth, then both tools share the same persisted cookies.
+Two behavioral differences worth knowing. First, it runs as a **daemon**: successive calls reuse the same browser instance until something closes it, so a snapshot's `@e` refs stay valid for the `--click`/`--fill` call that follows. Second, there is no `--login` flow here; use `harn browse --login` for one-time auth, then both tools share the same persisted cookies.
 
 ## Options
 

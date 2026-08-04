@@ -14,7 +14,7 @@ A per-agent markdown journal. Each agent has one journal at
 timestamped line under a category. It serves two purposes: **self-notes that
 survive in-session compaction** (the file is on disk, not in the conversation
 context, so a note written before a compaction is still readable after), and
-**pull-based peer coordination** — another agent can read your journal on
+**pull-based peer coordination**: another agent can read your journal on
 demand to pick up where you left off.
 
 The lifecycle is automated by session hooks: the journal is archived at
@@ -98,6 +98,6 @@ harn journal read --archive 5cc4edab-2026-07-14T10-00-00.md
   file there; `recovery-cue` reads the newest one to build the session-start
   hint; `janitor` prunes archives past the retention window and sweeps
   journals whose owning agent is gone.
-- **Pull-based, not push.** Nothing notifies a peer that you wrote something —
+- **Pull-based, not push.** Nothing notifies a peer that you wrote something;
   they read on demand. To hand someone an actionable note they'll see, use
   `harn agents ping`, which appends a `handoff` entry to *their* journal.

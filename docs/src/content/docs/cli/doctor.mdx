@@ -14,7 +14,7 @@ Walks through every dep Harnery touches and reports presence + version + install
 `--fix` installs missing managed tools before running the checks. Currently
 that means ripgrep: a version-pinned, sha256-verified download into
 Harnery's own tools directory (`~/.local/share/harnery/tools`), which
-`harn grep` probes directly — see the
+`harn grep` probes directly; see the
 [managed-install section on the grep page](/cli/grep/#managed-install-harnery-can-provision-rg-itself).
 
 ## Severity model
@@ -77,7 +77,7 @@ $ harn doctor --json
 
 ## Keeping hooks current after an upgrade
 
-Updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout) is enough for **code** fixes — your wired hooks call the `agent-hook` binary, so they immediately run the new code. No re-`init` needed.
+Updating Harnery (`npm i -g harnery@latest`, `npm update harnery`, or `git pull` for a cloned checkout) is enough for **code** fixes: your wired hooks call the `agent-hook` binary, so they immediately run the new code. No re-`init` needed.
 
 The one exception is when a release **adds, renames, or retires a hook event**. Re-run [`harn init`](/cli/init) to migrate the Harnery-owned entries without touching third-party hooks. `harn doctor`'s `adapter hooks` check catches this, and a one-line nudge also appears at the start of your next session:
 

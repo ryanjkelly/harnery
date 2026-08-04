@@ -1,4 +1,4 @@
-# harnery presence relay — Cloudflare Workers deployment.
+# harnery presence relay: Cloudflare Workers deployment.
 #
 # Deploy (needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in env):
 #   cd relay/worker && bunx wrangler deploy

@@ -101,20 +101,20 @@ is a trap under `subscriptionOnly`, because the concentration lands on a single
 seat's session meter: the seat hits its limit and the whole team stops at once,
 rather than degrading.
 
-`create` refuses that team. The refusal is narrow — it needs more than one
+`create` refuses that team. The refusal is narrow: it needs more than one
 specialist, all of them resolving to one adapter, subscription auth in force,
 and **another adapter that is attested reachable**:
 
 ```
 refusing to freeze a single-adapter team: no specialist pins an adapter, so all 6
-inherit the default (claude-code), and children are confined to subscription auth
-— so one seat carries the whole team and every specialist stops together when it
+inherit the default (claude-code), and children are confined to subscription auth,
+so one seat carries the whole team and every specialist stops together when it
 hits its limit. These adapters are attested and idle: codex, cursor.
 ```
 
 Attested, not merely registered. A registered adapter that has never completed a
 turn on this machine is not an alternative, and recommending it would trade one
-failure for a quieter one — every child handed to it would fail closed. Only
+failure for a quieter one: every child handed to it would fail closed. Only
 [`harn adapter attest`](./adapter/) records that an adapter actually ran, so only
 an attested adapter is grounds for the advice.
 

@@ -26,7 +26,7 @@ ppid walk then finds nothing and resolution returns null, so `agents status`,
 
 This is worst at the exact moment the coord layer most wants to work: the stop
 hook's end-of-turn rules nudge the agent to run `<bin> agents status` and
-`<bin> agents set-task` as its last calls — and those bare invocations are the
+`<bin> agents set-task` as its last calls, and those bare invocations are the
 ones that fail. The only escape was passing `--session-id <id>` explicitly,
 which means digging the id out of `events.ndjson` every turn.
 
@@ -34,7 +34,7 @@ which means digging the id out of `events.ndjson` every turn.
 
 Add a final resolution fallback: when env and the ppid walk both miss, scan
 `.harnery/active/` for live heartbeats (within the standard 600s freshness
-window). If **exactly one** agent is live, it is unambiguously self — resolve
+window). If **exactly one** agent is live, it is unambiguously self: resolve
 to it. With zero or two-or-more live agents, stay null (guessing would attribute
 state to the wrong agent), and the explicit `--session-id` escape hatch remains.
 

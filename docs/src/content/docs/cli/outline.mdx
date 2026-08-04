@@ -1,6 +1,6 @@
 ---
 title: harn outline
-description: Print the structural skeleton of a code file — imports plus top-level declarations with line numbers.
+description: Print the structural skeleton of a code file: imports plus top-level declarations with line numbers.
 sidebar:
   order: 17
 ---
@@ -9,8 +9,8 @@ sidebar:
 harn outline [options] <file>
 ```
 
-Prints a file's structural skeleton — its imports and top-level declarations,
-each with a line number — so you can locate one symbol without reading the whole
+Prints a file's structural skeleton (its imports and top-level declarations,
+each with a line number) so you can locate one symbol without reading the whole
 file. TS/JS/TSX/JSX are parsed with the TypeScript compiler AST; PHP and Python
 use a lighter regex pass. For markdown, use [`harn toc`](/cli/toc/) instead.
 

@@ -9,7 +9,7 @@ sidebar:
 harn read [options] [html-file]
 ```
 
-Turns an HTML page into clean, readable markdown — Readability strips the chrome (nav, ads, boilerplate) and Turndown converts what's left. Reads from a file argument or from stdin when the argument is `-`, which is what makes it the tail end of a scrape pipeline. Pair it with [`harn fetch`](/cli/fetch/) or [`harn browse`](/cli/browse/):
+Turns an HTML page into clean, readable markdown. Readability strips the chrome (nav, ads, boilerplate) and Turndown converts what's left. Reads from a file argument or from stdin when the argument is `-`, which is what makes it the tail end of a scrape pipeline. Pair it with [`harn fetch`](/cli/fetch/) or [`harn browse`](/cli/browse/):
 
 ```bash
 harn fetch https://example.com | harn read -

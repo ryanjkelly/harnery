@@ -10,7 +10,7 @@ harn config-get [options] <file> <key>
 ```
 
 Extract one value from a JSON or YAML config file by dotted-path. It's the quick
-way to pull a single field — a version, a port, a nested flag — without reading
+way to pull a single field (a version, a port, a nested flag) without reading
 the whole file or shelling out to `jq`. The file type is inferred from its
 extension (`.json`, `.yaml`, `.yml`).
 
@@ -27,7 +27,7 @@ mixed freely.
 
 By default a scalar (string, number, boolean, null) prints as-is and an
 object or array prints as pretty JSON. A missing key exits non-zero with a
-`key_not_found` error — unless `--json`, which always succeeds and reports
+`key_not_found` error, unless `--json`, which always succeeds and reports
 `found: false`.
 
 ## Examples

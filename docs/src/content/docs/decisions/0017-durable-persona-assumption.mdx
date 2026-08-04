@@ -49,6 +49,6 @@ The operation is limited to `kind=session`. Subagents retain their dispatch iden
 
 - Display names can now change within one instance lifecycle. Readers of `.name-history` must use the latest row for an `instance_id`; readers that already assign into a map line by line naturally do so.
 - The persona UUID, rather than a session UUID, becomes the stable identifier after assumption. A healed heartbeat recovers it from name history.
-- A replacement is blocked only while another live process still holds the role (or cached remote presence reports it). Abandoned local heartbeats — including those still inside the freshness window after a crash — are reclaimed by `identity assume` itself via a pid-map liveness probe, so operators do not need a separate stale-sweep or `agents heal --kind kill` step.
+- A replacement is blocked only while another live process still holds the role (or cached remote presence reports it). Abandoned local heartbeats (including those still inside the freshness window after a crash) are reclaimed by `identity assume` itself via a pid-map liveness probe, so operators do not need a separate stale-sweep or `agents heal --kind kill` step.
 - Cross-machine collision detection is best-effort because presence itself is advisory. Two machines that are both offline from one another can still assume the same role; the next presence exchange will expose the duplicate.
 - The command creates a minor-version behavior addition and ships with a changeset.

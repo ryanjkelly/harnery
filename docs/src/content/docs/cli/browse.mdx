@@ -122,7 +122,7 @@ paint-order and sticky-layer obstruction remain `--check-visible` concerns.
 
 Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
 flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd
-targets exactly that — distinct panels with no breathing room. Peers are
+targets exactly that: distinct panels with no breathing room. Peers are
 card-like panels (a full border, a modest corner radius, or a box-shadow) **or
 wrappers that contain at least one panel**. Separation is measured between the
 nearest face panels inside each peer, not the wrapper boxes, so a tall section
@@ -167,13 +167,13 @@ that documents template syntax. Contrast resolves the effective background by
 walking ancestors to the first opaque color; text over an image or gradient is
 `unknown`, not failed, and the check reads whatever theme the page is in, so
 toggle the theme with `--batch` to cover light and dark. Truncation is
-deliberately narrow — an active ellipsis or line-clamp only — so a decorative
+deliberately narrow (an active ellipsis or line-clamp only), so a decorative
 `overflow: hidden` does not read as a bug.
 
 ### Vision critique
 
 Heuristic checks only catch what you can enumerate. `--check-critique` hands the
-rendered page to a vision model for the long tail — the thing that looks off
+rendered page to a vision model for the long tail: the thing that looks off
 without tripping a named rule.
 
 | Flag | Description |
@@ -261,7 +261,7 @@ harn browse https://example.com --viewport mobile --no-full-page --out /tmp/run
 # Fill a search box, submit, and wait for results before capturing
 harn browse https://example.com --fill 'input[name=q]=>hello' --click 'button[type=submit]' --wait-for 'main .results'
 
-# Assert layout on mobile — break the build on overflow or narrow tables
+# Assert layout on mobile: break the build on overflow or narrow tables
 harn browse https://example.com --viewport 430x932 --check-width 'table' --check-overflow --check-overflow-fail
 
 # Run the rendered-layout suite in one browser state

@@ -13,10 +13,10 @@ Settings live in [JSONC](https://github.com/microsoft/node-jsonc-parser): JSON w
 
 Two files, merged **project-over-user** (project values win field by field):
 
-1. `~/.config/harnery/config.jsonc` — user-global base for every project on the machine (honors `XDG_CONFIG_HOME`, falling back to `~/.config`)
-2. `<project-root>/.harnery/config.jsonc` — the project file, authoritative
+1. `~/.config/harnery/config.jsonc`: user-global base for every project on the machine (honors `XDG_CONFIG_HOME`, falling back to `~/.config`)
+2. `<project-root>/.harnery/config.jsonc`: the project file, authoritative
 
-CLI flags and `HARNERY_*` env vars override both per invocation (each field's env override is noted in the [schema reference](/reference/config-schema/)). A project that sets only `web.port` keeps a user-global `web.bind` — the merge is field-by-field, not whole-object.
+CLI flags and `HARNERY_*` env vars override both per invocation (each field's env override is noted in the [schema reference](/reference/config-schema/)). A project that sets only `web.port` keeps a user-global `web.bind`; the merge is field-by-field, not whole-object.
 
 ## Schema
 

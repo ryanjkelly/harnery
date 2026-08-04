@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# harnery installer — the one-liner that puts the `harn` CLI on your PATH.
+# harnery installer: the one-liner that puts the `harn` CLI on your PATH.
 #
 #   curl -fsSL https://harnery.com/install.sh | bash
 #
 # It installs the published `harnery` npm package globally with a package manager
 # you already have (npm preferred for a predictable global bin, Bun otherwise),
 # checks that bin dir is on your PATH, and verifies the result. It does NOT wire a
-# project — run `harn init` in your repo for that (it prints the reminder).
+# project; run `harn init` in your repo for that (it prints the reminder).
 #
 # Non-interactive by design: piped into bash there is no terminal to prompt at,
 # so every choice is flag- or env-driven. Idempotent; safe to re-run.
@@ -30,7 +30,7 @@ PKG="harnery"
 
 show_help() {
   cat <<'EOF'
-harnery installer — put the `harn` CLI on your PATH.
+harnery installer: put the `harn` CLI on your PATH.
 
   curl -fsSL https://harnery.com/install.sh | bash
 

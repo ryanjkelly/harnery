@@ -155,11 +155,11 @@ Every section above is read from `config.jsonc` (both the user-global and projec
 
 | Section | Config keys | Env override | Other |
 | --- | --- | --- | --- |
-| `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` (alias `HARNERY_AGENT_FRESHNESS`) | — |
+| `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` (alias `HARNERY_AGENT_FRESHNESS`) | (none) |
 | `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |
-| `files` | `deny_globs`, `allow_overrides` | — | read by the web layer, not the core reader |
+| `files` | `deny_globs`, `allow_overrides` | (none) | read by the web layer, not the core reader |
 
 Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env → project `sync.remote` → user-global `sync.remote` → `~/.config/harnery/sync.json`.
 

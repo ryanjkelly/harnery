@@ -96,7 +96,7 @@ That is the correct state for a vendor CLI you cannot currently run.
 
 ## Product vs toolkit: where new code goes
 
-Harnery's public surface has two tiers (see [ADR 0010](docs/src/content/docs/decisions/0010-surface-tiers.mdx)): the **product tier** (`.`, `./commander`, `./core/*` — the coordination layer) and the **toolkit tier** (`./lib/*` — supporting utilities for embedding hosts). Two things to know before adding an export:
+Harnery's public surface has two tiers (see [ADR 0010](docs/src/content/docs/decisions/0010-surface-tiers.mdx)): the **product tier** (`.`, `./commander`, `./core/*`: the coordination layer) and the **toolkit tier** (`./lib/*`: supporting utilities for embedding hosts). Two things to know before adding an export:
 
 - A `./lib/*` export must never import `src/core/`, directly or transitively. CI enforces this (`bun run check:layering`); if your module needs the core, it belongs under `./core/*` instead.
 - New toolkit exports need demonstrated reuse: harnery's own commands use it, or more than one embedding host wants it. Utilities that serve a single host belong in that host's CLI, not here.

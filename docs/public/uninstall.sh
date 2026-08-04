@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harnery uninstaller — remove the `harn` CLI from your machine.
+# harnery uninstaller: remove the `harn` CLI from your machine.
 #
 #   curl -fsSL https://harnery.com/uninstall.sh | bash
 #
@@ -23,7 +23,7 @@ PKG="harnery"
 
 show_help() {
   cat <<'EOF'
-harnery uninstaller — remove the `harn` CLI.
+harnery uninstaller: remove the `harn` CLI.
 
   curl -fsSL https://harnery.com/uninstall.sh | bash
 

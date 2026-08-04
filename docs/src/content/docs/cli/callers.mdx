@@ -10,7 +10,7 @@ harn callers [options] <symbol>
 ```
 
 Finds every reference to a symbol across the codebase and classifies each match
-as a `call`, `import`, `type`, `decl`, or `ref` — a fast "who uses this?" sweep
+as a `call`, `import`, `type`, `decl`, or `ref`: a fast "who uses this?" sweep
 before a rename or removal. It is a heuristic, text-based whole-word search
 with post-filtering, not full type analysis: by default it drops the
 declaration line and single-line comments so the list is just the usages that
@@ -58,7 +58,7 @@ truncated, elapsed_ms }`, where each caller is `{ repo, file, line, kind, text }
 
 ## Notes
 
-The symbol must be a valid identifier — the command rejects anything else. Being
+The symbol must be a valid identifier; the command rejects anything else. Being
 text-based, it can't exclude matches inside multi-line string literals or
 block-comment interiors, so treat the output as a strong lead, not a proof.
 Multi-line comment continuation lines (starting with ` * `) are always dropped.
