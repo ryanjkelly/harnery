@@ -5,6 +5,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
 import { emitStopBlock } from "./output.ts";
 
 let outChunks: string[] = [];
@@ -71,6 +72,32 @@ describe("emitStopBlock", () => {
     expect(code).toBe(0);
     expect(outChunks.join("")).toBe("");
     expect(errChunks.join("")).toBe("");
+  });
+
+  test("cursor message leads with the remediation marker so the Stop verdict can see its own turn", () => {
+    capture();
+    emitStopBlock("cursor", verdict);
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+
+    const payload = JSON.parse(outChunks.join("").trim()) as { followup_message?: string };
+    const message = payload.followup_message ?? "";
+    // Leading, not trailing: prompt_text is clamped when recorded, so a marker
+    // at the end could be truncated off a long reason.
+    expect(message.startsWith(STOP_REMEDIATION_MARKER)).toBe(true);
+    // Both commands named: Cursor opens a NEW turn per followup, so a message
+    // that repairs the whole ritual ends the chain in one pass.
+    expect(message).toContain("agents set-task");
+    expect(message).toContain("agents status");
+  });
+
+  test("claude-code message carries no remediation marker (exit 2 continues the same turn)", () => {
+    capture();
+    emitStopBlock("claude-code", verdict);
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+
+    expect(errChunks.join("")).not.toContain(STOP_REMEDIATION_MARKER);
   });
 
   test("cursor falls back to a generic message when reason is absent", () => {

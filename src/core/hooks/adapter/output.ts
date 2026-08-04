@@ -18,6 +18,8 @@
  * fire-and-forget. Empty text → no-op (no JSON written).
  */
 
+import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
+import { resolveBinName } from "../../config.ts";
 import type { Adapter } from "../events/schema.ts";
 
 export type SystemEvent = "SessionStart" | "UserPromptSubmit" | "SubagentStart";
@@ -61,14 +63,25 @@ export function emitDeny(adapter: Adapter, reason: string): void {
 export function emitStopBlock(adapter: Adapter, verdict: { reason?: string; rule: string }): 0 | 2 {
   if (adapter === "codex") return 0;
 
-  const message = `${
-    verdict.reason ?? "End-of-turn coordination ritual incomplete."
-  }\n[agent-hook stop]: rule=${verdict.rule}`;
+  const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
   if (adapter === "cursor") {
+    // The marker leads the message so the Stop verdict can recognize the turn
+    // Cursor opens from it (`STOP_REMEDIATION_MARKER`), and so the operator can
+    // see in chat that the message came from Harnery rather than from them.
+    // Both commands are named because one message that repairs the whole ritual
+    // ends the chain in a single followup; the failing rule is context.
+    const bin = resolveBinName();
+    const message = [
+      `${STOP_REMEDIATION_MARKER} rule=${verdict.rule}]`,
+      reason,
+      `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${bin} agents status\` as your last tool call.`,
+    ].join("\n");
     process.stdout.write(`${JSON.stringify({ followup_message: message })}\n`);
     return 0;
   }
-  process.stderr.write(`${message}\n`);
+  // Claude Code continues the SAME turn on exit 2, so the single failing rule is
+  // both accurate and sufficient there. Left unchanged deliberately.
+  process.stderr.write(`${reason}\n[agent-hook stop]: rule=${verdict.rule}\n`);
   return 2;
 }
 

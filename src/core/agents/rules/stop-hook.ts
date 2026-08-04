@@ -15,6 +15,12 @@
  * Pure-prose-turn exemption: when zero `tool.pre_use` events fire in
  * the current turn, rules 1/3 and 3/3 do not apply. Rule 2/3 still applies
  * as a user-visible mobile cue.
+ *
+ * Remediation continuity: an adapter whose Stop channel re-prompts by
+ * submitting a new user message (Cursor's `followup_message`) opens a fresh
+ * turn to repair the previous one. Such a turn inherits the window of the turn
+ * it repairs, so ritual events accumulate instead of alternating. See
+ * `resolveTurnStartMs`.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -90,6 +96,62 @@ function ackSignalFor(adapter?: string): AckSignal {
 const RECENT_EVENT_WINDOW_LINES = 5_000;
 
 /**
+ * Machine marker that opens a Stop-remediation message. Written by
+ * `hooks/adapter/output.ts` on the adapters whose Stop channel is a new user
+ * message, and read back here off `user_prompt.submit.data.prompt_text` to
+ * recognize a turn Harnery itself opened.
+ *
+ * Leading position is deliberate: `prompt_text` is clamped when recorded, so a
+ * trailing marker could be truncated away on a long reason.
+ */
+export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
+
+/** How far back the remediation walk may travel. Adapters cap their own
+ * followup chains (Cursor's `loop_limit`), and each prompt can appear once per
+ * observing adapter, so this only guards a pathological stream. */
+const MAX_REMEDIATION_WALK_BACK = 16;
+
+function isStopRemediationPrompt(event: CanonicalEvent): boolean {
+  const text = event.data.prompt_text;
+  return typeof text === "string" && text.includes(STOP_REMEDIATION_MARKER);
+}
+
+/**
+ * Start of the window this Stop verdict judges.
+ *
+ * Normally the most recent `user_prompt.submit`. The exception is the
+ * remediation chain: Cursor does not continue a turn on Stop, it auto-submits
+ * our message as a new user turn (`followup_message`). Scoping the verdict to
+ * that new turn alone makes the ritual unsatisfiable in one pass, because
+ * remediation itself runs a tool, so the repair turn needs every rule again
+ * while the signal from the previous turn sits just outside the window. Running
+ * `set-task` then clears rule 3/3 and fails rule 1/3, running `status` clears
+ * 1/3 and fails 3/3, and the pair alternates until the adapter's loop cap.
+ *
+ * Anchoring the window at the last prompt Harnery did not author makes progress
+ * monotonic: each repair adds a signal and none are lost, so the chain ends.
+ * A genuine human prompt always anchors a fresh window, so this cannot be used
+ * to inherit ritual credit across real turns.
+ */
+function resolveTurnStartMs(ownerEvents: CanonicalEvent[], fallbackMs: number): number {
+  const prompts = ownerEvents.filter((e) => e.event_type === "user_prompt.submit");
+  if (prompts.length === 0) return fallbackMs;
+
+  let index = prompts.length - 1;
+  let hops = 0;
+  while (index > 0 && hops < MAX_REMEDIATION_WALK_BACK) {
+    const prompt = prompts[index];
+    if (!prompt || !isStopRemediationPrompt(prompt)) break;
+    index -= 1;
+    hops += 1;
+  }
+
+  const anchor = prompts[index];
+  const parsed = anchor ? Date.parse(anchor.ts) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : fallbackMs;
+}
+
+/**
  * Evaluate the Stop-hook verdict. Returns the first failing rule (or allow
  * when all three pass). Soft-fails open when the event stream isn't
  * readable, fail-open posture on a verdict failure.
@@ -151,18 +213,20 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   }
 
   // Turn window: from the most recent user_prompt.submit (this owner) up to
-  // either the explicit now_ms or the last event we see. Fall back to a
+  // either the explicit now_ms or the last event we see, walking back over any
+  // Harnery-authored Stop-remediation prompts so a repair turn is judged
+  // together with the turn it repairs (see `resolveTurnStartMs`). Fall back to a
   // 5-minute window when no user_prompt.submit is in scope (fresh wiring,
   // out-of-window prompt, etc.) so a stale stream doesn't silently pass.
   const nowMs = req.now_ms ?? Date.now();
-  const lastUserPrompt = [...ownerEvents]
-    .reverse()
-    .find((e) => e.event_type === "user_prompt.submit");
-  const startMs = lastUserPrompt ? Date.parse(lastUserPrompt.ts) : nowMs - 5 * 60 * 1000;
+  const startMs = req.turn_window
+    ? req.turn_window.start_ms
+    : resolveTurnStartMs(ownerEvents, nowMs - 5 * 60 * 1000);
+  const endMs = req.turn_window ? req.turn_window.end_ms : nowMs;
 
   const inTurn = ownerEvents.filter((e) => {
     const t = Date.parse(e.ts);
-    return Number.isFinite(t) && t >= startMs && t <= nowMs;
+    return Number.isFinite(t) && t >= startMs && t <= endMs;
   });
 
   const toolPreUseInTurn = inTurn.some((e) => e.event_type === "tool.pre_use");

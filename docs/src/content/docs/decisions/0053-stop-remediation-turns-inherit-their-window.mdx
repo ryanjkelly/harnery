@@ -1,0 +1,86 @@
+---
+title: "0053: Stop remediation turns inherit the window they repair"
+description: "ADR: when an adapter answers a Stop block by submitting a new user turn, the end-of-turn verdict judges that turn together with the turn it repairs, so ritual signals accumulate instead of alternating."
+---
+
+**Status:** accepted (2026-08-04) · **Scope:** product tier (`core/agents`, hooks)
+
+## Context
+
+The end-of-turn check asks an agent for two signals on any turn that used a
+tool: a `state.status_checked` event and a `state.task_set` event. Both are
+scoped to the current turn, which begins at the most recent
+`user_prompt.submit`.
+
+Adapters answer a blocked Stop in different ways. Claude Code continues the same
+turn on exit 2, so the turn boundary does not move and naming the one failing
+rule is both accurate and sufficient. Cursor ignores Stop exit codes and
+re-prompts only by auto-submitting a `followup_message` as the next user
+message. That opens a new turn.
+
+Those two facts interact badly. Repairing the ritual requires running a command,
+which emits `tool.pre_use`, so the repair turn is itself a tool turn and needs
+both signals again. The signal from the previous turn now sits outside the
+window. An agent that runs `agents set-task` clears rule 3/3 and fails rule 1/3.
+An agent that then runs `agents status` clears rule 1/3 and fails rule 3/3. The
+pair alternates until the adapter's followup cap.
+
+This was observed live rather than reasoned about. One session produced three
+followups and roughly thirty seconds of housekeeping after a finished answer,
+with verdicts alternating 3/3, 1/3, 3/3 before a turn that ran both commands
+passed. Progress was not slow, it was absent: each repair satisfied one rule by
+abandoning the other.
+
+Better wording alone does not fix this. A message naming both commands still
+depends on the model running both, and the underlying window arithmetic stays
+wrong.
+
+## Decision
+
+A turn opened by Harnery's own Stop message inherits the window of the turn it
+repairs.
+
+`emitStopBlock` writes a machine marker at the head of the message it hands to a
+new-user-message channel. `evaluateStopHook` reads that marker back off
+`user_prompt.submit.data.prompt_text` and walks the window anchor back over any
+consecutive Harnery-authored prompts, stopping at the last prompt a human wrote.
+Ritual signals then accumulate across the chain, so every repair adds a signal
+and none are lost. Progress is monotonic and the chain terminates.
+
+The marker leads the message rather than trailing it, because `prompt_text` is
+clamped when recorded and a trailing marker could be truncated off a long
+reason. It also tells the operator in the chat log that the message came from
+Harnery rather than from them.
+
+The Cursor followup additionally names both commands, with the failing rule kept
+as context. That is an optimization on top of the window fix, not the fix: it
+reduces the common case to a single followup, while the window guarantees
+termination even when the model runs only one command.
+
+Claude Code is unchanged. Its exit-2 continuation never opens a new turn, so its
+message carries no marker and its single-rule text stays correct. Codex remains
+observe-only ([ADR 0051](./0051-codex-stop-checks-are-observe-only)).
+
+## Consequences
+
+A real human prompt always anchors a fresh window, so ritual credit cannot be
+inherited across genuine turns and the check cannot be gamed by provoking a
+followup. The walk-back is bounded, since adapters cap their own followup chains
+and a pathological stream stops the walk after a fixed number of hops.
+
+Enforcement is preserved on every adapter that had it. The alternative under
+consideration was making Cursor observe-only the way ADR 0051 did for Codex,
+which would have traded away a working enforcement channel to buy chat hygiene.
+Fixing the window makes that trade unnecessary.
+
+One property is slightly weaker. When the status box was shown in the repaired
+turn and the repair turn ends with a different command, the last output on screen
+is not the box. The combined followup wording asks for status last, which keeps
+the common case ordered correctly.
+
+Unit coverage now includes the cross-turn cases, which no test previously
+exercised: a remediation followup that supplies the missing half passes, a chain
+of followups anchors on the last human prompt, and a second human prompt with no
+ritual still blocks. The remediation test also asserts the pre-fix behavior by
+pinning the window to the repair turn alone, so the alternation cannot return
+unnoticed.

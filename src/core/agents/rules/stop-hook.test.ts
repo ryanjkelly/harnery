@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateStopHook } from "./stop-hook.ts";
+import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "./stop-hook.ts";
 
 let root: string;
 
@@ -268,5 +268,177 @@ describe("evaluateStopHook", () => {
     });
     expect(v.allow).toBe(false);
     expect(v.rule).toBe("stop-hook.rule_2_3");
+  });
+
+  // Cross-turn remediation. Cursor answers a Stop block by auto-submitting our
+  // message as a NEW user turn, so these cases cover the window that spans the
+  // repair turn and the turn it repairs. Judged per-turn, the pair below
+  // alternates rule_3_3 / rule_1_3 forever: the repair runs a tool, so the new
+  // turn needs both signals while the earlier one sits outside the window.
+  const remediationPrompt = (rule: string) =>
+    `${STOP_REMEDIATION_MARKER} rule=${rule}]\nEnd-of-turn rule: repair the ritual.`;
+
+  test("cursor remediation followup inherits the window of the turn it repairs", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "e", session_id: "e", adapter: "cursor", source: "test" };
+    writeEvents([
+      // Human turn: ran tools and status, forgot set-task → blocked rule 3/3.
+      {
+        event_id: "1",
+        event_type: "user_prompt.submit",
+        ts: ts(-30000),
+        ...base,
+        data: { prompt_text: "anything else before we wrap?" },
+      },
+      { event_id: "2", event_type: "tool.pre_use", ts: ts(-25000), ...base, data: {} },
+      { event_id: "3", event_type: "state.status_checked", ts: ts(-24000), ...base, data: {} },
+      {
+        event_id: "4",
+        event_type: "turn.stop",
+        ts: ts(-20000),
+        ...base,
+        data: { status_box_present: false },
+      },
+      // Repair turn, opened by our own followup: supplies only the missing half.
+      {
+        event_id: "5",
+        event_type: "user_prompt.submit",
+        ts: ts(-15000),
+        ...base,
+        data: { prompt_text: remediationPrompt("stop-hook.rule_3_3") },
+      },
+      { event_id: "6", event_type: "tool.pre_use", ts: ts(-12000), ...base, data: {} },
+      { event_id: "7", event_type: "state.task_set", ts: ts(-11000), ...base, data: {} },
+      {
+        event_id: "8",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        ...base,
+        data: { status_box_present: false },
+      },
+    ]);
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "e",
+      adapter: "cursor",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("stop-hook.pass");
+
+    // The same stream judged with the window pinned to the repair turn alone is
+    // the pre-fix behavior, and it blocks: the agent supplied task_set, so the
+    // verdict now demands status_checked, which it already gave one turn ago.
+    // That is the alternation the remediation walk-back removes.
+    const perTurn = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "e",
+      adapter: "cursor",
+      now_ms: now,
+      turn_window: { start_ms: now - 15000, end_ms: now },
+    });
+    expect(perTurn.allow).toBe(false);
+    expect(perTurn.rule).toBe("stop-hook.rule_1_3");
+  });
+
+  test("a chain of remediation followups anchors on the last human prompt", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "f", session_id: "f", adapter: "cursor", source: "test" };
+    writeEvents([
+      {
+        event_id: "1",
+        event_type: "user_prompt.submit",
+        ts: ts(-40000),
+        ...base,
+        data: { prompt_text: "human turn" },
+      },
+      { event_id: "2", event_type: "tool.pre_use", ts: ts(-38000), ...base, data: {} },
+      { event_id: "3", event_type: "state.status_checked", ts: ts(-37000), ...base, data: {} },
+      {
+        event_id: "4",
+        event_type: "user_prompt.submit",
+        ts: ts(-30000),
+        ...base,
+        data: { prompt_text: remediationPrompt("stop-hook.rule_3_3") },
+      },
+      { event_id: "5", event_type: "tool.pre_use", ts: ts(-28000), ...base, data: {} },
+      // Repair ran the wrong command (status again), so a second followup fired.
+      { event_id: "6", event_type: "state.status_checked", ts: ts(-27000), ...base, data: {} },
+      {
+        event_id: "7",
+        event_type: "user_prompt.submit",
+        ts: ts(-20000),
+        ...base,
+        data: { prompt_text: remediationPrompt("stop-hook.rule_3_3") },
+      },
+      { event_id: "8", event_type: "tool.pre_use", ts: ts(-18000), ...base, data: {} },
+      { event_id: "9", event_type: "state.task_set", ts: ts(-17000), ...base, data: {} },
+      {
+        event_id: "10",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        ...base,
+        data: { status_box_present: false },
+      },
+    ]);
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "f",
+      adapter: "cursor",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("stop-hook.pass");
+  });
+
+  test("a real human prompt does NOT inherit ritual credit from the previous turn", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "g", session_id: "g", adapter: "cursor", source: "test" };
+    writeEvents([
+      {
+        event_id: "1",
+        event_type: "user_prompt.submit",
+        ts: ts(-30000),
+        ...base,
+        data: { prompt_text: "first human turn" },
+      },
+      { event_id: "2", event_type: "tool.pre_use", ts: ts(-28000), ...base, data: {} },
+      { event_id: "3", event_type: "state.status_checked", ts: ts(-27000), ...base, data: {} },
+      { event_id: "4", event_type: "state.task_set", ts: ts(-26000), ...base, data: {} },
+      {
+        event_id: "5",
+        event_type: "turn.stop",
+        ts: ts(-25000),
+        ...base,
+        data: { status_box_present: false },
+      },
+      // Second human turn: ritual not performed. Must still block.
+      {
+        event_id: "6",
+        event_type: "user_prompt.submit",
+        ts: ts(-15000),
+        ...base,
+        data: { prompt_text: "second human turn" },
+      },
+      { event_id: "7", event_type: "tool.pre_use", ts: ts(-12000), ...base, data: {} },
+      {
+        event_id: "8",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        ...base,
+        data: { status_box_present: false },
+      },
+    ]);
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "g",
+      adapter: "cursor",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(false);
+    expect(v.rule).toBe("stop-hook.rule_1_3");
   });
 });
