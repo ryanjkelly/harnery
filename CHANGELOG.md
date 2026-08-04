@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.31.6
+
+### Patch Changes
+
+- 9ce807e: Normalize Cursor Glass conversation ids before emitting coordination events and
+  resolve legacy dual heartbeats deterministically in favor of the canonical id.
+
 ## 0.31.5
 
 ### Patch Changes
