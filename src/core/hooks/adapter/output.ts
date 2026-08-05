@@ -19,7 +19,7 @@
  */
 
 import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
-import { resolveBinName } from "../../config.ts";
+import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 import type { Adapter } from "../events/schema.ts";
 
 export type SystemEvent = "SessionStart" | "UserPromptSubmit" | "SubagentStart";
@@ -60,7 +60,11 @@ export function emitDeny(adapter: Adapter, reason: string): void {
  *   We exit 0 so Cursor treats the run as a success and honors the output.
  *   (Confirmed against cursor.com/docs/agent/hooks.)
  */
-export function emitStopBlock(adapter: Adapter, verdict: { reason?: string; rule: string }): 0 | 2 {
+export function emitStopBlock(
+  adapter: Adapter,
+  verdict: { reason?: string; rule: string },
+  coordRoot?: string,
+): 0 | 2 {
   if (adapter === "codex") return 0;
 
   const reason = verdict.reason ?? "End-of-turn coordination ritual incomplete.";
@@ -70,11 +74,12 @@ export function emitStopBlock(adapter: Adapter, verdict: { reason?: string; rule
     // see in chat that the message came from Harnery rather than from them.
     // Both commands are named because one message that repairs the whole ritual
     // ends the chain in a single followup; the failing rule is context.
-    const bin = resolveBinName();
+    const bin = resolveBinName(coordRoot);
+    const statusCommand = endOfTurnStatusCommand(coordRoot);
     const message = [
       `${STOP_REMEDIATION_MARKER} rule=${verdict.rule}]`,
       reason,
-      `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${bin} agents status --final\` as your last tool call.`,
+      `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${statusCommand}\` as your last tool call.`,
     ].join("\n");
     process.stdout.write(`${JSON.stringify({ followup_message: message })}\n`);
     return 0;

@@ -25,7 +25,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { resolveBinName } from "../../config.ts";
+import {
+  agentsRequireGitFinalization,
+  endOfTurnStatusCommand,
+  resolveBinName,
+} from "../../config.ts";
 
 export type { VerdictResult } from "./verdict.ts";
 
@@ -255,7 +259,11 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   });
 
   const toolPreUseInTurn = inTurn.some((e) => e.event_type === "tool.pre_use");
-  const statusChecked = inTurn.some((e) => e.event_type === "state.status_checked");
+  const statusEvents = inTurn.filter((e) => e.event_type === "state.status_checked");
+  const statusChecked = statusEvents.length > 0;
+  const requiredStatusChecked = agentsRequireGitFinalization(coordRoot)
+    ? statusEvents.some((e) => e.data.git_finalization_checked === true)
+    : statusChecked;
   const taskSet = inTurn.some((e) => e.event_type === "state.task_set");
 
   // Rule 2/3: status_box_present on the most recent turn.stop for this owner.
@@ -270,8 +278,14 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   // on Claude Code / Codex it's the transcript-scanned `status_box_present`.
   // The matching block helper carries the right "how to fix" message.
   const ackSignal = ackSignalFor(req.adapter);
-  const ackPresent = ackSignal === "status_checked" ? statusChecked : boxPresent;
-  const ackBlock = ackSignal === "status_checked" ? rule13Block : rule23Block;
+  const ackPresent =
+    ackSignal === "status_checked"
+      ? toolPreUseInTurn
+        ? requiredStatusChecked
+        : statusChecked
+      : boxPresent;
+  const ackBlock =
+    ackSignal === "status_checked" ? () => rule13Block(coordRoot) : () => rule23Block(coordRoot);
 
   // Pure-prose-turn exemption: only the ack signal applies. Parity
   // across adapters: CC requires the box; Cursor requires status_checked.
@@ -287,7 +301,7 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
     };
   }
 
-  if (!statusChecked) return rule13Block();
+  if (!requiredStatusChecked) return rule13Block(coordRoot);
   // On Cursor `ackPresent === statusChecked` (already true here), so this is a
   // no-op and rule 2/3 is not enforced; on CC/Codex it's the box-paste check.
   if (!ackPresent) return ackBlock();
@@ -300,21 +314,24 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   };
 }
 
-function rule13Block(): VerdictResult {
+function rule13Block(coordRoot?: string): VerdictResult {
+  const missingEvidence = agentsRequireGitFinalization(coordRoot)
+    ? "no Git-finalized state.status_checked event found in this turn"
+    : "no state.status_checked event found in this turn";
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_1_3",
-    reason: `End-of-turn rule (1/3): no state.status_checked event found in this turn; run \`${resolveBinName()} agents status --final\` as your last tool call.`,
+    reason: `End-of-turn rule (1/3): ${missingEvidence}; run \`${endOfTurnStatusCommand(coordRoot)}\` as your last tool call.`,
   };
 }
 
-function rule23Block(): VerdictResult {
+function rule23Block(coordRoot?: string): VerdictResult {
   return {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_2_3",
-    reason: `End-of-turn rule (2/3): turn.stop did not see the agent-status box in your reply text. Paste the \`${resolveBinName()} agents status --final\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
+    reason: `End-of-turn rule (2/3): turn.stop did not see the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
   };
 }
 

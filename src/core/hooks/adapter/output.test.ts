@@ -5,6 +5,9 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
 import { emitStopBlock } from "./output.ts";
 
@@ -89,6 +92,35 @@ describe("emitStopBlock", () => {
     // that repairs the whole ritual ends the chain in one pass.
     expect(message).toContain("agents set-task");
     expect(message).toContain("agents status");
+  });
+
+  test("cursor remediation adds --final only for an opted-in host", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-stop-output-"));
+    mkdirSync(join(root, ".harnery"), { recursive: true });
+    try {
+      capture();
+      writeFileSync(
+        join(root, ".harnery", "config.jsonc"),
+        `{ "binName": "acme", "agents": { "requireGitFinalization": false } }`,
+      );
+      emitStopBlock("cursor", verdict, root);
+      const ordinary = JSON.parse(outChunks.join("").trim()) as { followup_message?: string };
+      expect(ordinary.followup_message).toContain("acme agents status");
+      expect(ordinary.followup_message).not.toContain("status --final");
+
+      capture();
+      writeFileSync(
+        join(root, ".harnery", "config.jsonc"),
+        `{ "binName": "acme", "agents": { "requireGitFinalization": true } }`,
+      );
+      emitStopBlock("cursor", verdict, root);
+      const guarded = JSON.parse(outChunks.join("").trim()) as { followup_message?: string };
+      expect(guarded.followup_message).toContain("acme agents status --final");
+    } finally {
+      process.stdout.write = realOut;
+      process.stderr.write = realErr;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("claude-code message carries no remediation marker (exit 2 continues the same turn)", () => {

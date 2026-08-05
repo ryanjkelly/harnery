@@ -7,7 +7,7 @@
  *   2. `<project-root>/.harnery/config.jsonc` — project override (authoritative)
  *
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
- * `hooksSetupHint`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
+ * `hooksSetupHint`, `agents`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `artifacts` (working-file retention),
  * `backup` (restic repo/password/prune policy), and `sync` (rclone
  * remote/prefix) sections. The `files` deny/override section
@@ -41,6 +41,12 @@ interface HarneryConfig {
    * declares it here (e.g. "scripts/setup-hooks.sh"). Unset → a generic hint.
    */
   hooksSetupHint?: string;
+  /**
+   * Agent-ritual policy owned by the host project. Git finalization is opt-in:
+   * standalone Harnery and embedding hosts keep the ordinary status ritual
+   * unless the project deliberately requires the guarded check.
+   */
+  agents?: { requireGitFinalization?: boolean };
   /**
    * Managed-tool provisioning consent. `{ ripgrep: { autoInstall: true } }`
    * lets `grep` download the pinned, checksum-verified ripgrep into the
@@ -157,6 +163,16 @@ function statMtime(p: string): number {
   }
 }
 
+/** Cache signature, or null when the file can't be stat'd (missing). */
+function statSignature(p: string): string | null {
+  try {
+    const stat = statSync(p);
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Parse one JSONC config file to an object; missing/unparseable → `{}`. */
 function parseConfigFile(p: string): HarneryConfig {
   try {
@@ -186,8 +202,13 @@ function mergeConfig(base: HarneryConfig, override: HarneryConfig): HarneryConfi
   return out as HarneryConfig;
 }
 
-// mtime-keyed per-process cache (both layers): a stat is cheap, a parse on every render isn't.
-let cache: { root: string; projMtime: number; userMtime: number; cfg: HarneryConfig } | null = null;
+// Stat-signature-keyed per-process cache (both layers): a stat is cheap, a parse on every render isn't.
+let cache: {
+  root: string;
+  projSignature: string | null;
+  userSignature: string | null;
+  cfg: HarneryConfig;
+} | null = null;
 
 /**
  * The effective config for `root`: user-global (`~/.config/harnery/config.jsonc`)
@@ -197,20 +218,20 @@ let cache: { root: string; projMtime: number; userMtime: number; cfg: HarneryCon
 function readConfig(root: string): HarneryConfig {
   const projPath = join(root, ".harnery", "config.jsonc");
   const userPath = userConfigPath();
-  const projMtime = statMtime(projPath);
-  const userMtime = statMtime(userPath);
+  const projSignature = statSignature(projPath);
+  const userSignature = statSignature(userPath);
   if (
     cache &&
     cache.root === root &&
-    cache.projMtime === projMtime &&
-    cache.userMtime === userMtime
+    cache.projSignature === projSignature &&
+    cache.userSignature === userSignature
   ) {
     return cache.cfg;
   }
-  const user = userMtime === -1 ? {} : parseConfigFile(userPath);
-  const project = projMtime === -1 ? {} : parseConfigFile(projPath);
+  const user = userSignature === null ? {} : parseConfigFile(userPath);
+  const project = projSignature === null ? {} : parseConfigFile(projPath);
   const cfg = mergeConfig(user, project);
-  cache = { root, projMtime, userMtime, cfg };
+  cache = { root, projSignature, userSignature, cfg };
   return cfg;
 }
 
@@ -268,6 +289,32 @@ export function resolveHooksSetupHint(coordRoot?: string | null): string | null 
   if (!root) return null;
   const hint = readConfig(root).hooksSetupHint;
   return typeof hint === "string" && hint.trim() ? hint.trim() : null;
+}
+
+/**
+ * Whether the host requires the guarded Git check at the end of tool-using
+ * turns. Default false: Harnery exposes `agents status --final` as a capability
+ * but does not impose a commit-and-push policy on embedding projects.
+ *
+ * `.harnery/config.jsonc`:
+ * `{ "agents": { "requireGitFinalization": true } }`
+ *
+ * `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0` overrides per process.
+ */
+export function agentsRequireGitFinalization(coordRoot?: string | null): boolean {
+  const env = coordEnv("AGENTS_REQUIRE_GIT_FINALIZATION");
+  if (env === "1") return true;
+  if (env === "0") return false;
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return false;
+  return readConfig(root).agents?.requireGitFinalization === true;
+}
+
+/** The status command automatic prompts and Stop remediation should request. */
+export function endOfTurnStatusCommand(coordRoot?: string | null): string {
+  const root = coordRoot ?? findCoordRoot();
+  const suffix = agentsRequireGitFinalization(root) ? " --final" : "";
+  return `${resolveBinName(root)} agents status${suffix}`;
 }
 
 /**

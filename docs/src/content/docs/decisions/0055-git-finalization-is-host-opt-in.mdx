@@ -1,0 +1,64 @@
+---
+title: "0055: Git finalization is host opt-in"
+description: "ADR: Harnery exposes the guarded status check, but hosts must opt into automatic end-of-turn enforcement."
+---
+
+**Status:** accepted (2026-08-05) · **Scope:** product tier (`core/config`, `core/agents`, `core/hooks`)
+
+## Context
+
+ADR 0054 added `agents status --final` and changed every adapter's automatic
+end-of-turn path to request it. The Git check itself is portable, but the policy
+is not universal. Requiring a commit and push after every tool-using turn is a
+host workflow choice. Harnery cannot assume that every consumer permits agents
+to commit autonomously, uses a remote, or treats a turn as a shipping boundary.
+
+The first implementation also recorded every successful status call as the
+same `state.status_checked` event. On Claude Code and Cursor, plain
+`agents status` could therefore satisfy the Stop rule even when the prompt
+requested `--final`. The message was stricter than the evidence.
+
+## Decision
+
+Harnery keeps `agents status --final` as an explicit, portable capability.
+Automatic enforcement is controlled by
+`agents.requireGitFinalization` in `.harnery/config.jsonc` and defaults to
+`false`. The `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0` environment variable
+provides a per-process override.
+
+When the setting is false, Codex prompts and Claude/Cursor Stop remediation
+request plain `agents status`. When it is true, they request
+`agents status --final`. A successful guarded call records
+`git_finalization_checked: true` on `state.status_checked`. An opted-in Stop
+verdict requires that evidence on tool-using turns, so a plain status call no
+longer bypasses the policy.
+
+The setting changes automatic ritual enforcement only. A user can still run
+`agents status --final` manually in a default Harnery project, and the command
+performs the same ownership-aware Git validation.
+
+## Alternatives considered
+
+**Keep the policy on for every Harnery project.** Rejected because commit
+authority and turn boundaries belong to the host. A coordination package should
+not silently choose a shipping policy for every consumer.
+
+**Remove the guarded command from Harnery and implement it only in one host.**
+Rejected because the ownership ledger, adapter hooks, and submodule-aware Git
+logic are portable. The capability belongs in Harnery even though activation
+belongs to the host.
+
+**Trust the prompt without changing event evidence.** Rejected because an agent
+could run the ordinary status command and satisfy Stop enforcement without
+checking Git.
+
+## Consequences
+
+Existing Harnery consumers return to ordinary end-of-turn status behavior
+unless they opt in. Hosts that require commit-and-push completion add one
+committed config field. Their automatic prompts, remediation messages, and Stop
+verdicts then agree on the guarded command and its evidence.
+
+The option name `--final` refers to the final status checkpoint of a turn, not
+the end of a session. That distinction must remain explicit in command help and
+documentation because the shorter name is open to both readings.

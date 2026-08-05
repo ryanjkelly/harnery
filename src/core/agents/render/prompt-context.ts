@@ -42,7 +42,7 @@ import {
 import { join } from "node:path";
 
 import { coordEnv } from "../../../lib/env.ts";
-import { resolveBinName } from "../../config.ts";
+import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
 import { formatPendingCouncils } from "./session-context.ts";
 
@@ -135,10 +135,10 @@ function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): 
   const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
   if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
 
-  const bin = resolveBinName(coordRoot);
+  const statusCommand = endOfTurnStatusCommand(coordRoot);
   return (
     "Codex status footer: complete the user's request first. " +
-    `Then run \`${bin} agents status --final\` as your final shell call and append its stdout verbatim in a fenced code block at the bottom of the same substantive reply. ` +
+    `Then run \`${statusCommand}\` as your final shell call and append its stdout verbatim in a fenced code block at the bottom of the same substantive reply. ` +
     "If it fails, finish the owned Git work and rerun it before replying. " +
     "Keep the answer intact. If the footer is missed, do not retry or replace the reply; the Stop hook is observe-only."
   );

@@ -208,6 +208,9 @@ harn agents list
 harn agents set-task "refactoring the ingest retry loop"
 
 # End-of-turn status box
+harn agents status
+
+# Optional guarded form: require owned Git work to be committed and pushed
 harn agents status --final
 
 # Dig into a peer's current state, then its full history
@@ -227,10 +230,23 @@ harn agents health --since 24h
 
 ## The status box
 
-`harn agents status --final` first verifies that the paths held by this session
-are committed and that the repositories involved are pushed. It follows held
-paths into submodules and checks the enclosing gitlink too. Active edits held by
-another session do not block the check.
+`harn agents status` prints the box without inspecting Git. The guarded
+`harn agents status --final` form first verifies that the paths held by this
+session are committed and that the repositories involved are pushed. It follows
+held paths into submodules and checks the enclosing gitlink too. Active edits
+held by another session do not block the check.
+
+Harnery does not impose the guarded form on every project. A host opts into
+automatic prompt and Stop enforcement with
+`{ "agents": { "requireGitFinalization": true } }` in
+`.harnery/config.jsonc`; the default is `false`. The command-line flag remains
+available as a manual check either way.
+
+The flag calls this the "final" status because it is the final status checkpoint
+for a turn, as opposed to a mid-turn coordination glance. It does not end the
+agent session. The name is compact, but "final" can also suggest session
+termination; the config and docs therefore describe it explicitly as a
+turn-ending Git guard.
 
 The gitlink check compares the commit recorded in parent `HEAD`, the parent
 index, and the child repository's `HEAD`. It does not treat unrelated modified

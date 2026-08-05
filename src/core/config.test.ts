@@ -3,11 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  agentsRequireGitFinalization,
   artifactDefaultRetentionDays,
   backupConfig,
   coordFreshnessSeconds,
   DEFAULT_BIN_NAME,
   DEFAULT_FRESHNESS_SECS,
+  endOfTurnStatusCommand,
   pinnedBinName,
   resolveBinName,
   stripJsonComments,
@@ -108,6 +110,46 @@ describe("pinnedBinName", () => {
     roots.push(empty, noField);
     expect(pinnedBinName(empty)).toBeNull();
     expect(pinnedBinName(noField)).toBeNull();
+  });
+});
+
+describe("agentsRequireGitFinalization", () => {
+  const roots: string[] = [];
+  const saved = process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION;
+
+  beforeEach(() => {
+    delete process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION;
+  });
+  afterEach(() => {
+    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    if (saved === undefined) delete process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION;
+    else process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION = saved;
+  });
+
+  test("defaults off and keeps the ordinary status command", () => {
+    const root = makeRoot(`{ "binName": "acme" }`);
+    roots.push(root);
+    expect(agentsRequireGitFinalization(root)).toBe(false);
+    expect(endOfTurnStatusCommand(root)).toBe("acme agents status");
+  });
+
+  test("project config opts into the guarded status command", () => {
+    const root = makeRoot(`{ "binName": "acme", "agents": { "requireGitFinalization": true } }`);
+    roots.push(root);
+    expect(agentsRequireGitFinalization(root)).toBe(true);
+    expect(endOfTurnStatusCommand(root)).toBe("acme agents status --final");
+  });
+
+  test("environment override wins in both directions", () => {
+    const enabled = makeRoot(`{ "agents": { "requireGitFinalization": true } }`);
+    const disabled = makeRoot(`{}`);
+    roots.push(enabled, disabled);
+
+    process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION = "0";
+    expect(agentsRequireGitFinalization(enabled)).toBe(false);
+
+    process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION = "1";
+    expect(agentsRequireGitFinalization(disabled)).toBe(true);
   });
 });
 

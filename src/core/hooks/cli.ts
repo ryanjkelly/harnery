@@ -897,7 +897,7 @@ async function main(): Promise<number> {
       // re-prompts only via a `followup_message` it auto-submits. emitStopBlock
       // writes the right shape and returns the exit code to use.
       const { emitStopBlock } = await import("./adapter/output.ts");
-      return emitStopBlock(adapter, verdict);
+      return emitStopBlock(adapter, verdict, coordRoot);
     }
   }
 

@@ -229,7 +229,7 @@ export function registerAgentsCommand(
     .option("--json", "JSON output instead of the box")
     .option(
       "--final",
-      "Issue the status box only when this session's held paths are committed and their repositories are pushed",
+      "Treat this as the turn's final status: issue the box only when this session's held paths are committed and their repositories are pushed",
     )
     .option(
       "--session-id <id>",
@@ -1704,6 +1704,7 @@ function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }
     adapter: normalizeAdapter(hb.platform),
     data: {
       format: opts.json ? "json" : "box",
+      git_finalization_checked: opts.final === true,
       agent_count: 0, // computed below, not yet available here; Phase 5 verdict reads owner-scope only
       included_self: true,
     },

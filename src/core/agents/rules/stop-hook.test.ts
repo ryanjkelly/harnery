@@ -9,6 +9,11 @@ let root: string;
 beforeEach(() => {
   root = join(tmpdir(), `agent-coord-stop-test-${process.pid}-${Date.now()}`);
   mkdirSync(join(root, ".harnery"), { recursive: true });
+  writeFileSync(
+    join(root, ".harnery", "config.jsonc"),
+    `{ "agents": { "requireGitFinalization": false } }`,
+    "utf8",
+  );
 });
 
 afterEach(() => {
@@ -166,6 +171,57 @@ describe("evaluateStopHook", () => {
     });
     expect(v.allow).toBe(true);
     expect(v.rule).toBe("stop-hook.pass");
+  });
+
+  test("opted-in host rejects a plain status event and accepts Git-finalization evidence", () => {
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      `{ "agents": { "requireGitFinalization": true } }`,
+      "utf8",
+    );
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "c", session_id: "c", adapter: "cursor", source: "test" };
+    const events = (gitFinalizationChecked: boolean) => [
+      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
+      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
+      {
+        event_id: "3",
+        event_type: "state.status_checked",
+        ts: ts(-3000),
+        ...base,
+        data: { git_finalization_checked: gitFinalizationChecked },
+      },
+      { event_id: "4", event_type: "state.task_set", ts: ts(-2000), ...base, data: {} },
+      {
+        event_id: "5",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        ...base,
+        data: { status_box_present: false },
+      },
+    ];
+
+    writeEvents(events(false));
+    const plain = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "c",
+      adapter: "cursor",
+      now_ms: now,
+    });
+    expect(plain.allow).toBe(false);
+    expect(plain.rule).toBe("stop-hook.rule_1_3");
+    expect(plain.reason).toContain("agents status --final");
+
+    writeEvents(events(true));
+    const guarded = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "c",
+      adapter: "cursor",
+      now_ms: now,
+    });
+    expect(guarded.allow).toBe(true);
+    expect(guarded.rule).toBe("stop-hook.pass");
   });
 
   test("cursor tool-turn: missing task_set → block rule 3/3", () => {

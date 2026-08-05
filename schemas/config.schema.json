@@ -23,6 +23,18 @@
       "type": "string",
       "description": "Host-specific command that (re)installs the project's git hooks (e.g. 'scripts/setup-hooks.sh'). Surfaced verbatim in the SessionStart 'commit guard not wired' nudge. harnery doesn't own git-hook installation (each host wires its own pre-commit to invoke `agent-coord verdict`) and the path/command is host-specific, so the host declares it here. Unset -> a generic, host-agnostic hint."
     },
+    "agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Host-owned agent ritual policy. Harnery capabilities stay available when a policy is disabled; automatic prompts and Stop remediation follow these switches.",
+      "properties": {
+        "requireGitFinalization": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require `agents status --final` instead of plain `agents status` at the end of tool-using turns. The guarded call verifies that session-owned paths are committed and their repositories are pushed. Env override: HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0."
+        }
+      }
+    },
     "coord": {
       "type": "object",
       "additionalProperties": false,

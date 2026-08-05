@@ -14,6 +14,11 @@ beforeEach(() => {
   );
   activeDir = join(root, ".harnery", "active");
   mkdirSync(activeDir, { recursive: true });
+  writeFileSync(
+    join(root, ".harnery", "config.jsonc"),
+    `{ "agents": { "requireGitFinalization": false } }`,
+    "utf8",
+  );
   // Seed a self heartbeat with task set so the nudge stays quiet by default.
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   writeFileSync(
@@ -70,7 +75,26 @@ describe("renderPromptContext", () => {
       expect(out).toContain("bottom of the same substantive reply");
       expect(out).toContain("Keep the answer intact");
       expect(out).toContain("Stop hook is observe-only");
+      expect(out).not.toContain("status --final");
     }
+  });
+
+  test("Codex status footer requests the Git guard only when the host opts in", () => {
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      `{ "agents": { "requireGitFinalization": true } }`,
+      "utf8",
+    );
+
+    const out = renderPromptContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      statusFooterNudge: true,
+    });
+
+    expect(out).toContain("harn agents status --final");
   });
 
   test("Codex status footer skips subagents and workflow children", () => {
