@@ -33,6 +33,7 @@ interface GitResult {
 interface RepoWork {
   root: string;
   paths: Set<string>;
+  gitlinks: Set<string>;
 }
 
 export interface GitFinalizationResult {
@@ -137,9 +138,19 @@ function discoverRepo(coordRoot: string, heldPath: string): { root: string; path
   return { root: repoRoot, path: repoPath };
 }
 
-function addRepoPath(repos: Map<string, RepoWork>, root: string, path: string): void {
-  const work = repos.get(root) ?? { root, paths: new Set<string>() };
+function addRepoPath(
+  repos: Map<string, RepoWork>,
+  root: string,
+  path: string,
+  gitlink = false,
+): void {
+  const work = repos.get(root) ?? {
+    root,
+    paths: new Set<string>(),
+    gitlinks: new Set<string>(),
+  };
   work.paths.add(path);
+  if (gitlink) work.gitlinks.add(path);
   repos.set(root, work);
 }
 
@@ -151,7 +162,7 @@ function addSuperprojects(coordRoot: string, repos: Map<string, RepoWork>, leafR
     const parentRoot = resolve(result.stdout.trim());
     if (!pathInside(coordRoot, parentRoot) || parentRoot === childRoot) return;
     const gitlink = relative(parentRoot, childRoot).replaceAll("\\", "/");
-    addRepoPath(repos, parentRoot, gitlink);
+    addRepoPath(repos, parentRoot, gitlink, true);
     childRoot = parentRoot;
   }
 }
@@ -185,6 +196,17 @@ function repoSyncState(repoRoot: string): "synced" | "unpushed" | "unverifiable"
   return containing.stdout.trim().length > 0 ? "synced" : "unpushed";
 }
 
+/** Compare gitlink commits without treating dirty contents inside the child as a pointer change. */
+function gitlinkIsDirty(parentRoot: string, gitlink: string): boolean {
+  const head = git(["rev-parse", `HEAD:${gitlink}`], parentRoot);
+  const index = git(["ls-files", "--stage", "--", gitlink], parentRoot);
+  const child = git(["rev-parse", "HEAD"], join(parentRoot, gitlink));
+  if (head.status !== 0 || index.status !== 0 || child.status !== 0) return true;
+  const indexMatch = /^160000 ([0-9a-f]{40}) 0\t/.exec(index.stdout.trim());
+  if (!indexMatch) return true;
+  return head.stdout.trim() !== indexMatch[1] || child.stdout.trim() !== indexMatch[1];
+}
+
 /** Check that this session's held paths are committed and their repositories are pushed. */
 export function checkGitFinalization(
   coordRoot: string,
@@ -211,6 +233,13 @@ export function checkGitFinalization(
 
   for (const work of repos.values()) {
     for (const repoPath of work.paths) {
+      if (work.gitlinks.has(repoPath)) {
+        if (gitlinkIsDirty(work.root, repoPath)) {
+          const label = repoLabel(root, work.root);
+          dirtyPaths.add(label === "." ? repoPath : `${label}/${repoPath}`);
+        }
+        continue;
+      }
       const status = git(
         ["status", "--porcelain=v1", "--untracked-files=all", "--", repoPath],
         work.root,

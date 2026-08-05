@@ -161,4 +161,24 @@ describe("checkGitFinalization", () => {
 
     expect(checkGitFinalization(parent, ["child/owned.txt"]).ok).toBe(true);
   });
+
+  test("ignores foreign dirty contents after the parent gitlink is committed", () => {
+    const childRemote = join(temp, "child-remote.git");
+    const childSeed = join(temp, "child-seed");
+    const parent = join(temp, "parent");
+    initRepo(childRemote, true);
+    initRepo(childSeed);
+    writeFileSync(join(childSeed, "owned.txt"), "base\n");
+    commitAll(childSeed, "initial");
+    git(childSeed, "remote", "add", "origin", childRemote);
+    git(childSeed, "push", "-u", "origin", "HEAD:master");
+    initRepo(parent);
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", childRemote, "child");
+    commitAll(parent, "add child");
+    writeFileSync(join(parent, "child", "foreign-untracked.txt"), "peer work\n");
+
+    const result = checkGitFinalization(parent, ["child/owned.txt"]);
+    expect(result.ok).toBe(true);
+    expect(result.dirty_paths).toEqual([]);
+  });
 });

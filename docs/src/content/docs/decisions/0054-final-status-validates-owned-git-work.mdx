@@ -48,6 +48,12 @@ checker walks through every enclosing superproject and validates the gitlink as
 well. That catches the common half-finished state where the submodule commit is
 clean but the parent pointer is not committed.
 
+Git's ordinary parent status marks a submodule dirty when its working tree has
+modified or untracked files. That signal is too broad for a shared checkout. The
+gitlink check instead compares the commit in parent `HEAD`, the commit in the
+parent index, and the child repository's `HEAD`. Peer work inside the child does
+not block the session when those three pointers agree.
+
 Every repository reached through those paths must also be synchronized. A branch
 with an upstream fails when `@{upstream}..HEAD` contains commits. A detached
 submodule passes when at least one remote-tracking ref contains `HEAD`. A local
