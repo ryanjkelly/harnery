@@ -232,6 +232,10 @@ are committed and that the repositories involved are pushed. It follows held
 paths into submodules and checks the enclosing gitlink too. Active edits held by
 another session do not block the check.
 
+Committed paths stay in scope through the session's `claim.acquire` history.
+The commit hook can release a clean active claim without letting an unpushed
+commit disappear from the final check.
+
 On success, it prints the same fixed-width box as `harn agents status`, designed
 to paste straight into a reply so a human (and peers) can see your state at a
 glance:

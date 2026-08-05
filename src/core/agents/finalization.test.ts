@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkGitFinalization } from "./finalization.ts";
+import { checkGitFinalization, readSessionWriteClaims } from "./finalization.ts";
 
 let temp: string;
 
@@ -36,6 +36,40 @@ afterEach(() => {
 });
 
 describe("checkGitFinalization", () => {
+  test("keeps committed paths in scope through durable session claim history", () => {
+    const repo = join(temp, "repo");
+    initRepo(repo);
+    mkdirSync(join(repo, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(repo, ".harnery", "events.ndjson"),
+      [
+        JSON.stringify({
+          event_type: "session.start",
+          instance_id: "owner",
+          session_id: "session",
+          data: {},
+        }),
+        JSON.stringify({
+          event_type: "claim.acquire",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "owned.txt", mode: "write" },
+        }),
+        JSON.stringify({
+          event_type: "claim.release",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "owned.txt", reason: "commit" },
+        }),
+      ].join("\n"),
+    );
+
+    expect(readSessionWriteClaims(repo, "owner", "session")).toEqual({
+      paths: ["owned.txt"],
+      complete: true,
+    });
+  });
+
   test("passes when held files are clean and the branch is pushed", () => {
     const remote = join(temp, "remote.git");
     const repo = join(temp, "repo");

@@ -9,6 +9,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readStreamTailBounded } from "./events/consume.ts";
+
+const CLAIM_HISTORY_CAP_BYTES = 128 * 1024 * 1024;
 
 const GIT_DISCOVERY_VARS = [
   "GIT_DIR",
@@ -34,11 +37,59 @@ interface RepoWork {
 
 export interface GitFinalizationResult {
   ok: boolean;
+  claim_history_complete: boolean;
   dirty_paths: string[];
   unpushed_repos: string[];
   unverifiable_paths: string[];
   unverifiable_repos: string[];
   repos_checked: string[];
+}
+
+export interface SessionWriteClaims {
+  paths: string[];
+  complete: boolean;
+}
+
+/**
+ * Read every write claim made by this session, including claims released after
+ * a commit. Current heartbeat claims describe dirty ownership; this history is
+ * what keeps the touched repository in scope until its commits are pushed.
+ */
+export function readSessionWriteClaims(
+  coordRoot: string,
+  instanceId: string,
+  sessionId: string,
+): SessionWriteClaims {
+  const streamPath = join(coordRoot, ".harnery", "events.ndjson");
+  const { text, truncated } = readStreamTailBounded(streamPath, CLAIM_HISTORY_CAP_BYTES);
+  const paths = new Set<string>();
+  let sawSessionStart = false;
+
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0) continue;
+    try {
+      const event = JSON.parse(line) as {
+        event_type?: string;
+        instance_id?: string;
+        session_id?: string;
+        data?: { path?: unknown; mode?: unknown };
+      };
+      if (event.instance_id !== instanceId || event.session_id !== sessionId) continue;
+      if (event.event_type === "session.start") sawSessionStart = true;
+      if (
+        event.event_type === "claim.acquire" &&
+        event.data?.mode === "write" &&
+        typeof event.data.path === "string"
+      ) {
+        paths.add(event.data.path);
+      }
+    } catch {
+      // Ignore malformed and crash-truncated event lines, matching the
+      // canonical stream consumer's recovery behavior.
+    }
+  }
+
+  return { paths: [...paths], complete: !truncated || sawSessionStart };
 }
 
 function git(args: string[], cwd: string): GitResult {
@@ -138,6 +189,7 @@ function repoSyncState(repoRoot: string): "synced" | "unpushed" | "unverifiable"
 export function checkGitFinalization(
   coordRoot: string,
   heldPaths: readonly string[],
+  options: { claimHistoryComplete?: boolean } = {},
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
   const repos = new Map<string, RepoWork>();
@@ -179,6 +231,7 @@ export function checkGitFinalization(
 
   const result: GitFinalizationResult = {
     ok: false,
+    claim_history_complete: options.claimHistoryComplete ?? true,
     dirty_paths: [...dirtyPaths].sort(),
     unpushed_repos: [...new Set(unpushedRepos)].sort(),
     unverifiable_paths: [...new Set(unverifiablePaths)].sort(),
@@ -186,6 +239,7 @@ export function checkGitFinalization(
     repos_checked: [...repos.keys()].map((repo) => repoLabel(root, repo)).sort(),
   };
   result.ok =
+    result.claim_history_complete &&
     result.dirty_paths.length === 0 &&
     result.unpushed_repos.length === 0 &&
     result.unverifiable_paths.length === 0 &&
@@ -195,6 +249,9 @@ export function checkGitFinalization(
 
 export function formatGitFinalizationFailure(result: GitFinalizationResult, bin: string): string {
   const lines = ["Owned Git work is not finalized; the status box was not issued."];
+  if (!result.claim_history_complete) {
+    lines.push("This session's write-claim history is older than the bounded event window.");
+  }
   if (result.dirty_paths.length > 0) {
     lines.push("Dirty owned paths:", ...result.dirty_paths.map((path) => `  - ${path}`));
   }

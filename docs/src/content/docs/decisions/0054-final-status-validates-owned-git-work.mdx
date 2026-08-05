@@ -36,6 +36,12 @@ heartbeat rebuild restore every path from a multi-file patch. Without that
 durable record, a rebuilt heartbeat could silently forget a file and let the
 final check miss it.
 
+The finalizer uses the union of current heartbeat claims and every write claim
+from the session's event history. Commit hooks release clean active claims, but
+that release does not remove the repository from finalization scope. Otherwise
+an agent could commit, skip the push, reach zero held files, and pass the remote
+check without inspecting a repository at all.
+
 For each held path, the checker discovers the Git repository that tracks it and
 asks Git whether that path is dirty. When the repository is a submodule, the
 checker walks through every enclosing superproject and validates the gitlink as
@@ -88,3 +94,7 @@ updates those refs, which is sufficient for the end-of-turn contract without
 adding a network fetch to every status call. If Git cannot determine a held
 path's repository or a configured remote's state, the command fails closed and
 names what it could not verify.
+
+Session claim history is read from a bounded tail of the append-only event
+stream. If that tail does not reach the session's start event, the command fails
+closed instead of treating an incomplete repository set as final.

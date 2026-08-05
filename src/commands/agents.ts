@@ -34,6 +34,7 @@ import {
   checkGitFinalization,
   formatGitFinalizationFailure,
   type GitFinalizationResult,
+  readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
 import {
   emitCanonical,
@@ -1667,7 +1668,11 @@ function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }
 
   let finalization: GitFinalizationResult | null = null;
   if (opts.final) {
-    finalization = checkGitFinalization(root, hb.files_touched ?? []);
+    const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
+    const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
+    finalization = checkGitFinalization(root, touchedPaths, {
+      claimHistoryComplete: history.complete,
+    });
     if (!finalization.ok) {
       emit.error({
         code: "git_not_finalized",
