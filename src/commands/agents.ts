@@ -31,6 +31,11 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { coordBinPath } from "../core/agents/coord-bin.ts";
 import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
+  checkGitFinalization,
+  formatGitFinalizationFailure,
+  type GitFinalizationResult,
+} from "../core/agents/finalization.ts";
+import {
   emitCanonical,
   type Heartbeat,
   monorepoRoot,
@@ -222,12 +227,16 @@ export function registerAgentsCommand(
     .description("End-of-turn status box (name + session age + files held + peer count)")
     .option("--json", "JSON output instead of the box")
     .option(
+      "--final",
+      "Issue the status box only when this session's held paths are committed and their repositories are pushed",
+    )
+    .option(
       "--session-id <id>",
       "Lookup heartbeat by session_id directly, bypassing the ppid walk. " +
         "Use this when calling from a hook (the hook's process tree may not lead back to Claude Code's session pid). " +
         "The Stop hook payload includes session_id; pass it through.",
     )
-    .action((opts: { json?: boolean; sessionId?: string }) => {
+    .action((opts: { final?: boolean; json?: boolean; sessionId?: string }) => {
       runStatus(opts);
     });
 
@@ -1624,7 +1633,7 @@ function runSuggestName(
   process.stdout.write(`${suggestedName}\n`); // lint-ok-emission: chat-paste path
 }
 
-function runStatus(opts: { json?: boolean; sessionId?: string }): void {
+function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }): void {
   const root = monorepoRoot();
   if (!root) {
     emit.error({
@@ -1654,6 +1663,19 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
       message: noHeartbeatMessage(myOwner),
     });
     process.exit(1);
+  }
+
+  let finalization: GitFinalizationResult | null = null;
+  if (opts.final) {
+    finalization = checkGitFinalization(root, hb.files_touched ?? []);
+    if (!finalization.ok) {
+      emit.error({
+        code: "git_not_finalized",
+        message: formatGitFinalizationFailure(finalization, resolveBinName(root)),
+      });
+      process.exitCode = 1;
+      return;
+    }
   }
 
   // Stamp .last_status_at = NOW. The verdict path reads state.status_checked
@@ -1784,6 +1806,7 @@ function runStatus(opts: { json?: boolean; sessionId?: string }): void {
     context_window: ctxUsage?.window ?? null,
     timestamp_iso: new Date().toISOString(),
     timestamp_local: timeStr,
+    ...(finalization ? { finalization } : {}),
   };
 
   if (opts.json) {

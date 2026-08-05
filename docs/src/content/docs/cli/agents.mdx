@@ -26,7 +26,8 @@ itself feels off.
 ```
 harn agents whoami              # this agent's name + instance_id + files claimed
 harn agents list                # all active agents (folds transients by default)
-harn agents status              # end-of-turn status box (name, age, files, peers, task)
+harn agents status              # status box (name, age, files, peers, task)
+harn agents status --final      # issue the box only after owned Git work is finalized
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
 harn agents identity assume <name-or-id> # continue a durable role in this session
 harn agents show <name>         # deep-dive on one peer: registry state + session history
@@ -89,7 +90,11 @@ The three orientation commands.
   declared task, last turn summary, context usage, files held, and a one-line
   peer roster. `--json` returns the same data unformatted. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
-  process tree doesn't lead back to the agent's session pid.
+  process tree doesn't lead back to the agent's session pid. Add `--final` for
+  the required final call: Harnery checks the current session's held paths,
+  enclosing submodule pointers, and touched repositories before issuing the
+  box. Dirty held work or commits missing from a configured remote make the
+  command fail instead.
 
 ### set-task
 
@@ -203,7 +208,7 @@ harn agents list
 harn agents set-task "refactoring the ingest retry loop"
 
 # End-of-turn status box
-harn agents status
+harn agents status --final
 
 # Dig into a peer's current state, then its full history
 harn agents show Foo
@@ -222,8 +227,14 @@ harn agents health --since 24h
 
 ## The status box
 
-`harn agents status` prints a fixed-width box designed to paste straight into a
-reply so a human (and peers) can see your state at a glance:
+`harn agents status --final` first verifies that the paths held by this session
+are committed and that the repositories involved are pushed. It follows held
+paths into submodules and checks the enclosing gitlink too. Active edits held by
+another session do not block the check.
+
+On success, it prints the same fixed-width box as `harn agents status`, designed
+to paste straight into a reply so a human (and peers) can see your state at a
+glance:
 
 ```
 ┌─ agent-Foo ────────────────────────────────────────────────────────┐

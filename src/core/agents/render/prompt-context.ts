@@ -138,7 +138,8 @@ function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): 
   const bin = resolveBinName(coordRoot);
   return (
     "Codex status footer: complete the user's request first. " +
-    `Then run \`${bin} agents status\` as your final shell call and append its stdout verbatim in a fenced code block at the bottom of the same substantive reply. ` +
+    `Then run \`${bin} agents status --final\` as your final shell call and append its stdout verbatim in a fenced code block at the bottom of the same substantive reply. ` +
+    "If it fails, finish the owned Git work and rerun it before replying. " +
     "Keep the answer intact. If the footer is missed, do not retry or replace the reply; the Stop hook is observe-only."
   );
 }

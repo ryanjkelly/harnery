@@ -1,0 +1,90 @@
+---
+title: "0054: Final status validates owned Git work"
+description: "ADR: the opt-in final status call issues its box only after the current session's held paths are committed and their repositories are pushed."
+---
+
+**Status:** accepted (2026-08-05) · **Scope:** product tier (`commands/agents`, `core/agents`)
+
+## Context
+
+Harnery already gives every session a touched-file ledger and asks agents to run
+`agents status` at the end of a turn. That command confirms coordination state,
+but it says nothing about Git. An agent can finish an implementation, skip the
+commit or push, run the required status command successfully, and report that it
+is done.
+
+The failure is especially confusing in a shared checkout. Source Control shows
+one combined dirty tree, while several active sessions may own different files.
+A whole-worktree cleanliness check would turn another session's legitimate work
+into a false block. A pre-commit hook cannot help because the failure happens
+when the agent never starts a commit.
+
+Codex cannot use a hard Stop block for this. [ADR 0051](./0051-codex-stop-checks-are-observe-only)
+keeps that path observe-only because a continuation can replace the substantive
+answer. [ADR 0052](./0052-codex-status-footer-is-prompted-not-enforced) instead
+puts a fresh final-command reminder in every Codex prompt.
+
+## Decision
+
+`agents status` gains an opt-in `--final` check. Before Harnery stamps
+`last_status_at`, emits `state.status_checked`, or prints the status box, it
+validates the current heartbeat's `files_touched` paths.
+
+Write claims are also recorded as canonical `claim.acquire` events. The claim
+verdict still updates the live heartbeat immediately, but the event lets a later
+heartbeat rebuild restore every path from a multi-file patch. Without that
+durable record, a rebuilt heartbeat could silently forget a file and let the
+final check miss it.
+
+For each held path, the checker discovers the Git repository that tracks it and
+asks Git whether that path is dirty. When the repository is a submodule, the
+checker walks through every enclosing superproject and validates the gitlink as
+well. That catches the common half-finished state where the submodule commit is
+clean but the parent pointer is not committed.
+
+Every repository reached through those paths must also be synchronized. A branch
+with an upstream fails when `@{upstream}..HEAD` contains commits. A detached
+submodule passes when at least one remote-tracking ref contains `HEAD`. A local
+repository with no remote is considered complete because there is nowhere to
+push it.
+
+The ownership boundary is deliberately narrow. Harnery checks the current
+session's held paths and required gitlinks, not the entire worktree. Files held
+by peers remain visible in the ordinary status box but cannot prevent this
+session from finishing.
+
+The Codex prompt footer and Stop-remediation messages now name
+`agents status --final`. A failed check does not emit `state.status_checked`, so
+Claude Code and Cursor retain their existing enforcement channel. Codex still
+does not block at Stop; the guarded command fails while the model is working,
+before it writes the original answer.
+
+## Alternatives considered
+
+**Add stronger prose to the commit instructions.** Rejected because the policy
+already existed and the model still crossed from implementation to final answer
+without invoking it.
+
+**Require the whole checkout to be clean.** Rejected because one session would
+be blocked by every active peer in a shared working tree.
+
+**Make the Stop hook run Git checks.** Rejected for Codex because a Stop
+continuation can replace the user's answer. It would also be too late to give the
+model a normal tool result it can remediate before composing that answer.
+
+**Commit or push automatically inside `agents status`.** Rejected because the
+status command cannot choose commit boundaries or messages safely, and pushing
+surprising paths would violate the ownership model. The command validates; the
+agent keeps authorship of the Git operations.
+
+## Consequences
+
+The normal `agents status` command remains useful mid-turn and does not inspect
+Git. The final ritual uses `--final`, so the success box becomes evidence that
+the current session's owned work is clean and available remotely.
+
+The check uses local remote-tracking refs and does not fetch. A successful push
+updates those refs, which is sufficient for the end-of-turn contract without
+adding a network fetch to every status call. If Git cannot determine a held
+path's repository or a configured remote's state, the command fails closed and
+names what it could not verify.

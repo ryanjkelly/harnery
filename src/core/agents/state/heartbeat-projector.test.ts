@@ -461,6 +461,58 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
     );
     expect(Array.isArray(raw.files_touched)).toBe(true);
   });
+
+  test("claim.acquire durably restores every write path after a heartbeat rebuild", () => {
+    const root = freshRoot();
+    const events = [
+      {
+        event_id: "01START",
+        event_type: "session.start",
+        ts: "2026-06-10T01:00:00Z",
+        instance_id: "patch-owner",
+        session_id: "patch-owner",
+        adapter: "codex",
+        source: "test",
+        data: {},
+      },
+      {
+        event_id: "01CLAIM1",
+        event_type: "claim.acquire",
+        ts: "2026-06-10T01:00:01Z",
+        instance_id: "patch-owner",
+        session_id: "patch-owner",
+        adapter: "codex",
+        source: "test",
+        data: { path: `${root}/src/first.ts`, mode: "write" },
+      },
+      {
+        event_id: "01CLAIM2",
+        event_type: "claim.acquire",
+        ts: "2026-06-10T01:00:02Z",
+        instance_id: "patch-owner",
+        session_id: "patch-owner",
+        adapter: "codex",
+        source: "test",
+        data: { path: "src/second.ts", mode: "write" },
+      },
+      {
+        event_id: "01READ",
+        event_type: "claim.acquire",
+        ts: "2026-06-10T01:00:03Z",
+        instance_id: "patch-owner",
+        session_id: "patch-owner",
+        adapter: "codex",
+        source: "test",
+        data: { path: "src/read-only.ts", mode: "read" },
+      },
+    ] as unknown as Events;
+
+    const result = projectHeartbeats(root, events);
+    expect(result.perOwner["patch-owner"]!.files_touched).toEqual([
+      "src/first.ts",
+      "src/second.ts",
+    ]);
+  });
 });
 
 describe("projectHeartbeats: seeds identity from .name-history (no agent-unknown ghost)", () => {

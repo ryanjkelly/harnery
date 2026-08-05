@@ -74,7 +74,7 @@ export function emitStopBlock(adapter: Adapter, verdict: { reason?: string; rule
     const message = [
       `${STOP_REMEDIATION_MARKER} rule=${verdict.rule}]`,
       reason,
-      `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${bin} agents status\` as your last tool call.`,
+      `Repair the ritual in this turn: run \`${bin} agents set-task "<short focus>"\` and then \`${bin} agents status --final\` as your last tool call.`,
     ].join("\n");
     process.stdout.write(`${JSON.stringify({ followup_message: message })}\n`);
     return 0;

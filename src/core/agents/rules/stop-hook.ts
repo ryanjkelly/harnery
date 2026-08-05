@@ -305,7 +305,7 @@ function rule13Block(): VerdictResult {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_1_3",
-    reason: `End-of-turn rule (1/3): no state.status_checked event found in this turn; run \`${resolveBinName()} agents status\` as your last tool call.`,
+    reason: `End-of-turn rule (1/3): no state.status_checked event found in this turn; run \`${resolveBinName()} agents status --final\` as your last tool call.`,
   };
 }
 
@@ -314,7 +314,7 @@ function rule23Block(): VerdictResult {
     allow: false,
     exit_code: 2,
     rule: "stop-hook.rule_2_3",
-    reason: `End-of-turn rule (2/3): turn.stop did not see the agent-status box in your reply text. Paste the \`${resolveBinName()} agents status\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
+    reason: `End-of-turn rule (2/3): turn.stop did not see the agent-status box in your reply text. Paste the \`${resolveBinName()} agents status --final\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
   };
 }
 

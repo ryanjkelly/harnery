@@ -1078,6 +1078,20 @@ async function runPreToolUseGuard(
       emitDeny(adapter, reason);
       return;
     }
+
+    // The verdict mutates the live heartbeat immediately, but that file is a
+    // projection and can be rebuilt at any later hook. Persist the acquisition
+    // in the canonical stream too. This matters most for Codex apply_patch:
+    // one tool call can claim several files, and tool.pre_use's clamped payload
+    // is not a durable ownership representation for those targets.
+    emit(coordRoot, {
+      event_type: "claim.acquire",
+      instance_id: instanceId,
+      session_id: sessionId,
+      adapter,
+      source: "agent-hooks",
+      data: { path: target, mode: "write" },
+    });
   }
 }
 

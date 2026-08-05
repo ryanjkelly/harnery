@@ -322,6 +322,19 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       break;
     }
 
+    case "claim.acquire": {
+      const path = pickStr(d, "path");
+      const mode = pickStr(d, "mode");
+      if (path && mode === "write") {
+        const canonical = path.startsWith(`${coordRoot}/`)
+          ? path.slice(coordRoot.length + 1)
+          : path;
+        if (!hb.files_touched) hb.files_touched = [];
+        if (!hb.files_touched.includes(canonical)) hb.files_touched.push(canonical);
+      }
+      break;
+    }
+
     case "claim.release": {
       const path = pickStr(d, "path");
       if (path && hb.files_touched) {
