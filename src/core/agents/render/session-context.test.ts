@@ -36,6 +36,18 @@ describe("renderSessionContext", () => {
     expect(out).not.toContain("(Codex)");
   });
 
+  test("self-name line asserts authority over an inherited name", () => {
+    const out = renderSessionContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+    });
+    expect(out).toContain(
+      "Any different agent name in earlier context was inherited from another session; this one is authoritative.",
+    );
+  });
+
   test("platformLabel renders adapter suffix on self-name", () => {
     const out = renderSessionContext({
       coordRoot: root,

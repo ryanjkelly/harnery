@@ -54,7 +54,12 @@ export function renderSessionContext(opts: RenderOpts): string {
   const peerTable = [localTable, formatRemoteMachines(coordRoot)].filter(Boolean).join("\n\n");
   if (agentName) {
     const suffix = platformLabel ? ` (${platformLabel})` : "";
-    const selfLine = `You are agent-${agentName}${suffix}.`;
+    // The authority clause guards forked/branched chats. An adapter that forks a
+    // conversation copies the parent's transcript, so the fork's context still
+    // asserts the parent's name, claims, and task. The fork is a new instance and
+    // gets its own name here; this sentence makes that unambiguous without needing
+    // to detect the fork (which the transcript-blind hook layer cannot do).
+    const selfLine = `You are agent-${agentName}${suffix}. Any different agent name in earlier context was inherited from another session; this one is authoritative.`;
     messages.push(peerTable ? `${selfLine}\n\n${peerTable}` : selfLine);
   } else if (peerTable) {
     messages.push(peerTable);
