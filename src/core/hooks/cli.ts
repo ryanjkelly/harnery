@@ -1,6 +1,5 @@
 /**
- * `agent-hook` CLI entry point. Phase 2: real canonical-event emission
- * alongside the legacy stream.
+ * `agent-hook` CLI entry point for canonical event emission.
  *
  * Flow:
  *   1. Parse argv → event-name + adapter.
@@ -80,11 +79,11 @@ function parseArgv(argv: string[]): Argv {
   const out: Argv = { eventName: null, extra: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--adapter" || arg === "--harness") {
+    if (arg === "--adapter") {
       i++; // detectAdapter will re-parse; just consume the value here.
       continue;
     }
-    if (arg.startsWith("--adapter=") || arg.startsWith("--harness=")) continue;
+    if (arg.startsWith("--adapter=")) continue;
     if (!out.eventName && !arg.startsWith("--")) {
       out.eventName = arg;
     } else {
@@ -238,7 +237,7 @@ function buildEventData(
     case "session.start": {
       const adapterPlatform =
         ctx.adapter === "claude-code"
-          ? "claude_code"
+          ? "claude-code"
           : ctx.adapter === "cursor"
             ? "cursor"
             : "codex";
@@ -1161,7 +1160,7 @@ function healHeartbeatViaCli(
   if (!existsSync(agentCoordBin)) return;
   // Pass the detected adapter so a pruned Cursor/Codex heartbeat is recreated
   // with the correct platform; without it, healHeartbeat defaults to
-  // claude_code and the dashboard mislabels the agent. See
+  // claude-code and the dashboard mislabels the agent. See
   // heartbeat-writer.healHeartbeat.
   spawnSync(agentCoordBin, ["heal-heartbeat", instanceId, sessionId, `--adapter=${adapter}`], {
     encoding: "utf8",
@@ -1480,7 +1479,7 @@ function emitSubagentStartContext(
 }
 
 function adapterPlatform(adapter: Adapter): string {
-  if (adapter === "claude-code") return "claude_code";
+  if (adapter === "claude-code") return "claude-code";
   return adapter;
 }
 

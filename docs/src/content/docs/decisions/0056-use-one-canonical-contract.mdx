@@ -1,0 +1,66 @@
+---
+title: "0056: Use one canonical contract"
+description: "ADR: Harnery removes ambiguous aliases and stale exported names instead of maintaining parallel public contracts."
+---
+
+**Status:** accepted (2026-08-05) · **Scope:** product tier (CLI, hooks, configuration, workflow exports)
+
+## Context
+
+Several Harnery surfaces had acquired two names for the same operation. The
+guarded status command used `--final`, although the boundary it checks is the
+end of an agent turn. Hook dispatch accepted both `adapter` and the older
+`harness` vocabulary. Other commands, environment variables, persisted adapter
+ids, and exported workspace types had similar duplicate names.
+
+Aliases looked inexpensive in isolation, but together they made help text,
+schemas, generated configuration, and downstream integrations disagree about
+the canonical contract. They also made a rename incomplete by design.
+
+## Decision
+
+Harnery uses one public name for each of these surfaces:
+
+- `agents status --end-turn` is the guarded end-of-turn check. `--final` is not
+  an alias.
+- Hook dispatch uses `--adapter` and `HARNERY_AGENT_COORD_ADAPTER`.
+- Claude Code is stored as `claude-code` in heartbeat and pid-map state.
+- Browser screenshot suppression is `--no-screenshot`; tunnel provider logs
+  use `--provider`; wait durations require an explicit unit.
+- Coordination freshness uses `HARNERY_AGENT_COORD_FRESHNESS`.
+- Workspace APIs export their canonical `ValidatedFilesystemPath`,
+  `WorkspaceProofOutcome`, and `WorkspaceCompatibilityExecutionEvidence`
+  names only.
+- New work intents use schema version 2 and require
+  `max_uncharged_attempts`.
+- A resumed non-shared workflow must carry either its frozen workspace binding
+  or explicit shared-fallback evidence.
+- The verified-contract maintainer tool reads the adapter registry and uses the
+  `adapter attest` command vocabulary.
+
+The explicit `docs frontmatter-migrate` command remains because it converts an
+old corpus on request and does not make the runtime accept two metadata
+contracts. `init` may also remove Harnery-owned hook entries that current vendor
+schemas reject. Those are bounded migrations, not alternate public interfaces.
+
+## Alternatives considered
+
+**Keep aliases with deprecation warnings.** Rejected because warnings still
+leave every reader and generator responsible for two contracts.
+
+**Rename only the status flag.** Rejected because the same ambiguity remained
+in adjacent public surfaces and would continue to set the wrong precedent.
+
+**Remove explicit migration commands too.** Rejected because a deliberate
+conversion step has a clear start and finish. It does not make normal reads or
+writes ambiguous.
+
+## Consequences
+
+Consumers using a removed name must update before taking this release. Generated
+hook configuration is refreshed by running `harn init`. Existing work-intent
+records with schema version 1 are rejected instead of receiving an implicit
+default.
+
+Help, configuration, durable state, and TypeScript exports now use the same
+vocabulary. Future changes have one contract to test and document.

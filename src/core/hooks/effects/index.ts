@@ -120,7 +120,7 @@ export function journalArchive(repoRoot: string, owner: string): void {
  * Fire the optional host session-sync extension on turn stop / session end.
  * harnery core has no session-telemetry sink of its own; a host that wants one
  * drops an executable at
- * `scripts/hooks/adapter/claude_code/extensions/session-sync.sh` under the coord
+ * `scripts/hooks/harness/claude-code/extensions/session-sync.sh` under the coord
  * root, and core runs it detached + unref'd so a slow sink never blocks the
  * hook. `force` arrives as argv $1 ("1" on session end, "0" on turn stop) so the
  * host can rate-limit the stop path and force-flush on end. No-op when the
@@ -134,8 +134,8 @@ export function runSessionSyncExtension(repoRoot: string, force: boolean): void 
       repoRoot,
       "scripts",
       "hooks",
-      "adapter",
-      "claude_code",
+      "harness",
+      "claude-code",
       "extensions",
       "session-sync.sh",
     );
@@ -169,8 +169,8 @@ export function runTurnSummary(
       repoRoot,
       "scripts",
       "hooks",
-      "adapter",
-      "claude_code",
+      "harness",
+      "claude-code",
       "extensions",
       "turn-summary.sh",
     );

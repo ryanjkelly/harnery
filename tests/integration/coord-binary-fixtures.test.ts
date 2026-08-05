@@ -166,19 +166,19 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
       ts: "2026-05-28T16:00:00Z",
       schemaVersion: 1,
       name: "Pim",
-      platform: "claude_code",
+      platform: "claude-code",
       extra: { kind: "session" },
     });
     expect(existsSync(path.join(root, ".harnery", "pid-map", "77777"))).toBe(false);
     run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
     expect(readFileSync(path.join(root, ".harnery", "pid-map", "77777"), "utf8")).toBe(
-      "owner-B\tclaude_code",
+      "owner-B\tclaude-code",
     );
   });
 
   test("second call is a no-op (idempotent pid-map, mtime unchanged)", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude_code" });
+    seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude-code" });
     run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
     const rowPath = path.join(root, ".harnery", "pid-map", "77777");
     const before = statSync(rowPath).mtimeMs;
@@ -188,11 +188,11 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
 
   test("stale pid-map row is rewritten to the current owner", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude_code" });
+    seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude-code" });
     const rowPath = path.join(root, ".harnery", "pid-map", "77777");
-    writeFileSync(rowPath, "owner-OLD\tclaude_code\n");
+    writeFileSync(rowPath, "owner-OLD\tclaude-code\n");
     run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
-    expect(readFileSync(rowPath, "utf8")).toBe("owner-B\tclaude_code");
+    expect(readFileSync(rowPath, "utf8")).toBe("owner-B\tclaude-code");
   });
 });
 
@@ -203,7 +203,7 @@ describe("agent-hook pre-tool-use cross-client deny", () => {
     seedHeartbeat(root, "cc-owner", {
       files: ["docs/shared.md"],
       name: "Adelaide",
-      platform: "claude_code",
+      platform: "claude-code",
     });
     seedHeartbeat(root, "cursor-session", { name: "Bertha", platform: "cursor" });
     mkdirSync(path.join(root, "docs"), { recursive: true });
@@ -227,7 +227,7 @@ describe("agent-hook pre-tool-use cross-client deny", () => {
     seedHeartbeat(root, "cc-blocker-codex", {
       files: ["docs/codex-conflict.md"],
       name: "Blocker",
-      platform: "claude_code",
+      platform: "claude-code",
     });
     const patch = `*** Begin Patch\n*** Update File: ${root}/docs/codex-conflict.md\n@@\n-old\n+new\n*** End Patch\n`;
     const payload = JSON.stringify({
@@ -253,9 +253,9 @@ describe("agent-hook session-start", () => {
       ts: nowIso(-2 * 60 * 60 * 1000),
       files: ["abandoned.txt"],
       name: "Ghost",
-      platform: "claude_code",
+      platform: "claude-code",
     });
-    seedHeartbeat(root, "fresh-cc", { name: "Alive", platform: "claude_code" });
+    seedHeartbeat(root, "fresh-cc", { name: "Alive", platform: "claude-code" });
     const sid = "new-cursor-sess";
     const payload = JSON.stringify({
       conversation_id: sid,
@@ -324,9 +324,9 @@ describe("agent-hook session-start", () => {
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
   });
 
-  test("Codex sessionStart accepts hook wiring from pre-rename releases", () => {
+  test("Codex sessionStart accepts canonical adapter wiring", () => {
     const root = makeSandbox();
-    const sid = "codex-legacy-harness-flag";
+    const sid = "codex-canonical-adapter-flag";
     const payload = JSON.stringify({
       session_id: sid,
       cwd: root,
@@ -335,7 +335,7 @@ describe("agent-hook session-start", () => {
       permission_mode: "bypassPermissions",
       source: "startup",
     });
-    run(AGENT_HOOK, ["session-start", "--harness", "codex"], payload, root);
+    run(AGENT_HOOK, ["session-start", "--adapter", "codex"], payload, root);
     expect(existsSync(path.join(root, ".harnery", "active", `${sid}.json`))).toBe(true);
   });
 });
@@ -347,7 +347,7 @@ describe("agent-hook context continuity", () => {
     const owner = "claude-compact-fixture";
     seedHeartbeat(root, owner, {
       name: "Ada",
-      platform: "claude_code",
+      platform: "claude-code",
       files: ["src/adapter.ts"],
       extra: { task: "Port context continuity", turn_summary: "Checkpoint core is passing" },
     });
@@ -569,7 +569,7 @@ describe("agent-hook user-prompt-submit", () => {
     seedHeartbeat(root, "cc-peer", {
       files: ["docs/a.md"],
       name: "Adelaide",
-      platform: "claude_code",
+      platform: "claude-code",
     });
     seedHeartbeat(root, "cursor-me", { name: "Bertha", platform: "cursor" });
     const payload = JSON.stringify({
@@ -595,7 +595,7 @@ describe("agent-hook user-prompt-submit", () => {
       {
         adapter: "claude-code",
         owner: "claude-name-first",
-        platform: "claude_code",
+        platform: "claude-code",
         payload: (root: string) => ({
           session_id: "claude-name-first",
           cwd: root,
@@ -952,16 +952,6 @@ describe("agent-coord subcommands", () => {
     expect(r.stdout ?? "").toContain("docs/shell-out.txt");
   });
 
-  test("stamp-status-call writes last_status_at", () => {
-    const root = makeSandbox();
-    const owner = "11111111-2222-3333-4444-555555555555";
-    seedHeartbeat(root, owner, { ts: "2026-05-24T00:00:00Z" });
-    run(AGENT_COORD, ["stamp-status-call", owner], "", root);
-    const hb = JSON.parse(
-      readFileSync(path.join(root, ".harnery", "active", `${owner}.json`), "utf8"),
-    );
-    expect(String(hb.last_status_at ?? "")).toContain("T");
-  });
 });
 
 // ── claude-code claim-guard + session-start via agent-hook ──────────────────
@@ -1023,7 +1013,7 @@ describe("claude-code pre-tool-use deny + session-start", () => {
 // dispatch_entry that points at the live agent-hook entry.
 describe("harn agents adapter-probe (TS-native)", () => {
   test("emits valid JSON with all keys + the corrected dispatch_entry", () => {
-    const r = spawnSync("bash", [HARN, "agents", "adapter-probe", "claude_code", "--json"], {
+    const r = spawnSync("bash", [HARN, "agents", "adapter-probe", "claude-code", "--json"], {
       cwd: HARNERY_DIR,
       encoding: "utf8",
       env: { ...process.env },
@@ -1059,7 +1049,7 @@ describe("agent-coord release-claim / kill-heartbeat: stream-durable releases", 
     const owner = "rel-bin-1";
     seedHeartbeat(root, owner, {
       files: [`${root}/src/a.ts`, `${root}/src/b.ts`],
-      platform: "claude_code",
+      platform: "claude-code",
     });
 
     const r = run(AGENT_COORD, ["release-claim", owner, `${root}/src/a.ts`], "", root);

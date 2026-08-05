@@ -21,9 +21,6 @@ export interface ValidatedFilesystemPath {
   identity: FilesystemIdentity;
 }
 
-/** @deprecated Use ValidatedFilesystemPath. */
-export type ValidatedFilesystemRoot = ValidatedFilesystemPath;
-
 export interface WorkspaceProviderRef {
   id: string;
   version: string;
@@ -183,9 +180,6 @@ export type WorkspaceProofOutcome =
   | "failed_retained"
   | "blocked"
   | "lost";
-
-/** @deprecated Use WorkspaceProofOutcome. */
-export type WorkspaceProofLifecycleState = WorkspaceProofOutcome;
 
 export type WorkspaceResourceState = "active" | "preserved_dirty" | "released" | "blocked" | "lost";
 
@@ -491,9 +485,6 @@ export interface WorkspaceCompatibilityExecutionEvidence {
   unknowns: ProviderUnknown[];
   receipts: Record<string, never>;
 }
-
-/** @deprecated Use WorkspaceCompatibilityExecutionEvidence. */
-export type WorkspaceUnsupportedExecutionEvidence = WorkspaceCompatibilityExecutionEvidence;
 
 export type WorkspaceExecutionEvidence =
   | WorkspaceBoundExecutionEvidence

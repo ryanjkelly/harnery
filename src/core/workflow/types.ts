@@ -425,11 +425,11 @@ export type Spawner = (req: SpawnRequest) => Promise<SpawnResult>;
 /** The API surface injected into a workflow script's default export. Explicit
  * injection (no ambient globals): keeps scripts portable and unit-testable. */
 export interface WorkflowContext {
-  /** Frozen durable-work assignment for work-linked runs. Standalone and
-   * legacy-resumed workflows have no work context. */
+  /** Frozen durable-work assignment for work-linked runs. Standalone workflows
+   * have no work context. */
   work?: Readonly<WorkflowWorkContext>;
   /** Frozen attempt identity and, on retry, a bounded synopsis of prior
-   * terminal evidence. Absent for standalone and legacy-resumed workflows. */
+   * terminal evidence. Absent for standalone workflows. */
   attempt?: Readonly<WorkflowAttemptContext>;
   /** Spawn one subagent; resolves to validated JSON (schema) or reply text. */
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>;

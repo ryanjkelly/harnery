@@ -33,14 +33,13 @@ function adapterOf(platform: string | undefined): "claude-code" | "cursor" | "co
   return "claude-code";
 }
 
-/** Inverse of adapterOf: maps the canonical adapter ("claude-code"/"cursor"/
- * "codex") to the legacy underscore platform label stored on the heartbeat.
- * Mirrors heartbeat-projector.adapterToPlatform so a healed heartbeat carries
- * the same platform value projection would have written. */
+/** Preserve the canonical adapter id in heartbeat state. Mirrors
+ * heartbeat-projector.adapterToPlatform so a healed heartbeat carries the same
+ * platform value projection would have written. */
 function adapterToPlatform(adapter: string | undefined): string {
   if (adapter === "cursor") return "cursor";
   if (adapter === "codex") return "codex";
-  return "claude_code";
+  return "claude-code";
 }
 
 /**
@@ -147,13 +146,6 @@ export function setTask(coordRoot: string, instanceId: string, task: string): He
   });
 }
 
-export function stampStatusCheck(coordRoot: string, instanceId: string): Heartbeat | null {
-  return mutate(coordRoot, instanceId, (hb) => ({
-    ...hb,
-    last_status_at: nowIsoSeconds(),
-  }));
-}
-
 export function setTurnSummary(
   coordRoot: string,
   instanceId: string,
@@ -200,9 +192,8 @@ export interface GroupUnclaimHit {
  * durable `claim.release` events — a file-only prune is silently reverted by
  * the next projector replay.
  *
- * files_touched can hold either absolute-under-coordRoot or canonical
- * repo-relative entries (legacy projections stored the raw tool_input path),
- * so both sides are normalized before comparing — an exact-string match
+ * Tool payloads and release calls can supply either absolute-under-coordRoot or
+ * canonical repo-relative entries, so both sides are normalized before comparing. An exact-string match
  * silently no-ops on the mixed-form case and the claim never releases.
  *
  * This is the Option B fix for post-commit's pid-map attribution hole: a
@@ -264,7 +255,7 @@ export function healPidmap(coordRoot: string, instanceId: string, pid: number): 
   const dir = join(coordRoot, ".harnery", "pid-map");
   mkdirSync(dir, { recursive: true });
   const hb = readHeartbeat(coordRoot, instanceId);
-  const platform = hb?.platform ?? "claude_code";
+  const platform = hb?.platform ?? "claude-code";
   const pmPath = join(dir, String(pid));
   // Drift guard: only write + emit telemetry when the entry is missing or
   // points at a different owner. Without this, a per-tool-call heal would
@@ -330,10 +321,10 @@ export function healHeartbeat(
     started_at: now,
     last_heartbeat: now,
     files_touched: [],
-    // Default to claude_code only when the caller can't tell us the adapter
+    // Default to claude-code only when the caller can't tell us the adapter
     // (e.g. manual `harn agents heal`). The live tool.pre_use heal threads the
     // detected adapter so a pruned Cursor/Codex heartbeat is recreated with
-    // the correct platform instead of being mislabeled claude_code.
+    // the correct platform instead of being mislabeled claude-code.
     platform: adapterToPlatform(adapter),
   };
   atomicWrite(path, JSON.stringify(hb, null, 2));

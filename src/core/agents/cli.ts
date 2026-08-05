@@ -261,14 +261,6 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       );
       return 0;
     }
-    case "stamp-status-call": {
-      const hb = writer.stampStatusCheck(root, owner);
-      if (!hb) return 1;
-      process.stdout.write(
-        `${JSON.stringify({ instance_id: owner, last_status_at: hb.last_status_at })}\n`,
-      );
-      return 0;
-    }
     case "set-turn-summary": {
       const summary = args.join(" ");
       const hb = writer.setTurnSummary(root, owner, summary);
@@ -860,7 +852,6 @@ async function main(): Promise<number> {
 
   if (
     subcommand === "set-task" ||
-    subcommand === "stamp-status-call" ||
     subcommand === "set-turn-summary" ||
     subcommand === "release-claim" ||
     subcommand === "kill-heartbeat" ||

@@ -78,8 +78,7 @@ export function emitCanonical(input: CanonicalEmitInput): void {
 }
 
 /**
- * Normalize the heartbeat's `platform` field (which uses snake_case
- * `claude_code`) to the canonical kebab-case Adapter type.
+ * Normalize the heartbeat's `platform` field to the canonical Adapter type.
  */
 export function normalizeAdapter(platform: string | undefined): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";

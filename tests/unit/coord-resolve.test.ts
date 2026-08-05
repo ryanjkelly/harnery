@@ -110,9 +110,9 @@ describe("detectAdapter", () => {
     expect(detectAdapter([])).toBe("cursor");
   });
 
-  test("legacy claude_code (underscore) maps to claude-code", () => {
-    expect(detectAdapter(["--adapter", "claude_code"])).toBe("claude-code");
-    process.env.HARNERY_AGENT_COORD_ADAPTER = "claude_code";
+  test("accepts the canonical claude-code adapter id", () => {
+    expect(detectAdapter(["--adapter", "claude-code"])).toBe("claude-code");
+    process.env.HARNERY_AGENT_COORD_ADAPTER = "claude-code";
     expect(detectAdapter([])).toBe("claude-code");
   });
 
@@ -176,7 +176,7 @@ describe("pid-map row format + resolveOwner", () => {
     // identity, which is what `whoami` was seen doing.
     writeFileSync(
       path.join(root, ".harnery", "pid-map", String(process.pid)),
-      "ghost-agent\tclaude_code\tl1",
+      "ghost-agent\tclaude-code\tl1",
       "utf8",
     );
     expect(resolveOwner({ payload: null, coordRoot: root })).toBeNull();
@@ -185,7 +185,7 @@ describe("pid-map row format + resolveOwner", () => {
   test("resolveOwner still trusts a live row written before start tokens existed", () => {
     writeFileSync(
       path.join(root, ".harnery", "pid-map", String(process.pid)),
-      "legacy-agent\tclaude_code",
+      "legacy-agent\tclaude-code",
       "utf8",
     );
     expect(resolveOwner({ payload: null, coordRoot: root })?.instance_id).toBe("legacy-agent");
@@ -196,7 +196,7 @@ describe("pid-map row format + resolveOwner", () => {
     // preferring the adapter row and silently downgrades to a fallback match.
     expect(parsePidmapRowPlatform("sess-abc\tcursor\tl12345")).toBe("cursor");
     expect(parsePidmapRowPlatform("sess-abc\tcursor")).toBe("cursor");
-    expect(parsePidmapRowPlatform("sess-abc")).toBe("claude_code");
+    expect(parsePidmapRowPlatform("sess-abc")).toBe("claude-code");
   });
 
   test("resolveOwner returns null when env unset, no payload, no pid-map hit", () => {
@@ -404,7 +404,7 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
     writeHeartbeat("agent-current", "sess-current", 30_000);
     writeHeartbeat("agent-recycled", "sess-recycled", 30_000);
-    writePidmapRow(root, process.pid, "agent-recycled", "claude_code");
+    writePidmapRow(root, process.pid, "agent-recycled", "claude-code");
 
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
     process.env.CLAUDE_CODE_SESSION_ID = "sess-current";
@@ -419,7 +419,7 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     // Preferring the env must not cost us the walk: an env session id with no
     // matching heartbeat has to fall through, not resolve to nothing.
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
-    writePidmapRow(root, process.pid, "agent-from-row", "claude_code");
+    writePidmapRow(root, process.pid, "agent-from-row", "claude-code");
 
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
     process.env.CLAUDE_CODE_SESSION_ID = "sess-with-no-heartbeat";

@@ -34,8 +34,9 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME } from "../core/config.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
+import type { SettingsFile } from "../core/hooks/adapter/wiring.ts";
 import { removeInstructions } from "../lib/instructions/apply.ts";
-import { type SettingsFile, unwireHooks } from "./init.ts";
+import { unwireHooks } from "./init.ts";
 
 interface DeinitOpts {
   adapter: string;

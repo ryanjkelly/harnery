@@ -76,7 +76,6 @@ interface LogsOpts {
   name?: string;
   follow?: boolean;
   gate?: boolean;
-  cloudflared?: boolean;
   provider?: boolean;
 }
 
@@ -916,7 +915,7 @@ function status(opts: StatusOpts): void {
     return;
   }
   if (states.length === 1) {
-    // Single tunnel: show the full detail block (backward-compatible).
+    // A single tunnel is clearer as a detail block than as a one-row table.
     statusDetail(states[0]);
     return;
   }
@@ -953,8 +952,7 @@ function logs(opts: LogsOpts): void {
   const name = resolveName(opts.name);
   const state = readState(name);
   const provider = state?.provider ?? "cloudflare";
-  const which =
-    opts.cloudflared || opts.provider ? providerLogFile(name, provider) : gateLogFile(name);
+  const which = opts.provider ? providerLogFile(name, provider) : gateLogFile(name);
   const path = cachePath("tunnel", which);
   if (!existsSync(path)) {
     emit.error({ code: "tunnel_no_log", message: `No log file at ${path}` });
@@ -1089,7 +1087,6 @@ export function registerTunnelCommand(
     .option("-f, --follow", "follow the log")
     .option("--gate", "tail the gate log (default)")
     .option("--provider", "tail the provider log instead")
-    .option("--cloudflared", "tail the Cloudflare provider log instead (legacy alias)")
     .action(logs);
 
   const allow = cmd

@@ -271,8 +271,8 @@ function isFresh(lastHeartbeat: string): boolean {
  *  - diff shows non-empty output (genuinely dirty)
  */
 function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
-  // Tolerate either path form: files_touched can hold absolute-under-coordRoot
-  // entries (legacy file-tracking) or canonical monorepo-relative ones.
+  // Tool payloads can provide either absolute-under-coordRoot or canonical
+  // monorepo-relative paths.
   const rel = relPath.startsWith(`${coordRoot}/`) ? relPath.slice(coordRoot.length + 1) : relPath;
   const abs = join(coordRoot, rel);
   if (!existsSync(abs)) return false;
@@ -305,7 +305,7 @@ function pruneClaimFromPeer(coordRoot: string, instanceId: string, relPath: stri
     const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     const files = (body.files_touched as string[] | undefined) ?? [];
     // Normalize both sides: files_touched can hold absolute-under-coordRoot
-    // entries (legacy projections) as well as canonical relative ones — an
+    // entries as well as canonical relative ones — an
     // exact-string filter silently no-ops on the mixed-form case and the
     // stale claim never heals.
     const norm = (p: string): string =>

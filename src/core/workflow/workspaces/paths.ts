@@ -9,11 +9,11 @@ import {
   statSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { FilesystemIdentity, ValidatedFilesystemRoot } from "./types.ts";
+import type { FilesystemIdentity, ValidatedFilesystemPath } from "./types.ts";
 
 const WINDOWS_AMBIGUOUS = /[<>:"|?*]|[ .]$/;
 
-export type ValidatedRoot = ValidatedFilesystemRoot;
+export type ValidatedRoot = ValidatedFilesystemPath;
 
 export interface OpenContainedDirectory {
   path: string;

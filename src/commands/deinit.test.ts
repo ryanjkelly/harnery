@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
+import type { SettingsFile } from "../core/hooks/adapter/wiring.ts";
 import { engineRemovalHint, shouldPromptForState } from "./deinit.ts";
-import { type SettingsFile, unwireHooks, wireHooks } from "./init.ts";
+import { unwireHooks, wireHooks } from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 const CLAUDE = ADAPTER_SPECS["claude-code"];

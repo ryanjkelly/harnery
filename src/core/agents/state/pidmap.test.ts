@@ -43,7 +43,7 @@ function deadPid(): number {
 
 /** A row in the pre-token two-field shape, as every existing map holds today. */
 function seedRow(pid: number, instanceId: string): void {
-  writeFileSync(join(pidmapDir, String(pid)), `${instanceId}\tclaude_code`, "utf8");
+  writeFileSync(join(pidmapDir, String(pid)), `${instanceId}\tclaude-code`, "utf8");
 }
 
 /**
@@ -52,7 +52,7 @@ function seedRow(pid: number, instanceId: string): void {
  * probe cannot distinguish from a healthy row.
  */
 function seedRecycledRow(pid: number, instanceId: string): void {
-  writeFileSync(join(pidmapDir, String(pid)), `${instanceId}\tclaude_code\tl1`, "utf8");
+  writeFileSync(join(pidmapDir, String(pid)), `${instanceId}\tclaude-code\tl1`, "utf8");
 }
 
 describe("prunePidmapDeadRows", () => {
@@ -78,7 +78,7 @@ describe("prunePidmapDeadRows", () => {
   });
 
   test("keeps a live row that carries a matching start token", () => {
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
     expect(prunePidmapDeadRows(root)).toBe(0);
     expect(existsSync(join(pidmapDir, String(process.pid)))).toBe(true);
   });
@@ -108,7 +108,7 @@ describe("writePidmapRow", () => {
     // 510 were dead, which is what let a recycled pid resolve to a long-gone
     // agent.
     for (let i = 0; i < 260; i++) seedRow(30000 + i, "ghost-instance");
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
 
     const rows = readdirSync(pidmapDir);
     expect(rows.length).toBeLessThan(260);
@@ -116,18 +116,18 @@ describe("writePidmapRow", () => {
   });
 
   test("stays idempotent for an unchanged row", () => {
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
     expect(readdirSync(pidmapDir)).toEqual([String(process.pid)]);
   });
 
   test("stamps a start token that survives a round trip", () => {
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
     const row = readFileSync(join(pidmapDir, String(process.pid)), "utf8");
     const parsed = parsePidmapRow(row);
 
     expect(parsed.instanceId).toBe("live-instance");
-    expect(parsed.platform).toBe("claude_code");
+    expect(parsed.platform).toBe("claude-code");
     // Linux stamps ticks-since-boot, scoped to the boot they are counted from;
     // anywhere the platform will not say, the field is absent and the row reads
     // as unverifiable rather than wrong.
@@ -137,10 +137,10 @@ describe("writePidmapRow", () => {
   });
 
   test("reads a pre-token row without inventing a token", () => {
-    const parsed = parsePidmapRow("some-instance\tclaude_code");
+    const parsed = parsePidmapRow("some-instance\tclaude-code");
     expect(parsed).toEqual({
       instanceId: "some-instance",
-      platform: "claude_code",
+      platform: "claude-code",
       startToken: undefined,
     });
   });
@@ -168,7 +168,7 @@ describe("the ps probe (a machine with no procfs)", () => {
   });
 
   test("writes a token, keeps the row, and still sees the instance", () => {
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
     const parsed = parsePidmapRow(readFileSync(join(pidmapDir, String(process.pid)), "utf8"));
 
     expect(parsed.startToken).toMatch(/^p\S/);
@@ -179,7 +179,7 @@ describe("the ps probe (a machine with no procfs)", () => {
   test("still catches a re-issued pid", () => {
     writeFileSync(
       join(pidmapDir, String(process.pid)),
-      "ghost-instance\tclaude_code\tpWed Jan  1 00:00:00 2020",
+      "ghost-instance\tclaude-code\tpWed Jan  1 00:00:00 2020",
       "utf8",
     );
     expect(instanceHasLivePid(root, "ghost-instance")).toBe(false);
@@ -190,7 +190,7 @@ describe("the ps probe (a machine with no procfs)", () => {
     // A machine does not change probes, so this only happens if one somehow
     // did. Dropping the row costs one rewrite; believing it across dialects
     // would mean comparing a tick count against a date.
-    writeFileSync(join(pidmapDir, String(process.pid)), "x\tclaude_code\tl12345", "utf8");
+    writeFileSync(join(pidmapDir, String(process.pid)), "x\tclaude-code\tl12345", "utf8");
     expect(prunePidmapDeadRows(root)).toBe(1);
   });
 });
@@ -215,7 +215,7 @@ describe("instanceHasLivePid", () => {
 
   test("one good row outweighs a recycled one for the same instance", () => {
     seedRecycledRow(deadPid(), "live-instance");
-    writePidmapRow(root, process.pid, "live-instance", "claude_code");
+    writePidmapRow(root, process.pid, "live-instance", "claude-code");
     expect(instanceHasLivePid(root, "live-instance")).toBe(true);
   });
 });

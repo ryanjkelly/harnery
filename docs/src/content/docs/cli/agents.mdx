@@ -27,7 +27,7 @@ itself feels off.
 harn agents whoami              # this agent's name + instance_id + files claimed
 harn agents list                # all active agents (folds transients by default)
 harn agents status              # status box (name, age, files, peers, task)
-harn agents status --final      # issue the box only after owned Git work is finalized
+harn agents status --end-turn   # issue the box only after owned Git work is finalized
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
 harn agents identity assume <name-or-id> # continue a durable role in this session
 harn agents show <name>         # deep-dive on one peer: registry state + session history
@@ -90,7 +90,7 @@ The three orientation commands.
   declared task, last turn summary, context usage, files held, and a one-line
   peer roster. `--json` returns the same data unformatted. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
-  process tree doesn't lead back to the agent's session pid. Add `--final` for
+  process tree doesn't lead back to the agent's session pid. Add `--end-turn` for
   the required final call: Harnery checks the current session's held paths,
   enclosing submodule pointers, and touched repositories before issuing the
   box. Dirty held work or commits missing from a configured remote make the
@@ -186,8 +186,8 @@ ended mid-edit) and a peer is now blocked on a path you no longer care about.
 
 The layer's own diagnostics.
 
-- **`health`** is a one-screen rollup: heal events, schema validity,
-  commit-guard activity, council activity, and anomalies. Built for a daily
+- **`health`** is a one-screen rollup: heal events, council activity, zombie
+  detection, and anomalies. Built for a daily
   glance or dashboard ingestion. `--since <window>` sets the window (default
   `24h`); `--json` for structured output.
 - **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
@@ -211,7 +211,7 @@ harn agents set-task "refactoring the ingest retry loop"
 harn agents status
 
 # Optional guarded form: require owned Git work to be committed and pushed
-harn agents status --final
+harn agents status --end-turn
 
 # Dig into a peer's current state, then its full history
 harn agents show Foo
@@ -231,7 +231,7 @@ harn agents health --since 24h
 ## The status box
 
 `harn agents status` prints the box without inspecting Git. The guarded
-`harn agents status --final` form first verifies that the paths held by this
+`harn agents status --end-turn` form first verifies that the paths held by this
 session are committed and that the repositories involved are pushed. It follows
 held paths into submodules and checks the enclosing gitlink too. Active edits
 held by another session do not block the check.

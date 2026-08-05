@@ -104,7 +104,7 @@ describe("groupUnclaim path-form robustness (the post-commit release path)", () 
     expect(hits.map((h) => h.instance_id)).toEqual(["parent"]);
   });
 
-  test("releases BOTH forms of the same file in one call (legacy dupes)", () => {
+  test("releases both absolute and repository-relative forms in one call", () => {
     seedPeer("parent", "sess-1", [join(root, "docs/a.md"), "docs/a.md", "docs/b.md"]);
     groupUnclaim(root, "sess-1", "docs/a.md");
     expect(peerFiles("parent")).toEqual(["docs/b.md"]);

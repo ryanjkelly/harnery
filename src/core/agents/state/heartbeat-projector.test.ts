@@ -420,7 +420,7 @@ describe("projectHeartbeats: does not resurrect dead agents from terminal events
         event_id: "01MS1",
         event_type: "session.start",
         ts: "2026-06-10T03:00:00Z",
-        data: { name: "Owen", kind: "session", platform: "claude_code" },
+        data: { name: "Owen", kind: "session", platform: "claude-code" },
       },
       {
         ...base,

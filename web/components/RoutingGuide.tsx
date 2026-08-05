@@ -71,7 +71,7 @@ export function NextActionBanner({
   councilId: string;
   /** The member whose prompt is copy-able right now, or null when all routed. */
   activeMember: string | null;
-  /** Coord-layer platform of the active member ("claude_code" | "codex" | "cursor"), when known. */
+  /** Coord-layer platform of the active member ("claude-code" | "codex" | "cursor"), when known. */
   activeMemberPlatform?: string | null;
   /** True when the active member's agent is heartbeating right now. */
   activeMemberWorking?: boolean;

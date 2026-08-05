@@ -66,7 +66,6 @@ interface BrowseOpts {
   // `opts.noX`. So `--no-screenshot` toggles `screenshot`, `--no-full-page`
   // toggles `fullPage`, `--no-cookies` toggles `cookies`.
   screenshot?: boolean;
-  domOnly?: boolean;
   fullPage?: boolean;
   snapshot?: boolean;
   html?: boolean;
@@ -201,7 +200,6 @@ export function registerBrowseCommand(
       "Output prefix for the trio (writes <prefix>.png, .html, .json). Defaults to ~/.cache/harnery/browse/last.",
     )
     .option("--no-screenshot", "Skip the .png in the trio (DOM + JSON only)")
-    .option("--dom-only", "Alias for --no-screenshot")
     .option("--no-full-page", "Capture only the viewport, not the full scrollable page")
     .option("--snapshot", "Print body innerText to stdout (skips file writes)")
     .option(
@@ -1155,7 +1153,7 @@ async function runTrioMode(
 
   const written: string[] = [];
 
-  const skipScreenshot = opts.screenshot === false || opts.domOnly === true;
+  const skipScreenshot = opts.screenshot === false;
   let pngPath: string | undefined;
   let pngBytes: number | undefined;
   let captureEvalResult: unknown;
@@ -1176,9 +1174,7 @@ async function runTrioMode(
     }
     written.push(pngPath);
   } else if (opts.captureEvaluate) {
-    throw new Error(
-      "--capture-evaluate requires a screenshot; remove --no-screenshot / --dom-only.",
-    );
+    throw new Error("--capture-evaluate requires a screenshot; remove --no-screenshot.");
   }
 
   const htmlPath = `${prefix}.html`;
@@ -1232,9 +1228,7 @@ async function runTrioMode(
   let savedBaseline: SaveBaselineResult | undefined;
   let diff: DiffResult | undefined;
   if ((opts.baseline || opts.diff) && !pngPath) {
-    throw new Error(
-      "--baseline / --diff require a screenshot; --no-screenshot / --dom-only disables it.",
-    );
+    throw new Error("--baseline / --diff require a screenshot; --no-screenshot disables it.");
   }
   if (opts.baseline && pngPath) {
     savedBaseline = saveBaseline(pngPath, opts.baseline);

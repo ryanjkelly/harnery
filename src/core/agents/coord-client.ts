@@ -79,7 +79,7 @@ export interface Heartbeat {
   turn_summary?: string | null;
   /** UTC ISO-8601 timestamp when turn_summary was last refreshed. */
   turn_summary_updated_at?: string | null;
-  /** Hook client: `claude_code` (default) or `cursor`. Cursor Phase 1. */
+  /** Hook client: `claude-code` (default) or `cursor`. Cursor Phase 1. */
   platform?: string;
 }
 
@@ -260,10 +260,10 @@ export function parsePidmapRowOwner(row: string): string {
   return tab >= 0 ? trimmed.slice(0, tab) : trimmed;
 }
 
-/** Parse platform from a pid-map row; legacy rows default to `claude_code`. */
+/** Parse platform from a pid-map row; legacy rows default to `claude-code`. */
 export function parsePidmapRowPlatform(row: string): string {
   const platform = row.trim().split("\t")[1]?.trim();
-  return platform || "claude_code";
+  return platform || "claude-code";
 }
 
 /** Parse the start token from a pid-map row; rows written before it carry none. */
@@ -368,7 +368,7 @@ function readPidmapRow(pidmapDir: string, pid: number): string | null {
  *
  * Pid-map files are `instance_id` or `instance_id\tplatform` (Cursor Phase 1).
  * Prefer a row whose platform matches `HARNERY_AGENT_COORD_PLATFORM` (default
- * `claude_code`); otherwise return the first owner seen on the walk.
+ * `claude-code`); otherwise return the first owner seen on the walk.
  *
  * Subagents intentionally do not write pid-map entries; a Bash-tool ppid-walk
  * from inside a subagent therefore resolves to the *parent's* pid-map entry.
@@ -443,7 +443,7 @@ export function resolveOwnerByPidmap(root: string): {
   const pidmapDir = resolve(root, ".harnery", "pid-map");
   if (!existsSync(pidmapDir)) return { owner: null, source: "none" };
 
-  const prefer = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim() || "claude_code";
+  const prefer = process.env.HARNERY_AGENT_COORD_PLATFORM?.trim() || "claude-code";
   let fallbackOwner: string | null = null;
   let pid: number | null = process.pid;
 

@@ -1,11 +1,9 @@
 /**
  * Command/narration event emitter for the coordination layer.
  *
- * `writeSessionEvent` emits command + narration events straight to the
+ * `writeSessionEvent` emits command and narration events straight to the
  * **canonical** `.harnery/events.ndjson` (alongside the hook events), which the
- * `/live` web viewer reads. The exported surface (`writeSessionEvent`,
- * `newCmdId`, `clampField`, `readLastIntent`) is stable so the session-tee
- * middleware callers need no edits.
+ * `/live` web viewer reads.
  */
 
 import { randomBytes } from "node:crypto";
@@ -15,28 +13,16 @@ import { dirname, resolve } from "node:path";
 import { normalizeAdapter, resolveEmitRoot } from "./canonical-emit.ts";
 import { emit } from "./events/emit.ts";
 
-/** Event types accepted by `writeSessionEvent`. Only the command stream +
- * narration are emitted canonically; the coord/state types are accepted for
- * call-site compatibility but are no-ops (the agents CLI emits those itself). */
-export type SessionEventType =
-  | "command_start"
-  | "output"
-  | "command_end"
-  | "end_of_turn"
-  | "hook_event"
-  | "set_task"
-  | "file_claim"
-  | "file_release"
-  | "peer_change"
-  | "narration";
+/** Event types accepted by `writeSessionEvent`. */
+export type SessionEventType = "command_start" | "output" | "command_end" | "narration";
 
 /**
  * Resolved path of the ndjson sidecar file. Lives inside `.harnery/` so a
  * containerized reader can pick it up through a single bind mount.
  */
-export function sessionEventsPath(): string {
+export function canonicalEventsPath(): string {
   // Explicit override (tests + non-monorepo invocations).
-  const explicit = process.env.HARNERY_OUTPUT_SESSION_EVENTS;
+  const explicit = process.env.HARNERY_EVENTS_PATH;
   if (explicit) return explicit;
   // Superproject-aware root resolution (git first, cwd walk fallback) via
   // resolveEmitRoot. A plain cwd walk here mis-anchored to a NESTED
@@ -64,7 +50,7 @@ export function newCmdId(): string {
  */
 export function readLastIntent(instanceId?: string): string | null {
   if (!instanceId) return null;
-  // Same superproject-aware root resolution as sessionEventsPath(): the
+  // Same superproject-aware root resolution as canonicalEventsPath(): the
   // intent stamp is written by the PreToolUse hook into the SUPERPROJECT's
   // .harnery/, so a nested-`.harnery/` cwd must not redirect the read.
   const root = resolveEmitRoot();
@@ -81,15 +67,7 @@ export function readLastIntent(instanceId?: string): string | null {
   }
 }
 
-/**
- * Dual-write: mirror command/narration session-events
- * into the canonical `.harnery/events.ndjson` stream so the legacy
- * session-events.ndjson writer + its web consumers can be retired.
- * Only the command-stream + narration types migrate; the coord/state types
- * (`set_task`, `file_claim`, `peer_change`, …) are already emitted canonically
- * by the agents CLI, so re-emitting them here would double-count.
- */
-const CANONICAL_TYPE: Partial<Record<SessionEventType, string>> = {
+const CANONICAL_TYPE: Record<SessionEventType, string> = {
   command_start: "command.start",
   output: "command.output",
   command_end: "command.end",
@@ -131,7 +109,7 @@ function enrichFromHeartbeat(coordRoot: string, instanceId: string): HeartbeatEn
   }
 }
 
-/** Project the flat legacy `fields` into the canonical event's `data` shape.
+/** Project the flat middleware `fields` into the canonical event's `data` shape.
  * Unknown types never reach here, guarded by CANONICAL_TYPE. */
 function canonicalData(
   type: SessionEventType,
@@ -158,15 +136,15 @@ function canonicalData(
 
 /** Emit a command/narration event to the canonical stream. Swallows every
  * error and skips when identity can't be resolved: telemetry must never break
- * (or slow down) a command. Non-command types return early. */
+ * or slow down a command. */
 function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unknown>): void {
   const eventType = CANONICAL_TYPE[type];
   if (!eventType) return;
   const instanceId = typeof fields.instance_id === "string" ? fields.instance_id : undefined;
   if (!instanceId) return;
   try {
-    // coordRoot = the dir containing `.harnery/`; sessionEventsPath() anchors it.
-    const coordRoot = dirname(dirname(sessionEventsPath()));
+    // coordRoot = the dir containing `.harnery/`; canonicalEventsPath() anchors it.
+    const coordRoot = dirname(dirname(canonicalEventsPath()));
     const enrich = enrichFromHeartbeat(coordRoot, instanceId);
     if (!enrich) return;
     emit(coordRoot, {
@@ -182,16 +160,11 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
 }
 
 /**
- * Emit a session event. Command + narration events
- * are written to the canonical `.harnery/events.ndjson`; the coord/state types
- * are accepted for call-site compatibility but are no-ops here (the agents CLI
- * emits those itself). Best-effort, never throws into the caller; a command
- * must never break or slow on telemetry. The `agentName` arg is retained for
- * the stable call signature (canonical events key on instance_id, not name).
+ * Emit a command or narration event to `.harnery/events.ndjson`. Best-effort,
+ * never throws into the caller; telemetry must not break or slow a command.
  */
 export function writeSessionEvent(
   type: SessionEventType,
-  _agentName: string,
   fields: Record<string, unknown> = {},
 ): void {
   emitCanonicalCommand(type, fields);

@@ -2,4 +2,4 @@
 "harnery": patch
 ---
 
-Make automatic Git finalization a default-off host policy while keeping `agents status --final` available as an explicit check.
+Make automatic Git finalization a default-off host policy while keeping `agents status --end-turn` available as an explicit check.

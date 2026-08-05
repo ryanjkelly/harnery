@@ -137,7 +137,7 @@ describe("agentsRequireGitFinalization", () => {
     const root = makeRoot(`{ "binName": "acme", "agents": { "requireGitFinalization": true } }`);
     roots.push(root);
     expect(agentsRequireGitFinalization(root)).toBe(true);
-    expect(endOfTurnStatusCommand(root)).toBe("acme agents status --final");
+    expect(endOfTurnStatusCommand(root)).toBe("acme agents status --end-turn");
   });
 
   test("environment override wins in both directions", () => {
@@ -166,18 +166,13 @@ describe("coordFreshnessSeconds", () => {
   const roots: string[] = [];
   const saved = {
     coord: process.env.HARNERY_AGENT_COORD_FRESHNESS,
-    legacy: process.env.HARNERY_AGENT_FRESHNESS,
   };
   beforeEach(() => {
     delete process.env.HARNERY_AGENT_COORD_FRESHNESS;
-    delete process.env.HARNERY_AGENT_FRESHNESS;
   });
   afterEach(() => {
     for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
-    for (const [k, v] of [
-      ["HARNERY_AGENT_COORD_FRESHNESS", saved.coord],
-      ["HARNERY_AGENT_FRESHNESS", saved.legacy],
-    ] as const) {
+    for (const [k, v] of [["HARNERY_AGENT_COORD_FRESHNESS", saved.coord]] as const) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
@@ -200,13 +195,6 @@ describe("coordFreshnessSeconds", () => {
     const root = makeRoot(`{ "coord": { "freshness_seconds": 1200 } }`);
     roots.push(root);
     expect(coordFreshnessSeconds(root)).toBe(45);
-  });
-
-  test("legacy HARNERY_AGENT_FRESHNESS alias is honored", () => {
-    process.env.HARNERY_AGENT_FRESHNESS = "90";
-    const root = makeRoot(`{}`);
-    roots.push(root);
-    expect(coordFreshnessSeconds(root)).toBe(90);
   });
 
   test("invalid config value falls back to the default", () => {
@@ -352,7 +340,6 @@ describe("user-global config layer", () => {
   test("a user-global value is read when the project omits it", () => {
     const root = withGlobal(`{ "coord": { "freshness_seconds": 300 } }`, `{}`);
     delete process.env.HARNERY_AGENT_COORD_FRESHNESS;
-    delete process.env.HARNERY_AGENT_FRESHNESS;
     expect(coordFreshnessSeconds(root)).toBe(300);
   });
 

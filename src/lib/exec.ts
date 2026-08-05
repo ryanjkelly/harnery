@@ -36,7 +36,7 @@ export interface ExecOpts {
 /**
  * Run a shell command and return stdout/stderr/exitCode.
  *
- * `trim` defaults to true (back-compat with every existing caller). Pass
+ * `trim` defaults to true. Pass
  * `trim: false` when the consumer depends on leading whitespace. `git status
  * --porcelain` is the canonical case: the first line of ` M PATH` output gets
  * its leading space stripped by .trim(), shifting the X/Y status columns and

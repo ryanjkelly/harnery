@@ -427,16 +427,6 @@ describe("run-level class in the proof packet (ADR 0046)", () => {
     writeFileSync(path, `${JSON.stringify(proof)}\n`, "utf8");
     expect(() => readWorkflowProof(root, "wf-test")).toThrow(/schema/);
   });
-
-  test("a pre-ADR-0046 proof with no run.class still reads (back-compat)", () => {
-    // The live coord root holds proofs written before the field existed; they
-    // must load unchanged and read as charged.
-    const path = join(root, ".harnery", "workflows", "wf-test", "proof.json");
-    const proof = sampleProof();
-    expect("class" in proof.run).toBe(false);
-    writeFileSync(path, `${JSON.stringify(proof)}\n`, "utf8");
-    expect(readWorkflowProof(root, "wf-test").run.class).toBeUndefined();
-  });
 });
 
 describe("evidence label overflow", () => {

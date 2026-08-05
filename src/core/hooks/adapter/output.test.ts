@@ -94,7 +94,7 @@ describe("emitStopBlock", () => {
     expect(message).toContain("agents status");
   });
 
-  test("cursor remediation adds --final only for an opted-in host", () => {
+  test("cursor remediation adds --end-turn only for an opted-in host", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-stop-output-"));
     mkdirSync(join(root, ".harnery"), { recursive: true });
     try {
@@ -106,7 +106,7 @@ describe("emitStopBlock", () => {
       emitStopBlock("cursor", verdict, root);
       const ordinary = JSON.parse(outChunks.join("").trim()) as { followup_message?: string };
       expect(ordinary.followup_message).toContain("acme agents status");
-      expect(ordinary.followup_message).not.toContain("status --final");
+      expect(ordinary.followup_message).not.toContain("status --end-turn");
 
       capture();
       writeFileSync(
@@ -115,7 +115,7 @@ describe("emitStopBlock", () => {
       );
       emitStopBlock("cursor", verdict, root);
       const guarded = JSON.parse(outChunks.join("").trim()) as { followup_message?: string };
-      expect(guarded.followup_message).toContain("acme agents status --final");
+      expect(guarded.followup_message).toContain("acme agents status --end-turn");
     } finally {
       process.stdout.write = realOut;
       process.stderr.write = realErr;

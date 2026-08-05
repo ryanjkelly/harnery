@@ -56,9 +56,9 @@ The host CLI's bin name. Harnery's coord binaries (`agent-hook`, `agent-coord`) 
 | `requireGitFinalization` | bool | `false` | Require the guarded Git check at the end of tool-using turns |
 
 When enabled, automatic prompts and Stop remediation request
-`agents status --final` instead of plain `agents status`. The Stop verdict also
+`agents status --end-turn` instead of plain `agents status`. The Stop verdict also
 requires evidence that the guarded command ran; an ordinary status call does not
-satisfy the opted-in policy. The `--final` capability remains available for
+satisfy the opted-in policy. The `--end-turn` capability remains available for
 manual use when this setting is false.
 
 ```jsonc
@@ -73,7 +73,7 @@ Env override per process: `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0`.
 | --------------------- | ------- | ------- | ----------- |
 | `freshness_seconds`   | number  | `600`   | Heartbeat age (seconds) above which the sweeper prunes an agent (10 min) |
 
-Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env (canonical; `HARNERY_AGENT_FRESHNESS` is a legacy alias) → this `config.jsonc` key → `600`.
+Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env → this `config.jsonc` key → `600`.
 
 ## `artifacts`
 
@@ -174,7 +174,7 @@ Every section above is read from `config.jsonc` (both the user-global and projec
 
 | Section | Config keys | Env override | Other |
 | --- | --- | --- | --- |
-| `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` (alias `HARNERY_AGENT_FRESHNESS`) | (none) |
+| `coord` | `freshness_seconds` | `HARNERY_AGENT_COORD_FRESHNESS` | (none) |
 | `artifacts` | `default_retention_days` | `HARNERY_ARTIFACT_RETENTION_DAYS` | `artifacts create --days` |
 | `backup` | `repo`, `password_file`, `keep_*` | `HARNERY_RESTIC_REPO`, `HARNERY_RESTIC_PASSWORD_FILE` | `--keep-*` flags override the prune policy per run |
 | `sync` | `remote`, `prefix` | `HARNERY_SYNC_REMOTE`, `HARNERY_SYNC_PREFIX` | `~/.config/harnery/sync.json` (written by `harn sync init`) is a lower-precedence fallback than the `sync` config section |

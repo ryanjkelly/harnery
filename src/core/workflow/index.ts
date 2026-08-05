@@ -143,7 +143,6 @@ export type {
   WorkspaceProviderCapabilities,
   WorkspaceProviderRef,
   WorkspaceResourceState,
-  WorkspaceUnsupportedExecutionEvidence,
 } from "./workspaces/index.ts";
 export {
   applyIntegration,

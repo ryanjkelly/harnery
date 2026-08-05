@@ -100,7 +100,7 @@ function identityAssumedLine(instanceId: string, name: string, agentId: string):
 describe("mergeIdentitiesFromChunk", () => {
   test("harvests session + subagent starts, skips non-start and nameless rows", () => {
     const chunk = [
-      startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+      startLine("session.start", "sess-1", "Anna", { platform: "claude-code" }),
       NON_START,
       startLine("subagent.start", "sub-1", "Bob", { agent_type: "Explore" }),
       startLine("session.start", "sess-2", undefined), // nameless → skipped
@@ -109,7 +109,7 @@ describe("mergeIdentitiesFromChunk", () => {
     const out = mergeIdentitiesFromChunk(chunk, {});
     expect(Object.keys(out).sort()).toEqual(["sess-1", "sub-1"]);
     expect(out["sess-1"]!.kind).toBe("session");
-    expect(out["sess-1"]!.platform).toBe("claude_code");
+    expect(out["sess-1"]!.platform).toBe("claude-code");
     expect(out["sub-1"]!.kind).toBe("subagent");
     expect(out["sub-1"]!.agent_type).toBe("Explore");
     expect(out["sub-1"]!.session_id).toBe("parent-sess");
@@ -153,7 +153,7 @@ describe("mergeIdentitiesFromChunk", () => {
   test("turn.stop folds data.model onto the existing identity; latest wins", () => {
     const into = mergeIdentitiesFromChunk(
       [
-        startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+        startLine("session.start", "sess-1", "Anna", { platform: "claude-code" }),
         turnStopLine("sess-1", "claude-opus-4-8"),
         turnStopLine("sess-1", "claude-fable-5"),
       ].join("\n"),
@@ -170,9 +170,9 @@ describe("mergeIdentitiesFromChunk", () => {
   test("a re-emitted session.start (resume) preserves the harvested model", () => {
     const into = mergeIdentitiesFromChunk(
       [
-        startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+        startLine("session.start", "sess-1", "Anna", { platform: "claude-code" }),
         turnStopLine("sess-1", "gpt-5.5"),
-        startLine("session.start", "sess-1", "Anna", { platform: "claude_code" }),
+        startLine("session.start", "sess-1", "Anna", { platform: "claude-code" }),
       ].join("\n"),
       {},
     );

@@ -354,7 +354,7 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
 }
 
 function adapterToPlatform(adapter: string): string {
-  if (adapter === "claude-code") return "claude_code";
+  if (adapter === "claude-code") return "claude-code";
   if (adapter === "cursor") return "cursor";
   if (adapter === "codex") return "codex";
   return adapter;

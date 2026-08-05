@@ -76,7 +76,6 @@ import { isWorkspaceAttestation } from "./validate.ts";
 const PROVIDER_ID = "local-git-worktree";
 const PROVIDER_VERSION = "1";
 const WORKSPACE_PARENT_SEGMENT = ".harnery-workspaces";
-const LEGACY_WORKSPACE_PARENT_SEGMENT = "harnery-workspaces";
 const LOCK_STALE_MS = 5 * 60 * 1_000;
 const OBJECT_FORMAT = /^[a-f0-9]{40,64}$/;
 const REF_FORMAT = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
@@ -308,7 +307,7 @@ async function allocate(
  */
 function claimedParentSegment(claim: WorkspaceClaim): string {
   const segment = basename(dirname(claim.workspace_root));
-  if (segment !== WORKSPACE_PARENT_SEGMENT && segment !== LEGACY_WORKSPACE_PARENT_SEGMENT) {
+  if (segment !== WORKSPACE_PARENT_SEGMENT) {
     throw new Error("claimed workspace path is not under a provider-owned workspace parent");
   }
   return segment;

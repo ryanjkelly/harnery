@@ -25,7 +25,7 @@ export interface RoutingPrompt {
   state: CouncilPromptState;
   order: number;
   activity?: MemberActivity | null;
-  /** Coord-layer platform of the member's session ("claude_code" | "codex" | "cursor"), when known. */
+  /** Coord-layer platform of the member's session ("claude-code" | "codex" | "cursor"), when known. */
   platform?: string | null;
   /** The model the member's session last used (e.g. "gpt-5.5"), when known. */
   model?: string | null;

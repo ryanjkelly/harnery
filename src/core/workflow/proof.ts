@@ -40,13 +40,13 @@ import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAttestation,
   WorkspaceBinding,
+  WorkspaceCompatibilityExecutionEvidence,
   WorkspaceExecutionEvidence,
-  WorkspaceUnsupportedExecutionEvidence,
 } from "./workspaces/index.ts";
 import {
   isWorkspaceBoundExecutionEvidence,
+  isWorkspaceCompatibilityExecutionEvidence,
   isWorkspaceExecutionEvidence,
-  isWorkspaceUnsupportedExecutionEvidence,
   workspaceProofLifecycle,
 } from "./workspaces/validate.ts";
 
@@ -101,7 +101,7 @@ export interface BuildWorkflowProofInput {
   blocked?: { reason: string; decisionId?: string };
   workspaceBinding?: WorkspaceBinding;
   workspaceAttestation?: WorkspaceAttestation;
-  workspaceFallback?: WorkspaceUnsupportedExecutionEvidence;
+  workspaceFallback?: WorkspaceCompatibilityExecutionEvidence;
   result?: unknown;
   error?: string;
 }
@@ -401,7 +401,7 @@ export function readWorkflowProof(coordRoot: string, runId: string): WorkflowPro
       ? isWorkspaceBoundExecutionEvidence(proofExecution, runId) &&
         stableDigest(proofExecution.binding) === stableDigest(manifestBinding)
       : manifestFallback !== undefined
-        ? isWorkspaceUnsupportedExecutionEvidence(proofExecution, runId) &&
+        ? isWorkspaceCompatibilityExecutionEvidence(proofExecution, runId) &&
           stableDigest(proofExecution) === stableDigest(manifestFallback)
         : proofExecution === undefined;
   if (!executionMatches) {

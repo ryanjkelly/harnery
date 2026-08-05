@@ -14,9 +14,9 @@ import { appendWorkflowTranscriptEvent, stableDigest, writeWorkspaceRequest } fr
 import type {
   WorkspaceAttestation,
   WorkspaceBinding,
+  WorkspaceCompatibilityExecutionEvidence,
   WorkspaceIsolation,
   WorkspaceProvider,
-  WorkspaceUnsupportedExecutionEvidence,
 } from "./types.ts";
 import { isWorkspaceAttestation, isWorkspaceBinding } from "./validate.ts";
 
@@ -36,7 +36,7 @@ export async function resolveWorkspaceBinding(input: {
   workContext: Readonly<WorkflowWorkContext> | undefined;
   attemptContext: Readonly<WorkflowAttemptContext> | undefined;
   policy: NormalizedPolicy | undefined;
-  onUnsupportedFallback?: (evidence: WorkspaceUnsupportedExecutionEvidence) => void;
+  onUnsupportedFallback?: (evidence: WorkspaceCompatibilityExecutionEvidence) => void;
 }): Promise<WorkspaceBinding | undefined> {
   if (input.isolation === "shared") return undefined;
   if (
@@ -47,6 +47,13 @@ export async function resolveWorkspaceBinding(input: {
     throw new Error(`unsupported workflow isolation ${JSON.stringify(input.isolation)}`);
   }
   if (input.resumeState && !input.resumeState.manifest.execution.workspace_binding) {
+    const frozenFallback = input.resumeState.manifest.execution.workspace_fallback;
+    if (!frozenFallback) {
+      throw new Error(
+        `workflow run ${input.runId} requested ${input.isolation} isolation without frozen workspace evidence`,
+      );
+    }
+    input.onUnsupportedFallback?.(frozenFallback);
     return undefined;
   }
   const capability = input.isolation as WorkspaceIsolation;
@@ -55,7 +62,7 @@ export async function resolveWorkspaceBinding(input: {
     if (input.resumeState?.manifest.execution.workspace_binding) {
       throw new Error("isolated workflow resume requires the frozen workspace provider");
     }
-    const fallback: WorkspaceUnsupportedExecutionEvidence = {
+    const fallback: WorkspaceCompatibilityExecutionEvidence = {
       schema_version: 1,
       run_id: input.runId,
       requested_isolation: capability,
@@ -163,7 +170,7 @@ export async function resolveWorkspaceBinding(input: {
                 message: `provider does not support ${capability} isolation`,
               },
             ];
-      const fallback: WorkspaceUnsupportedExecutionEvidence = {
+      const fallback: WorkspaceCompatibilityExecutionEvidence = {
         schema_version: 1,
         run_id: input.runId,
         requested_isolation: capability,

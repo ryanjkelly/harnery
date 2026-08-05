@@ -21,7 +21,7 @@ import { readWorkflowRunManifest, workflowScriptDigest } from "../workflow/run-s
 import { WORKFLOW_TRANSCRIPT_EVENT_BYTES, workflowTranscriptPath } from "../workflow/transcript.ts";
 import { isWorkspaceBoundExecutionEvidence } from "../workflow/workspaces/validate.ts";
 
-export const WORK_INTENT_SCHEMA_VERSION = 1 as const;
+export const WORK_INTENT_SCHEMA_VERSION = 2 as const;
 export const WORK_EVENT_SCHEMA_VERSION = 1 as const;
 
 const WORK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -77,12 +77,11 @@ export interface WorkIntent {
   dependencies: string[];
   workflow: { path: string; sha256: string };
   max_attempts: number;
-  /** Ceiling on CONSECUTIVE uncharged attempts (ADR 0046), separate from
+  /** Ceiling on consecutive uncharged attempts (ADR 0046), separate from
    * max_attempts. An upstream outage produces uncharged attempt after uncharged
    * attempt; without a bound it would retry forever. At the bound the item stops
-   * and reports it is blocked on an outside service. Optional for back-compat:
-   * an intent written before ADR 0046 has none and falls back to the default. */
-  max_uncharged_attempts?: number;
+   * and reports it is blocked on an outside service. */
+  max_uncharged_attempts: number;
   source?: { kind: "human" | "workflow" | "external"; ref?: string };
   created_at: string;
 }
@@ -551,7 +550,7 @@ function deriveWorkProjection(
     // Count trailing consecutive uncharged attempts in the current window. The
     // bound is the only brake on an outage that never ends, so at the limit the
     // item stops and names the outside service — distinct from work-blocked.
-    const maxUncharged = intent.max_uncharged_attempts ?? DEFAULT_MAX_UNCHARGED_ATTEMPTS;
+    const maxUncharged = intent.max_uncharged_attempts;
     let trailingUncharged = 0;
     for (let index = currentAttempts.length - 1; index >= 0; index--) {
       if (currentAttempts[index]!.uncharged === undefined) break;
@@ -1041,12 +1040,9 @@ function validateWorkIntent(intent: WorkIntent, workId: string): void {
     !Number.isSafeInteger(intent.max_attempts) ||
     intent.max_attempts < 1 ||
     intent.max_attempts > 100 ||
-    // Optional for back-compat: absent on pre-ADR-0046 intents. When present it
-    // must be a valid bound.
-    (intent.max_uncharged_attempts !== undefined &&
-      (!Number.isSafeInteger(intent.max_uncharged_attempts) ||
-        intent.max_uncharged_attempts < 1 ||
-        intent.max_uncharged_attempts > 100))
+    !Number.isSafeInteger(intent.max_uncharged_attempts) ||
+    intent.max_uncharged_attempts < 1 ||
+    intent.max_uncharged_attempts > 100
   ) {
     throw new Error(`work intent ${workId} has an unsupported or mismatched schema`);
   }

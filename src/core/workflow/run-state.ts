@@ -33,12 +33,12 @@ import { isCanonicalWorkflowWorkContext } from "./work-context.ts";
 import type {
   WorkspaceAllocationRequest,
   WorkspaceBinding,
-  WorkspaceUnsupportedExecutionEvidence,
+  WorkspaceCompatibilityExecutionEvidence,
 } from "./workspaces/index.ts";
 import {
   assertWorkspaceManifestAuthority,
   isWorkspaceBinding,
-  isWorkspaceUnsupportedExecutionEvidence,
+  isWorkspaceCompatibilityExecutionEvidence,
 } from "./workspaces/validate.ts";
 
 export const WORKFLOW_RUN_MANIFEST_SCHEMA_VERSION = 1 as const;
@@ -70,7 +70,7 @@ export interface WorkflowRunManifest {
     policy?: NormalizedPolicy;
     specialists?: Record<string, WorkflowSpecialistProfile>;
     workspace_binding?: WorkspaceBinding;
-    workspace_fallback?: WorkspaceUnsupportedExecutionEvidence;
+    workspace_fallback?: WorkspaceCompatibilityExecutionEvidence;
   };
 }
 
@@ -307,9 +307,9 @@ function validWorkspaceBinding(binding: WorkspaceBinding | undefined): boolean {
 }
 
 function validWorkspaceFallback(
-  fallback: WorkspaceUnsupportedExecutionEvidence | undefined,
+  fallback: WorkspaceCompatibilityExecutionEvidence | undefined,
 ): boolean {
-  return fallback === undefined || isWorkspaceUnsupportedExecutionEvidence(fallback);
+  return fallback === undefined || isWorkspaceCompatibilityExecutionEvidence(fallback);
 }
 
 function validSpecialists(

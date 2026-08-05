@@ -110,18 +110,6 @@ const RECENT_EVENT_WINDOW_LINES = 5_000;
  */
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
 
-/**
- * The pre-marker message shape, still recognized on purpose.
- *
- * A followup already sitting in the stream was written by whichever build was
- * running when it fired. An agent whose session spans an upgrade would otherwise
- * keep alternating until the first new-format followup appeared, which is the
- * exact failure this change removes. Recognizing the older trailing form closes
- * that rollout window at no cost: it only ever appears in a `prompt_text`
- * because Harnery put it there.
- */
-const STOP_REMEDIATION_LEGACY_MARKER = "[agent-hook stop]: rule=";
-
 /** How far back the remediation walk may travel. Adapters cap their own
  * followup chains (Cursor's `loop_limit`), and each prompt can appear once per
  * observing adapter, so this only guards a pathological stream. */
@@ -130,7 +118,7 @@ const MAX_REMEDIATION_WALK_BACK = 16;
 function isStopRemediationPrompt(event: CanonicalEvent): boolean {
   const text = event.data.prompt_text;
   if (typeof text !== "string") return false;
-  return text.includes(STOP_REMEDIATION_MARKER) || text.includes(STOP_REMEDIATION_LEGACY_MARKER);
+  return text.includes(STOP_REMEDIATION_MARKER);
 }
 
 /**
@@ -237,7 +225,7 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
       allow: true,
       exit_code: 0,
       rule: "stop-hook.no_history",
-      reason: "no canonical events for this owner; defer to legacy or skip",
+      reason: "no canonical events for this owner; nothing to evaluate",
     };
   }
 

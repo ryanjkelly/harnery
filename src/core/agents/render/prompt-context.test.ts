@@ -75,7 +75,7 @@ describe("renderPromptContext", () => {
       expect(out).toContain("bottom of the same substantive reply");
       expect(out).toContain("Keep the answer intact");
       expect(out).toContain("Stop hook is observe-only");
-      expect(out).not.toContain("status --final");
+      expect(out).not.toContain("status --end-turn");
     }
   });
 
@@ -94,7 +94,7 @@ describe("renderPromptContext", () => {
       statusFooterNudge: true,
     });
 
-    expect(out).toContain("harn agents status --final");
+    expect(out).toContain("harn agents status --end-turn");
   });
 
   test("Codex status footer skips subagents and workflow children", () => {

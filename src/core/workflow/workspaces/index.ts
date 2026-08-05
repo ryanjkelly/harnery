@@ -56,7 +56,6 @@ export type {
   RepositoryBinding,
   RepositoryObservation,
   ValidatedFilesystemPath,
-  ValidatedFilesystemRoot,
   WorkspaceAllocationRequest,
   WorkspaceAttestation,
   WorkspaceBinding,
@@ -77,13 +76,11 @@ export type {
   WorkspaceOwner,
   WorkspaceProbeInput,
   WorkspaceProbeResult,
-  WorkspaceProofLifecycleState,
   WorkspaceProofOutcome,
   WorkspaceProvider,
   WorkspaceProviderCapabilities,
   WorkspaceProviderRef,
   WorkspaceResourceState,
-  WorkspaceUnsupportedExecutionEvidence,
 } from "./types.ts";
 export {
   WORKSPACE_BINDING_SCHEMA_VERSION,

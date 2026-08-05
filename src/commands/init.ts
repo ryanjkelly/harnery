@@ -38,10 +38,6 @@ import {
 } from "../lib/instructions/apply.ts";
 import { HostAddendumError } from "../lib/instructions/host-addendum.ts";
 
-// Re-exported for back-compat: callers (deinit, tests) import these names
-// from init.ts. The definitions now live in core/hooks/adapter/wiring.ts.
-export type { HookGroup, SettingsFile };
-
 // This file is src/commands/init.ts → harnery package root is two levels up.
 const HARNERY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 

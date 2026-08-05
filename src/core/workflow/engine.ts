@@ -87,7 +87,7 @@ import {
 import type {
   WorkspaceAttestation,
   WorkspaceBinding,
-  WorkspaceUnsupportedExecutionEvidence,
+  WorkspaceCompatibilityExecutionEvidence,
 } from "./workspaces/types.ts";
 import { isWorkspaceAttestation } from "./workspaces/validate.ts";
 
@@ -324,7 +324,7 @@ async function executeWorkflow(
   const fallbackMeta = normalizeWorkflowMeta(undefined, fallbackName);
   const workspaceProvider = isolation === "shared" ? undefined : opts.workspace?.provider;
   let workspaceBinding: WorkspaceBinding | undefined;
-  let workspaceFallback: WorkspaceUnsupportedExecutionEvidence | undefined =
+  let workspaceFallback: WorkspaceCompatibilityExecutionEvidence | undefined =
     resumeState?.manifest.execution.workspace_fallback;
   try {
     workspaceBinding = await resolveWorkspaceBinding({

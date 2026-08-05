@@ -112,12 +112,12 @@ describe("sessionMetaByName", () => {
 
   test("derives {platform, model} per bare name (agent- prefix stripped, case-folded)", () => {
     const out = sessionMetaByName({
-      a: session("a", "agent-Celeste", "claude_code", "2026-06-10T20:00:00Z", {
+      a: session("a", "agent-Celeste", "claude-code", "2026-06-10T20:00:00Z", {
         model: "claude-fable-5",
       }),
       b: session("b", "Zephyr", "codex", "2026-06-10T20:00:00Z", { model: "gpt-5.5" }),
     });
-    expect(out.get("celeste")).toEqual({ platform: "claude_code", model: "claude-fable-5" });
+    expect(out.get("celeste")).toEqual({ platform: "claude-code", model: "claude-fable-5" });
     expect(out.get("zephyr")).toEqual({ platform: "codex", model: "gpt-5.5" });
   });
 
@@ -126,16 +126,16 @@ describe("sessionMetaByName", () => {
       old: session("old", "agent-Wren", "cursor", "2026-06-01T00:00:00Z", {
         model: "composer-2.5-fast",
       }),
-      neu: session("neu", "agent-Wren", "claude_code", "2026-06-10T00:00:00Z"),
+      neu: session("neu", "agent-Wren", "claude-code", "2026-06-10T00:00:00Z"),
     });
     // The newest session hasn't reported a model yet; the older session's
     // model must NOT leak through (it belonged to a different adapter).
-    expect(out.get("wren")).toEqual({ platform: "claude_code", model: null });
+    expect(out.get("wren")).toEqual({ platform: "claude-code", model: null });
   });
 
   test("ignores subagents, meta-less sessions, and missing identities", () => {
     const out = sessionMetaByName({
-      sub: session("sub", "agent-Pax", "claude_code", "2026-06-10T00:00:00Z", {
+      sub: session("sub", "agent-Pax", "claude-code", "2026-06-10T00:00:00Z", {
         kind: "subagent",
       }),
       bare: session("bare", "agent-Quinn", null, "2026-06-10T00:00:00Z"),

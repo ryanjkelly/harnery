@@ -30,7 +30,7 @@ beforeAll(() => {
       instance_id: "abc-fresh",
       name: "Alpha",
       kind: "session",
-      platform: "claude_code",
+      platform: "claude-code",
       last_heartbeat: fresh,
       files_touched: ["/a.ts", "/b.ts"],
       task: "writing tests",

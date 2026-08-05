@@ -579,7 +579,7 @@ describe("shared and explicit-provider compatibility", () => {
     expect(existsSync(report.workspaceBinding!.workspace_root)).toBe(true);
   });
 
-  test("historical declaration-only non-shared resume retains its frozen cwd", async () => {
+  test("non-shared resume without frozen workspace evidence is rejected", async () => {
     const root = tracked(tempRoot("workspace-historical"));
     const script = writeScript(root, "export default async ({ agent }) => agent('resume');\n");
     let parked: WorkflowParkedError | undefined;
@@ -619,16 +619,16 @@ describe("shared and explicit-provider compatibility", () => {
       verdict: "allow",
       actor: "operator",
     });
-    const report = await runWorkflow(script, {
-      coordRoot: root,
-      resumeRunId: parked!.runId,
-      spawners: {
-        "claude-code": async (request) => ({ ok: true, text: request.cwd, durationMs: 1 }),
-      },
-      ...quiet,
-    });
-    expect(report.result).toBe(root);
-    expect(report.workspaceBinding).toBeUndefined();
+    await expect(
+      runWorkflow(script, {
+        coordRoot: root,
+        resumeRunId: parked!.runId,
+        spawners: {
+          "claude-code": async (request) => ({ ok: true, text: request.cwd, durationMs: 1 }),
+        },
+        ...quiet,
+      }),
+    ).rejects.toThrow(/without frozen workspace evidence/);
     expect(existsSync(join(root, ".harnery", "workspaces"))).toBe(false);
   });
 
@@ -2489,20 +2489,6 @@ exec "$HARNERY_REAL_GIT" "$@"
     expect(readFileSync(join(parent, ".gitignore"), "utf8")).toBe("*\n");
     expect(git(repo, "status", "--porcelain", "--untracked-files=all")).toBe("");
   });
-
-  test("keeps reconciling an allocation frozen under the legacy parent", async () => {
-    if (!descriptorPathsAvailable) return;
-    if (!hasGit()) return;
-    for (const state of ["claim_only", "worktree_registered"] as const) {
-      const fixture = await allocationCrashFixture(state, "harnery-workspaces");
-      const binding = await fixture.provider.allocate(fixture.request);
-      expect(binding.workspace_root).toBe(
-        join(fixture.host, "harnery-workspaces", binding.binding_id),
-      );
-      expect((await fixture.provider.reattach(binding)).status).toBe("ok");
-      expect(existsSync(join(fixture.host, ".harnery-workspaces"))).toBe(false);
-    }
-  });
 });
 
 function boundExecution(proof: WorkflowProof): WorkspaceBoundExecutionEvidence {
@@ -2560,7 +2546,6 @@ async function allocationCrashFixture(
     | "worktree_registered"
     | "worktree_event_recorded"
     | "stale_registration",
-  parentSegment = ".harnery-workspaces",
 ): Promise<{
   repo: string;
   host: string;
@@ -2568,9 +2553,7 @@ async function allocationCrashFixture(
   request: WorkspaceAllocationRequest;
   claim: WorkspaceClaim;
 }> {
-  const { host, repo } = gitFixture(
-    `workspace-crash-${state}${parentSegment.startsWith(".") ? "" : "-legacy"}`,
-  );
+  const { host, repo } = gitFixture(`workspace-crash-${state}`);
   tracked(host);
   const script = writeScript(repo, "export default async () => 'recovered';\n");
   git(repo, "add", ".");
@@ -2606,7 +2589,7 @@ async function allocationCrashFixture(
   const requestSha256 = stableDigest(request);
   const bindingId = `ws-${stableDigest(request.idempotency_key).slice(0, 24)}`;
   const workspaceId = `local-${stableDigest({ bindingId, requestSha256 }).slice(0, 24)}`;
-  const workspaceRoot = join(host, parentSegment, bindingId);
+  const workspaceRoot = join(host, ".harnery-workspaces", bindingId);
   const commonDir = resolve(repo, git(repo, "rev-parse", "--git-common-dir"));
   const branch = git(repo, "branch", "--show-current");
   const head = git(repo, "rev-parse", "HEAD");
@@ -2654,7 +2637,7 @@ async function allocationCrashFixture(
     state === "worktree_event_recorded" ||
     state === "stale_registration"
   ) {
-    mkdirSync(join(host, parentSegment));
+    mkdirSync(join(host, ".harnery-workspaces"));
     git(repo, "worktree", "add", workspaceRoot, claim.repository.workspace_branch);
   }
   if (state === "worktree_event_recorded") {

@@ -293,7 +293,7 @@ export function resolveHooksSetupHint(coordRoot?: string | null): string | null 
 
 /**
  * Whether the host requires the guarded Git check at the end of tool-using
- * turns. Default false: Harnery exposes `agents status --final` as a capability
+ * turns. Default false: Harnery exposes `agents status --end-turn` as a capability
  * but does not impose a commit-and-push policy on embedding projects.
  *
  * `.harnery/config.jsonc`:
@@ -313,7 +313,7 @@ export function agentsRequireGitFinalization(coordRoot?: string | null): boolean
 /** The status command automatic prompts and Stop remediation should request. */
 export function endOfTurnStatusCommand(coordRoot?: string | null): string {
   const root = coordRoot ?? findCoordRoot();
-  const suffix = agentsRequireGitFinalization(root) ? " --final" : "";
+  const suffix = agentsRequireGitFinalization(root) ? " --end-turn" : "";
   return `${resolveBinName(root)} agents status${suffix}`;
 }
 
@@ -396,13 +396,13 @@ function posIntOr(v: unknown, fallback: number): number {
  * The heartbeat-freshness window (seconds): the age above which the sweeper
  * prunes an agent, and the cutoff the `agents` surface uses to fold stale peers.
  * Precedence:
- *   1. `HARNERY_AGENT_COORD_FRESHNESS` env (canonical), or `HARNERY_AGENT_FRESHNESS` (legacy alias)
+ *   1. `HARNERY_AGENT_COORD_FRESHNESS` env
  *   2. `.harnery/config.jsonc` `coord.freshness_seconds`
  *   3. `600` (10 minutes)
  * `coordRoot` is resolved via `findCoordRoot()` when not passed.
  */
 export function coordFreshnessSeconds(coordRoot?: string | null): number {
-  const env = coordEnv("AGENT_COORD_FRESHNESS") ?? coordEnv("AGENT_FRESHNESS");
+  const env = coordEnv("AGENT_COORD_FRESHNESS");
   if (env !== undefined) {
     const n = Number.parseInt(env, 10);
     if (Number.isFinite(n) && n > 0) return n;

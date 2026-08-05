@@ -11,7 +11,6 @@ import type {
   WorkspaceCompatibilityExecutionEvidence,
   WorkspaceExecutionEvidence,
   WorkspaceOwner,
-  WorkspaceProofLifecycleState,
   WorkspaceProofOutcome,
 } from "./types.ts";
 
@@ -376,7 +375,7 @@ function workspaceCwdMatchesBinding(
 }
 
 function validWorkspaceProofOutcome(
-  outcome: WorkspaceProofLifecycleState,
+  outcome: WorkspaceProofOutcome,
   attestation: WorkspaceAttestation,
   workflowStatus?: "succeeded" | "failed",
 ): boolean {
@@ -419,9 +418,6 @@ export function isWorkspaceCompatibilityExecutionEvidence(
     Object.keys(execution.receipts).length === 0
   );
 }
-
-/** @deprecated Use isWorkspaceCompatibilityExecutionEvidence. */
-export const isWorkspaceUnsupportedExecutionEvidence = isWorkspaceCompatibilityExecutionEvidence;
 
 function sameOwner(left: WorkspaceOwner, right: WorkspaceOwner): boolean {
   return (

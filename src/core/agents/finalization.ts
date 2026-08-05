@@ -302,6 +302,6 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
       ...result.unverifiable_repos.map((repo) => `  - ${repo}`),
     );
   }
-  lines.push(`Commit and push the owned work, then rerun \`${bin} agents status --final\`.`);
+  lines.push(`Commit and push the owned work, then rerun \`${bin} agents status --end-turn\`.`);
   return lines.join("\n");
 }

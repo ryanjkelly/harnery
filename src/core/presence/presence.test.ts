@@ -43,7 +43,7 @@ function seedHeartbeat(
       session_id: instanceId,
       name: "Testa",
       kind: "session",
-      platform: "claude_code",
+      platform: "claude-code",
       started_at: now,
       last_heartbeat: now,
       files_touched: ["src/a.ts"],

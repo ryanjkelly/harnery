@@ -211,7 +211,7 @@ describe("evaluateStopHook", () => {
     });
     expect(plain.allow).toBe(false);
     expect(plain.rule).toBe("stop-hook.rule_1_3");
-    expect(plain.reason).toContain("agents status --final");
+    expect(plain.reason).toContain("agents status --end-turn");
 
     writeEvents(events(true));
     const guarded = evaluateStopHook(root, {
@@ -442,51 +442,6 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, {
       rule: "stop-hook",
       instance_id: "f",
-      adapter: "cursor",
-      now_ms: now,
-    });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("stop-hook.pass");
-  });
-
-  test("a followup in the pre-marker format is still recognized (upgrade rollout window)", () => {
-    const now = Date.now();
-    const ts = (o: number) => new Date(now + o).toISOString();
-    const base = { instance_id: "h", session_id: "h", adapter: "cursor", source: "test" };
-    writeEvents([
-      {
-        event_id: "1",
-        event_type: "user_prompt.submit",
-        ts: ts(-30000),
-        ...base,
-        data: { prompt_text: "human turn" },
-      },
-      { event_id: "2", event_type: "tool.pre_use", ts: ts(-25000), ...base, data: {} },
-      { event_id: "3", event_type: "state.status_checked", ts: ts(-24000), ...base, data: {} },
-      // Written by the build that was running before this change shipped.
-      {
-        event_id: "4",
-        event_type: "user_prompt.submit",
-        ts: ts(-15000),
-        ...base,
-        data: {
-          prompt_text:
-            "End-of-turn rule (3/3): no state.task_set event found in this turn.\n[agent-hook stop]: rule=stop-hook.rule_3_3",
-        },
-      },
-      { event_id: "5", event_type: "tool.pre_use", ts: ts(-12000), ...base, data: {} },
-      { event_id: "6", event_type: "state.task_set", ts: ts(-11000), ...base, data: {} },
-      {
-        event_id: "7",
-        event_type: "turn.stop",
-        ts: ts(-1000),
-        ...base,
-        data: { status_box_present: false },
-      },
-    ]);
-    const v = evaluateStopHook(root, {
-      rule: "stop-hook",
-      instance_id: "h",
       adapter: "cursor",
       now_ms: now,
     });

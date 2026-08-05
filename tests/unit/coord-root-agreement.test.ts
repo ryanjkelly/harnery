@@ -65,7 +65,7 @@ function seedSession(root: string, session: string): void {
       session_id: session,
       agent_id: session,
       kind: "session",
-      platform: "claude_code",
+      platform: "claude-code",
       started_at: new Date().toISOString(),
       last_heartbeat: new Date().toISOString(),
       files_touched: [],

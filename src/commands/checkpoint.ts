@@ -165,7 +165,7 @@ function resolveContinuityIdentity(
 }
 
 function adapterFromPlatform(platform: string | undefined): Adapter | null {
-  if (platform === "claude_code" || platform === "claude-code") return "claude-code";
+  if (platform === "claude-code") return "claude-code";
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return null;

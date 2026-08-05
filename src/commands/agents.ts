@@ -228,8 +228,8 @@ export function registerAgentsCommand(
     .description("End-of-turn status box (name + session age + files held + peer count)")
     .option("--json", "JSON output instead of the box")
     .option(
-      "--final",
-      "Treat this as the turn's final status: issue the box only when this session's held paths are committed and their repositories are pushed",
+      "--end-turn",
+      "Treat this as the turn's closing status: issue the box only when this session's held paths are committed and their repositories are pushed",
     )
     .option(
       "--session-id <id>",
@@ -237,7 +237,7 @@ export function registerAgentsCommand(
         "Use this when calling from a hook (the hook's process tree may not lead back to Claude Code's session pid). " +
         "The Stop hook payload includes session_id; pass it through.",
     )
-    .action((opts: { final?: boolean; json?: boolean; sessionId?: string }) => {
+    .action((opts: { endTurn?: boolean; json?: boolean; sessionId?: string }) => {
       runStatus(opts);
     });
 
@@ -353,7 +353,7 @@ export function registerAgentsCommand(
     )
     .option(
       "--timeout <dur>",
-      "Give up after this duration; suffix s/m/h/d (e.g. 30s, 5m, 1h). Bare integer = minutes. Default 60m.",
+      "Give up after this duration; suffix s/m/h/d is required (e.g. 30s, 5m, 1h). Default 60m.",
       "60m",
     )
     .option("--poll-secs <n>", "Poll interval in seconds (default 5)", "5")
@@ -391,8 +391,8 @@ export function registerAgentsCommand(
   cmd
     .command("health")
     .description(
-      "One-screen coord-layer health rollup: heal events, schema validity, " +
-        "commit-guard activity, council activity, anomalies. Designed for " +
+      "One-screen coord-layer health rollup: heal events, council activity, " +
+        "zombie detection, and anomalies. Designed for " +
         "daily glance + dashboard ingestion. Reads .harnery/.",
     )
     .option("--since <window>", "Window (Nh | Nd). Default: 24h.", "24h")
@@ -407,7 +407,7 @@ export function registerAgentsCommand(
       "Adapter wiring probe: ppid chain, comm names, pid-map anchor, sample payload paths. " +
         "With --replay-samples, also replays every checked-in sample payload against the live " +
         "adapter in an isolated sandbox to catch adapter / payload-shape drift. " +
-        "Complements heal-events (drift telemetry). Id: claude_code | cursor.",
+        "Complements heal-events (drift telemetry). Id: claude-code | cursor.",
     )
     .option("--json", "JSON envelope output")
     .option(
@@ -889,7 +889,7 @@ function runWhoami(opts: { json?: boolean }): void {
     task: hb.task ?? null,
     turn_summary: hb.turn_summary ?? null,
     turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
-    platform: hb.platform ?? "claude_code",
+    platform: hb.platform ?? "claude-code",
   };
 
   emit.data({ ...row, resolution_source: resolved.source, note: SUBAGENT_NOTE });
@@ -987,7 +987,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         task: h.task ?? null,
         turn_summary: h.turn_summary ?? null,
         turn_summary_updated_at: h.turn_summary_updated_at ?? null,
-        platform: h.platform ?? "claude_code",
+        platform: h.platform ?? "claude-code",
       });
       continue;
     }
@@ -1012,7 +1012,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       task: h.task ?? null,
       turn_summary: h.turn_summary ?? null,
       turn_summary_updated_at: h.turn_summary_updated_at ?? null,
-      platform: h.platform ?? "claude_code",
+      platform: h.platform ?? "claude-code",
     });
   }
 
@@ -1040,7 +1040,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         task: a.task ?? null,
         turn_summary: a.turn_summary ?? null,
         turn_summary_updated_at: null,
-        platform: a.platform ?? "claude_code",
+        platform: a.platform ?? "claude-code",
         machine: rm.machine,
       });
     }
@@ -1634,7 +1634,7 @@ function runSuggestName(
   process.stdout.write(`${suggestedName}\n`); // lint-ok-emission: chat-paste path
 }
 
-function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }): void {
+function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string }): void {
   const root = monorepoRoot();
   if (!root) {
     emit.error({
@@ -1667,7 +1667,7 @@ function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }
   }
 
   let finalization: GitFinalizationResult | null = null;
-  if (opts.final) {
+  if (opts.endTurn) {
     const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
     const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
     finalization = checkGitFinalization(root, touchedPaths, {
@@ -1683,20 +1683,6 @@ function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }
     }
   }
 
-  // Stamp .last_status_at = NOW. The verdict path reads state.status_checked
-  // canonical events (emitted below), but the legacy heartbeat field is still
-  // populated for back-compat with consumers reading v1 directly. The stamp
-  // goes through agent-coord (atomic write).
-  try {
-    const helper = agentCoordOrExit(root);
-    spawnSync(helper, ["stamp-status-call", myOwner], {
-      encoding: "utf8",
-      timeout: 2000,
-      ...coordHelperOpts(root),
-    });
-  } catch {
-    /* non-fatal */
-  }
   emitCanonical({
     type: "state.status_checked",
     owner: myOwner,
@@ -1704,7 +1690,7 @@ function runStatus(opts: { final?: boolean; json?: boolean; sessionId?: string }
     adapter: normalizeAdapter(hb.platform),
     data: {
       format: opts.json ? "json" : "box",
-      git_finalization_checked: opts.final === true,
+      git_finalization_checked: opts.endTurn === true,
       agent_count: 0, // computed below, not yet available here; Phase 5 verdict reads owner-scope only
       included_self: true,
     },
@@ -2183,13 +2169,12 @@ function readCanonicalEventsInWindow(root: string, cutoffMs: number): CanonicalE
   return out;
 }
 
-/** adapter ("claude-code") → legacy platform label ("claude_code") so the
- * existing formatPlatformLabel rendering keeps working unchanged. */
+/** Normalize adapter event data into the heartbeat platform value. */
 function adapterToPlatform(adapter: string | undefined): string {
-  if (adapter === "claude-code") return "claude_code";
+  if (adapter === "claude-code") return "claude-code";
   if (adapter === "cursor") return "cursor";
   if (adapter === "codex") return "codex";
-  return "claude_code";
+  return "claude-code";
 }
 
 /** Project a canonical health.* event into the HealEvent shape the aggregators
@@ -2415,14 +2400,6 @@ interface HealthReport {
     by_reason: { missing: number; stale: number };
     by_platform: Record<string, number>;
     top_agents: Array<{ agent: string; count: number }>;
-  };
-  schema_invalid: { count: number; samples: string[] };
-  commit_guards: {
-    blocked: number;
-    bypassed: number;
-    suppressed: number;
-    edit_blocked: number;
-    shell_candidates: number;
   };
   councils: {
     active: number;
@@ -2765,18 +2742,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
 
   // Coordination telemetry reads from the canonical events.ndjson stream.
   // Heals come from health.*; council window-activity from council.*. The
-  // commit-guard + schema-invalid counters below have NO canonical equivalent
-  // yet. Their future home is the decision.* events (defined in schema.ts, not
-  // yet wired). Until then they report 0 (fields kept for output-shape
-  // compatibility).
   const heal: HealEvent[] = [];
-  const schemaInvalid = 0;
-  const schemaSamples: string[] = [];
-  const commitBlocked = 0;
-  const commitBypassed = 0;
-  const commitSuppressed = 0;
-  const editBlocked = 0;
-  const shellCandidates = 0;
   let councilAdvanced = 0;
   let councilClosed = 0;
   let councilArchived = 0;
@@ -2894,12 +2860,6 @@ function runHealth(opts: { since: string; json?: boolean }): void {
 
   // Anomaly detection.
   const anomalies: string[] = [];
-  if (schemaInvalid > 0) {
-    const sampleList = schemaSamples.slice(0, 3).join(", ");
-    anomalies.push(
-      `HEARTBEAT_SCHEMA_INVALID fired ${schemaInvalid}x; heartbeat shape failed validation${sampleList ? ` (samples: ${sampleList})` : ""}`,
-    );
-  }
   for (const { agent, count } of healTopAgents) {
     if (count >= 5) {
       anomalies.push(
@@ -2966,14 +2926,6 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       by_platform: healByPlatform,
       top_agents: healTopAgents,
     },
-    schema_invalid: { count: schemaInvalid, samples: schemaSamples },
-    commit_guards: {
-      blocked: commitBlocked,
-      bypassed: commitBypassed,
-      suppressed: commitSuppressed,
-      edit_blocked: editBlocked,
-      shell_candidates: shellCandidates,
-    },
     councils: {
       active: activeCouncils,
       archived_in_window: councilArchived,
@@ -3017,17 +2969,6 @@ function renderHealthBox(report: HealthReport): void {
   const topHealer = report.heal_events.top_agents[0];
   const topHealerStr = topHealer ? `${topHealer.agent} x${topHealer.count}` : "(none)";
 
-  const guardParts: string[] = [];
-  if (report.commit_guards.blocked > 0) guardParts.push(`blocked ${report.commit_guards.blocked}`);
-  if (report.commit_guards.bypassed > 0)
-    guardParts.push(`bypassed ${report.commit_guards.bypassed}`);
-  if (report.commit_guards.suppressed > 0)
-    guardParts.push(`suppressed ${report.commit_guards.suppressed}`);
-  if (report.commit_guards.edit_blocked > 0)
-    guardParts.push(`edit-blocked ${report.commit_guards.edit_blocked}`);
-  if (report.commit_guards.shell_candidates > 0)
-    guardParts.push(`shell ${report.commit_guards.shell_candidates}`);
-
   const councilParts: string[] = [`${report.councils.active} active`];
   if (report.councils.advanced_in_window > 0)
     councilParts.push(`${report.councils.advanced_in_window} advanced`);
@@ -3064,8 +3005,6 @@ function renderHealthBox(report: HealthReport): void {
         ? "0"
         : `${report.zombies.count} (${report.zombies.samples.join(", ")})`,
     ],
-    ["schema invalid", String(report.schema_invalid.count)],
-    ["commit guards", guardParts.length ? guardParts.join(", ") : "0"],
     ["councils", councilParts.join(", ")],
     ["anomalies", report.anomalies.length === 0 ? "(clean)" : `${report.anomalies.length} flagged`],
   ];
@@ -3099,10 +3038,10 @@ function runAdapterProbe(
   if (opts.json) emit.config({ format: "json" });
 
   const adapter = id.trim();
-  if (adapter !== "claude_code" && adapter !== "cursor") {
+  if (adapter !== "claude-code" && adapter !== "cursor") {
     emit.error({
       code: "bad_adapter",
-      message: "adapter id must be claude_code or cursor",
+      message: "adapter id must be claude-code or cursor",
     });
     process.exit(1);
   }
@@ -3322,7 +3261,7 @@ function replayAdapterSamples(
     stopFailure: "stop-failure",
     StopFailure: "stop-failure",
   };
-  const adapterFlag = adapter === "claude_code" ? "claude-code" : adapter;
+  const adapterFlag = adapter;
 
   const sandbox = mkdtempSync(join(tmpdir(), "harn-adapter-probe-"));
   const results: SampleReplayResult[] = [];
@@ -3459,13 +3398,13 @@ function collectPath(value: string, prev: string[]): string[] {
   return [...prev, value];
 }
 
-/** Parse "30", "30s", "5m", "1h", "2d" → ms. Bare integer defaults to minutes (back-compat). */
+/** Parse "30s", "5m", "1h", "2d" into milliseconds. */
 function parseDurationToMs(input: string): number | null {
-  const match = input.trim().match(/^(\d+)([smhd]?)$/i);
+  const match = input.trim().match(/^(\d+)([smhd])$/i);
   if (!match) return null;
   const n = Number.parseInt(match[1], 10);
   if (!Number.isFinite(n) || n <= 0) return null;
-  const unit = (match[2] || "m").toLowerCase();
+  const unit = match[2].toLowerCase();
   const mult: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
   return n * mult[unit];
 }
