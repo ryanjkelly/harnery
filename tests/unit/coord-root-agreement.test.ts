@@ -85,6 +85,7 @@ function bareEnv(session: string): NodeJS.ProcessEnv {
   delete env.CURSOR_SESSION_ID;
   delete env.CURSOR_CONVERSATION_ID;
   delete env.CODEX_SESSION_ID;
+  delete env.CODEX_THREAD_ID;
   env.CLAUDE_CODE_SESSION_ID = session;
   env.HARNERY_AGENT_COORD_SESSION_ID = session;
   env.HARNERY_OUTPUT_SESSION_TEE = "0";

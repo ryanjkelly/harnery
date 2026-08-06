@@ -28,6 +28,7 @@ const SESSION_ID_ENV_KEYS = [
   "CURSOR_SESSION_ID",
   "CURSOR_CONVERSATION_ID",
   "CODEX_SESSION_ID",
+  "CODEX_THREAD_ID",
 ] as const;
 
 describe("findCoordRoot (hooks-side)", () => {
@@ -362,6 +363,11 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     writeHeartbeat("agent-cdx", "sess-cdx", 30_000);
     process.env.CODEX_SESSION_ID = "sess-cdx";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx");
+    delete process.env.CODEX_SESSION_ID;
+
+    writeHeartbeat("agent-cdx-thread", "thread-cdx", 30_000);
+    process.env.CODEX_THREAD_ID = "thread-cdx";
+    expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx-thread");
   });
 
   test("Cursor conversation id env resolves and strips the Glass bc- prefix", () => {

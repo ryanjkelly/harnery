@@ -482,6 +482,7 @@ const SESSION_ID_ENV_VARS = [
   "CURSOR_SESSION_ID",
   "CURSOR_CONVERSATION_ID",
   "CODEX_SESSION_ID",
+  "CODEX_THREAD_ID",
 ] as const;
 
 /** Read normalized candidates from the first non-empty adapter session-id env var. */
