@@ -6,6 +6,7 @@ import {
   runFrontmatterMigration,
 } from "../lib/docs-frontmatter-migrate.ts";
 import { initDocsContext as initDocsIndex, runIndex } from "../lib/docs-index.ts";
+import { initDocsContext as initDocsLinks, runLinks } from "../lib/docs-links.ts";
 import { initDocsContext as initDocsLint, runLint } from "../lib/docs-lint.ts";
 import { readDocsMetadata, readDocsMetadataKey } from "../lib/docs-meta.ts";
 import {
@@ -27,6 +28,7 @@ function ensureContext(context: HarneryProgramContext | undefined): void {
     extraExcludedPrefixes: context.extraDocsExcludedPrefixes,
     docsRootAllowlist: context.docsRootAllowlist,
   });
+  initDocsLinks({ ...opts, extraExcludedPrefixes: context.extraDocsExcludedPrefixes });
   initDocsSweep(opts);
 }
 
@@ -114,6 +116,34 @@ export function registerDocsCommand(
         emit.error({ code: "docs_error", message: msg });
       }
     });
+
+  docs
+    .command("links")
+    .description("Check internal Markdown link targets and heading fragments")
+    .option("--repo <name>", "Limit to one submodule or '.' for parent")
+    .option("--no-fragments", "Check target existence only; skip heading-fragment validation")
+    .option("--strict", "Report findings in archive/audit/changelog docs as errors, not warnings")
+    .option("--check-escapes", "Also flag links that resolve outside their own repo root")
+    .option("--fail", "Exit non-zero when errors are found (advisory by default)")
+    .option("--format <type>", "Output format: human, json", "human")
+    .action(
+      async (opts: {
+        repo?: string;
+        fragments?: boolean;
+        strict?: boolean;
+        checkEscapes?: boolean;
+        fail?: boolean;
+        format: string;
+      }) => {
+        try {
+          ensureContext(context);
+          await handleLinks(opts);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          emit.error({ code: "docs_error", message: msg });
+        }
+      },
+    );
 
   docs
     .command("sweep")
@@ -230,6 +260,32 @@ async function handleLint(opts: { fast?: boolean; repo?: string; format: string 
   });
 
   if (errors.length > 0) emit.setExitCode(1);
+}
+
+// --- `harn docs links` ---
+
+/**
+ * Advisory by default: a clean exit code even with findings, because turning
+ * link health into a gate is an enforcement policy decision for the host, not
+ * something this command should assume. `--fail` is the opt-in for CI or a hook.
+ */
+async function handleLinks(opts: {
+  repo?: string;
+  fragments?: boolean;
+  strict?: boolean;
+  checkEscapes?: boolean;
+  fail?: boolean;
+  format: string;
+}): Promise<void> {
+  if (opts.format === "json") emit.config({ format: "json" });
+  const report = await runLinks({
+    repo: opts.repo,
+    noFragments: opts.fragments === false,
+    strict: opts.strict,
+    checkEscapes: opts.checkEscapes,
+  });
+  emit.data({ ...report, advisory: !opts.fail });
+  if (opts.fail && report.error_count > 0) emit.setExitCode(1);
 }
 
 // --- `harn docs sweep` ---

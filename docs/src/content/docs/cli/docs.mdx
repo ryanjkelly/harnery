@@ -10,6 +10,7 @@ harn docs
 harn docs meta <path> [key] [--json]
 harn docs frontmatter-migrate [--repo <name>] [--yes]
 harn docs lint [--fast] [--repo <name>]
+harn docs links [--repo <name>] [--no-fragments] [--strict] [--check-escapes] [--fail]
 harn docs sweep [--repo <name>]
 harn docs index [--dry-run] [--repo <name>]
 ```
@@ -51,6 +52,61 @@ existing frontmatter that has no `status`, and skips files that already carry
 YAML `status:`. Unsupported status values and conflicting fields are errors; the
 command exits nonzero without guessing or writing any file. `--yes` is the only
 mode that writes, and the apply is all-or-nothing for the selected repository set.
+
+## Check internal links
+
+`docs links` resolves every relative Markdown target in the tracked docs and
+validates the heading fragment each one points at:
+
+```bash
+harn docs links --repo .
+harn docs links --format json | jq '.findings[] | select(.rule == "missing-fragment")'
+```
+
+It reports four rules. `missing-target` is a path that does not exist.
+`missing-fragment` is a target that exists while the `#heading` after it does
+not, which is the failure a plain file-existence check cannot see: the reader
+lands silently at the top of the page. `case-mismatch` is a target that differs
+from the file on disk only by letter case, so it resolves on macOS and breaks on
+Linux; the finding carries the on-disk path as `suggestion`. `escapes-repo` is
+opt-in via `--check-escapes` and flags a link that resolves on your machine only
+because a sibling repository happens to sit next to it.
+
+Fragments are matched against GitHub's anchor rules: heading slugs including the
+duplicate `-1`/`-2` suffixes, explicit `{#custom-id}` suffixes, and HTML `id` or
+`name` attributes. Pass `--no-fragments` to check target existence alone.
+
+### What it deliberately ignores
+
+A link checker is only useful if its output is worth reading, so these never
+produce a finding:
+
+- External URLs, `mailto:`/`tel:` schemes, and protocol-relative links.
+- Anything inside a fenced code block or an inline code span, so documented
+  example links are not mistaken for real ones.
+- Targets containing template syntax such as `{{slug}}`, `${DIR}`, or a
+  `<placeholder>`, which cannot resolve by construction.
+- Root-absolute targets like `/pricing`, which are far more often site routes
+  than repository paths.
+- `#L42` line references and `#/spa/route` hash routes, neither of which can
+  name a heading.
+- Everything under the host's configured documentation exclusions.
+
+Findings in documents that record a past state — anything under `archive/`,
+`audits/`, `changelogs/`, `handoffs/`, or `decisions/` — are reported as
+warnings rather than errors, because a document naming a path as it existed then
+is accurate rather than broken. `--strict` reports them as errors.
+
+For a single link that must stay as written, put `<!-- links-allow: reason -->`
+on its line; for a whole document, put `<!-- links-allow-file: reason -->`
+anywhere in it.
+
+### Advisory by default
+
+`docs links` exits zero even when it finds errors. Whether link health should
+block a commit or a CI run is an enforcement decision that belongs to the host
+project, not a default this command imposes. Pass `--fail` to exit nonzero when
+there is at least one error finding.
 
 ## Other subcommands
 
