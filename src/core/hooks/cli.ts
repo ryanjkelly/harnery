@@ -75,6 +75,7 @@ import {
   scanStatusBoxPresent,
   scanTranscriptModel,
 } from "./resolve/transcript.ts";
+import { unsafeCrossShellReason } from "./unsafe-cross-shell.ts";
 
 interface Argv {
   eventName: string | null;
@@ -970,6 +971,29 @@ async function main(): Promise<number> {
       });
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-image-capture" });
+    }
+
+    // Windows-native Codex + WSL UNC only: block the one cross-shell shape
+    // proven to corrupt argument boundaries. Normal WSL argv calls, literal
+    // bash -s scripts, native Linux/macOS sessions, and every other adapter
+    // pass through. The host instructions name its concrete safe bridge.
+    const unsafeShellReason = unsafeCrossShellReason({
+      adapter,
+      cwd: payload?.cwd,
+      toolName: payload?.tool_name,
+      toolInput: payload?.tool_input,
+    });
+    if (unsafeShellReason) {
+      emit(coordRoot, {
+        event_type: "decision.block",
+        instance_id: owner.instance_id,
+        session_id: sessionId,
+        adapter,
+        data: { rule: "unsafe_cross_shell", reason: unsafeShellReason },
+      });
+      const { emitDeny } = await import("./adapter/output.ts");
+      emitDeny(adapter, unsafeShellReason);
+      return 0;
     }
 
     // G-guard for ALL adapters. Claude Code previously ran this via a

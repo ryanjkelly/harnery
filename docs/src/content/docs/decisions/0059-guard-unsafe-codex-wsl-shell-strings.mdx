@@ -1,0 +1,59 @@
+---
+title: "0059: Guard unsafe Codex-to-WSL shell strings"
+description: "ADR: deny direct wsl.exe to bash -c command strings only in Windows-native Codex sessions opened on a WSL UNC workspace."
+---
+
+**Status:** accepted (2026-08-06) · **Scope:** product tier (Codex PreToolUse)
+
+## Context
+
+ADR 0058 added diagnosis for the environment bridge between Windows-native
+Codex and WSL. A host can safely run Linux tools by forwarding separate argv
+values or streaming a literal script. A later agent can still bypass that
+bridge and construct one `wsl.exe ... bash -lc` string. PowerShell, WSL, and
+Bash then parse the same text, which can split arguments or reinterpret JSON,
+Unicode, and shell metacharacters.
+
+Harnery already owns adapter-aware PreToolUse denials. It can prevent the known
+bad shape before Windows launches it, but the rule must not become a general
+ban on WSL or Bash.
+
+## Decision
+
+`unsafeCrossShellReason` denies a tool call only when all of these conditions
+hold:
+
+- the adapter is Codex;
+- the adapter reports a `\\wsl.localhost`, `\\wsl$`, or extended WSL UNC
+  working directory;
+- the tool is a shell tool;
+- a direct, unquoted PowerShell command position invokes `wsl` or `wsl.exe`;
+- that WSL statement launches `bash` or `/bin/bash` with a command-string flag
+  such as `-c`, `-lc`, or `-cl`.
+
+The scanner ignores quoted examples and commands where `wsl.exe` is merely an
+argument. It allows direct argv calls, `bash -s`, all non-Codex adapters, and
+native Linux or macOS workspaces. A denial uses the existing adapter output
+contract and records `decision.block` with rule `unsafe_cross_shell`.
+
+## Alternatives considered
+
+- **Rely on host instructions.** Rejected because instructions warn after the
+  design decision, while PreToolUse can stop the regression before execution.
+- **Deny all WSL commands.** Rejected because `wsl.exe -- executable arg...` is
+  the safe direct path.
+- **Deny all Bash command strings.** Rejected because the observed corruption
+  requires the Windows-to-WSL boundary and because other environments may have
+  legitimate, controlled uses.
+- **Add a Windows hook dispatcher.** Rejected because trusted project hooks
+  already cross the boundary and the dispatcher would create another payload
+  transport.
+
+## Consequences
+
+The known unsafe construction now fails before execution and tells the agent
+to use the host's argv-preserving or literal-script bridge. The rule is narrow
+by design; dynamically hidden invocations such as an executable stored in a
+PowerShell variable are outside its scope. Tests cover direct and call-operator
+invocations, statement nesting, quoted false positives, safe argv calls,
+`bash -s`, serialized Codex inputs, adapter scope, and workspace scope.
