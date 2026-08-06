@@ -447,6 +447,10 @@ function findCaseVariant(absPath: string): string | null {
 
 /** Does the target path exist, allowing the extension-less form of a doc? */
 function resolveTarget(absPath: string): { found: string | null; isDir: boolean } {
+  // `path/file.ts:42` (and `:42-51`) is a common editor-facing line-reference
+  // convention; the file is what must exist.
+  const lineRef = absPath.match(/^(.*):\d+(?:-\d+)?$/);
+  if (lineRef?.[1] && !existsSync(absPath)) absPath = lineRef[1];
   if (existsSync(absPath)) {
     let isDir = false;
     try {
@@ -520,7 +524,11 @@ export function checkFile(opts: CheckFileOpts): FileResult {
       skipped++;
       continue;
     }
-    if (EXTERNAL_SCHEME.test(target) || PLACEHOLDER.test(target)) {
+    // `path/file.ts:42` looks like a scheme to the URL test (`file.ts:`),
+    // but a dot or slash before the colon plus an all-digit tail marks the
+    // editor-facing line-reference convention instead; `tel:911` has neither.
+    const isLineRefPath = /^[^:]*[/.][^:]*:\d+(?:-\d+)?$/.test(target);
+    if ((EXTERNAL_SCHEME.test(target) && !isLineRefPath) || PLACEHOLDER.test(target)) {
       skipped++;
       continue;
     }

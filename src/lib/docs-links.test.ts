@@ -247,6 +247,11 @@ describe("checkFile", () => {
     expect(check("docs/index.md", "[t](target.md#L42)").findings).toEqual([]);
   });
 
+  test("resolves editor-style :line suffixes against the base file", () => {
+    expect(check("docs/index.md", "[t](target.md:42)").findings).toEqual([]);
+    expect(check("docs/index.md", "[t](nope.md:42)").findings).toHaveLength(1);
+  });
+
   test("skips external, mail, protocol-relative, and root-absolute targets", () => {
     const r = check(
       "docs/index.md",
