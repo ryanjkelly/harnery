@@ -124,6 +124,11 @@ describe("slugify / collectAnchors", () => {
     expect(anchors.has("emphasized-title")).toBe(true);
   });
 
+  test("unescapes backslash escapes before slugging", () => {
+    const anchors = collectAnchors("## Cloud Function (`snake\\_case`)");
+    expect(anchors.has("cloud-function-snake_case")).toBe(true);
+  });
+
   test("honors explicit {#custom-id} and HTML id/name anchors", () => {
     const anchors = collectAnchors(
       ["## Heading {#custom-id}", '<a name="legacy"></a>', '<h2 id="html-anchor">x</h2>'].join(

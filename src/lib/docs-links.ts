@@ -389,6 +389,10 @@ export function collectAnchors(content: string): Set<string> {
     // character in JS regex, so \b sits exactly at the space-to-underscore
     // seam these delimiters occupy.
     text = text
+      // Backslash escapes render as the bare character, so `snake\_case`
+      // must anchor exactly like `snake_case`. Unescape before the emphasis
+      // strip or the escaped underscore gains a phantom word boundary.
+      .replace(/\\([\\`*_{}[\]()#+.!~-])/g, "$1")
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/[*~`]/g, "")
       .replace(/\b_+|_+\b/g, "")
