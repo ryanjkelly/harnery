@@ -28,6 +28,7 @@ import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
+import { resolveBinName } from "../config.ts";
 import {
   checkpointContext,
   completeContextRecovery,
@@ -48,6 +49,7 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./adapter/parse.ts";
+import { inspectCodexWslBridge, isWslUncPath } from "./codex-wsl-bridge.ts";
 import {
   captureImages,
   detectPresence,
@@ -1581,6 +1583,17 @@ async function emitSessionStartSystemMessage(
   }
   if (recoveryBriefing) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
+  }
+  if (adapter === "codex" && isWslUncPath(emittedData.cwd)) {
+    const bridge = inspectCodexWslBridge(process.env, { expected: true });
+    if (bridge && !bridge.ok) {
+      additionalContext = [
+        additionalContext,
+        `Harnery hybrid warning: ${bridge.detail}. Run \`${resolveBinName(coordRoot)} doctor\` for the repair hint.`,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
   }
   if (!additionalContext) return false;
 

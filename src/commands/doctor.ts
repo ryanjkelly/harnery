@@ -20,6 +20,7 @@ import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
 import { loadAdapterWiring } from "../core/hooks/adapter/wiring.ts";
+import { inspectCodexWslBridge } from "../core/hooks/codex-wsl-bridge.ts";
 import {
   ADAPTER_BINARIES,
   ADAPTER_INSTALL_HINTS,
@@ -97,6 +98,7 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
 }
 
 export function runChecks(): Check[] {
+  const codexWslBridge = checkCodexWslBridge();
   return [
     checkNode(),
     checkGit(),
@@ -104,12 +106,26 @@ export function runChecks(): Check[] {
     checkRipgrep(),
     checkHarneryDir(),
     checkAdapterHooks(),
+    ...(codexWslBridge ? [codexWslBridge] : []),
     ...BUILTIN_ADAPTER_IDS.map(checkWorkflowAdapter),
     checkRestic(),
     checkRclone(),
     checkPlaywright(),
     checkPython(),
   ];
+}
+
+function checkCodexWslBridge(): Check | null {
+  const status = inspectCodexWslBridge();
+  if (!status) return null;
+  return {
+    name: "codex:WSL bridge",
+    severity: status.ok ? "ok" : "warn",
+    detail: status.detail,
+    hint: status.ok
+      ? undefined
+      : "forward CODEX_THREAD_ID through WSLENV in the Codex shell environment policy, then start a fresh task",
+  };
 }
 
 function checkRipgrep(): Check {

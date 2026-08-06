@@ -35,6 +35,7 @@ Exits `0` unless a required dep is missing.
 | `ripgrep`      | optional | Fast engine for `harn grep` (grep fallback works, just slower). `--fix` installs it; or opt in to auto-install via `.harnery/config.jsonc` |
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
 | `adapter hooks`| optional | Compares wired `agent-hook` entries against the current adapter spec. Also reports invalid JSON and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
+| `codex:WSL bridge` | optional | In a Windows-native Codex task running inside WSL, verifies that `CODEX_THREAD_ID` arrived and that `WSLENV` will forward it to later WSL processes |
 | `workflow:claude-code` / `workflow:codex` / `workflow:cursor` | optional | Spawn targets for [`harn run`](/cli/run/): is the adapter CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
 | `rclone`       | optional | Required for `harn sync` |
@@ -89,3 +90,20 @@ $ harn doctor
 ```
 
 The check only performs missing-hook drift checks for a adapter the project has already opted into (at least one Harnery hook is wired), so a bare `.claude/settings.json` never triggers a false warning. Invalid JSON is always reported. Codex's parser is strict, so `doctor` also flags unsupported top-level fields and event names before they can silently disable every hook. Re-run `harn init` to remove legacy Harnery-owned events after repairing any invalid third-party configuration.
+
+## Windows-native Codex with a WSL project
+
+When Codex runs on Windows while the project and Harnery run in WSL, the task
+identity has to cross that process boundary. `harn doctor` checks both parts of
+the contract: the current process must have `CODEX_THREAD_ID`, and `WSLENV`
+must include that variable so later WSL commands keep the same identity.
+
+The same check runs during Codex SessionStart when the adapter reports a
+`\\wsl.localhost` or `\\wsl$` workspace. That UNC path distinguishes the
+Windows-to-WSL bridge from Codex running natively inside WSL. Healthy sessions
+print nothing. If the bridge is incomplete, the agent sees a warning before it
+starts work and can run `harn doctor` for the specific failure.
+
+Harnery does not add Git safe-directory entries or approve Codex hooks. Those
+are machine-level trust decisions. The diagnostic reports bridge drift but
+leaves authorization with Git and Codex.

@@ -1,0 +1,58 @@
+---
+title: "0058: Diagnose the Codex-to-WSL identity bridge without granting trust"
+description: "ADR: check CODEX_THREAD_ID and WSLENV in doctor and SessionStart, while leaving Git and hook authorization under their existing trust controls."
+---
+
+**Status:** accepted (2026-08-06) · **Scope:** product tier (`doctor`, Codex SessionStart)
+
+## Context
+
+A Windows-native Codex task can work in a project stored inside WSL. Harnery
+runs on the Linux side, while Codex owns the task id and browser session on the
+Windows side. Direct WSL commands identify the right heartbeat only when
+`CODEX_THREAD_ID` crosses the boundary through `WSLENV`.
+
+This setup can look healthy until the first direct command or end-of-turn Git
+check. A missing environment bridge leaves hooks partially functional while
+`harn agents whoami` cannot identify the task. A separate class of failure
+comes from Windows Git safe-directory checks and Codex's path- and hash-specific
+hook authorization.
+
+The diagnostic needs to catch environment drift early without weakening either
+trust system.
+
+## Decision
+
+- `inspectCodexWslBridge` checks for WSL, `CODEX_THREAD_ID`, and a matching
+  `WSLENV` entry. It accepts WSLENV flags such as `CODEX_THREAD_ID/u`.
+- `harn doctor` includes a `codex:WSL bridge` check when it detects a hybrid
+  Codex process. The check is informational and does not expose the task id.
+- Codex SessionStart runs the same inspection when the adapter reports a WSL
+  UNC workspace (`\\wsl.localhost`, `\\wsl$`, or extended UNC syntax). The
+  path is the Windows-origin signal, so Codex running natively inside WSL does
+  not get a false warning. Healthy sessions add no text. A broken bridge adds a
+  short warning and points to the host's configured binary name plus `doctor`.
+- Harnery does not edit Windows Git configuration, Codex project state, or
+  Codex hook trust. Those remain explicit machine-level authorization choices.
+
+## Alternatives considered
+
+- **Automatically add Windows Git safe-directory entries and Codex hook
+  approvals.** Rejected because a diagnostic should not turn observed code
+  into trusted code. Hook hashes change precisely so the user can review new
+  commands before approving them.
+- **Put the procedure only in setup documentation.** Rejected because the
+  failure is easy to miss during a fresh task and the repair guide is rarely
+  open when it happens.
+- **Add a separate hybrid-only command.** Rejected because `doctor` already
+  owns runtime and adapter checks. A second command would add another surface
+  to remember.
+
+## Consequences
+
+- A missing or incomplete thread-id bridge now appears at SessionStart and in
+  `doctor`, before Git finalization depends on it.
+- The check cannot repair or bypass an untrusted hook. If Codex refuses to run
+  SessionStart, its own trust prompt remains authoritative.
+- The code stays portable. It keys off standard Codex and WSL environment
+  variables and contains no project path, distro name, or host-specific config.
