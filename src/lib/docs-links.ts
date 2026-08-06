@@ -363,9 +363,15 @@ export function collectAnchors(content: string): Set<string> {
       text = text.slice(0, custom.index).trim();
     }
     // Strip inline markup so "**Bold** `code`" slugs like GitHub's does.
+    // Underscores are special: GitHub keeps literal ones (`not_in_channel`
+    // anchors as not_in_channel), and GFM emphasis never binds intra-word,
+    // so only word-boundary underscores are markup. `_` counts as a word
+    // character in JS regex, so \b sits exactly at the space-to-underscore
+    // seam these delimiters occupy.
     text = text
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/[*_~`]/g, "")
+      .replace(/[*~`]/g, "")
+      .replace(/\b_+|_+\b/g, "")
       .replace(/<[^>]+>/g, "");
     const base = slugify(text);
     if (!base) return;

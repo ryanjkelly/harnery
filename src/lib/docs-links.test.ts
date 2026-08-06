@@ -114,6 +114,16 @@ describe("slugify / collectAnchors", () => {
     expect(anchors.has("bold-and-a-link")).toBe(true);
   });
 
+  test("keeps literal underscores while stripping emphasis underscores", () => {
+    // GitHub anchors `not_in_channel` with its underscores intact; only
+    // word-boundary underscores are emphasis markup.
+    const anchors = collectAnchors(
+      ["## Slack: `not_in_channel` vs missing scope", "## _emphasized_ title"].join("\n"),
+    );
+    expect(anchors.has("slack-not_in_channel-vs-missing-scope")).toBe(true);
+    expect(anchors.has("emphasized-title")).toBe(true);
+  });
+
   test("honors explicit {#custom-id} and HTML id/name anchors", () => {
     const anchors = collectAnchors(
       ["## Heading {#custom-id}", '<a name="legacy"></a>', '<h2 id="html-anchor">x</h2>'].join(
