@@ -294,8 +294,10 @@ function looksLikePath(dest: string): boolean {
  */
 export function extractLinks(masked: string): ExtractedLink[] {
   const links: ExtractedLink[] = [];
-  // [id]: dest "title"
-  const refDef = /^\s{0,3}\[[^\]]+\]:\s*(\S+)/;
+  // [id]: dest "title" — but never [^id]:, which is a footnote definition
+  // whose body is prose, not a destination; parsing it would turn the first
+  // word of every footnote into a phantom link target.
+  const refDef = /^\s{0,3}\[[^\]^][^\]]*\]:\s*(\S+)/;
 
   masked.split("\n").forEach((line, i) => {
     const lineNo = i + 1;

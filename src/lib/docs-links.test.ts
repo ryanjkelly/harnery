@@ -70,6 +70,17 @@ describe("extractLinks", () => {
     const md = ["one", "two", "[a](b.md)"].join("\n");
     expect(extractLinks(md)[0]?.line).toBe(3);
   });
+
+  test("ignores footnote definitions", () => {
+    // A footnote body is prose; its first word must not become a link target.
+    const md = [
+      "Claim.[^1]",
+      "",
+      "[^1]: The quick brown fox explains the claim.",
+      "[ref]: real-target.md",
+    ].join("\n");
+    expect(extractLinks(md).map((l) => l.target)).toEqual(["real-target.md"]);
+  });
 });
 
 describe("slugify / collectAnchors", () => {
