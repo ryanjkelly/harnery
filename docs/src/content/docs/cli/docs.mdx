@@ -95,7 +95,11 @@ produce a finding:
 Findings in documents that record a past state — anything under `archive/`,
 `audits/`, `changelogs/`, `handoffs/`, or `decisions/` — are reported as
 warnings rather than errors, because a document naming a path as it existed then
-is accurate rather than broken. `--strict` reports them as errors.
+is accurate rather than broken. The same downgrade applies to lifecycle docs
+(under `issues/`, `plans/`, or `handoffs/`) whose YAML frontmatter carries a
+terminal `status:` (`resolved`, `wontfix`, `shipped`, `abandoned`): a resolved
+issue is a settled record, while an open one keeps error severity because its
+guidance is live. `--strict` reports all of these as errors.
 
 For a single link that must stay as written, put `<!-- links-allow: reason -->`
 on its line; for a whole document, put `<!-- links-allow-file: reason -->`

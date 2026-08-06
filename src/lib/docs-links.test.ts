@@ -296,6 +296,28 @@ describe("checkFile", () => {
     expect(r.findings[0]?.severity).toBe("error");
   });
 
+  test("downgrades findings in settled lifecycle docs; open ones stay errors", () => {
+    const resolved = "---\nstatus: resolved\n---\n\n[t](nope.md)\n";
+    expect(check("docs/issues/2026-01-01_x.md", resolved).findings[0]?.severity).toBe("warning");
+
+    const open = "---\nstatus: open\n---\n\n[t](nope.md)\n";
+    expect(check("docs/issues/2026-01-01_x.md", open).findings[0]?.severity).toBe("error");
+
+    // No frontmatter status at all: treat as live.
+    expect(check("docs/issues/2026-01-01_x.md", "[t](nope.md)").findings[0]?.severity).toBe(
+      "error",
+    );
+
+    // Status only helps for lifecycle dirs; a topic doc stays live regardless.
+    const topic = "---\nstatus: resolved\n---\n\n[t](nope.md)\n";
+    expect(check("docs/guides/topic.md", topic).findings[0]?.severity).toBe("error");
+
+    // --strict overrides the downgrade here too.
+    expect(
+      check("docs/issues/2026-01-01_x.md", resolved, { strict: true }).findings[0]?.severity,
+    ).toBe("error");
+  });
+
   test("--check-escapes flags a resolving link that leaves the repo", () => {
     const nested = join(root, "sub-repo");
     mkdirSync(nested, { recursive: true });

@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { type DocKind, readDocStatusFromText } from "./docs-frontmatter.ts";
 import { sh } from "./exec.ts";
 
 /**
@@ -155,6 +156,25 @@ async function findMarkdownFiles(root: string): Promise<string[]> {
 
 function isHistoryDoc(rel: string): boolean {
   return HISTORY_SEGMENTS.some((seg) => rel.startsWith(seg) || rel.includes(`/${seg}`));
+}
+
+/**
+ * Lifecycle docs in a terminal state are records too. An issue with
+ * `status: resolved` describes paths as they existed when the incident was
+ * worked; a link there naming a since-moved file is accurate history, exactly
+ * like an archived plan. Open lifecycle docs stay at error severity: their
+ * guidance is live and a broken link in one misdirects real work.
+ */
+const TERMINAL_STATUSES = new Set(["resolved", "wontfix", "shipped", "abandoned"]);
+
+function isSettledLifecycleDoc(rel: string, content: string): boolean {
+  let kind: DocKind | undefined;
+  if (rel.includes("issues/")) kind = "issue";
+  else if (rel.includes("plans/")) kind = "plan";
+  else if (rel.includes("handoffs/")) kind = "handoff";
+  if (!kind) return false;
+  const status = readDocStatusFromText(content, kind);
+  return status !== null && TERMINAL_STATUSES.has(status);
 }
 
 // --- Markdown parsing ---------------------------------------------------
@@ -469,7 +489,7 @@ export function checkFile(opts: CheckFileOpts): FileResult {
   const sourceLines = content.split("\n");
   const sourceAbs = join(repoPath, rel);
   const sourceDir = dirname(sourceAbs);
-  const history = isHistoryDoc(rel);
+  const history = isHistoryDoc(rel) || isSettledLifecycleDoc(rel, content);
   const sev: LinkSeverity = history && !opts.strict ? "warning" : "error";
 
   const add = (
