@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { emitAndProject } from "../../core/agents/cli-emit.ts";
 import { emit } from "../../core/agents/events/emit.ts";
 import { type Heartbeat, readHeartbeat } from "../../core/agents/state/heartbeat-writer.ts";
-import { recordNameAssumption } from "../../core/agents/state/names.ts";
+import { recordNameAssumption, resolveForkAncestry } from "../../core/agents/state/names.ts";
 import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
 import { coordFreshnessSeconds } from "../../core/config.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
@@ -41,6 +41,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export type IdentityAssumeErrorCode =
   | "identity_busy"
   | "identity_in_use"
+  | "identity_is_ancestor"
   | "identity_not_found"
   | "invalid_identity"
   | "no_heartbeat"
@@ -255,6 +256,7 @@ export function assumeIdentity(
   coordRoot: string,
   instanceId: string,
   target: string,
+  opts?: { forceAncestor?: boolean },
 ): IdentityAssumeResult {
   const release = acquireLock(coordRoot);
   try {
@@ -273,6 +275,25 @@ export function assumeIdentity(
     }
 
     const targetIdentity = resolveTarget(coordRoot, target);
+
+    // Recorded-fork-lineage guard: a branched session inherits a transcript
+    // full of its ancestor's name, so "assume <ancestor>" is far more likely
+    // a confused fork trusting its scrollback than a legitimate role handoff.
+    // The liveness check below cannot catch this once the ancestor exits;
+    // lineage can. --force-ancestor is the deliberate-successor escape hatch.
+    if (!opts?.forceAncestor) {
+      const ancestor = resolveForkAncestry(coordRoot, instanceId).find(
+        (a) => (a.name ?? "").toLowerCase() === targetIdentity.name.toLowerCase(),
+      );
+      if (ancestor) {
+        throw new IdentityAssumeError(
+          "identity_is_ancestor",
+          `agent-${targetIdentity.name} is this session's fork ancestor (${ancestor.instance_id}): ` +
+            `this conversation was branched from that session, so its name in your context is ` +
+            `inherited history, not your role. If you are deliberately succeeding it, rerun with --force-ancestor.`,
+        );
+      }
+    }
     let reclaimedInstanceId: string | null = null;
     let conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
     if (conflict && reclaimAbandonedLocalConflict(coordRoot, conflict)) {

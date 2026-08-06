@@ -1,0 +1,95 @@
+---
+title: "0057: Fork lineage is recorded state, not an inference"
+description: "ADR: stamp forked_from on a branched session's name-history row, name the parent in session-start context, and refuse assuming an ancestor without an explicit flag."
+---
+
+**Status:** accepted (2026-08-05) · **Scope:** product tier (name history, tool.pre_use heal, session-start context, `agents identity assume`)
+
+## Context
+
+Adapters can fork a conversation: the branch gets a new conversation id and a
+copy of the parent's transcript. The coordination layer already handles the id
+correctly (a new instance, a fresh pool name, its own claims), but the copied
+transcript still asserts the parent's name, task, and file claims, and nothing
+recorded that the two sessions were related.
+
+Three consequences followed. The branch could read its scrollback and act as
+the parent. Session-start context could only offer a generic "any different
+name in earlier context was inherited" disclaimer, unable to name the session
+the branch was about to be misled by. And `identity assume <parent>` succeeded
+once the parent exited, because the liveness check cannot distinguish a
+confused branch from a legitimate successor. Only a recorded parent-child
+relationship separates those two cases.
+
+One adapter-specific fact made recording possible without adapter cooperation,
+verified empirically against `claude --resume <id> --fork-session`: the fork
+copies the parent's rows into its own transcript, rewriting each row's
+`sessionId` but preserving message `uuid`s. A sibling transcript containing
+the fork's message uuids is therefore an ancestor. A second verified fact
+dictated WHERE detection runs: the forked session never fires its own
+SessionStart (the hook fires under the parent's id, `source: resume`, before
+the fork id is minted), so the fork's instance first materializes at the
+`tool.pre_use` heal. Detection at session.start would only mislabel the
+resumed parent. Before this change, that heal path also left the fork as a
+permanently nameless heartbeat.
+
+## Decision
+
+- `.name-history` rows carry an optional `forked_from: <instance_id>`,
+  stamped only on the row that first assigns the instance, so resumes are
+  naturally inert.
+- The `tool.pre_use` heal detects the parent for claude-code (gated on "no
+  heartbeat file yet", so the transcript scan runs once per instance
+  lifetime), and `healHeartbeat` now mints a pool name for a main session with
+  no history at all instead of writing a nameless heartbeat. The
+  `health.heartbeat_heal` event carries `forked_from` so ledger replay
+  converges with name history (the ADR 0017 dual-write pattern).
+- Parent selection: candidates are scored by containment of message uuids
+  sampled across the fork's transcript; a grandparent loses on score. Sibling
+  forks tie the parent on score, so the minimal container (fewest message
+  rows) wins. A wrong pick under that rule stays within the ancestry, while
+  a recency tie-break can name a non-ancestor sibling (observed with two
+  probes forked off one parent).
+- Session-start context names the parent when lineage is recorded ("branched
+  from agent-X's session: earlier context showing agent-X's name … belongs to
+  the pre-fork session"), falling back to the generic inherited-name clause.
+- `agents identity assume` refuses a target that is the caller's recorded
+  fork ancestor with `identity_is_ancestor`; `--force-ancestor` is the
+  deliberate-successor escape hatch.
+- Codex and Cursor expose no local parent signal today (Codex desktop keeps
+  thread state server-side). They keep the generic disclaimer; the
+  `--forked-from` plumbing on `assign-name` / `heal-heartbeat` is the seam an
+  adapter uses the day a signal appears.
+
+## Alternatives considered
+
+- **Prose-only disclaimer in session-start context.** Shipped first as a
+  stopgap; kept as the fallback. It cannot name the parent and cannot guard
+  `assume` after the parent exits: prose is not an authorization boundary,
+  in ADR 0017's own language.
+- **Detect at session.start.** The natural-looking hook point, but on
+  claude-code the fork never session.starts, and the only sessions that do
+  carry a matching transcript there are resumed parents, so every stamp it
+  could make is wrong. Removed after live probing.
+- **Tie-break sibling forks by newest mtime.** Picked a non-ancestor sibling
+  in live testing. Minimal-container keeps the worst case inside the
+  ancestry.
+- **Ask adapters for a parent id.** Correct long-term seam (and the plumbing
+  accepts it), but no adapter exposes one today; waiting on vendors would
+  have shipped nothing.
+- **Refuse ancestor assumption with no override.** A branch that outlives its
+  parent is sometimes the intended successor; a hard refusal would force
+  hand-editing state, which ADR 0017 exists to prevent.
+
+## Consequences
+
+- A forked claude-code session now gets a name, recorded lineage, and a
+  parent-specific authority line; before this change it ran as a nameless
+  heartbeat with no session-start context of its own.
+- `healHeartbeat` consuming a pool slot for history-less main sessions means
+  hook-wiring gaps surface as named agents rather than blank rows.
+- Detection reads sibling transcripts once per instance lifetime; the scan is
+  capped (128MB per file) and fail-soft, degrading to the generic clause.
+- Lineage is best-effort where transcripts were pruned: an absent parent file
+  simply records nothing. The `identity_is_ancestor` guard therefore reduces,
+  not eliminates, the assume-after-exit hole; unrecorded forks keep it open.

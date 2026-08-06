@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
+import { readForkParent } from "../state/names.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -56,10 +57,17 @@ export function renderSessionContext(opts: RenderOpts): string {
     const suffix = platformLabel ? ` (${platformLabel})` : "";
     // The authority clause guards forked/branched chats. An adapter that forks a
     // conversation copies the parent's transcript, so the fork's context still
-    // asserts the parent's name, claims, and task. The fork is a new instance and
-    // gets its own name here; this sentence makes that unambiguous without needing
-    // to detect the fork (which the transcript-blind hook layer cannot do).
-    const selfLine = `You are agent-${agentName}${suffix}. Any different agent name in earlier context was inherited from another session; this one is authoritative.`;
+    // asserts the parent's name, claims, and task. When recorded fork lineage
+    // (.name-history forked_from) names the parent, say so specifically — the
+    // fork is about to read a transcript full of that exact name. Otherwise
+    // fall back to the generic clause, which needs no fork detection.
+    const forkParent = readForkParent(coordRoot, instanceId);
+    const authority = forkParent?.name
+      ? `This conversation was branched from agent-${forkParent.name}'s session: earlier context showing agent-${forkParent.name}'s name, task, or file claims belongs to the pre-fork session, not to you.`
+      : forkParent
+        ? `This conversation was branched from another session (${forkParent.instance_id}); any agent name in earlier context belongs to that session, not to you.`
+        : "Any different agent name in earlier context was inherited from another session; this one is authoritative.";
+    const selfLine = `You are agent-${agentName}${suffix}. ${authority}`;
     messages.push(peerTable ? `${selfLine}\n\n${peerTable}` : selfLine);
   } else if (peerTable) {
     messages.push(peerTable);

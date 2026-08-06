@@ -68,7 +68,11 @@ import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/
 import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
-import { scanStatusBoxPresent, scanTranscriptModel } from "./resolve/transcript.ts";
+import {
+  detectForkParent,
+  scanStatusBoxPresent,
+  scanTranscriptModel,
+} from "./resolve/transcript.ts";
 
 interface Argv {
   eventName: string | null;
@@ -159,11 +163,14 @@ function assignNameViaAgentCoord(
   coordRoot: string,
   instanceId: string,
   kind: "session" | "subagent" | "transient",
+  forkedFrom?: string,
 ): { name: string; kind: string } | null {
   const binary = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(binary)) return null;
   try {
-    const result = spawnSync(binary, ["assign-name", instanceId, kind], {
+    const args = ["assign-name", instanceId, kind];
+    if (forkedFrom) args.push("--forked-from", forkedFrom);
+    const result = spawnSync(binary, args, {
       encoding: "utf8",
       timeout: 2000,
       env: childEnv(coordRoot),
@@ -241,9 +248,22 @@ function buildEventData(
           : ctx.adapter === "cursor"
             ? "cursor"
             : "codex";
+      // Recorded fork lineage is NOT detected here. On claude-code a fork
+      // never fires its own session.start — SessionStart fires under the
+      // PARENT's session id (source=resume) before the fork id is minted
+      // (verified 2026-08-05) — so detection at this point can only mislabel
+      // the resumed parent. The fork's new instance is caught by the
+      // tool.pre_use heal path instead. The forkedFrom plumbing below stays
+      // for adapters that DO report a parent at session start.
+      const forkedFrom: string | undefined = undefined;
       // Assign (or recover) name + kind via agent-coord. Idempotent: resume
       // returns the original name; new owner consumes a counter slot.
-      const assigned = assignNameViaAgentCoord(ctx.coordRoot, ctx.instanceId, "session");
+      const assigned = assignNameViaAgentCoord(
+        ctx.coordRoot,
+        ctx.instanceId,
+        "session",
+        forkedFrom,
+      );
       // Write the adapter pid-map row so `harn agents whoami` ppid-walks find
       // this owner. Prefer the payload pid (the actual claude binary), then the
       // anchor walk (the `node` ancestor for Cursor, which has no payload pid),
@@ -267,6 +287,10 @@ function buildEventData(
         name: assigned?.name,
         kind: "session",
         agent_id: ctx.instanceId,
+        // Recorded fork lineage rides the canonical event too, so full replay
+        // and derived readers converge on the same parent linkage that
+        // .name-history carries (the ADR 0017 dual-write pattern).
+        ...(forkedFrom ? { forked_from: forkedFrom } : {}),
         // Workflow-child linkage: `workflow run` children carry the run id in
         // env (spawn adapters set it via buildChildEnv), so their sessions and
         // heartbeats join back to the run transcript + /workflows web view.
@@ -911,7 +935,21 @@ async function main(): Promise<number> {
   // call was restored here afterward.
   if (norm.event_type === "tool.pre_use") {
     try {
-      healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, adapter);
+      // Recorded fork lineage, heal-path flavor. A forked CC conversation
+      // never fires its own session.start (SessionStart fires under the
+      // PARENT's session id with source=resume, before the fork id is
+      // minted; verified 2026-08-05), so the fork's new instance first
+      // materializes right here. Gate detection on "no heartbeat yet" so the
+      // transcript scan runs once per instance lifetime, not per tool call.
+      let forkedFrom: string | undefined;
+      if (
+        adapter === "claude-code" &&
+        payload?.transcript_path &&
+        !existsSync(join(coordRoot, ".harnery", "active", `${owner.instance_id}.json`))
+      ) {
+        forkedFrom = detectForkParent(payload.transcript_path, owner.instance_id);
+      }
+      healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, adapter, forkedFrom);
       refreshPidmap(coordRoot, owner.instance_id, adapter, payload?.pid);
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-heal" });
@@ -1155,14 +1193,18 @@ function healHeartbeatViaCli(
   instanceId: string,
   sessionId: string,
   adapter: string,
+  forkedFrom?: string,
 ): void {
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
   // Pass the detected adapter so a pruned Cursor/Codex heartbeat is recreated
   // with the correct platform; without it, healHeartbeat defaults to
   // claude-code and the dashboard mislabels the agent. See
-  // heartbeat-writer.healHeartbeat.
-  spawnSync(agentCoordBin, ["heal-heartbeat", instanceId, sessionId, `--adapter=${adapter}`], {
+  // heartbeat-writer.healHeartbeat. --forked-from carries detected fork
+  // lineage for an instance that never session.started (the CC fork flow).
+  const args = ["heal-heartbeat", instanceId, sessionId, `--adapter=${adapter}`];
+  if (forkedFrom) args.push(`--forked-from=${forkedFrom}`);
+  spawnSync(agentCoordBin, args, {
     encoding: "utf8",
     timeout: 2000,
     env: childEnv(coordRoot),

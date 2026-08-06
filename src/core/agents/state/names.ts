@@ -312,6 +312,10 @@ export interface NameHistoryRow {
   /** Audit marker distinguishing an explicit role adoption from pool assignment. */
   source?: "pool" | "identity.assume";
   previous_name?: string;
+  /** Instance this session was forked/branched from (recorded fork lineage).
+   * Stamped only on the row that first assigns this instance, when the adapter
+   * layer detected or supplied a parent conversation. */
+  forked_from?: string;
 }
 
 function atomicWrite(path: string, content: string): void {
@@ -433,8 +437,15 @@ export function recordNameAssumption(
  * Assign a name to <instanceId> with the given <kind>. Counter-consuming when
  * the owner is new. Idempotent: returns existing name on resume.
  */
-export function assignName(coordRoot: string, instanceId: string, kind: NameKind): string {
-  // Check 1: existing history row → original name.
+export function assignName(
+  coordRoot: string,
+  instanceId: string,
+  kind: NameKind,
+  opts?: { forkedFrom?: string },
+): string {
+  // Check 1: existing history row → original name. A resume re-enters here,
+  // which also makes fork stamping naturally idempotent: lineage lands only on
+  // the row that first assigns the instance.
   const existing = resolveName(coordRoot, instanceId);
   if (existing) return existing.name;
 
@@ -447,12 +458,53 @@ export function assignName(coordRoot: string, instanceId: string, kind: NameKind
   }
   const name = COORD_NAMES[counter % 260]!;
   atomicWrite(cPath, String(counter + 1));
+  const forkedFrom = opts?.forkedFrom;
   appendHistory(coordRoot, {
     instance_id: instanceId,
     name,
     kind,
     source: "pool",
+    ...(forkedFrom && forkedFrom !== instanceId ? { forked_from: forkedFrom } : {}),
     ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   });
   return name;
+}
+
+/** One step of recorded fork lineage: the latest row for <instanceId> that
+ * carries `forked_from` (latest-row-wins, matching resolveName). */
+export function readForkParent(
+  coordRoot: string,
+  instanceId: string,
+): { instance_id: string; name: string | null } | null {
+  const history = readHistory(coordRoot);
+  for (let i = history.length - 1; i >= 0; i--) {
+    const row = history[i]!;
+    if (row.instance_id !== instanceId) continue;
+    if (!row.forked_from) return null;
+    const parent = resolveName(coordRoot, row.forked_from);
+    return { instance_id: row.forked_from, name: parent?.name ?? null };
+  }
+  return null;
+}
+
+/**
+ * Full recorded fork ancestry for <instanceId>, nearest ancestor first, each
+ * with its latest resolved name. Depth-capped and cycle-guarded: lineage is
+ * append-only operational data, not something to trust unboundedly.
+ */
+export function resolveForkAncestry(
+  coordRoot: string,
+  instanceId: string,
+): Array<{ instance_id: string; name: string | null }> {
+  const out: Array<{ instance_id: string; name: string | null }> = [];
+  const seen = new Set<string>([instanceId]);
+  let cursor = instanceId;
+  for (let depth = 0; depth < 20; depth++) {
+    const parent = readForkParent(coordRoot, cursor);
+    if (!parent || seen.has(parent.instance_id)) break;
+    out.push(parent);
+    seen.add(parent.instance_id);
+    cursor = parent.instance_id;
+  }
+  return out;
 }

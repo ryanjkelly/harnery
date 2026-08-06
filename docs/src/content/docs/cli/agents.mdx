@@ -76,6 +76,13 @@ This is role adoption, not persona renaming. The old session keeps its historica
 record, while the replacement becomes the current live owner of the role. It is
 limited to main sessions; subagents cannot assume operator-facing identities.
 
+One target is refused even when nobody holds the name: a persona this session's
+recorded fork lineage descends from (`identity_is_ancestor`). A branched
+conversation inherits a transcript full of its parent's name, so asking to
+become that parent is usually a session misled by its scrollback, not a
+handoff. Pass `--force-ancestor` when succession is genuinely the intent. See
+[ADR 0057](/decisions/0057-recorded-fork-lineage/).
+
 ### whoami, list, status
 
 The three orientation commands.

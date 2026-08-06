@@ -562,12 +562,23 @@ function registerIdentityCommands(parent: Command): void {
       "--session-id <id>",
       "Bind the heartbeat with this session_id directly, bypassing the ppid walk.",
     )
-    .action((target: string, opts: { json?: boolean; sessionId?: string }) => {
-      runIdentityAssume(target, opts);
-    });
+    .option(
+      "--force-ancestor",
+      "Allow assuming a persona this session's fork lineage descends from " +
+        "(default: refused, because a fork's inherited transcript asserting that " +
+        "name is not a role handoff).",
+    )
+    .action(
+      (target: string, opts: { json?: boolean; sessionId?: string; forceAncestor?: boolean }) => {
+        runIdentityAssume(target, opts);
+      },
+    );
 }
 
-function runIdentityAssume(target: string, opts: { json?: boolean; sessionId?: string }): void {
+function runIdentityAssume(
+  target: string,
+  opts: { json?: boolean; sessionId?: string; forceAncestor?: boolean },
+): void {
   if (opts.json) emit.config({ format: "json" });
   const root = monorepoRoot();
   if (!root) {
@@ -588,7 +599,9 @@ function runIdentityAssume(target: string, opts: { json?: boolean; sessionId?: s
     process.exit(1);
   }
   try {
-    const result = assumeIdentity(root, owner, target);
+    const result = assumeIdentity(root, owner, target, {
+      forceAncestor: opts.forceAncestor ?? false,
+    });
     emit.data({
       ...result,
       display_name: displayAgentName(result.name),

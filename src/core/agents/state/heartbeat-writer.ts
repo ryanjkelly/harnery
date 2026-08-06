@@ -282,6 +282,7 @@ export function healHeartbeat(
   sessionId?: string,
   model?: string,
   adapter?: string,
+  opts?: { forkedFrom?: string },
 ): Heartbeat | null {
   const path = heartbeatPath(coordRoot, instanceId);
   if (existsSync(path)) {
@@ -297,14 +298,28 @@ export function healHeartbeat(
   let agentId = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { resolveName } = require("./names.ts") as typeof import("./names.ts");
-    const resolved = resolveName(coordRoot, instanceId, sessionId);
+    const names = require("./names.ts") as typeof import("./names.ts");
+    const resolved = names.resolveName(coordRoot, instanceId, sessionId);
     if (resolved) {
       name = resolved.name;
       kind = resolved.kind;
       // An explicitly assumed session carries its durable persona UUID in
       // name-history. Native subagents continue to use instance_id.
       agentId = resolved.agent_id ?? (resolved.kind === "subagent" ? instanceId : "");
+    } else if (!sessionId || sessionId === instanceId) {
+      // A main session with NO history at all never fired session.start —
+      // the CC fork flow (SessionStart fires under the parent's id before
+      // the fork id is minted), or a partially-wired adapter. Mint its pool
+      // name here instead of leaving a nameless heartbeat, and stamp the
+      // detected fork lineage while we're at it. A sessionId that differs
+      // from instanceId is left alone: that shape is a subagent whose parent
+      // is also unknown, and guessing "session" would be wrong.
+      name = names.assignName(
+        coordRoot,
+        instanceId,
+        "session",
+        opts?.forkedFrom ? { forkedFrom: opts.forkedFrom } : undefined,
+      );
     }
   } catch {
     /* names module unavailable, fall back to empty */
@@ -330,10 +345,12 @@ export function healHeartbeat(
   atomicWrite(path, JSON.stringify(hb, null, 2));
   // Write-only telemetry: only the actual-recreate branch reaches here (the
   // already-alive case returned above), so this records exactly the heals that
-  // happened.
+  // happened. Recorded fork lineage rides the event too, so derived readers
+  // rebuilding from the ledger converge with .name-history.
   emitHealthHeal(coordRoot, "health.heartbeat_heal", instanceId, hb, {
     reason: "missing",
     kind: "heartbeat",
+    ...(opts?.forkedFrom ? { forked_from: opts.forkedFrom } : {}),
   });
   return hb;
 }

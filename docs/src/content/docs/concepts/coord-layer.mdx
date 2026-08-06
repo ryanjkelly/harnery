@@ -29,20 +29,25 @@ session recovers the name it already had. Forking is different. When an adapter
 branches a conversation to try a second direction, it mints a new conversation
 id, so the coord layer sees a new session and draws a fresh name from the pool.
 That is the right outcome, since the branches edit files independently and each
-needs its own claims. Nothing fork-specific is involved.
+needs its own claims.
 
-Two things can still make a correctly renamed fork look like it kept the
-parent's identity.
+The relationship itself is recorded, not just tolerated. On Claude Code the
+branch's transcript preserves the parent's message uuids, so Harnery detects the
+parent, stamps `forked_from` on the branch's name-history row, and uses it in
+two places. Session-start context names the parent ("branched from agent-X's
+session…"), because the branch is about to read a transcript full of that exact
+name asserting a task and file claims that are not its own. And
+`agents identity assume` refuses a target that is the caller's fork ancestor,
+since a branch trying to become its parent is usually a session misled by its
+scrollback rather than a deliberate successor; `--force-ancestor` overrides it
+when succession is the intent. Adapters with no detectable parent signal fall
+back to a generic clause stating that any different name in earlier context was
+inherited. Full rationale:
+[ADR 0057](/decisions/0057-recorded-fork-lineage/).
 
-The inherited transcript is the first. A fork copies the parent's history, so
-everything above the branch point still shows the parent's name and task, and
-only the turns below it belong to the fork. The self-name line in session-start
-context says which name is authoritative, so a fork that reads its own context
-will not be misled.
-
-The chat title is the second. Adapters usually title a conversation once and
-never revise it, so a forked chat keeps the parent's title even though it is now
-a different agent. Harnery cannot rename it. The first `set-task` of any session
+One cosmetic seam remains. Adapters usually title a conversation once and never
+revise it, so a forked chat keeps the parent's title even though it is now a
+different agent. Harnery cannot rename it. The first `set-task` of any session
 prints a `suggested_session_name`, and that is the value to retitle to.
 
 ## Cross-machine presence

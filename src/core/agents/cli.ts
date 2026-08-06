@@ -336,10 +336,20 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       // fragility. Positionals (sessionId, model) stay as-is once flags are
       // filtered out.
       const adapter = args.find((a) => a.startsWith("--adapter="))?.slice("--adapter=".length);
+      const forkedFrom = args
+        .find((a) => a.startsWith("--forked-from="))
+        ?.slice("--forked-from=".length);
       const positional = args.filter((a) => !a.startsWith("--"));
       const sessionId = positional[0];
       const model = positional[1];
-      const hb = writer.healHeartbeat(root, owner, sessionId, model, adapter);
+      const hb = writer.healHeartbeat(
+        root,
+        owner,
+        sessionId,
+        model,
+        adapter,
+        forkedFrom ? { forkedFrom } : undefined,
+      );
       process.stdout.write(`${JSON.stringify({ instance_id: owner, recreated: !!hb })}\n`);
       return hb ? 0 : 1;
     }
@@ -489,17 +499,39 @@ async function handleCouncilAction(root: string, action: string, rest: string[])
 
 async function handleAssignName(root: string, rest: string[]): Promise<number> {
   const { assignName } = await import("./state/names.ts");
-  const [owner, kindArg] = rest;
+  // Optional recorded-fork-lineage flag: --forked-from <parent_instance_id>.
+  // Supplied by an adapter layer that knows (or detected) that this session
+  // was branched from another conversation. Inert on resume: assignName only
+  // stamps lineage on the row that first assigns the instance.
+  let forkedFrom: string | undefined;
+  const positional: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--forked-from") {
+      forkedFrom = rest[++i];
+      continue;
+    }
+    positional.push(rest[i]!);
+  }
+  const [owner, kindArg] = positional;
   if (!owner || !kindArg) {
-    process.stderr.write("agent-coord assign-name <instance_id> <session|subagent|transient>\n");
+    process.stderr.write(
+      "agent-coord assign-name <instance_id> <session|subagent|transient> [--forked-from <instance_id>]\n",
+    );
     return 2;
   }
   if (kindArg !== "session" && kindArg !== "subagent" && kindArg !== "transient") {
     process.stderr.write(`agent-coord assign-name: invalid kind ${kindArg}\n`);
     return 2;
   }
-  const name = assignName(root, owner, kindArg);
-  process.stdout.write(`${JSON.stringify({ instance_id: owner, name, kind: kindArg })}\n`);
+  const name = assignName(root, owner, kindArg, forkedFrom ? { forkedFrom } : undefined);
+  process.stdout.write(
+    `${JSON.stringify({
+      instance_id: owner,
+      name,
+      kind: kindArg,
+      ...(forkedFrom ? { forked_from: forkedFrom } : {}),
+    })}\n`,
+  );
   return 0;
 }
 

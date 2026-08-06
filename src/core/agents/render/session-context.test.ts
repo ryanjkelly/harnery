@@ -48,6 +48,38 @@ describe("renderSessionContext", () => {
     );
   });
 
+  test("recorded fork lineage names the parent in the authority clause", () => {
+    writeFileSync(
+      join(root, ".harnery", ".name-history"),
+      [
+        JSON.stringify({
+          instance_id: "parent-1",
+          name: "Hazel",
+          kind: "session",
+          source: "pool",
+          ts: "2026-01-01T00:00:00Z",
+        }),
+        JSON.stringify({
+          instance_id: "self",
+          name: "Maya",
+          kind: "session",
+          source: "pool",
+          forked_from: "parent-1",
+          ts: "2026-01-01T00:01:00Z",
+        }),
+      ].join("\n") + "\n",
+    );
+    const out = renderSessionContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+    });
+    expect(out).toContain("You are agent-Maya.");
+    expect(out).toContain("branched from agent-Hazel's session");
+    expect(out).not.toContain("was inherited from another session");
+  });
+
   test("platformLabel renders adapter suffix on self-name", () => {
     const out = renderSessionContext({
       coordRoot: root,

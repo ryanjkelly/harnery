@@ -148,3 +148,64 @@ function seedHeartbeat(root: string, instanceId: string, name: string, nowMs = D
     }),
   );
 }
+
+describe("assumeIdentity fork-ancestor guard", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-assume-fork-"));
+    mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    seedHeartbeat(root, "fork-1", "Maya");
+    // Lineage: fork-1 was branched from parent-1 (agent-Hazel), which has
+    // since exited (no heartbeat), the exact hole liveness checks can't see.
+    writeFileSync(
+      path.join(root, ".harnery", ".name-history"),
+      [
+        JSON.stringify({
+          instance_id: "parent-1",
+          name: "Hazel",
+          kind: "session",
+          source: "pool",
+          ts: "2026-01-01T00:00:00Z",
+        }),
+        JSON.stringify({
+          instance_id: "fork-1",
+          name: "Maya",
+          kind: "session",
+          source: "pool",
+          forked_from: "parent-1",
+          ts: "2026-01-01T00:01:00Z",
+        }),
+      ].join("\n") + "\n",
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("refuses assuming a fork ancestor even when nobody holds the name", () => {
+    expect(() => assumeIdentity(root, "fork-1", "Hazel")).toThrow(IdentityAssumeError);
+    try {
+      assumeIdentity(root, "fork-1", "agent-Hazel");
+      throw new Error("expected identity_is_ancestor");
+    } catch (error) {
+      expect((error as IdentityAssumeError).code).toBe("identity_is_ancestor");
+      expect((error as IdentityAssumeError).message).toContain("parent-1");
+      expect((error as IdentityAssumeError).message).toContain("--force-ancestor");
+    }
+  });
+
+  test("--force-ancestor deliberately succeeds the exited ancestor", () => {
+    const result = assumeIdentity(root, "fork-1", "Hazel", { forceAncestor: true });
+    expect(result.changed).toBe(true);
+    expect(result.name).toBe("Hazel");
+  });
+
+  test("non-ancestor personas are unaffected by the guard", () => {
+    const result = assumeIdentity(root, "fork-1", "Willow");
+    expect(result.changed).toBe(true);
+    expect(result.name).toBe("Willow");
+  });
+});

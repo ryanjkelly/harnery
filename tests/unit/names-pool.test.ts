@@ -11,7 +11,9 @@ import path from "node:path";
 import {
   assignName,
   COORD_NAMES,
+  readForkParent,
   recordNameAssumption,
+  resolveForkAncestry,
   resolveName,
 } from "../../src/core/agents/state/names.ts";
 
@@ -161,5 +163,70 @@ describe("assignName / resolveName", () => {
       kind: "transient",
       agent_id: "22222222-2222-4222-8222-222222222222",
     });
+  });
+});
+
+describe("recorded fork lineage", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-forklineage-"));
+    mkdirSync(path.join(root, ".harnery"), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("assignName stamps forked_from on the first row only", () => {
+    assignName(root, "parent-1", "session");
+    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    // Resume: idempotent, no second row, lineage intact.
+    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+
+    const rows = readFileSync(path.join(root, ".harnery", ".name-history"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(rows.filter((r) => r.instance_id === "fork-1")).toHaveLength(1);
+    expect(rows.find((r) => r.instance_id === "fork-1").forked_from).toBe("parent-1");
+    expect(rows.find((r) => r.instance_id === "parent-1").forked_from).toBeUndefined();
+  });
+
+  test("self-parent is refused at stamp time", () => {
+    assignName(root, "loop-1", "session", { forkedFrom: "loop-1" });
+    const rows = readFileSync(path.join(root, ".harnery", ".name-history"), "utf8");
+    expect(rows).not.toContain("forked_from");
+  });
+
+  test("readForkParent resolves the parent's latest name", () => {
+    const parentName = assignName(root, "parent-1", "session");
+    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    expect(readForkParent(root, "fork-1")).toEqual({
+      instance_id: "parent-1",
+      name: parentName,
+    });
+    expect(readForkParent(root, "parent-1")).toBeNull();
+    // Parent later assumes a persona: lineage follows latest-row-wins.
+    recordNameAssumption(root, "parent-1", "Yann", "agent-uuid-1");
+    expect(readForkParent(root, "fork-1")?.name).toBe("Yann");
+  });
+
+  test("resolveForkAncestry walks the chain nearest-first with depth + cycle guards", () => {
+    const gName = assignName(root, "gp-1", "session");
+    const pName = assignName(root, "parent-1", "session", { forkedFrom: "gp-1" });
+    assignName(root, "fork-1", "session", { forkedFrom: "parent-1" });
+    expect(resolveForkAncestry(root, "fork-1")).toEqual([
+      { instance_id: "parent-1", name: pName },
+      { instance_id: "gp-1", name: gName },
+    ]);
+    // Cycle: hand-write a corrupt loop; the walk must terminate.
+    writeFileSync(
+      path.join(root, ".harnery", ".name-history"),
+      [
+        JSON.stringify({ instance_id: "a", name: "Anna", kind: "session", forked_from: "b", ts: "2026-01-01T00:00:00Z" }),
+        JSON.stringify({ instance_id: "b", name: "Bob", kind: "session", forked_from: "a", ts: "2026-01-01T00:00:00Z" }),
+      ].join("\n") + "\n",
+    );
+    expect(resolveForkAncestry(root, "a")).toEqual([{ instance_id: "b", name: "Bob" }]);
   });
 });

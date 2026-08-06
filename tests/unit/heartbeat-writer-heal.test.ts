@@ -98,3 +98,39 @@ describe("heartbeat-writer canonical health.* emission", () => {
     expect(evs.some((e) => (e.data as Record<string, unknown>).reason === "stale")).toBe(true);
   });
 });
+
+describe("healHeartbeat names never-registered main sessions", () => {
+  test("mints a pool name + fork lineage for an instance with no history (CC fork flow)", () => {
+    const root = freshRoot();
+    assignName(root, "parent-1", "session");
+    const hb = healHeartbeat(root, "fork-1", "fork-1", undefined, "claude-code", {
+      forkedFrom: "parent-1",
+    });
+    expect(hb?.name).not.toBe("");
+    expect(hb?.kind).toBe("session");
+    const rows = readFileSync(path.join(root, ".harnery", ".name-history"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const row = rows.find((r) => r.instance_id === "fork-1");
+    expect(row?.name).toBe(hb?.name);
+    expect(row?.forked_from).toBe("parent-1");
+  });
+
+  test("existing history still wins (no double assignment, lineage attempt inert)", () => {
+    const root = freshRoot();
+    const name = assignName(root, "sess-1", "session");
+    const hb = healHeartbeat(root, "sess-1", "sess-1", undefined, "claude-code", {
+      forkedFrom: "parent-9",
+    });
+    expect(hb?.name).toBe(name);
+    const rows = readFileSync(path.join(root, ".harnery", ".name-history"), "utf8");
+    expect(rows).not.toContain("parent-9");
+  });
+
+  test("subagent-shaped heal (sessionId != instanceId, unknown parent) stays nameless", () => {
+    const root = freshRoot();
+    const hb = healHeartbeat(root, "sub-1", "other-session", undefined, "claude-code");
+    expect(hb?.name).toBe("");
+  });
+});
