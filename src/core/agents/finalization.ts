@@ -125,8 +125,22 @@ function existingProbeDir(coordRoot: string, absolutePath: string): string | nul
   return current;
 }
 
+/**
+ * Translate a Windows-native WSL UNC claim back to the Linux path seen by the
+ * coordination process. Codex can report `\\\\wsl.localhost\\<distro>\\...`
+ * while Harnery runs inside that distro with a `/...` coord root.
+ */
+function resolveHeldPath(coordRoot: string, heldPath: string): string {
+  const wslUnc = /^\\\\(?:wsl\.localhost|wsl\$)\\[^\\]+\\(.+)$/i.exec(heldPath);
+  if (wslUnc) {
+    const linuxPath = `/${wslUnc[1]!.replaceAll("\\", "/")}`;
+    if (pathInside(coordRoot, linuxPath)) return linuxPath;
+  }
+  return resolve(coordRoot, heldPath);
+}
+
 function discoverRepo(coordRoot: string, heldPath: string): { root: string; path: string } | null {
-  const absolutePath = resolve(coordRoot, heldPath);
+  const absolutePath = resolveHeldPath(coordRoot, heldPath);
   if (!pathInside(coordRoot, absolutePath)) return null;
   const probeDir = existingProbeDir(coordRoot, absolutePath);
   if (!probeDir) return null;

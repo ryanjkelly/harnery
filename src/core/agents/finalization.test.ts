@@ -87,6 +87,21 @@ describe("checkGitFinalization", () => {
     });
   });
 
+  test("maps a Windows WSL UNC claim to the Linux coordination root", () => {
+    const repo = join(temp, "repo");
+    initRepo(repo);
+    writeFileSync(join(repo, "owned.txt"), "done\n");
+    commitAll(repo, "initial");
+    const uncPath = `\\\\wsl.localhost\\Ubuntu-22.04${repo.replaceAll("/", "\\")}\\owned.txt`;
+
+    expect(checkGitFinalization(repo, [uncPath])).toMatchObject({
+      ok: true,
+      dirty_paths: [],
+      unverifiable_paths: [],
+      repos_checked: ["."],
+    });
+  });
+
   test("blocks a dirty held file but ignores a dirty foreign file", () => {
     const repo = join(temp, "repo");
     initRepo(repo);
