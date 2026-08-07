@@ -9,8 +9,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ADAPTER_SPECS, CLAUDE_CODE_EVENTS } from "./events.ts";
-import { diffWiring, loadAdapterWiring, type SettingsFile } from "./wiring.ts";
+import { ADAPTER_SPECS, type AdapterId, CLAUDE_CODE_EVENTS } from "./events.ts";
+import {
+  diffWiring,
+  loadAdapterWiring,
+  type SettingsFile,
+  summarizeAdapterWiring,
+} from "./wiring.ts";
 
 const CLAUDE = ADAPTER_SPECS["claude-code"];
 const HOOK_BASE = "/repo/harnery/bin/agent-hook";
@@ -220,6 +225,91 @@ describe("loadAdapterWiring (fs-backed)", () => {
       expect(drift).toHaveLength(1);
       expect(drift[0]!.missing).toHaveLength(0);
       expect(drift[0]!.orphans).toEqual(["gone-event"]);
+    } finally {
+      teardown();
+    }
+  });
+});
+
+/**
+ * The classification behind doctor's "CLI installed but never wired" warn.
+ * Both cases that `loadAdapterWiring` deliberately drops on the floor must
+ * still be visible here: the settings file that doesn't exist (the path a
+ * wholly missing adapter takes) and the one that exists carrying none of ours.
+ */
+describe("summarizeAdapterWiring (fs-backed)", () => {
+  let dir: string;
+
+  function setup(): string {
+    dir = mkdtempSync(join(tmpdir(), "harnery-summary-"));
+    return dir;
+  }
+  function teardown(): void {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
+  function writeClaudeSettings(root: string, settings: SettingsFile): void {
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify(settings, null, 2));
+  }
+
+  test("empty project → every adapter unwired, none wired", () => {
+    const root = setup();
+    try {
+      const summary = summarizeAdapterWiring(root);
+      expect(summary.wired).toEqual([]);
+      const allAdapters = Object.keys(ADAPTER_SPECS) as AdapterId[];
+      expect([...summary.unwired].sort()).toEqual(allAdapters.sort());
+    } finally {
+      teardown();
+    }
+  });
+
+  test("absent settings file counts as unwired, not as absent-from-both", () => {
+    const root = setup();
+    try {
+      writeClaudeSettings(root, settingsWiring(CLAUDE_CODE_EVENTS.map((e) => e.subcommand)));
+      const summary = summarizeAdapterWiring(root);
+      expect(summary.wired).toEqual(["claude-code"]);
+      // codex + cursor have no settings file at all — the loadAdapterWiring
+      // early-continue that hid them from doctor before this existed.
+      expect(summary.unwired).toContain("codex");
+      expect(summary.unwired).toContain("cursor");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("settings file with zero harnery hooks counts as unwired", () => {
+    const root = setup();
+    try {
+      writeClaudeSettings(root, { hooks: {} });
+      expect(summarizeAdapterWiring(root).unwired).toContain("claude-code");
+      expect(summarizeAdapterWiring(root).wired).toEqual([]);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("partially wired still counts as wired (that case is drift, not unwired)", () => {
+    const root = setup();
+    try {
+      writeClaudeSettings(root, settingsWiring(["session-start"]));
+      const summary = summarizeAdapterWiring(root);
+      expect(summary.wired).toEqual(["claude-code"]);
+      expect(summary.unwired).not.toContain("claude-code");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("unparseable settings file lands in neither list", () => {
+    const root = setup();
+    try {
+      mkdirSync(join(root, ".claude"), { recursive: true });
+      writeFileSync(join(root, ".claude", "settings.json"), "{ not json");
+      const summary = summarizeAdapterWiring(root);
+      expect(summary.wired).not.toContain("claude-code");
+      expect(summary.unwired).not.toContain("claude-code");
     } finally {
       teardown();
     }

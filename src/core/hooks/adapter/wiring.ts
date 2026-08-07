@@ -200,6 +200,49 @@ export function loadAdapterWiring(projectRoot: string): AdapterWiringStatus[] {
   return out;
 }
 
+export interface AdapterWiringSummary {
+  /** Adapters carrying at least one harnery hook. */
+  wired: AdapterId[];
+  /**
+   * Adapters carrying none: no settings file at all, or a settings file with
+   * none of ours in it. An unparseable file lands in neither list, since
+   * `loadAdapterWiring` already reports that as drift.
+   */
+  unwired: AdapterId[];
+}
+
+/**
+ * Classify every known adapter as wired or unwired, without judging whether an
+ * unwired one is a problem.
+ *
+ * `loadAdapterWiring` stays deliberately silent about an adapter with zero
+ * harnery hooks, because a bare settings file is not an opt-out signal and
+ * nagging about it would false-warn every session. That silence is right in
+ * isolation and wrong once you also know the adapter's CLI is installed: then
+ * an agent can start a session here and register nothing. Splitting the fact
+ * from the judgement lets a caller holding both (doctor) tell "not used here"
+ * from "never wired" without changing what counts as drift.
+ */
+export function summarizeAdapterWiring(projectRoot: string): AdapterWiringSummary {
+  const wired: AdapterId[] = [];
+  const unwired: AdapterId[] = [];
+  for (const [id, spec] of Object.entries(ADAPTER_SPECS) as [AdapterId, AdapterSpec][]) {
+    const settingsPath = resolve(projectRoot, spec.settingsFile);
+    if (!existsSync(settingsPath)) {
+      unwired.push(id);
+      continue;
+    }
+    let settings: SettingsFile;
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as SettingsFile;
+    } catch {
+      continue; // unparseable → already surfaced by loadAdapterWiring
+    }
+    (diffWiring(settings, spec).present.length > 0 ? wired : unwired).push(id);
+  }
+  return { wired, unwired };
+}
+
 /**
  * Resolve the harnery package version for context in nudges/checks. Walks up
  * from this module to the package root (works under Bun from `src/` and Node

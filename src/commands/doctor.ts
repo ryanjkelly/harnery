@@ -19,7 +19,8 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
-import { loadAdapterWiring } from "../core/hooks/adapter/wiring.ts";
+import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
+import { loadAdapterWiring, summarizeAdapterWiring } from "../core/hooks/adapter/wiring.ts";
 import { inspectCodexWslBridge } from "../core/hooks/codex-wsl-bridge.ts";
 import {
   ADAPTER_BINARIES,
@@ -99,15 +100,20 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
 
 export function runChecks(): Check[] {
   const codexWslBridge = checkCodexWslBridge();
+  // Probe the adapter CLIs before the hook check runs, not in output order:
+  // an unwired adapter only matters if its CLI is actually installed, and
+  // probing once here keeps that join to one spawn per CLI.
+  const workflow = BUILTIN_ADAPTER_IDS.map((id) => ({ id, ...checkWorkflowAdapter(id) }));
+  const installed = workflow.filter((w) => w.installed).map((w) => w.id as AdapterId);
   return [
     checkNode(),
     checkGit(),
     checkBun(),
     checkRipgrep(),
     checkHarneryDir(),
-    checkAdapterHooks(),
+    checkAdapterHooks(installed),
     ...(codexWslBridge ? [codexWslBridge] : []),
-    ...BUILTIN_ADAPTER_IDS.map(checkWorkflowAdapter),
+    ...workflow.map((w) => w.check),
     checkRestic(),
     checkRclone(),
     checkPlaywright(),
@@ -173,26 +179,35 @@ function whichVersion(bin: string, args: string[] = ["--version"]): { ok: boolea
  * One workflow spawn target: is the adapter CLI installed, and how will its
  * headless children bill (subscription login vs API key — see billing.ts)?
  * Missing is a warn, not a fail: workflows degrade to the adapters you have.
+ *
+ * Reports `installed` alongside the check so `checkAdapterHooks` can reuse the
+ * probe instead of spawning every adapter CLI a second time.
  */
-function checkWorkflowAdapter(adapter: AdapterName): Check {
+function checkWorkflowAdapter(adapter: AdapterName): { check: Check; installed: boolean } {
   const bin = ADAPTER_BINARIES[adapter];
   const name = `workflow:${adapter}`;
   const r = whichVersion(bin);
   if (!r.ok) {
     return {
-      name,
-      severity: "warn",
-      detail: `${bin} missing (workflow --adapter ${adapter} unavailable)`,
-      hint: `${ADAPTER_INSTALL_HINTS[adapter]}  then: ${ADAPTER_LOGIN_HINTS[adapter]}`,
+      check: {
+        name,
+        severity: "warn",
+        detail: `${bin} missing (workflow --adapter ${adapter} unavailable)`,
+        hint: `${ADAPTER_INSTALL_HINTS[adapter]}  then: ${ADAPTER_LOGIN_HINTS[adapter]}`,
+      },
+      installed: false,
     };
   }
   const probe = probeBilling(adapter);
   if (probe.login === "absent" && !probe.apiKeyPresent) {
     return {
-      name,
-      severity: "warn",
-      detail: `${r.out} — installed, but no stored login or API key detected`,
-      hint: ADAPTER_LOGIN_HINTS[adapter],
+      check: {
+        name,
+        severity: "warn",
+        detail: `${r.out} — installed, but no stored login or API key detected`,
+        hint: ADAPTER_LOGIN_HINTS[adapter],
+      },
+      installed: true,
     };
   }
   const billing =
@@ -201,7 +216,7 @@ function checkWorkflowAdapter(adapter: AdapterName): Check {
         ? "billing: subscription"
         : "billing: subscription (login unverifiable, CLI is the authority)"
       : `billing: ${probe.mode} (${probe.apiKeySource})`;
-  return { name, severity: "ok", detail: `${r.out} — ${billing}` };
+  return { check: { name, severity: "ok", detail: `${r.out} — ${billing}` }, installed: true };
 }
 
 function checkNode(): Check {
@@ -347,13 +362,22 @@ function checkHarneryDir(): Check {
  * loadAdapterWiring — so a bare settings file never false-warns. The remedy is
  * always the same: re-run `<bin> init` (idempotent, additive).
  */
-function checkAdapterHooks(): Check {
+function checkAdapterHooks(installedAdapters: AdapterId[] = []): Check {
   const root = findCoordProjectRoot();
   if (!root) {
     return { name: "adapter hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
   }
   const drift = loadAdapterWiring(root);
-  if (drift.length === 0) {
+  // A adapter with zero harnery hooks is only worth flagging when the project
+  // plainly uses harnery hooks (something else is wired) AND that adapter's CLI
+  // is installed. Both conditions matter: the first keeps a project that has
+  // never run init quiet, the second keeps a project that simply doesn't have
+  // Codex quiet. What's left is the case that reads as healthy but isn't — an
+  // agent can start a session through that adapter and register nothing.
+  const summary = summarizeAdapterWiring(root);
+  const unwired =
+    summary.wired.length > 0 ? summary.unwired.filter((id) => installedAdapters.includes(id)) : [];
+  if (drift.length === 0 && unwired.length === 0) {
     return { name: "adapter hooks", severity: "ok", detail: "wired + current" };
   }
   const bin = resolveBinName(root);
@@ -372,12 +396,22 @@ function checkAdapterHooks(): Check {
     }
     return `${d.settingsFile}: ${bits.join("; ")}`;
   });
+  for (const id of unwired) {
+    parts.push(`${ADAPTER_SPECS[id].settingsFile}: ${id} CLI installed, no harnery hooks wired`);
+  }
   const needsManualRepair = drift.some(
     (d) => d.parseError || d.invalidTopLevelKeys.length > 0 || d.invalidEventKeys.length > 0,
   );
-  const hint = needsManualRepair
-    ? `repair the invalid adapter settings, then run \`${bin} init\` to migrate harnery hooks`
-    : `run \`${bin} init\` to migrate the hook set (idempotent)`;
+  const wireHints = unwired.map((id) => `\`${bin} init --adapter ${id}\``);
+  let hint: string;
+  if (needsManualRepair) {
+    hint = `repair the invalid adapter settings, then run \`${bin} init\` to migrate harnery hooks`;
+  } else if (drift.length > 0) {
+    hint = `run \`${bin} init\` to migrate the hook set (idempotent)`;
+    if (wireHints.length > 0) hint += `; ${wireHints.join(" and ")} to wire the rest`;
+  } else {
+    hint = `run ${wireHints.join(" and ")} (idempotent, additive)`;
+  }
   return { name: "adapter hooks", severity: "warn", detail: parts.join("  |  "), hint };
 }
 
