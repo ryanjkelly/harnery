@@ -89,14 +89,14 @@ When more than one host checks out harnery (e.g. two separate monorepos each car
 
 This `AGENTS.md` is the canonical instructions file; `CLAUDE.md` is a verbatim mirror for Claude Code. Edit `AGENTS.md`, then copy it across.
 
-<!-- harnery:begin instructions v=c28c3573 -->
+<!-- harnery:begin instructions v=e6877b83 -->
 ## harnery coordination
 
 This project runs [harnery](https://harnery.com) for multi-agent coordination.
 You share this checkout with other agents; the surfaces below keep you oriented
 and out of each other's way, and let you dispatch a team of your own when a job
 is bigger than one session. Run `harn <command> --help` for any command's full
-surface. Procedures for the deeper flows live in the `harn-decide` and `harn-council` skills.
+surface. See `harn decision --help` and `harn agents council --help` for the deeper procedures.
 
 **Identity + peers.** You are one of several agents in this repo.
 `harn agents whoami` is you; `harn agents status` shows your session plus the
@@ -144,8 +144,8 @@ expired cleanup and requires `--yes` to delete anything.
 **Decision docket.** When you would otherwise stop to ask a human a decision you
 can't resolve from the repo, file it instead. `harn decision file "<question>"`
 records it and lets you proceed on a stated default; `harn decision search "<terms>"`
-surfaces prior decisions, so check for precedent before re-deciding. The `harn-decide` skill has the file / claim / resolve-with-evidence procedure.
+surfaces prior decisions, so check for precedent before re-deciding. See `harn decision --help` for the file / claim / resolve-with-evidence procedure.
 
 **Councils.** For a hard or contested decision, convene a council of agents.
-`harn council create "<objective>"` runs structured rounds toward a decision. The `harn-council` skill has the steward and member flow.
+`harn council create "<objective>"` runs structured rounds toward a decision. See `harn agents council --help` for the steward and member flow.
 <!-- harnery:end instructions -->

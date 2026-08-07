@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash bin/agent-hook session-start --adapter cursor"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "bash bin/agent-hook session-end --adapter cursor"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "bash bin/agent-hook pre-tool-use --adapter cursor"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "bash bin/agent-hook before-shell-execution --adapter cursor"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "bash bin/agent-hook post-tool-use --adapter cursor"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "bash bin/agent-hook post-tool-use-failure --adapter cursor"
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "bash bin/agent-hook sub-agent-start --adapter cursor"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "bash bin/agent-hook sub-agent-stop --adapter cursor"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "bash bin/agent-hook user-prompt-submit --adapter cursor"
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash bin/agent-hook stop --adapter cursor"
+      }
+    ]
+  }
+}
