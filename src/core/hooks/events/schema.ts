@@ -258,6 +258,10 @@ export type ClaimAcquire = EventEnvelope<
   {
     path: string;
     mode: "read" | "write";
+    finalization?: {
+      disposition: "git" | "output";
+      root: string;
+    };
   }
 >;
 

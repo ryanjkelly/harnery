@@ -32,6 +32,26 @@
           "type": "boolean",
           "default": false,
           "description": "Require `agents status --end-turn` instead of plain `agents status` at the end of tool-using turns. The guarded call verifies that session-owned paths are committed and their repositories are pushed. Env override: HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0."
+        },
+        "finalizationRoots": {
+          "type": "array",
+          "default": [],
+          "description": "Project-owned authority for guarded writes outside the coordination root. Each exact root declares one end-turn disposition: `git` requires the path to be a Git repository root and applies dirty/remote checks; `output` explicitly accepts intentional non-Git output. Paths may be absolute or relative to the coordination root. The coordination root is implicitly `git` when it is a Git repository. User-global config cannot grant these roots.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "disposition"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "disposition": {
+                "type": "string",
+                "enum": ["git", "output"]
+              }
+            }
+          }
         }
       }
     },

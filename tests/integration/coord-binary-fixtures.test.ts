@@ -246,6 +246,137 @@ describe("agent-hook pre-tool-use cross-client deny", () => {
 });
 
 // ── agent-hook session-start (cursor / codex) ─────────────────────────────
+describe("agent-hook pre-tool-use finalization authority", () => {
+  function externalDir(root: string, suffix: string): string {
+    const dir = `${root}-${suffix}`;
+    mkdirSync(dir, { recursive: true });
+    sandboxes.push(dir);
+    return dir;
+  }
+
+  function configure(
+    root: string,
+    entries: Array<{ path: string; disposition: "git" | "output" }>,
+  ): void {
+    writeFileSync(
+      path.join(root, ".harnery", "config.jsonc"),
+      JSON.stringify({
+        agents: { requireGitFinalization: true, finalizationRoots: entries },
+      }),
+    );
+  }
+
+  function writePayload(root: string, target: string): string {
+    return JSON.stringify({
+      session_id: "owner-finalization",
+      cwd: root,
+      hook_event_name: "PreToolUse",
+      tool_name: "Write",
+      tool_input: { file_path: target, content: "done\n" },
+    });
+  }
+
+  test("records the explicit output disposition before an authorized non-Git write", () => {
+    const root = makeSandbox();
+    const output = externalDir(root, "output");
+    const configuredPath = path.relative(root, output);
+    configure(root, [{ path: configuredPath, disposition: "output" }]);
+    seedHeartbeat(root, "owner-finalization", { platform: "claude-code" });
+    const target = path.join(output, "artifact.txt");
+
+    const { stdout } = run(
+      AGENT_HOOK,
+      ["pre-tool-use", "--adapter", "claude-code"],
+      writePayload(root, target),
+      root,
+    );
+    expect(stdout).not.toContain('"permissionDecision":"deny"');
+    const heartbeat = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "owner-finalization.json"), "utf8"),
+    ) as { files_touched: string[] };
+    expect(heartbeat.files_touched).toContain(
+      path.relative(root, target).replaceAll(path.sep, "/"),
+    );
+    const claim = events(root)
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((event) => event.event_type === "claim.acquire") as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(claim?.data?.finalization).toEqual({
+      disposition: "output",
+      root: configuredPath,
+    });
+  });
+
+  test("denies an unauthorized sibling before acquiring any claim", () => {
+    const root = makeSandbox();
+    const outside = externalDir(root, "outside");
+    configure(root, []);
+    seedHeartbeat(root, "owner-finalization", { platform: "claude-code" });
+
+    const { stdout } = run(
+      AGENT_HOOK,
+      ["pre-tool-use", "--adapter", "claude-code"],
+      writePayload(root, path.join(outside, "artifact.txt")),
+      root,
+    );
+    expect(stdout).toContain('"permissionDecision":"deny"');
+    expect(stdout).toContain("outside the coordination repository");
+    const heartbeat = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "owner-finalization.json"), "utf8"),
+    ) as { files_touched: string[] };
+    expect(heartbeat.files_touched).toEqual([]);
+    expect(events(root)).not.toContain('"event_type":"claim.acquire"');
+  });
+
+  test("denies a sibling non-Git directory misdeclared as Git", () => {
+    const root = makeSandbox();
+    const output = externalDir(root, "not-git");
+    configure(root, [{ path: path.relative(root, output), disposition: "git" }]);
+    seedHeartbeat(root, "owner-finalization", { platform: "claude-code" });
+
+    const { stdout } = run(
+      AGENT_HOOK,
+      ["pre-tool-use", "--adapter", "claude-code"],
+      writePayload(root, path.join(output, "artifact.txt")),
+      root,
+    );
+    expect(stdout).toContain('"permissionDecision":"deny"');
+    expect(stdout).toContain("configured root is invalid");
+    expect(events(root)).not.toContain('"event_type":"claim.acquire"');
+  });
+
+  test("preflights every apply_patch target before acquiring the first claim", () => {
+    const root = makeSandbox();
+    const outside = externalDir(root, "patch-outside");
+    configure(root, []);
+    seedHeartbeat(root, "owner-finalization", { platform: "codex" });
+    mkdirSync(path.join(root, "docs"), { recursive: true });
+    writeFileSync(path.join(root, "docs", "inside.md"), "old\n");
+    const patch =
+      `*** Begin Patch\n*** Update File: ${path.join(root, "docs", "inside.md")}\n` +
+      `@@\n-old\n+new\n*** Add File: ${path.join(outside, "outside.md")}\n` +
+      `+new\n*** End Patch\n`;
+    const payload = JSON.stringify({
+      session_id: "owner-finalization",
+      cwd: root,
+      hook_event_name: "PreToolUse",
+      tool_name: "apply_patch",
+      tool_input: { command: patch },
+    });
+
+    const { stdout } = run(AGENT_HOOK, ["pre-tool-use", "--adapter", "codex"], payload, root);
+    expect(stdout).toContain('"permissionDecision":"deny"');
+    const heartbeat = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "owner-finalization.json"), "utf8"),
+    ) as { files_touched: string[] };
+    expect(heartbeat.files_touched).toEqual([]);
+    expect(events(root)).not.toContain('"event_type":"claim.acquire"');
+  });
+});
+
 describe("agent-hook session-start", () => {
   test("Cursor sessionStart sweeps stale heartbeat, keeps fresh, creates own", () => {
     const root = makeSandbox();
@@ -538,10 +669,7 @@ describe("harn agents identity assume", () => {
     expect(`${blocked.stdout}\n${blocked.stderr}`).toContain("identity_in_use");
 
     // Dead pid-map row: assume reclaims and continues.
-    writeFileSync(
-      path.join(root, ".harnery", "pid-map", "999999999"),
-      "assume-cli-other\tcodex",
-    );
+    writeFileSync(path.join(root, ".harnery", "pid-map", "999999999"), "assume-cli-other\tcodex");
     unlinkSync(path.join(root, ".harnery", "pid-map", String(process.pid)));
     const reclaimed = run(
       HARN,
@@ -556,9 +684,7 @@ describe("harn agents identity assume", () => {
       reclaimed_instance_id: "assume-cli-other",
       action: "identity-assume",
     });
-    expect(existsSync(path.join(root, ".harnery", "active", "assume-cli-other.json"))).toBe(
-      false,
-    );
+    expect(existsSync(path.join(root, ".harnery", "active", "assume-cli-other.json"))).toBe(false);
   });
 });
 
@@ -740,10 +866,7 @@ describe("agent-hook user-prompt-submit", () => {
 
   test("codex gets the safe status-footer reminder on every prompt", () => {
     const root = makeSandbox();
-    writeFileSync(
-      path.join(root, ".harnery", "config.jsonc"),
-      JSON.stringify({ binName: "acme" }),
-    );
+    writeFileSync(path.join(root, ".harnery", "config.jsonc"), JSON.stringify({ binName: "acme" }));
     seedHeartbeat(root, "codex-status-footer", {
       name: "Bertha",
       platform: "codex",
@@ -951,7 +1074,6 @@ describe("agent-coord subcommands", () => {
     );
     expect(r.stdout ?? "").toContain("docs/shell-out.txt");
   });
-
 });
 
 // ── claude-code claim-guard + session-start via agent-hook ──────────────────

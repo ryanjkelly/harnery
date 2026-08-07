@@ -24,11 +24,17 @@ import { coordEnv } from "../../lib/env.ts";
 import { replayCodexJsonl } from "../agents/codex-replay.ts";
 import { coordBinPath } from "../agents/coord-bin.ts";
 import { consumeSince, writeCursor } from "../agents/events/consume.ts";
+import {
+  type ClaimFinalizationDecision,
+  type ClaimFinalizationDescriptor,
+  classifyWriteClaimFinalization,
+  formatWriteClaimFinalizationDenial,
+} from "../agents/finalization.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
-import { resolveBinName } from "../config.ts";
+import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
 import {
   checkpointContext,
   completeContextRecovery,
@@ -1096,13 +1102,44 @@ async function runPreToolUseGuard(
   adapter: Adapter,
 ): Promise<void> {
   const toolName = (data.tool_name as string | undefined) ?? "";
-  const targets = collectGuardTargets(toolName, data)
-    .map((p) => canonicalize(coordRoot, p))
-    .filter((p): p is string => p !== null);
+  const rawTargets = collectGuardTargets(toolName, data);
+  if (rawTargets.length === 0) return;
+
+  let targets: Array<{ path: string; finalization?: ClaimFinalizationDescriptor }>;
+  if (agentsRequireGitFinalization(coordRoot)) {
+    const decisions = rawTargets.map((path) => classifyWriteClaimFinalization(coordRoot, path));
+    const denied = decisions.find((decision) => !decision.allow);
+    if (denied && !denied.allow) {
+      const { emitDeny } = await import("./adapter/output.ts");
+      emitDeny(adapter, formatWriteClaimFinalizationDenial(denied, resolveBinName(coordRoot)));
+      return;
+    }
+    const allowed = decisions.filter(
+      (decision): decision is Extract<ClaimFinalizationDecision, { allow: true }> => decision.allow,
+    );
+    targets = allowed.map((decision) => ({
+      path: decision.path,
+      finalization: decision.descriptor,
+    }));
+  } else {
+    targets = rawTargets
+      .map((path) => canonicalize(coordRoot, path))
+      .filter((path): path is string => path !== null)
+      .map((path) => ({ path }));
+  }
   if (targets.length === 0) return;
 
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
-  if (!existsSync(agentCoordBin)) return;
+  if (!existsSync(agentCoordBin)) {
+    if (agentsRequireGitFinalization(coordRoot)) {
+      const { emitDeny } = await import("./adapter/output.ts");
+      emitDeny(
+        adapter,
+        "Harnery denied the write before mutation because the claim coordinator is unavailable; repair the project's Harnery installation and retry.",
+      );
+    }
+    return;
+  }
 
   // For apply_patch (multi-file), collect siblings so the deny reason names
   // them. For single-file tools the array has one entry.
@@ -1111,7 +1148,7 @@ async function runPreToolUseGuard(
       rule: "claim",
       instance_id: instanceId,
       session_id: sessionId,
-      path: target,
+      path: target.path,
     });
     const result = spawnSync(agentCoordBin, ["verdict"], {
       input: verdictReq,
@@ -1127,10 +1164,12 @@ async function runPreToolUseGuard(
       continue;
     }
     if (parsed.allow === false) {
-      let reason = parsed.reason ?? `Path ${target} is currently being edited by another agent.`;
+      let reason =
+        parsed.reason ?? `Path ${target.path} is currently being edited by another agent.`;
       if (targets.length > 1) {
         const siblings = targets
-          .filter((p) => p !== target)
+          .filter((candidate) => candidate !== target)
+          .map((candidate) => candidate.path)
           .slice(0, 3)
           .join(", ");
         if (siblings) {
@@ -1153,7 +1192,11 @@ async function runPreToolUseGuard(
       session_id: sessionId,
       adapter,
       source: "agent-hooks",
-      data: { path: target, mode: "write" },
+      data: {
+        path: target.path,
+        mode: "write",
+        ...(target.finalization ? { finalization: target.finalization } : {}),
+      },
     });
   }
 }

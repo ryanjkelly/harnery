@@ -30,6 +30,13 @@ export const DEFAULT_BIN_NAME = "harn";
 /** Heartbeat-freshness default (seconds): the sweep window when nothing overrides it. */
 export const DEFAULT_FRESHNESS_SECS = 600;
 
+export type AgentFinalizationDisposition = "git" | "output";
+
+export interface AgentFinalizationRoot {
+  path: string;
+  disposition: AgentFinalizationDisposition;
+}
+
 interface HarneryConfig {
   /** Host CLI bin name, stamped by `harn init` for a consumer (e.g. "acme"). */
   binName?: string;
@@ -46,7 +53,10 @@ interface HarneryConfig {
    * standalone Harnery and embedding hosts keep the ordinary status ritual
    * unless the project deliberately requires the guarded check.
    */
-  agents?: { requireGitFinalization?: boolean };
+  agents?: {
+    requireGitFinalization?: boolean;
+    finalizationRoots?: AgentFinalizationRoot[];
+  };
   /**
    * Managed-tool provisioning consent. `{ ripgrep: { autoInstall: true } }`
    * lets `grep` download the pinned, checksum-verified ripgrep into the
@@ -308,6 +318,29 @@ export function agentsRequireGitFinalization(coordRoot?: string | null): boolean
   const root = coordRoot ?? findCoordRoot();
   if (!root) return false;
   return readConfig(root).agents?.requireGitFinalization === true;
+}
+
+/**
+ * Extra roots whose guarded writes have an explicit end-turn disposition.
+ *
+ * This trust boundary comes only from the project config. A user-global config
+ * may tune ordinary behavior, but it cannot grant one project filesystem
+ * authority outside its coordination root. Paths may be absolute or relative
+ * to the coordination root. Invalid entries are ignored here and fail closed
+ * when the finalization policy validates them.
+ */
+export function agentsFinalizationRoots(coordRoot?: string | null): AgentFinalizationRoot[] {
+  const root = coordRoot ?? findCoordRoot();
+  if (!root) return [];
+  const entries = readProjectConfig(root).agents?.finalizationRoots;
+  if (!Array.isArray(entries)) return [];
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const path = typeof entry.path === "string" ? entry.path.trim() : "";
+    const disposition = entry.disposition;
+    if (!path || (disposition !== "git" && disposition !== "output")) return [];
+    return [{ path, disposition }];
+  });
 }
 
 /** The status command automatic prompts and Stop remediation should request. */

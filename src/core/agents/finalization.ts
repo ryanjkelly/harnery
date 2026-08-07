@@ -7,8 +7,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../config.ts";
 import { readStreamTailBounded } from "./events/consume.ts";
 
 const CLAIM_HISTORY_CAP_BYTES = 128 * 1024 * 1024;
@@ -41,10 +42,44 @@ export interface GitFinalizationResult {
   claim_history_complete: boolean;
   dirty_paths: string[];
   unpushed_repos: string[];
+  host_output_paths: string[];
+  unsupported_paths: UnsupportedFinalizationPath[];
   unverifiable_paths: string[];
   unverifiable_repos: string[];
   repos_checked: string[];
 }
+
+export type UnsupportedFinalizationReason =
+  | "outside_finalization_roots"
+  | "invalid_finalization_root"
+  | "ambiguous_finalization_roots"
+  | "path_escapes_finalization_root"
+  | "git_repository_unavailable"
+  | "output_path_is_git";
+
+export interface UnsupportedFinalizationPath {
+  path: string;
+  reason: UnsupportedFinalizationReason;
+}
+
+export interface ClaimFinalizationDescriptor {
+  disposition: AgentFinalizationDisposition;
+  root: string;
+}
+
+export type ClaimFinalizationDecision =
+  | {
+      allow: true;
+      path: string;
+      descriptor: ClaimFinalizationDescriptor;
+      authorityRoot: string;
+      repo?: { root: string; path: string };
+    }
+  | {
+      allow: false;
+      path: string;
+      reason: UnsupportedFinalizationReason;
+    };
 
 export interface SessionWriteClaims {
   paths: string[];
@@ -114,15 +149,32 @@ function pathInside(root: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function existingProbeDir(coordRoot: string, absolutePath: string): string | null {
+function existingProbeDir(authorityRoot: string, absolutePath: string): string | null {
   let current = absolutePath;
   if (existsSync(current) && !statSync(current).isDirectory()) current = dirname(current);
   while (!existsSync(current)) {
     const parent = dirname(current);
-    if (parent === current || !pathInside(coordRoot, parent)) return null;
+    if (parent === current || !pathInside(authorityRoot, parent)) return null;
     current = parent;
   }
-  return current;
+  return pathInside(authorityRoot, current) ? current : null;
+}
+
+/** Resolve existing ancestors through symlinks while preserving a missing tail. */
+function physicalPath(absolutePath: string): string | null {
+  let existing = absolutePath;
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return null;
+    existing = parent;
+  }
+  try {
+    const physical = realpathSync.native(existing);
+    const tail = relative(existing, absolutePath);
+    return resolve(physical, tail);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -134,22 +186,173 @@ function resolveHeldPath(coordRoot: string, heldPath: string): string {
   const wslUnc = /^\\\\(?:wsl\.localhost|wsl\$)\\[^\\]+\\(.+)$/i.exec(heldPath);
   if (wslUnc) {
     const linuxPath = `/${wslUnc[1]!.replaceAll("\\", "/")}`;
-    if (pathInside(coordRoot, linuxPath)) return linuxPath;
+    const slashRoot = coordRoot.replaceAll("\\", "/");
+    if (slashRoot.startsWith("/") || pathInside(coordRoot, linuxPath)) return linuxPath;
   }
   return resolve(coordRoot, heldPath);
 }
 
-function discoverRepo(coordRoot: string, heldPath: string): { root: string; path: string } | null {
-  const absolutePath = resolveHeldPath(coordRoot, heldPath);
-  if (!pathInside(coordRoot, absolutePath)) return null;
-  const probeDir = existingProbeDir(coordRoot, absolutePath);
+function discoverRepo(
+  authorityRoot: string,
+  absolutePath: string,
+): { root: string; path: string } | null {
+  const probeDir = existingProbeDir(authorityRoot, absolutePath);
   if (!probeDir) return null;
   const rootResult = git(["rev-parse", "--show-toplevel"], probeDir);
   if (rootResult.status !== 0) return null;
-  const repoRoot = resolve(rootResult.stdout.trim());
-  if (!pathInside(coordRoot, repoRoot) || !pathInside(repoRoot, absolutePath)) return null;
+  const repoRoot = physicalPath(resolve(rootResult.stdout.trim()));
+  if (!repoRoot || !pathInside(authorityRoot, repoRoot) || !pathInside(repoRoot, absolutePath)) {
+    return null;
+  }
   const repoPath = relative(repoRoot, absolutePath).replaceAll("\\", "/") || ".";
   return { root: repoRoot, path: repoPath };
+}
+
+interface FinalizationRoot {
+  configuredPath: string;
+  disposition: AgentFinalizationDisposition;
+  lexicalRoot: string;
+  physicalRoot: string | null;
+  invalid: boolean;
+}
+
+function rootIsGitRepository(root: string): boolean {
+  if (!existsSync(root) || !statSync(root).isDirectory()) return false;
+  const result = git(["rev-parse", "--show-toplevel"], root);
+  if (result.status !== 0) return false;
+  const discovered = physicalPath(resolve(result.stdout.trim()));
+  const physicalRoot = physicalPath(root);
+  return discovered !== null && physicalRoot !== null && discovered === physicalRoot;
+}
+
+function outputRootIsInsideGit(root: string): boolean {
+  let probe = root;
+  while (!existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) return false;
+    probe = parent;
+  }
+  if (!statSync(probe).isDirectory()) probe = dirname(probe);
+  return git(["rev-parse", "--show-toplevel"], probe).status === 0;
+}
+
+function finalizationRoots(coordRoot: string): FinalizationRoot[] {
+  const root = resolve(coordRoot);
+  const configured = agentsFinalizationRoots(root).map((entry) => {
+    const lexicalRoot = resolveHeldPath(root, entry.path);
+    const physicalRoot = physicalPath(lexicalRoot);
+    const invalid =
+      physicalRoot === null ||
+      (entry.disposition === "git"
+        ? !rootIsGitRepository(physicalRoot)
+        : outputRootIsInsideGit(physicalRoot));
+    return {
+      configuredPath: entry.path,
+      disposition: entry.disposition,
+      lexicalRoot,
+      physicalRoot,
+      invalid,
+    } satisfies FinalizationRoot;
+  });
+
+  const rootPhysical = physicalPath(root);
+  if (rootPhysical && rootIsGitRepository(rootPhysical)) {
+    configured.push({
+      configuredPath: ".",
+      disposition: "git",
+      lexicalRoot: root,
+      physicalRoot: rootPhysical,
+      invalid: false,
+    });
+  }
+
+  for (const current of configured) {
+    if (!current.physicalRoot) continue;
+    for (const peer of configured) {
+      if (current === peer || !peer.physicalRoot || current.disposition === peer.disposition) {
+        continue;
+      }
+      if (
+        pathInside(current.physicalRoot, peer.physicalRoot) ||
+        pathInside(peer.physicalRoot, current.physicalRoot)
+      ) {
+        current.invalid = true;
+        peer.invalid = true;
+      }
+    }
+  }
+
+  return configured;
+}
+
+/**
+ * Resolve one guarded write to the host's single supported end-turn
+ * disposition. Claim event data never grants authority: every call starts from
+ * the project-owned finalization roots and only then inspects the selected
+ * repository or output tree.
+ */
+export function classifyWriteClaimFinalization(
+  coordRoot: string,
+  heldPath: string,
+): ClaimFinalizationDecision {
+  const root = resolve(coordRoot);
+  const absolutePath = resolveHeldPath(root, heldPath);
+  const roots = finalizationRoots(root);
+  const lexicalMatches = roots.filter((entry) => pathInside(entry.lexicalRoot, absolutePath));
+  if (lexicalMatches.length === 0) {
+    return { allow: false, path: heldPath, reason: "outside_finalization_roots" };
+  }
+  if (lexicalMatches.some((entry) => entry.invalid)) {
+    return { allow: false, path: heldPath, reason: "invalid_finalization_root" };
+  }
+
+  const physical = physicalPath(absolutePath);
+  if (!physical) {
+    return { allow: false, path: heldPath, reason: "path_escapes_finalization_root" };
+  }
+  const matches = lexicalMatches.filter(
+    (entry) => entry.physicalRoot && pathInside(entry.physicalRoot, physical),
+  );
+  if (matches.length === 0) {
+    return { allow: false, path: heldPath, reason: "path_escapes_finalization_root" };
+  }
+  const dispositions = new Set(matches.map((entry) => entry.disposition));
+  if (dispositions.size !== 1) {
+    return { allow: false, path: heldPath, reason: "ambiguous_finalization_roots" };
+  }
+  const selected = [...matches].sort(
+    (a, b) => (b.physicalRoot?.length ?? 0) - (a.physicalRoot?.length ?? 0),
+  )[0]!;
+  const normalizedPath = relative(root, absolutePath).replaceAll("\\", "/") || ".";
+  const descriptor: ClaimFinalizationDescriptor = {
+    disposition: selected.disposition,
+    root: selected.configuredPath,
+  };
+
+  if (selected.disposition === "output") {
+    const probe = existingProbeDir(selected.physicalRoot!, physical);
+    if (probe && git(["rev-parse", "--show-toplevel"], probe).status === 0) {
+      return { allow: false, path: heldPath, reason: "output_path_is_git" };
+    }
+    return {
+      allow: true,
+      path: normalizedPath,
+      descriptor,
+      authorityRoot: selected.physicalRoot!,
+    };
+  }
+
+  const repo = discoverRepo(selected.physicalRoot!, physical);
+  if (!repo) {
+    return { allow: false, path: heldPath, reason: "git_repository_unavailable" };
+  }
+  return {
+    allow: true,
+    path: normalizedPath,
+    descriptor,
+    authorityRoot: selected.physicalRoot!,
+    repo,
+  };
 }
 
 function addRepoPath(
@@ -168,13 +371,17 @@ function addRepoPath(
   repos.set(root, work);
 }
 
-function addSuperprojects(coordRoot: string, repos: Map<string, RepoWork>, leafRoot: string): void {
+function addSuperprojects(
+  authorityRoot: string,
+  repos: Map<string, RepoWork>,
+  leafRoot: string,
+): void {
   let childRoot = leafRoot;
   for (;;) {
     const result = git(["rev-parse", "--show-superproject-working-tree"], childRoot);
     if (result.status !== 0 || result.stdout.trim().length === 0) return;
-    const parentRoot = resolve(result.stdout.trim());
-    if (!pathInside(coordRoot, parentRoot) || parentRoot === childRoot) return;
+    const parentRoot = physicalPath(resolve(result.stdout.trim()));
+    if (!parentRoot || !pathInside(authorityRoot, parentRoot) || parentRoot === childRoot) return;
     const gitlink = relative(parentRoot, childRoot).replaceAll("\\", "/");
     addRepoPath(repos, parentRoot, gitlink, true);
     childRoot = parentRoot;
@@ -229,16 +436,26 @@ export function checkGitFinalization(
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
   const repos = new Map<string, RepoWork>();
+  const hostOutputPaths = new Set<string>();
+  const unsupportedPaths: UnsupportedFinalizationPath[] = [];
   const unverifiablePaths: string[] = [];
 
   for (const heldPath of heldPaths) {
-    const discovered = discoverRepo(root, heldPath);
-    if (!discovered) {
-      unverifiablePaths.push(heldPath);
+    const decision = classifyWriteClaimFinalization(root, heldPath);
+    if (!decision.allow) {
+      unsupportedPaths.push({ path: heldPath, reason: decision.reason });
       continue;
     }
-    addRepoPath(repos, discovered.root, discovered.path);
-    addSuperprojects(root, repos, discovered.root);
+    if (decision.descriptor.disposition === "output") {
+      hostOutputPaths.add(decision.path);
+      continue;
+    }
+    if (!decision.repo) {
+      unsupportedPaths.push({ path: heldPath, reason: "git_repository_unavailable" });
+      continue;
+    }
+    addRepoPath(repos, decision.repo.root, decision.repo.path);
+    addSuperprojects(decision.authorityRoot, repos, decision.repo.root);
   }
 
   const dirtyPaths = new Set<string>();
@@ -277,6 +494,10 @@ export function checkGitFinalization(
     claim_history_complete: options.claimHistoryComplete ?? true,
     dirty_paths: [...dirtyPaths].sort(),
     unpushed_repos: [...new Set(unpushedRepos)].sort(),
+    host_output_paths: [...hostOutputPaths].sort(),
+    unsupported_paths: unsupportedPaths.sort(
+      (a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason),
+    ),
     unverifiable_paths: [...new Set(unverifiablePaths)].sort(),
     unverifiable_repos: [...new Set(unverifiableRepos)].sort(),
     repos_checked: [...repos.keys()].map((repo) => repoLabel(root, repo)).sort(),
@@ -285,13 +506,14 @@ export function checkGitFinalization(
     result.claim_history_complete &&
     result.dirty_paths.length === 0 &&
     result.unpushed_repos.length === 0 &&
+    result.unsupported_paths.length === 0 &&
     result.unverifiable_paths.length === 0 &&
     result.unverifiable_repos.length === 0;
   return result;
 }
 
 export function formatGitFinalizationFailure(result: GitFinalizationResult, bin: string): string {
-  const lines = ["Owned Git work is not finalized; the status box was not issued."];
+  const lines = ["Owned work is not finalized; the status box was not issued."];
   if (!result.claim_history_complete) {
     lines.push("This session's write-claim history is older than the bounded event window.");
   }
@@ -302,6 +524,14 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
     lines.push(
       "Repositories with commits not on their remote:",
       ...result.unpushed_repos.map((repo) => `  - ${repo}`),
+    );
+  }
+  if (result.unsupported_paths.length > 0) {
+    lines.push(
+      "Paths without an authorized end-turn disposition:",
+      ...result.unsupported_paths.map(
+        ({ path, reason }) => `  - ${path}: ${unsupportedReasonMessage(reason)}`,
+      ),
     );
   }
   if (result.unverifiable_paths.length > 0) {
@@ -316,6 +546,50 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
       ...result.unverifiable_repos.map((repo) => `  - ${repo}`),
     );
   }
-  lines.push(`Commit and push the owned work, then rerun \`${bin} agents status --end-turn\`.`);
+  if (
+    result.dirty_paths.length > 0 ||
+    result.unpushed_repos.length > 0 ||
+    result.unverifiable_paths.length > 0 ||
+    result.unverifiable_repos.length > 0
+  ) {
+    lines.push(
+      `Commit and push the owned Git work, then rerun \`${bin} agents status --end-turn\`.`,
+    );
+  }
+  if (result.unsupported_paths.length > 0) {
+    lines.push(
+      "For a legacy claim, add the containing Git repository or intentional non-Git output root to the project's `agents.finalizationRoots`, then rerun the guarded status. For new work, start the task from the target Git project or configure that root before editing.",
+    );
+  }
   return lines.join("\n");
+}
+
+function unsupportedReasonMessage(reason: UnsupportedFinalizationReason): string {
+  switch (reason) {
+    case "outside_finalization_roots":
+      return "outside the coordination repository and project-configured finalization roots";
+    case "invalid_finalization_root":
+      return "the matching project-configured root is invalid or overlaps another disposition";
+    case "ambiguous_finalization_roots":
+      return "more than one finalization disposition matches this path";
+    case "path_escapes_finalization_root":
+      return "the resolved path escapes its configured root";
+    case "git_repository_unavailable":
+      return "the configured Git root does not contain a verifiable repository for this path";
+    case "output_path_is_git":
+      return "the configured non-Git output path is inside a Git repository";
+  }
+}
+
+export function formatWriteClaimFinalizationDenial(
+  decision: Extract<ClaimFinalizationDecision, { allow: false }>,
+  bin: string,
+): string {
+  return (
+    `Harnery denied the write to ${decision.path} before mutation: ` +
+    `${unsupportedReasonMessage(decision.reason)}. ` +
+    "Start the task from the target Git project, or add its Git repository root " +
+    "(or an intentional non-Git output root) to the project's `agents.finalizationRoots` " +
+    `before editing. Then retry the tool and finish with \`${bin} agents status --end-turn\`.`
+  );
 }

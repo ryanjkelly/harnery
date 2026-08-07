@@ -243,6 +243,14 @@ session are committed and that the repositories involved are pushed. It follows
 held paths into submodules and checks the enclosing gitlink too. Active edits
 held by another session do not block the check.
 
+When the guarded form is required, write tools also preflight their targets.
+The coordination repository is authorized automatically. A host can add an
+exact sibling Git repository or an intentional non-Git output root through
+`agents.finalizationRoots` in project config. Harnery denies unsupported paths
+before the tool mutates them, and it records the selected disposition with the
+durable write claim. See the [configuration schema](/reference/config-schema/#agents)
+for the policy shape.
+
 Harnery does not impose the guarded form on every project. A host opts into
 automatic prompt and Stop enforcement with
 `{ "agents": { "requireGitFinalization": true } }` in
@@ -262,6 +270,11 @@ or untracked files inside the child as a pointer change.
 Committed paths stay in scope through the session's `claim.acquire` history.
 The commit hook can release a clean active claim without letting an unpushed
 commit disappear from the final check.
+
+An unsupported claim from an older session is reported separately from dirty
+Git work. The error explains how to authorize its containing repository or
+non-Git output root. It does not suggest committing a directory that has no Git
+repository.
 
 On success, it prints the same fixed-width box as `harn agents status`, designed
 to paste straight into a reply so a human (and peers) can see your state at a

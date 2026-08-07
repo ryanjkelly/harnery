@@ -1,0 +1,87 @@
+---
+title: "0060: Write claims have finalization dispositions"
+description: "ADR: preflight guarded writes against project-owned Git or output roots so every acquired claim has a supported end-turn result."
+---
+
+**Status:** accepted (2026-08-07) · **Scope:** product tier (`core/agents`, `core/hooks`, project config)
+
+## Context
+
+ADR 0054 kept every session write claim in the final Git check, even after the
+active claim was released. That closes a real loophole: a commit hook can
+release the file before its commit reaches a remote. The durable claim still
+keeps that repository in scope.
+
+Repository discovery stopped at the coordination root. A relative write such
+as `../another-project/file.ts` could acquire a durable claim before the
+finalizer learned that it was outside that boundary. A sibling repository then
+looked unverifiable. A sibling directory with no Git repository had no possible
+commit or push remedy. Releasing the claim could not help because the history
+was working as designed.
+
+The finalizer cannot solve this by trusting the path in `claim.acquire`.
+Session events are evidence, not filesystem grants. Removing the root check
+would let arbitrary event data trigger Git and filesystem inspection anywhere
+the process can read.
+
+## Decision
+
+Projects that require guarded end-turn status may declare extra
+`agents.finalizationRoots` in their project `.harnery/config.jsonc`. Each entry
+has a `path` and exactly one disposition:
+
+- `git` authorizes one Git repository tree. The configured path must resolve
+  to that repository's top level. Owned files receive the existing dirty,
+  remote, detached-HEAD, submodule, and gitlink checks.
+- `output` authorizes intentional non-Git output. Harnery records the
+  disposition on `claim.acquire`, then treats that path as a host-approved
+  output at end-turn. An output root cannot overlap Git authority or contain
+  the claimed path inside a Git repository.
+
+The coordination repository remains an implicit `git` root when its
+coordination root is also the repository top level. Extra authority comes only
+from project config. User-global config cannot grant paths to a project.
+
+The pre-use hook resolves every target in a multi-file write before it asks the
+claim coordinator to acquire any of them. It normalizes relative paths,
+absolute paths, and WSL UNC paths to one coordination-relative claim key. A
+target outside the declared roots, a root with the wrong disposition, an
+overlap, or a symlink escape is denied before the mutating tool runs.
+
+End-turn repeats the policy check instead of trusting the descriptor stored in
+the event. This matters for old or forged events and for config that changed
+after a claim was recorded. Unsupported legacy claims get a separate error
+from dirty Git work. The remedy is to configure the containing Git repository
+or intentional output root, or start new work from the target project. Harnery
+does not tell someone to commit a non-Git directory.
+
+## Alternatives considered
+
+- **Use active claims only.** Rejected because a released claim could hide an
+  unpushed commit, undoing ADR 0054.
+- **Allow repository discovery for every event path.** Rejected because claim
+  history is not an authority source.
+- **Reject every cross-root write.** Safe, but too narrow for a host that opens
+  several repositories in one authorized workspace or deliberately emits a
+  non-Git artifact.
+- **Treat every non-Git write as complete.** Rejected because an accidental or
+  malicious external path would disappear from the end-turn contract.
+- **Trust a user-global root list.** Rejected because one user's convenience
+  setting should not widen every project's filesystem authority.
+
+## Consequences
+
+Guarded writes now have a disposition before mutation. Sibling Git repositories
+behave like the coordination repository for owned dirty and remote state.
+Intentional non-Git outputs are visible in both project policy and durable claim
+history. Everything else fails before a write claim can poison the session.
+
+The root list stays narrow. A Git entry points at a repository top level, not a
+broad parent directory. Roots with conflicting dispositions fail closed. Hosts
+that do not enable `requireGitFinalization` keep the existing repo-scoped claim
+behavior.
+
+Tests cover clean, dirty, unpushed, and pushed sibling repositories; explicit
+non-Git outputs; unauthorized paths; WSL UNC normalization; released claims;
+submodules; peer-owned dirty files; pre-use denial; and the command-level
+`agents status --end-turn` path.

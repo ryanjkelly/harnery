@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  agentsFinalizationRoots,
   agentsRequireGitFinalization,
   artifactDefaultRetentionDays,
   backupConfig,
@@ -150,6 +151,47 @@ describe("agentsRequireGitFinalization", () => {
 
     process.env.HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION = "1";
     expect(agentsRequireGitFinalization(disabled)).toBe(true);
+  });
+});
+
+describe("agentsFinalizationRoots", () => {
+  const roots: string[] = [];
+  const savedXdg = process.env.XDG_CONFIG_HOME;
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+  });
+
+  test("reads valid roots from project config", () => {
+    const root = makeRoot(
+      `{ "agents": { "finalizationRoots": [` +
+        `{ "path": "../sibling", "disposition": "git" },` +
+        `{ "path": "../exports", "disposition": "output" }` +
+        `] } }`,
+    );
+    roots.push(root);
+    expect(agentsFinalizationRoots(root)).toEqual([
+      { path: "../sibling", disposition: "git" },
+      { path: "../exports", disposition: "output" },
+    ]);
+  });
+
+  test("does not grant filesystem authority from user-global config", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "harnery-user-config-"));
+    const root = makeRoot(`{}`);
+    roots.push(xdg, root);
+    mkdirSync(join(xdg, "harnery"), { recursive: true });
+    writeFileSync(
+      join(xdg, "harnery", "config.jsonc"),
+      `{ "agents": { "finalizationRoots": [` +
+        `{ "path": "/tmp/global-grant", "disposition": "output" }` +
+        `] } }`,
+    );
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    expect(agentsFinalizationRoots(root)).toEqual([]);
   });
 });
 

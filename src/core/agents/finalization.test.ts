@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { checkGitFinalization, readSessionWriteClaims } from "./finalization.ts";
+import { tmpdir } from "node:os";
+import { join, relative, resolve } from "node:path";
+import {
+  checkGitFinalization,
+  classifyWriteClaimFinalization,
+  formatGitFinalizationFailure,
+  readSessionWriteClaims,
+} from "./finalization.ts";
 
 let temp: string;
+const HARN_CLI = resolve(import.meta.dir, "../../..", "src", "cli.ts");
 
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -28,7 +35,9 @@ function commitAll(repo: string, message: string): void {
 }
 
 beforeEach(() => {
-  temp = mkdtempSync(join("/tmp", "harnery-finalization-"));
+  const base = process.platform === "win32" ? join("/tmp") : tmpdir();
+  mkdirSync(base, { recursive: true });
+  temp = mkdtempSync(join(base, "harnery-finalization-"));
 });
 
 afterEach(() => {
@@ -196,4 +205,239 @@ describe("checkGitFinalization", () => {
     expect(result.ok).toBe(true);
     expect(result.dirty_paths).toEqual([]);
   });
+
+  test("checks an authorized sibling Git repository through dirty, local, unpushed, and pushed states", () => {
+    const coord = join(temp, "coord");
+    const sibling = join(temp, "sibling");
+    const remote = join(temp, "sibling-remote.git");
+    initRepo(coord);
+    writeFileSync(join(coord, "seed.txt"), "coord\n");
+    commitAll(coord, "coord");
+    initRepo(sibling);
+    writeFileSync(join(sibling, "owned.txt"), "base\n");
+    commitAll(sibling, "initial");
+    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
+
+    expect(checkGitFinalization(coord, ["../sibling/owned.txt"])).toMatchObject({
+      ok: true,
+      repos_checked: ["../sibling"],
+    });
+
+    writeFileSync(join(sibling, "owned.txt"), "dirty\n");
+    expect(checkGitFinalization(coord, ["../sibling/owned.txt"])).toMatchObject({
+      ok: false,
+      dirty_paths: ["../sibling/owned.txt"],
+    });
+
+    writeFileSync(join(sibling, "owned.txt"), "base\n");
+    initRepo(remote, true);
+    git(sibling, "remote", "add", "origin", remote);
+    git(sibling, "push", "-u", "origin", "HEAD:master");
+    writeFileSync(join(sibling, "owned.txt"), "committed\n");
+    commitAll(sibling, "local");
+    expect(checkGitFinalization(coord, ["../sibling/owned.txt"])).toMatchObject({
+      ok: false,
+      dirty_paths: [],
+      unpushed_repos: ["../sibling"],
+    });
+
+    git(sibling, "push", "origin", "HEAD:master");
+    expect(checkGitFinalization(coord, ["../sibling/owned.txt"]).ok).toBe(true);
+  });
+
+  test("accepts an explicit sibling output root and rejects a non-Git root declared as Git", () => {
+    const coord = join(temp, "coord");
+    const output = join(temp, "output");
+    initRepo(coord);
+    writeFileSync(join(coord, "seed.txt"), "coord\n");
+    commitAll(coord, "coord");
+    mkdirSync(output);
+    writeFileSync(join(output, "artifact.txt"), "done\n");
+    configureFinalizationRoots(coord, [{ path: relative(coord, output), disposition: "output" }]);
+
+    expect(checkGitFinalization(coord, ["../output/artifact.txt"])).toMatchObject({
+      ok: true,
+      host_output_paths: ["../output/artifact.txt"],
+      repos_checked: [],
+    });
+
+    configureFinalizationRoots(coord, [{ path: relative(coord, output), disposition: "git" }]);
+    expect(classifyWriteClaimFinalization(coord, "../output/artifact.txt")).toMatchObject({
+      allow: false,
+      reason: "invalid_finalization_root",
+    });
+
+    initRepo(output);
+    commitAll(output, "track output");
+    configureFinalizationRoots(coord, [{ path: relative(coord, output), disposition: "output" }]);
+    expect(classifyWriteClaimFinalization(coord, "../output/artifact.txt")).toMatchObject({
+      allow: false,
+      reason: "invalid_finalization_root",
+    });
+  });
+
+  test("rejects an arbitrary external repository without granting Git discovery", () => {
+    const coord = join(temp, "coord");
+    const arbitrary = join(temp, "arbitrary");
+    initRepo(coord);
+    writeFileSync(join(coord, "seed.txt"), "coord\n");
+    commitAll(coord, "coord");
+    initRepo(arbitrary);
+    writeFileSync(join(arbitrary, "owned.txt"), "base\n");
+    commitAll(arbitrary, "initial");
+    writeFileSync(join(arbitrary, "owned.txt"), "dirty\n");
+
+    const result = checkGitFinalization(coord, ["../arbitrary/owned.txt"]);
+    expect(result).toMatchObject({
+      ok: false,
+      dirty_paths: [],
+      unpushed_repos: [],
+      repos_checked: [],
+      unsupported_paths: [{ path: "../arbitrary/owned.txt", reason: "outside_finalization_roots" }],
+    });
+    const message = formatGitFinalizationFailure(result, "harn");
+    expect(message).toContain("agents.finalizationRoots");
+    expect(message).not.toContain("Commit and push the owned Git work");
+  });
+
+  test("normalizes relative and WSL UNC forms of one authorized sibling claim", () => {
+    if (process.platform === "win32") return;
+    const coord = join(temp, "coord");
+    const sibling = join(temp, "sibling");
+    initRepo(coord);
+    writeFileSync(join(coord, "seed.txt"), "coord\n");
+    commitAll(coord, "coord");
+    initRepo(sibling);
+    writeFileSync(join(sibling, "owned.txt"), "base\n");
+    commitAll(sibling, "initial");
+    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
+    const uncPath = `\\\\wsl.localhost\\Ubuntu-22.04${join(sibling, "owned.txt").replaceAll("/", "\\")}`;
+
+    expect(classifyWriteClaimFinalization(coord, "../sibling/owned.txt")).toMatchObject({
+      allow: true,
+      path: "../sibling/owned.txt",
+      descriptor: { disposition: "git" },
+    });
+    expect(classifyWriteClaimFinalization(coord, uncPath)).toMatchObject({
+      allow: true,
+      path: "../sibling/owned.txt",
+      descriptor: { disposition: "git" },
+    });
+  });
+
+  test("a released sibling Git claim still blocks an unpushed commit", () => {
+    const coord = join(temp, "coord");
+    const sibling = join(temp, "sibling");
+    const remote = join(temp, "remote.git");
+    initRepo(coord);
+    writeFileSync(join(coord, "seed.txt"), "coord\n");
+    commitAll(coord, "coord");
+    initRepo(remote, true);
+    initRepo(sibling);
+    writeFileSync(join(sibling, "owned.txt"), "base\n");
+    commitAll(sibling, "initial");
+    git(sibling, "remote", "add", "origin", remote);
+    git(sibling, "push", "-u", "origin", "HEAD:master");
+    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
+    mkdirSync(join(coord, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(coord, ".harnery", "events.ndjson"),
+      [
+        event("session.start", {}),
+        event("claim.acquire", { path: "../sibling/owned.txt", mode: "write" }),
+        event("claim.release", { path: "../sibling/owned.txt", reason: "explicit" }),
+      ].join("\n"),
+    );
+    writeFileSync(join(sibling, "owned.txt"), "done\n");
+    commitAll(sibling, "done");
+
+    const history = readSessionWriteClaims(coord, "owner", "session");
+    expect(history.paths).toEqual(["../sibling/owned.txt"]);
+    expect(checkGitFinalization(coord, history.paths)).toMatchObject({
+      ok: false,
+      unpushed_repos: ["../sibling"],
+    });
+  });
+
+  test("the command-level end-turn path passes clean sibling work and names a dirty verdict", () => {
+    const coord = join(temp, "coord");
+    const sibling = join(temp, "sibling");
+    initRepo(coord);
+    writeFileSync(join(coord, "seed.txt"), "coord\n");
+    commitAll(coord, "coord");
+    initRepo(sibling);
+    writeFileSync(join(sibling, "owned.txt"), "base\n");
+    commitAll(sibling, "initial");
+    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
+    seedSession(coord, "../sibling/owned.txt");
+
+    const clean = runEndTurn(coord);
+    expect(clean.status).toBe(0);
+
+    writeFileSync(join(sibling, "owned.txt"), "dirty\n");
+    const dirty = runEndTurn(coord);
+    expect(dirty.status).toBe(1);
+    expect(`${dirty.stdout}\n${dirty.stderr}`).toContain("../sibling/owned.txt");
+    expect(`${dirty.stdout}\n${dirty.stderr}`).toContain("Dirty owned paths");
+  }, 15_000);
 });
+
+function configureFinalizationRoots(
+  coord: string,
+  roots: Array<{ path: string; disposition: "git" | "output" }>,
+): void {
+  mkdirSync(join(coord, ".harnery"), { recursive: true });
+  writeFileSync(
+    join(coord, ".harnery", "config.jsonc"),
+    JSON.stringify({
+      binName: "harn",
+      agents: { requireGitFinalization: true, finalizationRoots: roots },
+    }),
+  );
+}
+
+function event(eventType: string, data: Record<string, unknown>): string {
+  return JSON.stringify({
+    event_type: eventType,
+    instance_id: "owner",
+    session_id: "session",
+    data,
+  });
+}
+
+function seedSession(coord: string, heldPath: string): void {
+  mkdirSync(join(coord, ".harnery", "active"), { recursive: true });
+  writeFileSync(
+    join(coord, ".harnery", "active", "owner.json"),
+    JSON.stringify({
+      instance_id: "owner",
+      session_id: "session",
+      started_at: new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
+      files_touched: [heldPath],
+    }),
+  );
+  writeFileSync(
+    join(coord, ".harnery", "events.ndjson"),
+    [event("session.start", {}), event("claim.acquire", { path: heldPath, mode: "write" })].join(
+      "\n",
+    ),
+  );
+}
+
+function runEndTurn(coord: string): ReturnType<typeof spawnSync> {
+  return spawnSync(
+    process.execPath,
+    [HARN_CLI, "agents", "status", "--end-turn", "--session-id", "owner"],
+    {
+      cwd: coord,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HARNERY_COORD_ROOT_OVERRIDE: coord,
+        HARNERY_OUTPUT_SESSION_TEE: "0",
+      },
+      timeout: 30_000,
+    },
+  );
+}
