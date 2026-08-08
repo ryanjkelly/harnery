@@ -198,7 +198,8 @@ export function intersectRects(a: LayoutRect, b: LayoutRect): LayoutRect | null 
  */
 export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLintResult {
   return (request) => {
-    const CHILD_LIMIT = 250;
+    const CHILD_LIMIT = 1_000;
+    const TEXT_LIMIT = 1_000;
     const ISSUE_LIMIT = 100;
 
     const rectOf = (rect: DOMRect): LayoutRect => ({
@@ -515,8 +516,8 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     };
 
     const clip = request.clip.map(({ selector, tolerancePx }): ClipResult => {
-      const container = document.querySelector(selector);
-      if (!(container instanceof Element)) {
+      const containers = [...document.querySelectorAll(selector)];
+      if (containers.length === 0) {
         return {
           rule: "clip" as const,
           selector,
@@ -532,50 +533,15 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       const unsupported = new Set<string>();
       const excluded: LayoutExclusion[] = [];
       const issues: ClipIssue[] = [];
-      const descendants = [...container.querySelectorAll("*")];
-      let truncated = descendants.length > CHILD_LIMIT;
-      descendants.slice(0, CHILD_LIMIT).forEach((element, index) => {
-        if (isHidden(element)) {
-          excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "hidden" });
-          return;
-        }
-        const rect = element.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) {
-          excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "zero-area" });
-          return;
-        }
-        let allowed = paddingRect(container);
-        let clippedBy = labelOf(container);
-        let current: Element | null = element.parentElement;
-        while (current && container.contains(current)) {
-          const style = getComputedStyle(current);
-          if (style.clipPath && style.clipPath !== "none")
-            unsupported.add(`${labelOf(current)}:clip-path`);
-          if (style.borderRadius && !/^0(?:px)?(?: 0(?:px)?){0,3}$/.test(style.borderRadius)) {
-            unsupported.add(`${labelOf(current)}:border-radius`);
-          }
-          if (style.transform && style.transform !== "none")
-            unsupported.add(`${labelOf(current)}:transform`);
-          const clips = current === container ? { x: true, y: true } : clippingStyle(current);
-          if (clips.x || clips.y) {
-            const candidate = paddingRect(current);
-            allowed = {
-              x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
-              y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
-              left: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
-              top: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
-              right: clips.x ? Math.min(allowed.right, candidate.right) : allowed.right,
-              bottom: clips.y ? Math.min(allowed.bottom, candidate.bottom) : allowed.bottom,
-              width: 0,
-              height: 0,
-            };
-            allowed.width = Math.max(0, allowed.right - allowed.left);
-            allowed.height = Math.max(0, allowed.bottom - allowed.top);
-            clippedBy = labelOf(current);
-          }
-          if (current === container) break;
-          current = current.parentElement;
-        }
+      let truncated = false;
+      let measurementIndex = 0;
+
+      const recordIssue = (
+        element: LayoutElementMeasurement,
+        allowed: LayoutRect,
+        clippedBy: string,
+      ): void => {
+        const rect = element.rect;
         const overrun = {
           top: Math.max(0, allowed.top - rect.top),
           right: Math.max(0, rect.right - allowed.right),
@@ -584,14 +550,127 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         };
         const maxOverrunPx = Math.max(overrun.top, overrun.right, overrun.bottom, overrun.left);
         if (maxOverrunPx > tolerancePx && issues.length < ISSUE_LIMIT) {
-          issues.push({
-            element: measure(element, index, false),
-            clippedBy,
-            overrun,
-            maxOverrunPx,
-          });
+          issues.push({ element, clippedBy, overrun, maxOverrunPx });
         }
-      });
+      };
+
+      const textContainer = (node: Node, scope: Element): Element | null => {
+        let current = node.parentElement;
+        while (current && scope.contains(current)) {
+          if (current instanceof SVGElement) return null;
+          const display = getComputedStyle(current).display;
+          if (display !== "inline" && display !== "contents") return current;
+          if (current === scope) return current;
+          current = current.parentElement;
+        }
+        return scope;
+      };
+
+      for (const container of containers) {
+        const descendants = [...container.querySelectorAll("*")];
+        if (descendants.length > CHILD_LIMIT) truncated = true;
+        descendants.slice(0, CHILD_LIMIT).forEach((element) => {
+          const index = measurementIndex++;
+          if (isHidden(element)) {
+            excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "hidden" });
+            return;
+          }
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) {
+            excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "zero-area" });
+            return;
+          }
+          let allowed = paddingRect(container);
+          let clippedBy = labelOf(container);
+          let current: Element | null = element.parentElement;
+          while (current && container.contains(current)) {
+            const style = getComputedStyle(current);
+            if (style.clipPath && style.clipPath !== "none")
+              unsupported.add(`${labelOf(current)}:clip-path`);
+            if (style.borderRadius && !/^0(?:px)?(?: 0(?:px)?){0,3}$/.test(style.borderRadius)) {
+              unsupported.add(`${labelOf(current)}:border-radius`);
+            }
+            if (style.transform && style.transform !== "none")
+              unsupported.add(`${labelOf(current)}:transform`);
+            const clips = current === container ? { x: true, y: true } : clippingStyle(current);
+            if (clips.x || clips.y) {
+              const candidate = paddingRect(current);
+              allowed = {
+                x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
+                y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
+                left: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
+                top: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
+                right: clips.x ? Math.min(allowed.right, candidate.right) : allowed.right,
+                bottom: clips.y ? Math.min(allowed.bottom, candidate.bottom) : allowed.bottom,
+                width: 0,
+                height: 0,
+              };
+              allowed.width = Math.max(0, allowed.right - allowed.left);
+              allowed.height = Math.max(0, allowed.bottom - allowed.top);
+              clippedBy = labelOf(current);
+            }
+            if (current === container) break;
+            current = current.parentElement;
+          }
+          recordIssue(measure(element, index, false), allowed, clippedBy);
+        });
+
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        let textCount = 0;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (textCount >= TEXT_LIMIT) {
+            truncated = true;
+            break;
+          }
+          const value = node.nodeValue ?? "";
+          if (!/\S/.test(value)) continue;
+          const parent = node.parentElement;
+          if (
+            !parent ||
+            ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"].includes(parent.tagName) ||
+            isHidden(parent)
+          ) {
+            continue;
+          }
+          const owner = textContainer(node, container);
+          if (!owner) continue;
+          const ownerOverflowX = getComputedStyle(owner).overflowX;
+          if (ownerOverflowX === "auto" || ownerOverflowX === "scroll") continue;
+          let transformed = false;
+          let current: Element | null = owner;
+          while (current && container.contains(current)) {
+            const transform = getComputedStyle(current).transform;
+            if (transform && transform !== "none") {
+              unsupported.add(`${labelOf(current)}:transform`);
+              transformed = true;
+              break;
+            }
+            if (current === container) break;
+            current = current.parentElement;
+          }
+          if (transformed) continue;
+          textCount++;
+          const allowed = paddingRect(owner);
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const fragment of [...range.getClientRects()]) {
+            if (fragment.width <= 0 || fragment.height <= 0) continue;
+            const index = measurementIndex++;
+            recordIssue(
+              {
+                index,
+                tag: parent.tagName.toLowerCase(),
+                label: labelOf(parent),
+                snippet: value.replace(/\s+/g, " ").trim().slice(0, 160),
+                source: "text",
+                rect: rectOf(fragment),
+              },
+              allowed,
+              labelOf(owner),
+            );
+          }
+        }
+      }
       if (issues.length >= ISSUE_LIMIT) truncated = true;
       const outcome: LayoutOutcome =
         issues.length > 0 ? "fail" : unsupported.size > 0 ? "unknown" : "pass";

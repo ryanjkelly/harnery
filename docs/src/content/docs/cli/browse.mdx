@@ -92,7 +92,7 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-gap-threshold <px>` | Maximum gap deviation in CSS pixels. Default `2`. |
 | `--check-gap-fail` | Exit 2 when a gap target fails or is missing. An uninferable gap remains `unknown` without failing. |
 | `--no-check-gap-annotate` | Skip gap annotations. |
-| `--check-clip <selector>` | Compare painted descendants with the container's rectangular clipping chain. Repeatable. |
+| `--check-clip <selector>` | Check every matching container for descendant boxes or text paint leaving its rectangular clipping chain or nearest block parent. Repeatable. |
 | `--check-clip-threshold <px>` | Allowed rectangular overrun in CSS pixels. Default `0`. |
 | `--check-clip-fail` | Exit 2 when rectangular clipping fails or the selector is missing. Unsupported shapes remain `unknown`. |
 | `--no-check-clip-annotate` | Skip clipping annotations. |
@@ -114,10 +114,16 @@ They measure the rendered result rather than trusting `align-items`, `gap`, or
 margin declarations. Do not aim center alignment at an intentional
 `align-items: baseline` row.
 
-Clipping is deliberately rectangular. Border radius, arbitrary `clip-path`,
-non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
-are reported as `unknown`, not certified. Overlap covers sibling geometry;
-paint-order and sticky-layer obstruction remain `--check-visible` concerns.
+Clipping is deliberately rectangular. The selector is a scope, not a single
+element lookup: every match is checked. Within that scope, the check measures
+element boxes against clipping ancestors and rendered text fragments against
+their nearest non-inline parent. That catches an unbreakable label painting out
+of a narrow card even when every element box still fits. Horizontally scrollable
+text owners are skipped because their overflow is reachable by design. Border
+radius, arbitrary `clip-path`, non-axis-aligned transforms, closed shadow roots,
+and cross-origin frame content are reported as `unknown`, not certified. Overlap
+covers sibling geometry; paint-order and sticky-layer obstruction remain
+`--check-visible` concerns.
 
 Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
 flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd

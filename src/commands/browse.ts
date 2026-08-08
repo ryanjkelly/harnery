@@ -369,7 +369,8 @@ export function registerBrowseCommand(
     .option("--no-check-gap-annotate", "Skip gap screenshot annotations.")
     .option(
       "--check-clip <selector>",
-      "Check descendants against this container's rectangular clipping chain (repeatable).",
+      "Check every matching container for descendant boxes or text paint leaving its " +
+        "rectangular clipping chain or nearest block parent (repeatable).",
       (value: string, previous: string[] = []) => [...previous, value],
       [] as string[],
     )

@@ -42,6 +42,8 @@ describe("browse layout lint", () => {
         clip: [
           { selector: ".clip-good", tolerancePx: 0 },
           { selector: ".clip-bad", tolerancePx: 0 },
+          { selector: ".clip-text-case", tolerancePx: 0 },
+          { selector: ".clip-text-scroll", tolerancePx: 0 },
         ],
         overlap: [
           { selector: ".overlap-good", tolerancePx: 0 },
@@ -60,7 +62,15 @@ describe("browse layout lint", () => {
       expect(result.align.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
       expect(result.align[1]?.clusters[0]?.children[0]?.source).toBe("svg");
       expect(result.gap.map((entry) => entry.outcome)).toEqual(["pass", "fail", "unknown"]);
-      expect(result.clip.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
+      expect(result.clip.map((entry) => entry.outcome)).toEqual(["pass", "fail", "fail", "pass"]);
+      expect(result.clip[2]?.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            clippedBy: "div.text-host",
+            element: expect.objectContaining({ source: "text", snippet: "Persistence" }),
+          }),
+        ]),
+      );
       expect(result.overlap.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
       // crowd-good: panels 16px apart pass. crowd-bad: flush panels fail.
       // crowd-plain: flush but non-panel paragraphs must NOT flag (panel gate).
@@ -136,6 +146,33 @@ describe("browse layout lint", () => {
     expect(stdout).toContain('"overlap"');
     expect(stdout).toContain('"crowd"');
     expect(stdout).toContain('"hit"');
+  });
+
+  test("CLI clip gate catches text overflow in a later selector match", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--json",
+        "--no-cookies",
+        "--profile",
+        profile(),
+        "--check-clip",
+        ".clip-text-case",
+        "--check-clip-threshold",
+        "2",
+        "--check-clip-fail",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    const stdout = result.stdout.toString();
+    expect(result.exitCode).toBe(2);
+    expect(stdout).toContain('"snippet":"Persistence"');
+    expect(stdout).toContain('"source":"text"');
   });
 
   test("CLI binds captureEval to the explicit full-page screenshot viewport", () => {
