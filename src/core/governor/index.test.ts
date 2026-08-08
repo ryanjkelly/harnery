@@ -661,12 +661,18 @@ describe("durable goal governor", () => {
       if (request.prompt.includes("bounded replacement plan")) {
         expect(request.prompt).toContain("Work keys are lowercase identifiers no longer than 32");
         expect(request.prompt).toContain('"maxLength":32');
+        expect(request.prompt).toContain("smallest observable end-to-end slice");
+        expect(request.prompt).toContain("contracts, module boundaries, key types or call paths");
       }
       if (request.prompt.includes("Review this bounded")) {
         expect(request.prompt).toContain(
           "proposal.root names one newly proposed work key using a root-capable template",
         );
         expect(request.prompt).toContain("never require proposal.root to equal active_root");
+        expect(request.prompt).toContain("program-shape decisions are explicit");
+        expect(request.prompt).toContain(
+          "defers every observable integration until the final item",
+        );
       }
       return {
         ok: true,

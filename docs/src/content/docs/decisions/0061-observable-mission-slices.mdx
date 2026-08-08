@@ -1,0 +1,56 @@
+---
+title: "0061: Mission planners prefer independently observable slices"
+description: "ADR: guide governor planning and review toward explicit program-shape decisions and end-to-end slices without adding a second design schema."
+---
+
+**Status:** accepted (2026-08-07) · **Scope:** product tier (`governor` planning)
+
+## Context
+
+A governor plan already carries a mission objective, milestone acceptance,
+bounded work items, dependencies, immutable workflow templates, independent
+review, and explicit approval. Those contracts make a plan durable and safe to
+execute, but they do not by themselves encourage a useful implementation order.
+
+A planner can produce a valid graph that groups all storage work, then all
+service work, then all API work, and leaves the first observable integration
+until the final item. That shape delays feedback and makes a poor early design
+choice expensive to reverse. A plan can also leave module boundaries, key types,
+or call paths implicit, pushing consequential choices into the implementation
+turn where review is costlier.
+
+## Decision
+
+- Governor planner prompts prefer the smallest observable end-to-end slice that
+  can be verified before later work begins when work crosses system layers.
+- Layer-only work remains valid when it has independent acceptance evidence or
+  is a necessary prerequisite.
+- Work objectives and acceptance criteria should expose consequential contracts,
+  module boundaries, key types or call paths, and the observation that proves
+  the slice.
+- Independent plan reviewers treat deferred observable integration and implicit
+  program-shape decisions as blocking when the candidate gives no reason for
+  them. Revision prompts carry the same guidance.
+- Harnery does not add a second design-document schema. Existing mission,
+  milestone, work, review, and proof records remain the authoritative seams.
+
+## Alternatives considered
+
+- **Add required product, architecture, program-design, and delivery objects to
+  every plan proposal.** Rejected because many recovery plans and small missions
+  do not need that ceremony, and field presence would not prove design quality.
+- **Enforce verticality from the dependency graph.** Rejected because Harnery
+  cannot infer semantic system layers or observability from work titles and
+  edges. A deterministic check would produce false confidence.
+- **Leave implementation order entirely to each planner profile.** Rejected
+  because the failure shape is general and the governor owns the common planning
+  contract. Host profiles may add domain detail without restating the baseline.
+
+## Consequences
+
+- New planner and reviewer runs receive a compact, source-neutral quality rule;
+  existing persisted proposals and schemas remain readable.
+- The rule improves the odds of early feedback but is not advertised as a
+  conformance guarantee. Review and acceptance evidence still decide whether a
+  specific plan is good.
+- No new state, migration, public type, or command is introduced.
