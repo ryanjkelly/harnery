@@ -33,6 +33,15 @@ class FakeTarget implements BrowserSessionTarget {
   neverSettle = false;
   filled = "";
 
+  private navigation() {
+    return {
+      sequence: 1,
+      occurred_at: "2026-08-09T12:00:00.000Z",
+      url: "https://example.test/",
+      type: "navigate" as const,
+    };
+  }
+
   private async mutate(): Promise<{ revision: number }> {
     this.activeActions++;
     this.maxActiveActions = Math.max(this.maxActiveActions, this.activeActions);
@@ -49,7 +58,13 @@ class FakeTarget implements BrowserSessionTarget {
   }
 
   async sessionStatus(): Promise<BrowserSessionStatus> {
-    return { phase: "ready", active_tab: 0, tab_count: 1, revision: this.revision };
+    return {
+      phase: "ready",
+      active_tab: 0,
+      tab_count: 1,
+      revision: this.revision,
+      navigation: this.navigation(),
+    };
   }
   async sessionInspect(): Promise<BrowserSessionInspection> {
     return {
@@ -60,6 +75,7 @@ class FakeTarget implements BrowserSessionTarget {
       controls: [],
       focus: null,
       revision: this.revision,
+      navigation: this.navigation(),
       truncated: false,
     };
   }
@@ -106,6 +122,7 @@ class FakeTarget implements BrowserSessionTarget {
       url: "https://example.test/",
       active: true,
       revision: this.revision,
+      navigation: this.navigation(),
     };
   }
 }

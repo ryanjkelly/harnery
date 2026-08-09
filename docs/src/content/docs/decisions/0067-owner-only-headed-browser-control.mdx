@@ -91,4 +91,7 @@ the descriptor and transport created by that process.
   and SIGTERM converge on idempotent cleanup.
 - Inspection deliberately omits editable values. A future need for value reads
   requires a separate redacted design rather than loosening this protocol.
-
+- The action `revision` cannot prove that the operator used the visible window.
+  `status`, `inspect`, and `tabs` therefore return a separate per-tab navigation
+  receipt. Its sequence advances on each loaded document, and its Navigation
+  Timing type distinguishes a direct refresh from ordinary navigation.

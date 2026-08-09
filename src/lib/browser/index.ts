@@ -12,6 +12,8 @@ export {
   type BrowserSessionControl,
   type BrowserSessionInspection,
   type BrowserSessionLocator,
+  type BrowserSessionNavigation,
+  type BrowserSessionNavigationType,
   type BrowserSessionScreenshot,
   type BrowserSessionStatus,
   type BrowserSessionTab,

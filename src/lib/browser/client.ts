@@ -168,6 +168,25 @@ export interface BrowserSessionStatus {
   active_tab: number;
   tab_count: number;
   revision: number;
+  navigation: BrowserSessionNavigation;
+}
+
+export type BrowserSessionNavigationType =
+  | "navigate"
+  | "reload"
+  | "back_forward"
+  | "prerender"
+  | "unknown";
+
+export interface BrowserSessionNavigation {
+  /** Monotonic count of committed documents observed in this tab. */
+  sequence: number;
+  /** UTC time when the latest document reached DOMContentLoaded. */
+  occurred_at: string | null;
+  /** URL committed by the latest observed document navigation. */
+  url: string;
+  /** Browser Navigation Timing classification for the current document. */
+  type: BrowserSessionNavigationType;
 }
 
 export interface BrowserSessionTab {
@@ -176,6 +195,7 @@ export interface BrowserSessionTab {
   url: string;
   active: boolean;
   revision: number;
+  navigation: BrowserSessionNavigation;
 }
 
 export interface BrowserSessionControl {
@@ -193,6 +213,7 @@ export interface BrowserSessionInspection {
   controls: BrowserSessionControl[];
   focus: BrowserSessionControl | null;
   revision: number;
+  navigation: BrowserSessionNavigation;
   truncated: boolean;
 }
 
@@ -252,6 +273,7 @@ export class Browser {
   private page: Page | null = null;
   private pageIndexes = new Map<Page, number>();
   private pageRecency = new Map<Page, number>();
+  private pageNavigations = new Map<Page, BrowserSessionNavigation>();
   private nextPageIndex = 0;
   private recencyClock = 0;
   private sessionRevision = 0;
@@ -425,9 +447,17 @@ export class Browser {
   private trackPage(page: Page, makeActive: boolean): void {
     if (!this.pageIndexes.has(page)) {
       this.pageIndexes.set(page, this.nextPageIndex++);
+      this.pageNavigations.set(page, {
+        sequence: 0,
+        occurred_at: null,
+        url: page.url(),
+        type: "unknown",
+      });
       this.attachDiagnosticListeners(page);
+      page.on("domcontentloaded", () => this.recordDocumentNavigation(page));
       page.once("close", () => {
         this.pageRecency.delete(page);
+        this.pageNavigations.delete(page);
         if (this.page === page) this.selectMostRecentPage();
       });
     }
@@ -438,6 +468,47 @@ export class Browser {
     if (page.isClosed()) return;
     this.page = page;
     this.pageRecency.set(page, ++this.recencyClock);
+  }
+
+  private recordDocumentNavigation(page: Page): void {
+    if (page.isClosed()) return;
+    const previous = this.pageNavigations.get(page);
+    this.pageNavigations.set(page, {
+      sequence: (previous?.sequence ?? 0) + 1,
+      occurred_at: new Date().toISOString(),
+      url: page.url(),
+      type: "unknown",
+    });
+  }
+
+  private async describeNavigation(page: Page): Promise<BrowserSessionNavigation> {
+    const current = this.pageNavigations.get(page) ?? {
+      sequence: 0,
+      occurred_at: null,
+      url: page.url(),
+      type: "unknown" as const,
+    };
+    const type = await page
+      .evaluate<BrowserSessionNavigationType>(() => {
+        const entry = performance.getEntriesByType("navigation")[0] as
+          | PerformanceNavigationTiming
+          | undefined;
+        const observed = entry?.type;
+        return observed === "navigate" ||
+          observed === "reload" ||
+          observed === "back_forward" ||
+          observed === "prerender"
+          ? observed
+          : "unknown";
+      })
+      .catch(() => current.type);
+    const latest = this.pageNavigations.get(page);
+    if (latest?.sequence === current.sequence) {
+      const updated = { ...latest, type };
+      this.pageNavigations.set(page, updated);
+      return updated;
+    }
+    return latest ?? current;
   }
 
   private selectMostRecentPage(): void {
@@ -766,6 +837,7 @@ export class Browser {
       active_tab: active.index,
       tab_count: tabs.length,
       revision: this.sessionRevision,
+      navigation: active.navigation,
     };
   }
 
@@ -781,6 +853,7 @@ export class Browser {
         url: page.url(),
         active: page === this.page,
         revision: this.sessionRevision,
+        navigation: await this.describeNavigation(page),
       })),
     );
   }
@@ -980,6 +1053,7 @@ export class Browser {
       controls: observed.controls,
       focus: observed.focus,
       revision: this.sessionRevision,
+      navigation: await this.describeNavigation(page),
       truncated: textResult.truncated,
     };
   }
@@ -1079,6 +1153,7 @@ export class Browser {
       url: page.url(),
       active: page === this.page,
       revision: this.sessionRevision,
+      navigation: await this.describeNavigation(page),
     };
   }
 
@@ -1278,6 +1353,7 @@ export class Browser {
     this.page = null;
     this.pageIndexes.clear();
     this.pageRecency.clear();
+    this.pageNavigations.clear();
     this.nextPageIndex = 0;
     this.recencyClock = 0;
     this.sessionRevision = 0;

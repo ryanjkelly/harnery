@@ -110,6 +110,55 @@ describe("Browser live session operations", () => {
     expect(scoped.revision).toBe(1);
   });
 
+  test("records a browser-observed manual reload without changing the action revision", async () => {
+    const browser = new Browser({ profileDir: profile(), navigationTimeout: 10_000 });
+    browsers.push(browser);
+    await browser.open();
+    await browser.navigate(fixtureOrigin);
+
+    const before = await browser.sessionInspect();
+    expect(before.revision).toBe(0);
+    expect(before.navigation).toMatchObject({ sequence: 1, type: "navigate" });
+    expect(before.navigation.occurred_at).not.toBeNull();
+
+    await browser.currentPage.reload({ waitUntil: "load" });
+
+    const after = await browser.sessionInspect();
+    expect(after.revision).toBe(before.revision);
+    expect(after.navigation).toMatchObject({
+      sequence: before.navigation.sequence + 1,
+      type: "reload",
+      url: `${fixtureOrigin}/`,
+    });
+
+    const controlled = await browser.sessionReload();
+    expect(controlled).toMatchObject({
+      revision: 1,
+      navigation: { sequence: after.navigation.sequence + 1, type: "reload" },
+    });
+    expect(await browser.sessionStatus()).toMatchObject({
+      revision: 1,
+      navigation: controlled.navigation,
+    });
+  });
+
+  test("reports independent document sequences for controlled tabs", async () => {
+    const browser = new Browser({ profileDir: profile(), navigationTimeout: 10_000 });
+    browsers.push(browser);
+    await browser.open();
+    await browser.navigate(fixtureOrigin);
+    const opened = await browser.sessionOpenTab(`${fixtureOrigin}/second`);
+    expect(opened.navigation).toMatchObject({ sequence: 1, type: "navigate" });
+
+    await browser.currentPage.reload({ waitUntil: "load" });
+    const tabs = await browser.sessionTabs();
+    expect(tabs.find((tab) => tab.index === 0)?.navigation.sequence).toBe(1);
+    expect(tabs.find((tab) => tab.index === 1)?.navigation).toMatchObject({
+      sequence: 2,
+      type: "reload",
+    });
+  });
+
   test("writes owner-only screenshots and refuses to overwrite them", async () => {
     const browser = new Browser({ profileDir: profile(), navigationTimeout: 10_000 });
     browsers.push(browser);

@@ -32,8 +32,8 @@ descriptor path but never its token or contents.
 
 | Command | Purpose |
 | --- | --- |
-| `status` | Report readiness, active tab, tab count, and page-state revision. |
-| `inspect` | Return sanitized visible text, controls, focus, title, URL, and revision. |
+| `status` | Report readiness, active tab, tab count, action revision, and current navigation receipt. |
+| `inspect` | Return sanitized visible text, controls, focus, title, URL, action revision, and navigation receipt. |
 | `screenshot --out <path>` | Write a new owner-only full-page PNG. |
 | `tabs` | List stable session-local tab indexes, titles, URLs, and active state. |
 | `select-tab --index <n>` | Bring an existing controlled tab to the front. |
@@ -97,6 +97,16 @@ controls, current focus, and the active tab. It does not return cookies,
 request headers, local or session storage, hidden inputs, or form values. Link
 catalog entries omit credentials, query strings, and fragments. Visible text is
 capped at 256 KiB, and the response says when truncation occurred.
+
+`status`, `inspect`, and `tabs` also return a per-tab `navigation` receipt. Its
+`sequence` advances when that tab loads a new document, including a refresh
+performed directly in the visible window. `occurred_at` records the UTC time,
+`url` records the committed address, and `type` uses the browser's Navigation
+Timing classification: `navigate`, `reload`, `back_forward`, `prerender`, or
+`unknown`. The receipt is separate from `revision`, which counts successful
+control-channel actions. To verify a human refresh, record the sequence before
+the operator presses Ctrl+R, then require a larger sequence and `type: reload`
+from a fresh `inspect` command.
 
 Screenshots are not sent over the socket. `screenshot --out` writes a new PNG
 with mode `0600` and returns its path and pixel dimensions. The parent directory
