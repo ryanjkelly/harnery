@@ -673,8 +673,8 @@ describe("durable goal governor", () => {
           "proposal.root is inferred by Harnery as the single final outcome",
         );
         expect(request.prompt).toContain("never require proposal.root to equal active_root");
-        expect(request.prompt).toContain("program-shape decisions are explicit");
-        expect(request.prompt).toContain(
+        expect(request.prompt).not.toContain("program-shape decisions are explicit");
+        expect(request.prompt).not.toContain(
           "defers every observable integration until the final item",
         );
       }
@@ -943,10 +943,10 @@ describe("durable goal governor", () => {
       }
       if (request.prompt.includes("Revise this governor plan candidate")) {
         revisionCalls++;
-        expect(request.prompt).toContain(
+        expect(request.prompt).not.toContain(
           "Keep consequential contracts and program-shape decisions explicit",
         );
-        expect(request.prompt).toContain("independently observable end-to-end slices");
+        expect(request.prompt).not.toContain("independently observable end-to-end slices");
         return {
           ok: true,
           text: replacementProposal({

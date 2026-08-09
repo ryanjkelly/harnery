@@ -1,0 +1,72 @@
+---
+title: "0066: Keep common plan review and revision generic"
+description: "ADR: remove universal program-shape and delivery-strategy criteria from governor review and revision while preserving host-specific reviewer policy."
+---
+
+**Status:** accepted (2026-08-09) · **Scope:** product tier (`core/governor` planning)
+
+## Context
+
+ADR 0064 removed general program-shape and delivery-strategy advice from the
+first planner request but provisionally kept two independent-review criteria
+and one matching revision instruction. The review criteria asked reviewers to
+reject implicit consequential choices and unjustified delayed integration. The
+revision instruction asked planners to expose program shape and prefer
+observable end-to-end slices.
+
+A held-out comparison evaluated these surfaces separately. It used twelve new
+review candidates, two repeats per variant, six fixed revision cases, and two
+repeats per variant. All 72 reviewer and revision calls succeeded.
+
+The review criteria improved relevant seeded-defect recall from 50.0% to 91.7%
+with 10.4% more visible tokens and 10.4% more model duration. They also rejected
+four of twelve valid controls, including both local reversible controls. That
+33.3% false-positive rate exceeded the fixed 20% ceiling and failed the
+zero-local-false-positive rule.
+
+The revision instruction produced valid plans in every run and used a median
+of three work items versus 3.5 without the instruction. Two blinded primary
+judges agreed on 91.7% of twelve pairs. After one blind adjudication, the
+instruction was preferred in eleven pairs and introduced no material
+requirements outside the mission or finding. Its median model duration was
+42.7% higher, above the fixed 25% ceiling.
+
+## Alternatives considered
+
+- **Keep both surfaces because they improve semantic quality.** Rejected
+  because common policy must meet its reliability and cost gates, not just its
+  quality gates.
+- **Keep review criteria but exempt local work.** Rejected because that is new
+  wording that was not tested. A post-result rewrite would need a new study.
+- **Keep revision guidance despite the duration miss.** Rejected because the
+  ceiling was fixed before calls began. The strong preference result does not
+  authorize moving it after the fact.
+- **Turn the criteria into deterministic validation.** Rejected because
+  Harnery cannot infer semantic system layers, maintainability, or meaningful
+  observability from plan text and dependency edges.
+- **Forbid hosts from supplying these criteria.** Rejected because a domain
+  reviewer may know contracts and risks that the common runtime cannot know.
+
+## Decision
+
+Remove the two program-shape and delayed-integration criteria from the common
+governor review prompt. Remove the matching delivery-strategy instruction from
+the common revision prompt.
+
+Keep common review focused on candidate completeness, scope, frozen goal
+context, blocking findings, human-attention boundaries, and the proposal-root
+contract. Keep revision focused on resolving the actual reviewer findings
+within frozen goal and template constraints. Reviewer specialist profiles may
+add domain-specific criteria without changing Harnery's common contract.
+
+## Result and gotchas
+
+- No common governor prompt now carries the evaluated program-shape or
+  observable-slice wording.
+- The immutable proposal, review receipt, revision rounds, reviewer authority,
+  explicit approval, and inferred-root contracts do not change.
+- Removing universal wording does not claim that program shape or integrated
+  feedback is unimportant. It means Harnery lacks a common formulation that is
+  reliable and efficient across both consequential and local work.
+- This decision closes the provisional prompt adoption. It does not authorize
+  another workflow stage, design schema, or deterministic semantic checker.
