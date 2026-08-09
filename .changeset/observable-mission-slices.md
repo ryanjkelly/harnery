@@ -2,4 +2,4 @@
 "harnery": patch
 ---
 
-Guide governor planners and reviewers toward explicit program-shape decisions and independently observable end-to-end slices.
+Check consequential program shape and delayed integration during independent governor plan review and revision without adding general delivery-strategy advice to the first planner request.

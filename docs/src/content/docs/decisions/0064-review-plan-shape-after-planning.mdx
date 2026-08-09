@@ -1,0 +1,81 @@
+---
+title: "0064: Review plan shape after the first planner request"
+description: "ADR: keep program-shape and observable-integration checks in independent plan review without adding general delivery-strategy advice to the first planner prompt."
+---
+
+**Status:** accepted (2026-08-09) · **Scope:** product tier (`core/governor` planning)
+
+## Context
+
+ADR 0061 added two source-neutral instructions to governor planner requests.
+They asked for independently observable cross-layer slices and explicit
+contracts, module boundaries, types, and call paths. Independent reviewers and
+revision requests received matching checks.
+
+A controlled comparison found a useful quality signal but missed its fixed
+planner-cost ceiling. The combined guidance won all three cross-layer pairs and
+moved the first credible integrated observation earlier, but median planner
+model duration increased 27.45% against a 25% ceiling.
+
+A second experiment separated the planner concepts across 72 sequential calls.
+All proposals were valid and local plans stayed at one work item. The results
+were:
+
+| Planner variant | Visible-token change | Model-duration change |
+|---|---:|---:|
+| Observable-slice instruction only | -3.35% | -28.31% |
+| Program-shape instruction only | +17.58% | +108.73% |
+| Shorter combined instruction | +8.29% | +63.08% |
+
+The slice-only variant passed the cost screen and moved the cross-layer median
+first observation from item 3 to item 1. It did not pass blinded quality review.
+The two primary judges agreed on 55.6% of all pairs, below the fixed 70% floor,
+and disagreed on every cross-layer pair. The blinded adjudicator preferred the
+baseline in all three because the slice-only plans bundled persistence,
+surfaces, and proof into one item instead of exposing executable program seams
+and justified prerequisites.
+
+## Alternatives considered
+
+- **Keep the original combined planner guidance.** Rejected because it failed
+  the fixed planner-duration gate. Changing the ceiling after observing the
+  result would make the evaluation meaningless.
+- **Keep only the observable-slice instruction.** Rejected because an earlier
+  observation did not make the cross-layer plans better overall. The surviving
+  candidate failed both the preference and judge-agreement gates.
+- **Use the shorter combined instruction.** Rejected because word count was not
+  the main cost. That variant was 63.08% slower even though visible-token growth
+  stayed below 10%.
+- **Add a required design packet or another governor stage.** Rejected for this
+  change. The experiment evaluated prompt guidance, and a new durable artifact
+  needs its own evidence and authority design.
+- **Remove the reviewer and revision checks too.** Rejected for now. The prior
+  reviewer comparison met its defect-recall, false-positive, local-ceremony,
+  visible-token, and duration gates. Those surfaces require a separate study.
+
+## Decision
+
+Remove the two general delivery-strategy instructions from the first governor
+planner request. Keep the independent reviewer checks for implicit
+program-shape decisions and unjustified delayed integration. Keep the matching
+revision instruction so a rejected candidate can address those findings.
+
+Planner profiles supplied by a host may still contain domain-specific planning
+instructions. Harnery's common planner contract stays focused on the mission,
+durable state, dependency semantics, frozen template authority, limits, and
+the model-authored proposal schema.
+
+## Result and gotchas
+
+- A governor without configured plan review no longer receives a common
+  observable-slice or program-shape quality rule. Harnery does not claim that
+  graph validity proves semantic plan quality.
+- A reviewed plan can still be sent back for implicit consequential choices or
+  delayed integration. The correction happens after an inspectable candidate
+  exists instead of making every first planner request reason through both
+  strategies.
+- The proposal schema, inferred-root contract, persisted plan records, and
+  approval authority do not change.
+- The reviewer and revision wording remains provisional until evaluated as a
+  separate surface. This decision does not authorize another workflow stage or
+  design schema.

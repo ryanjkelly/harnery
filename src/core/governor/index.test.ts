@@ -663,8 +663,10 @@ describe("durable goal governor", () => {
         expect(request.prompt).toContain('"maxLength":32');
         expect(request.prompt).toContain("Do not return proposal.root");
         expect(request.prompt).toContain("single final outcome");
-        expect(request.prompt).toContain("smallest observable end-to-end slice");
-        expect(request.prompt).toContain("contracts, module boundaries, key types or call paths");
+        expect(request.prompt).not.toContain("smallest observable end-to-end slice");
+        expect(request.prompt).not.toContain(
+          "contracts, module boundaries, key types or call paths",
+        );
       }
       if (request.prompt.includes("Review this bounded")) {
         expect(request.prompt).toContain(
@@ -941,6 +943,10 @@ describe("durable goal governor", () => {
       }
       if (request.prompt.includes("Revise this governor plan candidate")) {
         revisionCalls++;
+        expect(request.prompt).toContain(
+          "Keep consequential contracts and program-shape decisions explicit",
+        );
+        expect(request.prompt).toContain("independently observable end-to-end slices");
         return {
           ok: true,
           text: replacementProposal({

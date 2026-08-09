@@ -733,8 +733,6 @@ function plannerScript(
     "Dependencies may name an active work ID or an earlier key in your proposed work array.",
     PLANNER_ROOT_RULE,
     "Work keys are lowercase identifiers no longer than 32 characters. Keep titles within 200 characters, objectives within 4000 characters, and each acceptance criterion within 500 characters.",
-    "When work spans system layers, prefer the smallest observable end-to-end slice that can be verified before later work begins. Avoid layer-only batches unless they have independent acceptance evidence or are necessary prerequisites.",
-    "Use work objectives and acceptance criteria to make consequential design decisions explicit before implementation: contracts, module boundaries, key types or call paths, and the concrete observation that proves each slice.",
     `Plan id: ${planId}`,
     `Planning trigger: ${trigger}`,
     `Goal: ${record.intent.title}`,
