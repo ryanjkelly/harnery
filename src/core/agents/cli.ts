@@ -108,6 +108,7 @@ async function handleVerdict(root: string): Promise<number> {
       reason: result.message,
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
     } as typeof verdict;
+    (verdict as Record<string, unknown>).instance_id = result.instance_id;
     (verdict as Record<string, unknown>).conflicts = result.conflicts;
     (verdict as Record<string, unknown>).log_lines = result.log_lines;
     (verdict as Record<string, unknown>).suppressed_self_attribution =
@@ -544,16 +545,23 @@ async function handlePostCommit(root: string): Promise<number> {
     return 0;
   }
   const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
+  // Owner resolution moved in-process (same cutover as evaluateCommit): the
+  // bash hooks used to walk the pid-map themselves and send the result, and a
+  // hook fired from a foreign process tree (Windows→WSL bridge) resolved
+  // nothing — so a bridged commit never pruned its claims and they lingered
+  // as stale conflicts for every later commit.
+  const { resolveOwner } = await import("../hooks/resolve/owner.ts");
+  const owner = req.owner?.trim() || resolveOwner({ payload: null, coordRoot: root })?.instance_id;
 
   // Session-group-wide unclaim. `owner` is the parent's session_id which is
   // also the group key (parent + subagents share session_id). Each actual
   // removal also emits a durable claim.release event — the projector rebuilds
   // files_touched from the permanent Edit/Write events, so a file-only prune
   // would resurrect on the next replay.
-  if (req.owner && Array.isArray(req.prune)) {
+  if (owner && Array.isArray(req.prune)) {
     for (const path of req.prune) {
       try {
-        for (const hit of groupUnclaim(root, req.owner, path)) {
+        for (const hit of groupUnclaim(root, owner, path)) {
           await emitClaimRelease(root, hit.instance_id, hit, path, "commit");
         }
       } catch {
@@ -573,10 +581,17 @@ async function handlePostCheckout(root: string, _rest: string[]): Promise<number
     return 0;
   }
   const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
-  if (req.owner && Array.isArray(req.removed)) {
+  // Owner resolution moved in-process (same cutover as evaluateCommit): the
+  // bash hooks used to walk the pid-map themselves and send the result, and a
+  // hook fired from a foreign process tree (Windows→WSL bridge) resolved
+  // nothing — so a bridged commit never pruned its claims and they lingered
+  // as stale conflicts for every later commit.
+  const { resolveOwner } = await import("../hooks/resolve/owner.ts");
+  const owner = req.owner?.trim() || resolveOwner({ payload: null, coordRoot: root })?.instance_id;
+  if (owner && Array.isArray(req.removed)) {
     for (const path of req.removed) {
       try {
-        for (const hit of groupUnclaim(root, req.owner, path)) {
+        for (const hit of groupUnclaim(root, owner, path)) {
           await emitClaimRelease(root, hit.instance_id, hit, path, "checkout");
         }
       } catch {

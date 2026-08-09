@@ -1,8 +1,8 @@
 /**
  * Pre-commit E-guard verdict. The caller (typically a bash pre-commit hook)
- * sends a JSON request with the staged paths, resolves its own instance_id
- * via pid-map, and prints the verdict messages + exits with
- * verdict.exit_code.
+ * sends a JSON request with the staged paths and prints the verdict
+ * messages + exits with verdict.exit_code. Committer identity is resolved
+ * HERE via `resolveOwner()` unless the request explicitly carries one.
  *
  * Three outcomes:
  *   1. allow (no conflicts): exit 0.
@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
+import { resolveOwner } from "../../hooks/resolve/owner.ts";
 import { instanceHasLivePid } from "../state/pidmap.ts";
 
 interface PeerHeartbeat {
@@ -46,9 +47,16 @@ interface Conflict {
 }
 
 export interface CommitVerdictRequest {
-  instance_id: string;
-  /** Group key. Subagents inherit parent's session_id. */
-  session_id: string;
+  /**
+   * Committer identity. Optional: when absent (or the legacy
+   * `__unattributed__` sentinel), the verdict resolves it via
+   * `resolveOwner()` — env → pid-map walk → validated Codex thread id —
+   * from its own process context. Callers should stop hand-rolling
+   * identity resolution and omit this.
+   */
+  instance_id?: string;
+  /** Group key. Subagents inherit parent's session_id. Same optionality. */
+  session_id?: string;
   /** Canonical monorepo-relative paths. */
   staged_paths: string[];
   /** Paths in `staged_paths` that resolve to submodule gitlinks (mode 160000)
@@ -62,6 +70,8 @@ export interface CommitVerdictResult {
   allow: boolean;
   exit_code: number;
   rule: string;
+  /** The committer identity the verdict actually used (resolved or passed). */
+  instance_id: string;
   /** Conflict details (for the caller to print). */
   conflicts: Conflict[];
   /** Path-specific gates that fired (for `coord_log` lines). */
@@ -73,11 +83,24 @@ export interface CommitVerdictResult {
 }
 
 export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): CommitVerdictResult {
+  // Resolve the committer here, not in the calling hook. The bash shims used
+  // to carry their own pid-map walk (a pre-extraction fossil of resolveOwner);
+  // a hand-rolled copy can only fall behind as tiers are added, so the rule
+  // resolves identity from its own process context and callers just omit it.
+  const passed = req.instance_id?.trim();
+  const me =
+    passed && passed !== "__unattributed__"
+      ? passed
+      : (resolveOwner({ payload: null, coordRoot })?.instance_id ?? "__unattributed__");
+  const passedSession = req.session_id?.trim();
+  const mySession = passed && passedSession ? passedSession : me;
+
   if (req.staged_paths.length === 0) {
     return {
       allow: true,
       exit_code: 0,
       rule: "commit.pass",
+      instance_id: me,
       conflicts: [],
       log_lines: [],
       message: "",
@@ -91,9 +114,9 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
 
   const conflicts: Conflict[] = [];
   for (const peer of peers) {
-    if (peer.instance_id === req.instance_id) continue;
+    if (peer.instance_id === me) continue;
     const peerSession = peer.session_id ?? peer.instance_id;
-    if (req.session_id && peerSession === req.session_id) continue; // same group
+    if (mySession !== "__unattributed__" && peerSession === mySession) continue; // same group
     const ts = peer.last_heartbeat ? Date.parse(peer.last_heartbeat) : 0;
     if (!Number.isFinite(ts) || ts < cutoffMs) continue; // stale
     const files = peer.files_touched ?? [];
@@ -118,6 +141,7 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
       allow: true,
       exit_code: 0,
       rule: "commit.pass",
+      instance_id: me,
       conflicts: [],
       log_lines: [],
       message: "",
@@ -129,6 +153,7 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
       allow: true,
       exit_code: 0,
       rule: "commit.bypass",
+      instance_id: me,
       conflicts,
       log_lines: conflicts.map(
         (c) => `COMMIT_BYPASSED  path=${c.staged_path} owner=${c.short_name}`,
@@ -149,6 +174,7 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
       allow: true,
       exit_code: 0,
       rule: "commit.suppressed",
+      instance_id: me,
       conflicts,
       log_lines: conflicts.map(
         (c) =>
@@ -167,6 +193,7 @@ export function evaluateCommit(coordRoot: string, req: CommitVerdictRequest): Co
     allow: false,
     exit_code: 1,
     rule: "commit.conflict",
+    instance_id: me,
     conflicts,
     log_lines: conflicts.map((c) => `COMMIT_BLOCKED  path=${c.staged_path} owner=${c.short_name}`),
     message:

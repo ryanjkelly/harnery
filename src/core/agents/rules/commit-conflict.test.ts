@@ -326,3 +326,74 @@ describe("evaluateCommit", () => {
     expect(v.allow).toBe(false);
   });
 });
+
+describe("evaluateCommit identity resolution", () => {
+  const savedThread = process.env.CODEX_THREAD_ID;
+  const savedOwner = process.env.HARNERY_AGENT_COORD_OWNER;
+
+  afterEach(() => {
+    if (savedThread === undefined) delete process.env.CODEX_THREAD_ID;
+    else process.env.CODEX_THREAD_ID = savedThread;
+    if (savedOwner === undefined) delete process.env.HARNERY_AGENT_COORD_OWNER;
+    else process.env.HARNERY_AGENT_COORD_OWNER = savedOwner;
+  });
+
+  test("resolves committer from CODEX_THREAD_ID when a matching heartbeat exists", () => {
+    seedPeer("thread-abc", { name: "Me", files: ["src/mine.ts"] });
+    process.env.CODEX_THREAD_ID = "thread-abc";
+    delete process.env.HARNERY_AGENT_COORD_OWNER;
+    const v = evaluateCommit(root, { staged_paths: ["src/mine.ts"] });
+    expect(v.rule).toBe("commit.pass");
+    expect(v.instance_id).toBe("thread-abc");
+    expect(v.allow).toBe(true);
+  });
+
+  test("a CODEX_THREAD_ID with no matching heartbeat cannot fabricate identity", () => {
+    seedPeer("peer-1", { name: "Peer", files: ["src/mine.ts", "src/other.ts"] });
+    process.env.CODEX_THREAD_ID = "thread-nonexistent";
+    delete process.env.HARNERY_AGENT_COORD_OWNER;
+    const v = evaluateCommit(root, { staged_paths: ["src/mine.ts"] });
+    expect(v.instance_id).toBe("__unattributed__");
+    expect(v.rule).toBe("commit.conflict");
+    expect(v.allow).toBe(false);
+  });
+
+  test("a path-hostile CODEX_THREAD_ID is rejected by format, not filesystem luck", () => {
+    process.env.CODEX_THREAD_ID = "../../../etc/passwd";
+    delete process.env.HARNERY_AGENT_COORD_OWNER;
+    const v = evaluateCommit(root, { staged_paths: ["src/mine.ts"] });
+    expect(v.instance_id).toBe("__unattributed__");
+  });
+
+  test("an explicitly passed instance_id wins over the env", () => {
+    seedPeer("thread-abc", { name: "Me", files: [] });
+    process.env.CODEX_THREAD_ID = "thread-abc";
+    const v = evaluateCommit(root, {
+      instance_id: "explicit-id",
+      session_id: "explicit-id",
+      staged_paths: [],
+    });
+    expect(v.instance_id).toBe("explicit-id");
+  });
+
+  test("HARNERY_AGENT_COORD_OWNER outranks CODEX_THREAD_ID", () => {
+    seedPeer("thread-abc", { name: "Me", files: [] });
+    process.env.CODEX_THREAD_ID = "thread-abc";
+    process.env.HARNERY_AGENT_COORD_OWNER = "owner-from-env";
+    const v = evaluateCommit(root, { staged_paths: ["src/mine.ts"] });
+    expect(v.instance_id).toBe("owner-from-env");
+  });
+
+  test("legacy __unattributed__ sentinel triggers resolution instead of sticking", () => {
+    seedPeer("thread-abc", { name: "Me", files: ["src/mine.ts"] });
+    process.env.CODEX_THREAD_ID = "thread-abc";
+    delete process.env.HARNERY_AGENT_COORD_OWNER;
+    const v = evaluateCommit(root, {
+      instance_id: "__unattributed__",
+      session_id: "__unattributed__",
+      staged_paths: ["src/mine.ts"],
+    });
+    expect(v.instance_id).toBe("thread-abc");
+    expect(v.rule).toBe("commit.pass");
+  });
+});

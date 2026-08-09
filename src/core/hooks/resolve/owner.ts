@@ -17,6 +17,12 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
  *      events; session_id is the parent-shape default.
  *   3. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
  *      chain (up to 20 hops).
+ *   4. `CODEX_THREAD_ID` env var, accepted only when a live heartbeat by that
+ *      id exists under `.harnery/active/`. Codex sessions use their thread id
+ *      as the heartbeat instance_id, and a Windows→WSL bridge forwards the
+ *      var into process trees that descend from no registered process — the
+ *      one place the pid walk can never land. Validated so a garbage value
+ *      cannot fabricate an identity.
  *
  * Returns null when nothing resolves. Callers must treat null as "no owner"
  * and skip the event (Phase 2 fail-safe; Phase 3 will mint a temporary owner
@@ -25,7 +31,10 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
 export function resolveOwner(opts: {
   payload: Record<string, unknown> | null;
   coordRoot: string;
-}): { instance_id: string; source: "env" | "payload" | "pidmap-self" | "pidmap-ancestor" } | null {
+}): {
+  instance_id: string;
+  source: "env" | "payload" | "pidmap-self" | "pidmap-ancestor" | "codex-env";
+} | null {
   const env = coordEnv("AGENT_COORD_OWNER");
   if (env && env.length > 0) {
     return { instance_id: env, source: "env" };
@@ -74,6 +83,18 @@ export function resolveOwner(opts: {
       pid = ppid;
       hops++;
     }
+  }
+
+  // Tier 4: Codex thread id, heartbeat-validated. Last because the pid map is
+  // more specific when it answers — an inherited env var can outlive the
+  // process tree it described, a live pid-map row cannot.
+  const codexThreadId = process.env.CODEX_THREAD_ID?.trim();
+  if (
+    codexThreadId &&
+    /^[A-Za-z0-9-]+$/.test(codexThreadId) &&
+    existsSync(join(opts.coordRoot, ".harnery", "active", `${codexThreadId}.json`))
+  ) {
+    return { instance_id: codexThreadId, source: "codex-env" };
   }
 
   return null;
