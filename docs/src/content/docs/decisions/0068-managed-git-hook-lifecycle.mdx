@@ -1,0 +1,107 @@
+---
+title: "0068: Git hooks join the managed lifecycle; hook behavior lives in the package"
+description: "ADR: coordination content in a consumer's git hooks is machine-owned, installed by init, upgraded by the package, removed by deinit."
+sidebar:
+  order: 68
+---
+
+**Status:** accepted (2026-08-09)
+
+## Context
+
+Harnery's coordination layer needs three git hooks in a consumer repo: a
+pre-commit guard that blocks a commit whose staged paths overlap another live
+agent's claimed files, a post-commit step that releases the committer's claims
+on what just landed, and a post-checkout step that releases claims on paths a
+ref move discarded. Until now the package shipped none of them. Each host
+wrote its own shell: staged-path collection, submodule canonicalization,
+gitlink discrimination, identity resolution, verdict invocation, claim
+pruning.
+
+That put coordination behavior outside the upgrade path, and it decayed
+exactly the way copied code decays. In the first host, three hooks carried
+three different vintages of the same pid-map walk; only one had the
+recycled-pid token guard. All three shared a structural blind spot: a commit
+spawned across a process boundary descends from no registered process, so the
+agent's own claims read as a peer's. The result was a multi-day run of
+false-positive self-blocks that taught agents to reach for the bypass
+environment variable as a reflex, while the post-commit prune silently
+no-oped and left stale claims behind to conflict with every later commit. One
+hook also shipped log lines to an `agent-coord` subcommand that had never
+existed, and nothing noticed.
+
+Meanwhile the AGENTS.md instructions block already had the right lifecycle: a
+hash-versioned managed region that `init` splices, `init --check` verifies,
+and `deinit` removes, with all rendered content owned by the package. Git
+hooks were the one coordination surface not on that contract.
+
+## Alternatives considered
+
+- **Keep hooks host-authored, document the pattern better.** Rejected: the
+  failure mode is not ignorance but drift. A documented copy is still a copy;
+  nothing re-verifies it after the commit that adds it.
+- **Auto-install hooks on package update.** Rejected: mutating a consumer's
+  git hooks without an explicit `init` is a trust-destroying surprise, and no
+  other harnery surface self-installs. It would also fight hook managers the
+  consumer already uses.
+- **Ship whole hook files and require `core.hooksPath` to point at the
+  package.** Rejected: hosts have their own hook content (typecheckers,
+  linters, policy gates) that must coexist. Owning the whole file makes
+  harnery a hook manager, which it is not.
+
+## Decision
+
+Two-part contract, mirroring the instructions block:
+
+1. **Behavior lives in the package.** `agent-coord git-hook <event>` owns all
+   coordination git plumbing in-process: collection (rename-aware,
+   submodule-canonical, gitlink-discriminating, clean-in-worktree gating),
+   the commit-conflict verdict, identity resolution, and claim pruning. It is
+   fail-open: an internal error never blocks a commit, while a clean conflict
+   verdict still does. The stdin-based `verdict --rule=commit`,
+   `post-commit`, and `post-checkout` entry points are removed; a straggler
+   caller lands in the fail-open unknown-rule branch.
+
+2. **Hook files carry only a managed region.** A hash-versioned
+   `# harnery:begin git-hook-<event>` region (the `#`-comment sibling of the
+   Markdown region syntax) locates `agent-coord` in either consumer layout
+   (git submodule or node_modules) and invokes it. `init` installs or
+   refreshes the region, honoring `core.hooksPath` and worktrees via
+   `git rev-parse --git-path hooks`; a missing hook file is created whole and
+   executable, and a host-authored hook gets the region inserted after its
+   shebang with every host line preserved. `deinit` removes the region and
+   deletes only files harnery created whole.
+
+Adoption is explicit and upgrade-safe: `init --check` treats a project with
+no managed hook regions as "not adopted" (green), so a CI wiring of `--check`
+cannot go red because the package added a feature. `harn doctor` carries the
+nudge instead. Once any region exists, a missing or stale one is drift
+(exit 2).
+
+## Consequences
+
+- A package upgrade is a hook upgrade. The region names an invocation; the
+  invocation's behavior versions with the package. If the invocation contract
+  itself changes, every consumer's `init --check` reports drift until `init`
+  re-runs, which is the same failure-visibility the instructions block has.
+- The identity blind spot is closed at the resolver, not in shell:
+  `resolveOwner()` runs inside the verdict process and gained a
+  final env tier for process trees the pid-map walk cannot reach, validated
+  against a live heartbeat so a stale or forged value cannot mint identity.
+- One residual skew window is accepted: a checkout whose hook regions are
+  newer than its installed package invokes a subcommand the old binary lacks
+  and coordination silently no-ops until the package updates. The window is
+  transient and one-directional; hardening it would cost a handshake spawn on
+  every commit.
+- The guard stays advisory-grade by design. Fail-open means a broken install
+  can never brick git for a human; the debug channel
+  (`.harnery/debug/agent-coord-verdict.ndjson`) records every verdict for
+  forensics.
+
+## Result
+
+Installed in the first host the same day: three hooks totalling roughly 460
+lines of coordination shell became three 12-line managed regions, installed
+by `init` rather than by hand. The pipeline blocked a genuine peer conflict
+within a minute of installation, and the bypass-invocation count in that
+host's event ledger went from 99 in the preceding three days to zero.

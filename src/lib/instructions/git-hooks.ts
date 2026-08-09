@@ -22,6 +22,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import type { GitHookEvent } from "../../core/agents/git-hook.ts";
 import {
   checkRegion,
   type ManagedStatus,
@@ -30,8 +31,12 @@ import {
   spliceRegion,
 } from "./splice.ts";
 
-export const GIT_HOOK_EVENTS = ["pre-commit", "post-commit", "post-checkout"] as const;
-export type GitHookEvent = (typeof GIT_HOOK_EVENTS)[number];
+export const GIT_HOOK_EVENTS = [
+  "pre-commit",
+  "post-commit",
+  "post-checkout",
+] as const satisfies readonly GitHookEvent[];
+export type { GitHookEvent };
 
 function regionName(event: GitHookEvent): string {
   return `git-hook-${event}`;

@@ -44,3 +44,10 @@ instructions block:
 
 `spliceRegion`/`removeRegion`/`checkRegion` accept an optional comment style
 ("html" default, "hash" for shell files); existing callers are unchanged.
+
+Removed: the stdin-based `agent-coord verdict --rule=commit`, `post-commit`,
+and `post-checkout` entry points (the pre-region host-hook contract). No
+shipped harnery surface ever called them; a host that still does lands in the
+fail-open unknown-rule branch, which is the same outcome those hooks already
+had for a malformed request. The in-session wiring hint now names `init`
+instead of the retired invocation.

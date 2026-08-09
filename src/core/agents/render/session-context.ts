@@ -92,7 +92,7 @@ export function renderSessionContext(opts: RenderOpts): string {
     const hint = resolveHooksSetupHint(coordRoot);
     const fix = hint
       ? `Run \`${hint}\` to install them.`
-      : "Wire each repo's pre-commit hook to invoke `agent-coord verdict --rule=commit` (harnery's commit guard).";
+      : `Run \`${resolveBinName(coordRoot)} init\` to install the harnery-managed git-hook regions (commit guard + claim pruning).`;
     const wiringSummary = `Coordination hooks are NOT wired: the E-guard will not block conflicting commits, and post-commit claim pruning will not run. ${fix} Detected:\n${wiringIssues.map((i) => `  - ${i}`).join("\n")}`;
     messages.push(wiringSummary);
   }

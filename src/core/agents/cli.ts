@@ -96,24 +96,11 @@ async function handleVerdict(root: string): Promise<number> {
   } else if (parsed.rule === "claim") {
     const { evaluateClaim } = await import("./rules/claim-conflict.ts");
     verdict = evaluateClaim(root, parsed as unknown as Parameters<typeof evaluateClaim>[1]);
-  } else if (parsed.rule === "commit") {
-    const { evaluateCommit } = await import("./rules/commit-conflict.ts");
-    const result = evaluateCommit(root, parsed as unknown as Parameters<typeof evaluateCommit>[1]);
-    // Map CommitVerdictResult → the standard verdict envelope, stash details
-    // on extra fields so the bash caller can pull conflicts + log_lines.
-    verdict = {
-      allow: result.allow,
-      exit_code: result.exit_code,
-      rule: result.rule,
-      reason: result.message,
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-    } as typeof verdict;
-    (verdict as Record<string, unknown>).instance_id = result.instance_id;
-    (verdict as Record<string, unknown>).conflicts = result.conflicts;
-    (verdict as Record<string, unknown>).log_lines = result.log_lines;
-    (verdict as Record<string, unknown>).suppressed_self_attribution =
-      result.suppressed_self_attribution ?? false;
   } else {
+    // NB: rule === "commit" was served here until 2026-08-09; the commit
+    // guard now enters through `git-hook pre-commit`, which runs the same
+    // evaluateCommit in-process. A straggler host lands in this fail-open
+    // branch, which is the pre-migration behavior for a malformed request.
     verdict = {
       allow: true,
       exit_code: 0,
@@ -533,72 +520,6 @@ async function handleAssignName(root: string, rest: string[]): Promise<number> {
       ...(forkedFrom ? { forked_from: forkedFrom } : {}),
     })}\n`,
   );
-  return 0;
-}
-
-async function handlePostCommit(root: string): Promise<number> {
-  const raw = await readStdin();
-  let req: { owner?: string; prune?: string[] } = {};
-  try {
-    req = JSON.parse(raw);
-  } catch {
-    return 0;
-  }
-  const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
-  // Owner resolution moved in-process (same cutover as evaluateCommit): the
-  // bash hooks used to walk the pid-map themselves and send the result, and a
-  // hook fired from a foreign process tree (Windows→WSL bridge) resolved
-  // nothing — so a bridged commit never pruned its claims and they lingered
-  // as stale conflicts for every later commit.
-  const { resolveOwner } = await import("../hooks/resolve/owner.ts");
-  const owner = req.owner?.trim() || resolveOwner({ payload: null, coordRoot: root })?.instance_id;
-
-  // Session-group-wide unclaim. `owner` is the parent's session_id which is
-  // also the group key (parent + subagents share session_id). Each actual
-  // removal also emits a durable claim.release event — the projector rebuilds
-  // files_touched from the permanent Edit/Write events, so a file-only prune
-  // would resurrect on the next replay.
-  if (owner && Array.isArray(req.prune)) {
-    for (const path of req.prune) {
-      try {
-        for (const hit of groupUnclaim(root, owner, path)) {
-          await emitClaimRelease(root, hit.instance_id, hit, path, "commit");
-        }
-      } catch {
-        /* best-effort */
-      }
-    }
-  }
-  return 0;
-}
-
-async function handlePostCheckout(root: string, _rest: string[]): Promise<number> {
-  const raw = await readStdin();
-  let req: { owner?: string; removed?: string[] } = {};
-  try {
-    req = JSON.parse(raw);
-  } catch {
-    return 0;
-  }
-  const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
-  // Owner resolution moved in-process (same cutover as evaluateCommit): the
-  // bash hooks used to walk the pid-map themselves and send the result, and a
-  // hook fired from a foreign process tree (Windows→WSL bridge) resolved
-  // nothing — so a bridged commit never pruned its claims and they lingered
-  // as stale conflicts for every later commit.
-  const { resolveOwner } = await import("../hooks/resolve/owner.ts");
-  const owner = req.owner?.trim() || resolveOwner({ payload: null, coordRoot: root })?.instance_id;
-  if (owner && Array.isArray(req.removed)) {
-    for (const path of req.removed) {
-      try {
-        for (const hit of groupUnclaim(root, owner, path)) {
-          await emitClaimRelease(root, hit.instance_id, hit, path, "checkout");
-        }
-      } catch {
-        /* best-effort */
-      }
-    }
-  }
   return 0;
 }
 
@@ -1052,14 +973,6 @@ async function main(): Promise<number> {
 
   if (subcommand === "git-hook") {
     return handleGitHook(root, rest);
-  }
-
-  if (subcommand === "post-commit") {
-    return handlePostCommit(root);
-  }
-
-  if (subcommand === "post-checkout") {
-    return handlePostCheckout(root, rest);
   }
 
   await logNoop(root, subcommand ?? "(none)", rest);
