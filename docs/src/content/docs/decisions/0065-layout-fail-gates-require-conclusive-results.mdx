@@ -1,0 +1,62 @@
+---
+title: "0065: Layout fail gates require conclusive results"
+description: "ADR: make browse layout fail gates exit 2 on unknown results while measuring rounded containers by their rectangular padding boxes."
+---
+
+**Status:** accepted (2026-08-09) · **Scope:** toolkit tier (`lib/browser`, `browse` CLI)
+
+## Context
+
+ADR 0030 kept most layout `unknown` outcomes as report-only evidence. That
+avoided noisy failures from rounded containers and two-item gap checks, but it
+also let automation treat an inconclusive check as a pass. One page check
+reported 13 unsupported desktop shapes and 14 unsupported mobile shapes while
+both commands returned zero. An earlier capture on the same page had reported
+24 clipping issues with a worst overrun of 111.9 CSS pixels. A caller that read
+only the process status could not distinguish those outcomes from a clean page.
+
+The `--check-*-fail` flags are used as release gates. A release gate must prove
+its condition or stop. JSON still preserves `unknown` as the measurement
+result, but the process status no longer certifies it.
+
+## Alternatives considered
+
+- Keep `unknown` report-only and require callers to parse JSON. Rejected because
+  the fail flags exist so shell scripts and CI do not need a second result
+  parser.
+- Convert `unknown` to `fail` in the JSON model. Rejected because it would erase
+  the difference between a measured defect and unsupported geometry.
+- Add another opt-in flag for strict unknown handling. Rejected because a flag
+  named `--check-*-fail` should already fail when the requested check cannot
+  reach a conclusion.
+- Keep every rounded clipping ancestor as unknown. Rejected because the clipping
+  rule is explicitly rectangular. A normal border radius does not prevent the
+  rule from measuring the ancestor's rectangular padding box.
+
+## Decision
+
+Every enabled layout fail gate now exits 2 when its result is `fail`, `unknown`,
+or missing. This applies to alignment, gap, clipping, overlap, crowd, and target
+size. The JSON outcome remains unchanged. The warning says `result unknown`, so
+callers know why the gate stopped.
+
+The rectangular clipping check no longer marks `border-radius` as unsupported.
+It measures the rounded container by its rectangular padding box. Arbitrary
+`clip-path`, transforms that cannot be certified by axis-aligned geometry,
+closed shadow roots, and cross-origin frames remain `unknown` and therefore
+fail an enabled gate.
+
+Two-item gap checks without `--check-gap-expected` also fail closed. Callers
+must provide the intended gap before the check can pass.
+
+## Result
+
+The layout fixture now proves both sides of the contract. Rounded containers
+with visible or clipped overflow return `pass` when their rectangular bounds
+hold. A `clip-path` fixture remains `unknown`, and a two-item gap without an
+expectation remains `unknown`; both commands exit 2 when their fail gates are
+enabled.
+
+The consumer page that exposed the bug now reports zero unknown shapes at its
+desktop and mobile viewports. The same command exits 2 against the explicit
+unknown fixtures.

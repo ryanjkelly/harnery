@@ -128,25 +128,25 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-align <selector>` | Compare rendered child-content centers inside a container. Uses text fragments, then descendant SVGs, then border boxes. Repeatable. |
 | `--check-align-axis <axis>` | `auto`, `x`, or `y`. Auto checks y-centers for rows and x-centers for flex columns. Default `auto`. |
 | `--check-align-threshold <px>` | Maximum center drift in CSS pixels. Default `2`. |
-| `--check-align-fail` | Exit 2 when an alignment target fails or is missing. |
+| `--check-align-fail` | Exit 2 when an alignment target fails, is unknown, or is missing. |
 | `--no-check-align-annotate` | Skip alignment annotations. |
 | `--check-gap <selector>` | Compare adjacent rendered gaps inside a container. Groups of 3+ infer their median gap. Repeatable. |
 | `--check-gap-axis <axis>` | `auto`, `x`, or `y`. Default `auto`. |
 | `--check-gap-expected <px>` | Supply the expected gap. Required to make a two-item group conclusive. |
 | `--check-gap-threshold <px>` | Maximum gap deviation in CSS pixels. Default `2`. |
-| `--check-gap-fail` | Exit 2 when a gap target fails or is missing. An uninferable gap remains `unknown` without failing. |
+| `--check-gap-fail` | Exit 2 when a gap target fails, is unknown, or is missing. A two-item group needs `--check-gap-expected` to produce a conclusive result. |
 | `--no-check-gap-annotate` | Skip gap annotations. |
 | `--check-clip <selector>` | Check every matching container for descendant boxes or text paint leaving its rectangular clipping chain or nearest block parent. Repeatable. |
 | `--check-clip-threshold <px>` | Allowed rectangular overrun in CSS pixels. Default `0`. |
-| `--check-clip-fail` | Exit 2 when rectangular clipping fails or the selector is missing. Unsupported shapes remain `unknown`. |
+| `--check-clip-fail` | Exit 2 when rectangular clipping fails, is unknown, or the selector is missing. |
 | `--no-check-clip-annotate` | Skip clipping annotations. |
 | `--check-overlap <selector>` | Detect area intersections among measurable in-flow siblings. Repeatable. |
 | `--check-overlap-threshold <px>` | Allowed overlap depth on either axis. Default `0`. |
-| `--check-overlap-fail` | Exit 2 when an overlap target fails or is missing. |
+| `--check-overlap-fail` | Exit 2 when an overlap target fails, is unknown, or is missing. |
 | `--no-check-overlap-annotate` | Skip overlap annotations. |
 | `--check-crowd <selector>` | Flag adjacent card panels (a full border, a modest corner radius, or a box-shadow) that touch or nearly touch. Wrappers that contain panels count as peers too; separation uses the nearest face panels inside them. Walks the whole subtree, so one selector catches nested cases. Repeatable. |
 | `--check-crowd-min <px>` | Minimum acceptable edge gap between adjacent panel faces. Default `6`. Negative separation (overlap) always flags. |
-| `--check-crowd-fail` | Exit 2 when a crowd target fails or is missing. |
+| `--check-crowd-fail` | Exit 2 when a crowd target fails, is unknown, or is missing. |
 | `--no-check-crowd-annotate` | Skip crowd annotations. |
 | `--check-hit [selector]` | Check interactive target size and spacing in the document or optional scope. Repeatable. |
 | `--check-hit-profile <profile>` | `wcag-aa` uses 24px; `comfortable` uses 44px as a product-quality policy. Default `wcag-aa`. |
@@ -163,11 +163,11 @@ element lookup: every match is checked. Within that scope, the check measures
 element boxes against clipping ancestors and rendered text fragments against
 their nearest non-inline parent. That catches an unbreakable label painting out
 of a narrow card even when every element box still fits. Horizontally scrollable
-text owners are skipped because their overflow is reachable by design. Border
-radius, arbitrary `clip-path`, non-axis-aligned transforms, closed shadow roots,
-and cross-origin frame content are reported as `unknown`, not certified. Overlap
-covers sibling geometry; paint-order and sticky-layer obstruction remain
-`--check-visible` concerns.
+text owners are skipped because their overflow is reachable by design. The
+check uses the rectangular padding box for border radius. Arbitrary `clip-path`,
+non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
+are reported as `unknown`, not certified. Overlap covers sibling geometry;
+paint-order and sticky-layer obstruction remain `--check-visible` concerns.
 
 Crowd sits between overlap and gap: overlap needs a real 2D intersection and gap
 flags *uneven* spacing, so a stack of cards all sitting flush passes both. Crowd
@@ -186,9 +186,9 @@ Per-pair results carry the two face panels, `beforeKind` / `afterKind`
 
 All requested checks run before one screenshot is captured. Fail gates are
 evaluated only after JSON and screenshot evidence is complete. Missing selectors
-always fail their enabled gate. Target-size `unknown` also fails closed; other
-layout `unknown` results stay visible without making common curved containers or
-two-item groups unusable.
+and layout `unknown` results fail every enabled gate. The JSON still records the
+unknown reason so the recipe can replace an unsupported selector or supply a
+missing expectation.
 
 ### Content checks
 

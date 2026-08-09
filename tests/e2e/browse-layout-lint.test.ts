@@ -44,6 +44,9 @@ describe("browse layout lint", () => {
           { selector: ".clip-bad", tolerancePx: 0 },
           { selector: ".clip-text-case", tolerancePx: 0 },
           { selector: ".clip-text-scroll", tolerancePx: 0 },
+          { selector: ".clip-rounded-visible", tolerancePx: 0 },
+          { selector: ".clip-rounded-hidden", tolerancePx: 0 },
+          { selector: ".clip-path-unknown", tolerancePx: 0 },
         ],
         overlap: [
           { selector: ".overlap-good", tolerancePx: 0 },
@@ -62,7 +65,18 @@ describe("browse layout lint", () => {
       expect(result.align.map((entry) => entry.outcome)).toEqual(["pass", "fail"]);
       expect(result.align[1]?.clusters[0]?.children[0]?.source).toBe("svg");
       expect(result.gap.map((entry) => entry.outcome)).toEqual(["pass", "fail", "unknown"]);
-      expect(result.clip.map((entry) => entry.outcome)).toEqual(["pass", "fail", "fail", "pass"]);
+      expect(result.clip.map((entry) => entry.outcome)).toEqual([
+        "pass",
+        "fail",
+        "fail",
+        "pass",
+        "pass",
+        "pass",
+        "unknown",
+      ]);
+      expect(result.clip[4]?.unsupported).toEqual([]);
+      expect(result.clip[5]?.unsupported).toEqual([]);
+      expect(result.clip[6]?.unsupported).toContain("section.clip-path-unknown:clip-path");
       expect(result.clip[2]?.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -173,6 +187,34 @@ describe("browse layout lint", () => {
     expect(result.exitCode).toBe(2);
     expect(stdout).toContain('"snippet":"Persistence"');
     expect(stdout).toContain('"source":"text"');
+  });
+
+  test("CLI layout fail gates exit 2 when any geometry result is unknown", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--no-cookies",
+        "--profile",
+        profile(),
+        "--no-screenshot",
+        "--check-gap",
+        ".two-gap",
+        "--check-gap-fail",
+        "--check-clip",
+        ".clip-path-unknown",
+        "--check-clip-fail",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    const stderr = result.stderr.toString();
+    expect(result.exitCode).toBe(2);
+    expect(stderr).toContain("check-gap FAIL .two-gap: result unknown");
+    expect(stderr).toContain("check-clip FAIL .clip-path-unknown: result unknown");
   });
 
   test("CLI binds captureEval to the explicit full-page screenshot viewport", () => {

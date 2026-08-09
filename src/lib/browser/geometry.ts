@@ -585,14 +585,12 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           let current: Element | null = element.parentElement;
           while (current && container.contains(current)) {
             const style = getComputedStyle(current);
+            const cssClips = clippingStyle(current);
             if (style.clipPath && style.clipPath !== "none")
               unsupported.add(`${labelOf(current)}:clip-path`);
-            if (style.borderRadius && !/^0(?:px)?(?: 0(?:px)?){0,3}$/.test(style.borderRadius)) {
-              unsupported.add(`${labelOf(current)}:border-radius`);
-            }
             if (style.transform && style.transform !== "none")
               unsupported.add(`${labelOf(current)}:transform`);
-            const clips = current === container ? { x: true, y: true } : clippingStyle(current);
+            const clips = current === container ? { x: true, y: true } : cssClips;
             if (clips.x || clips.y) {
               const candidate = paddingRect(current);
               allowed = {
@@ -672,6 +670,8 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         }
       }
       if (issues.length >= ISSUE_LIMIT) truncated = true;
+      // Border radius keeps the rectangular padding-box contract; only shapes
+      // the rectangle cannot certify contribute to unsupported geometry.
       const outcome: LayoutOutcome =
         issues.length > 0 ? "fail" : unsupported.size > 0 ? "unknown" : "pass";
       return {

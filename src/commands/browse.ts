@@ -374,7 +374,10 @@ export function registerBrowseCommand(
       "Maximum rendered-center drift in CSS pixels (default 2).",
       "2",
     )
-    .option("--check-align-fail", "Exit 2 when an alignment target fails or is missing.")
+    .option(
+      "--check-align-fail",
+      "Exit 2 when an alignment target fails, is unknown, or is missing.",
+    )
     .option("--no-check-align-annotate", "Skip alignment screenshot annotations.")
     .option(
       "--check-gap <selector>",
@@ -388,7 +391,7 @@ export function registerBrowseCommand(
       "Expected gap in CSS pixels. Without it, groups of 3+ infer the median gap.",
     )
     .option("--check-gap-threshold <px>", "Maximum gap deviation in CSS pixels (default 2).", "2")
-    .option("--check-gap-fail", "Exit 2 when a gap target fails or is missing.")
+    .option("--check-gap-fail", "Exit 2 when a gap target fails, is unknown, or is missing.")
     .option("--no-check-gap-annotate", "Skip gap screenshot annotations.")
     .option(
       "--check-clip <selector>",
@@ -402,7 +405,7 @@ export function registerBrowseCommand(
       "Allowed rectangular overrun in CSS pixels (default 0).",
       "0",
     )
-    .option("--check-clip-fail", "Exit 2 when a clip target fails or is missing.")
+    .option("--check-clip-fail", "Exit 2 when a clip target fails, is unknown, or is missing.")
     .option("--no-check-clip-annotate", "Skip clip screenshot annotations.")
     .option(
       "--check-overlap <selector>",
@@ -415,7 +418,10 @@ export function registerBrowseCommand(
       "Allowed overlap depth on either axis in CSS pixels (default 0).",
       "0",
     )
-    .option("--check-overlap-fail", "Exit 2 when an overlap target fails or is missing.")
+    .option(
+      "--check-overlap-fail",
+      "Exit 2 when an overlap target fails, is unknown, or is missing.",
+    )
     .option("--no-check-overlap-annotate", "Skip overlap screenshot annotations.")
     .option(
       "--check-crowd <selector>",
@@ -435,7 +441,7 @@ export function registerBrowseCommand(
         "Pairs closer than this are flagged; negative separation (overlap) always flags.",
       "6",
     )
-    .option("--check-crowd-fail", "Exit 2 when a crowd target fails or is missing.")
+    .option("--check-crowd-fail", "Exit 2 when a crowd target fails, is unknown, or is missing.")
     .option("--no-check-crowd-annotate", "Skip crowd screenshot annotations.")
     .option(
       "--check-placeholder [selector]",
@@ -1511,12 +1517,16 @@ function applyLayoutLintFailGates(
     results: T[] | undefined,
   ): void => {
     if (!enabled || !results) return;
-    const failed = results.filter((result) => !result.found || result.outcome === "fail");
+    const failed = results.filter(
+      (result) => !result.found || result.outcome === "fail" || result.outcome === "unknown",
+    );
     for (const result of failed) {
-      emit.log(
-        `check-${rule} FAIL ${result.selector}: ${result.found ? "rendered relation failed" : "element not found"}`,
-        "warn",
-      );
+      const reason = !result.found
+        ? "element not found"
+        : result.outcome === "unknown"
+          ? "result unknown"
+          : "rendered relation failed";
+      emit.log(`check-${rule} FAIL ${result.selector}: ${reason}`, "warn");
     }
     if (failed.length > 0) process.exitCode = 2;
   };

@@ -22,6 +22,10 @@
       .clip-text-case.clip-text-bad { width: 60px; }
       .clip-text-case .text-host { width: 100%; }
       .clip-text-scroll { width: 60px; overflow-x: auto; }
+      /* Radius uses its rectangular padding box with visible or hidden overflow. */
+      .clip-rounded-visible { width: 100px; border-radius: 12px; }
+      .clip-rounded-hidden { width: 100px; border-radius: 12px; overflow: hidden; }
+      .clip-path-unknown { width: 100px; clip-path: circle(50%); }
       .overlap-good { display: flex; gap: 4px; }
       .overlap-bad { display: grid; width: 40px; height: 24px; }
       .overlap-bad > * { grid-area: 1 / 1; width: 30px; height: 20px; }
@@ -66,6 +70,9 @@
     <section class="clip-text-case"><div class="text-host">Fits</div></section>
     <section class="clip-text-case clip-text-bad"><div class="text-host">Persistence</div></section>
     <section class="clip-text-scroll">Persistence</section>
+    <section class="clip-rounded-visible"><div>Visible rounded container</div></section>
+    <section class="clip-rounded-hidden"><div>Hidden rounded container</div></section>
+    <section class="clip-path-unknown"><div>Non-rectangular clip path</div></section>
     <section class="overlap-good">
       <div class="overlap-box"></div><div class="overlap-box"></div>
     </section>
