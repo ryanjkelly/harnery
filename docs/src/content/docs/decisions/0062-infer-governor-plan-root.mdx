@@ -1,0 +1,67 @@
+---
+title: "0062: Governor plans infer their final outcome root"
+description: "ADR: infer a governor proposal's root from its dependency graph instead of asking a planner to nominate the final outcome twice."
+---
+
+**Status:** accepted (2026-08-08) · **Scope:** product tier (`core/governor` planning)
+
+## Context
+
+A governor work graph points from later work to its earlier prerequisites. Its
+root is therefore the final outcome item: traversing that item's dependencies
+must reach every other proposed item. Planner output also had to name that item
+in a separate `root` field.
+
+That extra choice was redundant and easy to reverse. In ordinary planning
+language, "root" often means the first foundation. A planner could produce the
+right ordered dependency graph, name its first item as `root`, and have the
+whole proposal rejected because later items were not reachable from that key.
+The validator was enforcing Harnery's graph correctly, but the model-facing
+representation made a valid decomposition fail.
+
+## Decision
+
+Remove `root` from the schema for model-authored `apply` proposals. Harnery now
+infers the root after validating the ordered work array:
+
+1. Dependencies still name active work or an earlier proposed key.
+2. Harnery finds proposed keys that no other proposed item depends on.
+3. The graph must have exactly one such final outcome.
+4. That outcome must use a root-capable frozen template.
+5. Traversing its proposed dependencies must reach every proposed item.
+
+The planner prompt states the dependency direction and asks for one final
+outcome that depends transitively on the rest. Reviewers receive the inferred
+root in the normalized candidate and the same meaning in their goal context.
+
+The durable `GovernorPlanProposal` remains schema version 1 and still stores
+`root`. Plan records, review receipts, digests, application, projections, and
+public readers therefore retain one canonical materialized shape. Only the
+model-authored input stops duplicating information already present in the DAG.
+
+## Alternatives considered
+
+- **Clarify the old `root` field with more prose.** Rejected because the field
+  still asks the model to encode the same relationship twice and permits the
+  two answers to disagree.
+- **Rename `root` to `final_outcome` in a new durable schema.** Rejected because
+  inference fixes the model boundary without migrating plan records, review
+  receipts, readers, and public types.
+- **Reverse dependency direction.** Rejected because immutable work already
+  uses “this item depends on these prerequisites” throughout Harnery.
+- **Repair a wrong root in a second model call.** Rejected for this failure
+  because deterministic inference is cheaper and cannot disagree with the DAG.
+  Semantic retries remain appropriate for graph defects that cannot be derived.
+- **Choose the last array item unconditionally.** Rejected because array order
+  alone does not prove that parallel branches converge on one outcome.
+
+## Result and gotchas
+
+- A prerequisite-first plan no longer fails merely because the planner calls
+  its foundation the root; the model does not author that field.
+- Multiple terminal branches still fail closed. A planner must add a bounded
+  final outcome that joins them or return attention.
+- The inferred final item must use a root-capable template. Template authority
+  remains frozen by the governor and is not widened by inference.
+- Terminal `complete` and `attention` decisions keep their existing empty
+  `root` and `work` fields. They do not carry an executable graph.

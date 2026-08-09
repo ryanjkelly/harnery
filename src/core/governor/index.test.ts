@@ -661,12 +661,14 @@ describe("durable goal governor", () => {
       if (request.prompt.includes("bounded replacement plan")) {
         expect(request.prompt).toContain("Work keys are lowercase identifiers no longer than 32");
         expect(request.prompt).toContain('"maxLength":32');
+        expect(request.prompt).toContain("Do not return proposal.root");
+        expect(request.prompt).toContain("single final outcome");
         expect(request.prompt).toContain("smallest observable end-to-end slice");
         expect(request.prompt).toContain("contracts, module boundaries, key types or call paths");
       }
       if (request.prompt.includes("Review this bounded")) {
         expect(request.prompt).toContain(
-          "proposal.root names one newly proposed work key using a root-capable template",
+          "proposal.root is inferred by Harnery as the single final outcome",
         );
         expect(request.prompt).toContain("never require proposal.root to equal active_root");
         expect(request.prompt).toContain("program-shape decisions are explicit");
@@ -724,6 +726,129 @@ describe("durable goal governor", () => {
         actor: "operator",
       }),
     ).toThrow("proposal does not match its passed review");
+  });
+
+  test("infers the proposal root from a prerequisite-first dependency graph", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "inferred-root-blocked",
+      title: "Inferred root blocked",
+      objective: "Replace this terminal approach with a multi-item plan",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createGovernor({
+      coordRoot: root,
+      id: "goal-inferred-plan-root",
+      rootWorkId: "inferred-root-blocked",
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: {
+          prerequisite: { workflowPath: passing, maxAttempts: 1 },
+          delivery: { workflowPath: passing, maxAttempts: 1, root: true },
+        },
+      },
+    });
+    const spawner: Spawner = async () => ({
+      ok: true,
+      text: JSON.stringify({
+        decision: "apply",
+        rationale: "Establish the contract, integrate it, then prove the outcome",
+        work: [
+          {
+            key: "contract",
+            title: "Freeze the contract",
+            objective: "Define the bounded interface used by the integrated behavior",
+            acceptance: ["The contract is explicit"],
+            dependencies: [],
+            template: "prerequisite",
+          },
+          {
+            key: "integrated-proof",
+            title: "Deliver the integrated proof",
+            objective: "Implement and observe the complete bounded behavior",
+            acceptance: ["The integrated behavior is observed"],
+            dependencies: ["contract"],
+            template: "delivery",
+          },
+        ],
+      }),
+      durationMs: 1,
+    });
+
+    const report = await runGovernor({
+      coordRoot: root,
+      goalId: "goal-inferred-plan-root",
+      engine: { spawners: { codex: spawner }, probeBilling },
+    });
+    const plan = readGovernorPlan(
+      root,
+      "goal-inferred-plan-root",
+      report.projection.pending_plan_id!,
+    );
+    expect(plan.status).toBe("proposed");
+    expect(plan.proposal?.root).toBe("integrated-proof");
+    expect(plan.proposal?.work[1]?.dependencies).toEqual(["contract"]);
+  });
+
+  test("refuses to guess between multiple final outcomes", async () => {
+    const { root, passing, failing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "ambiguous-root-blocked",
+      title: "Ambiguous root blocked",
+      objective: "Reject replacement graphs with no single final outcome",
+      workflowPath: failing,
+      maxAttempts: 1,
+    });
+    createGovernor({
+      coordRoot: root,
+      id: "goal-ambiguous-plan-root",
+      rootWorkId: "ambiguous-root-blocked",
+      specialists: { planner: { instructions: "Plan", adapter: "codex" } },
+      replanning: {
+        plannerSpecialist: "planner",
+        maxReplans: 1,
+        templates: { delivery: { workflowPath: passing, maxAttempts: 1, root: true } },
+      },
+    });
+    const spawner: Spawner = async () => ({
+      ok: true,
+      text: JSON.stringify({
+        decision: "apply",
+        rationale: "Return two independent outcomes",
+        work: [
+          {
+            key: "alpha",
+            title: "Alpha outcome",
+            objective: "Complete alpha",
+            acceptance: ["Alpha passes"],
+            dependencies: [],
+            template: "delivery",
+          },
+          {
+            key: "beta",
+            title: "Beta outcome",
+            objective: "Complete beta",
+            acceptance: ["Beta passes"],
+            dependencies: [],
+            template: "delivery",
+          },
+        ],
+      }),
+      durationMs: 1,
+    });
+
+    await expect(
+      runGovernor({
+        coordRoot: root,
+        goalId: "goal-ambiguous-plan-root",
+        engine: { spawners: { codex: spawner }, probeBilling },
+      }),
+    ).rejects.toThrow("plan must have exactly one final outcome; found alpha, beta");
   });
 
   test("reviewed auto-apply still requires pre-existing frozen auto_apply", async () => {
@@ -1855,7 +1980,6 @@ describe("durable goal governor", () => {
           text: JSON.stringify({
             decision: "apply",
             rationale: "Return an identifier that exceeds the frozen bound",
-            root: key,
             work: [
               {
                 key,
@@ -1970,7 +2094,6 @@ describe("durable goal governor", () => {
       text: JSON.stringify({
         decision: "apply",
         rationale: "Unsafe dependency",
-        root: "repair",
         work: [
           {
             key: "repair",
@@ -2044,7 +2167,7 @@ describe("durable goal governor", () => {
     ).toThrow("must exceed max_milestones");
   });
 
-  test("counts a supplied root as the first accepted mission milestone", async () => {
+  test("counts an inferred root as the first accepted mission milestone", async () => {
     const { root, passing } = fixture();
     createWorkItem({
       coordRoot: root,
@@ -2831,7 +2954,6 @@ function replacementProposal(
   return JSON.stringify({
     decision: "apply",
     rationale: options.rationale ?? "Replace the terminal approach with one focused recovery item",
-    root: "repair",
     work: [
       {
         key: "repair",
@@ -2884,7 +3006,6 @@ function missionMilestoneProposal(): string {
   return JSON.stringify({
     decision: "apply",
     rationale: "Start with the smallest independently verifiable milestone",
-    root: "delivery",
     milestone: {
       sequence: 1,
       title: "Verified delivery",

@@ -47,7 +47,9 @@ const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_EVENTS_BYTES = 512 * 1024;
 const MAX_REASON = 2_000;
 const PROPOSAL_ROOT_RULE =
-  "proposal.root names one newly proposed work key using a root-capable template; it does not preserve or repeat active_root, which is context only";
+  "proposal.root is inferred by Harnery as the single final outcome that no other proposed item depends on; it must use a root-capable template and depend transitively on every other proposed item; it never preserves or repeats active_root, which is context only";
+const PLANNER_ROOT_RULE =
+  "Dependencies point from later work to earlier prerequisites. Do not return proposal.root. Harnery infers it as the single final outcome that no other proposed item depends on; make that outcome use a root-capable template and depend transitively on every other proposed item.";
 
 export interface RunGovernorPlannerInput {
   coordRoot: string;
@@ -729,7 +731,7 @@ function plannerScript(
       : "Return decision=apply with a replacement immutable root graph, or decision=attention when human judgment is required.",
     "Never claim mission completion unless the frozen mission acceptance is met. Never request a workflow outside the frozen template catalog.",
     "Dependencies may name an active work ID or an earlier key in your proposed work array.",
-    `Every proposed item must be reachable from root. ${PROPOSAL_ROOT_RULE}.`,
+    PLANNER_ROOT_RULE,
     "Work keys are lowercase identifiers no longer than 32 characters. Keep titles within 200 characters, objectives within 4000 characters, and each acceptance criterion within 500 characters.",
     "When work spans system layers, prefer the smallest observable end-to-end slice that can be verified before later work begins. Avoid layer-only batches unless they have independent acceptance evidence or are necessary prerequisites.",
     "Use work objectives and acceptance criteria to make consequential design decisions explicit before implementation: contracts, module boundaries, key types or call paths, and the concrete observation that proves each slice.",
@@ -1336,12 +1338,6 @@ function planProposalSchema(
   const applyProperties: Record<string, StageSchema> = {
     decision: { type: "string", enum: ["apply"] },
     rationale,
-    root: {
-      type: "string",
-      minLength: 1,
-      maxLength: 32,
-      pattern: "^[a-z][a-z0-9-]{0,31}$",
-    },
     work: {
       type: "array",
       minItems: 1,
@@ -1349,7 +1345,7 @@ function planProposalSchema(
       items: workItem,
     },
   };
-  const applyRequired = ["decision", "rationale", "root", "work"];
+  const applyRequired = ["decision", "rationale", "work"];
   if (record.intent.mission) {
     applyProperties.milestone = milestone;
     applyRequired.push("milestone");
@@ -1395,10 +1391,10 @@ function normalizeProposal(
   const proposedAt = preservedProposedAt ?? new Date().toISOString();
   const decision = enumValue(value.decision, ["apply", "complete", "attention"], "plan decision");
   const rationale = bounded(value.rationale, "plan rationale", MAX_REASON);
-  const root = typeof value.root === "string" ? value.root.trim() : "";
+  const terminalRoot = typeof value.root === "string" ? value.root.trim() : "";
   if (!Array.isArray(value.work)) throw new Error("plan work must be an array");
   if (decision === "attention" || decision === "complete") {
-    if (root || value.work.length > 0 || value.milestone !== undefined) {
+    if (terminalRoot || value.work.length > 0 || value.milestone !== undefined) {
       throw new Error(`${decision} plan must not contain work or milestone data`);
     }
     if (decision === "complete" && (!record.intent.mission || trigger !== "milestone")) {
@@ -1478,7 +1474,16 @@ function normalizeProposal(
       template,
     };
   });
-  if (!seen.has(root)) throw new Error(`plan root ${root || "(empty)"} is not a proposed key`);
+  const dependedOn = new Set(
+    work.flatMap((item) => item.dependencies.filter((dependency) => seen.has(dependency))),
+  );
+  const terminalOutcomes = work.filter((item) => !dependedOn.has(item.key));
+  if (terminalOutcomes.length !== 1) {
+    throw new Error(
+      `plan must have exactly one final outcome; found ${terminalOutcomes.map((item) => item.key).join(", ")}`,
+    );
+  }
+  const root = terminalOutcomes[0]!.key;
   const rootSpec = work.find((item) => item.key === root);
   if (!rootSpec || !policy.templates[rootSpec.template]?.root) {
     throw new Error(`plan root ${root} must use a root-capable template`);
