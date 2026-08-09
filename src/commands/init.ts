@@ -36,6 +36,7 @@ import {
   applyInstructions,
   checkInstructions,
 } from "../lib/instructions/apply.ts";
+import { applyGitHooks, checkGitHooks } from "../lib/instructions/git-hooks.ts";
 import { HostAddendumError } from "../lib/instructions/host-addendum.ts";
 
 // This file is src/commands/init.ts → harnery package root is two levels up.
@@ -81,15 +82,19 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       // ── --check: read-only drift report on the block + skills ──────────────
       if (opts.check === true) {
         const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
+        const gitHooks = checkGitHooks(projectRoot);
+        if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
+        const merged =
+          status === "error" ? "error" : gitHooks.status !== "fresh" ? "drift" : status;
         const head =
-          status === "fresh"
-            ? "harn init --check: instructions + skills are current"
-            : status === "drift"
+          merged === "fresh"
+            ? "harn init --check: instructions + skills + git hooks are current"
+            : merged === "drift"
               ? "harn init --check: drift found (re-run `init` to refresh)"
               : "harn init --check: error";
         const lines = issues.length ? `\n${issues.map((i) => `  ✗ ${i}`).join("\n")}` : "";
         emit.text(`${head}${lines}`);
-        emit.setExitCode(status === "fresh" ? 0 : status === "drift" ? 2 : 1);
+        emit.setExitCode(merged === "fresh" ? 0 : merged === "drift" ? 2 : 1);
         return;
       }
 
@@ -186,7 +191,14 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       }
       actions.push(...applied.actions);
 
-      emit.text(render(projectRoot, dryRun, actions, applied.warnings));
+      // ── 4. git-hook managed regions ────────────────────────────────────────
+      // Same lifecycle contract as the instructions block: the coordination
+      // content of the consumer's git hooks is machine-owned and versioned;
+      // everything else in those files belongs to the host.
+      const gitHooks = applyGitHooks(projectRoot, { dryRun });
+      actions.push(...gitHooks.actions);
+
+      emit.text(render(projectRoot, dryRun, actions, [...applied.warnings, ...gitHooks.warnings]));
     });
 }
 

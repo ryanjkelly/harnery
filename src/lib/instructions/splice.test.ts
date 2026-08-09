@@ -159,3 +159,40 @@ describe("shortHash", () => {
     expect(shortHash("abc")).toBe(h);
   });
 });
+
+describe("hash comment style (shell files)", () => {
+  test("splice, check, remove round-trip in a bash file", () => {
+    const body = 'echo "coord"';
+    const start = "#!/bin/bash\nset -uo pipefail\n\necho host-check\n";
+    const spliced = spliceRegion(start, "git-hook-pre-commit", body, "hash");
+    expect(spliced.changed).toBe(true);
+    expect(spliced.text).toContain("# harnery:begin git-hook-pre-commit v=");
+    expect(spliced.text).toContain("# harnery:end git-hook-pre-commit");
+    expect(spliced.text).toContain("echo host-check"); // host content untouched
+
+    expect(checkRegion(spliced.text, "git-hook-pre-commit", body, "hash")).toBe("fresh");
+    expect(checkRegion(spliced.text, "git-hook-pre-commit", 'echo "new"', "hash")).toBe("stale");
+
+    // idempotent
+    const again = spliceRegion(spliced.text, "git-hook-pre-commit", body, "hash");
+    expect(again.changed).toBe(false);
+    expect(again.had).toBe(true);
+
+    // refresh replaces in place
+    const refreshed = spliceRegion(spliced.text, "git-hook-pre-commit", 'echo "v2"', "hash");
+    expect(refreshed.text).toContain('echo "v2"');
+    expect(refreshed.text).not.toContain('echo "coord"');
+
+    const removed = removeRegion(refreshed.text, "git-hook-pre-commit", "hash");
+    expect(removed.removed).toBe(true);
+    expect(removed.text).toContain("echo host-check");
+    expect(removed.text).not.toContain("harnery:begin");
+  });
+
+  test("html markers do not match hash-style lookups and vice versa", () => {
+    const html = spliceRegion("", "r1", "body", "html").text;
+    expect(checkRegion(html, "r1", "body", "hash")).toBe("missing");
+    const hash = spliceRegion("", "r1", "body", "hash").text;
+    expect(checkRegion(hash, "r1", "body", "html")).toBe("missing");
+  });
+});

@@ -36,6 +36,7 @@ import { DEFAULT_BIN_NAME } from "../core/config.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
 import type { SettingsFile } from "../core/hooks/adapter/wiring.ts";
 import { removeInstructions } from "../lib/instructions/apply.ts";
+import { removeGitHooks } from "../lib/instructions/git-hooks.ts";
 import { unwireHooks } from "./init.ts";
 
 interface DeinitOpts {
@@ -138,6 +139,10 @@ export function registerDeinitCommand(program: Command, emit: EmitContext, binNa
       // ── 1b. agent-facing instructions block + skills ───────────────────────
       const removed = removeInstructions(projectRoot, { adapter, dryRun });
       actions.push(...removed.actions, ...removed.warnings.map((w) => `! ${w}`));
+
+      // ── 1c. git-hook managed regions ───────────────────────────────────────
+      const gitHooks = removeGitHooks(projectRoot, { dryRun });
+      actions.push(...gitHooks.actions, ...gitHooks.warnings.map((w) => `! ${w}`));
 
       // ── 2. coord root (opt-in; destructive) ────────────────────────────────
       if (purgeState) {

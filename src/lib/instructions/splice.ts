@@ -32,17 +32,33 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Marker comment style. Markdown/HTML files wrap markers in HTML comments;
+ * shell files (git hooks) use `#` line comments. The style only changes the
+ * marker syntax — hashing, splice, remove, and check semantics are identical.
+ */
+export type CommentStyle = "html" | "hash";
+
+function markerPair(style: CommentStyle): { open: string; close: string } {
+  return style === "hash" ? { open: "#", close: "" } : { open: "<!--", close: "-->" };
+}
+
 /** Capture regex for a named managed region: begin-marker, body, end-marker. */
-function regionRe(region: string): RegExp {
+function regionRe(region: string, style: CommentStyle = "html"): RegExp {
   const r = escapeRe(region);
+  const { open, close } = markerPair(style);
+  const o = escapeRe(open);
+  const c = close ? `\\s*${escapeRe(close)}` : "";
   return new RegExp(
-    `(<!--\\s*harnery:begin ${r}(?:\\s+v=([0-9a-f]*))?\\s*-->)([\\s\\S]*?)(<!--\\s*harnery:end ${r}\\s*-->)`,
+    `(${o}\\s*harnery:begin ${r}(?:\\s+v=([0-9a-f]*))?${c ? c : "[ \\t]*"})([\\s\\S]*?)(${o}\\s*harnery:end ${r}${c ? c : "[ \\t]*"})`,
   );
 }
 
 /** Canonical region block: begin-marker, body flanked by newlines, end-marker. */
-export function regionBlock(region: string, body: string): string {
-  return `<!-- harnery:begin ${region} v=${shortHash(body)} -->\n${body}\n<!-- harnery:end ${region} -->`;
+export function regionBlock(region: string, body: string, style: CommentStyle = "html"): string {
+  const { open, close } = markerPair(style);
+  const tail = close ? ` ${close}` : "";
+  return `${open} harnery:begin ${region} v=${shortHash(body)}${tail}\n${body}\n${open} harnery:end ${region}${tail}`;
 }
 
 export type ManagedStatus = "fresh" | "stale" | "missing";
@@ -63,10 +79,15 @@ export interface SpliceResult {
  * absent, the block is appended after existing content (blank-line separated);
  * an empty/whitespace-only `content` becomes just the block.
  */
-export function spliceRegion(content: string, region: string, body: string): SpliceResult {
-  const re = regionRe(region);
+export function spliceRegion(
+  content: string,
+  region: string,
+  body: string,
+  style: CommentStyle = "html",
+): SpliceResult {
+  const re = regionRe(region, style);
   const m = content.match(re);
-  const fresh = regionBlock(region, body);
+  const fresh = regionBlock(region, body, style);
   if (m) {
     const stale = m[2] !== shortHash(body) || m[3] !== `\n${body}\n`;
     // Replacer fn avoids `$`-in-body being read as a capture reference.
@@ -84,8 +105,12 @@ export function spliceRegion(content: string, region: string, body: string): Spl
  * was the file's only content, the result is the empty string — the caller
  * decides whether to delete the file.
  */
-export function removeRegion(content: string, region: string): { text: string; removed: boolean } {
-  const re = regionRe(region);
+export function removeRegion(
+  content: string,
+  region: string,
+  style: CommentStyle = "html",
+): { text: string; removed: boolean } {
+  const re = regionRe(region, style);
   if (!re.test(content)) return { text: content, removed: false };
   const stripped = content
     .replace(re, "")
@@ -96,8 +121,13 @@ export function removeRegion(content: string, region: string): { text: string; r
 }
 
 /** Region freshness: missing, stale (hash or body drifted), or fresh. */
-export function checkRegion(content: string, region: string, body: string): ManagedStatus {
-  const m = content.match(regionRe(region));
+export function checkRegion(
+  content: string,
+  region: string,
+  body: string,
+  style: CommentStyle = "html",
+): ManagedStatus {
+  const m = content.match(regionRe(region, style));
   if (!m) return "missing";
   return m[2] === shortHash(body) && m[3] === `\n${body}\n` ? "fresh" : "stale";
 }

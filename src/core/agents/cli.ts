@@ -880,6 +880,100 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * `agent-coord git-hook <event> [args]` — the single entry a host git hook
+ * invokes. Owns ALL of the coordination git plumbing that hosts used to carry
+ * as bash (staged/committed/checkout-removed collection, submodule
+ * canonicalization, gitlink probe, verdict, claim pruning), so a harnery
+ * upgrade upgrades hook behavior with no change to the host's hook file.
+ *
+ * Events: pre-commit (E-guard verdict; exit 1 blocks the commit),
+ * post-commit (prune committed paths' claims), post-checkout <old> <new>
+ * (release claims on paths the ref move rewrote).
+ *
+ * Fail-open by design: an internal error never blocks a commit (parity with
+ * the bash era, where a crashed verdict read as empty and the hook moved on).
+ * A clean conflict verdict still blocks.
+ */
+async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<number> {
+  const event = rest[0];
+  if (process.env.HARNERY_AGENT_COORD_OFF === "1") return 0;
+  const cwd = process.cwd();
+
+  try {
+    const gh = await import("./git-hook.ts");
+    // Pin the coord root to the superproject: a submodule cwd may carry its
+    // own config-only .harnery that the generic root walk would land on.
+    const root = gh.discoverCoordRoot(cwd) ?? fallbackRoot;
+
+    if (event === "pre-commit") {
+      const { staged, gitlinks } = gh.collectStaged(cwd);
+      if (staged.length === 0) return 0;
+      const { evaluateCommit } = await import("./rules/commit-conflict.ts");
+      const result = evaluateCommit(root, {
+        staged_paths: staged,
+        staged_gitlinks: gitlinks,
+        bypass: process.env.HARNERY_AGENT_COORD_BYPASS === "1",
+      });
+      // Forensics channel shared with the stdin `verdict` path.
+      try {
+        const logPath = join(root, ".harnery", "debug", "agent-coord-verdict.ndjson");
+        await mkdir(dirname(logPath), { recursive: true });
+        await appendFile(
+          logPath,
+          `${JSON.stringify({ ts: new Date().toISOString(), via: "git-hook", staged, verdict: result })}\n`,
+        );
+      } catch {
+        /* diagnostics never break a verdict */
+      }
+      if (result.rule !== "commit.pass") {
+        if (result.message) process.stdout.write(`\n${result.message}\n\n`);
+        for (const c of result.conflicts) {
+          process.stdout.write(`    ${c.staged_path}  (held by ${c.short_name})\n`);
+        }
+        process.stdout.write("\n");
+      }
+      if (!result.allow) {
+        process.stdout.write(
+          "  Wait for them to finish, split the commit, or set\n" +
+            "  HARNERY_AGENT_COORD_BYPASS=1 to force this commit through.\n\n",
+        );
+        return result.exit_code || 1;
+      }
+      return 0;
+    }
+
+    if (event === "post-commit" || event === "post-checkout") {
+      const paths =
+        event === "post-commit"
+          ? gh.collectCommitted(cwd)
+          : gh.collectCheckoutRemoved(cwd, rest[1] ?? "", rest[2] ?? "");
+      if (paths.length === 0) return 0;
+      const { resolveOwner } = await import("../hooks/resolve/owner.ts");
+      const owner = resolveOwner({ payload: null, coordRoot: root })?.instance_id;
+      if (!owner) return 0;
+      const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
+      const reason = event === "post-commit" ? ("commit" as const) : ("checkout" as const);
+      for (const path of paths) {
+        try {
+          for (const hit of groupUnclaim(root, owner, path)) {
+            await emitClaimRelease(root, hit.instance_id, hit, path, reason);
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
+      return 0;
+    }
+
+    process.stderr.write(`agent-coord git-hook: unknown event ${event ?? "(none)"}\n`);
+    return 0;
+  } catch {
+    // Fail open: coordination must never brick git.
+    return 0;
+  }
+}
+
 async function main(): Promise<number> {
   const [subcommand, ...rest] = process.argv.slice(2);
   const root = findCoordRoot(process.cwd());
@@ -954,6 +1048,10 @@ async function main(): Promise<number> {
 
   if (subcommand === "shell-mutation-claim-log") {
     return handleShellMutationClaimLog(root, rest);
+  }
+
+  if (subcommand === "git-hook") {
+    return handleGitHook(root, rest);
   }
 
   if (subcommand === "post-commit") {
