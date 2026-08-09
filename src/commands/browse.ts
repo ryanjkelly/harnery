@@ -34,6 +34,10 @@ import {
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
 import {
+  type BrowserSessionServer,
+  startBrowserSessionServer,
+} from "../lib/browser/session-control.ts";
+import {
   type DiffResult,
   diffAgainstBaseline,
   type SaveBaselineResult,
@@ -85,6 +89,7 @@ interface BrowseOpts {
   networkHar?: string;
   login?: boolean;
   loginCloseFile?: string;
+  controlFile?: string;
   headed?: boolean;
   browserArg?: string[];
   proxyFromEnv?: boolean;
@@ -244,6 +249,10 @@ export function registerBrowseCommand(
     .option(
       "--login-close-file <path>",
       "With --login, wait for this file instead of terminal Enter, then remove it and close cleanly",
+    )
+    .option(
+      "--control-file <path>",
+      "With --login, publish an owner-only descriptor for repeated browse-session control",
     )
     .option("--headed", "Headed mode for one-off (no auth-flow framing)")
     .option(
@@ -639,6 +648,9 @@ async function runBrowse(
   if (opts.loginCloseFile && !opts.login) {
     throw new Error("--login-close-file requires --login.");
   }
+  if (opts.controlFile && !opts.login) {
+    throw new Error("--control-file requires --login.");
+  }
   const loginCloseFile = opts.loginCloseFile ? resolve(opts.loginCloseFile) : null;
   if (loginCloseFile && existsSync(loginCloseFile)) {
     throw new Error(
@@ -661,6 +673,18 @@ async function runBrowse(
 
   // Print mode: --snapshot / --html / --json all suppress file writes.
   const printMode = opts.snapshot || opts.html || opts.json;
+  let controlServer: BrowserSessionServer | null = null;
+  let receivedSignal: NodeJS.Signals | null = null;
+  let resolveSignal: (() => void) | null = null;
+  const signalPromise = new Promise<void>((resolveSignalPromise) => {
+    resolveSignal = resolveSignalPromise;
+  });
+  const handleSignal = (signal: NodeJS.Signals) => {
+    receivedSignal = signal;
+    resolveSignal?.();
+  };
+  const handleSigint = () => handleSignal("SIGINT");
+  const handleSigterm = () => handleSignal("SIGTERM");
 
   try {
     await browser.open();
@@ -853,22 +877,35 @@ async function runBrowse(
       await browser.annotateContent(contentBoxes);
     }
 
+    if (opts.controlFile) {
+      controlServer = await startBrowserSessionServer(opts.controlFile, browser);
+      process.once("SIGINT", handleSigint);
+      process.once("SIGTERM", handleSigterm);
+      emit.log(`browser session ready: ${controlServer.descriptorPath}`, "info");
+    }
+
     if (opts.login) {
+      const lifecycleAbort = new AbortController();
+      const closeWaits: Promise<void>[] = [];
       if (loginCloseFile) {
         emit.log(
           `[--login] Headed Chromium is open. Drive the visible window now. Create ${loginCloseFile} to close cleanly.`,
           "info",
         );
-        await waitForLoginCloseFile(loginCloseFile);
+        closeWaits.push(waitForLoginCloseFile(loginCloseFile, lifecycleAbort.signal));
       } else {
-        await new Promise<void>((res) => {
-          emit.log(
-            "[--login] Headed Chromium is open. Walk through your auth flow now. Press Enter here to close + persist cookies into the profile.",
-            "info",
-          );
-          process.stdin.once("data", () => res());
-        });
+        emit.log(
+          "[--login] Headed Chromium is open. Walk through your auth flow now. Press Enter here to close + persist cookies into the profile.",
+          "info",
+        );
+        closeWaits.push(waitForTerminalEnter(lifecycleAbort.signal));
       }
+      if (controlServer) {
+        closeWaits.push(controlServer.closeRequested, signalPromise);
+      }
+      await Promise.race(closeWaits);
+      lifecycleAbort.abort();
+      if (controlServer) await controlServer.stopAccepting();
     }
 
     if (opts.exportCookies) {
@@ -1040,7 +1077,11 @@ async function runBrowse(
       if (failed.length > 0) process.exitCode = 2;
     }
   } finally {
+    process.removeListener("SIGINT", handleSigint);
+    process.removeListener("SIGTERM", handleSigterm);
+    await controlServer?.cleanup();
     await browser.close();
+    if (receivedSignal) process.exitCode = receivedSignal === "SIGINT" ? 130 : 143;
   }
 }
 
@@ -1868,11 +1909,31 @@ async function verifyBrowserProxyGate(
   emit.log(`browser proxy gate: ${observedIp} · expected IP confirmed`, "info");
 }
 
-async function waitForLoginCloseFile(path: string): Promise<void> {
-  while (!existsSync(path)) {
+async function waitForLoginCloseFile(path: string, signal?: AbortSignal): Promise<void> {
+  while (!existsSync(path) && !signal?.aborted) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  if (signal?.aborted) return;
   unlinkSync(path);
+}
+
+async function waitForTerminalEnter(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolveWait) => {
+    const onData = () => {
+      cleanup();
+      resolveWait();
+    };
+    const onAbort = () => {
+      cleanup();
+      resolveWait();
+    };
+    const cleanup = () => {
+      process.stdin.removeListener("data", onData);
+      signal.removeEventListener("abort", onAbort);
+    };
+    process.stdin.once("data", onData);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function parseViewport(spec: string): { width: number; height: number } {

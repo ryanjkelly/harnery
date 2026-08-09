@@ -1,0 +1,123 @@
+---
+title: harn browse-session
+description: Repeated, owner-only control of an opted-in headed harn browse session.
+sidebar:
+  order: 25
+---
+
+```
+harn browse-session <command> --control-file <path>
+```
+
+`browse-session` controls the original Playwright context of a visible
+[`harn browse --login`](/cli/browse/) process. Use it when the operator needs
+the visible window for a human challenge while an agent handles inspection and
+routine browser actions. WSLg is one example: Chromium can paint normally even
+when the Windows RemoteApp handle cannot be activated or captured reliably.
+
+The launch is explicit:
+
+```bash
+install -d -m 700 ~/.cache/harnery/live-session
+harn browse https://example.com/login \
+  --login \
+  --control-file ~/.cache/harnery/live-session/control.json
+```
+
+The browse process publishes the descriptor only after Chromium opens, the
+configured proxy gate passes, and the requested page loads. It prints the
+descriptor path but never its token or contents.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `status` | Report readiness, active tab, tab count, and page-state revision. |
+| `inspect` | Return sanitized visible text, controls, focus, title, URL, and revision. |
+| `screenshot --out <path>` | Write a new owner-only full-page PNG. |
+| `tabs` | List stable session-local tab indexes, titles, URLs, and active state. |
+| `select-tab --index <n>` | Bring an existing controlled tab to the front. |
+| `open-tab <url>` | Open a tab in the existing context. |
+| `close-tab --index <n>` | Close a tab. The final tab cannot be closed. |
+| `goto <url>` | Navigate the active tab. |
+| `reload` | Reload the active tab. |
+| `click <locator>` | Click one strict locator. |
+| `fill <locator>` | Fill one strict locator from standard input. |
+| `press <key>` | Send a Playwright key such as `Enter` or `Shift+Tab`. |
+| `wait <locator>` | Wait for one strict visible locator. |
+| `close` | Request normal browse finalization and cleanup. |
+
+Every command requires `--control-file <path>`. Commands emit structured data,
+so a host CLI can route the result through its normal JSON or table output.
+
+## Locators
+
+`click`, `fill`, and `wait` require exactly one locator. `inspect` accepts one
+when you want to scope its visible text.
+
+| Locator | Flags |
+| --- | --- |
+| CSS | `--selector <css>` |
+| Accessible role | `--role <role> [--name <name>]` |
+| Label | `--label <text>` |
+| Visible text | `--text <text>` |
+
+Role names, labels, and visible text match exactly by default. Add `--partial`
+to opt into partial matching. CSS does not accept `--partial`. Harnery counts
+matches immediately before every action and returns `locator_ambiguous` instead
+of choosing the first element.
+
+```bash
+harn browse-session click \
+  --control-file ~/.cache/harnery/live-session/control.json \
+  --role button \
+  --name Continue
+```
+
+## Fill from standard input
+
+Fill values never belong in arguments, JSON flags, the descriptor, or output.
+Pipe the value to `fill`; Harnery reads standard input once, removes one trailing
+pipeline newline, and caps the value at 64 KiB.
+
+```bash
+secret-producing-command |
+  harn browse-session fill \
+    --control-file ~/.cache/harnery/live-session/control.json \
+    --label Password
+```
+
+The response reports only the new page-state revision. Inspection reports
+`has_value: true` for a filled control without returning the value.
+
+## Inspection and screenshots
+
+Inspection returns visible body text, a compact list of visible links and
+controls, current focus, and the active tab. It does not return cookies,
+request headers, local or session storage, hidden inputs, or form values. Link
+catalog entries omit credentials, query strings, and fragments. Visible text is
+capped at 256 KiB, and the response says when truncation occurred.
+
+Screenshots are not sent over the socket. `screenshot --out` writes a new PNG
+with mode `0600` and returns its path and pixel dimensions. The parent directory
+must already exist, and Harnery refuses to overwrite an existing output file.
+
+## Security and lifecycle
+
+On POSIX, the descriptor directory must be owned by the current user and have
+no group or world access. The descriptor and Unix socket use mode `0600`. On
+Windows, Harnery uses a random local named pipe. Both transports require the
+descriptor's random 256-bit token. No TCP, HTTP, WebSocket, Chrome DevTools
+Protocol, personal-browser attachment, or arbitrary page evaluation is exposed.
+
+Requests use newline-delimited JSON with a 1 MiB frame limit. Harnery validates
+them at the server boundary, runs one action at a time, and resolves fresh tab
+and DOM state before acting. A wrong token, malformed request, dropped client,
+timeout, or Playwright error does not close the browser.
+
+The operator can use the visible tab at any time. The next command observes the
+current Playwright state rather than cached DOM nodes or screenshots. Close the
+session with `browse-session close`, the launch's `--login-close-file`, or
+terminal Enter. SIGINT and SIGTERM use the same cleanup path. Harnery stops new
+requests, finalizes the normal browse and cookie work, closes the context, and
+removes the descriptor and transport endpoint.

@@ -8,6 +8,13 @@ export {
 export {
   Browser,
   type BrowserOptions,
+  BrowserSessionActionError,
+  type BrowserSessionControl,
+  type BrowserSessionInspection,
+  type BrowserSessionLocator,
+  type BrowserSessionScreenshot,
+  type BrowserSessionStatus,
+  type BrowserSessionTab,
   type ConsoleEvent,
   type Diagnostics,
   type FailedRequest,

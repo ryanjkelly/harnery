@@ -1,11 +1,12 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import axe from "axe-core";
 import {
   type BrowserContext,
   type ConsoleMessage,
   chromium,
+  type Locator,
   type Page,
   type Cookie as PWCookie,
   type Request,
@@ -156,6 +157,62 @@ export interface Diagnostics {
   viewport: { width: number; height: number } | null;
 }
 
+export type BrowserSessionLocator =
+  | { kind: "selector"; value: string; partial: boolean }
+  | { kind: "role"; value: string; name?: string; partial: boolean }
+  | { kind: "label"; value: string; partial: boolean }
+  | { kind: "text"; value: string; partial: boolean };
+
+export interface BrowserSessionStatus {
+  phase: "ready";
+  active_tab: number;
+  tab_count: number;
+  revision: number;
+}
+
+export interface BrowserSessionTab {
+  index: number;
+  title: string;
+  url: string;
+  active: boolean;
+  revision: number;
+}
+
+export interface BrowserSessionControl {
+  kind: string;
+  name: string;
+  attributes: Record<string, string | boolean>;
+  has_value?: boolean;
+}
+
+export interface BrowserSessionInspection {
+  active_tab: number;
+  url: string;
+  title: string;
+  text: string;
+  controls: BrowserSessionControl[];
+  focus: BrowserSessionControl | null;
+  revision: number;
+  truncated: boolean;
+}
+
+export interface BrowserSessionScreenshot {
+  path: string;
+  width: number;
+  height: number;
+  revision: number;
+}
+
+export class BrowserSessionActionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrowserSessionActionError";
+  }
+}
+
 const DEFAULT_PROFILE = resolve(homedir(), ".cache", "harnery", "browser-profile");
 
 // Bound how many Chromium processes SPAWN at the same moment. When many Browser
@@ -193,6 +250,11 @@ function releaseLaunchSlot(): void {
 export class Browser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private pageIndexes = new Map<Page, number>();
+  private pageRecency = new Map<Page, number>();
+  private nextPageIndex = 0;
+  private recencyClock = 0;
+  private sessionRevision = 0;
   readonly profileDir: string;
   private consoleEvents: ConsoleEvent[] = [];
   private pageErrors: PageErrorEvent[] = [];
@@ -204,6 +266,7 @@ export class Browser {
 
   /** Lazy: caller-side helper to find the active page if mid-flow. */
   get currentPage(): Page {
+    if (!this.page || this.page.isClosed()) this.selectMostRecentPage();
     if (!this.page) {
       throw new Error("Browser not opened. Call open() first.");
     }
@@ -256,8 +319,9 @@ export class Browser {
     }
 
     const pages = this.context.pages();
-    this.page = pages[0] ?? (await this.context.newPage());
-    this.attachDiagnosticListeners(this.page);
+    const firstPage = pages[0] ?? (await this.context.newPage());
+    for (const page of this.context.pages()) this.trackPage(page, page === firstPage);
+    this.context.on("page", (page) => this.trackPage(page, true));
   }
 
   /**
@@ -295,6 +359,10 @@ export class Browser {
         }
         this.context = null;
         this.page = null;
+        this.pageIndexes.clear();
+        this.pageRecency.clear();
+        this.nextPageIndex = 0;
+        this.recencyClock = 0;
         this.consoleEvents = [];
         this.pageErrors = [];
         this.failedRequests = [];
@@ -352,6 +420,31 @@ export class Browser {
         document: req.resourceType() === "document" && res.frame() === page.mainFrame(),
       });
     });
+  }
+
+  private trackPage(page: Page, makeActive: boolean): void {
+    if (!this.pageIndexes.has(page)) {
+      this.pageIndexes.set(page, this.nextPageIndex++);
+      this.attachDiagnosticListeners(page);
+      page.once("close", () => {
+        this.pageRecency.delete(page);
+        if (this.page === page) this.selectMostRecentPage();
+      });
+    }
+    if (makeActive) this.setActivePage(page);
+  }
+
+  private setActivePage(page: Page): void {
+    if (page.isClosed()) return;
+    this.page = page;
+    this.pageRecency.set(page, ++this.recencyClock);
+  }
+
+  private selectMostRecentPage(): void {
+    const surviving = [...this.pageIndexes.keys()].filter((page) => !page.isClosed());
+    surviving.sort((a, b) => (this.pageRecency.get(b) ?? 0) - (this.pageRecency.get(a) ?? 0));
+    this.page = surviving[0] ?? null;
+    if (this.page) this.pageRecency.set(this.page, ++this.recencyClock);
   }
 
   /**
@@ -664,6 +757,335 @@ export class Browser {
     });
   }
 
+  async sessionStatus(): Promise<BrowserSessionStatus> {
+    const tabs = await this.sessionTabs();
+    const active = tabs.find((tab) => tab.active);
+    if (!active) throw new BrowserSessionActionError("no_active_tab", "No active browser tab.");
+    return {
+      phase: "ready",
+      active_tab: active.index,
+      tab_count: tabs.length,
+      revision: this.sessionRevision,
+    };
+  }
+
+  async sessionTabs(): Promise<BrowserSessionTab[]> {
+    this.selectMostRecentPageIfNeeded();
+    const pages = [...this.pageIndexes.entries()]
+      .filter(([page]) => !page.isClosed())
+      .sort((a, b) => a[1] - b[1]);
+    return await Promise.all(
+      pages.map(async ([page, index]) => ({
+        index,
+        title: await page.title().catch(() => ""),
+        url: page.url(),
+        active: page === this.page,
+        revision: this.sessionRevision,
+      })),
+    );
+  }
+
+  async sessionSelectTab(index: number): Promise<BrowserSessionTab> {
+    const page = this.pageForIndex(index);
+    await page.bringToFront();
+    this.setActivePage(page);
+    this.sessionRevision++;
+    return this.describeTab(page);
+  }
+
+  async sessionOpenTab(url: string): Promise<BrowserSessionTab> {
+    if (!this.context) throw new BrowserSessionActionError("not_ready", "Browser is not open.");
+    const previous = this.page;
+    const page = await this.context.newPage();
+    this.trackPage(page, true);
+    try {
+      await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
+      this.sessionRevision++;
+      return await this.describeTab(page);
+    } catch (error) {
+      await page.close().catch(() => {});
+      if (previous && !previous.isClosed()) this.setActivePage(previous);
+      throw error;
+    }
+  }
+
+  async sessionCloseTab(index: number): Promise<BrowserSessionTab> {
+    const surviving = [...this.pageIndexes.keys()].filter((page) => !page.isClosed());
+    if (surviving.length <= 1) {
+      throw new BrowserSessionActionError("final_tab", "The final browser tab cannot be closed.");
+    }
+    const page = this.pageForIndex(index);
+    await page.close();
+    this.selectMostRecentPageIfNeeded();
+    this.sessionRevision++;
+    return this.describeTab(this.currentPage);
+  }
+
+  async sessionGoto(url: string): Promise<BrowserSessionTab> {
+    const page = this.currentPage;
+    await page.goto(url, { waitUntil: this.opts.waitUntil ?? "load" });
+    this.sessionRevision++;
+    return this.describeTab(page);
+  }
+
+  async sessionReload(): Promise<BrowserSessionTab> {
+    const page = this.currentPage;
+    await page.reload({ waitUntil: this.opts.waitUntil ?? "load" });
+    this.sessionRevision++;
+    return this.describeTab(page);
+  }
+
+  async sessionClick(locator: BrowserSessionLocator): Promise<{ revision: number }> {
+    const target = await this.strictSessionLocator(locator);
+    await target.click();
+    this.sessionRevision++;
+    return { revision: this.sessionRevision };
+  }
+
+  async sessionFill(locator: BrowserSessionLocator, value: string): Promise<{ revision: number }> {
+    const target = await this.strictSessionLocator(locator);
+    await target.fill(value);
+    this.sessionRevision++;
+    return { revision: this.sessionRevision };
+  }
+
+  async sessionPress(key: string): Promise<{ revision: number }> {
+    await this.currentPage.keyboard.press(key);
+    this.sessionRevision++;
+    return { revision: this.sessionRevision };
+  }
+
+  async sessionWait(locator: BrowserSessionLocator): Promise<{ revision: number }> {
+    const target = this.sessionLocator(locator);
+    await target.first().waitFor({ state: "visible" });
+    await this.requireStrictLocator(target);
+    this.sessionRevision++;
+    return { revision: this.sessionRevision };
+  }
+
+  async sessionInspect(locator?: BrowserSessionLocator): Promise<BrowserSessionInspection> {
+    const page = this.currentPage;
+    const tabIndex = this.pageIndexes.get(page);
+    if (tabIndex === undefined) {
+      throw new BrowserSessionActionError("no_active_tab", "No active browser tab.");
+    }
+    const rawText = locator
+      ? await (await this.strictSessionLocator(locator)).innerText()
+      : await page.locator("body").innerText();
+    const textResult = truncateUtf8(rawText, 256 * 1024);
+    const observed = await page.evaluate(() => {
+      const visible = (element: Element): boolean => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity) > 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const named = (element: Element): string => {
+        const aria = element.getAttribute("aria-label")?.trim();
+        if (aria) return aria;
+        const labelledBy = element.getAttribute("aria-labelledby");
+        if (labelledBy) {
+          const text = labelledBy
+            .split(/\s+/)
+            .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+            .filter(Boolean)
+            .join(" ");
+          if (text) return text;
+        }
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+          const label = element.labels?.[0]?.textContent?.trim();
+          if (label) return label;
+          return element.placeholder?.trim() ?? "";
+        }
+        if (element instanceof HTMLSelectElement) {
+          return element.labels?.[0]?.textContent?.trim() ?? "";
+        }
+        return element.textContent?.replace(/\s+/g, " ").trim().slice(0, 200) ?? "";
+      };
+      const describe = (element: Element): BrowserSessionControl => {
+        const tag = element.tagName.toLowerCase();
+        const role = element.getAttribute("role")?.trim();
+        let kind = role || tag;
+        if (element instanceof HTMLAnchorElement) kind = "link";
+        if (element instanceof HTMLButtonElement) kind = "button";
+        const attributes: Record<string, string | boolean> = {};
+        const type = element.getAttribute("type")?.trim();
+        if (type) attributes.type = type;
+        const name = element.getAttribute("name")?.trim();
+        if (name) attributes.name = name;
+        const autocomplete = element.getAttribute("autocomplete")?.trim();
+        if (autocomplete) attributes.autocomplete = autocomplete;
+        if (element instanceof HTMLAnchorElement && element.href) {
+          try {
+            const href = new URL(element.href);
+            href.username = "";
+            href.password = "";
+            href.search = "";
+            href.hash = "";
+            attributes.href = href.toString();
+          } catch {
+            // Ignore malformed link targets.
+          }
+        }
+        if ("disabled" in element && (element as HTMLInputElement).disabled) {
+          attributes.disabled = true;
+        }
+        if (
+          (element instanceof HTMLInputElement && element.type !== "hidden") ||
+          element instanceof HTMLTextAreaElement ||
+          element instanceof HTMLSelectElement
+        ) {
+          return {
+            kind,
+            name: named(element),
+            attributes,
+            has_value: element.value.length > 0,
+          };
+        }
+        return { kind, name: named(element), attributes };
+      };
+      const selector = [
+        "a[href]",
+        "button",
+        "input:not([type=hidden])",
+        "select",
+        "textarea",
+        '[role="button"]',
+        '[role="link"]',
+        '[role="checkbox"]',
+        '[role="radio"]',
+        '[role="textbox"]',
+        '[role="combobox"]',
+      ].join(",");
+      const controls = Array.from(document.querySelectorAll(selector))
+        .filter(visible)
+        .slice(0, 500)
+        .map(describe);
+      const focus = document.activeElement;
+      return {
+        controls,
+        focus: focus && focus !== document.body && visible(focus) ? describe(focus) : null,
+      };
+    });
+    return {
+      active_tab: tabIndex,
+      url: page.url(),
+      title: await page.title(),
+      text: textResult.text,
+      controls: observed.controls,
+      focus: observed.focus,
+      revision: this.sessionRevision,
+      truncated: textResult.truncated,
+    };
+  }
+
+  async sessionScreenshot(outInput: string): Promise<BrowserSessionScreenshot> {
+    const out = resolve(outInput);
+    let parent: ReturnType<typeof statSync>;
+    try {
+      parent = statSync(dirname(out));
+    } catch {
+      throw new BrowserSessionActionError(
+        "screenshot_parent_missing",
+        "Screenshot parent directory must already exist.",
+      );
+    }
+    if (!parent.isDirectory()) {
+      throw new BrowserSessionActionError(
+        "screenshot_parent_invalid",
+        "Screenshot parent is not a directory.",
+      );
+    }
+    const buffer = await this.currentPage.screenshot({ type: "png", fullPage: true });
+    if (buffer.length < 24 || buffer.toString("ascii", 1, 4) !== "PNG") {
+      throw new BrowserSessionActionError("screenshot_invalid", "Browser returned an invalid PNG.");
+    }
+    try {
+      writeFileSync(out, buffer, { flag: "wx", mode: 0o600 });
+      chmodSync(out, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new BrowserSessionActionError(
+          "screenshot_exists",
+          "Screenshot output already exists.",
+        );
+      }
+      throw error;
+    }
+    this.sessionRevision++;
+    return {
+      path: out,
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20),
+      revision: this.sessionRevision,
+    };
+  }
+
+  private sessionLocator(locator: BrowserSessionLocator): Locator {
+    const page = this.currentPage;
+    switch (locator.kind) {
+      case "selector":
+        return page.locator(locator.value);
+      case "role":
+        return page.getByRole(locator.value as Parameters<Page["getByRole"]>[0], {
+          ...(locator.name === undefined ? {} : { name: locator.name, exact: !locator.partial }),
+        });
+      case "label":
+        return page.getByLabel(locator.value, { exact: !locator.partial });
+      case "text":
+        return page.getByText(locator.value, { exact: !locator.partial });
+    }
+  }
+
+  private async strictSessionLocator(locator: BrowserSessionLocator): Promise<Locator> {
+    return this.requireStrictLocator(this.sessionLocator(locator));
+  }
+
+  private async requireStrictLocator(locator: Locator): Promise<Locator> {
+    const count = await locator.count();
+    if (count === 0) {
+      throw new BrowserSessionActionError("locator_not_found", "Locator matched no elements.");
+    }
+    if (count !== 1) {
+      throw new BrowserSessionActionError(
+        "locator_ambiguous",
+        `Locator matched ${count} elements; refine it before acting.`,
+      );
+    }
+    return locator;
+  }
+
+  private pageForIndex(index: number): Page {
+    const entry = [...this.pageIndexes.entries()].find(
+      ([page, pageIndex]) => pageIndex === index && !page.isClosed(),
+    );
+    if (!entry) throw new BrowserSessionActionError("tab_not_found", "Browser tab was not found.");
+    return entry[0];
+  }
+
+  private async describeTab(page: Page): Promise<BrowserSessionTab> {
+    const index = this.pageIndexes.get(page);
+    if (index === undefined || page.isClosed()) {
+      throw new BrowserSessionActionError("tab_not_found", "Browser tab was not found.");
+    }
+    return {
+      index,
+      title: await page.title().catch(() => ""),
+      url: page.url(),
+      active: page === this.page,
+      revision: this.sessionRevision,
+    };
+  }
+
+  private selectMostRecentPageIfNeeded(): void {
+    if (!this.page || this.page.isClosed()) this.selectMostRecentPage();
+  }
+
   /**
    * Run occlusion checks on one or more selectors. For each, samples a grid
    * of points inside the element's bounding rect and uses
@@ -854,6 +1276,11 @@ export class Browser {
     await this.context.close().catch(() => {});
     this.context = null;
     this.page = null;
+    this.pageIndexes.clear();
+    this.pageRecency.clear();
+    this.nextPageIndex = 0;
+    this.recencyClock = 0;
+    this.sessionRevision = 0;
   }
 }
 
@@ -898,4 +1325,12 @@ function normalizeSameSite(s: string | undefined): "Strict" | "Lax" | "None" | u
   if (lower === "lax") return "Lax";
   if (lower === "none") return "None";
   return undefined;
+}
+
+function truncateUtf8(value: string, maxBytes: number): { text: string; truncated: boolean } {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return { text: value, truncated: false };
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
+  return { text: buffer.subarray(0, end).toString("utf8"), truncated: true };
 }

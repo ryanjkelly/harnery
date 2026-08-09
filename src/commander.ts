@@ -24,6 +24,7 @@ import { registerArtifactsCommand } from "./commands/artifacts.ts";
 import { registerBackupCommand } from "./commands/backup.ts";
 import { registerBrowseCommand } from "./commands/browse.ts";
 import { registerBrowseAiCommand } from "./commands/browse-ai.ts";
+import { registerBrowseSessionCommand } from "./commands/browse-session.ts";
 import { registerCallersCommand } from "./commands/callers.ts";
 import { registerCheckpointCommand } from "./commands/checkpoint.ts";
 import { registerClaudeDesktopCommand } from "./commands/claude-desktop.ts";
@@ -280,6 +281,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerFetchCommand(program, emit, opts.context);
   registerReadCommand(program, emit);
   registerBrowseCommand(program, emit, opts.context);
+  registerBrowseSessionCommand(program, emit);
   registerBrowseAiCommand(program, emit);
   registerCompletionCommand(program, emit, opts.context);
   registerCheckpointCommand(program, emit, opts.context);

@@ -1,0 +1,94 @@
+---
+title: "0067: Headed browser sessions expose owner-only bounded control"
+description: "ADR: let repeated CLI clients control the original opted-in Playwright context without opening a remote debugging surface."
+---
+
+**Status:** accepted (2026-08-09) Â· **Scope:** toolkit tier (`lib/browser`, `browse` and `browse-session` CLI)
+
+## Context
+
+[ADR 0063](./0063-browser-proxy-from-child-environment/) added an exact-IP
+browser gate and a close-signal file for headed login sessions. It rejected a
+browser-control daemon because a host desktop-control tool could drive the
+visible window while Playwright waited.
+
+That assumption does not hold for every desktop bridge. A Chromium window
+rendered through Windows Subsystem for Linux GUI (WSLg) can paint correctly and
+accept direct human input while Windows reports a stale or mismatched RemoteApp
+owner for the same window handle. Retrying that handle or using remembered
+screen coordinates would act without trustworthy window identity. Relaunching
+the browser would also lose the original profile, cookies, tabs, and configured
+proxy context.
+
+The running `browse` process already owns the safe control point: its Playwright
+`BrowserContext`. A second CLI process needs a narrow authenticated channel to
+that context. It does not need general Playwright access or a connection to an
+arbitrary browser.
+
+## Alternatives considered
+
+- **Keep retrying desktop control.** Rejected because discovery can succeed
+  while immediate activation and capture fail ownership checks.
+- **Open Chrome DevTools Protocol on TCP.** Rejected because it grants broader
+  authority than the required actions, lacks a suitable session credential,
+  and can cross WSL and host loopback boundaries.
+- **Attach to an installed browser.** Rejected because it could mix personal
+  profiles, extensions, cookies, and tabs with the isolated session.
+- **Relaunch or copy the persistent profile.** Rejected because two Chromium
+  processes must not write the same profile, and a copied context would not be
+  the already-gated proxy session.
+- **Poll command files.** Rejected because stale commands, weak correlation,
+  and awkward cancellation make the lifecycle harder to secure.
+- **Expose arbitrary page evaluation.** Rejected because it would turn a small
+  action set into page-context code execution and make redaction unreliable.
+
+## Decision
+
+Add `--control-file <path>` to `harn browse`. Version 1 accepts it only with
+`--login`. After the proxy gate and initial navigation pass, the browse process
+starts a local control server and atomically publishes an owner-only descriptor.
+
+On POSIX, the transport is a mode-`0600` Unix socket next to the descriptor. On
+Windows, it is a randomly named local pipe. Harnery never opens a TCP listener.
+The descriptor contains a random 256-bit token, and clients authenticate every
+request with a constant-time digest comparison. The descriptor's directory
+must be owned by the current POSIX user and inaccessible to group and other
+users.
+
+Add `harn browse-session` with an allowlist for status, sanitized inspection,
+screenshots, tab management, navigation, reload, strict-locator click and fill,
+keypress, wait, and clean close. Fill values come only from standard input.
+There is no command-line value option or arbitrary evaluation action.
+
+The protocol uses one newline-delimited JSON request and response per local
+connection. It caps frames at 1 MiB and fill input at 64 KiB, validates every
+field at the server boundary, gives actions timeouts, and serializes actions
+through one queue. A timeout response does not release the queue until the
+underlying Playwright action settles.
+
+Every tab remains in the original persistent `BrowserContext`. Harnery assigns
+stable session-local tab indexes, resolves the active page and locator again
+before each action, rejects ambiguous locators, and refuses to close the final
+tab. Inspection omits cookies, headers, storage, hidden inputs, and form values.
+Editable controls report only whether a value is present. Screenshot output is
+a new mode-`0600` PNG in an existing directory.
+
+The existing terminal Enter and `--login-close-file` paths remain available.
+Any close path stops new requests, lets the queued action settle, finalizes the
+normal browse capture and cookie lifecycle, closes Playwright, and removes only
+the descriptor and transport created by that process.
+
+## Result and gotchas
+
+- Repeated CLI processes can inspect and act on one visible persistent session
+  while the operator can still use the same window directly.
+- The control descriptor is a session credential. It must not enter logs,
+  artifacts, captures, cookie exports, or source control.
+- The control channel inherits proxy safety from the original context. It does
+  not replace `--proxy-from-env` or the exact-IP gate.
+- A disconnected or malformed client affects one request and leaves the browser
+  open. `browse-session close`, the close-signal file, terminal Enter, SIGINT,
+  and SIGTERM converge on idempotent cleanup.
+- Inspection deliberately omits editable values. A future need for value reads
+  requires a separate redacted design rather than loosening this protocol.
+
