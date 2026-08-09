@@ -174,4 +174,68 @@ describe("browse content checks", () => {
     expect(stdout).toContain('"truncation"');
     expect(stdout).toContain('"contrast"');
   });
+
+  test(
+    "content fail flags run their checks instead of silently succeeding",
+    () => {
+      const run = (...args: string[]) =>
+        Bun.spawnSync({
+          cmd: [
+            resolve(import.meta.dir, "../../bin/harn"),
+            "browse",
+            fixtureUrl,
+            "--json",
+            "--no-cookies",
+            "--profile",
+            profile(),
+            ...args,
+          ],
+          cwd: resolve(import.meta.dir, "../.."),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+
+      const placeholder = run("--check-placeholder-fail");
+      expect(placeholder.exitCode).toBe(2);
+      expect(placeholder.stdout.toString()).toContain('"placeholder"');
+
+      const images = run("--check-images-fail");
+      expect(images.exitCode).toBe(2);
+      expect(images.stdout.toString()).toContain('"image"');
+
+      const truncation = run("--check-truncation-fail");
+      expect(truncation.exitCode).toBe(2);
+      expect(truncation.stdout.toString()).toContain('"truncation"');
+
+      const contrast = run("--check-contrast-fail");
+      expect(contrast.exitCode).toBe(2);
+      expect(contrast.stdout.toString()).toContain('"contrast"');
+    },
+    { timeout: 30_000 },
+  );
+
+  test("contrast fail gate rejects an inconclusive result", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--json",
+        "--no-cookies",
+        "--profile",
+        profile(),
+        "--check-contrast",
+        ".grad",
+        "--check-contrast-fail",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toString()).toContain("check-contrast FAIL: result unknown");
+  });
 });

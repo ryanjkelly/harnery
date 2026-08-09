@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Browser } from "../../src/lib/browser/client.ts";
 import { PNG } from "pngjs";
+import { Browser } from "../../src/lib/browser/client.ts";
 import {
   bandRects,
   type CritiqueProvider,
@@ -195,7 +195,8 @@ describe("critique tiling + orchestration", () => {
     const stdout = result.stdout.toString();
     expect(stdout).toContain('"critique"');
     expect(stdout).toContain('"skipped"');
-    // skipped is not a failure — the gate only fires on outcome "fail".
-    expect(result.exitCode).toBe(0);
+    // A fail gate cannot certify a visual review that never ran.
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toString()).toContain("check-critique FAIL");
   });
 });

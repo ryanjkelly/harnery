@@ -22,6 +22,11 @@
       .clip-text-case.clip-text-bad { width: 60px; }
       .clip-text-case .text-host { width: 100%; }
       .clip-text-scroll { width: 60px; overflow-x: auto; }
+      .clip-hanging-indent {
+        width: 260px;
+        padding-left: 28px;
+        text-indent: -28px;
+      }
       /* Radius uses its rectangular padding box with visible or hidden overflow. */
       .clip-rounded-visible { width: 100px; border-radius: 12px; }
       .clip-rounded-hidden { width: 100px; border-radius: 12px; overflow: hidden; }
@@ -45,6 +50,7 @@
       .crowd-composite-good > .panel { margin-top: 16px; }
       .crowd-composite-deep .group p { margin: 0; height: 40px; }
       .crowd-composite-deep > .panel { margin-top: 0; }
+      .runt-good, .runt-bad { width: 105px; font: 16px/20px monospace; }
     </style>
   </head>
   <body>
@@ -70,6 +76,7 @@
     <section class="clip-text-case"><div class="text-host">Fits</div></section>
     <section class="clip-text-case clip-text-bad"><div class="text-host">Persistence</div></section>
     <section class="clip-text-scroll">Persistence</section>
+    <section class="clip-hanging-indent">Normal hanging-indent text remains inside the section border box.</section>
     <section class="clip-rounded-visible"><div>Visible rounded container</div></section>
     <section class="clip-rounded-hidden"><div>Hidden rounded container</div></section>
     <section class="clip-path-unknown"><div>Non-rectangular clip path</div></section>
@@ -109,5 +116,7 @@
       </div>
       <div class="panel"></div>
     </section>
+    <section class="runt-good">alpha beta gamma delta epsilon zeta eta theta i j</section>
+    <section class="runt-bad">alpha beta gamma delta epsilon zeta eta theta iota omega</section>
   </body>
 </html>

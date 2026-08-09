@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Page checks</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 16px/20px monospace; }
+      .runt-bad { width: 105px; }
+      .overflow-bad { width: 1400px; height: 1px; }
+      .hit-bad { display: flex; gap: 0; }
+      .hit-bad button { width: 12px; height: 12px; min-width: 0; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <p class="runt-bad">alpha beta gamma delta epsilon zeta eta theta iota omega</p>
+    <div class="hit-bad">
+      <button type="button" aria-label="Small target one"></button>
+      <button type="button" aria-label="Small target two"></button>
+    </div>
+    <div class="overflow-bad" aria-hidden="true"></div>
+  </body>
+</html>

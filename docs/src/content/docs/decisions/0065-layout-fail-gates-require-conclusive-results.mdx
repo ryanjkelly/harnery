@@ -60,3 +60,20 @@ enabled.
 The consumer page that exposed the bug now reports zero unknown shapes at its
 desktop and mobile viewports. The same command exits 2 against the explicit
 unknown fixtures.
+
+A follow-up audit found two more ways to produce misleading evidence. Fail flags
+could be passed without their check flag, which returned zero without placing a
+result in JSON. The clipping sweep also treated normal vertical font paint and
+fractional Chromium geometry as defects. The original consumer page accumulated
+six 27.2px false text leaks from a valid hanging indent.
+
+Fail flags now have one of two explicit behaviors. Whole-document gates enable
+their measurement, including overflow, runts, content, target size, and
+critique. Selector-based gates reject a missing selector before Chromium opens;
+assertion and visual-diff gates likewise require their paired input. Unknown
+content and skipped critiques fail rather than certifying an incomplete review.
+Runt results distinguish missing, incomplete, passing, and failing sweeps.
+Clipping ignores sub-half-pixel rasterization differences and compares ordinary
+text horizontally to its block owner; vertical glyph overhang is measured only
+where a real ancestor clips that axis. The full consumer verifier then passed
+four desktop/mobile and light/dark contexts with zero layout issues.

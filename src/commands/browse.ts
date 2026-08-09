@@ -338,7 +338,7 @@ export function registerBrowseCommand(
     )
     .option(
       "--check-overflow-fail",
-      "Exit non-zero if --check-overflow detects horizontal overflow.",
+      "Run --check-overflow and exit 2 if horizontal overflow is detected.",
     )
     .option(
       "--no-check-overflow-annotate",
@@ -357,7 +357,10 @@ export function registerBrowseCommand(
       "Minimum block text length to scan (default 40; smaller labels can't meaningfully wrap).",
       "40",
     )
-    .option("--check-runts-fail", "Exit non-zero if any runt is detected.")
+    .option(
+      "--check-runts-fail",
+      "Run a document-wide runt check when needed; exit 2 on a runt, missing scope, or incomplete sweep.",
+    )
     .option(
       "--no-check-runts-annotate",
       "Skip drawing runt boxes on the screenshot (JSON still emitted).",
@@ -452,7 +455,10 @@ export function registerBrowseCommand(
         "bug on funnels and reports. Do not point it at a page that documents template " +
         "syntax in prose.",
     )
-    .option("--check-placeholder-fail", "Exit 2 if any placeholder tell is found.")
+    .option(
+      "--check-placeholder-fail",
+      "Run a document-wide placeholder check when needed; exit 2 if the result does not pass.",
+    )
     .option("--no-check-placeholder-annotate", "Skip placeholder screenshot annotations.")
     .option(
       "--check-images [selector]",
@@ -466,7 +472,10 @@ export function registerBrowseCommand(
       "Aspect-ratio deviation above which an image counts as stretched (0–1, default 0.1 = 10%).",
       "0.1",
     )
-    .option("--check-images-fail", "Exit 2 if any image failed to load or is stretched.")
+    .option(
+      "--check-images-fail",
+      "Run a document-wide image check when needed; exit 2 if the result does not pass.",
+    )
     .option("--no-check-images-annotate", "Skip image screenshot annotations.")
     .option(
       "--check-truncation [selector]",
@@ -479,7 +488,10 @@ export function registerBrowseCommand(
       "Overflow past the clip box, in CSS px, above which truncation counts (default 2).",
       "2",
     )
-    .option("--check-truncation-fail", "Exit 2 if any text is actively truncated.")
+    .option(
+      "--check-truncation-fail",
+      "Run a document-wide truncation check when needed; exit 2 if the result does not pass.",
+    )
     .option("--no-check-truncation-annotate", "Skip truncation screenshot annotations.")
     .option(
       "--check-contrast [selector]",
@@ -488,7 +500,10 @@ export function registerBrowseCommand(
         "with --batch to cover light and dark. Text over an image or gradient is reported as " +
         "`unknown`, not failed. Optional selector scopes the sweep (default: whole body).",
     )
-    .option("--check-contrast-fail", "Exit 2 if any text fails the contrast ratio.")
+    .option(
+      "--check-contrast-fail",
+      "Run a document-wide contrast check when needed; exit 2 on fail, unknown, or a missing scope.",
+    )
     .option("--no-check-contrast-annotate", "Skip contrast screenshot annotations.")
     .option(
       "--check-critique [selector]",
@@ -511,7 +526,10 @@ export function registerBrowseCommand(
       "24",
     )
     .option("--check-critique-rubric <text>", "Override the default critique rubric.")
-    .option("--check-critique-fail", "Exit 2 if the critique returns any high-severity finding.")
+    .option(
+      "--check-critique-fail",
+      "Run a whole-page critique when needed; exit 2 unless the critique conclusively passes.",
+    )
     .option(
       "--assert <expr>",
       "Assert a page value (repeatable). Grammar: '<op> <selector> => <expected>', where op is " +
@@ -521,7 +539,7 @@ export function registerBrowseCommand(
       (value: string, previous: string[] = []) => [...previous, value],
       [] as string[],
     )
-    .option("--assert-fail", "Exit 2 if any --assert fails.")
+    .option("--assert-fail", "Exit 2 if any --assert fails; requires at least one --assert.")
     .option(
       "--check-hit [selector]",
       "Check pointer-target size and spacing in the document or optional scope (repeatable).",
@@ -538,7 +556,7 @@ export function registerBrowseCommand(
     )
     .option(
       "--check-hit-fail",
-      "Exit 2 when target sizing fails, is incomplete, or a scope is missing.",
+      "Run a document-wide target-size check when needed; exit 2 when it fails or is incomplete.",
     )
     .option("--no-check-hit-annotate", "Skip target-size screenshot annotations.")
     .option(
@@ -559,7 +577,10 @@ export function registerBrowseCommand(
         "considered a match (0–1, default 0.01 = 1%).",
       "0.01",
     )
-    .option("--diff-fail", "Exit non-zero if --diff mismatchRatio exceeds --diff-threshold.")
+    .option(
+      "--diff-fail",
+      "Exit non-zero if --diff mismatchRatio exceeds --diff-threshold; requires --diff.",
+    )
     .option(
       "--no-dev-overlay",
       "Skip auto-capture of Next.js dev-overlay issues. Default: capture every queued error (kind/code/message/stack) when a <nextjs-portal> shadow root is present. Necessary because Next.js 16 + React 19 route hydration errors + most React warnings through onCaughtError → next-devtools' errorQueue, NOT through console.error, so Playwright's standard listener doesn't see them. Surfaces them in the JSON envelope under `devOverlay`.",
@@ -580,6 +601,7 @@ async function runBrowse(
   opts: BrowseOpts,
   context: HarneryProgramContext | undefined,
 ): Promise<void> {
+  normalizeCheckFailOptions(opts);
   const alignAxis = parseLayoutAxis(opts.checkAlignAxis ?? "auto", "--check-align-axis");
   const gapAxis = parseLayoutAxis(opts.checkGapAxis ?? "auto", "--check-gap-axis");
   const alignThreshold = parseNonNegativeNumber(
@@ -966,12 +988,21 @@ async function runBrowse(
       }
     }
 
-    if (opts.checkRuntsFail && runts && runts.runts.length > 0) {
-      for (const hit of runts.runts) {
+    if (opts.checkRuntsFail && runts && runts.outcome !== "pass") {
+      if (!runts.found) {
+        emit.log(`check-runts FAIL ${runts.scope}: scope not found`, "warn");
+      } else if (runts.outcome === "unknown") {
         emit.log(
-          `check-runts FAIL ${hit.block}: last line is a lone "${hit.word}" ("…${hit.snippet.slice(-40)}")`,
+          `check-runts FAIL ${runts.scope ?? "document"}: sweep incomplete after ${runts.scannedBlocks} blocks`,
           "warn",
         );
+      } else {
+        for (const hit of runts.runts) {
+          emit.log(
+            `check-runts FAIL ${hit.block}: last line is a lone "${hit.word}" ("…${hit.snippet.slice(-40)}")`,
+            "warn",
+          );
+        }
       }
       process.exitCode = 2;
     }
@@ -990,9 +1021,12 @@ async function runBrowse(
 
     applyLayoutLintFailGates(opts, layoutLint, hit);
     applyContentFailGates(opts, content);
-    if (opts.checkCritiqueFail && critique && critique.outcome === "fail") {
-      const high = critique.findings.filter((f) => f.severity === "high").length;
-      emit.log(`check-critique FAIL: ${high} high-severity finding(s)`, "warn");
+    if (opts.checkCritiqueFail && critique && critique.outcome !== "pass") {
+      const detail =
+        critique.outcome === "skipped"
+          ? (critique.error ?? "critique was skipped")
+          : `${critique.findings.filter((f) => f.severity === "high").length} high-severity finding(s)`;
+      emit.log(`check-critique FAIL: ${detail}`, "warn");
       process.exitCode = 2;
     }
     if (opts.assertFail && asserts) {
@@ -1379,6 +1413,13 @@ async function runTrioMode(
     emit.log(`check-overflow: [${ok ? "OK" : "FAIL"}] ${detail}`, ok ? "info" : "warn");
   }
 
+  if (runts) {
+    emit.log(
+      `check-runts: [${runts.outcome.toUpperCase()}] ${runts.scope ?? "document"}: ${runts.runts.length} runt${runts.runts.length === 1 ? "" : "s"} in ${runts.scannedBlocks} scanned block${runts.scannedBlocks === 1 ? "" : "s"}${runts.truncated ? " (incomplete)" : ""}`,
+      runts.outcome === "pass" ? "info" : "warn",
+    );
+  }
+
   if (layoutLint) {
     logLayoutLintSummary(layoutLint);
   }
@@ -1446,6 +1487,59 @@ function parseNonNegativeNumber(value: string, flag: string): number {
     throw new Error(`${flag} must be a finite non-negative number (got: ${value})`);
   }
   return parsed;
+}
+
+function normalizeCheckFailOptions(opts: BrowseOpts): void {
+  // Whole-document checks can be enabled by their fail flag. Selector-based
+  // checks cannot invent a scope, so reject the invocation before Chromium
+  // opens instead of returning a misleading zero.
+  if (opts.checkOverflowFail) opts.checkOverflow = true;
+  if (opts.checkRuntsFail && opts.checkRunts === undefined) opts.checkRunts = true;
+  if (opts.checkPlaceholderFail && opts.checkPlaceholder === undefined) {
+    opts.checkPlaceholder = true;
+  }
+  if (opts.checkImagesFail && opts.checkImages === undefined) opts.checkImages = true;
+  if (opts.checkTruncationFail && opts.checkTruncation === undefined) {
+    opts.checkTruncation = true;
+  }
+  if (opts.checkContrastFail && opts.checkContrast === undefined) opts.checkContrast = true;
+  if (opts.checkCritiqueFail && opts.checkCritique === undefined) opts.checkCritique = true;
+  if (opts.checkHitFail && (!opts.checkHit || opts.checkHit.length === 0)) {
+    opts.checkHit = [null];
+  }
+
+  const requireTargets = (
+    failEnabled: boolean | undefined,
+    targets: unknown[] | undefined,
+    failFlag: string,
+    checkFlag: string,
+  ): void => {
+    if (failEnabled && (!targets || targets.length === 0)) {
+      throw new Error(`${failFlag} requires ${checkFlag}.`);
+    }
+  };
+
+  requireTargets(
+    opts.checkVisibleFail,
+    opts.checkVisible,
+    "--check-visible-fail",
+    "--check-visible",
+  );
+  requireTargets(opts.checkWidthFail, opts.checkWidth, "--check-width-fail", "--check-width");
+  requireTargets(opts.checkAlignFail, opts.checkAlign, "--check-align-fail", "--check-align");
+  requireTargets(opts.checkGapFail, opts.checkGap, "--check-gap-fail", "--check-gap");
+  requireTargets(opts.checkClipFail, opts.checkClip, "--check-clip-fail", "--check-clip");
+  requireTargets(
+    opts.checkOverlapFail,
+    opts.checkOverlap,
+    "--check-overlap-fail",
+    "--check-overlap",
+  );
+  requireTargets(opts.checkCrowdFail, opts.checkCrowd, "--check-crowd-fail", "--check-crowd");
+  requireTargets(opts.assertFail, opts.assert, "--assert-fail", "--assert");
+  if (opts.diffFail && !opts.diff) {
+    throw new Error("--diff-fail requires --diff.");
+  }
 }
 
 function parseLayoutAxis(value: string, flag: string): LayoutAxis {
@@ -1657,8 +1751,13 @@ function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | 
     result: { found: boolean; outcome: string } | undefined,
   ): void => {
     if (!enabled || !result) return;
-    if (!result.found || result.outcome === "fail") {
-      emit.log(`check-${rule} FAIL: ${result.found ? "issues found" : "scope not found"}`, "warn");
+    if (!result.found || result.outcome !== "pass") {
+      const reason = !result.found
+        ? "scope not found"
+        : result.outcome === "unknown"
+          ? "result unknown"
+          : "issues found";
+      emit.log(`check-${rule} FAIL: ${reason}`, "warn");
       process.exitCode = 2;
     }
   };

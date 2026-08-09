@@ -201,6 +201,9 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     const CHILD_LIMIT = 1_000;
     const TEXT_LIMIT = 1_000;
     const ISSUE_LIMIT = 100;
+    // Chromium geometry is fractional even when authored CSS is integral.
+    // Differences below half a CSS pixel are rasterization noise, not clipping.
+    const SUBPIXEL_EPSILON = 0.5;
 
     const rectOf = (rect: DOMRect): LayoutRect => ({
       x: rect.x,
@@ -540,16 +543,17 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         element: LayoutElementMeasurement,
         allowed: LayoutRect,
         clippedBy: string,
+        axes: { x: boolean; y: boolean } = { x: true, y: true },
       ): void => {
         const rect = element.rect;
         const overrun = {
-          top: Math.max(0, allowed.top - rect.top),
-          right: Math.max(0, rect.right - allowed.right),
-          bottom: Math.max(0, rect.bottom - allowed.bottom),
-          left: Math.max(0, allowed.left - rect.left),
+          top: axes.y ? Math.max(0, allowed.top - rect.top) : 0,
+          right: axes.x ? Math.max(0, rect.right - allowed.right) : 0,
+          bottom: axes.y ? Math.max(0, rect.bottom - allowed.bottom) : 0,
+          left: axes.x ? Math.max(0, allowed.left - rect.left) : 0,
         };
         const maxOverrunPx = Math.max(overrun.top, overrun.right, overrun.bottom, overrun.left);
-        if (maxOverrunPx > tolerancePx && issues.length < ISSUE_LIMIT) {
+        if (maxOverrunPx > tolerancePx + SUBPIXEL_EPSILON && issues.length < ISSUE_LIMIT) {
           issues.push({ element, clippedBy, overrun, maxOverrunPx });
         }
       };
@@ -648,7 +652,42 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           }
           if (transformed) continue;
           textCount++;
-          const allowed = paddingRect(owner);
+          // Text glyph boxes routinely extend a few pixels above/below their
+          // line box. That is normal font paint, not clipping. Constrain text
+          // horizontally to its nearest block owner, vertically to the scope,
+          // and on either axis where a CSS ancestor actually clips.
+          let allowed = paddingRect(container);
+          const ownerRect = paddingRect(owner);
+          allowed = {
+            ...allowed,
+            left: Math.max(allowed.left, ownerRect.left),
+            right: Math.min(allowed.right, ownerRect.right),
+          };
+          allowed.x = allowed.left;
+          allowed.width = Math.max(0, allowed.right - allowed.left);
+          let clippedBy = labelOf(owner);
+          current = owner;
+          while (current && container.contains(current)) {
+            const clips = current === container ? { x: true, y: true } : clippingStyle(current);
+            if (clips.x || clips.y) {
+              const candidate = paddingRect(current);
+              allowed = {
+                x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
+                y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
+                left: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
+                top: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
+                right: clips.x ? Math.min(allowed.right, candidate.right) : allowed.right,
+                bottom: clips.y ? Math.min(allowed.bottom, candidate.bottom) : allowed.bottom,
+                width: 0,
+                height: 0,
+              };
+              allowed.width = Math.max(0, allowed.right - allowed.left);
+              allowed.height = Math.max(0, allowed.bottom - allowed.top);
+              clippedBy = labelOf(current);
+            }
+            if (current === container) break;
+            current = current.parentElement;
+          }
           const range = document.createRange();
           range.selectNodeContents(node);
           for (const fragment of [...range.getClientRects()]) {
@@ -664,7 +703,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
                 rect: rectOf(fragment),
               },
               allowed,
-              labelOf(owner),
+              clippedBy,
             );
           }
         }

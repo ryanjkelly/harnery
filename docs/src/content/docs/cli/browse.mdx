@@ -119,11 +119,11 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-width-fail` | Exit non-zero if any width target falls below threshold. |
 | `--no-check-width-annotate` | Skip drawing width-check boxes. |
 | `--check-overflow` | Assert no horizontal overflow (`document.scrollWidth <= window.innerWidth`); surfaces protruding elements. |
-| `--check-overflow-fail` | Exit non-zero if horizontal overflow is detected. |
+| `--check-overflow-fail` | Run the overflow check when needed, then exit 2 if horizontal overflow is detected. |
 | `--no-check-overflow-annotate` | Skip drawing overflow annotations. |
 | `--check-runts [selector]` | Scan text blocks for runts (a single word alone on a block's last visual line), counting words via per-word Range rects. Optional selector scopes the sweep. |
 | `--check-runts-min-chars <n>` | Minimum block text length to scan. Default `40`. |
-| `--check-runts-fail` | Exit non-zero if any runt is detected. |
+| `--check-runts-fail` | Run a document-wide check when needed, then exit 2 for a runt, missing scope, or incomplete sweep. |
 | `--no-check-runts-annotate` | Skip drawing runt boxes. |
 | `--check-align <selector>` | Compare rendered child-content centers inside a container. Uses text fragments, then descendant SVGs, then border boxes. Repeatable. |
 | `--check-align-axis <axis>` | `auto`, `x`, or `y`. Auto checks y-centers for rows and x-centers for flex columns. Default `auto`. |
@@ -164,7 +164,10 @@ element boxes against clipping ancestors and rendered text fragments against
 their nearest non-inline parent. That catches an unbreakable label painting out
 of a narrow card even when every element box still fits. Horizontally scrollable
 text owners are skipped because their overflow is reachable by design. The
-check uses the rectangular padding box for border radius. Arbitrary `clip-path`,
+check ignores sub-half-pixel rasterization noise and normal vertical glyph
+overhang; neither is visible clipping. Hanging indents remain valid when their
+paint stays inside the block border. The check uses the rectangular padding box
+for border radius. Arbitrary `clip-path`,
 non-axis-aligned transforms, closed shadow roots, and cross-origin frame content
 are reported as `unknown`, not certified. Overlap covers sibling geometry;
 paint-order and sticky-layer obstruction remain `--check-visible` concerns.
@@ -190,6 +193,19 @@ and layout `unknown` results fail every enabled gate. The JSON still records the
 unknown reason so the recipe can replace an unsupported selector or supply a
 missing expectation.
 
+A fail flag never succeeds without running its check. Whole-document checks can
+infer their scope: overflow, runts, placeholders, images, truncation, contrast,
+target size, and critique all run against the page when their fail flag is used
+alone. Selector-based fail flags cannot invent a target, so
+`--check-clip-fail` without `--check-clip <selector>` (and the same pattern for
+visibility, width, alignment, gap, overlap, and crowd) stops with a usage error
+before Chromium opens. `--assert-fail` requires `--assert`, and `--diff-fail`
+requires `--diff`.
+
+Runt results carry `scope`, `found`, and `outcome`. A safety-cap truncation is
+`unknown`, not a clean result; a requested selector that matches nothing is
+`fail`.
+
 ### Content checks
 
 These cover failures a human catches at a glance even when the geometry is
@@ -199,15 +215,15 @@ contrast. Each takes an optional selector (default: the whole body).
 | Flag | Description |
 | --- | --- |
 | `--check-placeholder [selector]` | Flag unrendered tells in the visible text: `{{x}}` and JS template tokens, `[object Object]`, `Invalid Date`, `NaN`, or an element whose whole text is literally "undefined" / "null". |
-| `--check-placeholder-fail` | Exit 2 if any placeholder tell is found. |
+| `--check-placeholder-fail` | Run a document-wide check when needed; exit 2 unless it passes. |
 | `--check-images [selector]` | Audit `<img>` for a failed load (naturalWidth 0), a still-loading image, or a stretched one (rendered aspect far from intrinsic, uncorrected by object-fit). |
 | `--check-images-tolerance <ratio>` | Aspect-ratio deviation above which an image counts as stretched. Default `0.1`. |
-| `--check-images-fail` | Exit 2 if any image failed to load or is stretched. |
+| `--check-images-fail` | Run a document-wide check when needed; exit 2 unless it passes. |
 | `--check-truncation [selector]` | Flag text actively cut off by an ellipsis or `-webkit-line-clamp`. Stays quiet on plain `overflow: hidden`. |
 | `--check-truncation-tolerance <px>` | Overflow past the clip box, in px, above which truncation counts. Default `2`. |
-| `--check-truncation-fail` | Exit 2 if any text is actively truncated. |
+| `--check-truncation-fail` | Run a document-wide check when needed; exit 2 unless it passes. |
 | `--check-contrast [selector]` | Flag rendered text below the WCAG AA ratio (4.5:1 normal, 3:1 large) against its effective background. |
-| `--check-contrast-fail` | Exit 2 if any text fails the contrast ratio. |
+| `--check-contrast-fail` | Run a document-wide check when needed; exit 2 on failed, unknown, or missing results. |
 | `--no-check-<name>-annotate` | Skip that check's screenshot annotations (JSON still emitted). |
 
 Placeholder is prose-safe: bare "undefined" / "null" only flag when they are an
@@ -232,16 +248,16 @@ without tripping a named rule.
 | `--check-critique-overlap <px>` | Vertical overlap between bands so a seam finding stays visible. Default `120`. |
 | `--check-critique-max-tiles <n>` | Cap on tiles sent to the model, to bound cost. Default `24`. |
 | `--check-critique-rubric <text>` | Override the default rubric. |
-| `--check-critique-fail` | Exit 2 on any high-severity finding. |
+| `--check-critique-fail` | Run a whole-page critique when needed; exit 2 unless it conclusively passes. |
 
 The page is tiled because a tall screenshot downscaled to a model's input budget
 loses the detail the critique depends on; each tile is captured at full
 resolution and judged on its own, and findings carry their tile and scroll
 offset for locality. harnery ships no model client, so a host injects a
 `critiqueProvider` into `HarneryProgramContext` (the `extraHeaders` pattern);
-without one the check reports `skipped`, never a false pass. A provider that
-throws becomes a high-severity finding for that tile rather than aborting the
-run.
+without one, the result is `skipped`, and `--check-critique-fail` exits 2 rather
+than certifying a review that did not happen. A provider that throws becomes a
+high-severity finding for that tile rather than aborting the run.
 
 ### Value assertions
 

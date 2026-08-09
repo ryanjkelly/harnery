@@ -31,6 +31,12 @@ export interface RuntHit {
 }
 
 export interface RuntsResult {
+  /** Requested selector scope, or null for the document body. */
+  scope: string | null;
+  /** False when a requested selector matched nothing. */
+  found: boolean;
+  /** Unknown means the sweep hit a safety cap before proving the page clean. */
+  outcome: "pass" | "fail" | "unknown";
   /** Text blocks scanned (post length/inline-children filters). */
   scannedBlocks: number;
   /** True when the block sweep hit the internal cap (very large page). */
@@ -71,7 +77,16 @@ export function buildRuntsCheck(): (args: {
     const RUNT_CAP = 50;
 
     const root = scope ? document.querySelector(scope) : document.body;
-    if (!root) return { scannedBlocks: 0, truncated: false, runts: [] };
+    if (!root) {
+      return {
+        scope,
+        found: false,
+        outcome: "fail",
+        scannedBlocks: 0,
+        truncated: false,
+        runts: [],
+      };
+    }
 
     const sx = window.scrollX;
     const sy = window.scrollY;
@@ -84,7 +99,9 @@ export function buildRuntsCheck(): (args: {
       return tag;
     };
 
-    const all = root.querySelectorAll("*");
+    // Include the scope itself. A caller commonly points directly at a <p>,
+    // caption, or blurb; querySelectorAll("*") would otherwise scan nothing.
+    const all = [root, ...root.querySelectorAll("*")];
     const runts: RuntHit[] = [];
     let scanned = 0;
     let truncated = false;
@@ -158,7 +175,14 @@ export function buildRuntsCheck(): (args: {
       }
     }
 
-    return { scannedBlocks: scanned, truncated, runts };
+    return {
+      scope,
+      found: true,
+      outcome: runts.length > 0 ? "fail" : truncated ? "unknown" : "pass",
+      scannedBlocks: scanned,
+      truncated,
+      runts,
+    };
   };
 }
 

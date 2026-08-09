@@ -11,6 +11,9 @@ const fixtureUrl = pathToFileURL(
 const nonConvergentFixtureUrl = pathToFileURL(
   resolve(import.meta.dir, "../fixtures/capture-viewport/non-convergent.html"),
 ).href;
+const pageChecksFixtureUrl = pathToFileURL(
+  resolve(import.meta.dir, "../fixtures/page-checks/index.html"),
+).href;
 const profiles: string[] = [];
 
 function profile(): string {
@@ -44,6 +47,7 @@ describe("browse layout lint", () => {
           { selector: ".clip-bad", tolerancePx: 0 },
           { selector: ".clip-text-case", tolerancePx: 0 },
           { selector: ".clip-text-scroll", tolerancePx: 0 },
+          { selector: ".clip-hanging-indent", tolerancePx: 0 },
           { selector: ".clip-rounded-visible", tolerancePx: 0 },
           { selector: ".clip-rounded-hidden", tolerancePx: 0 },
           { selector: ".clip-path-unknown", tolerancePx: 0 },
@@ -72,15 +76,16 @@ describe("browse layout lint", () => {
         "pass",
         "pass",
         "pass",
+        "pass",
         "unknown",
       ]);
-      expect(result.clip[4]?.unsupported).toEqual([]);
       expect(result.clip[5]?.unsupported).toEqual([]);
-      expect(result.clip[6]?.unsupported).toContain("section.clip-path-unknown:clip-path");
+      expect(result.clip[6]?.unsupported).toEqual([]);
+      expect(result.clip[7]?.unsupported).toContain("section.clip-path-unknown:clip-path");
       expect(result.clip[2]?.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            clippedBy: "div.text-host",
+            clippedBy: "section.clip-text-case.clip-text-bad",
             element: expect.objectContaining({ source: "text", snippet: "Persistence" }),
           }),
         ]),
@@ -107,6 +112,96 @@ describe("browse layout lint", () => {
     } finally {
       await browser.close();
     }
+  });
+
+  test("runt checks distinguish pass, fail, and a missing scope", async () => {
+    const browser = new Browser({ profileDir: profile(), viewport: { width: 800, height: 900 } });
+    try {
+      await browser.open();
+      await browser.navigate(fixtureUrl);
+      const good = await browser.checkRunts({ scope: ".runt-good", minChars: 1 });
+      const bad = await browser.checkRunts({ scope: ".runt-bad", minChars: 1 });
+      const missing = await browser.checkRunts({ scope: ".does-not-exist", minChars: 1 });
+
+      expect(good).toMatchObject({ found: true, outcome: "pass", truncated: false });
+      expect(bad).toMatchObject({ found: true, outcome: "fail", truncated: false });
+      expect(bad.runts).toHaveLength(1);
+      expect(missing).toMatchObject({ found: false, outcome: "fail", scannedBlocks: 0 });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test(
+    "CLI fail flags cannot silently skip their checks",
+    () => {
+      const run = (...args: string[]) =>
+        Bun.spawnSync({
+          cmd: [
+            resolve(import.meta.dir, "../../bin/harn"),
+            "browse",
+            pageChecksFixtureUrl,
+            "--json",
+            "--no-cookies",
+            "--profile",
+            profile(),
+            ...args,
+          ],
+          cwd: resolve(import.meta.dir, "../.."),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+
+      const overflow = run("--check-overflow-fail");
+      expect(overflow.exitCode).toBe(2);
+      expect(overflow.stdout.toString()).toContain('"overflow"');
+
+      const runts = run("--check-runts-fail", "--check-runts-min-chars", "1");
+      expect(runts.exitCode).toBe(2);
+      expect(runts.stdout.toString()).toContain('"runts"');
+
+      const clip = run("--check-clip-fail");
+      expect(clip.exitCode).toBe(1);
+      expect(clip.stderr.toString()).toContain("--check-clip-fail requires --check-clip");
+
+      const hit = run("--check-hit-fail");
+      expect(hit.exitCode).toBe(2);
+      expect(hit.stdout.toString()).toContain('"hit"');
+
+      const assertion = run("--assert-fail");
+      expect(assertion.exitCode).toBe(1);
+      expect(assertion.stderr.toString()).toContain("--assert-fail requires --assert");
+
+      const diff = run("--diff-fail");
+      expect(diff.exitCode).toBe(1);
+      expect(diff.stderr.toString()).toContain("--diff-fail requires --diff");
+    },
+    { timeout: 30_000 },
+  );
+
+  test("CLI runt gate fails when its requested scope is missing", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--no-cookies",
+        "--profile",
+        profile(),
+        "--no-screenshot",
+        "--check-runts",
+        ".does-not-exist",
+        "--check-runts-fail",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.toString()).toContain("check-runts FAIL .does-not-exist: scope not found");
   });
 
   test("preserves target-size pass and fail truth", async () => {
