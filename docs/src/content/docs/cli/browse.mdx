@@ -48,6 +48,7 @@ By default it writes a **trio of files** (`<prefix>.png`, `<prefix>.html`, `<pre
 | --- | --- |
 | `--login` | Headed mode for a one-time auth flow; cookies persist in the profile. |
 | `--login-close-file <path>` | With `--login`, keep the process open until another process creates this signal file, then remove it and close cleanly. |
+| `--control-file <path>` | With `--login`, publish an owner-only descriptor for repeated [`harn browse-session`](/cli/browse-session/) control. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
 | `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
 | `--proxy-from-env` | Pass `HTTPS_PROXY`/`HTTP_PROXY` to Playwright as an authenticated browser proxy. Credentials remain in the child environment instead of command arguments. |
@@ -84,17 +85,31 @@ For example, a wrapper can validate the route with `curl`, inject the same
 expected IP into the child, and let Chromium repeat the gate before target
 navigation.
 
-For an agent-driven visible flow, pair `--login` with
-`--login-close-file`. The browse process can yield while a desktop-control tool
-drives the window. A second shell call creates the signal only after the flow is
-complete; `browse` removes it, exports cookies if requested, persists the
-profile, and closes Chromium. The signal must not exist at launch, which
-prevents a stale file from closing a new session immediately.
+For an agent-driven visible flow, pair `--login` with either
+`--control-file` or `--login-close-file`. The owner-only control descriptor lets
+repeated [`browse-session`](/cli/browse-session/) processes inspect and act on
+the original Playwright context. This avoids relying on an operating-system
+window handle while the operator can still use the visible tab directly.
+
+The signal-file form remains useful when another trusted control surface drives
+the window. A second process creates the signal only after the flow is complete;
+`browse` removes it, exports cookies if requested, persists the profile, and
+closes Chromium. The signal must not exist at launch, which prevents a stale
+file from closing a new session immediately.
 
 ```bash
 harn browse --login --login-close-file /tmp/auth-complete https://example.com
 # From a second process, after the visible flow is complete:
 touch /tmp/auth-complete
+```
+
+For live CLI control, create a private directory and launch with a descriptor:
+
+```bash
+install -d -m 700 ~/.cache/harnery/live-session
+harn browse --login \
+  --control-file ~/.cache/harnery/live-session/control.json \
+  https://example.com
 ```
 
 :::note[Headed windows under WSLg]
