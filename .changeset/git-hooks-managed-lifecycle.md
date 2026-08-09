@@ -28,6 +28,13 @@ instructions block:
   Markdown region syntax) that locates `agent-coord` in either consumer layout
   (git submodule or node_modules) and invokes `git-hook <event>`.
 
+- **Adoption is explicit and upgrade-safe.** A project that upgrades harnery
+  but never runs `init` sees no change: `init --check` treats never-installed
+  git hooks as "not adopted" (green), so a CI or pre-commit wiring of
+  `--check` cannot go red on upgrade. `harn doctor` carries the nudge instead
+  (warn: "git hooks not installed; run init"). Once any region exists, a
+  missing or stale one is drift again.
+
 - **`init` installs or refreshes the regions** (honoring `core.hooksPath` and
   worktrees via `git rev-parse --git-path hooks`): a missing hook file is
   created whole and executable; a host-authored hook gets the region inserted

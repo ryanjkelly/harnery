@@ -160,12 +160,39 @@ export function applyGitHooks(projectRoot: string, opts: { dryRun?: boolean }): 
   return { actions, warnings };
 }
 
-/** Drift report for `init --check`: per-hook managed-region freshness. */
+/**
+ * Has this project adopted harnery-managed git hooks at all? True when any of
+ * the three hook files carries a managed region. Adoption is the gate between
+ * "never installed" (a consumer that upgraded but hasn't opted in — not drift,
+ * `--check` stays green, `doctor` nudges) and "decayed" (a region existed and
+ * is now stale or partially deleted — drift, `--check` goes red).
+ */
+export function gitHooksInstalled(projectRoot: string): boolean {
+  const hooksDir = resolveHooksDir(projectRoot);
+  if (!hooksDir) return false;
+  for (const event of GIT_HOOK_EVENTS) {
+    const file = join(hooksDir, event);
+    if (!existsSync(file)) continue;
+    try {
+      if (readFileSync(file, "utf8").includes(`harnery:begin ${regionName(event)}`)) return true;
+    } catch {
+      /* unreadable file counts as absent */
+    }
+  }
+  return false;
+}
+
+/**
+ * Drift report for `init --check`: per-hook managed-region freshness. A
+ * project that never adopted git hooks reports fresh — an upgrade must not
+ * turn a consumer's CI red for a feature they haven't installed.
+ */
 export function checkGitHooks(projectRoot: string): { status: ManagedStatus; issues: string[] } {
   const issues: string[] = [];
   let worst: ManagedStatus = "fresh";
   const hooksDir = resolveHooksDir(projectRoot);
   if (!hooksDir) return { status: "fresh", issues };
+  if (!gitHooksInstalled(projectRoot)) return { status: "fresh", issues };
 
   for (const event of GIT_HOOK_EVENTS) {
     const file = join(hooksDir, event);

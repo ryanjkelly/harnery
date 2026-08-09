@@ -29,6 +29,7 @@ import {
 } from "../core/workflow/adapters.ts";
 import { probeBilling } from "../core/workflow/billing.ts";
 import type { AdapterName } from "../core/workflow/types.ts";
+import { checkGitHooks, gitHooksInstalled } from "../lib/instructions/git-hooks.ts";
 import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/tools/ripgrep.ts";
 
 type Severity = "ok" | "warn" | "fail";
@@ -112,6 +113,7 @@ export function runChecks(): Check[] {
     checkRipgrep(),
     checkHarneryDir(),
     checkAdapterHooks(installed),
+    checkGitHookRegions(),
     ...(codexWslBridge ? [codexWslBridge] : []),
     ...workflow.map((w) => w.check),
     checkRestic(),
@@ -119,6 +121,36 @@ export function runChecks(): Check[] {
     checkPlaywright(),
     checkPython(),
   ];
+}
+
+function checkGitHookRegions(): Check {
+  const root = findCoordProjectRoot();
+  if (!root) {
+    return { name: "git hooks", severity: "ok", detail: "n/a (no .harnery/ above cwd)" };
+  }
+  try {
+    if (!gitHooksInstalled(root)) {
+      const bin = resolveBinName(root);
+      return {
+        name: "git hooks",
+        severity: "warn",
+        detail:
+          `not installed - commits are not guarded against peer-claim conflicts and ` +
+          `claims never auto-release on commit/checkout; run \`${bin} init\` to install`,
+      };
+    }
+    const { status, issues } = checkGitHooks(root);
+    if (status === "fresh") {
+      return { name: "git hooks", severity: "ok", detail: "managed regions current" };
+    }
+    return { name: "git hooks", severity: "warn", detail: issues.join("; ") };
+  } catch (err) {
+    return {
+      name: "git hooks",
+      severity: "warn",
+      detail: `check failed: ${(err as Error).message}`,
+    };
+  }
 }
 
 function checkCodexWslBridge(): Check | null {

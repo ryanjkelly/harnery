@@ -144,3 +144,27 @@ describe("renderGitHookBody", () => {
     expect(body).toContain("/node_modules/harnery/bin/agent-coord");
   });
 });
+
+describe("adoption-aware check (upgrade safety)", () => {
+  test("a project that never installed git hooks reports fresh, not drift", () => {
+    // No hook files at all — the upgraded-but-not-adopted consumer.
+    expect(checkGitHooks(repo).status).toBe("fresh");
+    expect(checkGitHooks(repo).issues).toEqual([]);
+  });
+
+  test("host-authored hooks without regions still report fresh", () => {
+    const hooksDir = join(repo, ".git", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(join(hooksDir, "pre-commit"), "#!/bin/sh\necho host only\n");
+    expect(checkGitHooks(repo).status).toBe("fresh");
+  });
+
+  test("partial adoption is drift: one region present, others missing", () => {
+    applyGitHooks(repo, {});
+    rmSync(join(repo, ".git", "hooks", "post-commit"));
+    rmSync(join(repo, ".git", "hooks", "post-checkout"));
+    const check = checkGitHooks(repo);
+    expect(check.status).toBe("missing");
+    expect(check.issues.length).toBe(2);
+  });
+});
