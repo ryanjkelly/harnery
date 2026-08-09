@@ -1,0 +1,78 @@
+---
+title: "0063: Browser proxies come from the child environment"
+description: "ADR: give harn browse authenticated Playwright proxy support without putting credentials in arguments or depending on extensions."
+---
+
+**Status:** accepted (2026-08-09) · **Scope:** toolkit tier (`lib/browser`, `browse` CLI)
+
+## Context
+
+An embedding host can run a command with `HTTP_PROXY` and `HTTPS_PROXY`, but
+Chromium does not automatically turn those variables into a Playwright browser
+proxy. A test through an authenticated ISP endpoint reached the proxy, received
+`407 Proxy Authentication Required`, and timed out because the browser had no
+credential channel. A normal unproxied `browse` call still succeeded. The child
+environment therefore prevented direct egress but could not produce a usable
+proxied browser session.
+
+An extension-based workaround was also unsuitable. Playwright's Chromium
+defaults disable extensions, a clean persistent profile has no extension to
+configure, and installing one would make browser requests before the intended
+route protected the profile. Extension state also cannot provide a hard egress
+gate.
+
+## Decision
+
+Add an explicit `--proxy-from-env` flag to `harn browse`.
+
+1. Read `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, then `http_proxy`.
+2. Accept authenticated `http://` and `https://` URLs containing only scheme,
+   host, port, and optional userinfo.
+3. Remove userinfo from the server URL and pass `server`, `username`, and
+   `password` to Playwright's `launchPersistentContext` proxy option.
+4. Add Chromium's
+   `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` switch whenever
+   the proxy is enabled.
+5. If the host supplies `HARNERY_BROWSER_PROXY_EXPECTED_IP` and
+   `HARNERY_BROWSER_PROXY_CHECK_URL`, navigate to that HTTPS checker first and
+   require an exact IP match before opening the requested target.
+6. Add `--export-cookies <path>` for a mode-`0600` Netscape cookie export from
+   the live persistent context. This is independent of the shared Harnery jar.
+7. Add `--login-close-file <path>` so an agent can keep the headed process
+   yielded, drive the visible window through a host desktop-control capability,
+   then trigger a clean close from a second shell call.
+
+The flag is opt-in. Existing `browse` behavior does not change merely because a
+developer shell happens to contain a proxy variable.
+
+## Alternatives considered
+
+- **Keep using a Chrome extension.** Rejected because the extension is absent
+  from clean profiles, disabled by the automation browser defaults, and cannot
+  protect its own installation request.
+- **Put `--proxy-server`, username, and password on the command line.** Rejected
+  because command arguments are recorded by shells and agent tooling.
+- **Automatically honor proxy environment variables.** Rejected because a
+  developer or CI environment can carry unrelated proxy settings. Browser
+  routing must remain explicit.
+- **Build a new browser-control daemon.** Rejected for this change. A headed
+  `--login` process can stay alive while the host's desktop-control capability
+  drives the visible window, and a local signal file provides bounded cleanup.
+  A new transport would add lifecycle and security surface without improving
+  proxy enforcement.
+- **Export the shared cookie jar.** Rejected for isolated profiles launched
+  with `--no-cookies`; those sessions intentionally never enter that jar.
+
+## Result and gotchas
+
+- Authenticated proxy credentials remain in the child environment and are not
+  echoed or embedded in the Playwright server URL.
+- A fixed-route host can perform both an external `curl` probe and an in-browser
+  exact-IP gate. The target never opens when either check fails.
+- Native Playwright proxy routing fails closed if the proxy disappears. There
+  is no extension toggle or direct-route fallback.
+- The expected-IP variables are a pair. Supplying only one is a configuration
+  error.
+- The Netscape export contains authentication cookies and is always rewritten
+  with owner-only permissions. Callers remain responsible for limiting its
+  lifetime and distribution.

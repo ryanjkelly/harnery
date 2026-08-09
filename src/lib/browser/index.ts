@@ -44,7 +44,6 @@ export {
   type DevOverlayError,
   type DevOverlayResult,
 } from "./dev-overlay.js";
-export { buildLayoutLintCheck } from "./geometry.js";
 export type {
   AlignChild,
   AlignCluster,
@@ -66,12 +65,25 @@ export type {
   OverlapIssue,
   OverlapResult,
 } from "./geometry.js";
+export { buildLayoutLintCheck } from "./geometry.js";
 export { isWSL, wslHeadedLaunchArgs } from "./launch-args.js";
 export type {
   OverflowElement,
   OverflowResult,
   WidthResult,
 } from "./layout.js";
+export {
+  serializeNetscapeCookies,
+  writeNetscapeCookieFile,
+} from "./netscape-cookies.js";
+export {
+  type BrowserProxy,
+  type BrowserProxyGate,
+  browserProxyFromEnv,
+  browserProxyGateFromEnv,
+  extractObservedIp,
+  WEBRTC_PROXY_ONLY_ARG,
+} from "./proxy.js";
 export type {
   RuntHit,
   RuntsResult,

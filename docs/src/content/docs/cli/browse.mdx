@@ -47,11 +47,55 @@ By default it writes a **trio of files** (`<prefix>.png`, `<prefix>.html`, `<pre
 | Flag | Description |
 | --- | --- |
 | `--login` | Headed mode for a one-time auth flow; cookies persist in the profile. |
+| `--login-close-file <path>` | With `--login`, keep the process open until another process creates this signal file, then remove it and close cleanly. |
 | `--headed` | Headed mode for a one-off (no auth-flow framing). |
 | `--browser-arg <flag>` | Extra Chromium launch flag, passed straight to the browser (repeatable). Also settable machine-wide via `HARNERY_BROWSER_ARGS` (whitespace-separated). See WSLg note below. |
+| `--proxy-from-env` | Pass `HTTPS_PROXY`/`HTTP_PROXY` to Playwright as an authenticated browser proxy. Credentials remain in the child environment instead of command arguments. |
 | `--no-cookies` | Skip cookie-jar attach and persist. |
 | `--store <path>` | Cookie store path. Default `~/.cache/harnery/cookies.json`. |
 | `--profile <dir>` | Persistent Chromium profile dir. Default `~/.cache/harnery/browser-profile`. |
+| `--export-cookies <path>` | Export the live profile to an owner-only Netscape `cookies.txt` file before closing. |
+
+### Authenticated proxy sessions
+
+`--proxy-from-env` reads `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, then
+`http_proxy`. It separates userinfo from the proxy server URL and passes the
+credentials through Playwright's native proxy option, so Chromium can answer a
+Basic-authentication `407` without showing a prompt. The secret is never part of
+the `harn browse` argument vector.
+
+When a host wrapper sets both `HARNERY_BROWSER_PROXY_EXPECTED_IP` and
+`HARNERY_BROWSER_PROXY_CHECK_URL`, `browse` opens the HTTPS check URL first and
+requires its `ip`, `query`, or `origin` value to match exactly. A missing field,
+bad response, or mismatch stops the command before the requested URL opens.
+Proxy-enabled launches also set Chromium's WebRTC IP handling policy to
+`disable_non_proxied_udp`. Playwright does not fall back to a direct connection
+when its configured proxy becomes unavailable.
+
+```bash
+HTTPS_PROXY='http://user:password@proxy.example:7000' \
+HARNERY_BROWSER_PROXY_EXPECTED_IP='192.0.2.10' \
+HARNERY_BROWSER_PROXY_CHECK_URL='https://ip.example/json' \
+harn browse --proxy-from-env https://example.com
+```
+
+Keep fixed-route checks in the host wrapper when it owns the proxy inventory.
+For example, a wrapper can validate the route with `curl`, inject the same
+expected IP into the child, and let Chromium repeat the gate before target
+navigation.
+
+For an agent-driven visible flow, pair `--login` with
+`--login-close-file`. The browse process can yield while a desktop-control tool
+drives the window. A second shell call creates the signal only after the flow is
+complete; `browse` removes it, exports cookies if requested, persists the
+profile, and closes Chromium. The signal must not exist at launch, which
+prevents a stale file from closing a new session immediately.
+
+```bash
+harn browse --login --login-close-file /tmp/auth-complete https://example.com
+# From a second process, after the visible flow is complete:
+touch /tmp/auth-complete
+```
 
 :::note[Headed windows under WSLg]
 On WSL, a headed Chromium window composites its GPU-backed surface over an RDP stream to Windows; on some Windows/GPU/WSLg combinations that surface never presents, so the window shows in the taskbar but paints blank (the page still runs; JS, navigation, and DOM all work). `browse` auto-adds `--disable-gpu` to headed launches under WSL to mitigate that mode. Opt out with `HARNERY_BROWSER_NO_WSL_DEFAULTS=1`; add alternative flags with `--browser-arg` or `HARNERY_BROWSER_ARGS`.
@@ -282,4 +326,8 @@ harn browse https://example.com --diff home-desktop --diff-fail
 
 # One-time headed login; cookies persist to the shared profile for later runs
 harn browse --login https://example.com
+
+# Export one dedicated profile for a consumer that requires Netscape cookies.txt
+harn browse --profile ~/.cache/harnery/profiles/media --no-cookies \
+  --export-cookies ~/.cache/harnery/exports/media-cookies.txt https://example.com
 ```

@@ -112,6 +112,8 @@ export interface BrowserOptions {
    * defaults only.
    */
   launchArgs?: string[];
+  /** Authenticated browser proxy passed directly to Playwright. */
+  proxy?: { server: string; username?: string; password?: string };
 }
 
 export interface NavigateResult {
@@ -223,6 +225,7 @@ export class Browser {
         ...(this.opts.launchArgs && this.opts.launchArgs.length > 0
           ? { args: this.opts.launchArgs }
           : {}),
+        ...(this.opts.proxy ? { proxy: this.opts.proxy } : {}),
         ...(this.opts.recordHarPath
           ? { recordHar: { path: this.opts.recordHarPath, mode: "full" as const } }
           : {}),
@@ -824,6 +827,12 @@ export class Browser {
   async addInitScript(script: string): Promise<void> {
     if (!this.context) throw new Error("Browser not opened. Call open() first.");
     await this.context.addInitScript(script);
+  }
+
+  /** Snapshot all cookies in the live persistent context. */
+  async cookies(): Promise<PWCookie[]> {
+    if (!this.context) throw new Error("Browser not opened. Call open() first.");
+    return this.context.cookies();
   }
 
   /**

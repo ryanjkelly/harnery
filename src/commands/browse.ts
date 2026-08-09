@@ -1,4 +1,4 @@
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { Command } from "commander";
@@ -7,6 +7,8 @@ import { resolveBinName } from "../core/config.ts";
 import {
   type AssertResult,
   Browser,
+  browserProxyFromEnv,
+  browserProxyGateFromEnv,
   type ContentAnnotationBox,
   type ContentChecksResult,
   type CritiqueResult,
@@ -15,6 +17,7 @@ import {
   DEFAULT_CRITIQUE_RUBRIC,
   type DevOverlayResult,
   type Diagnostics,
+  extractObservedIp,
   type LayoutAxis,
   type LayoutLintResult,
   type OverflowResult,
@@ -25,7 +28,9 @@ import {
   type TargetSizeResult,
   tilesFromFullPage,
   type VisibilityResult,
+  WEBRTC_PROXY_ONLY_ARG,
   type WidthResult,
+  writeNetscapeCookieFile,
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
 import {
@@ -79,8 +84,11 @@ interface BrowseOpts {
   batch?: string;
   networkHar?: string;
   login?: boolean;
+  loginCloseFile?: string;
   headed?: boolean;
   browserArg?: string[];
+  proxyFromEnv?: boolean;
+  exportCookies?: string;
   cookies?: boolean;
   store?: string;
   profile?: string;
@@ -233,6 +241,10 @@ export function registerBrowseCommand(
       "desktop",
     )
     .option("--login", "Headed mode for one-time auth flow (cookies persist in profile)")
+    .option(
+      "--login-close-file <path>",
+      "With --login, wait for this file instead of terminal Enter, then remove it and close cleanly",
+    )
     .option("--headed", "Headed mode for one-off (no auth-flow framing)")
     .option(
       "--browser-arg <flag>",
@@ -244,9 +256,20 @@ export function registerBrowseCommand(
       (value: string, prev: string[] = []) => [...prev, value],
       [] as string[],
     )
+    .option(
+      "--proxy-from-env",
+      "Pass HTTP(S)_PROXY to Playwright as an authenticated browser proxy. " +
+        "Credentials stay in the child environment, never command arguments. " +
+        "When the host also injects the HARNERY_BROWSER_PROXY_* gate variables, " +
+        "the expected IP is verified before the requested URL opens.",
+    )
     .option("--no-cookies", "Skip cookie-jar attach and persist")
     .option("--store <path>", `Cookie store path (default ${DEFAULT_STORE})`)
     .option("--profile <dir>", `Persistent Chromium profile dir (default ${DEFAULT_PROFILE})`)
+    .option(
+      "--export-cookies <path>",
+      "Write live profile cookies as an owner-only Netscape cookies.txt file on close",
+    )
     .option(
       "--wait-until <strategy>",
       "Navigation wait strategy: load | domcontentloaded | networkidle | commit",
@@ -583,6 +606,17 @@ async function runBrowse(
       : new CookieJar({ path: opts.store ?? DEFAULT_STORE, source: "harn-browse" });
   const headed = opts.login || opts.headed;
   const viewport = parseViewport(opts.viewport ?? "desktop");
+  const proxy = opts.proxyFromEnv ? browserProxyFromEnv() : undefined;
+  const proxyGate = opts.proxyFromEnv ? browserProxyGateFromEnv() : null;
+  if (opts.loginCloseFile && !opts.login) {
+    throw new Error("--login-close-file requires --login.");
+  }
+  const loginCloseFile = opts.loginCloseFile ? resolve(opts.loginCloseFile) : null;
+  if (loginCloseFile && existsSync(loginCloseFile)) {
+    throw new Error(
+      `Login close signal already exists at ${loginCloseFile}. Remove the stale file before launching.`,
+    );
+  }
 
   const browser = new Browser({
     profileDir: opts.profile ?? DEFAULT_PROFILE,
@@ -593,7 +627,8 @@ async function runBrowse(
     waitUntil: opts.waitUntil as BrowseOpts["waitUntil"] as never,
     recordHarPath: opts.networkHar ? resolve(opts.networkHar) : undefined,
     extraHeaders: context?.extraHeaders,
-    launchArgs: resolveLaunchArgs(opts, Boolean(headed)),
+    launchArgs: resolveLaunchArgs(opts, Boolean(headed), Boolean(proxy)),
+    proxy,
   });
 
   // Print mode: --snapshot / --html / --json all suppress file writes.
@@ -601,6 +636,7 @@ async function runBrowse(
 
   try {
     await browser.open();
+    if (proxyGate) await verifyBrowserProxyGate(browser, proxyGate);
     const navResult = await browser.navigate(url);
 
     if (opts.fill) {
@@ -790,13 +826,27 @@ async function runBrowse(
     }
 
     if (opts.login) {
-      await new Promise<void>((res) => {
+      if (loginCloseFile) {
         emit.log(
-          "[--login] Headed Chromium is open. Walk through your auth flow now. Press Enter here to close + persist cookies into the profile.",
+          `[--login] Headed Chromium is open. Drive the visible window now. Create ${loginCloseFile} to close cleanly.`,
           "info",
         );
-        process.stdin.once("data", () => res());
-      });
+        await waitForLoginCloseFile(loginCloseFile);
+      } else {
+        await new Promise<void>((res) => {
+          emit.log(
+            "[--login] Headed Chromium is open. Walk through your auth flow now. Press Enter here to close + persist cookies into the profile.",
+            "info",
+          );
+          process.stdin.once("data", () => res());
+        });
+      }
+    }
+
+    if (opts.exportCookies) {
+      const exportPath = resolve(opts.exportCookies);
+      writeNetscapeCookieFile(exportPath, await browser.cookies());
+      emit.log(`exported live profile cookies to ${exportPath} (mode 600)`, "info");
     }
 
     // Auto-capture Next.js dev-overlay issues unless --no-dev-overlay was passed.
@@ -1677,7 +1727,7 @@ function summarizeDiagnostics(diag: Diagnostics): Record<string, unknown> {
  *   2. HARNERY_BROWSER_ARGS env (whitespace-separated) — a machine-wide default.
  *   3. --browser-arg flags on this invocation (repeatable).
  */
-function resolveLaunchArgs(opts: BrowseOpts, headed: boolean): string[] {
+function resolveLaunchArgs(opts: BrowseOpts, headed: boolean, proxyEnabled: boolean): string[] {
   const args: string[] = [];
   if (headed && !process.env.HARNERY_BROWSER_NO_WSL_DEFAULTS) {
     args.push(...wslHeadedLaunchArgs());
@@ -1685,7 +1735,35 @@ function resolveLaunchArgs(opts: BrowseOpts, headed: boolean): string[] {
   const envArgs = process.env.HARNERY_BROWSER_ARGS?.trim();
   if (envArgs) args.push(...envArgs.split(/\s+/));
   if (opts.browserArg && opts.browserArg.length > 0) args.push(...opts.browserArg);
+  if (proxyEnabled) args.push(WEBRTC_PROXY_ONLY_ARG);
   return [...new Set(args)];
+}
+
+async function verifyBrowserProxyGate(
+  browser: Browser,
+  gate: { checkUrl: string; expectedIp: string },
+): Promise<void> {
+  const result = await browser.navigate(gate.checkUrl);
+  if (result.status === null || result.status < 200 || result.status >= 300) {
+    throw new Error(
+      `Browser proxy gate failed before target navigation (HTTP ${result.status ?? "unknown"}).`,
+    );
+  }
+  const body = await browser.evaluate<string>("document.body?.innerText ?? ''");
+  const observedIp = extractObservedIp(body);
+  if (observedIp !== gate.expectedIp) {
+    throw new Error(
+      `Browser proxy gate returned ${observedIp ?? "no IP"}; expected ${gate.expectedIp}. Target navigation was blocked.`,
+    );
+  }
+  emit.log(`browser proxy gate: ${observedIp} · expected IP confirmed`, "info");
+}
+
+async function waitForLoginCloseFile(path: string): Promise<void> {
+  while (!existsSync(path)) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  unlinkSync(path);
 }
 
 function parseViewport(spec: string): { width: number; height: number } {
