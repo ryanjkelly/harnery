@@ -242,10 +242,12 @@ const DEFAULT_PROFILE = resolve(homedir(), ".cache", "harnery", "browser-profile
 // resources and Chromium launch dies with an unhandled ENOENT that a per-call
 // retry can't catch. Serializing only the brief launch phase (never the
 // browser's lifetime, so N browsers still run concurrently) removes the burst
-// that causes it. Overridable via HARNERY_MAX_BROWSER_LAUNCHES.
+// that causes it. The default stays at one because even a three-process burst
+// can exhaust Bun/Playwright's IPC sockets under a full suite; callers with
+// more headroom can opt into a higher value via HARNERY_MAX_BROWSER_LAUNCHES.
 const MAX_CONCURRENT_LAUNCHES = Math.max(
   1,
-  Number.parseInt(process.env.HARNERY_MAX_BROWSER_LAUNCHES ?? "3", 10) || 3,
+  Number.parseInt(process.env.HARNERY_MAX_BROWSER_LAUNCHES ?? "1", 10) || 1,
 );
 let activeLaunches = 0;
 const launchWaiters: Array<() => void> = [];
