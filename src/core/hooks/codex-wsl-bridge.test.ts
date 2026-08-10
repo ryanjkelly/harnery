@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { inspectCodexWslBridge, isWslUncPath } from "./codex-wsl-bridge.ts";
+import {
+  codexWslFileLinkTelemetry,
+  codexWslWorkspaceLinkMapping,
+  inspectCodexWslBridge,
+  isWslUncPath,
+  renderCodexWslFileLinkContext,
+} from "./codex-wsl-bridge.ts";
 
 describe("isWslUncPath", () => {
   test("recognizes both WSL UNC host spellings and extended UNC syntax", () => {
@@ -77,5 +83,65 @@ describe("inspectCodexWslBridge", () => {
   test("stays quiet outside a detected hybrid session", () => {
     expect(inspectCodexWslBridge({ CODEX_THREAD_ID: "thread-1" })).toBeNull();
     expect(inspectCodexWslBridge({ WSL_DISTRO_NAME: "Ubuntu" })).toBeNull();
+  });
+});
+
+describe("Codex WSL workspace file links", () => {
+  const linuxRoot = "/home/dev/projects/example";
+  const uncRoot = "\\\\wsl.localhost\\Ubuntu-22.04\\home\\dev\\projects\\example";
+
+  test("derives the host root from a nested adapter cwd", () => {
+    expect(codexWslWorkspaceLinkMapping(linuxRoot, `${uncRoot}\\src`)).toEqual({
+      linuxRoot,
+      hostRoot: "//wsl.localhost/Ubuntu-22.04/home/dev/projects/example",
+      distro: "Ubuntu-22.04",
+    });
+  });
+
+  test("normalizes extended UNC syntax", () => {
+    expect(
+      codexWslWorkspaceLinkMapping(
+        linuxRoot,
+        "\\\\?\\UNC\\wsl.localhost\\Ubuntu-22.04\\home\\dev\\projects\\example",
+      )?.hostRoot,
+    ).toBe("//wsl.localhost/Ubuntu-22.04/home/dev/projects/example");
+  });
+
+  test("rejects native paths and unrelated WSL workspaces", () => {
+    expect(codexWslWorkspaceLinkMapping(linuxRoot, linuxRoot)).toBeNull();
+    expect(
+      codexWslWorkspaceLinkMapping(linuxRoot, "\\\\wsl.localhost\\Ubuntu\\srv\\other"),
+    ).toBeNull();
+  });
+
+  test("renders a derived instruction that separates Markdown and shell paths", () => {
+    const text = renderCodexWslFileLinkContext(linuxRoot, uncRoot);
+    expect(text).toContain(linuxRoot);
+    expect(text).toContain("//wsl.localhost/Ubuntu-22.04/home/dev/projects/example");
+    expect(text).toContain("Keep Linux paths unchanged in shell commands");
+  });
+
+  test("counts only visible Markdown destinations under the Linux root", () => {
+    const message = [
+      `[bad](${linuxRoot}/src/a.ts:12)`,
+      `[good](//wsl.localhost/Ubuntu-22.04/home/dev/projects/example/src/a.ts)`,
+      `[web](https://example.com/home/dev/projects/example)`,
+      `\`[inline](${linuxRoot}/ignored.ts)\``,
+      "```markdown",
+      `[fenced](${linuxRoot}/ignored-too.ts)`,
+      "```",
+      `[outside](/home/dev/projects/elsewhere/file.ts)`,
+    ].join("\n");
+
+    expect(codexWslFileLinkTelemetry(linuxRoot, uncRoot, message)).toEqual({
+      wsl_linux_file_link_count: 1,
+      wsl_linux_file_link_examples: [`${linuxRoot}/src/a.ts:12`],
+    });
+  });
+
+  test("records a zero for a clean hybrid reply", () => {
+    expect(codexWslFileLinkTelemetry(linuxRoot, uncRoot, "No local links here.")).toEqual({
+      wsl_linux_file_link_count: 0,
+    });
   });
 });

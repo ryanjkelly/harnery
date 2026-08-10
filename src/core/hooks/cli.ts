@@ -56,7 +56,12 @@ import {
   type ParsedPayload,
   parsePayload,
 } from "./adapter/parse.ts";
-import { inspectCodexWslBridge, isWslUncPath } from "./codex-wsl-bridge.ts";
+import {
+  codexWslFileLinkTelemetry,
+  inspectCodexWslBridge,
+  isWslUncPath,
+  renderCodexWslFileLinkContext,
+} from "./codex-wsl-bridge.ts";
 import {
   captureImages,
   detectPresence,
@@ -332,6 +337,11 @@ function buildEventData(
     }
 
     case "turn.stop": {
+      const lastAssistantMessage = (p?.raw.last_assistant_message as string | undefined) ?? "";
+      const fileLinkTelemetry =
+        ctx.adapter === "codex"
+          ? codexWslFileLinkTelemetry(ctx.coordRoot, p?.cwd, lastAssistantMessage)
+          : null;
       return {
         // Backfill the model for adapters that omit it at session.start
         // (Claude Code). The transcript is populated with assistant turns by
@@ -350,8 +360,7 @@ function buildEventData(
         // the verdict now sees because agent-hook emits this turn.stop itself
         // (the previous path passed those via the no-history fail-open).
         status_box_present:
-          scanStatusBoxPresent(p?.transcript_path) ||
-          ((p?.raw.last_assistant_message as string | undefined) ?? "").includes("┌─ agent-"),
+          scanStatusBoxPresent(p?.transcript_path) || lastAssistantMessage.includes("┌─ agent-"),
         // Shadow measurement for the rule-2/3 detector: the loose scan above
         // matches the box prefix ANYWHERE in the transcript tail, including
         // the tool_result row the status command itself writes, so it can
@@ -363,7 +372,7 @@ function buildEventData(
         // reconsidered; either way this field decides it with data.
         status_box_present_strict:
           scanAssistantTextIncludes(p?.transcript_path, "┌─ agent-") ||
-          ((p?.raw.last_assistant_message as string | undefined) ?? "").includes("┌─ agent-"),
+          lastAssistantMessage.includes("┌─ agent-"),
         // While the session's suggested name is pending (built, not yet seen
         // in assistant text), report whether this turn's reply shows it and
         // stamp the heartbeat when it does. Omitted once seen (or never built)
@@ -373,8 +382,9 @@ function buildEventData(
           ctx.coordRoot,
           ctx.instanceId,
           p?.transcript_path,
-          (p?.raw.last_assistant_message as string | undefined) ?? "",
+          lastAssistantMessage,
         ),
+        ...(fileLinkTelemetry ?? {}),
         stop_hook_active: p?.stop_hook_active,
       };
     }
@@ -894,6 +904,7 @@ async function main(): Promise<number> {
         owner.instance_id,
         sessionId,
         adapter,
+        payload?.cwd,
         recovery?.briefing ?? "",
       );
       if (injected && recovery) {
@@ -1565,6 +1576,7 @@ async function emitUserPromptSubmitSystemMessage(
   instanceId: string,
   sessionId: string,
   adapter: Adapter,
+  workspaceCwd?: string,
   recoveryBriefing = "",
 ): Promise<boolean> {
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
@@ -1596,6 +1608,12 @@ async function emitUserPromptSubmitSystemMessage(
     if (adapter === "codex") args.push("--status-footer-nudge");
     const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
     if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
+  }
+  if (adapter === "codex") {
+    const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, workspaceCwd);
+    if (fileLinkContext) {
+      additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");
+    }
   }
   if (recoveryBriefing) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
@@ -1709,6 +1727,10 @@ async function emitSessionStartSystemMessage(
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
   }
   if (adapter === "codex" && isWslUncPath(emittedData.cwd)) {
+    const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, emittedData.cwd);
+    if (fileLinkContext) {
+      additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");
+    }
     const bridge = inspectCodexWslBridge(process.env, { expected: true });
     if (bridge && !bridge.ok) {
       additionalContext = [

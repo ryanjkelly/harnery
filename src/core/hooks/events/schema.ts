@@ -107,6 +107,11 @@ export type TurnStop = EventEnvelope<
     /** Present only while the session's suggested name is pending (built but
      * not yet seen in assistant text): whether this turn's reply shows it. */
     session_name_present?: boolean;
+    /** Shadow telemetry for Windows-hosted Codex workspaces: Markdown link
+     * destinations that still use the Linux coordination root. */
+    wsl_linux_file_link_count?: number;
+    /** Up to three bounded examples for diagnosing the mismatches locally. */
+    wsl_linux_file_link_examples?: string[];
   }
 >;
 

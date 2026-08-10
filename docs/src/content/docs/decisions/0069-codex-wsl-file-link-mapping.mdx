@@ -1,0 +1,73 @@
+---
+title: "0069: Derive Codex WSL file-link mappings at the adapter boundary"
+description: "ADR: derive Windows-visible Markdown roots from Codex hook payloads and measure Linux-root link mismatches without blocking completed replies."
+sidebar:
+  order: 69
+---
+
+**Status:** accepted (2026-08-10)
+
+## Context
+
+A Windows-native Codex task can open a checkout through a WSL UNC path while
+running its tools inside Linux. Both paths name the same file, but Codex
+Desktop's file opener receives the Markdown destination from the assistant's
+reply. A destination such as `/home/dev/project/docs/runbook.md` is valid for
+the shell but cannot be opened by the Windows client. The equivalent
+`//wsl.localhost/<distro>/home/dev/project/docs/runbook.md` destination works.
+
+The model sees both environments and can choose either spelling. A static rule
+in every consumer's instructions is easy to miss. It also copies host-specific
+state into prose, which goes stale when a checkout or distro moves. Harnery
+already receives the Windows-visible `cwd` in Codex hook payloads and knows the
+Linux coordination root, so it can derive the mapping from the running task.
+
+ADR 0051 also constrains the repair path. Codex Stop hooks are observe-only
+because a continuation can replace the useful answer. A Stop hook can inspect
+the completed reply, but it cannot edit the Markdown already shown to the user.
+
+## Alternatives considered
+
+- Keep the fix in consumer instructions. Rejected as the primary mechanism
+  because it copies machine state into prose and still depends on the model
+  remembering it after long tool runs.
+- Create a Windows junction that mirrors `/home`. Rejected because it mutates
+  machine-global state, may require elevated privileges, and hides the client
+  boundary behind an undocumented filesystem dependency.
+- Block or retry the reply from Stop. Rejected by ADR 0051. A retry can replace
+  the requested answer and still cannot repair the link already rendered.
+- Rewrite the assistant response inside Harnery. Rejected because adapter hooks
+  do not expose a pre-render response mutation boundary.
+
+## Decision
+
+`codexWslWorkspaceLinkMapping` derives a path pair only when the adapter `cwd`
+is `\\wsl.localhost`, `\\wsl$`, or extended UNC syntax and its encoded Linux
+path overlaps the coordination root. It produces a forward-slash UNC root for
+Markdown while leaving Linux tool paths alone. The overlap check prevents an
+unrelated WSL workspace from supplying a mapping for another checkout.
+
+Codex receives the derived mapping twice: once in SessionStart context and
+again on every UserPromptSubmit. Repeating it keeps the rule available after
+compaction and immediately before the model writes a reply. Harnery does not
+store a username, distro, or project path in source or configuration.
+
+At `turn.stop`, `codexWslFileLinkTelemetry` scans visible Markdown destinations
+in `last_assistant_message`. It ignores fenced and inline code, web links,
+correct UNC links, and Linux paths outside the coordination root. Hybrid turns
+record `wsl_linux_file_link_count`; mismatched turns also keep up to three
+bounded examples. The fields are telemetry only and never enter the Stop
+verdict.
+
+## Consequences
+
+The repository-controlled fallback is derived from the actual workspace rather
+than copied instructions. It reduces bad links but cannot guarantee them away,
+because the model still authors Markdown and Harnery cannot rewrite it before
+rendering. The telemetry gives maintainers a denominator and a miss count for
+measuring that residual failure rate.
+
+The complete product fix still belongs in the client: a semantic
+workspace-relative file reference, or click-time conversion from a WSL Linux
+path to the active workspace's UNC path. Harnery's mapping remains useful until
+that boundary exists and can later become a compatibility fallback.
