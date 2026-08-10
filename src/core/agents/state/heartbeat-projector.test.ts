@@ -802,4 +802,35 @@ describe("projectHeartbeats: session-name sighting attribution", () => {
     // Unattributed, so the next stop re-scans instead of skipping on a guess.
     expect(hb.session_name_seen_for).toBeUndefined();
   });
+
+  test("clears an existing bad attribution when a legacy sighting cannot identify its name", () => {
+    const root = freshRoot();
+    const instanceId = "legacy-existing-owner";
+    writeRawHeartbeat(root, instanceId, {
+      schema_version: 1,
+      instance_id: instanceId,
+      session_id: instanceId,
+      last_heartbeat: "2026-06-04T00:00:00Z",
+      files_touched: [],
+      suggested_session_name: "Agent Maya - First focus",
+      session_name_seen_at: "2026-06-03T23:59:00Z",
+      // This is the pre-fix corruption: the projector guessed that an older,
+      // unattributed sighting covered the name currently on the heartbeat.
+      session_name_seen_for: "Agent Maya - First focus",
+    });
+
+    const res = projectHeartbeats(
+      root,
+      events(instanceId, {
+        status_box_present: true,
+        session_name_present: true,
+      }) as unknown as Events,
+    );
+
+    expect(res.perOwner[instanceId]!.session_name_seen_for).toBeUndefined();
+    const persisted = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${instanceId}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    expect(persisted.session_name_seen_for).toBeUndefined();
+  });
 });

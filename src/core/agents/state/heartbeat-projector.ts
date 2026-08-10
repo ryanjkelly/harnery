@@ -258,8 +258,7 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
         // old sighting to a re-minted name, which faked "already seen" for a
         // name no reply had shown. An event without the field predates it, so
         // leave the attribution unset and let the next stop re-scan.
-        const seenFor = pickStr(d, "session_name_present_for");
-        if (seenFor) hb.session_name_seen_for = seenFor;
+        hb.session_name_seen_for = pickStr(d, "session_name_present_for");
       }
       {
         const summary = pickStr(d, "turn_summary");
@@ -529,7 +528,15 @@ function writeHeartbeat(coordRoot: string, instanceId: string, hb: V2Heartbeat):
     setIfDefined(merged, "task_updated_at", hb.task_updated_at);
     setIfDefined(merged, "suggested_session_name", hb.suggested_session_name);
     setIfDefined(merged, "session_name_seen_at", hb.session_name_seen_at);
-    setIfDefined(merged, "session_name_seen_for", hb.session_name_seen_for);
+    if (hb.session_name_seen_for) {
+      merged.session_name_seen_for = hb.session_name_seen_for;
+    } else {
+      // Unlike most projected fields, an absent attribution is meaningful: a
+      // legacy sighting cannot prove which suggested name it covered. Remove a
+      // stale value inherited through the additive merge so the next stop
+      // scans the current name instead of treating it as already satisfied.
+      delete merged.session_name_seen_for;
+    }
     setIfDefined(merged, "last_status_at", hb.last_status_at);
     setIfDefined(merged, "turn_summary", hb.turn_summary);
     setIfDefined(merged, "turn_summary_updated_at", hb.turn_summary_updated_at);
