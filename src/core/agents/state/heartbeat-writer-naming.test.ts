@@ -107,6 +107,23 @@ describe("stampSessionNameSeen", () => {
     const second = stampSessionNameSeen(root, "self");
     expect(second?.session_name_seen_at).toBe(stamp as string);
   });
+
+  // The sighting has to record WHICH name it was for. Keyed on the timestamp
+  // alone, a re-minted suggested name inherits the earlier sighting, the
+  // turn.stop scan stays off forever, `session_name_present` is never emitted
+  // again, and the Stop-hook naming rule blocks every reply from then on --
+  // including the reply that reproduced the name it asked for.
+  test("records which name the sighting was for, and re-records on a new name", () => {
+    seed({ suggested_session_name: "Agent Maya - Auth refactor" });
+    const first = stampSessionNameSeen(root, "self", "Agent Maya - Auth refactor");
+    expect(first?.session_name_seen_for).toBe("Agent Maya - Auth refactor");
+    const stamp = first?.session_name_seen_at;
+
+    const second = stampSessionNameSeen(root, "self", "Agent Maya - Billing sweep");
+    expect(second?.session_name_seen_for).toBe("Agent Maya - Billing sweep");
+    // The original sighting time is preserved; only the name it covers moves.
+    expect(second?.session_name_seen_at).toBe(stamp as string);
+  });
 });
 
 describe("buildSuggestedName", () => {

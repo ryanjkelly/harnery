@@ -36,6 +36,7 @@ export interface V2Heartbeat {
   task_updated_at?: string;
   suggested_session_name?: string;
   session_name_seen_at?: string;
+  session_name_seen_for?: string;
   last_status_at?: string;
   presence?: "mobile" | "office";
   last_intent?: string;
@@ -250,8 +251,10 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       // Rebuild fidelity for the naming ritual: the live stamp is written by
       // the Stop hook (stampSessionNameSeen); reproduce it from the event so a
       // full projector rebuild doesn't re-open a satisfied naming window.
-      if (d.session_name_present === true && !hb.session_name_seen_at) {
-        hb.session_name_seen_at = ev.ts;
+      if (d.session_name_present === true) {
+        hb.session_name_seen_at ??= ev.ts;
+        // Which name it was for: the one current at that point in the replay.
+        hb.session_name_seen_for = hb.suggested_session_name;
       }
       {
         const summary = pickStr(d, "turn_summary");
@@ -521,6 +524,7 @@ function writeHeartbeat(coordRoot: string, instanceId: string, hb: V2Heartbeat):
     setIfDefined(merged, "task_updated_at", hb.task_updated_at);
     setIfDefined(merged, "suggested_session_name", hb.suggested_session_name);
     setIfDefined(merged, "session_name_seen_at", hb.session_name_seen_at);
+    setIfDefined(merged, "session_name_seen_for", hb.session_name_seen_for);
     setIfDefined(merged, "last_status_at", hb.last_status_at);
     setIfDefined(merged, "turn_summary", hb.turn_summary);
     setIfDefined(merged, "turn_summary_updated_at", hb.turn_summary_updated_at);

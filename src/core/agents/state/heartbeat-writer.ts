@@ -93,6 +93,10 @@ export interface Heartbeat {
   /** Stamped by turn.stop once the suggested name is seen in assistant reply
    * text, ending the per-turn transcript scan. */
   session_name_seen_at?: string;
+  /** WHICH name that sighting was for. The scan is skipped only while this
+   * matches the current suggested name, so a re-minted name is detectable
+   * again rather than being suppressed by the earlier sighting. */
+  session_name_seen_for?: string;
   last_status_at?: string;
   turn_summary?: string | null;
   turn_summary_updated_at?: string | null;
@@ -179,12 +183,21 @@ export function buildSuggestedName(
   return { suggestedName: `Agent ${name} - ${description}`, description };
 }
 
-/** Stamp session_name_seen_at (idempotent) once the suggested name has been
- * observed in assistant reply text; later turns skip the transcript scan. */
-export function stampSessionNameSeen(coordRoot: string, instanceId: string): Heartbeat | null {
-  return mutate(coordRoot, instanceId, (hb) =>
-    hb.session_name_seen_at ? hb : { ...hb, session_name_seen_at: nowIsoSeconds() },
-  );
+/** Stamp the sighting once the suggested name has been observed in assistant
+ * reply text; later turns skip the transcript scan. Records WHICH name was seen,
+ * because the skip is only valid for that one: if a later set-task mints a
+ * different suggested name, a bare "already seen" stamp would suppress the scan
+ * forever and leave the Stop-hook naming rule permanently unsatisfiable. */
+export function stampSessionNameSeen(
+  coordRoot: string,
+  instanceId: string,
+  name?: string,
+): Heartbeat | null {
+  return mutate(coordRoot, instanceId, (hb) => ({
+    ...hb,
+    session_name_seen_at: hb.session_name_seen_at ?? nowIsoSeconds(),
+    ...(name ? { session_name_seen_for: name } : {}),
+  }));
 }
 
 export function setTurnSummary(

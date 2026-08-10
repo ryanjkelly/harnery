@@ -499,10 +499,15 @@ function sessionNamePresence(
   try {
     const hb = readHeartbeat(coordRoot, instanceId);
     const name = hb?.suggested_session_name;
-    if (!name || hb?.session_name_seen_at) return {};
+    // Skip only while the sighting was for THIS name. Keying the skip on the
+    // timestamp alone deadlocked the naming rule whenever a later set-task
+    // minted a different name: the scan stayed off, `session_name_present` was
+    // never emitted again, and the rule blocked every subsequent reply --
+    // including the reply that reproduced the name it was asking for.
+    if (!name || hb?.session_name_seen_for === name) return {};
     const present =
       scanAssistantTextIncludes(transcriptPath, name) || lastAssistantMessage.includes(name);
-    if (present) stampSessionNameSeen(coordRoot, instanceId);
+    if (present) stampSessionNameSeen(coordRoot, instanceId, name);
     return { session_name_present: present };
   } catch {
     return {};
