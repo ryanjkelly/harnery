@@ -99,6 +99,11 @@ export type TurnStop = EventEnvelope<
     tool_call_count: number;
     text_length: number;
     status_box_present: boolean; // adapter sets via transcript scan for `┌─ agent-` prefix
+    /** Strict variant of status_box_present: assistant text blocks only, so a
+     * tool_result carrying the box (the status command's own output) does not
+     * count. Shadow telemetry while the rule-2/3 detector decision is open;
+     * the Stop verdict does not read it yet. */
+    status_box_present_strict?: boolean;
     /** Present only while the session's suggested name is pending (built but
      * not yet seen in assistant text): whether this turn's reply shows it. */
     session_name_present?: boolean;
