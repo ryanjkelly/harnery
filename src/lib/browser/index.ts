@@ -97,6 +97,23 @@ export type {
   RuntHit,
   RuntsResult,
 } from "./runts.js";
+export {
+  BROWSER_SESSION_MAX_FILL_BYTES,
+  BROWSER_SESSION_MAX_FRAME_BYTES,
+  BROWSER_SESSION_MAX_INSPECTION_TEXT_BYTES,
+  BROWSER_SESSION_PROTOCOL_VERSION,
+  type BrowserSessionDescriptor,
+  BrowserSessionError,
+  type BrowserSessionRequest,
+  type BrowserSessionResponse,
+  type BrowserSessionResult,
+  type BrowserSessionServer,
+  type BrowserSessionTarget,
+  browserSessionTransport,
+  readBrowserSessionDescriptor,
+  sendBrowserSessionRequest,
+  startBrowserSessionServer,
+} from "./session-control.js";
 export type {
   TargetSizeNode,
   TargetSizeOutcome,
