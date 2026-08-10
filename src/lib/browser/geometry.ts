@@ -242,11 +242,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         // real ancestor reports it. Without this, every closed accordion panel
         // reads as text clipped out of its container.
         const parent: Element | null = current.parentElement;
-        if (
-          parent instanceof HTMLDetailsElement &&
-          !parent.open &&
-          current.tagName !== "SUMMARY"
-        ) {
+        if (parent instanceof HTMLDetailsElement && !parent.open && current.tagName !== "SUMMARY") {
           return true;
         }
         const style = getComputedStyle(current);
