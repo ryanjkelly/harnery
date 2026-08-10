@@ -177,9 +177,13 @@ Clipping is deliberately rectangular. The selector is a scope, not a single
 element lookup: every match is checked. Within that scope, the check measures
 element boxes against clipping ancestors and rendered text fragments against
 their nearest non-inline parent. That catches an unbreakable label painting out
-of a narrow card even when every element box still fits. Horizontally scrollable
-text owners are skipped because their overflow is reachable by design. The
-check ignores sub-half-pixel rasterization noise and normal vertical glyph
+of a narrow card even when every element box still fits. An axis stops being
+checked at the first ancestor that scrolls it — including the queried container —
+because content the reader can scroll to is reachable by design, so a capped
+table or a wide code block reports nothing. Anything an ancestor *inside* that
+scroller clips is still reported, since scrolling the outer box cannot reveal
+it. Content inside a collapsed `<details>` is treated as hidden rather than
+clipped. The check ignores sub-half-pixel rasterization noise and normal vertical glyph
 overhang; neither is visible clipping. Hanging indents remain valid when their
 paint stays inside the block border. The check uses the rectangular padding box
 for border radius. Arbitrary `clip-path`,

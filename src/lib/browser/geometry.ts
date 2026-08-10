@@ -237,6 +237,18 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
     const isHidden = (element: Element): boolean => {
       let current: Element | null = element;
       while (current) {
+        // A collapsed disclosure hides its content through the ::details-content
+        // pseudo, which is not in the ancestor chain, so no computed style on a
+        // real ancestor reports it. Without this, every closed accordion panel
+        // reads as text clipped out of its container.
+        const parent: Element | null = current.parentElement;
+        if (
+          parent instanceof HTMLDetailsElement &&
+          !parent.open &&
+          current.tagName !== "SUMMARY"
+        ) {
+          return true;
+        }
         const style = getComputedStyle(current);
         const contentVisibility = (style as CSSStyleDeclaration & { contentVisibility?: string })
           .contentVisibility;
@@ -499,6 +511,29 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       return { x: clips.has(style.overflowX), y: clips.has(style.overflowY) };
     };
 
+    // A scroller hides content the same way a clip does, but the reader can
+    // reach it. Content below the fold of a capped table or right of a wide
+    // code block is not a layout defect, so an axis stops being checked at the
+    // first ancestor that scrolls it. Constraints from ancestors INSIDE that
+    // scroller still apply -- an overflow:hidden box within a scroller really
+    // does cut its content off, and the scroller cannot reveal it.
+    const scrollingStyle = (element: Element): { x: boolean; y: boolean } => {
+      const style = getComputedStyle(element);
+      const scrolls = new Set(["auto", "scroll"]);
+      return { x: scrolls.has(style.overflowX), y: scrolls.has(style.overflowY) };
+    };
+
+    const unbounded = (): LayoutRect => ({
+      x: Number.NEGATIVE_INFINITY,
+      y: Number.NEGATIVE_INFINITY,
+      left: Number.NEGATIVE_INFINITY,
+      top: Number.NEGATIVE_INFINITY,
+      right: Number.POSITIVE_INFINITY,
+      bottom: Number.POSITIVE_INFINITY,
+      width: Number.POSITIVE_INFINITY,
+      height: Number.POSITIVE_INFINITY,
+    });
+
     const paddingRect = (element: Element): LayoutRect => {
       const rect = element.getBoundingClientRect();
       const html = element as HTMLElement;
@@ -558,6 +593,61 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         }
       };
 
+      // Walk from `start` up to `container`, intersecting the allowed rect with
+      // every ancestor that genuinely clips. `free` records an axis the reader
+      // can scroll, after which nothing further constrains that axis -- the
+      // scroller's own box still has to fit its outer chain, but its contents
+      // are reachable and so are exempt.
+      const clipChain = (
+        start: Element | null,
+        container: Element,
+        seed: LayoutRect,
+        seedLabel: string,
+      ): { allowed: LayoutRect; clippedBy: string } => {
+        let allowed = { ...seed };
+        let clippedBy = seedLabel;
+        const free = { x: false, y: false };
+        let current: Element | null = start;
+        while (current && container.contains(current)) {
+          const style = getComputedStyle(current);
+          if (style.clipPath && style.clipPath !== "none")
+            unsupported.add(`${labelOf(current)}:clip-path`);
+          if (style.transform && style.transform !== "none")
+            unsupported.add(`${labelOf(current)}:transform`);
+          // The container bounds by default even when it does not CSS-clip,
+          // since it is the scope the caller asked about -- but a scroller
+          // hands its axis back whether it is the scope or an ancestor.
+          const scope = current === container;
+          const scrolls = scrollingStyle(current);
+          const css = scope ? { x: true, y: true } : clippingStyle(current);
+          const clips = {
+            x: css.x && !free.x && !scrolls.x,
+            y: css.y && !free.y && !scrolls.y,
+          };
+          if (clips.x || clips.y) {
+            const candidate = paddingRect(current);
+            allowed = {
+              x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
+              y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
+              left: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
+              top: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
+              right: clips.x ? Math.min(allowed.right, candidate.right) : allowed.right,
+              bottom: clips.y ? Math.min(allowed.bottom, candidate.bottom) : allowed.bottom,
+              width: 0,
+              height: 0,
+            };
+            allowed.width = Math.max(0, allowed.right - allowed.left);
+            allowed.height = Math.max(0, allowed.bottom - allowed.top);
+            clippedBy = labelOf(current);
+          }
+          if (scrolls.x) free.x = true;
+          if (scrolls.y) free.y = true;
+          if (scope) break;
+          current = current.parentElement;
+        }
+        return { allowed, clippedBy };
+      };
+
       const textContainer = (node: Node, scope: Element): Element | null => {
         let current = node.parentElement;
         while (current && scope.contains(current)) {
@@ -584,37 +674,13 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "zero-area" });
             return;
           }
-          let allowed = paddingRect(container);
-          let clippedBy = labelOf(container);
-          let current: Element | null = element.parentElement;
-          while (current && container.contains(current)) {
-            const style = getComputedStyle(current);
-            const cssClips = clippingStyle(current);
-            if (style.clipPath && style.clipPath !== "none")
-              unsupported.add(`${labelOf(current)}:clip-path`);
-            if (style.transform && style.transform !== "none")
-              unsupported.add(`${labelOf(current)}:transform`);
-            const clips = current === container ? { x: true, y: true } : cssClips;
-            if (clips.x || clips.y) {
-              const candidate = paddingRect(current);
-              allowed = {
-                x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
-                y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
-                left: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
-                top: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
-                right: clips.x ? Math.min(allowed.right, candidate.right) : allowed.right,
-                bottom: clips.y ? Math.min(allowed.bottom, candidate.bottom) : allowed.bottom,
-                width: 0,
-                height: 0,
-              };
-              allowed.width = Math.max(0, allowed.right - allowed.left);
-              allowed.height = Math.max(0, allowed.bottom - allowed.top);
-              clippedBy = labelOf(current);
-            }
-            if (current === container) break;
-            current = current.parentElement;
-          }
-          recordIssue(measure(element, index, false), allowed, clippedBy);
+          const chain = clipChain(
+            element.parentElement,
+            container,
+            unbounded(),
+            labelOf(container),
+          );
+          recordIssue(measure(element, index, false), chain.allowed, chain.clippedBy);
         });
 
         const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -636,8 +702,6 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           }
           const owner = textContainer(node, container);
           if (!owner) continue;
-          const ownerOverflowX = getComputedStyle(owner).overflowX;
-          if (ownerOverflowX === "auto" || ownerOverflowX === "scroll") continue;
           let transformed = false;
           let current: Element | null = owner;
           while (current && container.contains(current)) {
@@ -656,38 +720,20 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           // line box. That is normal font paint, not clipping. Constrain text
           // horizontally to its nearest block owner, vertically to the scope,
           // and on either axis where a CSS ancestor actually clips.
-          let allowed = paddingRect(container);
-          const ownerRect = paddingRect(owner);
-          allowed = {
-            ...allowed,
-            left: Math.max(allowed.left, ownerRect.left),
-            right: Math.min(allowed.right, ownerRect.right),
-          };
-          allowed.x = allowed.left;
-          allowed.width = Math.max(0, allowed.right - allowed.left);
-          let clippedBy = labelOf(owner);
-          current = owner;
-          while (current && container.contains(current)) {
-            const clips = current === container ? { x: true, y: true } : clippingStyle(current);
-            if (clips.x || clips.y) {
-              const candidate = paddingRect(current);
-              allowed = {
-                x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
-                y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
-                left: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
-                top: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
-                right: clips.x ? Math.min(allowed.right, candidate.right) : allowed.right,
-                bottom: clips.y ? Math.min(allowed.bottom, candidate.bottom) : allowed.bottom,
-                width: 0,
-                height: 0,
-              };
-              allowed.width = Math.max(0, allowed.right - allowed.left);
-              allowed.height = Math.max(0, allowed.bottom - allowed.top);
-              clippedBy = labelOf(current);
-            }
-            if (current === container) break;
-            current = current.parentElement;
+          const seed = unbounded();
+          // Constrain text horizontally to its nearest block owner -- unless
+          // that owner scrolls sideways, where running past its edge is how a
+          // long line is meant to behave.
+          if (!scrollingStyle(owner).x) {
+            const ownerRect = paddingRect(owner);
+            seed.left = ownerRect.left;
+            seed.right = ownerRect.right;
+            seed.x = seed.left;
+            seed.width = Math.max(0, seed.right - seed.left);
           }
+          const chain = clipChain(owner, container, seed, labelOf(owner));
+          const allowed = chain.allowed;
+          const clippedBy = chain.clippedBy;
           const range = document.createRange();
           range.selectNodeContents(node);
           for (const fragment of [...range.getClientRects()]) {

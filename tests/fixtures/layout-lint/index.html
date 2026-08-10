@@ -22,6 +22,16 @@
       .clip-text-case.clip-text-bad { width: 60px; }
       .clip-text-case .text-host { width: 100%; }
       .clip-text-scroll { width: 60px; overflow-x: auto; }
+      /* A capped scroller: rows past the cap are reachable, not clipped away. */
+      .clip-scroll-y { width: 120px; max-height: 30px; overflow-y: auto; }
+      .clip-scroll-y > div { height: 30px; }
+      /* An overflow:hidden box INSIDE a scroller still cuts its content off --
+         scrolling the outer container cannot reveal it. */
+      /* Collapsed disclosure: content is deliberately unrendered, not clipped. */
+      .clip-closed-details { width: 120px; overflow: hidden; }
+      .clip-hidden-in-scroll { width: 120px; max-height: 60px; overflow-y: auto; }
+      .clip-hidden-in-scroll .inner { width: 100px; height: 30px; overflow: hidden; }
+      .clip-hidden-in-scroll .inner > div { width: 140px; height: 30px; }
       .clip-hanging-indent {
         width: 260px;
         padding-left: 28px;
@@ -76,6 +86,11 @@
     <section class="clip-text-case"><div class="text-host">Fits</div></section>
     <section class="clip-text-case clip-text-bad"><div class="text-host">Persistence</div></section>
     <section class="clip-text-scroll">Persistence</section>
+    <section class="clip-scroll-y"><div>Row one</div><div>Row two</div><div>Row three</div></section>
+    <section class="clip-closed-details">
+      <details><summary>Closed</summary><div>Panel copy the reader has not opened yet</div></details>
+    </section>
+    <section class="clip-hidden-in-scroll"><div class="inner"><div>Cut off inside a scroller</div></div></section>
     <section class="clip-hanging-indent">Normal hanging-indent text remains inside the section border box.</section>
     <section class="clip-rounded-visible"><div>Visible rounded container</div></section>
     <section class="clip-rounded-hidden"><div>Hidden rounded container</div></section>

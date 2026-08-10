@@ -47,6 +47,9 @@ describe("browse layout lint", () => {
           { selector: ".clip-bad", tolerancePx: 0 },
           { selector: ".clip-text-case", tolerancePx: 0 },
           { selector: ".clip-text-scroll", tolerancePx: 0 },
+          { selector: ".clip-scroll-y", tolerancePx: 0 },
+          { selector: ".clip-closed-details", tolerancePx: 0 },
+          { selector: ".clip-hidden-in-scroll", tolerancePx: 0 },
           { selector: ".clip-hanging-indent", tolerancePx: 0 },
           { selector: ".clip-rounded-visible", tolerancePx: 0 },
           { selector: ".clip-rounded-hidden", tolerancePx: 0 },
@@ -76,12 +79,25 @@ describe("browse layout lint", () => {
         "pass",
         "pass",
         "pass",
+        "fail",
+        "pass",
+        "pass",
         "pass",
         "unknown",
       ]);
-      expect(result.clip[5]?.unsupported).toEqual([]);
-      expect(result.clip[6]?.unsupported).toEqual([]);
-      expect(result.clip[7]?.unsupported).toContain("section.clip-path-unknown:clip-path");
+      expect(result.clip[8]?.unsupported).toEqual([]);
+      expect(result.clip[9]?.unsupported).toEqual([]);
+      expect(result.clip[10]?.unsupported).toContain("section.clip-path-unknown:clip-path");
+      // Content below the fold of a scroller is reachable, and a collapsed
+      // disclosure is deliberately unrendered; neither is a clip defect. An
+      // overflow:hidden box inside that scroller still is.
+      expect(result.clip[4]?.issues).toEqual([]);
+      expect(result.clip[5]?.issues).toEqual([]);
+      expect(result.clip[6]?.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ clippedBy: "div.inner" }),
+        ]),
+      );
       expect(result.clip[2]?.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
