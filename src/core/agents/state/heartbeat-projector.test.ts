@@ -733,3 +733,73 @@ describe("projectHeartbeats: claim.release durability + path-form normalization"
     expect(res.perOwner[OWNER]!.files_touched).toEqual(["src/d.ts"]);
   });
 });
+
+/**
+ * The naming ritual deadlocked in the wild: a `turn.stop` sighting replayed
+ * against whatever `suggested_session_name` was current, so a re-minted name
+ * inherited an older name's sighting. `sessionNamePresence` then treated the
+ * new name as already seen, stopped emitting `session_name_present`, and the
+ * stop-hook naming rule blocked every reply -- including the ones reproducing
+ * the exact name it asked for. The sighting now carries the name it covered.
+ */
+describe("projectHeartbeats: session-name sighting attribution", () => {
+  function events(instanceId: string, stopData: Record<string, unknown>): unknown[] {
+    return [
+      {
+        event_id: "01NAME",
+        event_type: "state.task_set",
+        ts: "2026-06-04T00:00:01Z",
+        instance_id: instanceId,
+        session_id: instanceId,
+        adapter: "claude-code",
+        source: "test",
+        data: {
+          task: "First focus",
+          first_of_session: true,
+          suggested_session_name: "Agent Maya - First focus",
+        },
+      },
+      {
+        event_id: "01STOP",
+        event_type: "turn.stop",
+        ts: "2026-06-04T00:00:02Z",
+        instance_id: instanceId,
+        session_id: instanceId,
+        adapter: "claude-code",
+        source: "test",
+        data: stopData,
+      },
+    ];
+  }
+
+  test("attributes the sighting to the name the scan covered, not the current one", () => {
+    const root = freshRoot();
+    const res = projectHeartbeats(
+      root,
+      events("named-owner", {
+        status_box_present: true,
+        session_name_present: true,
+        session_name_present_for: "Agent Maya - Earlier focus",
+      }) as unknown as Events,
+    );
+    const hb = res.perOwner["named-owner"]!;
+    expect(hb.session_name_seen_at).toBe("2026-06-04T00:00:02Z");
+    // NOT "Agent Maya - First focus" -- that name was never shown.
+    expect(hb.session_name_seen_for).toBe("Agent Maya - Earlier focus");
+  });
+
+  test("leaves attribution unset when the sighting predates the field", () => {
+    const root = freshRoot();
+    const res = projectHeartbeats(
+      root,
+      events("legacy-owner", {
+        status_box_present: true,
+        session_name_present: true,
+      }) as unknown as Events,
+    );
+    const hb = res.perOwner["legacy-owner"]!;
+    expect(hb.session_name_seen_at).toBe("2026-06-04T00:00:02Z");
+    // Unattributed, so the next stop re-scans instead of skipping on a guess.
+    expect(hb.session_name_seen_for).toBeUndefined();
+  });
+});

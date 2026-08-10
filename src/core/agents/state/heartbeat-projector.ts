@@ -253,8 +253,13 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       // full projector rebuild doesn't re-open a satisfied naming window.
       if (d.session_name_present === true) {
         hb.session_name_seen_at ??= ev.ts;
-        // Which name it was for: the one current at that point in the replay.
-        hb.session_name_seen_for = hb.suggested_session_name;
+        // Attribute the sighting to the name the scan actually covered. Reading
+        // the name current at this point in the replay instead re-attributed an
+        // old sighting to a re-minted name, which faked "already seen" for a
+        // name no reply had shown. An event without the field predates it, so
+        // leave the attribution unset and let the next stop re-scan.
+        const seenFor = pickStr(d, "session_name_present_for");
+        if (seenFor) hb.session_name_seen_for = seenFor;
       }
       {
         const summary = pickStr(d, "turn_summary");

@@ -104,9 +104,14 @@ export type TurnStop = EventEnvelope<
      * count. Shadow telemetry while the rule-2/3 detector decision is open;
      * the Stop verdict does not read it yet. */
     status_box_present_strict?: boolean;
-    /** Present only while the session's suggested name is pending (built but
-     * not yet seen in assistant text): whether this turn's reply shows it. */
+    /** Whether the session's suggested name is satisfied as of this turn:
+     * either this reply showed it, or an earlier reply did. Present whenever a
+     * suggested name exists, since the Stop verdict reads it per turn. */
     session_name_present?: boolean;
+    /** Which suggested name `session_name_present` refers to. A projector
+     * rebuild attributes the sighting to this name instead of to whichever
+     * name is current during the replay. */
+    session_name_present_for?: string;
     /** Shadow telemetry for Windows-hosted Codex workspaces: Markdown link
      * destinations that still use the Linux coordination root. */
     wsl_linux_file_link_count?: number;

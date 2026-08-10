@@ -32,7 +32,6 @@ import {
 } from "../agents/finalization.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
-import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
@@ -88,6 +87,7 @@ import {
   scanStatusBoxPresent,
   scanTranscriptModel,
 } from "./resolve/transcript.ts";
+import { sessionNamePresence } from "./session-name-presence.ts";
 import { unsafeCrossShellReason } from "./unsafe-cross-shell.ts";
 
 interface Argv {
@@ -373,16 +373,12 @@ function buildEventData(
         status_box_present_strict:
           scanAssistantTextIncludes(p?.transcript_path, "┌─ agent-") ||
           lastAssistantMessage.includes("┌─ agent-"),
-        // While the session's suggested name is pending (built, not yet seen
-        // in assistant text), report whether this turn's reply shows it and
-        // stamp the heartbeat when it does. Omitted once seen (or never built)
-        // so the scan runs at most a few turns per session. Feeds the
-        // stop-hook.session_name verdict + the miss-rate telemetry.
-        ...sessionNamePresence(
-          ctx.coordRoot,
-          ctx.instanceId,
-          p?.transcript_path,
-          lastAssistantMessage,
+        // Whether the session's suggested name is satisfied as of this turn,
+        // and which name that refers to. Reported on every stop while a name
+        // exists (the stop-hook.session_name verdict reads it per turn); the
+        // transcript scan itself stops once the name has been sighted.
+        ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, lastAssistantMessage, (name) =>
+          scanAssistantTextIncludes(p?.transcript_path, name),
         ),
         ...(fileLinkTelemetry ?? {}),
         stop_hook_active: p?.stop_hook_active,
@@ -489,38 +485,6 @@ function buildEventData(
           numberField(metadata?.post_compact_tokens),
       };
     }
-  }
-}
-
-/**
- * Session-name presence for `turn.stop`: while the heartbeat carries a
- * suggested_session_name with no session_name_seen_at stamp, scan the reply
- * for it — assistant text blocks only (the raw tail also carries the name in
- * the set-task tool_result, which must not count) — plus the adapter-supplied
- * last_assistant_message for transcript-less stops. Stamps the heartbeat on
- * first sighting so later turns skip the scan entirely. Never throws.
- */
-function sessionNamePresence(
-  coordRoot: string,
-  instanceId: string,
-  transcriptPath: string | undefined,
-  lastAssistantMessage: string,
-): { session_name_present?: boolean } {
-  try {
-    const hb = readHeartbeat(coordRoot, instanceId);
-    const name = hb?.suggested_session_name;
-    // Skip only while the sighting was for THIS name. Keying the skip on the
-    // timestamp alone deadlocked the naming rule whenever a later set-task
-    // minted a different name: the scan stayed off, `session_name_present` was
-    // never emitted again, and the rule blocked every subsequent reply --
-    // including the reply that reproduced the name it was asking for.
-    if (!name || hb?.session_name_seen_for === name) return {};
-    const present =
-      scanAssistantTextIncludes(transcriptPath, name) || lastAssistantMessage.includes(name);
-    if (present) stampSessionNameSeen(coordRoot, instanceId, name);
-    return { session_name_present: present };
-  } catch {
-    return {};
   }
 }
 
