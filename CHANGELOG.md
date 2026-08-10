@@ -1,5 +1,221 @@
 # Changelog
 
+## 0.32.0
+
+### Minor Changes
+
+- b466ae5: `doctor`: flag an adapter whose CLI is installed but that has no hooks wired
+
+  The `adapter hooks` check only reported drift for an adapter already carrying at
+  least one Harnery hook. An adapter with none — including one whose settings file
+  does not exist — was skipped before any check ran, so a project could have Codex
+  or Cursor installed, have no hook manifest for it at all, and still see every
+  `doctor` check pass. Agents starting a session through that adapter registered
+  nothing, and nothing in the output said so.
+
+  `doctor` now warns when the project plainly uses Harnery hooks (some other
+  adapter is wired) and the unwired adapter's CLI is installed, with the
+  `init --adapter <id>` remedy. Both conditions are required, so a project that has
+  never run `init` and a project without that CLI both stay quiet.
+
+  Adds `summarizeAdapterWiring()` to `core/hooks/adapter/wiring.ts` for the
+  wired/unwired split. `loadAdapterWiring()`'s contract is unchanged: it still
+  reports drift only, and a bare settings file still never false-warns.
+
+- 44300db: Replace ambiguous compatibility aliases with one canonical CLI, hook,
+  configuration, adapter-state, workspace API, and durable-workflow contract. The
+  guarded status command is now `agents status --end-turn`, with no `--final`
+  alias.
+- 8a3dff3: Git hooks join the managed lifecycle: `init` installs them, upgrades ride the package, `deinit` removes them
+
+  Coordination behavior in a consumer's git hooks used to be the consumer's
+  problem: hosts copied the staged-path collection, submodule canonicalization,
+  gitlink probe, verdict call, and claim-pruning shell into their own
+  `pre-commit` / `post-commit` / `post-checkout` files, and those copies sat
+  outside the upgrade path. The first host's copies decayed for months (one hook
+  had a recycled-pid guard the other two never got; all three shared an identity
+  blind spot) and even shipped calls to an `agent-coord log` subcommand that does
+  not exist. Nothing in `init`, `deinit`, or `--check` knew git hooks existed.
+
+  Now the whole surface is machine-owned, on the same contract as the AGENTS.md
+  instructions block:
+
+  - **`agent-coord git-hook <event>`** owns every piece of hook behavior
+    in-process: staged/committed/checkout-removed collection (rename-aware,
+    submodule-canonical, gitlink-discriminating, clean-in-worktree gating), the
+    commit-conflict verdict, and claim pruning. Fail-open by design: an internal
+    error never blocks a commit; a clean conflict verdict still does. A repo's
+    root commit now prunes claims too (the bash era silently skipped it).
+
+  - **Hook files carry only a hash-versioned managed region**
+    (`# harnery:begin git-hook-<event>` markers, the `#`-comment sibling of the
+    Markdown region syntax) that locates `agent-coord` in either consumer layout
+    (git submodule or node_modules) and invokes `git-hook <event>`.
+
+  - **Adoption is explicit and upgrade-safe.** A project that upgrades harnery
+    but never runs `init` sees no change: `init --check` treats never-installed
+    git hooks as "not adopted" (green), so a CI or pre-commit wiring of
+    `--check` cannot go red on upgrade. `harn doctor` carries the nudge instead
+    (warn: "git hooks not installed; run init"). Once any region exists, a
+    missing or stale one is drift again.
+
+  - **`init` installs or refreshes the regions** (honoring `core.hooksPath` and
+    worktrees via `git rev-parse --git-path hooks`): a missing hook file is
+    created whole and executable; a host-authored hook gets the region inserted
+    after its shebang, everything else untouched. **`init --check`** reports a
+    missing or stale region as drift (exit 2). **`deinit`** removes the region,
+    deleting only files harnery created whole.
+
+  `spliceRegion`/`removeRegion`/`checkRegion` accept an optional comment style
+  ("html" default, "hash" for shell files); existing callers are unchanged.
+
+  Removed: the stdin-based `agent-coord verdict --rule=commit`, `post-commit`,
+  and `post-checkout` entry points (the pre-region host-hook contract). No
+  shipped harnery surface ever called them; a host that still does lands in the
+  fail-open unknown-rule branch, which is the same outcome those hooks already
+  had for a malformed request. The in-session wiring hint now names `init`
+  instead of the retired invocation.
+
+- 7f0cf1a: Add `harn docs links`: an internal Markdown link checker that resolves relative targets and validates the heading fragments they point at. Reports `missing-target`, `missing-fragment`, `case-mismatch` (with the on-disk path as a suggestion), and opt-in `escapes-repo`. Fragments are matched against GitHub's anchor rules, including duplicate-heading `-1`/`-2` suffixes, `{#custom-id}` suffixes, and HTML `id`/`name` attributes.
+
+  Built for a low enough noise floor to be worth reading: code fences and inline spans are masked before parsing, external/`mailto:`/protocol-relative/root-absolute targets are skipped, template placeholders (`{{x}}`, `${x}`, `<placeholder>`) are treated as unresolvable by design, `#L42` line refs and `#/spa/route` hash routes are never treated as headings, and findings in `archive/`, `audits/`, `changelogs/`, `handoffs/`, and `decisions/` documents are downgraded to warnings, as are lifecycle docs whose YAML frontmatter carries a terminal `status:` (resolved/wontfix/shipped/abandoned) — open ones stay errors (`--strict` opts out of both downgrades). Per-link `<!-- links-allow: reason -->` and per-file `<!-- links-allow-file: reason -->` escape hatches cover the rest. Advisory by default — `--fail` is the opt-in exit-code gate, so making link health blocking stays a host decision.
+
+- e1da455: Add authenticated environment-proxy routing, fixed-egress browser gating, WebRTC leak protection, graceful headed-session signaling, and owner-only Netscape cookie export to `harn browse`.
+- 62c7eab: Add authenticated owner-only live control for opted-in headed `browse` sessions, including sanitized inspection, strict locator actions, shared-context tab management, screenshots, and clean multi-process lifecycle handling.
+- 1c9bc09: Recorded fork lineage. A branched conversation is now a first-class recorded
+  relationship instead of an inference: Claude Code forks are detected from
+  preserved message uuids at the tool.pre_use heal (the fork never fires its own
+  SessionStart), `forked_from` lands on the branch's name-history row and rides
+  the heal event for replay convergence, session-start context names the parent
+  ("branched from agent-X's session…") with a generic inherited-name clause as
+  the fallback, and `agents identity assume` refuses a fork ancestor
+  (`identity_is_ancestor`) unless `--force-ancestor` marks deliberate
+  succession. Also fixes the pre-existing hole where a forked Claude Code
+  session ran as a permanently nameless heartbeat: healHeartbeat now mints a
+  pool name for a main session with no history. `assign-name` and
+  `heal-heartbeat` accept `--forked-from` for adapters that can supply a parent
+  id directly.
+- 41bdaff: Make the session-name ritual reliable. The suggested session name is now built on the session's first NON-EMPTY `set-task` (a bare clear no longer consumes the naming window), on the `--session-id` path too, and never for subagents or workflow children; the result carries a right-time `note` telling the agent to fence the name. The UserPromptSubmit reminder re-emits on every prompt until a name is produced instead of hash-deduping away after one ignored prompt. `turn.stop` now detects the name in assistant reply text (assistant text blocks only — tool_result rows carrying the set-task JSON must not count) as `session_name_present`, stamping `session_name_seen_at` on the heartbeat, and on Claude Code the Stop hook enforces the naming turn via the new `stop-hook.session_name` rule. Cursor stays soft (its Stop payload carries no transcript); Codex stays observe-only. `state.task_set` events carry `first_of_session` + `suggested_session_name`, and the heartbeat projector rebuilds both naming fields from events. `buildSuggestedName` moved from `commands/agents.ts` to `core/agents/state/heartbeat-writer.ts`.
+- f87bf4e: Commit verdict resolves committer identity itself; `resolveOwner()` gains a validated Codex-thread tier
+
+  A host's pre-commit hook used to resolve its own `instance_id` (typically with
+  a hand-rolled pid-map ancestor walk) and pass it into `agent-coord verdict`.
+  Any copy of that logic decays independently of `resolveOwner()`, and the walk
+  itself has a structural blind spot: a commit spawned across a process boundary
+  (e.g. a Windows→WSL bridge) descends from no registered process, resolves as
+  unattributed, and the agent's own claims then read as a peer's. The
+  self-attribution rescue can never cover that case — its pid gate refuses
+  whenever the holder has a live pid anchor, and a live session always does. In
+  practice this produced runs of false-positive self-blocks that taught agents
+  to reach for the bypass env var as a reflex.
+
+  Two changes:
+
+  - `CommitVerdictRequest.instance_id` / `session_id` are now optional. When
+    absent (or the legacy `__unattributed__` sentinel), `evaluateCommit()`
+    resolves the committer via `resolveOwner()` from its own process context,
+    and `CommitVerdictResult` / the verdict envelope carry the resolved
+    `instance_id` back so callers can use it for logging. Hooks should send
+    staged paths + bypass only and stop resolving identity themselves.
+
+  - `resolveOwner()` gains a final tier: `CODEX_THREAD_ID`, accepted only when
+    it is format-safe and a heartbeat by that id exists under
+    `.harnery/active/`. Codex sessions use their thread id as the heartbeat
+    instance_id, and bridges forward the variable into process trees the
+    pid-map walk can never reach; the heartbeat requirement keeps a stale or
+    garbage value from fabricating an identity.
+
+  The `post-commit` and `post-checkout` unclaim handlers get the same
+  treatment: when the request omits `owner`, they resolve it in-process rather
+  than silently no-oping. The silent no-op was the quiet half of the bridge
+  failure — a bridged commit that did land never pruned its claims, so they
+  lingered as stale conflicts for every commit after it.
+
+  Explicitly passed identity still wins, so existing callers are unaffected.
+
+### Patch Changes
+
+- 776cb37: Expose per-tab document navigation receipts from headed browser sessions so callers can verify direct operator refreshes independently of control-channel actions.
+- 4fe5afe: Recognize Codex Desktop's `CODEX_THREAD_ID` as a session identity source so
+  coordination commands resolve the correct heartbeat when tool processes cross
+  the Windows-to-WSL boundary.
+- 08f13ed: Resolve Windows WSL UNC write claims during end-of-turn Git finalization.
+- 48d9c67: `browse --check-clip`: stop reporting scrolled-out content as clipped
+
+  The clip rule treated `overflow: auto` and `overflow: scroll` exactly like
+  `hidden`, so anything a reader could reach by scrolling counted as a layout
+  defect. A table with a `max-height`, a code block wider than its column, any
+  capped scroll region — each reported one issue per row or line, and the fix the
+  report implied (remove the cap) was the opposite of the intent.
+
+  An axis now stops being checked at the first ancestor that scrolls it, including
+  the queried container itself. Constraints from ancestors _inside_ that scroller
+  still apply, so an `overflow: hidden` box nested in a scroller is still reported:
+  scrolling the outer container cannot reveal what the inner box cut off.
+
+  Text handling follows the same rule instead of its previous special case, which
+  skipped a text node entirely when its nearest block owner scrolled horizontally.
+  Such text is now still checked vertically, where a real clip can hide it.
+
+  Content inside a collapsed `<details>` no longer counts either. Chromium hides it
+  through the `::details-content` pseudo, which is not in the ancestor chain, so no
+  computed style on a real ancestor reported it and every closed accordion panel
+  read as text clipped out of its container.
+
+  Both classes were previously masked on busy pages: the check caps at 100 issues,
+  and a single capped table could fill it, so a real finding further down the
+  document never got recorded.
+
+- 01e4d78: Make every browse fail flag execute its check or reject a missing target, fail closed on inconclusive results, and filter normal font/subpixel paint from clip failures.
+- bbee1d0: Guard cross-root writes with explicit finalization roots. Projects that require
+  `agents status --end-turn` can authorize sibling Git repositories or deliberate
+  non-Git output roots in project config. The pre-use hook now rejects unsupported
+  targets before mutation, while the end-turn checker preserves durable released
+  claims and applies the normal dirty and remote checks to authorized sibling
+  repositories.
+- 3bc9176: Add an ownership-aware `agents status --end-turn` check that withholds the status
+  box until the current session's held paths, submodule pointers, and touched
+  repositories are committed and pushed. Released claims remain in scope through
+  the session's durable write-claim history, so a local commit cannot hide by
+  reducing the active file count to zero.
+
+  Submodule completion compares gitlink commit IDs directly, so unrelated dirty
+  files inside a peer's submodule working tree do not create a false block.
+
+- f2ea0c6: Infer governor proposal roots from the dependency graph's single final outcome instead of requiring planners to nominate the root separately.
+- 59d25f9: Keep common governor planning, independent review, and revision focused on frozen mission contracts and candidate-specific findings without universal program-shape or delivery-strategy advice.
+- 79dbc2d: Make automatic Git finalization a default-off host policy while keeping `agents status --end-turn` available as an explicit check.
+- 5ff8604: Detect an incomplete Windows-native Codex to WSL identity bridge in `doctor`
+  and at SessionStart, without changing Git or hook trust.
+- 8d973c7: Serialize Chromium process launches by default. Harnery still allows browsers
+  to run concurrently after startup, while avoiding transient Playwright
+  `connect ENOENT` failures when Bun's full test suite or a browse fan-out opens
+  several persistent contexts at once. Environments with extra process headroom
+  can raise `HARNERY_MAX_BROWSER_LAUNCHES` explicitly.
+- b8b2479: fix: stop the session-naming rule from deadlocking after a name is sighted
+
+  The Stop verdict's naming rule passes only on an in-window `turn.stop` carrying
+  `session_name_present: true`. Once the heartbeat recorded a sighting, the hook
+  omitted that field on every later stop, so nothing could re-emit it and every
+  reply blocked, including the replies that reproduced the exact name the rule
+  asked for. A satisfied name now reports `true` on each stop.
+
+  `turn.stop` also carries the new `session_name_present_for`, naming which
+  suggested name the sighting covered. A projector rebuild used to attribute an
+  older sighting to whatever name was current during the replay, so a re-minted
+  name looked satisfied without ever having been shown; the attribution now
+  follows the event, and a sighting that predates the field leaves it unset so the
+  next stop re-scans.
+
+- efeebac: Emit `status_box_present_strict` on `turn.stop`: the assistant-text-only variant of the rule-2/3 status-box detection, shadow telemetry alongside the existing loose scan (which also matches the box inside the status command's own tool_result row). The Stop verdict does not read it yet; the field exists to measure the divergence rate before deciding whether the gate flips to the strict scan.
+- f64706e: Make `browse` layout fail gates exit 2 for unknown results when enabled, and
+  treat rounded containers as rectangular geometry instead of inconclusive
+  clipping.
+- 6d730eb: Make `harn browse --check-clip` inspect every matching scope and catch rendered text that paints outside its nearest block parent.
+- fda3a91: Derive Windows-visible file-link roots for Codex tasks opened on WSL UNC
+  workspaces, inject the mapping into session and prompt context, and record
+  Linux-root Markdown destinations as non-blocking `turn.stop` telemetry.
+
 ## 0.31.6
 
 ### Patch Changes
