@@ -79,14 +79,14 @@ describe("sessionNamePresence", () => {
     });
   });
 
-  test("prefers the transcript scan over the last assistant message", () => {
+  test("reports true from the transcript scan, which is asked for the current name", () => {
     const root = rootWith({ suggested_session_name: NAME });
-    const seen: string[] = [];
-    const res = sessionNamePresence(root, "self", "", (name) => {
-      seen.push(name);
+    const scanned: string[] = [];
+    const res = sessionNamePresence(root, "self", "a reply without the name", (name) => {
+      scanned.push(name);
       return true;
     });
-    expect(seen).toEqual([NAME]);
+    expect(scanned).toEqual([NAME]);
     expect(res.session_name_present).toBe(true);
   });
 
