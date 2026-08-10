@@ -99,6 +99,9 @@ export type TurnStop = EventEnvelope<
     tool_call_count: number;
     text_length: number;
     status_box_present: boolean; // adapter sets via transcript scan for `┌─ agent-` prefix
+    /** Present only while the session's suggested name is pending (built but
+     * not yet seen in assistant text): whether this turn's reply shows it. */
+    session_name_present?: boolean;
   }
 >;
 
@@ -288,6 +291,11 @@ export type StateTaskSet = EventEnvelope<
   {
     task: string;
     cleared: boolean;
+    /** True exactly when this call produced the session name (first non-empty
+     * declaration of a human-facing session); never true with a null name. */
+    first_of_session?: boolean;
+    /** The name produced by this call, for the Stop-hook naming rule. */
+    suggested_session_name?: string | null;
   }
 >;
 

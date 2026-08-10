@@ -326,6 +326,144 @@ describe("evaluateStopHook", () => {
     expect(v.rule).toBe("stop-hook.rule_2_3");
   });
 
+  // Session-naming rule: the turn whose set-task produced the suggested name
+  // must show it in the reply (turn.stop's session_name_present). CC-only.
+  const NAME = "Agent Maya - Auth refactor";
+  const namingEvents = (
+    base: Record<string, unknown>,
+    ts: (o: number) => string,
+    stops: Array<Record<string, unknown>>,
+  ): Array<Record<string, unknown>> => [
+    { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
+    { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
+    { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
+    {
+      event_id: "4",
+      event_type: "state.task_set",
+      ts: ts(-2500),
+      ...base,
+      data: {
+        task: "Auth refactor",
+        cleared: false,
+        first_of_session: true,
+        suggested_session_name: NAME,
+      },
+    },
+    ...stops.map((data, i) => ({
+      event_id: `${5 + i}`,
+      event_type: "turn.stop",
+      ts: ts(-1000 + i * 100),
+      ...base,
+      data,
+    })),
+  ];
+
+  test("claude-code: the naming turn without the fenced name blocks stop-hook.session_name", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "n1", session_id: "n1", adapter: "claude-code", source: "test" };
+    writeEvents(
+      namingEvents(base, ts, [{ status_box_present: true, session_name_present: false }]),
+    );
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "n1",
+      adapter: "claude-code",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(false);
+    expect(v.rule).toBe("stop-hook.session_name");
+    expect(v.reason).toContain(NAME);
+  });
+
+  test("claude-code: naming turn passes once session_name_present is true", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "n2", session_id: "n2", adapter: "claude-code", source: "test" };
+    writeEvents(namingEvents(base, ts, [{ status_box_present: true, session_name_present: true }]));
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "n2",
+      adapter: "claude-code",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("stop-hook.pass");
+  });
+
+  test("an earlier in-window sighting satisfies the rule even when a later turn.stop omits the flag", () => {
+    // Once seen, session_name_seen_at is stamped and later turn.stops omit
+    // session_name_present; a repair of a DIFFERENT rule fires such a stop and
+    // must not un-satisfy the naming rule (livelock guard).
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "n3", session_id: "n3", adapter: "claude-code", source: "test" };
+    writeEvents(
+      namingEvents(base, ts, [
+        { status_box_present: true, session_name_present: true },
+        { status_box_present: true },
+      ]),
+    );
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "n3",
+      adapter: "claude-code",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("stop-hook.pass");
+  });
+
+  test("a non-naming task_set never triggers the rule", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "n4", session_id: "n4", adapter: "claude-code", source: "test" };
+    writeEvents([
+      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
+      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
+      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
+      {
+        event_id: "4",
+        event_type: "state.task_set",
+        ts: ts(-2500),
+        ...base,
+        data: { task: "Later turn", cleared: false, first_of_session: false },
+      },
+      {
+        event_id: "5",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        ...base,
+        data: { status_box_present: true },
+      },
+    ]);
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "n4",
+      adapter: "claude-code",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("stop-hook.pass");
+  });
+
+  test("cursor: the naming rule never fires (fence undetectable from Cursor's Stop payload)", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = { instance_id: "n5", session_id: "n5", adapter: "cursor", source: "test" };
+    writeEvents(
+      namingEvents(base, ts, [{ status_box_present: false, session_name_present: false }]),
+    );
+    const v = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "n5",
+      adapter: "cursor",
+      now_ms: now,
+    });
+    expect(v.allow).toBe(true);
+    expect(v.rule).toBe("stop-hook.pass");
+  });
+
   // Cross-turn remediation. Cursor answers a Stop block by auto-submitting our
   // message as a NEW user turn, so these cases cover the window that spans the
   // repair turn and the turn it repairs. Judged per-turn, the pair below

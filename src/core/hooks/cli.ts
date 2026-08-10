@@ -32,6 +32,7 @@ import {
 } from "../agents/finalization.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
+import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
@@ -78,6 +79,7 @@ import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
 import {
   detectForkParent,
+  scanAssistantTextIncludes,
   scanStatusBoxPresent,
   scanTranscriptModel,
 } from "./resolve/transcript.ts";
@@ -350,6 +352,17 @@ function buildEventData(
         status_box_present:
           scanStatusBoxPresent(p?.transcript_path) ||
           ((p?.raw.last_assistant_message as string | undefined) ?? "").includes("┌─ agent-"),
+        // While the session's suggested name is pending (built, not yet seen
+        // in assistant text), report whether this turn's reply shows it and
+        // stamp the heartbeat when it does. Omitted once seen (or never built)
+        // so the scan runs at most a few turns per session. Feeds the
+        // stop-hook.session_name verdict + the miss-rate telemetry.
+        ...sessionNamePresence(
+          ctx.coordRoot,
+          ctx.instanceId,
+          p?.transcript_path,
+          (p?.raw.last_assistant_message as string | undefined) ?? "",
+        ),
         stop_hook_active: p?.stop_hook_active,
       };
     }
@@ -454,6 +467,33 @@ function buildEventData(
           numberField(metadata?.post_compact_tokens),
       };
     }
+  }
+}
+
+/**
+ * Session-name presence for `turn.stop`: while the heartbeat carries a
+ * suggested_session_name with no session_name_seen_at stamp, scan the reply
+ * for it — assistant text blocks only (the raw tail also carries the name in
+ * the set-task tool_result, which must not count) — plus the adapter-supplied
+ * last_assistant_message for transcript-less stops. Stamps the heartbeat on
+ * first sighting so later turns skip the scan entirely. Never throws.
+ */
+function sessionNamePresence(
+  coordRoot: string,
+  instanceId: string,
+  transcriptPath: string | undefined,
+  lastAssistantMessage: string,
+): { session_name_present?: boolean } {
+  try {
+    const hb = readHeartbeat(coordRoot, instanceId);
+    const name = hb?.suggested_session_name;
+    if (!name || hb?.session_name_seen_at) return {};
+    const present =
+      scanAssistantTextIncludes(transcriptPath, name) || lastAssistantMessage.includes(name);
+    if (present) stampSessionNameSeen(coordRoot, instanceId);
+    return { session_name_present: present };
+  } catch {
+    return {};
   }
 }
 

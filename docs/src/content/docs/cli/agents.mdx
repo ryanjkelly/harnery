@@ -110,27 +110,37 @@ shown to peers in the per-prompt snapshot and on the dashboard. Pass an empty
 string (`''`) to clear it. Like `status`, it accepts `--session-id <id>` for
 adapters where the process walk can't resolve self.
 
-**First-of-session session name.** The first time you declare a focus in a
-session (detected by the absence of a prior `task_updated_at` stamp), the JSON
-result additionally carries `first_of_session: true` and a
-`suggested_session_name` (`Agent <you> - <your task>`) for the operator to set
-as their adapter's session/tab title:
+**First-of-session session name.** The session's first **non-empty** focus
+declaration builds a `suggested_session_name` (`Agent <you> - <your task>`),
+stamps it on the heartbeat, and returns it with `first_of_session: true` for
+the operator to set as their adapter's session/tab title:
 
 ```json
 { "task": "Auth Refactor", "first_of_session": true,
-  "suggested_session_name": "Agent Hollis - Auth Refactor", ... }
+  "suggested_session_name": "Agent Hollis - Auth Refactor",
+  "note": "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title." }
 ```
 
-With hooks installed, Harnery injects a reminder on the first prompt in Claude
-Code, Cursor, and Codex. It tells the agent to run `set-task` before task work
-and copy the returned name into a fenced code block. The reminder fires once
-and skips subagents and workflow children.
+`first_of_session: true` means exactly "this call produced the session name" —
+it is never true with a null name. A bare clear (`''`) as the first call does
+not consume the naming window; the next non-empty declaration still names the
+session. The `--session-id` path names the session like any other call.
+Subagents and workflow children are never named.
 
-The single focus declaration feeds both the peer-visible task and the tab name,
-so there's one source of truth. Reproduce `suggested_session_name` inside a fenced
-code block in your reply. Chat UIs add a one-click Copy button to code blocks, so
-the operator grabs the exact string without hand-selecting. Every later `set-task`
-returns `first_of_session: false` and a null name.
+With hooks installed, Harnery injects a reminder on every prompt in Claude
+Code, Cursor, and Codex until the session has produced its name; it skips
+subagents and workflow children. The single focus declaration feeds both the
+peer-visible task and the tab name, so there's one source of truth. Reproduce
+`suggested_session_name` inside a fenced code block in your reply. Chat UIs add
+a one-click Copy button to code blocks, so the operator grabs the exact string
+without hand-selecting. Every later `set-task` returns
+`first_of_session: false` and a null name.
+
+On Claude Code, the Stop hook additionally enforces the naming turn
+(`stop-hook.session_name`): the turn whose `set-task` produced the name must
+show it in the reply text. Cursor's Stop payload carries neither a transcript
+nor the assistant message, so the fence is undetectable there and the reminder
+stays soft; Codex Stop remains observe-only.
 
 ### suggest-name
 

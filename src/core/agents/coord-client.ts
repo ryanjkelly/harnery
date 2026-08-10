@@ -75,6 +75,10 @@ export interface Heartbeat {
   task?: string;
   /** UTC ISO-8601 timestamp when task was last set/cleared. Used by adapters without Stop enforcement to compute staleness. 2026-05-24. */
   task_updated_at?: string | null;
+  /** Session name built on the first non-empty set-task; its presence means "this session has been named". 2026-08-09. */
+  suggested_session_name?: string;
+  /** Stamped by turn.stop once the suggested name is seen in assistant reply text. 2026-08-09. */
+  session_name_seen_at?: string;
   /** Auto-generated per-turn summary written by the Stop hook via Haiku. 2026-05-23. */
   turn_summary?: string | null;
   /** UTC ISO-8601 timestamp when turn_summary was last refreshed. */

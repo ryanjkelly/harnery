@@ -22,6 +22,56 @@ export function scanStatusBoxPresent(transcriptPath: string | undefined): boolea
 }
 
 /**
+ * Scan a CC-style JSONL transcript for a needle in ASSISTANT message text
+ * blocks only. Used by `turn.stop` to detect the suggested session name in the
+ * reply.
+ *
+ * The row filter is load-bearing: the transcript tail also carries the needle
+ * inside `tool_result` rows (the `agents set-task` JSON output) and hook
+ * context rows, so a raw `includes()` over the tail — the way the status-box
+ * scan works — would false-pass the moment set-task runs. Verified empirically
+ * 2026-08-09 against a live transcript.
+ *
+ * Same 256KB tail window as the other scans; the window's first line may be a
+ * truncated JSON row, which the per-line parse guard skips.
+ */
+export function scanAssistantTextIncludes(
+  transcriptPath: string | undefined,
+  needle: string,
+): boolean {
+  if (!transcriptPath || !needle || !existsSync(transcriptPath)) return false;
+  const text = tailText(transcriptPath);
+  if (!text) return false;
+  for (const line of text.split("\n")) {
+    // Cheap gate before parsing: most lines don't contain the needle at all.
+    if (!line.includes(needle)) continue;
+    try {
+      const row = JSON.parse(line) as {
+        type?: unknown;
+        message?: { content?: unknown };
+      };
+      if (row.type !== "assistant") continue;
+      const content = row.message?.content;
+      if (typeof content === "string") {
+        if (content.includes(needle)) return true;
+        continue;
+      }
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (typeof block !== "object" || block === null) continue;
+        const b = block as { type?: unknown; text?: unknown };
+        if (b.type === "text" && typeof b.text === "string" && b.text.includes(needle)) {
+          return true;
+        }
+      }
+    } catch {
+      // Truncated/partial line (tail-window start or flush race); skip it.
+    }
+  }
+  return false;
+}
+
+/**
  * Resolve the agent's model from a CC-style JSONL transcript by reading the
  * most-recent assistant message's `message.model`. Claude Code's SessionStart
  * payload omits `model` (Codex + Cursor supply it directly), so this is the

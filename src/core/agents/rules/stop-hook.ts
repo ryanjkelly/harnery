@@ -11,6 +11,9 @@
  *            stop currently firing carries that field via the in-flight event
  *            agent-hook emits before the stop hook runs).
  * Rule 3/3: `state.task_set` event with matching turn boundary exists.
+ * Session-naming rule (at most once per session, CC semantics only): the turn
+ *            whose set-task produced `suggested_session_name` must carry an
+ *            in-window `turn.stop` with `session_name_present: true`.
  *
  * Pure-prose-turn exemption: when zero `tool.pre_use` events fire in
  * the current turn, rules 1/3 and 3/3 do not apply. Rule 2/3 still applies
@@ -295,6 +298,37 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   if (!ackPresent) return ackBlock();
   if (!taskSet) return rule33Block();
 
+  // Session-naming rule (at most once per session, evaluated last so
+  // remediation stays monotonic in the established order): the turn whose
+  // set-task produced the suggested session name must show that name in the
+  // reply. Claude Code semantics only — Cursor's Stop payload carries neither
+  // a transcript nor the assistant message, so the fence is undetectable there
+  // (the same reason rule 2/3 collapses into 1/3 on Cursor), and Codex
+  // returned observe-only above. Detection rides `turn.stop`'s
+  // `session_name_present` (assistant-text-only transcript scan), mirroring
+  // how rule 2/3 rides `status_box_present`.
+  if (ackSignal === "status_box_present") {
+    const namingTaskSet = inTurn.find(
+      (e) =>
+        e.event_type === "state.task_set" &&
+        e.data.first_of_session === true &&
+        typeof e.data.suggested_session_name === "string" &&
+        e.data.suggested_session_name.length > 0,
+    );
+    if (namingTaskSet) {
+      // ANY in-window turn.stop with the flag satisfies the rule, not just the
+      // latest: once seen, `session_name_seen_at` is stamped and later
+      // turn.stops OMIT the field, so a later block on a different rule (whose
+      // repair fires a fresh turn.stop) must not un-satisfy this one.
+      const namePresent = inTurn.some(
+        (e) => e.event_type === "turn.stop" && e.data.session_name_present === true,
+      );
+      if (!namePresent) {
+        return sessionNameBlock(String(namingTaskSet.data.suggested_session_name));
+      }
+    }
+  }
+
   return {
     allow: true,
     exit_code: 0,
@@ -320,6 +354,15 @@ function rule23Block(coordRoot?: string): VerdictResult {
     exit_code: 2,
     rule: "stop-hook.rule_2_3",
     reason: `End-of-turn rule (2/3): turn.stop did not see the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
+  };
+}
+
+function sessionNameBlock(name: string): VerdictResult {
+  return {
+    allow: false,
+    exit_code: 2,
+    rule: "stop-hook.session_name",
+    reason: `Session-naming rule: this turn's set-task produced the session name, but your reply doesn't show it. Reproduce it by itself in a fenced code block so the operator can one-click-copy it as the session/tab title: ${name}`,
   };
 }
 

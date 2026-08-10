@@ -212,7 +212,9 @@ describe("renderPromptContext", () => {
     expect(out).toContain("fenced code block");
   });
 
-  test("first-session nudge dedupes while the first set-task is still pending", () => {
+  test("first-session nudge re-emits on every prompt until a name is produced", () => {
+    // Deliberately NOT deduped: "still unnamed" is the failure state, and a
+    // one-shot reminder erased by dedup was the operator-reported miss mode.
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     writeFileSync(
       join(activeDir, "self.json"),
@@ -238,11 +240,14 @@ describe("renderPromptContext", () => {
     };
     expect(renderPromptContext(opts)).toContain("suggested_session_name");
     const second = renderPromptContext(opts);
-    expect(second).not.toContain("suggested_session_name");
+    expect(second).toContain("suggested_session_name");
+    // The naming reminder supersedes the generic task-unset reminder.
     expect(second).not.toContain("task` field is unset");
   });
 
-  test("first-session nudge does not fire after any set-task, including a clear", () => {
+  test("first-session nudge still fires after a bare clear (clears never name)", () => {
+    // A first declaration of "" stamps task_updated_at but produces no name;
+    // the naming window must stay open.
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     writeFileSync(
       join(activeDir, "self.json"),
@@ -253,6 +258,35 @@ describe("renderPromptContext", () => {
         session_id: "self",
         kind: "session",
         task_updated_at: now,
+        files_touched: [],
+        last_heartbeat: now,
+        started_at: now,
+      }),
+      "utf8",
+    );
+    const out = renderPromptContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      sessionNameNudge: true,
+    });
+    expect(out).toContain("suggested_session_name");
+  });
+
+  test("first-session nudge stops once the session has been named", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    writeFileSync(
+      join(activeDir, "self.json"),
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "self",
+        name: "Maya",
+        session_id: "self",
+        kind: "session",
+        task: "Auth refactor",
+        task_updated_at: now,
+        suggested_session_name: "Agent Maya - Auth refactor",
         files_touched: [],
         last_heartbeat: now,
         started_at: now,

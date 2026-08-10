@@ -784,6 +784,17 @@ describe("agent-hook user-prompt-submit", () => {
       expect(stdout).toContain("first_of_session: true");
       expect(stdout).toContain("suggested_session_name");
       expect(stdout).toContain("fenced code block");
+
+      // Not deduped: the reminder re-emits while the session stays unnamed
+      // (one ignored prompt must not erase the ritual).
+      const repeat = run(
+        AGENT_HOOK,
+        ["user-prompt-submit", "--adapter", fixture.adapter],
+        JSON.stringify(fixture.payload(root)),
+        root,
+        { HARNERY_BIN: "" },
+      );
+      expect(repeat.stdout).toContain("suggested_session_name");
     }
   });
 
@@ -792,7 +803,12 @@ describe("agent-hook user-prompt-submit", () => {
     seedHeartbeat(root, "cursor-task-null", {
       name: "Bertha",
       platform: "cursor",
-      extra: { task_updated_at: nowIso() },
+      // A named session (first set-task happened) whose task was then cleared:
+      // the generic task-unset nudge applies, not the naming reminder.
+      extra: {
+        task_updated_at: nowIso(),
+        suggested_session_name: "Agent Bertha - initial focus",
+      },
     });
     const payload = JSON.stringify({
       conversation_id: "cursor-task-null",
@@ -816,7 +832,11 @@ describe("agent-hook user-prompt-submit", () => {
     seedHeartbeat(root, "cursor-task-stale", {
       name: "Bertha",
       platform: "cursor",
-      extra: { task: "old workstream", task_updated_at: nowIso(-2 * 60 * 60 * 1000) },
+      extra: {
+        task: "old workstream",
+        task_updated_at: nowIso(-2 * 60 * 60 * 1000),
+        suggested_session_name: "Agent Bertha - old workstream",
+      },
     });
     const mk = (prompt: string) =>
       JSON.stringify({
@@ -850,7 +870,11 @@ describe("agent-hook user-prompt-submit", () => {
     seedHeartbeat(root, "codex-task-null", {
       name: "Bertha",
       platform: "codex",
-      extra: { task_updated_at: nowIso() },
+      // Named session, task since cleared (see the cursor twin above).
+      extra: {
+        task_updated_at: nowIso(),
+        suggested_session_name: "Agent Bertha - initial focus",
+      },
     });
     const payload = JSON.stringify({
       session_id: "codex-task-null",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildSuggestedName } from "./agents.ts";
+import { buildSuggestedName } from "../core/agents/state/heartbeat-writer.ts";
 
 describe("buildSuggestedName", () => {
   test("composes 'Agent <name> - <description>'", () => {

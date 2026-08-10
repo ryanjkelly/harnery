@@ -3,7 +3,93 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { detectForkParent, scanTranscriptModel } from "./transcript.ts";
+import { detectForkParent, scanAssistantTextIncludes, scanTranscriptModel } from "./transcript.ts";
+
+describe("scanAssistantTextIncludes", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "harn-transcript-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeTranscript(lines: (object | string)[]): string {
+    const p = join(dir, "transcript.jsonl");
+    writeFileSync(
+      p,
+      `${lines.map((l) => (typeof l === "string" ? l : JSON.stringify(l))).join("\n")}\n`,
+    );
+    return p;
+  }
+
+  const NAME = "Agent Maya - Auth refactor";
+
+  test("matches the needle in an assistant text block", () => {
+    const p = writeTranscript([
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: `\`\`\`\n${NAME}\n\`\`\`` }] },
+      },
+    ]);
+    expect(scanAssistantTextIncludes(p, NAME)).toBe(true);
+  });
+
+  test("matches a plain-string assistant content", () => {
+    const p = writeTranscript([{ type: "assistant", message: { content: `top\n${NAME}\nrest` } }]);
+    expect(scanAssistantTextIncludes(p, NAME)).toBe(true);
+  });
+
+  test("does NOT match the needle inside a tool_result row", () => {
+    // Load-bearing: the set-task JSON output lands in a tool_result row of the
+    // same tail window, so a raw includes() would false-pass the moment
+    // set-task runs (verified against a live CC transcript, 2026-08-09).
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: `{"first_of_session":true,"suggested_session_name":"${NAME}"}`,
+            },
+          ],
+        },
+      },
+    ]);
+    expect(scanAssistantTextIncludes(p, NAME)).toBe(false);
+  });
+
+  test("does NOT match inside non-text assistant blocks (tool_use input)", () => {
+    const p = writeTranscript([
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", input: { command: `echo "${NAME}"` } }],
+        },
+      },
+    ]);
+    expect(scanAssistantTextIncludes(p, NAME)).toBe(false);
+  });
+
+  test("survives a truncated first line (tail-window start)", () => {
+    const p = writeTranscript([
+      `"message":{"content":[{"type":"text","text":"${NAME}"}]}}`, // torn row
+      { type: "assistant", message: { content: [{ type: "text", text: NAME }] } },
+    ]);
+    expect(scanAssistantTextIncludes(p, NAME)).toBe(true);
+  });
+
+  test("returns false for missing path or empty needle", () => {
+    expect(scanAssistantTextIncludes(undefined, NAME)).toBe(false);
+    expect(scanAssistantTextIncludes(join(dir, "nope.jsonl"), NAME)).toBe(false);
+    const p = writeTranscript([
+      { type: "assistant", message: { content: [{ type: "text", text: NAME }] } },
+    ]);
+    expect(scanAssistantTextIncludes(p, "")).toBe(false);
+  });
+});
 
 describe("scanTranscriptModel", () => {
   let dir: string;

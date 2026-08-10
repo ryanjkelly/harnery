@@ -12,11 +12,12 @@
  *      + sorted(files_touched) + platform, sorted by instance_id).
  *   2. Council pending: pending open-council IDs hashed; re-emits when the
  *      ID set changes.
- *   3. Focus nudge. Before the first set-task in a human-facing session, tells
- *      every adapter to reproduce set-task's suggested session name in a fenced
- *      code block. Cursor/Codex additionally get the existing unset/stale-task
- *      reminder because their Stop hooks do not enforce task declarations as
- *      reliably as Claude Code's.
+ *   3. Focus nudge. Until the session has produced its suggested name (first
+ *      non-empty set-task), tells every adapter — on every prompt, undeduped —
+ *      to reproduce set-task's suggested session name in a fenced code block.
+ *      Cursor/Codex additionally get the existing unset/stale-task reminder
+ *      because their Stop hooks do not enforce task declarations as reliably
+ *      as Claude Code's.
  *   4. Codex status footer: a non-deduplicated reminder to put the live status
  *      box after the substantive answer. Stop stays observe-only, so missing the
  *      footer can never trigger a replacement response.
@@ -59,6 +60,7 @@ interface HeartbeatRow {
   platform?: string;
   task?: string;
   task_updated_at?: string;
+  suggested_session_name?: string;
   turn_summary?: string;
   workflow_run_id?: string;
 }
@@ -177,13 +179,15 @@ function computeFocusNudgeIfChanged(
   let message = "";
   let nudgeKind = "";
 
-  if (opts.sessionNameNudge && !hb.task_updated_at) {
+  if (opts.sessionNameNudge && !hb.suggested_session_name) {
+    // Keyed on "a name was ever produced", not task_updated_at: a bare clear
+    // as the first declaration must not end the naming window.
     needsNudge = true;
     nudgeKind = "session-name";
     message =
-      `New session: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
+      `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
       "When it returns `first_of_session: true`, reproduce its `suggested_session_name` value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title. " +
-      "Then continue with the task; that first `set-task` also satisfies this turn's focus declaration.";
+      "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.";
   } else if (opts.taskNudge && !taskValue) {
     needsNudge = true;
     nudgeKind = "task-unset";
@@ -208,8 +212,18 @@ function computeFocusNudgeIfChanged(
     return "";
   }
 
-  // Dedup on kind + task state so the first-session reminder does not turn into
-  // a generic "task unset" reminder on the next prompt before set-task runs.
+  // The session-name reminder is deliberately NOT deduped: it re-emits on
+  // every prompt until a name is produced, because the "still unnamed" state
+  // is the failure state — deduping it erases the only reminder after one
+  // ignored prompt (the miss mode operators reported). Bounded in practice:
+  // Stop rule 3/3 forces a set-task on the first tool-using turn.
+  if (nudgeKind === "session-name") {
+    clearHashFile(hashFile);
+    return message;
+  }
+
+  // Dedup the task-unset/stale reminders on kind + task state so a repeat
+  // prompt in the same state stays quiet.
   const state = `${nudgeKind}|task=${taskValue}|updated=${hb.task_updated_at ?? ""}|threshold=${threshold}`;
   const newHash = sha256Hex16(state);
   const oldHash = safeRead(hashFile);

@@ -46,6 +46,7 @@ import {
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
+import { buildSuggestedName } from "../core/agents/state/heartbeat-writer.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
@@ -1518,15 +1519,13 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     process.exit(1);
   }
 
-  // Snapshot BEFORE the mutation: a heartbeat that has never carried a task
-  // has no `task_updated_at` stamp (setTask always stamps it, even on a clear),
-  // so its absence is the "focus never declared this session" signal — i.e. the
-  // first set-task of the session. That's the natural moment to also hand the
-  // operator a session name built from the same declaration (one source of
-  // truth: the focus you declare names the session). Distinct from task===""
-  // (a deliberate clear), which carries a stamp and does NOT re-trigger.
+  // Snapshot BEFORE the mutation: the writer stamps `suggested_session_name`
+  // on the session's first NON-EMPTY declaration (one source of truth: the
+  // focus you declare names the session). A bare clear never consumes the
+  // naming window, and subagent/workflow kinds are never named — see
+  // heartbeat-writer.setTask. This call is the naming call exactly when the
+  // stamp appears across the mutation.
   const priorHb = readHeartbeat(myOwner);
-  const firstOfSession = !priorHb?.task_updated_at;
 
   // Heartbeat mutation goes through agent-coord (atomic temp+rename).
   const helper = agentCoordOrExit(root);
@@ -1543,20 +1542,29 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   }
 
   const hb = readHeartbeat(myOwner);
+
+  // The naming call: the mutation just stamped `suggested_session_name` for
+  // the first time. `first_of_session: true` means exactly "this call produced
+  // the session name" — it is never true with a null name (an empty first
+  // declaration or a `--session-id` relay both keep the window open instead).
+  const suggestedName =
+    !priorHb?.suggested_session_name && hb?.suggested_session_name
+      ? hb.suggested_session_name
+      : null;
+  const firstOfSession = suggestedName !== null;
+
   emitCanonical({
     type: "state.task_set",
     owner: myOwner,
     session: hb?.session_id ?? myOwner,
     adapter: normalizeAdapter(hb?.platform),
-    data: { task, cleared: !task || task.length === 0 },
+    data: {
+      task,
+      cleared: !task || task.length === 0,
+      first_of_session: firstOfSession,
+      suggested_session_name: suggestedName,
+    },
   });
-
-  // On the first focus declaration of a session, surface a suggested session
-  // name for the operator to set as their adapter tab title. Read the result
-  // (`suggested_session_name`) and reproduce it in a fenced code block so the
-  // UI's Copy button hands over the exact string. null on every later call.
-  const built =
-    firstOfSession && !opts?.sessionId ? buildSuggestedName(hb?.name ?? "unknown", [task]) : null;
 
   emit.data({
     instance_id: myOwner,
@@ -1564,23 +1572,15 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     task: hb?.task ?? null,
     cleared: !task || task.length === 0,
     first_of_session: firstOfSession,
-    suggested_session_name: built?.suggestedName ?? null,
+    suggested_session_name: suggestedName,
+    // Right-time instruction: the UserPromptSubmit nudge fires before the name
+    // exists; this result is the moment the model holds the string.
+    ...(suggestedName
+      ? {
+          note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
+        }
+      : {}),
   });
-}
-
-/**
- * Build the copy-pasteable session name from the coord identity + the agent's
- * description parts. Pure (no coord-state reads) so it's unit-testable; collapses
- * internal whitespace and trims. Returns null when the description is empty.
- */
-export function buildSuggestedName(
-  agentName: string,
-  descriptionParts: string[],
-): { suggestedName: string; description: string } | null {
-  const description = descriptionParts.join(" ").replace(/\s+/g, " ").trim();
-  if (!description) return null;
-  const name = agentName?.trim() || "unknown";
-  return { suggestedName: `Agent ${name} - ${description}`, description };
 }
 
 function runSuggestName(

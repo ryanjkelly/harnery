@@ -86,6 +86,13 @@ export interface Heartbeat {
   files_touched: string[];
   task?: string;
   task_updated_at?: string | null;
+  /** Session name built on the first non-empty set-task (never rebuilt). Its
+   * presence is the "this session has been named" signal the prompt-context
+   * nudge and the Stop-hook naming rule key on. */
+  suggested_session_name?: string;
+  /** Stamped by turn.stop once the suggested name is seen in assistant reply
+   * text, ending the per-turn transcript scan. */
+  session_name_seen_at?: string;
   last_status_at?: string;
   turn_summary?: string | null;
   turn_summary_updated_at?: string | null;
@@ -94,6 +101,7 @@ export interface Heartbeat {
   last_tool_at?: string;
   current_turn_id?: string;
   parent_instance_id?: string;
+  workflow_run_id?: string;
   [extra: string]: unknown;
 }
 
@@ -138,12 +146,45 @@ function mutate(
 export function setTask(coordRoot: string, instanceId: string, task: string): Heartbeat | null {
   return mutate(coordRoot, instanceId, (hb) => {
     const cleared = !task || task.length === 0;
+    // Name the session on its first NON-EMPTY declaration. Keyed on the
+    // suggested_session_name stamp, not task_updated_at, so a bare clear as
+    // the first call never burns the naming window. Subagents and workflow
+    // children have no human-owned tab to rename, so they are never named.
+    const humanFacing = hb.kind !== "subagent" && hb.kind !== "transient" && !hb.workflow_run_id;
+    const built =
+      !cleared && !hb.suggested_session_name && humanFacing
+        ? buildSuggestedName(hb.name ?? "unknown", [task])
+        : null;
     return {
       ...hb,
       task: cleared ? undefined : task,
       task_updated_at: nowIsoSeconds(),
+      ...(built ? { suggested_session_name: built.suggestedName } : {}),
     };
   });
+}
+
+/**
+ * Build the copy-pasteable session name from the coord identity + the agent's
+ * description parts. Pure (no coord-state reads) so it's unit-testable; collapses
+ * internal whitespace and trims. Returns null when the description is empty.
+ */
+export function buildSuggestedName(
+  agentName: string,
+  descriptionParts: string[],
+): { suggestedName: string; description: string } | null {
+  const description = descriptionParts.join(" ").replace(/\s+/g, " ").trim();
+  if (!description) return null;
+  const name = agentName?.trim() || "unknown";
+  return { suggestedName: `Agent ${name} - ${description}`, description };
+}
+
+/** Stamp session_name_seen_at (idempotent) once the suggested name has been
+ * observed in assistant reply text; later turns skip the transcript scan. */
+export function stampSessionNameSeen(coordRoot: string, instanceId: string): Heartbeat | null {
+  return mutate(coordRoot, instanceId, (hb) =>
+    hb.session_name_seen_at ? hb : { ...hb, session_name_seen_at: nowIsoSeconds() },
+  );
 }
 
 export function setTurnSummary(

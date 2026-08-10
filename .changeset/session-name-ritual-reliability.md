@@ -1,0 +1,5 @@
+---
+"harnery": minor
+---
+
+Make the session-name ritual reliable. The suggested session name is now built on the session's first NON-EMPTY `set-task` (a bare clear no longer consumes the naming window), on the `--session-id` path too, and never for subagents or workflow children; the result carries a right-time `note` telling the agent to fence the name. The UserPromptSubmit reminder re-emits on every prompt until a name is produced instead of hash-deduping away after one ignored prompt. `turn.stop` now detects the name in assistant reply text (assistant text blocks only — tool_result rows carrying the set-task JSON must not count) as `session_name_present`, stamping `session_name_seen_at` on the heartbeat, and on Claude Code the Stop hook enforces the naming turn via the new `stop-hook.session_name` rule. Cursor stays soft (its Stop payload carries no transcript); Codex stays observe-only. `state.task_set` events carry `first_of_session` + `suggested_session_name`, and the heartbeat projector rebuilds both naming fields from events. `buildSuggestedName` moved from `commands/agents.ts` to `core/agents/state/heartbeat-writer.ts`.
