@@ -329,7 +329,7 @@ try {
     workProbe,
     [
       'import { WORK_INTENT_SCHEMA_VERSION, createWorkItem, readWorkItem, reconcileWorkItem, runWorkItem } from "harnery/core/work";',
-      'if (WORK_INTENT_SCHEMA_VERSION !== 1) throw new Error("unexpected work schema version");',
+      'if (WORK_INTENT_SCHEMA_VERSION !== 2) throw new Error("unexpected work schema version");',
       "for (const fn of [createWorkItem, readWorkItem, reconcileWorkItem, runWorkItem]) {",
       '  if (typeof fn !== "function") throw new Error("work function missing");',
       "}",
