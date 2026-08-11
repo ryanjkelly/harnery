@@ -21,7 +21,14 @@ import { BUILTIN_ADAPTER_IDS } from "../core/adapters/index.ts";
 import { resolveBinName, ripgrepAutoInstall } from "../core/config.ts";
 import { ADAPTER_SPECS, type AdapterId } from "../core/hooks/adapter/events.ts";
 import { loadAdapterWiring, summarizeAdapterWiring } from "../core/hooks/adapter/wiring.ts";
-import { inspectCodexWslBridge } from "../core/hooks/codex-wsl-bridge.ts";
+import {
+  type CodexHookAuthorizationResult,
+  probeCodexHookAuthorization,
+} from "../core/hooks/codex-authorization.ts";
+import {
+  type CodexWslBridgeStatus,
+  inspectCodexWslBridge,
+} from "../core/hooks/codex-wsl-bridge.ts";
 import {
   ADAPTER_BINARIES,
   ADAPTER_INSTALL_HINTS,
@@ -34,7 +41,7 @@ import { findRg, installRg, managedRgPath, rgInstallSupported } from "../lib/too
 
 type Severity = "ok" | "warn" | "fail";
 
-interface Check {
+export interface Check {
   name: string;
   severity: Severity;
   detail: string;
@@ -66,7 +73,7 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
           emit.text(`ripgrep install failed: ${(err as Error).message}\n`);
         }
       }
-      const checks = runChecks();
+      const checks = await runChecks();
       const requiredFailed = checks.some((c) => c.severity === "fail");
 
       if (opts.json) {
@@ -99,13 +106,15 @@ export function registerDoctorCommand(program: Command, emit: EmitContext): void
     });
 }
 
-export function runChecks(): Check[] {
-  const codexWslBridge = checkCodexWslBridge();
+export async function runChecks(): Promise<Check[]> {
+  const codexWslStatus = inspectCodexWslBridge();
+  const codexWslBridge = checkCodexWslBridge(codexWslStatus);
   // Probe the adapter CLIs before the hook check runs, not in output order:
   // an unwired adapter only matters if its CLI is actually installed, and
   // probing once here keeps that join to one spawn per CLI.
   const workflow = BUILTIN_ADAPTER_IDS.map((id) => ({ id, ...checkWorkflowAdapter(id) }));
   const installed = workflow.filter((w) => w.installed).map((w) => w.id as AdapterId);
+  const codexAuthorization = await checkCodexHookAuthorization(installed, codexWslStatus);
   return [
     checkNode(),
     checkGit(),
@@ -113,6 +122,7 @@ export function runChecks(): Check[] {
     checkRipgrep(),
     checkHarneryDir(),
     checkAdapterHooks(installed),
+    ...(codexAuthorization ? [codexAuthorization] : []),
     checkGitHookRegions(),
     ...(codexWslBridge ? [codexWslBridge] : []),
     ...workflow.map((w) => w.check),
@@ -153,8 +163,7 @@ function checkGitHookRegions(): Check {
   }
 }
 
-function checkCodexWslBridge(): Check | null {
-  const status = inspectCodexWslBridge();
+function checkCodexWslBridge(status: CodexWslBridgeStatus | null): Check | null {
   if (!status) return null;
   return {
     name: "codex:WSL bridge",
@@ -164,6 +173,49 @@ function checkCodexWslBridge(): Check | null {
       ? undefined
       : "forward CODEX_THREAD_ID through WSLENV in the Codex shell environment policy, then start a fresh task",
   };
+}
+
+export function codexAuthorizationCheck(result: CodexHookAuthorizationResult): Check {
+  const reviewHint =
+    "terminal UI: run `/hooks`; Codex Desktop: open Settings > Hooks; after approval, start a fresh task";
+  if (result.status === "runnable") {
+    return { name: "codex:hook authorization", severity: "ok", detail: result.detail };
+  }
+  if (result.status === "review_required" || result.status === "disabled") {
+    return {
+      name: "codex:hook authorization",
+      severity: "warn",
+      detail: result.detail,
+      hint: reviewHint,
+    };
+  }
+  return {
+    name: "codex:hook authorization",
+    severity: "warn",
+    detail: `authorization unverified: ${result.detail}`,
+    hint: reviewHint,
+  };
+}
+
+async function checkCodexHookAuthorization(
+  installedAdapters: AdapterId[],
+  codexWslStatus: CodexWslBridgeStatus | null,
+): Promise<Check | null> {
+  const root = findCoordProjectRoot();
+  if (!root || !summarizeAdapterWiring(root).wired.includes("codex")) return null;
+
+  if (codexWslStatus) {
+    return {
+      name: "codex:hook authorization",
+      severity: "warn",
+      detail:
+        "unverified from WSL; the Windows-native Codex runtime owns this workspace's trust state",
+      hint: "run the host's Windows bridge doctor, or open Codex Desktop Settings > Hooks; start a fresh task after approval",
+    };
+  }
+  if (!installedAdapters.includes("codex")) return null;
+
+  return codexAuthorizationCheck(await probeCodexHookAuthorization({ cwd: root }));
 }
 
 function checkRipgrep(): Check {

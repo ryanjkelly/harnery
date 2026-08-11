@@ -92,8 +92,26 @@ All three adapters are fully auto-wired. Pass `--adapter`:
 |---|---|---|
 | `claude-code` (default) | `.claude/settings.json` | 10 events; nested `{ hooks: [{ type, command }] }` entries |
 | `cursor` | `.cursor/hooks.json` | 10 events; flat `{ command }` entries + `"version": 1` |
-| `codex` | `.codex/hooks.json` | 7 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
+| `codex` | `.codex/hooks.json` | 9 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
 
 Each writes only its own file, so you can wire several adapters in one project by running `init` once per adapter. The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).
 
-> Codex requires hooks to be enabled (`[features] hooks = true` in `config.toml`, the default on current Codex) and prompts you to trust new hooks via `/hooks` on first run.
+### Codex authorization is a separate step
+
+Writing `.codex/hooks.json` does not authorize its commands. Codex stores
+approval separately for each hook path and command hash, so a project can be
+trusted while all nine Harnery hooks remain unable to run.
+
+After `harn init --adapter codex`, review the commands before starting work:
+
+- Terminal UI: run `/hooks`.
+- Codex Desktop: open **Settings > Hooks** for the project.
+
+Start a fresh task after approval. An already-open task cannot replay the
+`SessionStart` event it missed while the hooks were untrusted. `harn init`
+prints this reminder every time it wires or verifies the Codex adapter, and
+[`harn doctor`](/cli/doctor/#codex-hook-authorization) checks execution
+authorization separately from manifest wiring.
+
+Harnery never approves a command, writes Codex's trusted hashes, or uses the
+hook-trust bypass flag.

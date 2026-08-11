@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripJsonComments } from "../core/config.ts";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
-import { stampBinName, stampWorkflowDefaults, wireHooks } from "./init.ts";
+import { codexHookReviewAction, stampBinName, stampWorkflowDefaults, wireHooks } from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 // Claude Code exports CLAUDE_PROJECT_DIR to hook processes; init anchors the
@@ -118,6 +118,14 @@ describe("wireHooks: Cursor", () => {
 });
 
 describe("wireHooks: Codex", () => {
+  test("requires explicit hook review before a fresh task", () => {
+    const action = codexHookReviewAction("codex");
+    expect(action).toContain("/hooks");
+    expect(action).toContain("Settings > Hooks");
+    expect(action).toContain("fresh task");
+    expect(codexHookReviewAction("cursor")).toBeNull();
+  });
+
   test("uses the Claude entry shape with PascalCase keys and no version", () => {
     const settings: Record<string, unknown> = {};
     const { wired } = wireHooks(settings as never, CODEX, HOOK, "codex");

@@ -1,0 +1,76 @@
+---
+title: "0070: Observe Codex hook authorization without granting it"
+description: "ADR: use Codex app-server hooks/list to distinguish installed hooks from runnable hooks while leaving approval inside Codex."
+sidebar:
+  order: 70
+---
+
+**Status:** accepted (2026-08-11) · **Scope:** product tier (`init`, `doctor`, Codex hooks)
+
+## Context
+
+Codex separates project trust from hook-command authorization. A valid
+`.codex/hooks.json` can be loaded while every command remains untrusted, so
+`SessionStart` never registers the task and no later Harnery hook can explain
+the failure. The existing adapter check proves the manifest is current but not
+that Codex will execute it.
+
+ADR 0058 already requires Harnery to leave hook approval with Codex. The new
+diagnostic must preserve that boundary, work without parsing Codex's private
+configuration, and avoid testing a hook by creating a synthetic live session.
+Windows-native Codex controlling a WSL checkout adds another constraint: the
+Linux Codex installation can use a different version and trust store from the
+Desktop process that owns the task.
+
+## Alternatives considered
+
+- **Read `config.toml` and compare trusted hashes.** Rejected because the file
+  layout and hook-key format are private implementation details. Reproducing
+  Codex's hash rules would also make Harnery responsible for interpreting an
+  authorization boundary it does not own.
+- **Approve commands during `init` or `doctor`.** Rejected by ADR 0058. A setup
+  tool must not turn newly discovered repository commands into trusted code.
+- **Run `agent-hook session-start` as a canary.** Rejected because it can create
+  a phantom Harnery peer and still does not prove that Codex's lifecycle will
+  execute the native event.
+- **Use the Codex binary found on WSL's `PATH` for hybrid tasks.** Rejected
+  because it can report a valid answer about the wrong configuration home and
+  trust store.
+- **Print setup instructions without probing.** Kept as a fallback, but
+  insufficient alone because a changed command hash can invalidate previously
+  approved hooks after onboarding.
+
+## Decision
+
+`probeCodexHookAuthorization` opens the active Codex CLI's app-server protocol,
+performs the required initialization handshake, and calls the read-only
+`hooks/list` method for the project root. `assessCodexHookList` filters the
+response to commands containing Harnery's `agent-hook` binary.
+
+`harn doctor` reports wiring and authorization separately. Enabled `trusted`
+and `managed` commands are runnable. `untrusted`, `modified`, and disabled
+commands warn. Invalid or unavailable responses are unverified, never green.
+The probe has a bounded timeout and closes the app-server child immediately
+after the response.
+
+In Windows-to-WSL hybrid mode, Harnery does not run the Linux Codex probe. It
+reports authorization as unverified and leaves the exact query to a
+Windows-side host bridge, which can address the Windows runtime and supply the
+UNC workspace path.
+
+`harn init --adapter codex` always prints the client-specific review surfaces:
+`/hooks` in the terminal UI and Settings > Hooks in Codex Desktop. It also says
+to start a fresh task after approval because an open task cannot replay a
+missed `SessionStart`.
+
+## Consequences
+
+The silent state now has a direct diagnostic instead of being inferred from a
+missing PID-map entry. The check remains advisory and does not change `doctor`'s
+exit code, because hook authorization is an operator-controlled optional
+dependency rather than a Node or Git runtime failure.
+
+The app-server protocol is a vendor integration surface and may change. A
+protocol error degrades to an explicit unverified warning. Hybrid hosts need a
+small Windows-side bridge check until Codex exposes the owning Desktop runtime
+directly inside WSL.

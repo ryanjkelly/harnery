@@ -175,6 +175,8 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
             `${removed} legacy hook(s) in ${rel(projectRoot, settingsPath)} (${already} already present)`,
         );
       }
+      const authorizationReview = codexHookReviewAction(adapter);
+      if (authorizationReview) actions.push(authorizationReview);
 
       // ── 3. agent-facing instructions block + skills ────────────────────────
       // A misconfigured host addendum aborts here rather than half-writing: the
@@ -200,6 +202,15 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
       emit.text(render(projectRoot, dryRun, actions, [...applied.warnings, ...gitHooks.warnings]));
     });
+}
+
+export function codexHookReviewAction(adapter: AdapterId): string | null {
+  if (adapter !== "codex") return null;
+  return (
+    "! Codex authorizes hook commands separately. Before starting work, review them in " +
+    "the terminal UI with `/hooks` or in Codex Desktop under Settings > Hooks. " +
+    "After approval, start a fresh task so SessionStart can run."
+  );
 }
 
 /**

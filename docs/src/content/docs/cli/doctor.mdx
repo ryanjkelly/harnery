@@ -36,6 +36,7 @@ Exits `0` unless a required dep is missing.
 | `.harnery/`    | optional | The coord state directory above cwd. Most commands degrade gracefully without it |
 | `git hooks` | optional | Reports whether the project has Harnery's managed git-hook regions ([ADR 0068](/decisions/0068-managed-git-hook-lifecycle/)) and whether they are current. A project that never ran `init` gets a warn naming what is missing (commit guard, claim pruning) with the `init` remedy; never an error, and `init --check` stays green for it |
 | `adapter hooks`| optional | Compares wired `agent-hook` entries against the current adapter spec. Also flags an adapter whose CLI is installed but which has no Harnery hooks at all, reports invalid JSON, and, for Codex, strict-schema fields or event names that make Codex reject the whole file (see [Keeping hooks current](#keeping-hooks-current-after-an-upgrade)) |
+| `codex:hook authorization` | optional | Uses Codex app-server's read-only `hooks/list` method to distinguish trusted and enabled Harnery commands from new, modified, disabled, or unverifiable hooks. It never grants trust |
 | `codex:WSL bridge` | optional | In a Windows-native Codex task running inside WSL, verifies that `CODEX_THREAD_ID` arrived and that `WSLENV` will forward it to later WSL processes |
 | `workflow:claude-code` / `workflow:codex` / `workflow:cursor` | optional | Spawn targets for [`harn run`](/cli/run/): is the adapter CLI installed, and how will headless children bill (subscription login vs API key)? A missing CLI warns with the vendor's official install one-liner + login command; installed-but-unauthenticated warns with the login hint |
 | `restic`       | optional | Required for `harn backup` |
@@ -107,6 +108,30 @@ $ harn doctor
 
 Both conditions are load-bearing. A project that has never run `harn init` stays quiet, and so does one that simply doesn't have Codex installed — that case is already covered by the `workflow:codex` check. Wiring the adapter clears the warning; there is no separate opt-out, so a project that has an adapter CLI installed and deliberately wants it unwired will keep seeing it.
 
+## Codex hook authorization
+
+The `adapter hooks` check answers whether `.codex/hooks.json` is valid and
+current. It cannot answer whether Codex will run those commands. Codex keeps a
+separate path-and-hash authorization record for every unmanaged hook.
+
+On a native host, `doctor` asks the active Codex CLI for `hooks/list` through
+its app-server protocol. The result is read-only:
+
+- `trusted` and `managed`, when enabled, report `ok`;
+- `untrusted` and `modified` report `warn` with the review instructions;
+- disabled hooks report `warn`;
+- a missing, incompatible, or unreachable app server reports authorization as
+  unverified rather than green.
+
+```text
+⚠ codex:hook authorization  9 of 9 Harnery hooks require review (9 new, 0 modified)
+    ↳ terminal UI: run `/hooks`; Codex Desktop: open Settings > Hooks; after approval, start a fresh task
+```
+
+The check filters the response to Harnery's `agent-hook` commands. It does not
+read Codex's private configuration format, persist the returned hashes, call a
+trust-write method, or run a hook to test it.
+
 ## Windows-native Codex with a WSL project
 
 When Codex runs on Windows while the project and Harnery run in WSL, the task
@@ -123,3 +148,11 @@ starts work and can run `harn doctor` for the specific failure.
 Harnery does not add Git safe-directory entries or approve Codex hooks. Those
 are machine-level trust decisions. The diagnostic reports bridge drift but
 leaves authorization with Git and Codex.
+
+The Linux Codex binary inside WSL may have a different version, configuration
+home, and trust store from the Windows process that owns the Desktop task.
+`harn doctor` therefore reports hook authorization as unverified in this hybrid
+mode instead of querying the wrong runtime. A Windows host bridge can call the
+same `hooks/list` method on the Windows-native Codex runtime with the project's
+UNC path. Review any warning in Codex Desktop and start a fresh task after
+approval.
