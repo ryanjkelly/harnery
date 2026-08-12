@@ -49,7 +49,7 @@ export function registerInstructionsCommand(program: Command, emit: EmitContext)
         generated_at: new Date().toISOString(),
         source_commit: gitHead(coordRoot),
         tokenizer: "o200k_base",
-        coord_root: coordRoot,
+        coord_root: ".",
         profile_count: profiles.length,
         profiles,
       };
@@ -83,6 +83,7 @@ function enrichBundle(bundle: ReturnType<typeof buildInstructionBundle>, coordRo
   );
   return {
     ...bundle,
+    coord_root: ".",
     components,
     canonical_sources: canonicalSources,
     totals: totals(components),
