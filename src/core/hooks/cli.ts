@@ -33,6 +33,7 @@ import {
 } from "../agents/finalization.ts";
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
+import { stampSessionStateEvent } from "../agents/state/heartbeat-writer.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
@@ -631,20 +632,16 @@ async function main(): Promise<number> {
     event_id: envelope.event_id,
   });
 
-  // Activity is only useful while it is current. The historic projection path
-  // drains at turn.stop, which is too late to show an open permission prompt
-  // and too late for tool.pre_use to clear that wait. Project the three live
-  // progress signals immediately. Session/subagent starts have their own sync
-  // projection below; terminal hooks remove their heartbeat directly.
+  // Activity is only useful while it is current. Stamp prompt and permission
+  // evidence directly from this envelope rather than draining the global
+  // projector: a drain here could apply a tool event before its authorization
+  // verdict. Tool progress is stamped later, after the guard allows it.
   if (
     norm.event_type === "user_prompt.submit" ||
-    norm.event_type === "tool.pre_use" ||
     norm.event_type === "interaction.input_requested"
   ) {
     try {
-      const result = consumeSince(coordRoot);
-      projectHeartbeats(coordRoot, result.events);
-      if (result.lastEventId) writeCursor(coordRoot, result.lastEventId);
+      stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
     } catch (err) {
       logError(coordRoot, err, { phase: "activity-projection" });
     }
@@ -1107,10 +1104,25 @@ async function main(): Promise<number> {
     // apply_patch (codex) parses paths from the patch body and runs verdict
     // per-path; Edit/Write/NotebookEdit resolve a single target. Non-write tools
     // (incl. Agent) yield no targets and pass through with no deny.
+    let guardAllowed = true;
     try {
-      await runPreToolUseGuard(coordRoot, owner.instance_id, sessionId, data, adapter);
+      guardAllowed = await runPreToolUseGuard(
+        coordRoot,
+        owner.instance_id,
+        sessionId,
+        data,
+        adapter,
+      );
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-guard" });
+    }
+
+    if (guardAllowed) {
+      try {
+        stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
+      } catch (err) {
+        logError(coordRoot, err, { phase: "activity-projection" });
+      }
     }
 
     // Shell-mutation warn (warn-only, never blocks). Was the cursor
@@ -1204,10 +1216,10 @@ async function runPreToolUseGuard(
   sessionId: string,
   data: Record<string, unknown>,
   adapter: Adapter,
-): Promise<void> {
+): Promise<boolean> {
   const toolName = (data.tool_name as string | undefined) ?? "";
   const rawTargets = collectGuardTargets(toolName, data);
-  if (rawTargets.length === 0) return;
+  if (rawTargets.length === 0) return true;
 
   let targets: Array<{ path: string; finalization?: ClaimFinalizationDescriptor }>;
   if (agentsRequireGitFinalization(coordRoot)) {
@@ -1216,7 +1228,7 @@ async function runPreToolUseGuard(
     if (denied && !denied.allow) {
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, formatWriteClaimFinalizationDenial(denied, resolveBinName(coordRoot)));
-      return;
+      return false;
     }
     const allowed = decisions.filter(
       (decision): decision is Extract<ClaimFinalizationDecision, { allow: true }> => decision.allow,
@@ -1231,7 +1243,7 @@ async function runPreToolUseGuard(
       .filter((path): path is string => path !== null)
       .map((path) => ({ path }));
   }
-  if (targets.length === 0) return;
+  if (targets.length === 0) return true;
 
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) {
@@ -1241,8 +1253,9 @@ async function runPreToolUseGuard(
         adapter,
         "Harnery denied the write before mutation because the claim coordinator is unavailable; repair the project's Harnery installation and retry.",
       );
+      return false;
     }
-    return;
+    return true;
   }
 
   // For apply_patch (multi-file), collect siblings so the deny reason names
@@ -1282,7 +1295,7 @@ async function runPreToolUseGuard(
       }
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, reason);
-      return;
+      return false;
     }
 
     // The verdict mutates the live heartbeat immediately, but that file is a
@@ -1303,6 +1316,7 @@ async function runPreToolUseGuard(
       },
     });
   }
+  return true;
 }
 
 /** Canonicalize a path to monorepo-relative form. Absolute paths under

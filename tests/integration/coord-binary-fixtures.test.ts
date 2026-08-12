@@ -223,6 +223,27 @@ describe("agent-hook permission-request [codex]", () => {
       activity: "needs_input",
       activity_source: "interaction.input_requested",
     });
+
+    const progress = run(
+      AGENT_HOOK,
+      ["pre-tool-use", "--adapter", "codex"],
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        session_id: sessionId,
+        turn_id: "turn-7d0f4f9c",
+        tool_name: "shell_command",
+        tool_input: { command: "git status --short" },
+      }),
+      root,
+    );
+    expect(progress.status).toBe(0);
+    const working = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${sessionId}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    expect(working).toMatchObject({
+      activity: "working",
+      activity_source: "tool.pre_use",
+    });
   });
 });
 

@@ -24,7 +24,12 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { emit } from "../events/emit.ts";
-import type { AgentActivity, TaskState } from "./session-state.ts";
+import {
+  type AgentActivity,
+  applySessionStateEvent,
+  type SessionStateEvidenceEvent,
+  type TaskState,
+} from "./session-state.ts";
 
 /** Inline adapter normalizer (mirrors canonical-emit.normalizeAdapter), kept
  * local so the writer's only cross-module dep is the in-process emit(). */
@@ -139,6 +144,32 @@ export function readHeartbeat(coordRoot: string, instanceId: string): Heartbeat 
   } catch {
     return null;
   }
+}
+
+/** Apply one evidence event to the live state fields without draining the
+ * global event stream. This keeps permission prompts current while avoiding
+ * unrelated projector side effects before a tool authorization verdict. */
+export function stampSessionStateEvent(
+  coordRoot: string,
+  instanceId: string,
+  event: Omit<SessionStateEvidenceEvent, "data"> & { data: unknown },
+): Heartbeat | null {
+  return mutate(coordRoot, instanceId, (heartbeat) => {
+    const data =
+      typeof event.data === "object" && event.data !== null && !Array.isArray(event.data)
+        ? (event.data as Record<string, unknown>)
+        : {};
+    const state = applySessionStateEvent(heartbeat, { ...event, data });
+    return {
+      ...heartbeat,
+      activity: state.activity,
+      activity_updated_at: state.activity_updated_at,
+      activity_source: state.activity_source,
+      task_state: state.task_state,
+      task_state_updated_at: state.task_state_updated_at,
+      task_state_reason: state.task_state_reason,
+    };
+  });
 }
 
 function mutate(

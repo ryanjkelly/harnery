@@ -27,6 +27,12 @@ export interface SessionStateSelector {
   session_id?: string;
 }
 
+export interface SessionStateEvidenceEvent {
+  event_type: string;
+  ts: string;
+  data: Record<string, unknown>;
+}
+
 const TERMINAL_ACTIVITY_EVENTS = new Set(["session.end", "subagent.stop", "turn.stop"]);
 
 /**
@@ -39,7 +45,7 @@ const TERMINAL_ACTIVITY_EVENTS = new Set(["session.end", "subagent.stop", "turn.
  */
 export function applySessionStateEvent(
   current: Readonly<SessionStateFields>,
-  event: CanonicalEvent,
+  event: SessionStateEvidenceEvent,
 ): SessionStateFields {
   const next: SessionStateFields = { ...current };
 
@@ -101,7 +107,7 @@ export function foldSessionState(
 function setActivity(
   target: SessionStateFields,
   activity: AgentActivity,
-  event: CanonicalEvent,
+  event: SessionStateEvidenceEvent,
 ): void {
   target.activity = activity;
   target.activity_updated_at = event.ts;
