@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { coordEnv } from "../../lib/env.ts";
+import { buildInstructionBundle } from "../../lib/instructions/bundle.ts";
 import { replayCodexJsonl } from "../agents/codex-replay.ts";
 import { coordBinPath } from "../agents/coord-bin.ts";
 import { consumeSince, writeCursor } from "../agents/events/consume.ts";
@@ -290,6 +291,7 @@ function buildEventData(
       if (adapterPid) {
         writePidmapViaAgentCoord(ctx.coordRoot, adapterPid, ctx.instanceId, adapterPlatform);
       }
+      const bundle = safeInstructionBundle(ctx.coordRoot, p?.cwd ?? process.cwd(), ctx.adapter);
       return {
         started_at: new Date().toISOString(),
         cwd: p?.cwd ?? process.cwd(),
@@ -303,6 +305,14 @@ function buildEventData(
         name: assigned?.name,
         kind: "session",
         agent_id: ctx.instanceId,
+        ...(bundle
+          ? {
+              instruction_bundle_id: bundle.instruction_bundle_id,
+              instruction_source_id: bundle.canonical_source_id,
+              instruction_profile_root: bundle.profile_root,
+              instruction_component_count: bundle.components.length,
+            }
+          : {}),
         // Recorded fork lineage rides the canonical event too, so full replay
         // and derived readers converge on the same parent linkage that
         // .name-history carries (the ADR 0017 dual-write pattern).
@@ -485,6 +495,15 @@ function buildEventData(
           numberField(metadata?.post_compact_tokens),
       };
     }
+  }
+}
+
+function safeInstructionBundle(coordRoot: string, cwd: string, adapter: Adapter) {
+  try {
+    return buildInstructionBundle({ coordRoot, cwd, adapter });
+  } catch (err) {
+    logError(coordRoot, err, { phase: "instruction-bundle-identity" });
+    return null;
   }
 }
 
@@ -955,6 +974,23 @@ async function main(): Promise<number> {
       bypass: coordEnv("AGENT_COORD_BYPASS_STOP") === "1",
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
+    const enforcementMode = stopEnforcementMode(verdict.rule);
+    emit(coordRoot, {
+      event_type: "stop.verdict",
+      instance_id: owner.instance_id,
+      session_id: sessionId,
+      turn_id: payload?.turn_id,
+      parent_turn_id: payload?.parent_turn_id,
+      adapter,
+      data: {
+        allow: verdict.allow,
+        rule: verdict.rule,
+        ...(verdict.reason ? { reason: verdict.reason } : {}),
+        enforcement_mode: enforcementMode,
+        eligible: enforcementMode === "enforced",
+        nag_delivered: enforcementMode === "enforced" && !verdict.allow,
+      },
+    });
     if (!verdict.allow) {
       // Adapter-aware enforcement channel: Claude Code / Codex honor exit-2 +
       // stderr as a turn block; Cursor ignores exit codes (fail-open) and
@@ -1124,6 +1160,13 @@ async function main(): Promise<number> {
   }
 
   return 0;
+}
+
+function stopEnforcementMode(rule: string): "enforced" | "observe_only" | "exempt" | "fail_open" {
+  if (rule === "stop-hook.codex_observe_only") return "observe_only";
+  if (rule === "stop-hook.fail_open" || rule === "stop-hook.no_history") return "fail_open";
+  if (rule === "stop-hook.bypass" || rule === "stop-hook.workflow_child") return "exempt";
+  return "enforced";
 }
 
 async function runPreToolUseGuard(

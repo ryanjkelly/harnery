@@ -51,6 +51,14 @@ export type SessionStart = EventEnvelope<
     cwd: string;
     model?: string;
     pid: number;
+    /** Content hash of every repo-authored instruction/config file this
+     * adapter can load for the session's working-path profile. */
+    instruction_bundle_id?: string;
+    /** Parallel hash of canonical AGENTS.md + .agents sources. This diagnoses
+     * sync drift without splitting behavior cohorts when rendered bytes match. */
+    instruction_source_id?: string;
+    instruction_profile_root?: string;
+    instruction_component_count?: number;
     /** Present iff this session is a `workflow run` child: the run id whose
      * transcript owns it (child env HARNERY_WORKFLOW_RUN_ID). Optional-field
      * addition per the schema evolution rules (minor bump). */
@@ -117,6 +125,21 @@ export type TurnStop = EventEnvelope<
     wsl_linux_file_link_count?: number;
     /** Up to three bounded examples for diagnosing the mismatches locally. */
     wsl_linux_file_link_examples?: string[];
+  }
+>;
+
+/** The evaluated end-turn policy outcome. One row per Stop evaluation makes
+ * the future bounce denominator explicit and keeps repeated remediation nags
+ * from being mistaken for additional human turns. */
+export type StopVerdict = EventEnvelope<
+  "stop.verdict",
+  {
+    allow: boolean;
+    rule: string;
+    reason?: string;
+    enforcement_mode: "enforced" | "observe_only" | "exempt" | "fail_open";
+    eligible: boolean;
+    nag_delivered: boolean;
   }
 >;
 
@@ -487,6 +510,7 @@ export type Event =
   | SubagentStop
   | UserPromptSubmit
   | TurnStop
+  | StopVerdict
   | CommandStart
   | CommandOutput
   | CommandEnd

@@ -121,6 +121,36 @@ describe("projectHeartbeats: coercion of writer-produced heartbeats", () => {
     ) as Record<string, unknown>;
     expect(onDisk.workflow_run_id).toBe("wf-2026-06-04T00-00-00-000Z-abc123");
   });
+
+  test("session.start projects instruction bundle identity for live joins", () => {
+    const root = freshRoot();
+    const events = [
+      {
+        event_id: "01BUNDLE",
+        event_type: "session.start",
+        ts: "2026-08-12T00:00:00Z",
+        instance_id: "bundle-session",
+        session_id: "bundle-session",
+        adapter: "codex",
+        source: "test",
+        data: {
+          instruction_bundle_id: "sha256:effective",
+          instruction_source_id: "sha256:canonical",
+          instruction_profile_root: "services/web",
+          instruction_component_count: 49,
+        },
+      },
+    ] as unknown as Events;
+
+    projectHeartbeats(root, events);
+    const onDisk = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "bundle-session.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(onDisk.instruction_bundle_id).toBe("sha256:effective");
+    expect(onDisk.instruction_source_id).toBe("sha256:canonical");
+    expect(onDisk.instruction_profile_root).toBe("services/web");
+    expect(onDisk.instruction_component_count).toBe(49);
+  });
 });
 
 describe("projectHeartbeats: does not resurrect dead agents from terminal events", () => {

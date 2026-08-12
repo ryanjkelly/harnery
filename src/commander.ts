@@ -44,6 +44,7 @@ import { registerFileHistoryCommand } from "./commands/file-history.ts";
 import { registerGovernorCommand } from "./commands/governor.ts";
 import { registerGrepCommand } from "./commands/grep.ts";
 import { registerInitCommand } from "./commands/init.ts";
+import { registerInstructionsCommand } from "./commands/instructions.ts";
 import { registerJournalCommand } from "./commands/journal.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
 import { registerPolicyCommand } from "./commands/policy.ts";
@@ -294,6 +295,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerAgentsCommand(program, emit, opts.context);
   registerCouncilCommands(program);
   registerDoctorCommand(program, emit);
+  registerInstructionsCommand(program, emit);
   registerInitCommand(program, emit, opts.binName);
   registerDeinitCommand(program, emit, opts.binName);
   registerBackupCommand(program, emit);

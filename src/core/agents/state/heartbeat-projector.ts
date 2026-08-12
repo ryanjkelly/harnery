@@ -21,6 +21,10 @@ export interface V2Heartbeat {
   name?: string;
   kind?: "session" | "subagent" | "transient";
   model?: string;
+  instruction_bundle_id?: string;
+  instruction_source_id?: string;
+  instruction_profile_root?: string;
+  instruction_component_count?: number;
   platform?: string;
   subagent_call_id?: string;
   parent_session_id?: string;
@@ -188,6 +192,16 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       {
         const model = pickStr(d, "model");
         if (model) hb.model = model;
+        const instructionBundleId = pickStr(d, "instruction_bundle_id");
+        if (instructionBundleId) hb.instruction_bundle_id = instructionBundleId;
+        const instructionSourceId = pickStr(d, "instruction_source_id");
+        if (instructionSourceId) hb.instruction_source_id = instructionSourceId;
+        const instructionProfileRoot = pickStr(d, "instruction_profile_root");
+        if (instructionProfileRoot) hb.instruction_profile_root = instructionProfileRoot;
+        const instructionComponentCount = pickNum(d, "instruction_component_count");
+        if (instructionComponentCount !== undefined) {
+          hb.instruction_component_count = instructionComponentCount;
+        }
         const platform = pickStr(d, "platform") ?? adapterToPlatform(ev.adapter);
         hb.platform = platform;
         const name = pickStr(d, "name");
@@ -513,6 +527,10 @@ function writeHeartbeat(coordRoot: string, instanceId: string, hb: V2Heartbeat):
     setIfDefined(merged, "workflow_run_id", hb.workflow_run_id);
     setIfDefined(merged, "workflow_agent_id", hb.workflow_agent_id);
     setIfDefined(merged, "model", hb.model);
+    setIfDefined(merged, "instruction_bundle_id", hb.instruction_bundle_id);
+    setIfDefined(merged, "instruction_source_id", hb.instruction_source_id);
+    setIfDefined(merged, "instruction_profile_root", hb.instruction_profile_root);
+    setIfDefined(merged, "instruction_component_count", hb.instruction_component_count);
     setIfDefined(merged, "platform", hb.platform);
     setIfDefined(merged, "started_at", hb.started_at);
     // files_touched is a required-array invariant for every reader
@@ -579,4 +597,9 @@ function pickStr(o: Record<string, unknown>, k: string): string | undefined {
 function pickBool(o: Record<string, unknown>, k: string): boolean | undefined {
   const v = o[k];
   return typeof v === "boolean" ? v : undefined;
+}
+
+function pickNum(o: Record<string, unknown>, k: string): number | undefined {
+  const v = o[k];
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }

@@ -1,0 +1,78 @@
+---
+title: "0071: Version effective instruction bundles in session telemetry"
+description: "ADR: identify the rendered instruction surface each adapter can load, while tracking canonical sources separately for drift diagnosis."
+sidebar:
+  order: 71
+---
+
+**Status:** accepted (2026-08-12) · **Scope:** product tier (`instructions`, hooks, canonical events)
+
+## Context
+
+An instruction change cannot be evaluated unless each session can be joined to
+the exact instructions it could load. A git revision is not enough. Unrelated
+commits split identical instruction cohorts, while generated files and
+directory-scoped instructions can differ at the same parent revision. Claude
+Code, Cursor, and Codex also load different rendered files and runtime hook
+configuration.
+
+The same audit needs to detect source-to-render drift. Canonical sources and
+rendered consumers answer different questions, so one hash cannot do both jobs
+without creating false behavior cohorts.
+
+## Alternatives considered
+
+- **Use the parent repository commit.** Rejected because most commits do not
+  change instructions, and submodule revisions do not describe uncommitted or
+  generated instruction bytes.
+- **Hash only `AGENTS.md` or `CLAUDE.md`.** Rejected because rules, skills,
+  directory-scoped files, and hook configuration are part of the effective
+  bundle.
+- **Hash canonical sources and rendered files together.** Rejected because a
+  source-only change that has not reached a consumer would create a new cohort
+  even though runtime behavior is unchanged.
+- **Maintain a hand-written version in host configuration.** Rejected because
+  it would drift at the exact moment the join is most important.
+- **Store the full manifest on every session event.** Rejected because the
+  canonical stream only needs a stable join key. The detailed manifest belongs
+  in a dated audit artifact.
+
+## Decision
+
+Harnery computes two deterministic SHA-256 identities for an adapter and
+working-path profile:
+
+1. `instruction_bundle_id` hashes the sorted paths, roles, and content hashes
+   of every rendered file the adapter can load. Components are classified as
+   always loaded, just in time, or runtime configuration.
+2. `instruction_source_id` hashes the canonical `AGENTS.md` and `.agents/`
+   inputs for the same path profile. It is adapter independent and exists to
+   diagnose sync drift.
+
+Neither identity includes a timestamp or git revision. Byte-identical bundles
+therefore remain in one cohort across unrelated commits and machines.
+
+`session.start` records both identities, the profile root, and component count.
+The heartbeat projector carries those fields into live coordination state.
+`harn instructions manifest` emits the full component list, hashes, byte counts,
+and token counts for one or more path profiles.
+
+The end-turn evaluator also emits one `stop.verdict` event per Stop evaluation.
+It records eligibility, enforcement mode, rule, and whether a nag was delivered.
+This gives future analyses an explicit turn denominator instead of reconstructing
+one from copied hook text.
+
+## Consequences
+
+Fresh sessions can be compared by effective instruction content without being
+confounded by unrelated source history. A source/render mismatch remains
+visible through the parallel source identity.
+
+Session start now reads and hashes the selected instruction files. The surface
+is bounded to the coordination root and applicable directory-scoped roots, but
+large skill catalogs still add a small startup cost. Tokenization is kept out of
+the hook path and runs only in the manifest command.
+
+The component discovery rules are part of the telemetry contract. A new adapter
+load surface must update the discovery implementation and its tests before an
+experiment can rely on the resulting identifier.
