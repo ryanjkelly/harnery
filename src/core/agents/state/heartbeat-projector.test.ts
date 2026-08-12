@@ -153,6 +153,128 @@ describe("projectHeartbeats: coercion of writer-produced heartbeats", () => {
   });
 });
 
+describe("projectHeartbeats: two-axis session state", () => {
+  test("persists needs_input until direct progress evidence arrives", () => {
+    const root = freshRoot();
+    const base = {
+      instance_id: "state-owner",
+      session_id: "state-owner",
+      adapter: "codex",
+      source: "test",
+    };
+    const waiting = [
+      {
+        ...base,
+        event_id: "01STATE1",
+        event_type: "session.start",
+        ts: "2026-08-12T10:00:00Z",
+        data: {},
+      },
+      {
+        ...base,
+        event_id: "01STATE2",
+        event_type: "user_prompt.submit",
+        ts: "2026-08-12T10:01:00Z",
+        data: {},
+      },
+      {
+        ...base,
+        event_id: "01STATE3",
+        event_type: "interaction.input_requested",
+        ts: "2026-08-12T10:02:00Z",
+        data: { request_kind: "permission" },
+      },
+      {
+        ...base,
+        event_id: "01STATE4",
+        event_type: "tool.post_use",
+        ts: "2026-08-12T10:03:00Z",
+        data: {},
+      },
+    ] as unknown as Events;
+
+    projectHeartbeats(root, waiting);
+    let onDisk = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "state-owner.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(onDisk).toMatchObject({
+      activity: "needs_input",
+      activity_updated_at: "2026-08-12T10:02:00Z",
+      activity_source: "interaction.input_requested",
+    });
+
+    projectHeartbeats(root, [
+      {
+        ...base,
+        event_id: "01STATE5",
+        event_type: "tool.pre_use",
+        ts: "2026-08-12T10:04:00Z",
+        data: { tool_name: "shell_command" },
+      },
+    ] as unknown as Events);
+    onDisk = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "state-owner.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(onDisk).toMatchObject({
+      activity: "working",
+      activity_updated_at: "2026-08-12T10:04:00Z",
+      activity_source: "tool.pre_use",
+    });
+  });
+
+  test("projects lifecycle without coupling it to activity", () => {
+    const root = freshRoot();
+    const base = {
+      instance_id: "lifecycle-owner",
+      session_id: "lifecycle-owner",
+      adapter: "codex",
+      source: "test",
+    };
+    projectHeartbeats(root, [
+      {
+        ...base,
+        event_id: "01LIFE1",
+        event_type: "user_prompt.submit",
+        ts: "2026-08-12T11:00:00Z",
+        data: {},
+      },
+      {
+        ...base,
+        event_id: "01LIFE2",
+        event_type: "state.task_state",
+        ts: "2026-08-12T11:01:00Z",
+        data: { state: "blocked", reason: "waiting for access" },
+      },
+    ] as unknown as Events);
+
+    const onDisk = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "lifecycle-owner.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(onDisk).toMatchObject({
+      activity: "working",
+      task_state: "blocked",
+      task_state_updated_at: "2026-08-12T11:01:00Z",
+      task_state_reason: "waiting for access",
+    });
+
+    projectHeartbeats(root, [
+      {
+        ...base,
+        event_id: "01LIFE3",
+        event_type: "state.task_state",
+        ts: "2026-08-12T11:02:00Z",
+        data: { state: "active" },
+      },
+    ] as unknown as Events);
+    const reopened = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", "lifecycle-owner.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(reopened.task_state).toBe("active");
+    expect(reopened.task_state_reason).toBeUndefined();
+    expect(reopened.activity).toBe("working");
+  });
+});
+
 describe("projectHeartbeats: does not resurrect dead agents from terminal events", () => {
   test("a lone subagent.stop for an unseen owner does NOT create a heartbeat (the agent-unknown ghost)", () => {
     const root = freshRoot();

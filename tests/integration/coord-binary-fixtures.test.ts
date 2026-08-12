@@ -196,6 +196,36 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
   });
 });
 
+describe("agent-hook permission-request [codex]", () => {
+  test("emits direct input-wait evidence and projects it before approval resolves", () => {
+    const root = makeSandbox();
+    const payload = readFileSync(
+      path.join(HARNERY_DIR, "tests", "fixtures", "adapters", "codex", "permission-request.json"),
+      "utf8",
+    );
+    const sessionId = "019ff6e8-ba69-71e2-9d5f-3ae7a4bd918a";
+    seedHeartbeat(root, sessionId, {
+      schemaVersion: 1,
+      name: "Ulysses",
+      platform: "codex",
+      extra: { kind: "session", activity: "working" },
+    });
+
+    const result = run(AGENT_HOOK, ["permission-request", "--adapter", "codex"], payload, root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(events(root)).toContain('"event_type":"interaction.input_requested"');
+
+    const heartbeat = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${sessionId}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    expect(heartbeat).toMatchObject({
+      activity: "needs_input",
+      activity_source: "interaction.input_requested",
+    });
+  });
+});
+
 // ── agent-hook pre-tool-use cross-client deny (cursor / codex) ─────────────
 describe("agent-hook pre-tool-use cross-client deny", () => {
   test("Cursor Write on a held path is denied + names the holding agent", () => {

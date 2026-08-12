@@ -178,6 +178,8 @@ export function normalizeEventName(
     case "pre-tool-use":
     case "before-shell-execution":
       return { event_type: "tool.pre_use", intra_turn: true };
+    case "permission-request":
+      return { event_type: "interaction.input_requested", intra_turn: true };
     case "post-tool-use":
       return { event_type: "tool.post_use", intra_turn: true };
     case "post-tool-use-failure":
@@ -199,6 +201,7 @@ export type NormalizedEventType =
   | "subagent.start"
   | "subagent.stop"
   | "tool.pre_use"
+  | "interaction.input_requested"
   | "tool.post_use"
   | "tool.post_use_failure"
   | "context.compaction.started"

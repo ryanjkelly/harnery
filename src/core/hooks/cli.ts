@@ -445,6 +445,16 @@ function buildEventData(
       };
     }
 
+    case "interaction.input_requested": {
+      const description = extractToolDescription(p?.tool_input);
+      const reason = description ? clampString(description, 500).value : undefined;
+      return {
+        request_kind: "permission",
+        tool_name: p?.tool_name,
+        ...(reason ? { reason } : {}),
+      };
+    }
+
     case "tool.post_use": {
       const toolName = p?.tool_name ?? "unknown";
       const summary = summarizeOutput(p?.tool_response);
@@ -620,6 +630,25 @@ async function main(): Promise<number> {
     owner_source: owner.source,
     event_id: envelope.event_id,
   });
+
+  // Activity is only useful while it is current. The historic projection path
+  // drains at turn.stop, which is too late to show an open permission prompt
+  // and too late for tool.pre_use to clear that wait. Project the three live
+  // progress signals immediately. Session/subagent starts have their own sync
+  // projection below; terminal hooks remove their heartbeat directly.
+  if (
+    norm.event_type === "user_prompt.submit" ||
+    norm.event_type === "tool.pre_use" ||
+    norm.event_type === "interaction.input_requested"
+  ) {
+    try {
+      const result = consumeSince(coordRoot);
+      projectHeartbeats(coordRoot, result.events);
+      if (result.lastEventId) writeCursor(coordRoot, result.lastEventId);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "activity-projection" });
+    }
+  }
 
   // Context telemetry is opportunistic and truthful: only persist a sample
   // when the adapter payload actually exposes usage/window data. Identical

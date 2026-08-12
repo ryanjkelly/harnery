@@ -101,6 +101,16 @@ export type UserPromptSubmit = EventEnvelope<
   }
 >;
 
+/** Direct adapter evidence that the session is waiting for operator input. */
+export type InteractionInputRequested = EventEnvelope<
+  "interaction.input_requested",
+  {
+    request_kind: "permission";
+    tool_name?: string;
+    reason?: string;
+  }
+>;
+
 export type TurnStop = EventEnvelope<
   "turn.stop",
   {
@@ -337,6 +347,14 @@ export type StateTaskSet = EventEnvelope<
   }
 >;
 
+export type StateTaskState = EventEnvelope<
+  "state.task_state",
+  {
+    state: "active" | "blocked" | "done";
+    reason?: string;
+  }
+>;
+
 export type StateStatusChecked = EventEnvelope<
   "state.status_checked",
   {
@@ -509,6 +527,7 @@ export type Event =
   | SubagentStart
   | SubagentStop
   | UserPromptSubmit
+  | InteractionInputRequested
   | TurnStop
   | StopVerdict
   | CommandStart
@@ -529,6 +548,7 @@ export type Event =
   | ClaimRelease
   | ClaimConflict
   | StateTaskSet
+  | StateTaskState
   | StateStatusChecked
   | StateJournalAppend
   | StatePresenceChange

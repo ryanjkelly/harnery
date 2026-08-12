@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { emit } from "../events/emit.ts";
+import type { AgentActivity, TaskState } from "./session-state.ts";
 
 /** Inline adapter normalizer (mirrors canonical-emit.normalizeAdapter), kept
  * local so the writer's only cross-module dep is the in-process emit(). */
@@ -86,6 +87,12 @@ export interface Heartbeat {
   files_touched: string[];
   task?: string;
   task_updated_at?: string | null;
+  activity?: AgentActivity;
+  activity_updated_at?: string;
+  activity_source?: string;
+  task_state?: TaskState;
+  task_state_updated_at?: string;
+  task_state_reason?: string;
   /** Session name built on the first non-empty set-task (never rebuilt). Its
    * presence is the "this session has been named" signal the prompt-context
    * nudge and the Stop-hook naming rule key on. */

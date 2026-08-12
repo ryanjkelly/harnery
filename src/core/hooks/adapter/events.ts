@@ -87,6 +87,7 @@ export const CURSOR_EVENTS: HookEvent[] = [
 export const CODEX_EVENTS: HookEvent[] = [
   { settingsKey: "SessionStart", subcommand: "session-start" },
   { settingsKey: "PreToolUse", subcommand: "pre-tool-use" },
+  { settingsKey: "PermissionRequest", subcommand: "permission-request" },
   { settingsKey: "PostToolUse", subcommand: "post-tool-use" },
   { settingsKey: "UserPromptSubmit", subcommand: "user-prompt-submit" },
   { settingsKey: "SubagentStart", subcommand: "sub-agent-start" },

@@ -1,0 +1,77 @@
+---
+title: "0072: Derive session state from canonical events"
+description: "ADR: keep current activity separate from task lifecycle and rebuild both from durable evidence."
+sidebar:
+  order: 72
+---
+
+**Status:** accepted (2026-08-12) · **Scope:** product tier (`coordination`, hooks, canonical events)
+
+## Context
+
+An agent can be waiting for permission while its task is still active. It can
+also be idle after a turn while the same task remains open. One status field
+cannot describe both facts without making readers guess what a value means.
+
+Heartbeat files are useful for live views, but they are temporary. They can be
+swept, deleted at session end, or rebuilt. Session state therefore needs a
+durable source that survives the heartbeat.
+
+Adapter payloads are uneven. Some adapters report a permission request
+directly; others expose tool and turn boundaries but no trustworthy input-wait
+signal. Inferring a wait from elapsed time or a nearby hook would report false
+states.
+
+## Alternatives considered
+
+- **Use one status enum.** Rejected because values such as `blocked`, `idle`,
+  and `done` mix current activity with task lifecycle.
+- **Treat a missing heartbeat as completion.** Rejected because a process can
+  stop without finishing its declared task.
+- **Infer `needs_input` from time or nearby hooks.** Rejected because silence
+  and pre-execution events do not prove that an operator prompt is open.
+- **Store state only in the heartbeat.** Rejected because the state would
+  disappear with the file and could not be audited or rebuilt.
+- **Implement separate live and replay rules.** Rejected because the two views
+  would eventually disagree.
+
+## Decision
+
+Harnery keeps two independent axes:
+
+- `activity`: `unknown`, `working`, `needs_input`, or `idle`
+- `task_state`: `active`, `blocked`, or `done`
+
+One pure transition reducer consumes canonical events. The heartbeat projector
+uses that reducer for live state, and `foldSessionState()` uses the same reducer
+for replay. Heartbeats store the current values plus their evidence timestamp
+and source. The event ledger remains authoritative.
+
+Activity changes only on mapped evidence. A prompt or tool start means
+`working`; a direct `interaction.input_requested` event means `needs_input`;
+a turn or session stop means `idle`. Tool output, narration, unrelated
+coordination events, and elapsed time do not clear an input wait. A command
+start counts as progress only while the session already has an evidenced open
+turn.
+
+Task lifecycle changes only through `state.task_state`. Activity events never
+finish, block, or reopen a task. Readers treat a missing lifecycle value as
+`active` for compatibility. Missing or unsupported activity evidence resolves
+to `unknown`.
+
+Codex `PermissionRequest` is mapped to `interaction.input_requested`. Harnery
+does not map the superficially similar Claude Code or Cursor hooks until their
+payload contracts provide direct evidence of an operator wait.
+
+## Consequences
+
+Live dashboards and ledger replay now share the same semantics. Removing a
+heartbeat does not remove the evidence needed to reconstruct either axis.
+
+Some sessions will show `unknown` instead of a more appealing guess. That is
+intentional. Adapter support can expand when a verified payload fixture proves
+the signal.
+
+Lifecycle commands and automatic completion policy remain separate work. This
+record defines their durable event and projection contract, but it does not
+make process exit mean `done`.

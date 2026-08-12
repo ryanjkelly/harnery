@@ -135,6 +135,9 @@ describe("wireHooks: Codex", () => {
     expect(hooks.SessionStart[0]).toEqual({
       hooks: [{ type: "command", command: `bash ${HOOK} session-start --adapter codex` }],
     });
+    expect(hooks.PermissionRequest[0]).toEqual({
+      hooks: [{ type: "command", command: `bash ${HOOK} permission-request --adapter codex` }],
+    });
   });
 
   test("removes legacy Codex events while preserving unrelated handlers", () => {

@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CanonicalEvent } from "../events/consume.ts";
+import { type AgentActivity, applySessionStateEvent, type TaskState } from "./session-state.ts";
 
 export interface V2Heartbeat {
   instance_id: string;
@@ -38,6 +39,12 @@ export interface V2Heartbeat {
   last_tool_at?: string;
   task?: string;
   task_updated_at?: string;
+  activity?: AgentActivity;
+  activity_updated_at?: string;
+  activity_source?: string;
+  task_state?: TaskState;
+  task_state_updated_at?: string;
+  task_state_reason?: string;
   suggested_session_name?: string;
   session_name_seen_at?: string;
   session_name_seen_for?: string;
@@ -183,6 +190,14 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
   hb.events_applied += 1;
   hb.v2_meta.last_projected = new Date().toISOString();
   if (ev.turn_id) hb.last_turn_id = ev.turn_id;
+
+  const sessionState = applySessionStateEvent(hb, ev);
+  hb.activity = sessionState.activity;
+  hb.activity_updated_at = sessionState.activity_updated_at;
+  hb.activity_source = sessionState.activity_source;
+  hb.task_state = sessionState.task_state;
+  hb.task_state_updated_at = sessionState.task_state_updated_at;
+  hb.task_state_reason = sessionState.task_state_reason;
 
   const d = ev.data;
   switch (ev.event_type) {
@@ -544,6 +559,16 @@ function writeHeartbeat(coordRoot: string, instanceId: string, hb: V2Heartbeat):
     setIfDefined(merged, "last_tool_at", hb.last_tool_at);
     setIfDefined(merged, "task", hb.task);
     setIfDefined(merged, "task_updated_at", hb.task_updated_at);
+    setIfDefined(merged, "activity", hb.activity);
+    setIfDefined(merged, "activity_updated_at", hb.activity_updated_at);
+    setIfDefined(merged, "activity_source", hb.activity_source);
+    setIfDefined(merged, "task_state", hb.task_state);
+    setIfDefined(merged, "task_state_updated_at", hb.task_state_updated_at);
+    if (hb.task_state_reason) {
+      merged.task_state_reason = hb.task_state_reason;
+    } else if (hb.task_state) {
+      delete merged.task_state_reason;
+    }
     setIfDefined(merged, "suggested_session_name", hb.suggested_session_name);
     setIfDefined(merged, "session_name_seen_at", hb.session_name_seen_at);
     if (hb.session_name_seen_for) {

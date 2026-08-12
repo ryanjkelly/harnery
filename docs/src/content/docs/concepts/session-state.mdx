@@ -1,0 +1,69 @@
+---
+title: Session state
+description: How Harnery tracks current activity and task lifecycle without mixing the two.
+sidebar:
+  order: 2
+---
+
+Harnery describes a session with two independent state axes.
+
+| Axis | Values | Question answered |
+| --- | --- | --- |
+| `activity` | `unknown`, `working`, `needs_input`, `idle` | What is the agent doing now? |
+| `task_state` | `active`, `blocked`, `done` | Is the declared task still open? |
+
+The separation matters. An agent waiting for approval can have
+`activity: needs_input` and `task_state: active`. After the turn ends, it can
+be `idle` while the task remains `active`. Neither state implies the other.
+
+## Activity evidence
+
+Harnery changes activity only when a canonical event supplies evidence.
+
+| Canonical event | Activity | Notes |
+| --- | --- | --- |
+| `session.start`, `subagent.start` | `idle` | The session exists, but no open turn is implied. |
+| `user_prompt.submit`, `tool.pre_use` | `working` | A turn or tool action is in progress. |
+| `command.start` | `working` | Applied only during an already evidenced open turn. |
+| `interaction.input_requested` | `needs_input` | The adapter directly reported an operator prompt. |
+| `turn.stop`, `session.end`, `subagent.stop` | `idle` | The current execution window ended. |
+
+Output chunks, post-tool events, narration, unrelated coordination commands,
+and elapsed time do not clear `needs_input`. New progress evidence or a stop
+event does.
+
+Codex provides a `PermissionRequest` hook, which Harnery records as
+`interaction.input_requested`. Claude Code and Cursor sessions still use
+`unknown` when their available events cannot prove an input wait. Harnery does
+not turn a nearby pre-execution event into approval evidence.
+
+## Lifecycle evidence
+
+Only `state.task_state` changes task lifecycle. Stopping a process or reaching
+the end of a turn does not mark the task `done`.
+
+The compatibility default is `active` when an older heartbeat or event stream
+has no lifecycle event. A blocked state may carry a reason. Reopening the task
+clears an obsolete blocker reason.
+
+## Live state and replay
+
+The heartbeat projector writes these fields to `.harnery/active/<id>.json`:
+
+```json
+{
+  "activity": "needs_input",
+  "activity_updated_at": "2026-08-12T10:02:00.000Z",
+  "activity_source": "interaction.input_requested",
+  "task_state": "active",
+  "task_state_updated_at": "2026-08-12T09:30:00.000Z"
+}
+```
+
+Heartbeats are a live projection. The canonical event ledger is the durable
+record. The public `foldSessionState()` helper rebuilds both axes from a session
+slice, even after its heartbeat has been removed. Live projection and replay
+call the same transition reducer.
+
+See [ADR 0072](/decisions/0072-event-derived-session-state/) for the decision
+and rejected inference rules.

@@ -12,3 +12,4 @@
 export * from "./canonical-emit.js";
 export * from "./coord-client.js";
 export * from "./session-events.js";
+export * from "./state/session-state.js";

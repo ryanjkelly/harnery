@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PermissionRequest",
+  "session_id": "019ff6e8-ba69-71e2-9d5f-3ae7a4bd918a",
+  "turn_id": "turn-7d0f4f9c",
+  "tool_name": "shell_command",
+  "tool_input": {
+    "command": "git status --short",
+    "description": "Inspect the working tree outside the sandbox"
+  }
+}
