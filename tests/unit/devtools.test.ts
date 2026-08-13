@@ -26,6 +26,8 @@ const NOW = Date.parse("2026-07-13T00:00:00.000Z");
 // 2026-07-14, a +4d one would have on 2026-07-17). Expressed as fixed absolute epochs.
 const VALID_EXP_S = Math.floor(Date.parse("2099-01-01T00:00:00.000Z") / 1000);
 const EXPIRED_EXP_S = Math.floor(Date.parse("2000-01-01T00:00:00.000Z") / 1000);
+const VALID_EXP_MS = VALID_EXP_S * 1000;
+const EXPIRED_EXP_MS = EXPIRED_EXP_S * 1000;
 
 /** Minimal JWT with the given claims (unsigned; only the payload is decoded). */
 function jwt(claims: Record<string, unknown>): string {
@@ -645,8 +647,8 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
     globalThis.fetch = origFetch;
   });
 
-  /** Write ~/.claude/.credentials.json with the given token + expiry offsets (ms from NOW). */
-  function seedClaude(token: string, accessInMs: number, refreshInMs: number) {
+  /** Write ~/.claude/.credentials.json with fixed absolute expiry epochs. */
+  function seedClaude(token: string, accessExpiresAt: number, refreshExpiresAt: number) {
     const dir = path.join(home, ".claude");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -654,8 +656,8 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
       JSON.stringify({
         claudeAiOauth: {
           accessToken: token,
-          expiresAt: NOW + accessInMs,
-          refreshTokenExpiresAt: NOW + refreshInMs,
+          expiresAt: accessExpiresAt,
+          refreshTokenExpiresAt: refreshExpiresAt,
         },
       }),
     );
@@ -663,7 +665,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
 
   test("populates quota windows + extra-usage spend from oauth/usage; token never surfaces", async () => {
     const token = "sk-ant-oat-TESTSECRET";
-    seedClaude(token, 3_600_000, 30 * 86_400_000);
+    seedClaude(token, VALID_EXP_MS, VALID_EXP_MS);
     // A session transcript stamps the live client version; the UA must mirror it.
     const proj = path.join(home, ".claude", "projects", "p");
     mkdirSync(proj, { recursive: true });
@@ -725,7 +727,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
   });
 
   test("expired token is skipped (no call, quota stays server-side)", async () => {
-    seedClaude("sk-ant-oat-DEAD", -10_000, -10_000);
+    seedClaude("sk-ant-oat-DEAD", EXPIRED_EXP_MS, EXPIRED_EXP_MS);
     let called = false;
     globalThis.fetch = (async () => {
       called = true;
@@ -740,7 +742,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
   });
 
   test("a rate-limited (429) usage fetch degrades to a note, never throws", async () => {
-    seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
+    seedClaude("sk-ant-oat-OK", VALID_EXP_MS, VALID_EXP_MS);
     globalThis.fetch = (async () =>
       new Response('{"error":{"type":"rate_limit_error"}}', { status: 429 })) as unknown as typeof fetch;
     const report = readDevtools({ home, now: NOW, only: ["claude-code"] });
@@ -751,7 +753,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
   });
 
   test("a 429 records a cooldown and does NOT re-hit within the retry-after window", async () => {
-    seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
+    seedClaude("sk-ant-oat-OK", VALID_EXP_MS, VALID_EXP_MS);
     let calls = 0;
     globalThis.fetch = (async () => {
       calls++;
@@ -783,13 +785,13 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
       );
     }) as unknown as typeof fetch;
 
-    seedClaude("sk-ant-oat-ACCT-A", 3_600_000, 30 * 86_400_000);
+    seedClaude("sk-ant-oat-ACCT-A", VALID_EXP_MS, VALID_EXP_MS);
     const rA = readDevtools({ home, now: NOW, only: ["claude-code"] });
     await enrichFromApi(rA, { home });
     expect(byTool(rA.tools, "claude-code").quota?.[0]?.usedPercent).toBe(10);
 
     // Switch accounts: a fresh token must bypass account A's cache and fetch anew.
-    seedClaude("sk-ant-oat-ACCT-B", 3_600_000, 30 * 86_400_000);
+    seedClaude("sk-ant-oat-ACCT-B", VALID_EXP_MS, VALID_EXP_MS);
     const rB = readDevtools({ home, now: NOW, only: ["claude-code"] });
     await enrichFromApi(rB, { home });
     expect(byTool(rB.tools, "claude-code").quota?.[0]?.usedPercent).toBe(90);
@@ -797,7 +799,7 @@ describe("enrichFromApi — claude-code usage (oauth token)", () => {
   });
 
   test("a fresh cache short-circuits the network (protects the rate-limited endpoint)", async () => {
-    seedClaude("sk-ant-oat-OK", 3_600_000, 30 * 86_400_000);
+    seedClaude("sk-ant-oat-OK", VALID_EXP_MS, VALID_EXP_MS);
     let calls = 0;
     globalThis.fetch = (async () => {
       calls++;
@@ -833,8 +835,8 @@ describe("probeEndpoints — doctor", () => {
       JSON.stringify({
         claudeAiOauth: {
           accessToken: "sk-ant-oat-OK",
-          expiresAt: NOW + 3_600_000,
-          refreshTokenExpiresAt: NOW + 30 * 86_400_000,
+          expiresAt: VALID_EXP_MS,
+          refreshTokenExpiresAt: VALID_EXP_MS,
         },
       }),
     );
