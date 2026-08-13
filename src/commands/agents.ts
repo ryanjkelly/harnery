@@ -50,7 +50,11 @@ import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
 } from "../core/agents/state/heartbeat-writer.ts";
-import type { TaskState } from "../core/agents/state/session-state.ts";
+import {
+  type AgentActivity,
+  foldSessionState,
+  type TaskState,
+} from "../core/agents/state/session-state.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
@@ -186,12 +190,31 @@ interface Row {
   last_tool?: string | null;
   last_tool_target?: string | null;
   task?: string | null;
+  activity: AgentActivity;
+  activity_updated_at?: string | null;
+  activity_source?: string | null;
+  task_state: TaskState;
+  task_state_updated_at?: string | null;
+  task_state_reason?: string | null;
   turn_summary?: string | null;
   turn_summary_updated_at?: string | null;
   platform?: string | null;
   /** Set on relation=remote rows: the machine label the row arrived from
    * via the cross-machine presence transport (ADR 0016). */
   machine?: string | null;
+}
+
+function activityOf(hb: Pick<Heartbeat, "activity">): AgentActivity {
+  return hb.activity ?? "unknown";
+}
+
+function taskStateOf(hb: Pick<Heartbeat, "task_state">): TaskState {
+  return hb.task_state ?? "active";
+}
+
+function lifecycleLabel(hb: Pick<Heartbeat, "task_state" | "task_state_reason">): string {
+  const state = taskStateOf(hb);
+  return state === "blocked" && hb.task_state_reason ? `${state}: ${hb.task_state_reason}` : state;
 }
 
 let emit: EmitContext;
@@ -917,6 +940,12 @@ function runWhoami(opts: { json?: boolean }): void {
     last_tool: hb.last_tool ?? null,
     last_tool_target: hb.last_tool_target ?? null,
     task: hb.task ?? null,
+    activity: activityOf(hb),
+    activity_updated_at: hb.activity_updated_at ?? null,
+    activity_source: hb.activity_source ?? null,
+    task_state: taskStateOf(hb),
+    task_state_updated_at: hb.task_state_updated_at ?? null,
+    task_state_reason: hb.task_state_reason ?? null,
     turn_summary: hb.turn_summary ?? null,
     turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
     platform: hb.platform ?? "claude-code",
@@ -1015,6 +1044,12 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         last_tool: h.last_tool ?? null,
         last_tool_target: h.last_tool_target ?? null,
         task: h.task ?? null,
+        activity: activityOf(h),
+        activity_updated_at: h.activity_updated_at ?? null,
+        activity_source: h.activity_source ?? null,
+        task_state: taskStateOf(h),
+        task_state_updated_at: h.task_state_updated_at ?? null,
+        task_state_reason: h.task_state_reason ?? null,
         turn_summary: h.turn_summary ?? null,
         turn_summary_updated_at: h.turn_summary_updated_at ?? null,
         platform: h.platform ?? "claude-code",
@@ -1040,6 +1075,12 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       last_tool: h.last_tool ?? null,
       last_tool_target: h.last_tool_target ?? null,
       task: h.task ?? null,
+      activity: activityOf(h),
+      activity_updated_at: h.activity_updated_at ?? null,
+      activity_source: h.activity_source ?? null,
+      task_state: taskStateOf(h),
+      task_state_updated_at: h.task_state_updated_at ?? null,
+      task_state_reason: h.task_state_reason ?? null,
       turn_summary: h.turn_summary ?? null,
       turn_summary_updated_at: h.turn_summary_updated_at ?? null,
       platform: h.platform ?? "claude-code",
@@ -1068,6 +1109,12 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         last_tool: a.last_tool ?? null,
         last_tool_target: null,
         task: a.task ?? null,
+        activity: a.activity ?? "unknown",
+        activity_updated_at: null,
+        activity_source: null,
+        task_state: a.task_state ?? "active",
+        task_state_updated_at: null,
+        task_state_reason: a.task_state_reason ?? null,
         turn_summary: a.turn_summary ?? null,
         turn_summary_updated_at: null,
         platform: a.platform ?? "claude-code",
@@ -1335,6 +1382,12 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     age_secs: ageSecs,
     last_heartbeat_secs_ago: heartbeatAgeSecs,
     task: hb.task ?? null,
+    activity: activityOf(hb),
+    activity_updated_at: hb.activity_updated_at ?? null,
+    activity_source: hb.activity_source ?? null,
+    task_state: taskStateOf(hb),
+    task_state_updated_at: hb.task_state_updated_at ?? null,
+    task_state_reason: hb.task_state_reason ?? null,
     turn_summary: hb.turn_summary ?? null,
     turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
     title: report?.title ?? null,
@@ -1366,6 +1419,10 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     `  session  ${formatAge(ageSecs)} old · kind=${data.kind} · session_id=${data.session_id.slice(0, 8)}…`,
   );
   lines.push(`  last heartbeat: ${formatAge(heartbeatAgeSecs)} ago`);
+  lines.push(`  activity:       ${data.activity}`);
+  lines.push(
+    `  lifecycle:      ${data.task_state}${data.task_state === "blocked" && data.task_state_reason ? `: ${data.task_state_reason}` : ""}`,
+  );
   if (data.last_tool) {
     const target = data.last_tool_target ? ` ${truncate(data.last_tool_target, 80)}` : "";
     lines.push(`  last activity:  ${data.last_tool}${target}`);
@@ -1953,6 +2010,12 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     instance_id: hb.instance_id,
     kind: normalizeKind(hb.kind),
     session_age_secs: ageSecs,
+    activity: activityOf(hb),
+    activity_updated_at: hb.activity_updated_at ?? null,
+    activity_source: hb.activity_source ?? null,
+    task_state: taskStateOf(hb),
+    task_state_updated_at: hb.task_state_updated_at ?? null,
+    task_state_reason: hb.task_state_reason ?? null,
     files_held: filesHeld,
     peers_live: livePeers.length,
     peers_stale: peersStale,
@@ -1966,6 +2029,9 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
       agents: m.agents.map((a) => ({
         name: a.name || "unnamed",
         task: a.task ?? null,
+        activity: a.activity ?? "unknown",
+        task_state: a.task_state ?? "active",
+        task_state_reason: a.task_state_reason ?? null,
         files: a.files_touched?.length ?? 0,
       })),
     })),
@@ -1985,6 +2051,8 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
 
   const rows: Array<[string, string]> = [
     ["session", formatAge(ageSecs)],
+    ["activity", activityOf(hb)],
+    ["lifecycle", lifecycleLabel(hb)],
     ["context", ctxStr],
     ["files", filesStr],
     ["peers", peersStr],
@@ -2736,6 +2804,12 @@ function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
     case "state.task_set":
       detail = d.cleared ? "(cleared)" : clip(s("task"));
       break;
+    case "state.task_state":
+      detail = `${s("prior_state") || "active"} → ${s("state") || "active"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
+      break;
+    case "interaction.input_requested":
+      detail = s("request_kind") || s("tool_name") || "operator input requested";
+      break;
     case "state.status_checked":
       detail = "status box rendered";
       break;
@@ -2856,6 +2930,7 @@ function runTrace(
   }
 
   const events = byId.get(resolvedId) ?? [];
+  const state = foldSessionState(events, { instance_id: resolvedId });
   const lines = events
     .map((ev) => traceLine(ev, !!opts.allTools))
     .filter((l): l is TraceEntry => l !== null)
@@ -2870,6 +2945,12 @@ function runTrace(
     instance_id: resolvedId,
     other_instances: candidateIds.filter((id) => id !== resolvedId),
     total_events: events.length,
+    activity: state.activity,
+    activity_updated_at: state.activity_updated_at ?? null,
+    activity_source: state.activity_source ?? null,
+    task_state: state.task_state,
+    task_state_updated_at: state.task_state_updated_at ?? null,
+    task_state_reason: state.task_state_reason ?? null,
     shown: shown.length,
     entries: shown,
   };
@@ -2881,6 +2962,9 @@ function runTrace(
   emit.data(result);
   const header = `Trace: agent-${displayName}  (${resolvedId.slice(0, 8)}…)  ${events.length} events${result.other_instances.length ? ` · ${result.other_instances.length} older instance(s) of this name` : ""}`;
   process.stdout.write(`${header}\n`); // lint-ok-emission: human trace view
+  process.stdout.write(
+    `  activity=${state.activity} · lifecycle=${state.task_state}${state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
+  ); // lint-ok-emission: human trace view
   if (shown.length === 0) {
     process.stdout.write("  (no events)\n"); // lint-ok-emission: human trace view
     return;

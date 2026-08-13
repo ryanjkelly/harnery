@@ -102,6 +102,9 @@ describe("renderSessionContext", () => {
         files_touched: ["docs/x.md"],
         last_heartbeat: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
         started_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+        activity: "needs_input",
+        task_state: "blocked",
+        task_state_reason: "waiting for approval",
       }),
       "utf8",
     );
@@ -112,6 +115,8 @@ describe("renderSessionContext", () => {
       agentName: "Maya",
     });
     expect(out).toContain("agent-Adelaide");
+    expect(out).toContain("activity=needs_input");
+    expect(out).toContain("lifecycle=blocked: waiting for approval");
   });
 });
 

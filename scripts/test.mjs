@@ -22,6 +22,16 @@ const browserFiles = new Set([
   "tests/e2e/browse-session.test.ts",
 ]);
 
+// This file owns a long-lived fixture process and repeatedly spawns short-lived
+// CLI clients. Browser state left by earlier files can delay the fixture's
+// Chromium shutdown past its independently bounded teardown window, even when
+// Bun runs the tests serially. Give the process integration case its own Bun
+// process so both sides of the control socket start from a clean runtime.
+const browserProcessFiles = new Set([
+  "src/lib/browser/session-browser.test.ts",
+  "tests/e2e/browse-session.test.ts",
+]);
+
 function discoverTests(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
@@ -46,12 +56,19 @@ const allFiles = [
   ...discoverTests(join(repoRoot, "tests")),
 ].sort();
 const coreFiles = allFiles.filter((file) => !browserFiles.has(file));
-const isolatedBrowserFiles = allFiles.filter((file) => browserFiles.has(file));
+const isolatedBrowserFiles = allFiles.filter(
+  (file) => browserFiles.has(file) && !browserProcessFiles.has(file),
+);
+const isolatedBrowserProcessFiles = allFiles.filter((file) => browserProcessFiles.has(file));
 
-if (isolatedBrowserFiles.length !== browserFiles.size) {
-  const missing = [...browserFiles].filter((file) => !isolatedBrowserFiles.includes(file));
+if (isolatedBrowserFiles.length + isolatedBrowserProcessFiles.length !== browserFiles.size) {
+  const found = new Set([...isolatedBrowserFiles, ...isolatedBrowserProcessFiles]);
+  const missing = [...browserFiles].filter((file) => !found.has(file));
   throw new Error(`browser test partition is stale; missing: ${missing.join(", ")}`);
 }
 
+for (const file of isolatedBrowserProcessFiles) {
+  run(`browser process partition: ${file}`, [file], ["--max-concurrency", "1"]);
+}
 run("browser test partition", isolatedBrowserFiles, ["--max-concurrency", "1"]);
 run("core test partition", coreFiles);

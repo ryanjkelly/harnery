@@ -20,9 +20,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   __resetCoordRootCache,
+  __resetIdentityIndexCache,
   type IdentityIndex,
   mergeIdentitiesFromChunk,
   readEvents,
+  readAgents,
+  readEndedAgent,
   refreshIdentityIndex,
 } from "./coord-reader.ts";
 
@@ -177,6 +180,128 @@ describe("mergeIdentitiesFromChunk", () => {
       {},
     );
     expect(into["sess-1"]!.model).toBe("gpt-5.5");
+  });
+
+  test("folds activity and lifecycle evidence for ended-session readers", () => {
+    const events = [
+      startLine("session.start", "sess-1", "Anna"),
+      JSON.stringify({
+        event_type: "user_prompt.submit",
+        ts: "2026-06-04T00:01:00Z",
+        instance_id: "sess-1",
+        data: {},
+      }),
+      JSON.stringify({
+        event_type: "interaction.input_requested",
+        ts: "2026-06-04T00:02:00Z",
+        instance_id: "sess-1",
+        data: { request_kind: "permission" },
+      }),
+      JSON.stringify({
+        event_type: "state.task_state",
+        ts: "2026-06-04T00:03:00Z",
+        instance_id: "sess-1",
+        data: { state: "blocked", reason: "waiting for approval" },
+      }),
+      JSON.stringify({
+        event_type: "session.end",
+        ts: "2026-06-04T00:04:00Z",
+        instance_id: "sess-1",
+        data: {},
+      }),
+    ].join("\n");
+    const out = mergeIdentitiesFromChunk(events, {});
+    expect(out["sess-1"]).toMatchObject({
+      activity: "idle",
+      activity_source: "session.end",
+      task_state: "blocked",
+      task_state_reason: "waiting for approval",
+    });
+  });
+
+  test("replayed older evidence cannot regress the projected session state", () => {
+    const event = (event_type: string, ts: string, data: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        event_type,
+        ts,
+        instance_id: "sess-1",
+        session_id: "sess-1",
+        data,
+      });
+    const into = mergeIdentitiesFromChunk(
+      [
+        startLine("session.start", "sess-1", "Anna"),
+        event("interaction.input_requested", "2026-06-04T00:04:00Z"),
+        event("state.task_state", "2026-06-04T00:05:00Z", {
+          state: "blocked",
+          reason: "approval pending",
+        }),
+        event("turn.stop", "2026-06-04T00:02:00Z"),
+        event("state.task_state", "2026-06-04T00:01:00Z", { state: "active" }),
+        startLine("session.start", "sess-1", "Anna resumed"),
+      ].join("\n"),
+      {},
+    );
+
+    expect(into["sess-1"]).toMatchObject({
+      activity: "needs_input",
+      activity_updated_at: "2026-06-04T00:04:00Z",
+      task_state: "blocked",
+      task_state_updated_at: "2026-06-04T00:05:00Z",
+      task_state_reason: "approval pending",
+      last_ts: "2026-06-04T00:05:00Z",
+    });
+  });
+});
+
+describe("ended-session state projection", () => {
+  test("ended sessions leave the live board but keep event-derived lifecycle", () => {
+    const root = freshRoot();
+    mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
+    const body = [
+      startLine("session.start", "ended-1", "Anna"),
+      JSON.stringify({
+        schema_version: 2,
+        event_id: "01state",
+        event_type: "state.task_state",
+        ts: "2026-06-04T00:03:00Z",
+        instance_id: "ended-1",
+        session_id: "ended-1",
+        adapter: "codex",
+        source: "agent-coord",
+        data: { state: "done", reason: "verified" },
+      }),
+      JSON.stringify({
+        schema_version: 2,
+        event_id: "01end",
+        event_type: "session.end",
+        ts: "2026-06-04T00:04:00Z",
+        instance_id: "ended-1",
+        session_id: "ended-1",
+        adapter: "codex",
+        source: "agent-hook",
+        data: {},
+      }),
+    ].join("\n");
+    writeFileSync(streamPath(root), `${body}\n`, "utf8");
+    const priorRoot = process.env.HARNERY_COORD_ROOT;
+    process.env.HARNERY_COORD_ROOT = root;
+    __resetCoordRootCache();
+    __resetIdentityIndexCache();
+    try {
+      expect(readAgents().active).toHaveLength(0);
+      expect(readAgents().stale).toHaveLength(0);
+      expect(readEndedAgent("ended-1")).toMatchObject({
+        activity: "idle",
+        task_state: "done",
+        task_state_reason: "verified",
+      });
+    } finally {
+      if (priorRoot === undefined) delete process.env.HARNERY_COORD_ROOT;
+      else process.env.HARNERY_COORD_ROOT = priorRoot;
+      __resetCoordRootCache();
+      __resetIdentityIndexCache();
+    }
   });
 });
 

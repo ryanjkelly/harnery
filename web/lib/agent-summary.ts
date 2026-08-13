@@ -5,10 +5,10 @@
  * metadata baked in (no client-side FS reads).
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { type InstanceIdentity, coordRoot } from "./coord-reader";
+import { coordRoot, type Heartbeat, type InstanceIdentity } from "./coord-reader";
 import { type AgentIdentity, lookupByName } from "./identities";
 
 export interface AgentSummary {
@@ -27,6 +27,9 @@ export interface AgentSummary {
   model?: string | null;
   started_at?: string;
   task?: string | null;
+  activity?: Heartbeat["activity"];
+  task_state?: Heartbeat["task_state"];
+  task_state_reason?: string | null;
   last_tool?: string | null;
   last_tool_target?: string | null;
   files_touched?: string[];
@@ -50,6 +53,9 @@ interface ActivityState {
   model?: string | null;
   started_at?: string;
   task?: string | null;
+  activity?: Heartbeat["activity"];
+  task_state?: Heartbeat["task_state"];
+  task_state_reason?: string | null;
   last_tool?: string | null;
   last_tool_target?: string | null;
   files_touched?: string[];
@@ -79,6 +85,9 @@ function readActiveIndex(): {
         platform?: string | null;
         model?: string | null;
         task?: string | null;
+        activity?: Heartbeat["activity"];
+        task_state?: Heartbeat["task_state"];
+        task_state_reason?: string | null;
         last_tool?: string | null;
         last_tool_target?: string | null;
         files_touched?: string[];
@@ -102,6 +111,9 @@ function readActiveIndex(): {
           model: hb.model ?? null,
           started_at: hb.started_at,
           task: hb.task ?? null,
+          activity: hb.activity ?? "unknown",
+          task_state: hb.task_state ?? "active",
+          task_state_reason: hb.task_state_reason ?? null,
           last_tool: hb.last_tool ?? null,
           last_tool_target: hb.last_tool_target ?? null,
           files_touched: hb.files_touched ?? [],
@@ -283,6 +295,9 @@ export function buildAgentSummaryMap(
       model: activity?.model ?? metaFallback.get(bare)?.model ?? null,
       started_at: activity?.started_at,
       task: activity?.task,
+      activity: activity?.activity ?? "unknown",
+      task_state: activity?.task_state ?? "active",
+      task_state_reason: activity?.task_state_reason ?? null,
       last_tool: activity?.last_tool,
       last_tool_target: activity?.last_tool_target,
       files_touched: activity?.files_touched,
@@ -397,6 +412,9 @@ export function buildEndedAgentSummaries(
       platform: id.platform ?? null,
       model: id.model ?? null,
       started_at: id.started_at ?? undefined,
+      activity: id.activity ?? "unknown",
+      task_state: id.task_state ?? "active",
+      task_state_reason: id.task_state_reason ?? null,
     };
   }
   return out;

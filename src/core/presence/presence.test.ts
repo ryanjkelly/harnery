@@ -105,6 +105,7 @@ describe("buildPresenceBlob", () => {
     expect(blob.machine).toBe("machine-a");
     expect(blob.agents.map((a) => a.instance_id)).toEqual(["live-1"]);
     expect(blob.agents[0]!.task).toBe("testing presence");
+    expect(blob.agents[0]).toMatchObject({ activity: "unknown", task_state: "active" });
   });
 
   test("basis hash changes on task change, not on heartbeat churn", () => {
@@ -119,6 +120,32 @@ describe("buildPresenceBlob", () => {
     // Task change: new basis.
     seedHeartbeat(cloneA, "live-1", { task: "different focus" });
     expect(buildPresenceBlob(cloneA).basisHash).not.toBe(h1);
+  });
+
+  test("basis hash changes on activity or lifecycle changes without task churn", () => {
+    process.env.HARNERY_MACHINE = "machine-a";
+    seedHeartbeat(cloneA, "live-1", {
+      activity: "working",
+      task_state: "active",
+    });
+    const active = buildPresenceBlob(cloneA);
+    expect(active.blob.agents[0]).toMatchObject({
+      activity: "working",
+      task_state: "active",
+    });
+
+    seedHeartbeat(cloneA, "live-1", {
+      activity: "needs_input",
+      task_state: "blocked",
+      task_state_reason: "waiting for approval",
+    });
+    const blocked = buildPresenceBlob(cloneA);
+    expect(blocked.basisHash).not.toBe(active.basisHash);
+    expect(blocked.blob.agents[0]).toMatchObject({
+      activity: "needs_input",
+      task_state: "blocked",
+      task_state_reason: "waiting for approval",
+    });
   });
 });
 

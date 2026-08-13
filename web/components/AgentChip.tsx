@@ -1,5 +1,6 @@
 "use client";
 
+import { AgentStateBadges } from "@/components/AgentStateBadges";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -314,6 +315,19 @@ function AgentCardBody({
           />
           {summary.state}
         </span>
+      </div>
+
+      <div className="border-t border-border/60 pt-2">
+        <AgentStateBadges
+          activity={summary.activity ?? "unknown"}
+          taskState={summary.task_state ?? "active"}
+          reason={summary.task_state_reason}
+        />
+        {summary.task_state === "blocked" && summary.task_state_reason && (
+          <p className="mt-1 text-[11px] text-amber-300 wrap-break-word">
+            {summary.task_state_reason}
+          </p>
+        )}
       </div>
 
       {summary.kind === "subagent" && (

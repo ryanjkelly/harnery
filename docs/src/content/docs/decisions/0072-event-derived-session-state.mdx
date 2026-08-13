@@ -92,3 +92,14 @@ Lifecycle changes also re-mint the suggested session name. Prompt reminders
 and the Claude Code Stop rule now enforce the new name until it is observed.
 Human-facing guards keep subagents, transient processes, and workflow children
 from declaring operator task lifecycle.
+
+Phase 3 carried both axes through the operator surfaces. Local CLI records,
+prompt peer context, cross-machine presence, and web views now use explicit
+activity and lifecycle labels. State-only changes participate in prompt and
+presence hashes, and lifecycle-only heartbeat writes refresh the web view.
+
+The web identity index also folds session-state evidence for ended sessions.
+Live boards still remove stale or ended heartbeats, while detail and history
+readers reconstruct their last activity and lifecycle from canonical events.
+Timestamp guards prevent an older replayed event from rolling that projection
+backward.

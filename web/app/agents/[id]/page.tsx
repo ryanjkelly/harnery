@@ -3,28 +3,29 @@ import path from "node:path";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AgentStateBadges } from "@/components/AgentStateBadges";
 import { EndSessionButton } from "@/components/EndSessionButton";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { HealActions } from "@/components/HealActions";
 import { HeartbeatJson } from "@/components/HeartbeatJson";
+import { JournalPanel } from "@/components/journal/JournalPanel";
 import { NavBar } from "@/components/NavBar";
 import { NudgeBox } from "@/components/NudgeBox";
 import { RecentActivity } from "@/components/RecentActivity";
 import { ReleaseClaimButton } from "@/components/ReleaseClaimButton";
-import { JournalPanel } from "@/components/journal/JournalPanel";
-import { NO_DATA } from "@/lib/format/no-data";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ageLabel,
   coordRoot,
+  journalDir,
   listJournalArchives,
   readAgent,
   readEndedAgent,
   readEvents,
   readJournal,
-  journalDir,
 } from "@/lib/coord-reader";
+import { NO_DATA } from "@/lib/format/no-data";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +67,11 @@ export default async function AgentDetailPage({
             <span className="font-mono">agent-{hb.name}</span>
             <Badge variant="outline">{hb.platform ?? "unknown"}</Badge>
             {hb.kind && <Badge variant="secondary">{hb.kind}</Badge>}
+            <AgentStateBadges
+              activity={hb.activity}
+              taskState={hb.task_state}
+              reason={hb.task_state_reason}
+            />
             {!isLive && (
               <Badge variant="outline" className="border-amber-500/40 text-amber-400">
                 session ended
@@ -118,6 +124,20 @@ export default async function AgentDetailPage({
                 <span>
                   {hb.task ?? (
                     <span className="text-muted-foreground italic">none</span>
+                  )}
+                </span>
+                <span className="text-muted-foreground">activity</span>
+                <span>
+                  {hb.activity}
+                  {hb.activity_source && (
+                    <span className="text-muted-foreground"> via {hb.activity_source}</span>
+                  )}
+                </span>
+                <span className="text-muted-foreground">lifecycle</span>
+                <span>
+                  {hb.task_state}
+                  {hb.task_state_reason && (
+                    <span className="text-muted-foreground">: {hb.task_state_reason}</span>
                   )}
                 </span>
                 {hb.turn_summary && (

@@ -175,7 +175,13 @@ export function registerPresenceCommand(program: Command, emit: EmitContext): vo
         for (const a of m.agents) {
           const task = a.task ? `  "${a.task.slice(0, 70)}"` : "";
           const files = a.files_touched?.length ? `  [${a.files_touched.length} files]` : "";
-          emit.text(`  agent-${a.name ?? a.instance_id.slice(0, 8)}${task}${files}\n`);
+          const lifecycle =
+            a.task_state === "blocked" && a.task_state_reason
+              ? `${a.task_state}: ${a.task_state_reason}`
+              : a.task_state;
+          emit.text(
+            `  agent-${a.name ?? a.instance_id.slice(0, 8)}${task}${files}  activity=${a.activity} lifecycle=${lifecycle}\n`,
+          );
         }
       }
     });

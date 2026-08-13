@@ -22,6 +22,11 @@ import {
 } from "node:fs";
 import path from "node:path";
 import {
+  type AgentActivity,
+  applySessionStateEvent,
+  type TaskState,
+} from "harnery/core/agents";
+import {
   buildContributionMatrix,
   type ContributionMatrix,
   countConsecutiveAllTrivialRounds,
@@ -89,6 +94,12 @@ export interface Heartbeat {
   files_touched: string[];
   task?: string | null;
   task_updated_at?: string | null;
+  activity: AgentActivity;
+  activity_updated_at?: string | null;
+  activity_source?: string | null;
+  task_state: TaskState;
+  task_state_updated_at?: string | null;
+  task_state_reason?: string | null;
   turn_summary?: string | null;
   turn_summary_updated_at?: string | null;
   last_tool?: string | null;
@@ -165,7 +176,12 @@ function readHeartbeats(): { all: Heartbeat[]; invalid: InvalidHeartbeat[]; dir:
     }
     const ts = Date.parse(parsed.last_heartbeat);
     const ageSec = Number.isFinite(ts) ? Math.max(0, Math.floor((now - ts) / 1000)) : 0;
-    all.push({ ...parsed, age_seconds: ageSec });
+    all.push({
+      ...parsed,
+      activity: parsed.activity ?? "unknown",
+      task_state: parsed.task_state ?? "active",
+      age_seconds: ageSec,
+    });
   }
 
   all.sort((a, b) => b.last_heartbeat.localeCompare(a.last_heartbeat));
@@ -246,6 +262,12 @@ export function readEndedAgent(instanceId: string): Heartbeat | null {
     last_heartbeat: lastSeen,
     files_touched: [],
     task: null,
+    activity: identity.activity ?? "unknown",
+    activity_updated_at: identity.activity_updated_at ?? null,
+    activity_source: identity.activity_source ?? null,
+    task_state: identity.task_state ?? "active",
+    task_state_updated_at: identity.task_state_updated_at ?? null,
+    task_state_reason: identity.task_state_reason ?? null,
     turn_summary: null,
     last_tool: null,
     last_tool_target: null,
@@ -633,6 +655,12 @@ export interface InstanceIdentity {
   /** Model from this instance's most recent `turn.stop` ("what model did it
    * last use"), survives the heartbeat and tracks mid-session model switches. */
   model?: string | null;
+  activity?: AgentActivity;
+  activity_updated_at?: string | null;
+  activity_source?: string | null;
+  task_state?: TaskState;
+  task_state_updated_at?: string | null;
+  task_state_reason?: string | null;
   started_at?: string | null;
   /** ts of the start event: a recency proxy for agents that have since ended. */
   last_ts?: string | null;
@@ -669,8 +697,9 @@ export interface IdentityIndex {
 
 /** v2: turn.stop model harvesting (2026-06-10). v3: fold rolled archives so
  * identities survive events.ndjson rotation (2026-07-07). v4: fold
- * identity.assumed role changes (2026-07-20). */
-const IDENTITY_INDEX_VERSION = 4;
+ * identity.assumed role changes (2026-07-20). v5: fold both session-state
+ * axes so ended-agent views keep durable lifecycle evidence. */
+const IDENTITY_INDEX_VERSION = 5;
 
 /** Line-aligned window for folding a file range into the identity index without
  * ever materializing a >512MB string (V8's max string length). A just-rolled
@@ -679,10 +708,25 @@ const IDENTITY_FOLD_WINDOW_BYTES = 64 * 1024 * 1024;
 
 let identityIndexCache: IdentityIndex | null = null;
 
+/** Reset the memoized event-derived identity/state index (tests only). */
+export function __resetIdentityIndexCache(): void {
+  identityIndexCache = null;
+}
+
 /** Parse identity-bearing rows out of an ndjson chunk and merge them into
  * `into`. Starts establish the instance, identity.assumed changes its durable
  * persona/name, and turn.stop carries the most recently used model. Pure;
  * exported for tests. The substring pre-filter avoids JSON.parse on noise. */
+const SESSION_STATE_EVENT_TYPES = [
+  "user_prompt.submit",
+  "tool.pre_use",
+  "command.start",
+  "interaction.input_requested",
+  "session.end",
+  "subagent.stop",
+  "state.task_state",
+] as const;
+
 export function mergeIdentitiesFromChunk(
   chunk: string,
   into: Record<string, InstanceIdentity>,
@@ -692,12 +736,20 @@ export function mergeIdentitiesFromChunk(
     const isSubagent = !isSession && line.includes('"subagent.start"');
     const isAssume = !isSession && !isSubagent && line.includes('"identity.assumed"');
     const isTurnStop = !isSession && !isSubagent && !isAssume && line.includes('"turn.stop"');
-    if (!isSession && !isSubagent && !isAssume && !isTurnStop) continue;
+    const isStateEvent =
+      !isSession &&
+      !isSubagent &&
+      !isAssume &&
+      !isTurnStop &&
+      SESSION_STATE_EVENT_TYPES.some((type) => line.includes(`"${type}"`));
+    if (!isSession && !isSubagent && !isAssume && !isTurnStop && !isStateEvent) continue;
     try {
       if (isTurnStop) {
         const row = JSON.parse(line) as {
+          event_type: string;
           instance_id?: string;
-          data?: { model?: string };
+          ts?: string;
+          data?: { model?: string } & Record<string, unknown>;
         };
         const model = row.data?.model;
         // A turn.stop always follows its session.start in the append-only log,
@@ -706,6 +758,7 @@ export function mergeIdentitiesFromChunk(
         if (row.instance_id && model && into[row.instance_id]) {
           into[row.instance_id].model = model;
         }
+        applyIdentityState(into, row);
         continue;
       }
       if (isAssume) {
@@ -727,12 +780,29 @@ export function mergeIdentitiesFromChunk(
           session_id: previous?.session_id ?? row.session_id ?? null,
           platform: previous?.platform ?? null,
           model: previous?.model ?? null,
+          activity: previous?.activity,
+          activity_updated_at: previous?.activity_updated_at ?? null,
+          activity_source: previous?.activity_source ?? null,
+          task_state: previous?.task_state,
+          task_state_updated_at: previous?.task_state_updated_at ?? null,
+          task_state_reason: previous?.task_state_reason ?? null,
           started_at: previous?.started_at ?? null,
-          last_ts: row.ts ?? previous?.last_ts ?? null,
+          last_ts: mostRecentTimestamp(row.ts, previous?.last_ts),
         };
         continue;
       }
+      if (isStateEvent) {
+        const row = JSON.parse(line) as {
+          event_type: string;
+          instance_id?: string;
+          ts?: string;
+          data?: Record<string, unknown>;
+        };
+        applyIdentityState(into, row);
+        continue;
+      }
       const row = JSON.parse(line) as {
+        event_type: string;
         instance_id?: string;
         session_id?: string;
         ts?: string;
@@ -751,14 +821,76 @@ export function mergeIdentitiesFromChunk(
         // A re-emitted start (session resume) must not wipe a model already
         // harvested from this instance's earlier turn.stops.
         model: into[row.instance_id]?.model ?? null,
+        activity: into[row.instance_id]?.activity,
+        activity_updated_at: into[row.instance_id]?.activity_updated_at ?? null,
+        activity_source: into[row.instance_id]?.activity_source ?? null,
+        task_state: into[row.instance_id]?.task_state,
+        task_state_updated_at: into[row.instance_id]?.task_state_updated_at ?? null,
+        task_state_reason: into[row.instance_id]?.task_state_reason ?? null,
         started_at: row.data?.started_at ?? null,
-        last_ts: row.ts ?? null,
+        last_ts: mostRecentTimestamp(row.ts, into[row.instance_id]?.last_ts),
       };
+      applyIdentityState(into, row);
     } catch {
       // skip malformed line
     }
   }
   return into;
+}
+
+function applyIdentityState(
+  identities: Record<string, InstanceIdentity>,
+  event: {
+    event_type: string;
+    instance_id?: string;
+    ts?: string;
+    data?: Record<string, unknown>;
+  },
+): void {
+  if (!event.instance_id || !event.ts) return;
+  const identity = identities[event.instance_id];
+  if (!identity) return;
+  const priorActivityUpdatedAt = identity.activity_updated_at ?? null;
+  const priorTaskStateUpdatedAt = identity.task_state_updated_at ?? null;
+  const next = applySessionStateEvent(
+    {
+      activity: identity.activity,
+      activity_updated_at: identity.activity_updated_at ?? undefined,
+      activity_source: identity.activity_source ?? undefined,
+      task_state: identity.task_state,
+      task_state_updated_at: identity.task_state_updated_at ?? undefined,
+      task_state_reason: identity.task_state_reason ?? undefined,
+    },
+    {
+      event_type: event.event_type,
+      ts: event.ts,
+      data: event.data ?? {},
+    },
+  );
+  if (isAtLeastAsRecent(next.activity_updated_at, priorActivityUpdatedAt)) {
+    identity.activity = next.activity;
+    identity.activity_updated_at = next.activity_updated_at ?? null;
+    identity.activity_source = next.activity_source ?? null;
+  }
+  if (isAtLeastAsRecent(next.task_state_updated_at, priorTaskStateUpdatedAt)) {
+    identity.task_state = next.task_state;
+    identity.task_state_updated_at = next.task_state_updated_at ?? null;
+    identity.task_state_reason = next.task_state_reason ?? null;
+  }
+  identity.last_ts = mostRecentTimestamp(event.ts, identity.last_ts);
+}
+
+function isAtLeastAsRecent(candidate: string | null | undefined, current: string | null | undefined) {
+  if (!candidate) return !current;
+  if (!current) return true;
+  return Date.parse(candidate) >= Date.parse(current);
+}
+
+function mostRecentTimestamp(
+  candidate: string | null | undefined,
+  current: string | null | undefined,
+): string | null {
+  return isAtLeastAsRecent(candidate, current) ? (candidate ?? null) : (current ?? null);
 }
 
 /** Read bytes `[start, end)` of a file as UTF-8 without loading the rest. Both

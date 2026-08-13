@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
+import type { AgentActivity, TaskState } from "../agents/state/session-state.ts";
 
 /** Mirror of the local heartbeat freshness window (commands/agents.ts). */
 const FRESHNESS_SECS = 600;
@@ -24,6 +25,9 @@ export interface PresenceAgent {
   session_id?: string;
   platform?: string;
   task?: string;
+  activity: AgentActivity;
+  task_state: TaskState;
+  task_state_reason?: string;
   turn_summary?: string;
   files_touched?: string[];
   last_tool?: string;
@@ -78,6 +82,9 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
         session_id: strOr(hb.session_id),
         platform: strOr(hb.platform),
         task: strOr(hb.task),
+        activity: activityOrUnknown(hb.activity),
+        task_state: taskStateOrActive(hb.task_state),
+        task_state_reason: clamp(strOr(hb.task_state_reason), 160),
         turn_summary: clamp(strOr(hb.turn_summary), 160),
         files_touched: Array.isArray(hb.files_touched)
           ? (hb.files_touched as string[]).slice(0, MAX_FILES_PER_AGENT)
@@ -107,6 +114,9 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
     n: a.name ?? null,
     k: a.kind ?? null,
     t: a.task ?? null,
+    a: a.activity,
+    l: a.task_state,
+    r: a.task_state_reason ?? null,
     s: a.turn_summary ?? null,
     f: [...(a.files_touched ?? [])].sort(),
   }));
@@ -117,6 +127,14 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
 
 function strOr(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function activityOrUnknown(v: unknown): AgentActivity {
+  return v === "working" || v === "needs_input" || v === "idle" ? v : "unknown";
+}
+
+function taskStateOrActive(v: unknown): TaskState {
+  return v === "blocked" || v === "done" ? v : "active";
 }
 
 function clamp(v: string | undefined, max: number): string | undefined {

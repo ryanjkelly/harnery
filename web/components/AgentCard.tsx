@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AgentStateBadges } from "@/components/AgentStateBadges";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ageLabel, type Heartbeat } from "@/lib/coord-reader";
@@ -38,6 +39,12 @@ export function AgentCard({
               </Badge>
             )}
             {stale && <Badge variant="warning">stale</Badge>}
+            <AgentStateBadges
+              activity={hb.activity}
+              taskState={hb.task_state}
+              reason={hb.task_state_reason}
+              compact
+            />
           </div>
         </CardHeader>
         <CardContent className="text-xs text-muted-foreground space-y-1">
@@ -53,6 +60,9 @@ export function AgentCard({
             />
           )}
           {hb.task && <Row label="task" value={truncate(hb.task, 80)} />}
+          {hb.task_state === "blocked" && hb.task_state_reason && (
+            <Row label="blocked" value={truncate(hb.task_state_reason, 80)} />
+          )}
           {hb.turn_summary && (
             <Row label="last turn" value={truncate(hb.turn_summary, 80)} />
           )}

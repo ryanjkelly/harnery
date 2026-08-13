@@ -102,7 +102,26 @@ The heartbeat projector writes these fields to `.harnery/active/<id>.json`:
 Heartbeats are a live projection. The canonical event ledger is the durable
 record. The public `foldSessionState()` helper rebuilds both axes from a session
 slice, even after its heartbeat has been removed. Live projection and replay
-call the same transition reducer.
+call the same transition reducer. Replay orders evidence by event timestamp,
+so an older event appended later cannot roll the state backward.
+
+## Where the state appears
+
+Harnery carries the same two labels through every operator surface:
+
+- `harn agents whoami`, `list`, `status`, `show`, and `trace`, including JSON
+- prompt-time peer context and its change-detection hash
+- cross-machine presence blobs and remote peer readers
+- web cards, agent chips, the agent detail page, and ended-session detail reads
+
+The presence hash includes activity, lifecycle, and the bounded blocker reason.
+A state-only change therefore reaches another machine without waiting for a task
+or file claim to change. The web refresh signal also observes heartbeat writes,
+so lifecycle-only updates repaint the live view.
+
+Ended and swept heartbeats disappear from the live board. Their event-derived
+identity and session state remain available to history and detail readers. This
+keeps the live board honest without discarding the lifecycle record.
 
 See [ADR 0072](/decisions/0072-event-derived-session-state/) for the decision
 and rejected inference rules.

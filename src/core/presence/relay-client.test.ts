@@ -121,7 +121,11 @@ describe("relay cache merge into readRemoteMachines", () => {
     const remote = readRemoteMachines(root);
     expect(remote).toHaveLength(1);
     expect(remote[0]!.machine).toBe("machine-b");
-    expect(remote[0]!.agents[0]!.name).toBe("Remo");
+    expect(remote[0]!.agents[0]).toMatchObject({
+      name: "Remo",
+      activity: "unknown",
+      task_state: "active",
+    });
   });
 
   test("freshest source per machine wins (relay cache newer than nothing else)", () => {

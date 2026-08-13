@@ -1,5 +1,3 @@
-import type { CanonicalEvent } from "../events/consume.ts";
-
 /** What the agent is doing now. `unknown` is evidence-safe, not an error. */
 export type AgentActivity = "unknown" | "working" | "needs_input" | "idle";
 
@@ -30,7 +28,9 @@ export interface SessionStateSelector {
 export interface SessionStateEvidenceEvent {
   event_type: string;
   ts: string;
-  data: Record<string, unknown>;
+  data?: Record<string, unknown>;
+  instance_id?: string;
+  session_id?: string;
 }
 
 const TERMINAL_ACTIVITY_EVENTS = new Set(["session.end", "subagent.stop", "turn.stop"]);
@@ -65,11 +65,12 @@ export function applySessionStateEvent(
   }
 
   if (event.event_type === "state.task_state") {
-    const state = field(event.data, "state");
+    const data = event.data ?? {};
+    const state = field(data, "state");
     if (state === "active" || state === "blocked" || state === "done") {
       next.task_state = state;
       next.task_state_updated_at = event.ts;
-      const reason = field(event.data, "reason");
+      const reason = field(data, "reason");
       if (typeof reason === "string" && reason.length > 0) {
         next.task_state_reason = reason;
       } else {
@@ -86,7 +87,7 @@ export function applySessionStateEvent(
  * Events may be the whole ledger or an already-filtered session slice.
  */
 export function foldSessionState(
-  events: readonly CanonicalEvent[],
+  events: readonly SessionStateEvidenceEvent[],
   selector: SessionStateSelector = {},
 ): SessionState {
   const ordered = events
@@ -114,13 +115,13 @@ function setActivity(
   target.activity_source = event.event_type;
 }
 
-function matches(event: CanonicalEvent, selector: SessionStateSelector): boolean {
+function matches(event: SessionStateEvidenceEvent, selector: SessionStateSelector): boolean {
   if (selector.instance_id && event.instance_id !== selector.instance_id) return false;
   if (selector.session_id && event.session_id !== selector.session_id) return false;
   return true;
 }
 
-function timestamp(event: CanonicalEvent): number {
+function timestamp(event: SessionStateEvidenceEvent): number {
   const parsed = Date.parse(event.ts);
   return Number.isFinite(parsed) ? parsed : 0;
 }

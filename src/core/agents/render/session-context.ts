@@ -14,6 +14,7 @@ import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
 import { readForkParent } from "../state/names.ts";
+import type { AgentActivity, TaskState } from "../state/session-state.ts";
 
 interface HeartbeatRow {
   instance_id?: string;
@@ -27,6 +28,9 @@ interface HeartbeatRow {
   files_touched?: string[];
   platform?: string;
   task?: string;
+  activity?: AgentActivity;
+  task_state?: TaskState;
+  task_state_reason?: string;
   turn_summary?: string;
 }
 
@@ -135,8 +139,12 @@ function formatRemoteMachines(coordRoot: string): string {
         const files = a.files_touched?.length
           ? `holds: ${a.files_touched.slice(0, 3).join(", ")}${a.files_touched.length > 3 ? `, +${a.files_touched.length - 3} more` : ""}`
           : "nothing held";
+        const reason =
+          a.task_state === "blocked" && a.task_state_reason
+            ? `: ${a.task_state_reason.slice(0, 80)}`
+            : "";
         lines.push(
-          `  - agent-${a.name ?? a.instance_id.slice(0, 8)} @${m.machine}${task} (${files})`,
+          `  - agent-${a.name ?? a.instance_id.slice(0, 8)} @${m.machine}${task} (activity=${a.activity}, lifecycle=${a.task_state}${reason}, ${files})`,
         );
       }
     }
@@ -230,11 +238,15 @@ function renderSubtable(
 
 function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number): string {
   const taskPart = r.task ? ` "${r.task.slice(0, 60)}"` : "";
+  const activity = r.activity ?? "unknown";
+  const lifecycle = r.task_state ?? "active";
+  const reason =
+    lifecycle === "blocked" && r.task_state_reason ? `: ${r.task_state_reason.slice(0, 80)}` : "";
   const ageFrom = fmtAge(nowSec - parseIsoSec(r.started_at));
   const filesPart = fmtFiles(r.display_files);
   const lastActivity = fmtLastActivity(r, nowSec);
   const turnSummary = r.turn_summary ? `\n    last turn: ${r.turn_summary.slice(0, 80)}` : "";
-  return `  - agent-${r.name ?? "unknown"}${taskPart}   (${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
+  return `  - agent-${r.name ?? "unknown"}${taskPart}   (activity=${activity}, lifecycle=${lifecycle}${reason}, ${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
 }
 
 function fmtFiles(files: string[]): string {

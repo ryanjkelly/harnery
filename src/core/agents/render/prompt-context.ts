@@ -45,6 +45,7 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
+import type { AgentActivity, TaskState } from "../state/session-state.ts";
 import { formatPendingCouncils } from "./session-context.ts";
 
 interface HeartbeatRow {
@@ -59,6 +60,9 @@ interface HeartbeatRow {
   files_touched?: string[];
   platform?: string;
   task?: string;
+  activity?: AgentActivity;
+  task_state?: TaskState;
+  task_state_reason?: string;
   task_updated_at?: string;
   suggested_session_name?: string;
   session_name_seen_for?: string;
@@ -276,6 +280,9 @@ function computePeerTableIfChanged(
       started_at: p.started_at ?? null,
       files_touched: Array.from(p.files_touched ?? []).sort(),
       platform: p.platform ?? null,
+      activity: p.activity ?? "unknown",
+      task_state: p.task_state ?? "active",
+      task_state_reason: p.task_state_reason ?? null,
     }))
     .sort((a, b) => (a.instance_id ?? "").localeCompare(b.instance_id ?? ""));
   // Remote basis: machine + per-agent identity/task/files (published_at is
@@ -286,6 +293,9 @@ function computePeerTableIfChanged(
       instance_id: a.instance_id,
       name: a.name ?? null,
       task: a.task ?? null,
+      activity: a.activity,
+      task_state: a.task_state,
+      task_state_reason: a.task_state_reason ?? null,
       files_touched: Array.from(a.files_touched ?? []).sort(),
     })),
   }));
@@ -500,6 +510,7 @@ function renderSubtable(
 
 function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number): string {
   const taskPart = r.task ? ` "${r.task.slice(0, 60)}"` : "";
+  const statePart = formatState(r);
   // Fall back started_at → last_heartbeat; if neither is a valid timestamp,
   // show "age unknown" rather than the epoch-derived "20608d ago" ghost.
   const startedSec = parseIsoSec(r.started_at) ?? parseIsoSec(r.last_heartbeat);
@@ -510,7 +521,15 @@ function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number
   // Prefer a short instance_id over a bare "unknown" so an incomplete row is
   // still identifiable.
   const label = r.name ?? (r.instance_id ? r.instance_id.slice(0, 8) : "unknown");
-  return `  - agent-${label}${taskPart}   (${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
+  return `  - agent-${label}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
+}
+
+function formatState(r: HeartbeatRow): string {
+  const activity = r.activity ?? "unknown";
+  const lifecycle = r.task_state ?? "active";
+  const reason =
+    lifecycle === "blocked" && r.task_state_reason ? `: ${r.task_state_reason.slice(0, 80)}` : "";
+  return `activity=${activity}, lifecycle=${lifecycle}${reason}`;
 }
 
 function fmtFiles(files: string[]): string {

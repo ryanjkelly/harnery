@@ -157,6 +157,46 @@ describe("renderPromptContext", () => {
     expect(second).toBe(""); // Hash dedup suppresses
   });
 
+  test("state-only peer changes refresh the semantic hash and rendered labels", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    const peerPath = join(activeDir, "peer.json");
+    const peer = {
+      schema_version: 2,
+      instance_id: "peer",
+      name: "Adelaide",
+      session_id: "peer",
+      task: "review auth",
+      files_touched: ["docs/x.md"],
+      last_heartbeat: now,
+      started_at: now,
+      activity: "working",
+      task_state: "active",
+    };
+    writeFileSync(peerPath, JSON.stringify(peer), "utf8");
+    const opts = {
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+    };
+    expect(renderPromptContext(opts)).toContain("activity=working, lifecycle=active");
+    expect(renderPromptContext(opts)).toBe("");
+
+    writeFileSync(
+      peerPath,
+      JSON.stringify({
+        ...peer,
+        activity: "needs_input",
+        task_state: "blocked",
+        task_state_reason: "waiting for approval",
+      }),
+      "utf8",
+    );
+    const changed = renderPromptContext(opts);
+    expect(changed).toContain("activity=needs_input");
+    expect(changed).toContain("lifecycle=blocked: waiting for approval");
+  });
+
   test("task nudge fires when taskNudge=true AND task is empty", () => {
     // Replace self heartbeat with one that has no task
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");

@@ -263,7 +263,7 @@ export function readRemoteMachines(
         machine,
         published_at: blob.published_at,
         age_secs: ageSecs,
-        agents: blob.agents,
+        agents: blob.agents.map(normalizePresenceAgent),
       });
     }
     out.sort((a, b) => a.machine.localeCompare(b.machine));
@@ -271,4 +271,21 @@ export function readRemoteMachines(
   } catch {
     return [];
   }
+}
+
+function normalizePresenceAgent(agent: PresenceAgent): PresenceAgent {
+  const legacy = agent as Partial<PresenceAgent>;
+  return {
+    ...agent,
+    activity:
+      legacy.activity === "working" ||
+      legacy.activity === "needs_input" ||
+      legacy.activity === "idle"
+        ? legacy.activity
+        : "unknown",
+    task_state:
+      legacy.task_state === "blocked" || legacy.task_state === "done"
+        ? legacy.task_state
+        : "active",
+  };
 }

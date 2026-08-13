@@ -89,14 +89,19 @@ handoff. Pass `--force-ancestor` when succession is genuinely the intent. See
 The three orientation commands.
 
 - **`whoami`** prints your own name, `instance_id`, and the files you've claimed.
-  `--json` for the full heartbeat record.
+  `--json` returns the full heartbeat record, including `activity`,
+  `activity_updated_at`, `activity_source`, `task_state`,
+  `task_state_updated_at`, and `task_state_reason`.
 - **`list`** shows every active agent. By default it folds `kind=transient` rows
   (short-lived helper processes) into their parent; `--all` shows them raw.
   `--stale` includes heartbeats older than the freshness window (agents that
-  likely exited without cleaning up). `--json` for structured output.
+  likely exited without cleaning up). Its structured rows keep `activity` and
+  `task_state` separate for local and remote agents. Older heartbeats read as
+  `activity: unknown` and `task_state: active`.
 - **`status`** renders the end-of-turn status box: your name, session age,
-  declared task, last turn summary, context usage, files held, and a one-line
-  peer roster. `--json` returns the same data unformatted. `--session-id <id>`
+  current activity, task lifecycle, declared task, last turn summary, context
+  usage, files held, and a one-line peer roster. A blocked lifecycle includes
+  its reason. `--json` returns the same data unformatted. `--session-id <id>`
   looks the heartbeat up by session id directly, for use from a hook whose
   process tree doesn't lead back to the agent's session pid. Add `--end-turn` for
   the required final call: Harnery checks the current session's held paths,
@@ -210,12 +215,15 @@ Two ways to dig into a single agent, addressed by name (`agent-Foo` or `Foo`) or
 by `instance_id`.
 
 - **`show`** is the *current state* view: files held, last tool, declared task,
-  plus recent session history (latest title, recent prompts, tool-usage
-  tallies). A name is disambiguated to an `instance_id` by prefix match.
+  current activity, task lifecycle, plus recent session history (latest title,
+  recent prompts, tool-usage tallies). A name is disambiguated to an
+  `instance_id` by prefix match.
 - **`trace`** is the *history* view: it reconstructs one agent's lifecycle from
   the event ledger in chronological order: session start, prompts, turns,
-  tools, heals, sweeps, file claims, exit. This is the answer to "what happened
-  to this agent / why did it vanish?" without hand-grepping the stream.
+  input requests, lifecycle declarations, tools, heals, sweeps, file claims,
+  and exit. Its header carries the latest folded activity and lifecycle, even
+  after the live heartbeat is gone. This is the answer to "what happened to
+  this agent / why did it vanish?" without hand-grepping the stream.
   `--since <window>` bounds it (e.g. `1h`, `2d`), `--limit <n>` caps it (default
   `200`), and `--all-tools` includes the per-tool noise that's hidden by default.
 
