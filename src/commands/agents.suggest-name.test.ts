@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildSuggestedName } from "../core/agents/state/heartbeat-writer.ts";
+import {
+  buildLifecycleSuggestedName,
+  buildSuggestedName,
+} from "../core/agents/state/heartbeat-writer.ts";
 
 describe("buildSuggestedName", () => {
   test("composes 'Agent <name> - <description>'", () => {
@@ -24,5 +27,23 @@ describe("buildSuggestedName", () => {
     expect(buildSuggestedName("", ["Auth Refactor"])?.suggestedName).toBe(
       "Agent unknown - Auth Refactor",
     );
+  });
+});
+
+describe("buildLifecycleSuggestedName", () => {
+  test("projects active, blocked, and done titles from the same task", () => {
+    expect(buildLifecycleSuggestedName("Hollis", "Auth Refactor", "active")).toBe(
+      "Agent Hollis - Auth Refactor",
+    );
+    expect(buildLifecycleSuggestedName("Hollis", "Auth Refactor", "blocked")).toBe(
+      "[BLOCKED] - Agent Hollis - Auth Refactor",
+    );
+    expect(buildLifecycleSuggestedName("Hollis", "Auth Refactor", "done")).toBe(
+      "[DONE] - Agent Hollis - Auth Refactor",
+    );
+  });
+
+  test("returns null when the session has no task to project", () => {
+    expect(buildLifecycleSuggestedName("Hollis", undefined, "blocked")).toBeNull();
   });
 });

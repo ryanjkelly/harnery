@@ -29,6 +29,7 @@ harn agents list                # all active agents (folds transients by default
 harn agents status              # status box (name, age, files, peers, task)
 harn agents status --end-turn   # issue the box only after owned Git work is finalized
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
+harn agents lifecycle <state>   # declare active, blocked, or done task lifecycle
 harn agents identity assume <name-or-id> # continue a durable role in this session
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
@@ -136,11 +137,53 @@ a one-click Copy button to code blocks, so the operator grabs the exact string
 without hand-selecting. Every later `set-task` returns
 `first_of_session: false` and a null name.
 
+`set-task` never changes task lifecycle. If task text changes while the session
+is `blocked` or `done`, the command returns a warning to reopen the lifecycle
+explicitly. The new task text is still recorded.
+
 On Claude Code, the Stop hook additionally enforces the naming turn
 (`stop-hook.session_name`): the turn whose `set-task` produced the name must
 show it in the reply text. Cursor's Stop payload carries neither a transcript
 nor the assistant message, so the fence is undetectable there and the reminder
 stays soft; Codex Stop remains observe-only.
+
+### lifecycle
+
+Declares whether the current task is active, blocked, or done:
+
+```bash
+harn agents lifecycle active
+harn agents lifecycle blocked --reason "waiting for repository access"
+harn agents lifecycle done --reason "implementation and verification complete"
+```
+
+`blocked` requires a reason. `done` requires a current task and runs the same
+Git finalization check as `agents status --end-turn`. Dirty touched paths,
+incomplete claim history, an uncommitted enclosing submodule pointer, an
+unverifiable repository, or commits missing from a configured remote make the
+command fail without changing lifecycle or recording an event. The gate checks
+repository hygiene; it does not certify tests, deployment, or the business
+outcome.
+
+A successful transition records one durable `state.task_state` event and
+projects it into the live heartbeat. Repeating the same state and reason is a
+no-op, with no duplicate event. Moving away from `blocked` clears the old
+blocker reason. Subagents, transient processes, and workflow children cannot
+declare operator-facing lifecycle state.
+
+Each title-changing transition also returns a re-minted
+`suggested_session_name`:
+
+```text
+active  -> Agent Hollis - Auth Refactor
+blocked -> [BLOCKED] - Agent Hollis - Auth Refactor
+done    -> [DONE] - Agent Hollis - Auth Refactor
+```
+
+The per-prompt reminder and Claude Code Stop rule remain active until the new
+name is observed. Titles are projections for people; editing a title never
+changes the underlying lifecycle. Pass `--session-id <id>` when the calling
+process cannot resolve its session anchor.
 
 ### suggest-name
 
@@ -223,6 +266,10 @@ harn agents list
 
 # Declare your focus so peers can see it
 harn agents set-task "refactoring the ingest retry loop"
+
+# Declare an operator-facing lifecycle transition
+harn agents lifecycle blocked --reason "waiting for API access"
+harn agents lifecycle active
 
 # End-of-turn status box
 harn agents status

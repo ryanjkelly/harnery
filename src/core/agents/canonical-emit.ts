@@ -37,11 +37,11 @@ export function resolveEmitRoot(start: string = process.cwd()): string | null {
   return resolveCoordRoot(start);
 }
 
-export function emitCanonical(input: CanonicalEmitInput): void {
+export function emitCanonical(input: CanonicalEmitInput): boolean {
   const root = resolveEmitRoot();
-  if (!root) return;
+  if (!root) return false;
   const binary = coordBinPath("agent-coord", root);
-  if (!binary) return;
+  if (!binary) return false;
   try {
     const args = [
       "emit-event",
@@ -71,9 +71,11 @@ export function emitCanonical(input: CanonicalEmitInput): void {
     if (result.error || result.status !== 0) {
       const why = result.error ? result.error.message : `exit ${result.status}`;
       process.stderr.write(`emitCanonical: ${input.type} emit failed (${why})\n`); // lint-ok-emission: soft-fail diagnostic promised by the module doc; silent drops cost blocked turns
+      return false;
     }
+    return true;
   } catch {
-    /* never break the caller */
+    return false;
   }
 }
 

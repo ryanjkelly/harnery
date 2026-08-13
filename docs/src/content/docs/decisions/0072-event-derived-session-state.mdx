@@ -72,6 +72,23 @@ Some sessions will show `unknown` instead of a more appealing guess. That is
 intentional. Adapter support can expand when a verified payload fixture proves
 the signal.
 
-Lifecycle commands and automatic completion policy remain separate work. This
-record defines their durable event and projection contract, but it does not
-make process exit mean `done`.
+Process exit still never means `done`. Lifecycle declarations use the durable
+event and projection contract defined here.
+
+## Result
+
+Phase 1 shipped the shared reducer, heartbeat projection, replay helper, and
+adapter normalization. A native Codex permission request then produced a real
+`interaction.input_requested` event and projected `activity: needs_input`; the
+approved HEAD request completed successfully.
+
+Phase 2 added `harn agents lifecycle <active|blocked|done>`. Successful changes
+emit one `state.task_state` event, while exact repeats emit nothing. `blocked`
+requires a reason, leaving it deletes the old reason, and `done` reuses the Git
+finalization gate before any mutation. Normal `set-task` calls stay
+lifecycle-neutral.
+
+Lifecycle changes also re-mint the suggested session name. Prompt reminders
+and the Claude Code Stop rule now enforce the new name until it is observed.
+Human-facing guards keep subagents, transient processes, and workflow children
+from declaring operator task lifecycle.

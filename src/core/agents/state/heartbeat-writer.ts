@@ -221,6 +221,19 @@ export function buildSuggestedName(
   return { suggestedName: `Agent ${name} - ${description}`, description };
 }
 
+/** Build the operator-facing title projected from an explicit task lifecycle. */
+export function buildLifecycleSuggestedName(
+  agentName: string,
+  task: string | undefined,
+  state: TaskState,
+): string | null {
+  const built = buildSuggestedName(agentName, task ? [task] : []);
+  if (!built) return null;
+  if (state === "blocked") return `[BLOCKED] - ${built.suggestedName}`;
+  if (state === "done") return `[DONE] - ${built.suggestedName}`;
+  return built.suggestedName;
+}
+
 /** Stamp the sighting once the suggested name has been observed in assistant
  * reply text; later turns skip the transcript scan. Records WHICH name was seen,
  * because the skip is only valid for that one: if a later set-task mints a

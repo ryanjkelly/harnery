@@ -61,6 +61,7 @@ interface HeartbeatRow {
   task?: string;
   task_updated_at?: string;
   suggested_session_name?: string;
+  session_name_seen_for?: string;
   turn_summary?: string;
   workflow_run_id?: string;
 }
@@ -179,15 +180,21 @@ function computeFocusNudgeIfChanged(
   let message = "";
   let nudgeKind = "";
 
-  if (opts.sessionNameNudge && !hb.suggested_session_name) {
+  if (
+    opts.sessionNameNudge &&
+    (!hb.suggested_session_name ||
+      (hb.session_name_seen_for !== undefined &&
+        hb.suggested_session_name !== hb.session_name_seen_for))
+  ) {
     // Keyed on "a name was ever produced", not task_updated_at: a bare clear
     // as the first declaration must not end the naming window.
     needsNudge = true;
     nudgeKind = "session-name";
-    message =
-      `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
-      "When it returns `first_of_session: true`, reproduce its `suggested_session_name` value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title. " +
-      "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.";
+    message = hb.suggested_session_name
+      ? `This session's lifecycle changed its suggested name. Reproduce this value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title: ${hb.suggested_session_name}`
+      : `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
+        "When it returns `first_of_session: true`, reproduce its `suggested_session_name` value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title. " +
+        "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.";
   } else if (opts.taskNudge && !taskValue) {
     needsNudge = true;
     nudgeKind = "task-unset";

@@ -391,6 +391,57 @@ describe("evaluateStopHook", () => {
     expect(v.rule).toBe("stop-hook.pass");
   });
 
+  test("claude-code: lifecycle name re-mint is enforced like first-session naming", () => {
+    const now = Date.now();
+    const ts = (o: number) => new Date(now + o).toISOString();
+    const base = {
+      instance_id: "life-name",
+      session_id: "life-name",
+      adapter: "claude-code",
+      source: "test",
+    };
+    const lifecycleName = "[DONE] - Agent Maya - Auth refactor";
+    writeEvents([
+      { event_id: "1", event_type: "user_prompt.submit", ts: ts(-9000), ...base, data: {} },
+      { event_id: "2", event_type: "tool.pre_use", ts: ts(-8000), ...base, data: {} },
+      { event_id: "3", event_type: "state.status_checked", ts: ts(-3000), ...base, data: {} },
+      {
+        event_id: "4",
+        event_type: "state.task_set",
+        ts: ts(-2600),
+        ...base,
+        data: { task: "Auth refactor", cleared: false, first_of_session: false },
+      },
+      {
+        event_id: "5",
+        event_type: "state.task_state",
+        ts: ts(-2500),
+        ...base,
+        data: {
+          state: "done",
+          name_reminted: true,
+          suggested_session_name: lifecycleName,
+        },
+      },
+      {
+        event_id: "6",
+        event_type: "turn.stop",
+        ts: ts(-1000),
+        ...base,
+        data: { status_box_present: true, session_name_present: false },
+      },
+    ]);
+    const verdict = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "life-name",
+      adapter: "claude-code",
+      now_ms: now,
+    });
+    expect(verdict.allow).toBe(false);
+    expect(verdict.rule).toBe("stop-hook.session_name");
+    expect(verdict.reason).toContain(lifecycleName);
+  });
+
   test("an earlier in-window sighting satisfies the rule even when a later turn.stop omits the flag", () => {
     // Once seen, session_name_seen_at is stamped and later turn.stops omit
     // session_name_present; a repair of a DIFFERENT rule fires such a stop and

@@ -42,9 +42,48 @@ not turn a nearby pre-execution event into approval evidence.
 Only `state.task_state` changes task lifecycle. Stopping a process or reaching
 the end of a turn does not mark the task `done`.
 
+Human-facing sessions declare lifecycle explicitly:
+
+```bash
+harn agents lifecycle active
+harn agents lifecycle blocked --reason "waiting for repository access"
+harn agents lifecycle done --reason "implementation and verification complete"
+```
+
+`blocked` requires a reason. Leaving `blocked` clears that reason. Repeating
+the same state and reason records nothing, which keeps replay idempotent.
+Subagents, transient processes, and workflow children cannot make these
+operator-facing declarations.
+
+`done` also requires a current task and a passing Git finalization check. The
+check covers the session's durable write-claim history, dirty touched paths,
+enclosing submodule pointers, repository verification, and remote reachability.
+A refusal writes no lifecycle event and leaves the heartbeat unchanged. This
+gate certifies repository hygiene, not tests or business correctness.
+
+The per-turn `agents set-task` command remains lifecycle-neutral. Changing task
+text while blocked or done returns a warning, but it does not reopen the task.
+Use `lifecycle active` to resume explicitly.
+
 The compatibility default is `active` when an older heartbeat or event stream
 has no lifecycle event. A blocked state may carry a reason. Reopening the task
 clears an obsolete blocker reason.
+
+## Session-name projection
+
+A lifecycle change can re-mint the human-facing session name:
+
+| Lifecycle | Suggested name |
+| --- | --- |
+| `active` | `Agent <name> - <task>` |
+| `blocked` | `[BLOCKED] - Agent <name> - <task>` |
+| `done` | `[DONE] - Agent <name> - <task>` |
+
+The `state.task_state` event carries `suggested_session_name` and
+`name_reminted: true` when the name changes. Prompt context keeps reminding the
+agent until the new name is observed, and the Claude Code Stop rule treats the
+re-mint like the first session name. The title is still a projection. Editing
+it does not mutate lifecycle.
 
 ## Live state and replay
 

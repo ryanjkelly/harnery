@@ -287,6 +287,7 @@ describe("renderPromptContext", () => {
         task: "Auth refactor",
         task_updated_at: now,
         suggested_session_name: "Agent Maya - Auth refactor",
+        session_name_seen_for: "Agent Maya - Auth refactor",
         files_touched: [],
         last_heartbeat: now,
         started_at: now,
@@ -301,6 +302,38 @@ describe("renderPromptContext", () => {
       sessionNameNudge: true,
     });
     expect(out).not.toContain("suggested_session_name");
+    expect(out).not.toContain("lifecycle changed its suggested name");
+  });
+
+  test("lifecycle re-mint nudge persists until the new name is seen", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    writeFileSync(
+      join(activeDir, "self.json"),
+      JSON.stringify({
+        schema_version: 2,
+        instance_id: "self",
+        name: "Maya",
+        session_id: "self",
+        kind: "session",
+        task: "Auth refactor",
+        task_updated_at: now,
+        suggested_session_name: "[DONE] - Agent Maya - Auth refactor",
+        session_name_seen_for: "Agent Maya - Auth refactor",
+        files_touched: [],
+        last_heartbeat: now,
+        started_at: now,
+      }),
+      "utf8",
+    );
+    const opts = {
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      sessionNameNudge: true,
+    };
+    expect(renderPromptContext(opts)).toContain("[DONE] - Agent Maya - Auth refactor");
+    expect(renderPromptContext(opts)).toContain("[DONE] - Agent Maya - Auth refactor");
   });
 
   test("first-session nudge skips subagents and workflow children", () => {

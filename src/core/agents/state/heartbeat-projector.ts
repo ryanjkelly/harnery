@@ -353,6 +353,21 @@ function apply(hb: V2Heartbeat, ev: CanonicalEvent, coordRoot: string): void {
       break;
     }
 
+    case "state.task_state": {
+      const suggested = pickStr(d, "suggested_session_name");
+      if (suggested && suggested !== hb.suggested_session_name) {
+        // Older heartbeats predate session_name_seen_for. A lifecycle re-mint
+        // still needs a mismatch the prompt and Stop paths can enforce, so
+        // attribute the prior title before replacing it. Ordinary legacy
+        // heartbeats remain quiet until a real lifecycle event changes them.
+        if (!hb.session_name_seen_for && hb.suggested_session_name) {
+          hb.session_name_seen_for = hb.suggested_session_name;
+        }
+        hb.suggested_session_name = suggested;
+      }
+      break;
+    }
+
     case "state.status_checked":
       hb.last_status_at = ev.ts;
       break;

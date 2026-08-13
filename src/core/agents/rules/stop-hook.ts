@@ -308,14 +308,14 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
   // `session_name_present` (assistant-text-only transcript scan), mirroring
   // how rule 2/3 rides `status_box_present`.
   if (ackSignal === "status_box_present") {
-    const namingTaskSet = inTurn.find(
+    const namingEvent = inTurn.find(
       (e) =>
-        e.event_type === "state.task_set" &&
-        e.data.first_of_session === true &&
+        ((e.event_type === "state.task_set" && e.data.first_of_session === true) ||
+          (e.event_type === "state.task_state" && e.data.name_reminted === true)) &&
         typeof e.data.suggested_session_name === "string" &&
         e.data.suggested_session_name.length > 0,
     );
-    if (namingTaskSet) {
+    if (namingEvent) {
       // ANY in-window turn.stop with the flag satisfies the rule, not just the
       // latest: once seen, `session_name_seen_at` is stamped and later
       // turn.stops OMIT the field, so a later block on a different rule (whose
@@ -324,7 +324,7 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
         (e) => e.event_type === "turn.stop" && e.data.session_name_present === true,
       );
       if (!namePresent) {
-        return sessionNameBlock(String(namingTaskSet.data.suggested_session_name));
+        return sessionNameBlock(String(namingEvent.data.suggested_session_name));
       }
     }
   }

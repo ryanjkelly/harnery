@@ -46,7 +46,11 @@ import {
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
-import { buildSuggestedName } from "../core/agents/state/heartbeat-writer.ts";
+import {
+  buildLifecycleSuggestedName,
+  buildSuggestedName,
+} from "../core/agents/state/heartbeat-writer.ts";
+import type { TaskState } from "../core/agents/state/session-state.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
@@ -315,6 +319,18 @@ export function registerAgentsCommand(
     )
     .action((text: string[], opts: { sessionId?: string }) => {
       runSetTask(text.join(" "), opts);
+    });
+
+  cmd
+    .command("lifecycle <state>")
+    .description("Declare this session's task lifecycle: active, blocked, or done")
+    .option("--reason <text>", "Explain the lifecycle declaration")
+    .option(
+      "--session-id <id>",
+      "Target the heartbeat with this session_id directly, bypassing the ppid walk.",
+    )
+    .action((state: string, opts: { reason?: string; sessionId?: string }) => {
+      runLifecycle(state, opts);
     });
 
   cmd
@@ -1526,6 +1542,11 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // heartbeat-writer.setTask. This call is the naming call exactly when the
   // stamp appears across the mutation.
   const priorHb = readHeartbeat(myOwner);
+  const normalizedTask = task.length > 0 ? task : undefined;
+  const lifecycleWarning =
+    priorHb && (priorHb.task_state ?? "active") !== "active" && priorHb.task !== normalizedTask
+      ? `Task text changed while lifecycle is ${priorHb.task_state}; run \`${resolveBinName(root)} agents lifecycle active\` to reopen it explicitly.`
+      : null;
 
   // Heartbeat mutation goes through agent-coord (atomic temp+rename).
   const helper = agentCoordOrExit(root);
@@ -1573,9 +1594,151 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     cleared: !task || task.length === 0,
     first_of_session: firstOfSession,
     suggested_session_name: suggestedName,
+    ...(lifecycleWarning ? { warning: lifecycleWarning } : {}),
     // Right-time instruction: the UserPromptSubmit nudge fires before the name
     // exists; this result is the moment the model holds the string.
     ...(suggestedName
+      ? {
+          note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
+        }
+      : {}),
+  });
+}
+
+function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: string }): void {
+  const state = rawState.trim().toLowerCase();
+  if (state !== "active" && state !== "blocked" && state !== "done") {
+    emit.error({
+      code: "invalid_lifecycle_state",
+      message: "lifecycle state must be one of: active, blocked, done",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  const root = monorepoRoot();
+  if (!root) {
+    emit.error({
+      code: "not_in_repo",
+      message: "not in an agent session; coord_root() returned null",
+    });
+    process.exitCode = 1;
+    return;
+  }
+  if (!opts.sessionId) ensureCursorSession(root);
+  const myOwner = opts.sessionId ?? resolveOwner();
+  if (!myOwner) {
+    emit.error({
+      code: "no_pidmap_entry",
+      message:
+        "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  const hb = readHeartbeat(myOwner);
+  if (!hb) {
+    emit.error({ code: "no_heartbeat", message: noHeartbeatMessage(myOwner) });
+    process.exitCode = 1;
+    return;
+  }
+  if (hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) {
+    emit.error({
+      code: "lifecycle_not_human_facing",
+      message: "task lifecycle declarations are limited to human-facing sessions",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  const reason = opts.reason?.trim() || undefined;
+  if (state === "blocked" && !reason) {
+    emit.error({
+      code: "blocked_reason_required",
+      message: "lifecycle blocked requires --reason <text>",
+    });
+    process.exitCode = 1;
+    return;
+  }
+  if (state === "done" && !hb.task) {
+    emit.error({
+      code: "task_required_for_done",
+      message: "declare a current task with agents set-task before marking it done",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  const priorState: TaskState = hb.task_state ?? "active";
+  const priorReason = hb.task_state_reason || undefined;
+  if (priorState === state && priorReason === reason) {
+    emit.data({
+      instance_id: myOwner,
+      task_state: state,
+      reason: reason ?? null,
+      changed: false,
+      name_reminted: false,
+      git_finalization_checked: false,
+    });
+    return;
+  }
+
+  let finalization: GitFinalizationResult | null = null;
+  if (state === "done") {
+    const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
+    const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
+    finalization = checkGitFinalization(root, touchedPaths, {
+      claimHistoryComplete: history.complete,
+    });
+    if (!finalization.ok) {
+      emit.error({
+        code: "git_not_finalized",
+        message: formatGitFinalizationFailure(finalization, resolveBinName(root)).replace(
+          "the status box was not issued",
+          "lifecycle was not changed",
+        ),
+      });
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const suggestedName = buildLifecycleSuggestedName(hb.name ?? "unknown", hb.task, state);
+  const nameReminted = suggestedName !== null && suggestedName !== hb.suggested_session_name;
+  const emitted = emitCanonical({
+    type: "state.task_state",
+    owner: myOwner,
+    session: hb.session_id ?? myOwner,
+    adapter: normalizeAdapter(hb.platform),
+    data: {
+      state,
+      reason: reason ?? null,
+      prior_state: priorState,
+      name_reminted: nameReminted,
+      git_finalization_checked: finalization !== null,
+      ...(nameReminted ? { suggested_session_name: suggestedName } : {}),
+    },
+  });
+  if (!emitted) {
+    emit.error({
+      code: "lifecycle_event_failed",
+      message: "the lifecycle event could not be recorded; heartbeat state was left unchanged",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  emit.data({
+    instance_id: myOwner,
+    task_state: state,
+    prior_state: priorState,
+    reason: reason ?? null,
+    changed: true,
+    name_reminted: nameReminted,
+    suggested_session_name: nameReminted ? suggestedName : null,
+    git_finalization_checked: finalization !== null,
+    ...(nameReminted
       ? {
           note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
         }
