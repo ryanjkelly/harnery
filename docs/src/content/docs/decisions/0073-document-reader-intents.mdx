@@ -1,0 +1,59 @@
+---
+title: "0073: Organize product docs by reader intent"
+description: "ADR: give shareable features, task guides, concepts, command reference, and decisions distinct public URLs."
+sidebar:
+  order: 73
+---
+
+**Status:** accepted (2026-08-13) · **Scope:** harnery.com information architecture
+
+## Context
+
+Harnery's public site originally grouped pages into Getting started, CLI
+reference, Concepts, Reference, and Decisions. That structure documented the
+software, but it did not provide a clear page to share when someone asked what
+a feature did.
+
+A CLI page answers syntax questions. A concept page explains a technical model.
+Neither is the best introduction to a capability, and combining all three jobs
+on one page makes the page harder to scan.
+
+## Alternatives considered
+
+- **Use CLI pages as feature pages.** Rejected because command syntax leads
+  before the user understands the outcome or why the feature exists.
+- **Expand concept pages to cover every reader.** Rejected because tutorials
+  and flag tables would obscure the mental model.
+- **Create one large features overview.** Rejected because individual
+  capabilities would still lack stable direct links.
+- **Give every command a feature page.** Rejected because many commands are
+  supporting utilities rather than a shareable product capability.
+
+## Decision
+
+Harnery's public docs use these reader-intent layers:
+
+| Page type | Question it answers | URL shape |
+| --- | --- | --- |
+| Feature | What does Harnery do for me? | `/features/<capability>/` |
+| Guide | How do I complete this task? | `/guides/<task>/` |
+| Concept | How does the model work? | `/concepts/<model>/` |
+| CLI reference | What is the exact command or flag? | `/cli/<command>/` |
+| Reference | What is the exact schema or configuration? | `/reference/<subject>/` |
+| Decision | Why was the system designed this way? | `/decisions/<adr>/` |
+
+Each feature that is useful as a standalone explanation gets one canonical
+feature page. Supporting commands do not receive feature pages automatically.
+Feature pages link down to guides, concepts, and reference. Those pages link
+back to the feature when it helps readers move between outcomes and details.
+
+The Starlight sidebar autogenerates Features and Guides from matching content
+directories. This keeps navigation and direct URLs in sync with the source
+tree.
+
+## Result
+
+Session state is the first page under Features. Managing Claude Desktop
+sessions is the first task under Guides. The existing session-state concept,
+`harn agents` reference, `harn claude-desktop` reference, and ADR 0072 remain
+the technical layers for the same capability.

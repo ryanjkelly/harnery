@@ -1,0 +1,141 @@
+---
+title: Manage Claude Desktop sessions
+description: Keep Claude Code sessions visible across desktop accounts and archive completed entries safely.
+sidebar:
+  order: 1
+---
+
+import { LinkCard, Steps } from '@astrojs/starlight/components';
+
+Claude Desktop stores its Claude Code sidebar separately for each signed-in
+account. Switching accounts can make existing sessions disappear from the
+sidebar even though their transcripts still exist.
+
+`harn claude-desktop` can mirror those sidebar entries across accounts. It can
+also archive completed entries after Harnery records their task lifecycle as
+`done`.
+
+## Before you begin
+
+- Run the command on the machine where Claude Desktop stores its session index.
+- Initialize Harnery in the project whose lifecycle events you want to read.
+- Fully quit Claude Desktop before relying on a changed sidebar. Closing the
+  window usually leaves the app running in the system tray.
+
+## Keep sessions visible after an account switch
+
+<Steps>
+1. Inspect the account directories Harnery found.
+
+   ```bash
+   harn claude-desktop accounts
+   harn claude-desktop sessions
+   ```
+
+2. Preview the mirror plan. The command changes nothing without `--yes`.
+
+   ```bash
+   harn claude-desktop mirror --all
+   ```
+
+3. Apply the plan.
+
+   ```bash
+   harn claude-desktop mirror --all --yes
+   ```
+
+   Use `--to <account-prefix>` or `--from <account-prefix>` when you want a
+   one-way copy. Use `--session <id-or-title>` to mirror one session.
+
+4. Fully quit Claude Desktop and relaunch it.
+</Steps>
+
+Mirroring copies sidebar entry files. It does not copy or fork the transcript.
+Both accounts point to the same underlying Claude Code session, so do not open
+and drive that session from two accounts at the same time.
+
+## Archive completed sessions
+
+<Steps>
+1. Mark the Harnery task done from its agent session.
+
+   ```bash
+   harn agents lifecycle done --reason "implementation and verification complete"
+   ```
+
+2. Preview the cleanup plan.
+
+   ```bash
+   harn claude-desktop tidy
+   ```
+
+   Harnery maps each desktop entry to its session and reads the newest durable
+   lifecycle event. It reports active, blocked, unmatched, and already archived
+   entries without changing them.
+
+3. Apply the archive plan.
+
+   ```bash
+   harn claude-desktop tidy --yes
+   ```
+
+   Limit the batch with `--account <uuid-prefix>` when needed.
+
+4. Fully quit and relaunch Claude Desktop.
+</Steps>
+
+Applied cleanup changes only `isArchived` and replaces each entry atomically.
+Repeating the command is safe; already archived entries become skips.
+
+## Handle older hand-labeled sessions
+
+Older sessions may have a `[DONE]` title but no lifecycle event. Normal cleanup
+skips them because a title is editable and cannot prove completion.
+
+Preview those entries only when you intend to include that history:
+
+```bash
+harn claude-desktop tidy --include-legacy-prefix
+harn claude-desktop tidy --include-legacy-prefix --yes
+```
+
+The compatibility flag never overrides a matching `active` or `blocked`
+lifecycle event. A `[BLOCKED]` title never qualifies for cleanup.
+
+## Troubleshooting
+
+### No desktop data directory was found
+
+Pass the directory explicitly:
+
+```bash
+harn claude-desktop accounts --data-dir <path>
+```
+
+Harnery normally checks `~/Library/Application Support/Claude` on macOS,
+`%APPDATA%\\Claude` on Windows, and `~/.config/Claude` on Linux. A CLI running
+under WSL also scans Windows user profiles mounted under `/mnt/c/Users/`.
+
+### A completed entry is reported as unmatched
+
+The desktop row must carry a `cliSessionId` that maps to a Harnery session in
+the current project's active or rotated event ledgers. Run the command from the
+project that recorded the lifecycle event. Do not rename the sidebar entry as a
+substitute for that evidence.
+
+### The sidebar did not change
+
+Quit the Claude Desktop process from its tray menu, then relaunch it. The window
+close button may only hide the application.
+
+<LinkCard
+  title="Why lifecycle evidence is authoritative"
+  description="Read how Harnery separates current activity from declared task lifecycle."
+  href="/features/session-state/"
+/>
+
+<LinkCard
+  title="Claude Desktop CLI reference"
+  description="See every subcommand, selector, environment variable, and caveat."
+  href="/cli/claude-desktop/"
+/>

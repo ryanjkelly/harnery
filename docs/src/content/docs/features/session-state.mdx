@@ -1,0 +1,96 @@
+---
+title: Session state
+description: See what each agent is doing now and whether its declared task is active, blocked, or done.
+sidebar:
+  order: 1
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Harnery gives each agent session two separate status signals. One reports what
+the process is doing now. The other reports whether the assigned task is still
+open.
+
+That distinction answers a question most agent tools leave ambiguous: did the
+agent finish its objective, or did its turn simply stop?
+
+## What you can see
+
+| Signal | Values | What it tells you |
+| --- | --- | --- |
+| Activity | `unknown`, `working`, `needs_input`, `idle` | What the agent is doing now |
+| Lifecycle | `active`, `blocked`, `done` | Whether the declared task is still open |
+
+The signals can be combined. An agent may be `needs_input + active` while it
+waits for approval. It may be `idle + active` between turns. A completed task
+is usually `idle + done`.
+
+<CardGrid>
+  <Card title="Find the session that needs you" icon="warning">
+    A verified permission request moves activity to `needs_input`. Background
+    output does not make the wait disappear.
+  </Card>
+  <Card title="Tell a pause from completion" icon="check-circle">
+    A stopped turn becomes idle. Only an explicit lifecycle declaration marks
+    the task blocked or done.
+  </Card>
+  <Card title="See the same labels everywhere" icon="seti:json">
+    The local CLI, prompt context, cross-machine presence, and web UI all use
+    the same activity and lifecycle values.
+  </Card>
+  <Card title="Keep the record after the session ends" icon="document">
+    Live heartbeats can disappear. Harnery rebuilds the last known state from
+    its canonical event ledger.
+  </Card>
+</CardGrid>
+
+## Declaring lifecycle
+
+The agent declares lifecycle through one explicit command:
+
+```bash
+harn agents lifecycle active
+harn agents lifecycle blocked --reason "waiting for repository access"
+harn agents lifecycle done --reason "implementation and verification complete"
+```
+
+Declaring `done` runs Harnery's Git finalization check first. The check looks
+for dirty touched files, uncommitted submodule pointers, incomplete write
+history, and commits that have not reached a configured remote. It certifies
+repository hygiene, not test results or business correctness.
+
+Lifecycle also drives human-facing projections. A blocked task suggests a
+`[BLOCKED]` session title, while a completed task suggests `[DONE]`. Claude
+Desktop cleanup reads the lifecycle event itself, not the editable title.
+
+## Where it appears
+
+- `harn agents whoami`, `list`, `status`, `show`, and `trace`
+- prompt-time peer context
+- cross-machine presence
+- agent cards and detail pages in `harn web`
+- suggested session titles
+- `harn claude-desktop tidy`
+
+## Start using it
+
+Run `harn agents status` to see the current session and its peers. Use
+`harn agents lifecycle` when the task becomes blocked, resumes, or finishes.
+
+<LinkCard
+  title="Understand the state model"
+  description="Read the event rules, compatibility behavior, projections, and replay semantics."
+  href="/concepts/session-state/"
+/>
+
+<LinkCard
+  title="Manage Claude Desktop sessions"
+  description="Mirror sessions across accounts and archive completed entries safely."
+  href="/guides/manage-claude-desktop-sessions/"
+/>
+
+<LinkCard
+  title="Look up harn agents commands"
+  description="See the exact lifecycle syntax, output fields, and command options."
+  href="/cli/agents/"
+/>

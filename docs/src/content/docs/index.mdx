@@ -1,33 +1,37 @@
 ---
 title: Harnery
-description: Multi-agent coordination + adapter adapters + portable CLI utilities for Claude Code / Cursor / Codex.
+description: Multi-agent coordination, adapter integrations, and portable CLI utilities for Claude Code, Cursor, and Codex.
 template: splash
 hero:
   image:
     file: ../../assets/harnery-emblem.svg
     alt: Harnery emblem
-  tagline: Multi-agent coordination, adapter adapters, and portable CLI utilities, extracted from production Claude Code / Cursor / Codex tooling.
+  tagline: Multi-agent coordination, adapter integrations, and portable CLI utilities for Claude Code, Cursor, and Codex.
   actions:
     - text: Get started
       link: /getting-started/install/
       icon: right-arrow
       variant: primary
+    - text: Explore features
+      link: /features/session-state/
+      icon: open-book
+      variant: secondary
     - text: View on GitHub
       link: https://github.com/ryanjkelly/harnery
       icon: external
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 :::caution[Pre-1.0]
-Harnery is still pre-1.0. Pin a specific minor version (`harnery@^0.31.0`) and read the [CHANGELOG](https://github.com/ryanjkelly/harnery/blob/main/CHANGELOG.md) before each upgrade. Details on [Install](/getting-started/install/).
+Harnery is still pre-1.0. Pin a specific minor version (`harnery@^0.32.0`) and read the [CHANGELOG](https://github.com/ryanjkelly/harnery/blob/main/CHANGELOG.md) before each upgrade. Details on [Install](/getting-started/install/).
 :::
 
 ## What's inside
 
 <CardGrid stagger>
   <Card title="Coord layer" icon="puzzle">
-    `.harnery/active/` heartbeats, claim-time guards, commit-time guards, the canonical event stream, adapter adapters for Claude Code / Cursor / Codex.
+    `.harnery/active/` heartbeats, claim-time guards, commit-time guards, the canonical event stream, and adapter integrations for Claude Code, Cursor, and Codex.
   </Card>
   <Card title="Portable utilities" icon="laptop">
     `tokens`, `eml`, `env`, `grep`, `docs`, `browse`, `fetch`, `read`, `devtools`. Cross-platform and dependency-light, with sensible defaults out of the box.
@@ -39,3 +43,17 @@ Harnery is still pre-1.0. Pin a specific minor version (`harnery@^0.31.0`) and r
     `harn backup` snapshots `.harnery/` via [restic](https://restic.net/); `harn sync` keeps a curated subset live across machines via rclone (Google Drive or any remote).
   </Card>
 </CardGrid>
+
+## Start with the outcome
+
+<LinkCard
+  title="Know what every agent is doing"
+  description="Session state keeps live activity separate from whether the task is active, blocked, or done."
+  href="/features/session-state/"
+/>
+
+<LinkCard
+  title="Manage Claude Desktop sessions"
+  description="Keep sessions visible across account switches and archive completed work from durable lifecycle evidence."
+  href="/guides/manage-claude-desktop-sessions/"
+/>

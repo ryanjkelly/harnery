@@ -100,6 +100,8 @@ The boundary is enforced, not aspirational: CI verifies that no `harnery/lib/*` 
 Full docs at **[harnery.com](https://harnery.com)**:
 
 - [Getting started](https://harnery.com/getting-started/install)
+- [Features](https://harnery.com/features/session-state/)
+- [Guides](https://harnery.com/guides/manage-claude-desktop-sessions/)
 - [CLI reference](https://harnery.com/cli/)
 - [Concepts](https://harnery.com/concepts/coord-layer)
 - [Configuration schema](https://harnery.com/reference/config-schema)

@@ -27,12 +27,20 @@ export default defineConfig({
           items: [{ autogenerate: { directory: "getting-started" } }],
         },
         {
-          label: "CLI reference",
-          items: [{ autogenerate: { directory: "cli" } }],
+          label: "Features",
+          items: [{ autogenerate: { directory: "features" } }],
+        },
+        {
+          label: "Guides",
+          items: [{ autogenerate: { directory: "guides" } }],
         },
         {
           label: "Concepts",
           items: [{ autogenerate: { directory: "concepts" } }],
+        },
+        {
+          label: "CLI reference",
+          items: [{ autogenerate: { directory: "cli" } }],
         },
         {
           label: "Reference",
