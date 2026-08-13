@@ -125,6 +125,87 @@ describe("renderPromptContext", () => {
     }
   });
 
+  test("turn-ritual reminder is fresh on every prompt for claude-code and asks for the pasted box", () => {
+    const opts = {
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      turnRitualNudge: "claude-code",
+    };
+
+    const first = renderPromptContext(opts);
+    const second = renderPromptContext(opts);
+
+    for (const out of [first, second]) {
+      expect(out).toContain("Turn ritual (Stop-enforced)");
+      expect(out).toContain('harn agents set-task "<short focus>"');
+      expect(out).toContain("harn agents status");
+      expect(out).toContain("paste its output verbatim in a fenced code block");
+      expect(out).toContain("bounced by the Stop hook");
+    }
+  });
+
+  test("turn-ritual reminder for cursor never asks for a second copy of the box", () => {
+    const out = renderPromptContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      turnRitualNudge: "cursor",
+    });
+
+    expect(out).toContain("Turn ritual (Stop-enforced)");
+    expect(out).toContain("final tool call");
+    expect(out).not.toContain("paste its output verbatim");
+  });
+
+  test("turn-ritual reminder skips subagents and workflow children", () => {
+    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
+      writeFileSync(
+        join(activeDir, "self.json"),
+        JSON.stringify({
+          schema_version: 1,
+          instance_id: "self",
+          name: "Maya",
+          session_id: "self",
+          files_touched: [],
+          last_heartbeat: now,
+          started_at: now,
+          ...extra,
+        }),
+        "utf8",
+      );
+      const out = renderPromptContext({
+        coordRoot: root,
+        instanceId: "self",
+        sessionId: "self",
+        agentName: "Maya",
+        turnRitualNudge: "claude-code",
+      });
+      expect(out).not.toContain("Turn ritual");
+    }
+  });
+
+  test("turn-ritual reminder carries the Git-guarded status command when the host opts in", () => {
+    writeFileSync(
+      join(root, ".harnery", "config.jsonc"),
+      `{ "agents": { "requireGitFinalization": true } }`,
+      "utf8",
+    );
+
+    const out = renderPromptContext({
+      coordRoot: root,
+      instanceId: "self",
+      sessionId: "self",
+      agentName: "Maya",
+      turnRitualNudge: "claude-code",
+    });
+
+    expect(out).toContain("harn agents status --end-turn");
+  });
+
   test("hash dedup: second call with no changes returns empty", () => {
     // Seed a peer
     const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");

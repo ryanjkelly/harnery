@@ -620,9 +620,13 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
   const sessionNameNudge = args["session-name-nudge"] === "true";
   const taskNudge = args["task-nudge"] === "true";
   const statusFooterNudge = args["status-footer-nudge"] === "true";
+  // Value is the adapter id; a bare flag (parsed as "true") still enables the
+  // reminder with the adapter-neutral wording.
+  const turnRitualNudge =
+    args["turn-ritual-nudge"] === "true" ? "generic" : args["turn-ritual-nudge"];
   if (!instanceId) {
     process.stderr.write(
-      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge] [--status-footer-nudge]\n",
+      "agent-coord prompt-context --instance <id> [--session <id>] [--name <agent-name>] [--session-name-nudge] [--task-nudge] [--status-footer-nudge] [--turn-ritual-nudge <adapter>]\n",
     );
     return 2;
   }
@@ -635,6 +639,7 @@ async function handlePromptContext(root: string, rest: string[]): Promise<number
     sessionNameNudge,
     taskNudge,
     statusFooterNudge,
+    turnRitualNudge,
   });
   process.stdout.write(text);
   return 0;

@@ -84,6 +84,12 @@ export interface PromptContextOpts {
   /** When true, append the non-deduplicated Codex status-footer reminder.
    * The caller enables this only for human-facing Codex sessions. */
   statusFooterNudge?: boolean;
+  /** Adapter id whose Stop hook ENFORCES the end-of-turn ritual (task_set +
+   * status check). When set, append a fresh per-prompt reminder of that
+   * contract so the model satisfies it before ending the turn instead of
+   * being bounced into a retry. Not hash-deduped, same rationale as the
+   * status footer. */
+  turnRitualNudge?: string;
 }
 
 /**
@@ -103,6 +109,7 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     sessionNameNudge,
     taskNudge,
     statusFooterNudge,
+    turnRitualNudge,
   } = opts;
   const sections: string[] = [];
 
@@ -135,7 +142,39 @@ export function renderPromptContext(opts: PromptContextOpts): string {
     if (statusMsg) sections.push(statusMsg);
   }
 
+  // 5. Adapters whose Stop hook ENFORCES the turn ritual get a fresh reminder
+  // on every prompt. Reminding before the reply is drafted is far cheaper than
+  // the bounce-and-retry the Stop hook otherwise forces: enforcement-only
+  // compliance was measured missing on a double-digit share of turns. Not
+  // hash-deduped for the same reason as the Codex footer.
+  if (turnRitualNudge) {
+    const ritualMsg = renderTurnRitualReminder(coordRoot, instanceId, turnRitualNudge);
+    if (ritualMsg) sections.push(ritualMsg);
+  }
+
   return sections.join("\n\n");
+}
+
+function renderTurnRitualReminder(
+  coordRoot: string,
+  selfInstanceId: string,
+  adapter: string,
+): string {
+  const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
+  if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
+
+  const bin = resolveBinName(coordRoot);
+  const statusCommand = endOfTurnStatusCommand(coordRoot);
+  // Claude Code renders the status box only if the reply carries it; Cursor
+  // shows the box inline on its own, so it is never asked for a second copy.
+  const paste =
+    adapter === "claude-code"
+      ? " and paste its output verbatim in a fenced code block at the end of your reply"
+      : "";
+  return (
+    `Turn ritual (Stop-enforced): on any turn that uses tools, run \`${bin} agents set-task "<short focus>"\` at some point during the turn (required every turn, even when the focus is unchanged; pass an empty string when there is no meaningful focus), then make \`${statusCommand}\` your final tool call${paste}. ` +
+    "A turn that ends without these is bounced by the Stop hook and costs a retry."
+  );
 }
 
 function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): string {

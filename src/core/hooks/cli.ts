@@ -1653,9 +1653,14 @@ async function emitUserPromptSubmitSystemMessage(
     // staleness nudges; Claude Code enforces those via its Stop transcript.
     // Codex gets a fresh status-footer reminder on every prompt. Its Stop hook
     // stays observe-only, so missing the footer never replaces the answer.
+    // Claude Code + Cursor (the Stop-ENFORCING adapters) get a fresh per-turn
+    // ritual reminder: satisfying the contract up front is far cheaper than
+    // the bounce-and-retry the Stop hook otherwise forces.
     args.push("--session-name-nudge");
     if (adapter === "cursor" || adapter === "codex") args.push("--task-nudge");
     if (adapter === "codex") args.push("--status-footer-nudge");
+    if (adapter === "claude-code" || adapter === "cursor")
+      args.push("--turn-ritual-nudge", adapter);
     const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
     if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }
