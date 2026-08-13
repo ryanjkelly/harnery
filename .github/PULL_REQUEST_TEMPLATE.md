@@ -2,7 +2,7 @@
 Thanks for the PR! A few things to confirm before you mark it ready for review:
 
 1. Did you include a changeset? Run `bun x changeset` if not.
-2. Do `bun run lint`, `bun run typecheck`, and `bun test` all pass locally?
+2. Do `bun run lint`, `bun run typecheck`, and `bun run test` all pass locally?
 3. If this changes user-visible behavior, did you update docs/src/content/docs/?
 -->
 

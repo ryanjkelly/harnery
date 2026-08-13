@@ -1,28 +1,33 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { codexAuthorizationCheck, runChecks } from "../../src/commands/doctor.ts";
 
+let checks: Awaited<ReturnType<typeof runChecks>>;
+
+beforeAll(async () => {
+  checks = await runChecks();
+});
+
 describe("harn doctor", () => {
-  test("runChecks returns Node + git + .harnery checks", async () => {
-    const checks = await runChecks();
+  test("runChecks returns Node + git + .harnery checks", () => {
     const names = checks.map((c) => c.name);
     expect(names).toContain("node");
     expect(names).toContain("git");
     expect(names).toContain(".harnery/");
   });
 
-  test("every check has a severity", async () => {
-    for (const c of await runChecks()) {
+  test("every check has a severity", () => {
+    for (const c of checks) {
       expect(["ok", "warn", "fail"]).toContain(c.severity);
     }
   });
 
-  test("node check passes on the test runner (we require ≥ 20)", async () => {
-    const node = (await runChecks()).find((c) => c.name === "node");
+  test("node check passes on the test runner (we require ≥ 20)", () => {
+    const node = checks.find((c) => c.name === "node");
     expect(node?.severity).toBe("ok");
   });
 
-  test("git check is ok or fail (never warn, git is required)", async () => {
-    const git = (await runChecks()).find((c) => c.name === "git");
+  test("git check is ok or fail (never warn, git is required)", () => {
+    const git = checks.find((c) => c.name === "git");
     expect(git).toBeDefined();
     if (git) {
       expect(["ok", "fail"]).toContain(git.severity);

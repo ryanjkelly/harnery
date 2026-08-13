@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,9 +10,13 @@ const fixtureHost = resolve(import.meta.dir, "../fixtures/browser-session/host.t
 const cliEntrypoint = resolve(harneryRoot, "src/cli.ts");
 const children: ChildProcess[] = [];
 
+// Chromium shutdown can take longer than Bun's 5s default on a busy full-suite
+// run. The cleanup remains independently bounded by waitForExit's 10s limit.
+setDefaultTimeout(30_000);
+
 afterEach(async () => {
   for (const child of children.splice(0)) {
-    if (child.exitCode === null) child.kill("SIGTERM");
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
     await waitForExit(child).catch(() => {});
   }
 });
@@ -205,7 +209,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 }
 
 async function waitForExit(child: ChildProcess, timeoutMs = 10_000): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   await Promise.race([
     new Promise<void>((resolve) => child.once("exit", () => resolve())),
     new Promise<void>((_, reject) =>

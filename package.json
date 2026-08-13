@@ -185,7 +185,7 @@
     "check:layering": "bun run scripts/check-layering.ts",
     "lint:fix": "bun x @biomejs/biome check --write src",
     "format": "bun x @biomejs/biome format --write src",
-    "test": "bun test src tests",
+    "test": "bun run scripts/test.mjs",
     "test:web": "cd web && bun install && bun test",
     "test:integration": "bash tests/integration/run.sh",
     "smoke": "node scripts/smoke-test.mjs",
