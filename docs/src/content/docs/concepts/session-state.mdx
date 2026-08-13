@@ -85,6 +85,13 @@ agent until the new name is observed, and the Claude Code Stop rule treats the
 re-mint like the first session name. The title is still a projection. Editing
 it does not mutate lifecycle.
 
+Claude Desktop cleanup uses the same one-way projection. `harn claude-desktop
+tidy` maps a sidebar entry to its Harnery session and checks the latest durable
+lifecycle event. It archives mapped `done` entries only when `--yes` is present.
+A `[DONE]` title without lifecycle evidence is skipped unless the operator adds
+`--include-legacy-prefix`; a `[BLOCKED]` title never qualifies. Titles remain an
+output of lifecycle, not an input to it.
+
 ## Live state and replay
 
 The heartbeat projector writes these fields to `.harnery/active/<id>.json`:

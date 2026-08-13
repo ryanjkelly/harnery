@@ -299,7 +299,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerInitCommand(program, emit, opts.binName);
   registerDeinitCommand(program, emit, opts.binName);
   registerBackupCommand(program, emit);
-  registerClaudeDesktopCommand(program, emit);
+  registerClaudeDesktopCommand(program, emit, opts.context);
   registerSyncCommand(program, emit);
   registerWorkflowCommand(program, emit);
   registerWorkCommand(program, emit);

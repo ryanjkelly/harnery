@@ -103,3 +103,14 @@ Live boards still remove stale or ended heartbeats, while detail and history
 readers reconstruct their last activity and lifecycle from canonical events.
 Timestamp guards prevent an older replayed event from rolling that projection
 backward.
+
+Phase 4 added the first lifecycle consumer outside the live coordination
+surfaces. `harn claude-desktop tidy` streams the active and rotated event
+ledgers, maps desktop entries by session identity, and archives only entries
+whose latest declaration is `done`. It dry-runs by default and uses atomic
+entry replacement when `--yes` is supplied.
+
+Historical `[DONE]` titles remain available behind
+`--include-legacy-prefix`. They are not part of normal selection, and neither a
+legacy title nor a desktop edit can override matching active or blocked event
+evidence. This keeps the projection direction established by this decision.

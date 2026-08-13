@@ -1,12 +1,16 @@
 import type { Command } from "commander";
-import type { EmitContext } from "../commander.ts";
+import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import { monorepoRoot } from "../core/agents/index.ts";
 import {
   applyMirror,
+  applyTidy,
   type DesktopAccount,
   findDesktopDataDirs,
   listAccounts,
   planMirror,
+  planTidy,
   readCliAccount,
+  readDesktopLifecycleIndex,
 } from "../lib/claude-desktop.ts";
 
 /**
@@ -24,12 +28,14 @@ import {
  * desktop app picks the copies up, and opening one resumes with full
  * history.
  */
-export function registerClaudeDesktopCommand(program: Command, emit: EmitContext): void {
+export function registerClaudeDesktopCommand(
+  program: Command,
+  emit: EmitContext,
+  context?: HarneryProgramContext,
+): void {
   const cmd = program
     .command("claude-desktop")
-    .description(
-      "Claude desktop-app session index: list accounts/sessions, mirror sessions across accounts",
-    )
+    .description("Claude desktop-app session index: list, mirror, and archive completed sessions")
     .action(() => {
       const dirs = requireDataDirs(emit, undefined);
       for (const dir of dirs) {
@@ -180,6 +186,101 @@ export function registerClaudeDesktopCommand(program: Command, emit: EmitContext
               copied > 0
                 ? "fully quit the Claude desktop app (tray icon, not the X) and relaunch to see the sessions"
                 : "nothing to copy",
+          });
+        }
+      },
+    );
+
+  cmd
+    .command("tidy")
+    .description(
+      "Archive desktop sidebar entries whose mapped Harnery lifecycle is done. " +
+        "Dry-run by default; --yes applies atomic entry updates.",
+    )
+    .option("--data-dir <path>", "Explicit desktop-app data directory")
+    .option(
+      "--account <uuid-prefix>",
+      "Only entries under accounts matching this UUID prefix (repeatable)",
+      collect,
+      [] as string[],
+    )
+    .option(
+      "--include-legacy-prefix",
+      "Also archive unmatched historical entries whose title starts with [DONE]",
+    )
+    .option("--yes", "Apply the archive plan (default is dry-run)")
+    .action(
+      async (opts: {
+        dataDir?: string;
+        account: string[];
+        includeLegacyPrefix?: boolean;
+        yes?: boolean;
+      }) => {
+        const dirs = requireDataDirs(emit, opts.dataDir);
+        const coordRoot =
+          context?.resolveCoordRoot?.() ?? context?.repoRoot ?? monorepoRoot() ?? process.cwd();
+        const lifecycle = await readDesktopLifecycleIndex(coordRoot);
+
+        for (const dir of dirs) {
+          const plan = planTidy(listAccounts(dir), lifecycle, {
+            accounts: opts.account,
+            includeLegacyPrefix: opts.includeLegacyPrefix,
+          });
+          const planned = plan.actions.map((action) => ({
+            account_uuid: action.entry.accountUuid,
+            cli_session_id: action.entry.cliSessionId,
+            title: action.entry.title,
+            source: action.source,
+            lifecycle_updated_at: action.lifecycle?.updatedAt ?? null,
+            file: action.entry.file,
+          }));
+          const skipped = plan.skipped
+            .map((skip) => ({
+              account_uuid: skip.entry.accountUuid,
+              cli_session_id: skip.entry.cliSessionId,
+              title: skip.entry.title,
+              reason: skip.reason,
+              lifecycle: skip.lifecycle?.state ?? null,
+            }))
+            .filter((skip) => skip.reason !== "already_archived");
+          const skippedByReason = Object.fromEntries(
+            [
+              "already_archived",
+              "blocked_title",
+              "lifecycle_active",
+              "lifecycle_blocked",
+              "unmatched",
+            ].map((reason) => [
+              reason,
+              plan.skipped.filter((skip) => skip.reason === reason).length,
+            ]),
+          );
+
+          if (!opts.yes) {
+            emit.data({
+              data_dir: dir,
+              dry_run: true,
+              planned,
+              skipped,
+              skipped_by_reason: skippedByReason,
+              hint: plan.actions.length > 0 ? "re-run with --yes to archive" : "nothing to archive",
+            });
+            continue;
+          }
+
+          const result = applyTidy(plan);
+          emit.data({
+            data_dir: dir,
+            dry_run: false,
+            archived: result.archived,
+            already_archived: result.alreadyArchived,
+            planned,
+            skipped,
+            skipped_by_reason: skippedByReason,
+            hint:
+              result.archived > 0
+                ? "fully quit the Claude desktop app (tray icon, not the X) and relaunch to refresh the sidebar"
+                : "nothing to archive",
           });
         }
       },

@@ -1,13 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyMirror,
+  applyTidy,
   entryMatchesSelector,
   findDesktopDataDirs,
   listAccounts,
   planMirror,
+  planTidy,
+  readDesktopLifecycleIndex,
 } from "./claude-desktop.ts";
 
 const ACCT_A = "aaaaaaaa-0000-0000-0000-000000000001";
@@ -145,5 +156,104 @@ describe("entryMatchesSelector", () => {
     expect(entryMatchesSelector(entry, "local_sel")).toBe(true);
     expect(entryMatchesSelector(entry, "great sess")).toBe(true);
     expect(entryMatchesSelector(entry, "nope")).toBe(false);
+  });
+});
+
+describe("desktop lifecycle tidy", () => {
+  function writeLifecycle(
+    sessionId: string,
+    state: "active" | "blocked" | "done",
+    ts = "2026-08-13T12:00:00.000Z",
+    file = "events.ndjson",
+  ): void {
+    const dir = join(dataDir, ".harnery");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, file);
+    const event = {
+      schema_version: 1,
+      event_id: `${sessionId}-${state}-${ts}`,
+      event_type: "state.task_state",
+      ts,
+      instance_id: `instance-${sessionId}`,
+      session_id: sessionId,
+      adapter: "claude-code",
+      source: "agent-coord",
+      data: { state, reason: state === "blocked" ? "waiting" : null },
+    };
+    writeFileSync(
+      path,
+      `${existsSync(path) ? readFileSync(path, "utf8") : ""}${JSON.stringify(event)}\n`,
+    );
+  }
+
+  test("reads the newest lifecycle declaration across rotated event files", async () => {
+    writeLifecycle("cli-one", "done", "2026-08-13T10:00:00.000Z", "events-2026-08-13.ndjson");
+    writeLifecycle("cli-one", "active", "2026-08-13T11:00:00.000Z");
+    // Replay appends older evidence after the newer declaration. Timestamp,
+    // rather than file or append order, remains authoritative.
+    writeLifecycle("cli-one", "blocked", "2026-08-13T09:00:00.000Z");
+
+    const lifecycle = await readDesktopLifecycleIndex(dataDir);
+    expect(lifecycle.get("cli-one")?.state).toBe("active");
+    expect(lifecycle.get("instance-cli-one")?.state).toBe("active");
+  });
+
+  test("selects only mapped done entries by default and never trusts blocked titles", async () => {
+    writeEntry(ACCT_A, "done", { title: "Agent Ada - complete" });
+    writeEntry(ACCT_A, "active", { title: "Agent Bo - still working" });
+    writeEntry(ACCT_A, "forged", { title: "[DONE] - Agent Cy - hand labeled" });
+    writeEntry(ACCT_A, "blocked", { title: "[BLOCKED] - Agent Di - waiting" });
+    writeLifecycle("cli-done", "done");
+    writeLifecycle("cli-active", "active");
+    writeLifecycle("cli-blocked", "done");
+
+    const lifecycle = await readDesktopLifecycleIndex(dataDir);
+    const plan = planTidy(listAccounts(dataDir), lifecycle);
+    expect(plan.actions.map((action) => action.entry.cliSessionId)).toEqual(["cli-done"]);
+    expect(plan.skipped.find((skip) => skip.entry.cliSessionId === "cli-forged")?.reason).toBe(
+      "unmatched",
+    );
+    expect(plan.skipped.find((skip) => skip.entry.cliSessionId === "cli-blocked")?.reason).toBe(
+      "blocked_title",
+    );
+  });
+
+  test("legacy title parsing is explicit and account scoping is exact", () => {
+    writeEntry(ACCT_A, "old-a", { title: "[DONE] - Agent Ada - old task" });
+    writeEntry(ACCT_B, "old-b", { title: "[DONE] - Agent Bo - old task" });
+
+    const plan = planTidy(listAccounts(dataDir), new Map(), {
+      accounts: ["bbbbbbbb"],
+      includeLegacyPrefix: true,
+    });
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions[0]?.entry.accountUuid).toBe(ACCT_B);
+    expect(plan.actions[0]?.source).toBe("legacy-prefix");
+  });
+
+  test("archives atomically from the latest file contents and is idempotent", async () => {
+    const file = writeEntry(ACCT_A, "done", { preserved: "original" });
+    writeLifecycle("cli-done", "done");
+    const lifecycle = await readDesktopLifecycleIndex(dataDir);
+    const plan = planTidy(listAccounts(dataDir), lifecycle);
+
+    // Simulate a desktop-side update after planning. applyTidy rereads the
+    // entry immediately before its atomic replacement and preserves the field.
+    const current = JSON.parse(readFileSync(file, "utf8"));
+    current.preserved = "concurrent update";
+    writeFileSync(file, JSON.stringify(current));
+
+    expect(applyTidy(plan)).toEqual({ archived: 1, alreadyArchived: 0 });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({
+      isArchived: true,
+      preserved: "concurrent update",
+    });
+    expect(readdirSync(join(dataDir, "claude-code-sessions", ACCT_A, ENV))).toEqual([
+      "local_done.json",
+    ]);
+
+    const again = planTidy(listAccounts(dataDir), lifecycle);
+    expect(again.actions).toHaveLength(0);
+    expect(again.skipped[0]?.reason).toBe("already_archived");
   });
 });
