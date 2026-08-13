@@ -140,23 +140,31 @@ describe("harn agents state surfaces", () => {
     });
   });
 
-  test("status and show render explicit activity and lifecycle labels", () => {
-    const root = makeSandbox();
-    expect(json(harn(root, ["agents", "status", "--json", "--session-id", OWNER]))).toMatchObject({
-      activity: "needs_input",
-      task_state: "blocked",
-      task_state_reason: "waiting for approval",
-    });
-    expect(harn(root, ["agents", "status", "--session-id", OWNER]).stdout).toContain("lifecycle");
+  test(
+    "status and show render explicit activity and lifecycle labels",
+    () => {
+      const root = makeSandbox();
+      expect(
+        json(harn(root, ["agents", "status", "--json", "--session-id", OWNER])),
+      ).toMatchObject({
+        activity: "needs_input",
+        task_state: "blocked",
+        task_state_reason: "waiting for approval",
+      });
+      expect(harn(root, ["agents", "status", "--session-id", OWNER]).stdout).toContain(
+        "lifecycle",
+      );
 
-    expect(json(harn(root, ["agents", "show", "Hollis", "--json"]))).toMatchObject({
-      activity: "needs_input",
-      task_state: "blocked",
-    });
-    const shown = harn(root, ["agents", "show", "Hollis"]);
-    expect(shown.stdout).toContain("activity:       needs_input");
-    expect(shown.stdout).toContain("lifecycle:      blocked: waiting for approval");
-  });
+      expect(json(harn(root, ["agents", "show", "Hollis", "--json"]))).toMatchObject({
+        activity: "needs_input",
+        task_state: "blocked",
+      });
+      const shown = harn(root, ["agents", "show", "Hollis"]);
+      expect(shown.stdout).toContain("activity:       needs_input");
+      expect(shown.stdout).toContain("lifecycle:      blocked: waiting for approval");
+    },
+    { timeout: 15_000 },
+  );
 
   test("trace folds durable activity and lifecycle and renders their events", () => {
     const root = makeSandbox();

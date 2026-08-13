@@ -32,6 +32,11 @@ const browserProcessFiles = new Set([
   "tests/e2e/browse-session.test.ts",
 ]);
 
+// Browser-backed checks can spend several seconds waiting for Chromium on a
+// shared CI runner. Keep the core suite's strict default while giving this
+// isolated partition enough room to finish real browser work.
+const browserTestArgs = ["--max-concurrency", "1", "--timeout", "15000"];
+
 function discoverTests(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
@@ -68,7 +73,7 @@ if (isolatedBrowserFiles.length + isolatedBrowserProcessFiles.length !== browser
 }
 
 for (const file of isolatedBrowserProcessFiles) {
-  run(`browser process partition: ${file}`, [file], ["--max-concurrency", "1"]);
+  run(`browser process partition: ${file}`, [file], browserTestArgs);
 }
-run("browser test partition", isolatedBrowserFiles, ["--max-concurrency", "1"]);
+run("browser test partition", isolatedBrowserFiles, browserTestArgs);
 run("core test partition", coreFiles);
