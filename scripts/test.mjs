@@ -22,13 +22,13 @@ const browserFiles = new Set([
   "tests/e2e/browse-session.test.ts",
 ]);
 
-// This file owns a long-lived fixture process and repeatedly spawns short-lived
-// CLI clients. Browser state left by earlier files can delay the fixture's
-// Chromium shutdown past its independently bounded teardown window, even when
-// Bun runs the tests serially. Give the process integration case its own Bun
-// process so both sides of the control socket start from a clean runtime.
+// These files either own a long-lived fixture process or repeatedly resize and
+// evaluate a live page. Browser state left by earlier files can stall later
+// Playwright operations even when Bun runs tests serially. Give them fresh Bun
+// processes so each suite starts with clean browser transport state.
 const browserProcessFiles = new Set([
   "src/lib/browser/session-browser.test.ts",
+  "tests/e2e/browse-layout-lint.test.ts",
   "tests/e2e/browse-session.test.ts",
 ]);
 
