@@ -568,6 +568,8 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
   const matches: Array<{
     instanceId: string;
     sessionPreference: number;
+    /** 0 = the adapter session itself; 1 = subagent/transient/workflow child. */
+    kindRank: number;
     hasName: boolean;
     lastHeartbeatMs: number;
   }> = [];
@@ -581,9 +583,21 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
       if (typeof parsed.instance_id !== "string") continue;
       const ts = Date.parse(parsed.last_heartbeat);
       if (!Number.isFinite(ts) || ts < cutoffMs) continue;
+      // In-process subagents inherit the adapter's session-id env var, so their
+      // heartbeats carry the SAME session_id as the session that spawned them —
+      // several live heartbeats can match at once. The env var names the
+      // adapter session, so the session-kind heartbeat is the owner; ranking a
+      // subagent above it hands the session's CLI calls (journal, decision,
+      // artifacts) to whichever child heartbeated most recently. This also
+      // matches the ppid-walk contract: subagent CLI calls attribute to the
+      // parent session (subagents write no pid-map rows by design).
+      const isSideKind =
+        (typeof parsed.kind === "string" && parsed.kind !== "session") ||
+        typeof parsed.workflow_run_id === "string";
       matches.push({
         instanceId: parsed.instance_id,
         sessionPreference,
+        kindRank: isSideKind ? 1 : 0,
         hasName: typeof parsed.name === "string" && parsed.name.trim().length > 0,
         lastHeartbeatMs: ts,
       });
@@ -594,6 +608,7 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
   matches.sort(
     (a, b) =>
       a.sessionPreference - b.sessionPreference ||
+      a.kindRank - b.kindRank ||
       Number(b.hasName) - Number(a.hasName) ||
       b.lastHeartbeatMs - a.lastHeartbeatMs ||
       a.instanceId.localeCompare(b.instanceId),

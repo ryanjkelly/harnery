@@ -370,6 +370,44 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx-thread");
   });
 
+  test("subagent heartbeats sharing the parent session id never outrank the session", () => {
+    // In-process subagents inherit the adapter session-id env var, so their
+    // heartbeats carry the parent's session_id. The session-kind heartbeat must
+    // win even when a subagent is named and heartbeated more recently.
+    writeFileSync(
+      path.join(activeDir, "parent.json"),
+      JSON.stringify({
+        instance_id: "parent",
+        session_id: "sess-shared",
+        kind: "session",
+        name: "Drake",
+        last_heartbeat: isoAgo(120_000),
+      }),
+    );
+    writeFileSync(
+      path.join(activeDir, "sub.json"),
+      JSON.stringify({
+        instance_id: "sub",
+        session_id: "sess-shared",
+        kind: "subagent",
+        name: "Foster",
+        last_heartbeat: isoAgo(1_000),
+      }),
+    );
+    writeFileSync(
+      path.join(activeDir, "wf-child.json"),
+      JSON.stringify({
+        instance_id: "wf-child",
+        session_id: "sess-shared",
+        workflow_run_id: "wf_abc123",
+        name: "Child",
+        last_heartbeat: isoAgo(2_000),
+      }),
+    );
+    process.env.CLAUDE_CODE_SESSION_ID = "sess-shared";
+    expect(resolveOwnerBySessionEnv(root)).toBe("parent");
+  });
+
   test("Cursor conversation id env resolves and strips the Glass bc- prefix", () => {
     writeHeartbeat("agent-cur", "sess-cur", 30_000);
     process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
