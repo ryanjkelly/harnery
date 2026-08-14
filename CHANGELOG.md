@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.33.0
+
+### Minor Changes
+
+- 6fe8e44: Add dry-run-first Claude Desktop cleanup backed by durable task lifecycle
+  events, with account scoping, atomic archives, and an explicit legacy-title
+  compatibility option.
+- 9b1bf98: Add explicit agent task lifecycle declarations with durable transition events,
+  Git-finalized completion, idempotent repeats, lifecycle-neutral task updates,
+  and active, blocked, or done session-name re-mints.
+- c2dc561: Add event-derived activity and task lifecycle state, durable replay helpers,
+  and verified Codex permission-request evidence.
+- c5b5a1c: Expose activity and task lifecycle across CLI, prompt context, cross-machine
+  presence, and web views, with durable ended-session reconstruction.
+
+### Patch Changes
+
+- 955fe43: Diagnose Codex hook authorization separately from manifest wiring, and require
+  hook review before starting a freshly initialized Codex task.
+- 3825c40: Stop-enforcing adapters (Claude Code, Cursor) now receive a fresh per-prompt turn-ritual reminder from UserPromptSubmit: declare the turn focus with `agents set-task` and finish with the end-of-turn status command. Satisfying the contract up front is far cheaper than the bounce-and-retry the Stop hook otherwise forces; enforcement-only compliance was measured missing on a double-digit share of turns. Claude Code's variant asks for the status box pasted verbatim; Cursor's does not, since Cursor renders the box inline. Subagents, transient sessions, and workflow children are exempt, matching the status footer. Enable via `agent-coord prompt-context --turn-ritual-nudge <adapter>` (the shared hook path wires it automatically).
+
 ## 0.32.0
 
 ### Minor Changes
