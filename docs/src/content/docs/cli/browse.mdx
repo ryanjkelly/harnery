@@ -151,7 +151,7 @@ These assert on the rendered layout and surface findings in the JSON envelope; e
 | `--check-gap-threshold <px>` | Maximum gap deviation in CSS pixels. Default `2`. |
 | `--check-gap-fail` | Exit 2 when a gap target fails, is unknown, or is missing. A two-item group needs `--check-gap-expected` to produce a conclusive result. |
 | `--no-check-gap-annotate` | Skip gap annotations. |
-| `--check-clip <selector>` | Check every matching container for descendant boxes or text paint leaving its rectangular clipping chain or nearest block parent. Repeatable. |
+| `--check-clip <selector>` | Check every matching container for descendant boxes or text paint leaving its rectangular clipping chain or nearest block parent. In-flow boxes are checked horizontally against that parent even when CSS overflow is visible. Repeatable. |
 | `--check-clip-threshold <px>` | Allowed rectangular overrun in CSS pixels. Default `0`. |
 | `--check-clip-fail` | Exit 2 when rectangular clipping fails, is unknown, or the selector is missing. |
 | `--no-check-clip-annotate` | Skip clipping annotations. |

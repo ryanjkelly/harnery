@@ -41,6 +41,15 @@
       .clip-rounded-visible { width: 100px; border-radius: 12px; }
       .clip-rounded-hidden { width: 100px; border-radius: 12px; overflow: hidden; }
       .clip-path-unknown { width: 100px; clip-path: circle(50%); }
+      /* The nowrap chip stays inside the outer scope but escapes its narrow
+         grid cell and paints over the neighboring column. */
+      .clip-parent-box { display: grid; grid-template-columns: 80px 80px; gap: 8px; width: 168px; }
+      .clip-parent-box .cell { min-width: 0; }
+      .clip-parent-box .nowrap-chip { display: inline-flex; white-space: nowrap; }
+      /* The same parent escape is reachable when an outer ancestor scrolls. */
+      .clip-parent-scroll { width: 80px; overflow-x: auto; }
+      .clip-parent-scroll .visible-wrapper { width: 60px; }
+      .clip-parent-scroll .wide-box { width: 120px; height: 20px; }
       .overlap-good { display: flex; gap: 4px; }
       .overlap-bad { display: grid; width: 40px; height: 24px; }
       .overlap-bad > * { grid-area: 1 / 1; width: 30px; height: 20px; }
@@ -95,6 +104,13 @@
     <section class="clip-rounded-visible"><div>Visible rounded container</div></section>
     <section class="clip-rounded-hidden"><div>Hidden rounded container</div></section>
     <section class="clip-path-unknown"><div>Non-rectangular clip path</div></section>
+    <section class="clip-parent-box">
+      <div class="cell"><span class="nowrap-chip">Active offer: yes</span></div>
+      <div class="cell">Neighbor</div>
+    </section>
+    <section class="clip-parent-scroll">
+      <div class="visible-wrapper"><div class="wide-box">Reachable by scrolling</div></div>
+    </section>
     <section class="overlap-good">
       <div class="overlap-box"></div><div class="overlap-box"></div>
     </section>

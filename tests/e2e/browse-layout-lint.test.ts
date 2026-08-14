@@ -54,6 +54,8 @@ describe("browse layout lint", () => {
           { selector: ".clip-rounded-visible", tolerancePx: 0 },
           { selector: ".clip-rounded-hidden", tolerancePx: 0 },
           { selector: ".clip-path-unknown", tolerancePx: 0 },
+          { selector: ".clip-parent-box", tolerancePx: 0 },
+          { selector: ".clip-parent-scroll", tolerancePx: 0 },
         ],
         overlap: [
           { selector: ".overlap-good", tolerancePx: 0 },
@@ -84,10 +86,23 @@ describe("browse layout lint", () => {
         "pass",
         "pass",
         "unknown",
+        "fail",
+        "pass",
       ]);
       expect(result.clip[8]?.unsupported).toEqual([]);
       expect(result.clip[9]?.unsupported).toEqual([]);
       expect(result.clip[10]?.unsupported).toContain("section.clip-path-unknown:clip-path");
+      expect(result.clip[11]?.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            clippedBy: "div.cell",
+            element: expect.objectContaining({
+              label: "span.nowrap-chip",
+              source: "box",
+            }),
+          }),
+        ]),
+      );
       // Content below the fold of a scroller is reachable, and a collapsed
       // disclosure is deliberately unrendered; neither is a clip defect. An
       // overflow:hidden box inside that scroller still is.
@@ -101,7 +116,7 @@ describe("browse layout lint", () => {
       expect(result.clip[2]?.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            clippedBy: "section.clip-text-case.clip-text-bad",
+            clippedBy: "div.text-host",
             element: expect.objectContaining({ source: "text", snippet: "Persistence" }),
           }),
         ]),
@@ -298,6 +313,31 @@ describe("browse layout lint", () => {
     expect(result.exitCode).toBe(2);
     expect(stdout).toContain('"snippet":"Persistence"');
     expect(stdout).toContain('"source":"text"');
+  });
+
+  test("CLI clip gate catches a visible child escaping its parent", () => {
+    const result = Bun.spawnSync({
+      cmd: [
+        resolve(import.meta.dir, "../../bin/harn"),
+        "browse",
+        fixtureUrl,
+        "--json",
+        "--no-cookies",
+        "--profile",
+        profile(),
+        "--check-clip",
+        ".clip-parent-box",
+        "--check-clip-fail",
+      ],
+      cwd: resolve(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    const stdout = result.stdout.toString();
+    expect(result.exitCode).toBe(2);
+    expect(stdout).toContain('"label":"span.nowrap-chip"');
+    expect(stdout).toContain('"clippedBy":"div.cell"');
   });
 
   test("CLI layout fail gates exit 2 when any geometry result is unknown", () => {

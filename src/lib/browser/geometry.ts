@@ -519,6 +519,20 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       return { x: scrolls.has(style.overflowX), y: scrolls.has(style.overflowY) };
     };
 
+    const scrollsBeforeScope = (
+      start: Element | null,
+      scope: Element,
+      axis: "x" | "y",
+    ): boolean => {
+      let current = start;
+      while (current && scope.contains(current)) {
+        if (scrollingStyle(current)[axis]) return true;
+        if (current === scope) break;
+        current = current.parentElement;
+      }
+      return false;
+    };
+
     const unbounded = (): LayoutRect => ({
       x: Number.NEGATIVE_INFINITY,
       y: Number.NEGATIVE_INFINITY,
@@ -573,7 +587,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       const recordIssue = (
         element: LayoutElementMeasurement,
         allowed: LayoutRect,
-        clippedBy: string,
+        clippedBy: { x: string; y: string },
         axes: { x: boolean; y: boolean } = { x: true, y: true },
       ): void => {
         const rect = element.rect;
@@ -585,7 +599,14 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         };
         const maxOverrunPx = Math.max(overrun.top, overrun.right, overrun.bottom, overrun.left);
         if (maxOverrunPx > tolerancePx + SUBPIXEL_EPSILON && issues.length < ISSUE_LIMIT) {
-          issues.push({ element, clippedBy, overrun, maxOverrunPx });
+          const horizontalOverrun = Math.max(overrun.left, overrun.right);
+          const verticalOverrun = Math.max(overrun.top, overrun.bottom);
+          issues.push({
+            element,
+            clippedBy: horizontalOverrun >= verticalOverrun ? clippedBy.x : clippedBy.y,
+            overrun,
+            maxOverrunPx,
+          });
         }
       };
 
@@ -599,9 +620,9 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         container: Element,
         seed: LayoutRect,
         seedLabel: string,
-      ): { allowed: LayoutRect; clippedBy: string } => {
+      ): { allowed: LayoutRect; clippedBy: { x: string; y: string } } => {
         let allowed = { ...seed };
-        let clippedBy = seedLabel;
+        const clippedBy = { x: seedLabel, y: seedLabel };
         const free = { x: false, y: false };
         let current: Element | null = start;
         while (current && container.contains(current)) {
@@ -622,6 +643,14 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           };
           if (clips.x || clips.y) {
             const candidate = paddingRect(current);
+            const tightensX =
+              clips.x &&
+              (candidate.left > allowed.left + SUBPIXEL_EPSILON ||
+                candidate.right < allowed.right - SUBPIXEL_EPSILON);
+            const tightensY =
+              clips.y &&
+              (candidate.top > allowed.top + SUBPIXEL_EPSILON ||
+                candidate.bottom < allowed.bottom - SUBPIXEL_EPSILON);
             allowed = {
               x: clips.x ? Math.max(allowed.left, candidate.left) : allowed.left,
               y: clips.y ? Math.max(allowed.top, candidate.top) : allowed.top,
@@ -634,7 +663,11 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             };
             allowed.width = Math.max(0, allowed.right - allowed.left);
             allowed.height = Math.max(0, allowed.bottom - allowed.top);
-            clippedBy = labelOf(current);
+            // Keep the label of the boundary that actually made each axis
+            // smaller. A wider outer scope should not hide the nearer parent
+            // responsible for a horizontal overrun.
+            if (tightensX) clippedBy.x = labelOf(current);
+            if (tightensY) clippedBy.y = labelOf(current);
           }
           if (scrolls.x) free.x = true;
           if (scrolls.y) free.y = true;
@@ -644,7 +677,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
         return { allowed, clippedBy };
       };
 
-      const textContainer = (node: Node, scope: Element): Element | null => {
+      const nearestBlockOwner = (node: Node, scope: Element): Element | null => {
         let current = node.parentElement;
         while (current && scope.contains(current)) {
           if (current instanceof SVGElement) return null;
@@ -670,12 +703,29 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "zero-area" });
             return;
           }
-          const chain = clipChain(
-            element.parentElement,
-            container,
-            unbounded(),
-            labelOf(container),
-          );
+          // CSS overflow defaults to visible, so a child can escape a grid or
+          // flex cell without any clipping ancestor noticing. Constrain
+          // in-flow boxes horizontally to their nearest block owner. Vertical
+          // parent containment is intentionally left to real CSS clips because
+          // normal margin collapse can paint outside a parent's vertical box.
+          const owner = nearestBlockOwner(element, container);
+          const seed = unbounded();
+          let seedLabel = labelOf(container);
+          const position = getComputedStyle(element).position;
+          if (
+            owner &&
+            position !== "absolute" &&
+            position !== "fixed" &&
+            !scrollsBeforeScope(owner, container, "x")
+          ) {
+            const ownerRect = paddingRect(owner);
+            seed.left = ownerRect.left;
+            seed.right = ownerRect.right;
+            seed.x = seed.left;
+            seed.width = Math.max(0, seed.right - seed.left);
+            seedLabel = labelOf(owner);
+          }
+          const chain = clipChain(element.parentElement, container, seed, seedLabel);
           recordIssue(measure(element, index, false), chain.allowed, chain.clippedBy);
         });
 
@@ -696,7 +746,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           ) {
             continue;
           }
-          const owner = textContainer(node, container);
+          const owner = nearestBlockOwner(node, container);
           if (!owner) continue;
           let transformed = false;
           let current: Element | null = owner;
