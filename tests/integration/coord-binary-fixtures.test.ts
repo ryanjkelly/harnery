@@ -380,6 +380,17 @@ describe("agent-hook pre-tool-use finalization authority", () => {
     ) as { files_touched: string[] };
     expect(heartbeat.files_touched).toEqual([]);
     expect(events(root)).not.toContain('"event_type":"claim.acquire"');
+    // The deny must also emit a claim.release for the target: the tool.pre_use
+    // event already in the stream folds the path into files_touched on any
+    // later heartbeat rebuild, and no post_use event will ever fire to clear
+    // it. The release is what keeps the phantom claim from blocking end-turn.
+    const release = events(root)
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { event_type?: string; data?: Record<string, unknown> })
+      .find((event) => event.event_type === "claim.release");
+    expect(release?.data?.reason).toBe("guard_denied_finalization");
+    expect(String(release?.data?.path)).toContain("artifact.txt");
   });
 
   test("denies a sibling non-Git directory misdeclared as Git", () => {

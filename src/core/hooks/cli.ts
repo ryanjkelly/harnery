@@ -1221,11 +1221,30 @@ async function runPreToolUseGuard(
   const rawTargets = collectGuardTargets(toolName, data);
   if (rawTargets.length === 0) return true;
 
+  // The tool.pre_use event emitted before this guard already folded every
+  // write target into the heartbeat's files_touched. A deny means the write
+  // never happens and no post_use/post_use_failure event will fire to clean
+  // that up, so the phantom claim would block the end-turn finalization check
+  // until a manual release-claim. Every deny path below must release first.
+  const releaseGuardTargets = (reason: string): void => {
+    for (const raw of rawTargets) {
+      emit(coordRoot, {
+        event_type: "claim.release",
+        instance_id: instanceId,
+        session_id: sessionId,
+        adapter,
+        source: "agent-hooks",
+        data: { path: raw, reason },
+      });
+    }
+  };
+
   let targets: Array<{ path: string; finalization?: ClaimFinalizationDescriptor }>;
   if (agentsRequireGitFinalization(coordRoot)) {
     const decisions = rawTargets.map((path) => classifyWriteClaimFinalization(coordRoot, path));
     const denied = decisions.find((decision) => !decision.allow);
     if (denied && !denied.allow) {
+      releaseGuardTargets("guard_denied_finalization");
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, formatWriteClaimFinalizationDenial(denied, resolveBinName(coordRoot)));
       return false;
@@ -1248,6 +1267,7 @@ async function runPreToolUseGuard(
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) {
     if (agentsRequireGitFinalization(coordRoot)) {
+      releaseGuardTargets("guard_denied_coordinator_unavailable");
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(
         adapter,
@@ -1293,6 +1313,7 @@ async function runPreToolUseGuard(
           reason += ` The patch also touched: ${siblings}: pick a different file or wait.`;
         }
       }
+      releaseGuardTargets("guard_denied_peer_claim");
       const { emitDeny } = await import("./adapter/output.ts");
       emitDeny(adapter, reason);
       return false;

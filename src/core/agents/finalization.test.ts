@@ -79,6 +79,66 @@ describe("checkGitFinalization", () => {
     });
   });
 
+  test("guard-denied releases subtract from claim history; others stay in scope", () => {
+    const repo = join(temp, "repo-released");
+    initRepo(repo);
+    mkdirSync(join(repo, ".harnery"), { recursive: true });
+    writeFileSync(
+      join(repo, ".harnery", "events.ndjson"),
+      [
+        JSON.stringify({
+          event_type: "session.start",
+          instance_id: "owner",
+          session_id: "session",
+          data: {},
+        }),
+        JSON.stringify({
+          event_type: "claim.acquire",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "released.txt", mode: "write" },
+        }),
+        JSON.stringify({
+          event_type: "claim.release",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "released.txt", reason: "explicit" },
+        }),
+        JSON.stringify({
+          event_type: "claim.acquire",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "denied.txt", mode: "write" },
+        }),
+        // The guard releases with the raw absolute target; normalization must
+        // still subtract the canonical acquire.
+        JSON.stringify({
+          event_type: "claim.release",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: `${repo}/denied.txt`, reason: "guard_denied_finalization" },
+        }),
+        JSON.stringify({
+          event_type: "claim.acquire",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "committed.txt", mode: "write" },
+        }),
+        JSON.stringify({
+          event_type: "claim.release",
+          instance_id: "owner",
+          session_id: "session",
+          data: { path: "committed.txt", reason: "commit" },
+        }),
+      ].join("\n"),
+    );
+
+    expect(readSessionWriteClaims(repo, "owner", "session")).toEqual({
+      paths: ["released.txt", "committed.txt"],
+      complete: true,
+    });
+  });
+
   test("passes when held files are clean and the branch is pushed", () => {
     const remote = join(temp, "remote.git");
     const repo = join(temp, "repo");

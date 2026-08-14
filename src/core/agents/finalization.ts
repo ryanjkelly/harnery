@@ -100,6 +100,11 @@ export function readSessionWriteClaims(
   const { text, truncated } = readStreamTailBounded(streamPath, CLAIM_HISTORY_CAP_BYTES);
   const paths = new Set<string>();
   let sawSessionStart = false;
+  // Acquire events carry canonical repo-relative paths; release events may
+  // carry the raw absolute target (the guard releases what the adapter sent).
+  // Normalize both so a release always subtracts its acquire.
+  const norm = (p: string): string =>
+    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
 
   for (const line of text.split("\n")) {
     if (line.trim().length === 0) continue;
@@ -117,7 +122,19 @@ export function readSessionWriteClaims(
         event.data?.mode === "write" &&
         typeof event.data.path === "string"
       ) {
-        paths.add(event.data.path);
+        paths.add(norm(event.data.path));
+      }
+      // A guard-denied release subtracts: the write NEVER HAPPENED (the guard
+      // blocked it before mutation), so there is no repo work to finalize and
+      // the phantom claim would block end-turn forever. Every other release
+      // reason stays in scope on purpose — released-but-mutated paths must
+      // still pass the committed-and-pushed check (see the released-sibling
+      // and commit-release tests).
+      if (event.event_type === "claim.release" && typeof event.data?.path === "string") {
+        const reason = (event.data as { reason?: unknown }).reason;
+        if (typeof reason === "string" && reason.startsWith("guard_denied")) {
+          paths.delete(norm(event.data.path));
+        }
       }
     } catch {
       // Ignore malformed and crash-truncated event lines, matching the
