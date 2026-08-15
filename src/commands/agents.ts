@@ -481,6 +481,11 @@ export function registerAgentsCommand(
         "session_id fails schema validation and pollutes the audit trail).",
     )
     .option(
+      "--adapter <id>",
+      "(--kind heartbeat) adapter to stamp when recreating a heartbeat: " +
+        "claude-code | cursor | codex. Default: claude-code.",
+    )
+    .option(
       "--pid <pid>",
       "(--kind pidmap) PID to register in pid-map. Default: walk " +
         "this shell's ppid chain for a claude process. Pass explicitly " +
@@ -489,7 +494,14 @@ export function registerAgentsCommand(
     )
     .option("--json", "JSON envelope output")
     .action(
-      (opts: { owner: string; kind: string; sessionId?: string; pid?: string; json?: boolean }) => {
+      (opts: {
+        owner: string;
+        kind: string;
+        sessionId?: string;
+        adapter?: string;
+        pid?: string;
+        json?: boolean;
+      }) => {
         runHeal(opts);
       },
     );
@@ -3849,6 +3861,7 @@ function runHeal(opts: {
   owner: string;
   kind: string;
   sessionId?: string;
+  adapter?: string;
   pid?: string;
   json?: boolean;
 }): void {
@@ -3864,6 +3877,18 @@ function runHeal(opts: {
     emit.error({
       code: "bad_kind",
       message: "--kind must be one of: pidmap, heartbeat, kill",
+    });
+    process.exit(1);
+  }
+  if (
+    opts.adapter &&
+    opts.adapter !== "claude-code" &&
+    opts.adapter !== "cursor" &&
+    opts.adapter !== "codex"
+  ) {
+    emit.error({
+      code: "bad_adapter",
+      message: "--adapter must be one of: claude-code, cursor, codex",
     });
     process.exit(1);
   }
@@ -3925,6 +3950,7 @@ function runHeal(opts: {
   const helperArgs: string[] = [action, owner];
   if (kind === "pidmap" && opts.pid) helperArgs.push(opts.pid);
   if (kind === "heartbeat" && opts.sessionId) helperArgs.push(opts.sessionId);
+  if (kind === "heartbeat" && opts.adapter) helperArgs.push(`--adapter=${opts.adapter}`);
 
   // heal-pidmap / heal-heartbeat / kill-heartbeat are handled by the
   // bundled agent-coord binary.

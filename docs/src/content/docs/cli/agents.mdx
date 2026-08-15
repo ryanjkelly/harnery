@@ -53,6 +53,17 @@ One further subtree lives under `agents` for advanced use: `harn agents identity
 `harn agents <sub> --help` for any of them. Councils are their own top-level
 command; see [Councils](/concepts/councils/).
 
+When an adapter session survives a WSL or coordination-state restart, recreate
+its heartbeat with the full session ID and the adapter that owns it:
+
+```bash
+harn agents heal --kind heartbeat --owner "$CODEX_THREAD_ID" \
+  --session-id "$CODEX_THREAD_ID" --adapter codex
+```
+
+The adapter matters: it keeps recovered presence, telemetry, and end-of-turn
+behavior attributed to Codex instead of the manual-heal default.
+
 ### identity assume
 
 Use `identity assume` when a new adapter session is continuing a durable role

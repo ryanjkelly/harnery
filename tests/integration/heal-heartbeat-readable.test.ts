@@ -154,6 +154,27 @@ describe("heal → read round-trip", () => {
     expect(heartbeat(root, SESSION_ID).task).toBe("healed-ok");
   });
 
+  test("a manually healed heartbeat preserves its adapter", () => {
+    const root = makeSandbox();
+
+    const healed = harn(root, [
+      "agents",
+      "heal",
+      "--kind",
+      "heartbeat",
+      "--owner",
+      SESSION_ID,
+      "--session-id",
+      SESSION_ID,
+      "--adapter",
+      "codex",
+      "--json",
+    ]);
+
+    expect(healed.status).toBe(0);
+    expect(heartbeat(root, SESSION_ID).platform).toBe("codex");
+  });
+
   test("heal refuses a truncated owner id instead of minting an orphan", () => {
     const root = makeSandbox();
 
