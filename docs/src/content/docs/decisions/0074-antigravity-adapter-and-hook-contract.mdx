@@ -1,0 +1,87 @@
+---
+title: "0074: Google Antigravity adapter and hook lifecycle contract"
+description: "ADR: add first-class Google Antigravity (AGY) support across the adapter registry, workflow spawner, lifecycle hook translation, and instructions management."
+---
+
+**Status:** accepted (2026-08-15) · **Scope:** product tier (`core/adapters`, `core/hooks`, `core/workflow`, `commands/init`, `commands/doctor`)
+
+## Context
+
+Harnery previously provided first-class support for three execution harnesses: Claude Code, Codex, and Cursor. Each harness has distinct invocation semantics, hook configuration schemas, event payload structures, and response protocols:
+
+- **Claude Code** wires `.claude/settings.json`, uses nested `hooks: [{ type: "command", command }]` arrays, reads `CLAUDE.md` / `@AGENTS.md` imports, and handles same-turn `Stop` continuation natively.
+- **Codex** wires `.codex/hooks.json`, uses strict top-level schema validation, enforces sandboxed workspace policies, and communicates authoritative results out-of-band via result files.
+- **Cursor** wires `.cursor/hooks.json` (root version 1), uses flat `{ command }` entries with camelCase event names, and delivers JSON result envelopes.
+
+Google Antigravity (`agy` CLI, Antigravity IDE, and Antigravity 2.0) has emerged as a major development environment. Antigravity establishes clear, standardized conventions:
+
+1. **Customization Root**: Discovers project-level configuration under `.agents/` (`.agents/skills/`, `.agents/rules/`, `.agents/hooks.json`, `AGENTS.md`, and `GEMINI.md`) and user-level configuration under `~/.gemini/config/`.
+2. **Lifecycle Hooks (`.agents/hooks.json`)**: Configured with named hook bundles (e.g. `"harnery": { ... }`). Supports `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, and `Stop`. Tool hooks require a regex `matcher` (e.g. `"matcher": "*"`).
+3. **Payload Encoding**: Payloads sent to `stdin` use **camelCase protojson** (`conversationId`, `workspacePaths`, `transcriptPath`, `artifactDirectoryPath`, `toolCall: { name, args }`, `stepIdx`, `terminationReason`, `executionNum`, `modelName`).
+4. **Stdout Contracts**:
+   - `PreToolUse`: Returns `{ "decision": "allow" | "deny" | "ask" | "force_ask", "reason": "...", "overwrite": { ... } }`.
+   - `Stop`: Returns `{ "decision": "continue", "reason": "..." }` to enforce turn policies and continue loops.
+   - `PreInvocation`: Returns `{ "injectSteps": [...] }`.
+5. **Skills and Rules**: Uses progressive disclosure on `.agents/skills/<name>/SKILL.md` and hierarchical rule loading on `AGENTS.md`.
+
+Without a native adapter in Harnery, Antigravity users cannot take advantage of `harn init`, `harn doctor`, workflow child spawning, automated tool-use auditing, turn-stop governance, or offline adapter bench verification.
+
+## Alternatives Considered
+
+- **External plugin or bridge wrapper**: Build an external wrapper script translating Antigravity payloads before invoking Harnery. Rejected because Harnery's core design (ADR 0018) mandates that supported adapters are first-class, verified citizens in the adapter registry rather than unmonitored external shims.
+- **Separate adapters for CLI (`agy`) vs IDE (`antigravity-ide`)**: Rejected because both surfaces share identical `.agents/` discovery roots, identical `.agents/hooks.json` schemas, and identical protojson payloads. A single adapter identifier (`antigravity`) cleanly covers both.
+- **Coercing protojson upstream via jq/wrapper**: Rejected because adding external shell dependencies breaks cross-platform portability. Tolerant normalization inside Harnery's `parsePayload` is fast, zero-dependency, and type-safe.
+
+## Decision
+
+Add first-class `"antigravity"` adapter support across all Harnery subsystems:
+
+### 1. Adapter Registry & Capabilities (`core/adapters/`)
+Register `BUILTIN_ADAPTER_PROFILES["antigravity"]`:
+- `id: "antigravity"`
+- `displayName: "Google Antigravity"`
+- `binary: "agy"`
+- `installHint: "https://antigravity.google/docs"`
+- `loginHint: "run \`agy\` and complete authentication"`
+- `apiKeyEnv: "GEMINI_API_KEY"`
+- `modelFamily: "multi"`
+- `effortValues: []` (Gemini model selection manages reasoning modes directly)
+- Declare explicit capabilities:
+  - `invocation: supported("Headless CLI subprocess via agy.")`
+  - `toolEvidence: supported("PreToolUse and PostToolUse capture full tool calls and execution state.")`
+  - `policyMapping: supported("PreToolUse maps ALLOW/DENY/ASK and tool-input overwrite directly.")`
+  - `sessionId: supported("Read from conversationId in protojson payloads.")`
+  - `preCompactionSignal: unknown()`
+  - `postCompactionSignal: unknown()`
+
+### 2. Event Schema & Hook Adapter (`core/hooks/`)
+- Add `"antigravity"` to the canonical `Adapter` union in `core/hooks/events/schema.ts`.
+- Define `ANTIGRAVITY_EVENTS` and `ADAPTER_SPECS["antigravity"]` in `core/hooks/adapter/events.ts`:
+  - `settingsFile: ".agents/hooks.json"`
+  - `entryShape: "antigravity"` (named bucket wrapper with `matcher` fields on tool events)
+  - Map `PreToolUse` → `pre-tool-use`, `PostToolUse` → `post-tool-use`, `PreInvocation` → `session-start` / `user-prompt-submit`, `Stop` → `stop`.
+- Update `core/hooks/adapter/parse.ts` to normalize camelCase protojson fields:
+  - `conversationId` → `session_id` / `conversation_id`
+  - `toolCall.name` → `tool_name`
+  - `toolCall.args` → `tool_input`
+  - `stepIdx` → `turn_id`
+  - `transcriptPath` → `transcript_path`
+- Update `core/hooks/adapter/output.ts` to format stdout decisions adhering to Antigravity's schema (`{ decision: "allow" | "deny" | "ask" }` for `PreToolUse`, `{ decision: "continue", reason: "..." }` for `Stop`).
+- Update `core/hooks/adapter/detect.ts` to recognize `--adapter antigravity` and `AGENT_COORD_ADAPTER=antigravity`.
+
+### 3. Workflow Subprocess Spawner (`core/workflow/spawn-antigravity.ts`)
+- Implement `buildAntigravityInvocation(request, resultFile)` to construct `agy` subprocess arguments.
+- Implement `normalizeAntigravityResult(raw)` to map CLI output and exit codes into a unified `SpawnResult`.
+- Provide an offline deterministic test fixture in `registry.ts` for `harn adapter bench`.
+
+### 4. Setup, Diagnostics, and Instructions (`commands/` & `lib/instructions/`)
+- `harn init --adapter antigravity`: Writes/merges `.agents/hooks.json` without disturbing custom user hooks, and injects managed orientation blocks into `AGENTS.md`.
+- `harn doctor`: Probes `agy` executable availability, verifies `.agents/hooks.json` hook registration, and checks instruction synchronization.
+- `lib/instructions/apply.ts`: Deploys agent skills directly to `.agents/skills/` without needing import shims, as Antigravity natively loads this path.
+
+## Result
+
+- `harn adapter list` and `harn adapter show antigravity` display verified capability claims.
+- `harn adapter bench antigravity` executes offline conformance checks verifying invocation planning and result normalization without requiring live model calls.
+- `harn init --adapter antigravity` bootstraps Harnery coordination in Antigravity projects in a single idempotent step.
+- Lifecycle events, tool auditing, and turn-stop policies function seamlessly in Antigravity environments.
