@@ -43,7 +43,10 @@ VS Code (and most modern editors) read the `$schema` URL and provide autocomplet
 
   // Coord layer
   "coord": {
-    "freshness_seconds": 600  // how stale a peer heartbeat can get before sweep
+    "freshness_seconds": 600,  // how stale a peer heartbeat can get before sweep
+    "run_quality": {
+      "mode": "off"  // opt into shadow or report only after local evaluation
+    }
   },
 
   // Repository-local working files

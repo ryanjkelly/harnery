@@ -37,6 +37,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toolInputHash } from "../../src/core/hooks/events/input-hash.ts";
 
 // Layout-agnostic: the harnery repo root is two levels up from this file
 // (tests/integration/). Works both standalone (repo root == harnery) and when
@@ -171,8 +172,8 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
     });
     expect(existsSync(path.join(root, ".harnery", "pid-map", "77777"))).toBe(false);
     run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
-    expect(readFileSync(path.join(root, ".harnery", "pid-map", "77777"), "utf8")).toBe(
-      "owner-B\tclaude-code",
+    expect(readFileSync(path.join(root, ".harnery", "pid-map", "77777"), "utf8")).toStartWith(
+      "owner-B\tclaude-code\t",
     );
   });
 
@@ -192,7 +193,29 @@ describe("agent-hook pre-tool-use [claude-code]", () => {
     const rowPath = path.join(root, ".harnery", "pid-map", "77777");
     writeFileSync(rowPath, "owner-OLD\tclaude-code\n");
     run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], payload, root, anchor);
-    expect(readFileSync(rowPath, "utf8")).toBe("owner-B\tclaude-code");
+    expect(readFileSync(rowPath, "utf8")).toStartWith("owner-B\tclaude-code\t");
+  });
+
+  test("stamps the exact pre-clamp input hash without persisting the full input", () => {
+    const root = makeSandbox();
+    seedHeartbeat(root, "owner-B", { schemaVersion: 1, platform: "claude-code" });
+    const toolInput = { command: `echo ${"x".repeat(9_000)}-tail` };
+    const exactPayload = JSON.stringify({
+      session_id: "owner-B",
+      tool_name: "Bash",
+      tool_input: toolInput,
+      cwd: root,
+      hook_event_name: "PreToolUse",
+    });
+    run(AGENT_HOOK, ["pre-tool-use", "--adapter", "claude-code"], exactPayload, root, anchor);
+    const emitted = events(root)
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event_type: string; data: Record<string, unknown> })
+      .find((event) => event.event_type === "tool.pre_use")!;
+    expect(emitted.data.input_hash).toBe(toolInputHash("Bash", toolInput));
+    expect(String(emitted.data.tool_input).length).toBe(8_000);
+    expect(emitted.data.truncated).toBe(true);
   });
 });
 

@@ -77,6 +77,7 @@ import {
   soundForEvent,
 } from "./effects/index.ts";
 import { emit } from "./events/emit.ts";
+import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
 import type { Adapter } from "./events/schema.ts";
 import { canonicalize } from "./guard-path.ts";
 import { adapterPidFromEnv, parsePsChainLine, selectAnchorPid } from "./resolve/anchor.ts";
@@ -439,6 +440,8 @@ function buildEventData(
       return {
         tool_name: toolName,
         tool_input: clamped.value,
+        input_hash: toolInputHash(toolName, p?.tool_input ?? null),
+        target_hash: toolTargetHash(toolName, p?.tool_input ?? null),
         intent,
         intent_source: source,
         tool_use_id: p?.tool_use_id,

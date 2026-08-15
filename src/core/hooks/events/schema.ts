@@ -195,6 +195,10 @@ export type ToolPreUse = EventEnvelope<
   {
     tool_name: string;
     tool_input: unknown; // clamped to 8000 chars when stringified
+    /** SHA-256(tool name + canonical exact pre-clamp input). */
+    input_hash?: string;
+    /** SHA-256 of a recognized semantic target (path, URL, or query). */
+    target_hash?: string;
     intent?: string;
     truncated?: boolean;
   }
@@ -519,6 +523,28 @@ export type HealthVerdictFailure = EventEnvelope<
   }
 >;
 
+/** Advisory run-quality status transition. Never an execution verdict. */
+export type HealthRunQualityChanged = EventEnvelope<
+  "health.run_quality_changed",
+  {
+    previous_status: "unknown" | "healthy" | "attention" | "critical";
+    status: "unknown" | "healthy" | "attention" | "critical";
+    signal_ids: string[];
+    evidence_watermark?: string;
+    reason: "evidence" | "deadline" | "config_changed" | "insufficient_evidence";
+  }
+>;
+
+/** A malformed coord.run_quality object disabled evaluation for its digest. */
+export type HealthRunQualityConfigInvalid = EventEnvelope<
+  "health.run_quality_config_invalid",
+  {
+    config_digest: string;
+    reason_codes: string[];
+    fallback: "off";
+  }
+>;
+
 // ── Discriminated union over every event_type ────────────────────────────────
 
 export type Event =
@@ -566,7 +592,9 @@ export type Event =
   | HealthHeartbeatHeal
   | HealthPidmapHeal
   | HealthHeartbeatSwept
-  | HealthVerdictFailure;
+  | HealthVerdictFailure
+  | HealthRunQualityChanged
+  | HealthRunQualityConfigInvalid;
 
 export type EventType = Event["event_type"];
 

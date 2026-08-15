@@ -64,6 +64,32 @@
           "minimum": 30,
           "default": 600,
           "description": "How stale a peer heartbeat can get before the sweeper prunes it. Env override: HARNERY_AGENT_COORD_FRESHNESS."
+        },
+        "run_quality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "description": "Report-only run-quality observation. Invalid objects disable evaluation as one unit.",
+          "properties": {
+            "mode": { "type": "string", "enum": ["off", "shadow", "report"], "default": "off" },
+            "evaluation_interval_seconds": { "type": "integer", "minimum": 5, "maximum": 3600, "default": 30 },
+            "snapshot_ttl_seconds": { "type": "integer", "minimum": 10, "maximum": 86400, "default": 120 },
+            "max_tail_bytes": { "type": "integer", "minimum": 65536, "maximum": 67108864, "default": 2097152 },
+            "evaluation_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 30, "default": 30 },
+            "lock_stale_seconds": { "type": "integer", "minimum": 5, "maximum": 3600, "default": 60 },
+            "supervised_roots_per_sweep": { "type": "integer", "minimum": 1, "maximum": 100, "default": 8 },
+            "thresholds": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "repeated_tool_calls": { "type": "integer", "minimum": 2, "maximum": 10000, "default": 8 },
+                "consecutive_failures": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 5 },
+                "context_growth_per_minute": { "type": "integer", "minimum": 1, "maximum": 10000000, "default": 60000 },
+                "compaction_grace_seconds": { "type": "integer", "minimum": 0, "maximum": 86400, "default": 300 },
+                "no_progress_evaluations": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 2 }
+              }
+            }
+          }
         }
       }
     },

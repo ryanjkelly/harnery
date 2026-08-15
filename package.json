@@ -92,6 +92,11 @@
       "types": "./dist/core/governor/read.d.ts",
       "import": "./dist/core/governor/read.js"
     },
+    "./core/guard": {
+      "bun": "./src/core/guard/index.ts",
+      "types": "./dist/core/guard/index.d.ts",
+      "import": "./dist/core/guard/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",

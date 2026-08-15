@@ -88,7 +88,7 @@ interface HarneryConfig {
    * Coord-layer tunables. `freshness_seconds` is the heartbeat age above which
    * the sweeper prunes an agent (default 600). Read via `coordFreshnessSeconds()`.
    */
-  coord?: { freshness_seconds?: number };
+  coord?: { freshness_seconds?: number; run_quality?: unknown };
   /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
@@ -192,6 +192,61 @@ function parseConfigFile(p: string): HarneryConfig {
     /* missing or unparseable → defaults (files-section resolver fails loud; the rest is non-critical) */
   }
   return {};
+}
+
+export interface CoordRunQualityConfigSource {
+  value: unknown;
+  invalid: boolean;
+  /** Stable digest seed that contains no config values when parsing failed. */
+  digest_seed: unknown;
+}
+
+/**
+ * Effective user-plus-project `coord.run_quality` value with parse diagnostics.
+ * The ordinary config reader stays fail-soft; this one lets the guard visibly
+ * disable itself rather than silently substituting defaults for malformed JSONC.
+ */
+export function coordRunQualityConfigSource(root: string): CoordRunQualityConfigSource {
+  const projectPath = join(root, ".harnery", "config.jsonc");
+  const userPath = userConfigPath();
+  const layers = [userPath, projectPath].map((path) => parseConfigLayer(path));
+  const invalid = layers.filter((layer) => layer.invalid);
+  if (invalid.length > 0) {
+    return {
+      value: undefined,
+      invalid: true,
+      digest_seed: invalid.map((layer) => ({
+        path_kind: layer.path_kind,
+        signature: layer.signature,
+      })),
+    };
+  }
+  const merged = mergeConfig(layers[0]!.config, layers[1]!.config);
+  return {
+    value: merged.coord?.run_quality,
+    invalid: false,
+    digest_seed: merged.coord?.run_quality,
+  };
+}
+
+function parseConfigLayer(path: string): {
+  config: HarneryConfig;
+  invalid: boolean;
+  path_kind: "user" | "project";
+  signature: string | null;
+} {
+  const pathKind = path === userConfigPath() ? "user" : "project";
+  const signature = statSignature(path);
+  if (signature === null) return { config: {}, invalid: false, path_kind: pathKind, signature };
+  try {
+    const value = JSON.parse(stripJsonComments(readFileSync(path, "utf8"))) as unknown;
+    if (isPlainObject(value)) {
+      return { config: value as HarneryConfig, invalid: false, path_kind: pathKind, signature };
+    }
+  } catch {
+    // The guard reports one bounded health event for this file signature.
+  }
+  return { config: {}, invalid: true, path_kind: pathKind, signature };
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

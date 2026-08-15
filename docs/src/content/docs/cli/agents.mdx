@@ -377,6 +377,14 @@ glance:
 summary of your previous turn; `peers` lists the other active agents with their
 adapter and file counts.
 
+When `coord.run_quality.mode` is `report`, status also performs a non-blocking
+due check and shows a `quality` line. A fresh snapshot can be `unknown`,
+`healthy`, `attention`, or `critical`, followed by up to three active signal
+IDs. Missing, expired, truncated, or insufficient evidence is `unknown`.
+`shadow` mode still evaluates and records snapshots but deliberately exposes no
+operator-facing severity. Run quality is advisory and cannot alter the status
+command's Git guard or any hook verdict.
+
 ## Notes
 
 - **Bash identity is process-level.** When resolving "who am I" from a shell

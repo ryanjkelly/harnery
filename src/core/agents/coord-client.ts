@@ -96,6 +96,14 @@ export interface Heartbeat {
   /** Hook client: `claude-code` (default) or `cursor`. Cursor Phase 1. */
   platform?: string;
   workflow_run_id?: string;
+  /** Optional declared role consumed by report-only liveness normalization. */
+  role?: string;
+  /** Durable wait record bindings; absence grants no run-quality exemption. */
+  approval_id?: string;
+  decision_id?: string;
+  next_wake_at?: string;
+  work_item_id?: string;
+  governor_goal_id?: string;
 }
 
 /**

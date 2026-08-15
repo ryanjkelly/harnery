@@ -56,6 +56,8 @@ import {
   type TaskState,
 } from "../core/agents/state/session-state.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
+import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
+import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
 
@@ -1911,6 +1913,14 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     process.exit(1);
   }
 
+  // Report-only run quality: cheap config/cursor due check first, then a
+  // non-blocking lazy evaluation. Shadow mode deliberately exposes no severity.
+  const qualityEvaluation = evaluateRunQualityIfDue(root, new Date(), myOwner);
+  const quality = qualityForStatus(
+    qualityEvaluation.config.requested_mode,
+    qualityEvaluation.snapshot,
+  );
+
   let finalization: GitFinalizationResult | null = null;
   if (opts.endTurn) {
     const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
@@ -2052,6 +2062,7 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     context_window: ctxUsage?.window ?? null,
     timestamp_iso: new Date().toISOString(),
     timestamp_local: timeStr,
+    ...(quality ? { quality } : {}),
     ...(finalization ? { finalization } : {}),
   };
 
@@ -2088,9 +2099,48 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
         : `${pendingCouncils.length} pending (${pendingCouncils[0]}, +${pendingCouncils.length - 1})`;
     rows.splice(idx, 0, ["council", summary]);
   }
+  if (quality) {
+    const idx = rows.findIndex((row) => row[0] === "time");
+    rows.splice(idx, 0, ["quality", formatRunQuality(quality.status, quality.signal_ids)]);
+  }
   // Box rendering needs predictable stdout regardless of TTY/pipe detection:
   // agent runs this via Bash (no TTY) and pastes captured stdout into chat.
   process.stdout.write(`${formatBox(displayName, rows)}\n`); // lint-ok-emission: chat-paste path; emit.text() auto-suppresses non-TTY
+}
+
+function qualityForStatus(
+  mode: "off" | "shadow" | "report",
+  snapshot: RunQualitySnapshot | null,
+): {
+  status: RunQualityStatus;
+  signal_ids: string[];
+  evaluated_at: string | null;
+  fresh: boolean;
+} | null {
+  if (mode !== "report") return null;
+  const fresh = !!snapshot && Date.parse(snapshot.expires_at) > Date.now();
+  if (!snapshot || !fresh) {
+    return {
+      status: "unknown",
+      signal_ids: [],
+      evaluated_at: snapshot?.evaluated_at ?? null,
+      fresh: false,
+    };
+  }
+  return {
+    status: snapshot.status,
+    signal_ids: snapshot.signals
+      .filter((signal) => signal.state === "active" && signal.severity !== "none")
+      .map((signal) => signal.id)
+      .sort()
+      .slice(0, 3),
+    evaluated_at: snapshot.evaluated_at,
+    fresh: true,
+  };
+}
+
+function formatRunQuality(status: RunQualityStatus, signalIds: string[]): string {
+  return signalIds.length > 0 ? `${status} (${signalIds.join(", ")})` : status;
 }
 
 function formatList(items: string[], cap: number, emptyLabel: string): string {
