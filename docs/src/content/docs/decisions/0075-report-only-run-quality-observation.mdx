@@ -1,0 +1,219 @@
+---
+title: "0075: Observe run quality without taking control"
+description: "ADR: derive bounded, rebuildable run-quality observations from coordination evidence while keeping every verdict advisory."
+---
+
+**Status:** accepted (2026-08-15) · **Scope:** product tier (`core/guard`, `core/agents`, `core/governor`)
+
+## Context
+
+Bounded attempts and static budgets limit some failures, but they do not tell an
+operator whether a live session is repeating the same action, accumulating
+errors, growing its context without artifact progress, or merely waiting on a
+legitimate dependency. The same ambiguity reaches governed teams: their
+projection reports work state and lease liveness, while planning prompts do not
+carry a bounded view of exceptional live state.
+
+This signal is probabilistic. Missing telemetry, compaction, parked approvals,
+and long-running service roles can all resemble a stalled run. Treating a
+heuristic as execution authority would therefore make the first version more
+dangerous than the condition it observes.
+
+## Decision
+
+Add a report-only run-quality subsystem. Its public vocabulary is
+`unknown | healthy | attention | critical`; no status can deny, steer, pause,
+interrupt, or terminate work. Any future action requires a separate decision
+that identifies an attested control and keeps detection separate from action.
+
+### Evaluation boundary and cadence
+
+`evaluateRunQuality(input)` is a pure state transition over normalized evidence,
+the previous snapshot, and validated config. A file-backed coordinator owns all
+I/O. It reads a rotation-safe, byte-bounded event tail and the durable records
+needed to normalize role and wait state, then writes snapshots atomically.
+
+The coordinator has its own `.harnery/guard/cursor.json`; it never reads or
+advances the session projector's `.harnery/.events-cursor`. The cursor records a
+schema version and event watermark. Rotation, truncation, a missing cursor, or a
+new session generation triggers a bounded rebuild. Insufficient retained
+evidence produces `unknown`, not an invented healthy state.
+
+Evaluation is due at most once per configured interval for a coordination root.
+The canonical event-drain path calls the coordinator after projection, and CLI,
+web, and governor readers may lazily call the same `evaluateIfDue` entry point
+when the snapshot is stale. A non-blocking, coordination-root lock gives one
+writer ownership; a busy caller uses the last snapshot. Repeated reads with no
+new evidence do not count as corroborating evaluations. Time-based no-progress
+checks may advance only after their next eligible deadline.
+
+This keeps evaluation out of guard-rule verdict calculation. Slice 1 must also
+prove the maximum-tail evaluation budget before the coordinator is enabled from
+hook-driven event drains; until then, only explicit and lazy read paths invoke
+it.
+
+### Snapshot contract
+
+Each instance has `.harnery/guard/<instance_id>.json` with:
+
+- `schema_version`, instance identity, session generation, and config digest;
+- status, previous status, evaluation time, next eligible time, and freshness;
+- first and last evidence watermarks, window bounds, and truncation state;
+- bounded signal records with stable signal IDs, state
+  (`inactive | active | unknown | suppressed`), severity, counts, and reason
+  codes; and
+- normalized role and wait evidence with its source and observation time.
+
+Snapshots contain hashes and aggregates, never tool input or output bodies.
+Writes use temporary-file plus rename. Session end, archive, or stale-session
+sweep removes the live snapshot and cursor state for that generation; an orphan
+retention sweep handles missed cleanup. Consumers treat an expired snapshot as
+`unknown`.
+
+### Evidence and state transitions
+
+The first signals are repeated tool calls, consecutive failures, context-window
+growth, artifact/target stagnation, and compaction grace:
+
+- Repetition identity hashes the tool name plus canonical JSON of the already
+  clamped input. Object keys are sorted before hashing. Counts are per instance
+  and reset when the identity changes.
+- Consecutive failures use post-use success/failure events. A success resets the
+  failure streak; missing outcomes do not become successes.
+- Context-window growth is derived only from exact or reported context samples
+  whose adapter attestation permits that sample source. It describes current
+  context occupancy, not cumulative tokens or cost. Estimated or absent samples
+  contribute `unknown`.
+- No-progress requires at least two independent signal families and two
+  evidence-bearing evaluation epochs. Compaction suppresses context-growth and
+  no-progress arms for a bounded grace period, including a hard deadline when a
+  post-compaction event never arrives.
+
+Escalation and recovery move at most one level per eligible evaluation.
+Conflicting evidence caps the result at `attention`. A dead session with stale
+activity is `completed-unconfirmed` exit evidence, not proof of failure.
+
+### Wait and role normalization
+
+A resolver joins heartbeat identity to workflow run state, approval state,
+durable-work/governor state, and declared workflow role. It returns normalized
+`role`, `wait_kind`, evidence source, and observation time. Wait kinds are
+`none | needs_input | decision | approval | scheduled | unknown`.
+
+Only fresh, durable evidence grants a timer exemption. Missing or conflicting
+evidence does not. Exemptions attach to declared roles, never names, and every
+exempt role keeps an alternative liveness predicate. Repetition and failure
+signals remain visible during legitimate waits; only timer-derived
+no-progress arms are suppressed.
+
+### Configuration and rollout
+
+Configuration lives under `.harnery/config.jsonc` `coord.run_quality`:
+
+```json
+{
+  "coord": {
+    "run_quality": {
+      "mode": "off",
+      "evaluation_interval_seconds": 30,
+      "snapshot_ttl_seconds": 120,
+      "max_tail_bytes": 2097152,
+      "thresholds": {
+        "repeated_tool_calls": 8,
+        "consecutive_failures": 5,
+        "context_growth_per_minute": 60000,
+        "compaction_grace_seconds": 300,
+        "no_progress_evaluations": 2
+      }
+    }
+  }
+}
+```
+
+`mode` is `off | shadow | report`. `shadow` evaluates and records without
+operator-facing severity; `report` surfaces the advisory result. Absence stays
+`off` through the first implementation and replay. Moving a package default or
+a host from `shadow` to `report` is a separate rollout decision based on the
+recorded gate; this ADR does not authorize a fleet-wide default.
+
+All bounds are validated as finite integers in documented ranges. Invalid
+config disables evaluation for that config digest, reports `unknown`, and emits
+one rate-limited `health.run_quality_config_invalid` event. It never substitutes
+a zero or partially applies a malformed object.
+
+Status transitions emit `health.run_quality_changed` with previous/current
+status, bounded signal IDs, and the evidence watermark. These events are
+observations, not rule-engine decisions, so they do not reuse `decision.warn`.
+Repeated evaluations at the same status emit nothing.
+
+### Read models and planning context
+
+Agent status and the web surface read fresh snapshots. An additive optional
+governor `quality` field reports the worst fresh child status, status counts,
+stale count, evaluation time, and a bounded deterministic list of exceptional
+child IDs. It does not change governor state, work priority, or `next_action`.
+Multi-root workflows resolve snapshots from each run's coordination root.
+
+New planner and reviewer requests receive a bounded, deterministic
+`live_status_snapshot` containing its capture time and evidence watermark,
+aggregate counts, exceptional active specialists, and parked decision or
+approval items. The prompt frames the JSON as observational data and states
+that current durable work and governor records supersede it. Raw task bodies do
+not enter the snapshot.
+
+The snapshot is captured when a new plan or replan request is generated. A
+parked planner resumes its frozen script with the original timestamp; it does
+not silently receive different instructions under the same script identity.
+This context never enters hash-pinned work-item scripts.
+
+### Proof and rollout gate
+
+The evaluator ships with source-neutral synthetic fixtures for every signal,
+state transition, wait exemption, cursor/rebuild edge, and unknown path. The
+private replay corpus is session-split so no session appears in both tuning and
+holdout sets, stratified by adapter, role, and scenario, with a manifest of
+labels, hashes, redaction attestations, and config digests.
+
+`report` may be enabled for the first host only when the untouched holdout has:
+
+- zero false `critical` verdicts on known-healthy traces;
+- at most five percent of known-healthy traces receiving any false
+  `attention` verdict;
+- every labeled runaway or stalled trace detected by its second eligible
+  evidence-bearing evaluation; and
+- coverage for all scenario families on at least two adapters where the
+  required telemetry is supported.
+
+If sample minimums or adapter coverage are missing, the result is
+`insufficient`, not a pass. Hook-driven invocation also requires a measured
+maximum-tail latency budget and a failure test proving evaluator errors cannot
+change the hook verdict or block event projection.
+
+## Alternatives considered
+
+- **Extend the session-state projector with heuristic counters.** Rejected for
+  the first version because it couples rebuild-sensitive heuristics to the
+  canonical heartbeat projection and its shared cursor.
+- **Reuse decision warning events.** Rejected because recovery and healthy
+  transitions are not warnings, and downstream consumers should not infer a
+  health contract from rule-name prefixes.
+- **Treat context occupancy as token consumption.** Rejected because current
+  samples can fall after compaction and are not cumulative usage or cost.
+- **Refresh a parked planner prompt on resume.** Rejected because it changes
+  the effective script under an existing identity and undermines replay.
+- **Act on a critical observation.** Rejected until a separate enforcement ADR
+  defines authority, capability truth, false-positive tolerance, and recovery.
+
+## Result and gotchas
+
+- Operators gain a legible advisory signal without creating an execution
+  control path.
+- `unknown` is first-class and may be common on adapters with limited
+  telemetry or after event rotation.
+- The dedicated cursor, lock, cleanup, and freshness rules are part of the
+  product contract, not implementation details.
+- Threshold defaults are provisional until replayed. Passing one host's gate
+  does not establish universal defaults.
+- Adding the health events and public config surface is published behavior and
+  requires a changeset in the implementation slice; this documentation-only
+  ADR does not.
