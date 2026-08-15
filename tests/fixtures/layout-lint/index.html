@@ -69,7 +69,11 @@
       .crowd-composite-good > .panel { margin-top: 16px; }
       .crowd-composite-deep .group p { margin: 0; height: 40px; }
       .crowd-composite-deep > .panel { margin-top: 0; }
-      .runt-good, .runt-bad { width: 105px; font: 16px/20px monospace; }
+      .runt-good, .runt-bad, .runt-chip { width: 105px; font: 16px/20px monospace; }
+      .runt-chip code, .crowd-chips code {
+        background: #eef; border: 1px solid #99c; border-radius: 4px; padding: 1px 4px;
+      }
+      .crowd-chips { display: flex; gap: 2px; width: 300px; }
     </style>
   </head>
   <body>
@@ -149,5 +153,11 @@
     </section>
     <section class="runt-good">alpha beta gamma delta epsilon zeta eta theta i j</section>
     <section class="runt-bad">alpha beta gamma delta epsilon zeta eta theta iota omega</section>
+    <!-- chip on the last line: a padded, boxed <code> token is a UI control,
+         not a prose word, so the runt gate must not flag it -->
+    <section class="runt-chip">alpha beta gamma delta epsilon zeta eta theta <code>omega_flag</code></section>
+    <!-- flex tag row: blockified code chips 2px apart are controls, not
+         crowded panels -->
+    <section class="crowd-chips"><code>alpha.js</code><code>beta.js</code><code>gamma.js</code></section>
   </body>
 </html>

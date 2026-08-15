@@ -68,6 +68,7 @@ describe("browse layout lint", () => {
           { selector: ".crowd-composite-bad", minGapPx: 6 },
           { selector: ".crowd-composite-good", minGapPx: 6 },
           { selector: ".crowd-composite-deep", minGapPx: 6 },
+          { selector: ".crowd-chips", minGapPx: 6 },
         ],
       });
 
@@ -127,11 +128,13 @@ describe("browse layout lint", () => {
       // crowd-composite-bad: wrapper-of-panels flush to a panel fails (nearest faces).
       // crowd-composite-good: same structure with 16px gap passes.
       // crowd-composite-deep: tall wrapper flush to next panel but inner face far — pass.
+      // crowd-chips: blockified code chips 2px apart are controls, not panels — pass.
       expect(result.crowd.map((entry) => entry.outcome)).toEqual([
         "pass",
         "fail",
         "pass",
         "fail",
+        "pass",
         "pass",
         "pass",
       ]);
@@ -152,11 +155,15 @@ describe("browse layout lint", () => {
       await browser.navigate(fixtureUrl);
       const good = await browser.checkRunts({ scope: ".runt-good", minChars: 1 });
       const bad = await browser.checkRunts({ scope: ".runt-bad", minChars: 1 });
+      const chip = await browser.checkRunts({ scope: ".runt-chip", minChars: 1 });
       const missing = await browser.checkRunts({ scope: ".does-not-exist", minChars: 1 });
 
       expect(good).toMatchObject({ found: true, outcome: "pass", truncated: false });
       expect(bad).toMatchObject({ found: true, outcome: "fail", truncated: false });
       expect(bad.runts).toHaveLength(1);
+      // a padded, boxed <code> chip alone on the last line is a UI control,
+      // not a prose runt
+      expect(chip).toMatchObject({ found: true, outcome: "pass", truncated: false });
       expect(missing).toMatchObject({ found: false, outcome: "fail", scannedBlocks: 0 });
     } finally {
       await browser.close();

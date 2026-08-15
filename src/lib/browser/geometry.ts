@@ -906,6 +906,11 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       "COL",
       "COLGROUP",
     ]);
+    // Code-family chips are inline controls, not layout cards, but the
+    // radius-vs-size pill test misses them (a code chip's radius is modest)
+    // and a flex/grid tag row blockifies their computed display, defeating
+    // the inline-display exclusion. Exclude them by tag.
+    const CONTROL_TAGS = new Set(["CODE", "KBD", "SAMP", "VAR", "OUTPUT"]);
 
     const maxCornerRadiusPx = (style: CSSStyleDeclaration, minDim: number): number => {
       const corners = [
@@ -927,6 +932,7 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
 
     const isPanel = (element: Element): boolean => {
       if (STRUCTURAL_TAGS.has(element.tagName)) return false;
+      if (CONTROL_TAGS.has(element.tagName)) return false;
       const style = getComputedStyle(element);
       if (style.display.startsWith("table") || style.display.startsWith("inline")) return false;
       if (style.boxShadow && style.boxShadow !== "none") return true;
