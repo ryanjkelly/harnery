@@ -35,17 +35,32 @@ needed to normalize role and wait state, then writes snapshots atomically.
 
 The coordinator has its own `.harnery/guard/cursor.json`; it never reads or
 advances the session projector's `.harnery/.events-cursor`. The cursor records a
-schema version and event watermark. Rotation, truncation, a missing cursor, or a
-new session generation triggers a bounded rebuild. Insufficient retained
+schema version, the last processed event ULID, and the root-relative ledger
+segment identity. Incremental scans stop at `max_tail_bytes` and mark the
+snapshot truncated when unread evidence remains. Rotation, truncation, a
+missing cursor, or a new session generation triggers a bounded rebuild that may
+read the live ledger plus the newest archive segment. Insufficient retained
 evidence produces `unknown`, not an invented healthy state.
 
 Evaluation is due at most once per configured interval for a coordination root.
-The canonical event-drain path calls the coordinator after projection, and CLI,
-web, and governor readers may lazily call the same `evaluateIfDue` entry point
-when the snapshot is stale. A non-blocking, coordination-root lock gives one
-writer ownership; a busy caller uses the last snapshot. Repeated reads with no
-new evidence do not count as corroborating evaluations. Time-based no-progress
-checks may advance only after their next eligible deadline.
+The canonical event-drain path is the eventual hook-owned caller after
+projection; CLI, web, and governor readers may lazily call the same
+`evaluateIfDue` entry point when the snapshot is stale. A non-blocking,
+coordination-root exclusive lock
+gives one writer ownership; it records owner PID, acquisition time, and a nonce.
+A caller steals the lock only when the owner is demonstrably dead or the lock
+exceeds `lock_stale_seconds`; nonce matching prevents an old owner from removing
+a replacement lock. Evaluation aborts before `evaluation_timeout_seconds`, and
+the writer rechecks its nonce before the atomic snapshot rename so a stolen
+owner cannot publish late. A busy caller uses the last snapshot. Crash-holder
+recovery is tested with the same rigor as event-rotation lock recovery.
+
+Evaluation has two epoch kinds. An **evidence-bearing epoch** advances the event
+ULID watermark. A **deadline-bearing epoch** reaches an eligible time-based
+deadline with no new evidence while the instance remains live and is not in a
+legible wait. Repeated reads that satisfy neither definition do not corroborate
+anything. No-progress corroboration may count either epoch kind but must span at
+least one deadline-bearing epoch.
 
 This keeps evaluation out of guard-rule verdict calculation. Slice 1 must also
 prove the maximum-tail evaluation budget before the coordinator is enabled from
@@ -65,33 +80,41 @@ Each instance has `.harnery/guard/<instance_id>.json` with:
 - normalized role and wait evidence with its source and observation time.
 
 Snapshots contain hashes and aggregates, never tool input or output bodies.
-Writes use temporary-file plus rename. Session end, archive, or stale-session
-sweep removes the live snapshot and cursor state for that generation; an orphan
-retention sweep handles missed cleanup. Consumers treat an expired snapshot as
-`unknown`.
+Writes use temporary-file plus rename. Snapshot TTL controls consumer trust,
+not evaluator memory: signal arms, streaks, compaction grace, and cursor state
+survive TTL expiry so a later evaluation can continue honestly. Session end,
+archive, or stale-session sweep removes the live snapshot and cursor state for
+that generation; an orphan retention sweep handles missed cleanup. Consumers
+treat an expired snapshot as `unknown`.
 
 ### Evidence and state transitions
 
 The first signals are repeated tool calls, consecutive failures, context-window
 growth, artifact/target stagnation, and compaction grace:
 
-- Repetition identity hashes the tool name plus canonical JSON of the already
-  clamped input. Object keys are sorted before hashing. Counts are per instance
-  and reset when the identity changes.
+- Event capture stamps `input_hash`, a SHA-256 digest of the tool name plus
+  canonical JSON of the exact pre-clamp input. Object keys are sorted before
+  hashing. Repetition uses that digest; older events without an exact hash
+  contribute `unknown` instead of hashing a truncated prefix. Counts are per
+  instance and reset when the identity changes. V1 detects consecutive exact
+  repetition only; alternating A/B loops are a documented blind spot.
 - Consecutive failures use post-use success/failure events. A success resets the
-  failure streak; missing outcomes do not become successes.
+  failure streak; a missing outcome holds the streak without incrementing or
+  resetting it.
 - Context-window growth is derived only from exact or reported context samples
   whose adapter attestation permits that sample source. It describes current
   context occupancy, not cumulative tokens or cost. Estimated or absent samples
   contribute `unknown`.
-- No-progress requires at least two independent signal families and two
-  evidence-bearing evaluation epochs. Compaction suppresses context-growth and
-  no-progress arms for a bounded grace period, including a hard deadline when a
-  post-compaction event never arrives.
+- No-progress requires at least two independent signal families and the
+  configured number of eligible epochs, counting evidence-bearing or
+  deadline-bearing epochs but including at least one deadline. Compaction
+  suppresses context-growth and no-progress arms for a bounded grace period,
+  including a hard deadline when a post-compaction event never arrives.
 
 Escalation and recovery move at most one level per eligible evaluation.
-Conflicting evidence caps the result at `attention`. A dead session with stale
-activity is `completed-unconfirmed` exit evidence, not proof of failure.
+Conflicting evidence caps the result at `attention`. Terminal-session
+classification remains owned by session finalization; `completed-unconfirmed`
+is not a run-quality status and is not synthesized during snapshot cleanup.
 
 ### Wait and role normalization
 
@@ -100,11 +123,15 @@ durable-work/governor state, and declared workflow role. It returns normalized
 `role`, `wait_kind`, evidence source, and observation time. Wait kinds are
 `none | needs_input | decision | approval | scheduled | unknown`.
 
-Only fresh, durable evidence grants a timer exemption. Missing or conflicting
-evidence does not. Exemptions attach to declared roles, never names, and every
-exempt role keeps an alternative liveness predicate. Repetition and failure
-signals remain visible during legitimate waits; only timer-derived
-no-progress arms are suppressed.
+Freshness is wait-kind-specific. `approval` and `decision` are fresh while the
+referenced durable record remains open when re-read at evaluation time.
+`scheduled` is fresh while its durable record remains open and its declared
+wake time is still in the future. `needs_input` is fresh while the heartbeat is
+within the host's coordination freshness horizon. Missing, overdue, closed, or
+conflicting evidence grants no exemption. Exemptions attach to declared roles,
+never names, and every exempt role keeps an alternative liveness predicate.
+Repetition and failure signals remain visible during legitimate waits; only
+timer-derived no-progress arms are suppressed.
 
 ### Configuration and rollout
 
@@ -118,6 +145,9 @@ Configuration lives under `.harnery/config.jsonc` `coord.run_quality`:
       "evaluation_interval_seconds": 30,
       "snapshot_ttl_seconds": 120,
       "max_tail_bytes": 2097152,
+      "evaluation_timeout_seconds": 30,
+      "lock_stale_seconds": 60,
+      "supervised_roots_per_sweep": 8,
       "thresholds": {
         "repeated_tool_calls": 8,
         "consecutive_failures": 5,
@@ -139,19 +169,26 @@ recorded gate; this ADR does not authorize a fleet-wide default.
 All bounds are validated as finite integers in documented ranges. Invalid
 config disables evaluation for that config digest, reports `unknown`, and emits
 one rate-limited `health.run_quality_config_invalid` event. It never substitutes
-a zero or partially applies a malformed object.
+a zero or partially applies a malformed object. A valid config-digest change
+keeps the event watermark but resets signal arms, streaks, and grace state, then
+emits a transition with reason code `config_changed`.
 
 Status transitions emit `health.run_quality_changed` with previous/current
 status, bounded signal IDs, and the evidence watermark. These events are
 observations, not rule-engine decisions, so they do not reuse `decision.warn`.
-Repeated evaluations at the same status emit nothing.
+Repeated evaluations at the same status emit nothing unless a config-digest
+change resets signal state and emits reason `config_changed`.
 
 ### Read models and planning context
 
-Agent status and the web surface read fresh snapshots. An additive optional
-governor `quality` field reports the worst fresh child status, status counts,
-stale count, evaluation time, and a bounded deterministic list of exceptional
-child IDs. It does not change governor state, work priority, or `next_action`.
+Agent status and the web surface read fresh snapshots. Cheap due-ness checks run
+before lock acquisition or any ledger read, including on end-turn status paths.
+In Slice 2, the governor service evaluates supervised coordination roots in a
+persistent round-robin, bounded by `supervised_roots_per_sweep`, before it builds
+the projection. Aggregation itself is read-only. An additive optional governor
+`quality` field reports the worst fresh child status, status counts, stale
+count, evaluation time, and a bounded deterministic list of exceptional child
+IDs. It does not change governor state, work priority, or `next_action`.
 Multi-root workflows resolve snapshots from each run's coordination root.
 
 New planner and reviewer requests receive a bounded, deterministic
@@ -169,25 +206,44 @@ This context never enters hash-pinned work-item scripts.
 ### Proof and rollout gate
 
 The evaluator ships with source-neutral synthetic fixtures for every signal,
-state transition, wait exemption, cursor/rebuild edge, and unknown path. The
-private replay corpus is session-split so no session appears in both tuning and
-holdout sets, stratified by adapter, role, and scenario, with a manifest of
-labels, hashes, redaction attestations, and config digests.
+state transition, wait exemption, lock crash, cursor/rebuild/rotation edge,
+clamp-collision case, and unknown path. The private replay corpus is
+session-split so no session appears in both tuning and holdout sets, stratified
+by adapter, role, and scenario, with a manifest of labels, hashes, redaction
+attestations, config digests, and minimum sample counts fixed before tuning.
 
 `report` may be enabled for the first host only when the untouched holdout has:
 
 - zero false `critical` verdicts on known-healthy traces;
 - at most five percent of known-healthy traces receiving any false
   `attention` verdict;
-- every labeled runaway or stalled trace detected by its second eligible
-  evidence-bearing evaluation; and
-- coverage for all scenario families on at least two adapters where the
-  required telemetry is supported.
+- every labeled runaway trace reaching at least `attention` no later than the
+  first eligible evaluation after its configured signal threshold is met;
+- every labeled stalled trace reaching at least `attention` no later than the
+  first eligible evaluation at which its configured no-progress epoch count is
+  met; and
+- at least 30 known-healthy holdout traces per eligible adapter/role stratum and
+  10 positive holdout traces per scenario family and eligible adapter.
 
-If sample minimums or adapter coverage are missing, the result is
-`insufficient`, not a pass. Hook-driven invocation also requires a measured
-maximum-tail latency budget and a failure test proving evaluator errors cannot
-change the hook verdict or block event projection.
+`partial` adapter attestation counts for a signal only when it explicitly
+permits the observed sample source. A signal represented on two or more
+qualifying adapters must cover at least two; when fewer than two qualify, every
+qualifying adapter must be covered and the manifest records the capability
+limit. If sample minimums or qualifying-adapter coverage are missing, the
+result is `insufficient`, not a pass. Hook-driven invocation also requires a
+measured maximum-tail latency budget, including end-turn status, and a failure
+test proving evaluator errors cannot change the hook verdict or block event
+projection.
+
+Slice 1 shadow evidence is explicit-read and offline-replay evidence only. The
+first host remains in `shadow` until Slice 2 supplies bounded supervised sweeps;
+moving to `report` requires both the holdout gate above and a live periodic-path
+shadow soak lasting at least seven consecutive days and 100 supervised
+root-hours. Every shadow `attention` or `critical` transition is adjudicated
+against the same false-positive limits, and the truncation/unknown rate is
+recorded. A root whose incremental gap exceeds the bounded live plus
+newest-archive window degrades to truncated `unknown`; the evaluator never
+widens an individual scan without configuration.
 
 ## Alternatives considered
 
