@@ -38,11 +38,28 @@ describe("renderInstructionsBlock", () => {
     expect(lines).toBeLessThanOrEqual(80);
   });
 
-  test("names all five surfaces so an agent knows they exist", () => {
+  test("names all six surfaces so an agent knows they exist", () => {
     const block = renderInstructionsBlock("harn").toLowerCase();
-    for (const surface of ["identity", "intent", "journal", "decision docket", "council"]) {
+    for (const surface of [
+      "identity",
+      "lifecycle",
+      "intent",
+      "journal",
+      "decision docket",
+      "council",
+    ]) {
       expect(block).toContain(surface);
     }
+  });
+
+  test("teaches lifecycle declarations with host-bin commands", () => {
+    const block = renderInstructionsBlock("acme");
+    expect(block).toContain('acme agents lifecycle blocked --reason "<why>"');
+    expect(block).toContain("acme agents lifecycle done");
+    expect(block).toContain("acme agents lifecycle active");
+    // the done gate is stated, and set-task neutrality is preserved
+    expect(block).toContain("Git finalization check");
+    expect(block).toContain("`set-task` calls never change lifecycle");
   });
 
   test("lists every journal category (locks the block to the canonical enum)", () => {

@@ -87,6 +87,14 @@ active peers and the files they've claimed; \`${b} agents set-task "<focus>"\`
 declares your current focus so peers can see it. Check for peers before editing
 widely-shared files.
 
+**Task lifecycle.** Beside the activity peers already see, declare whether your
+objective is still open: \`${b} agents lifecycle blocked --reason "<why>"\` when
+it cannot proceed, \`${b} agents lifecycle done\` when it is complete, and
+\`${b} agents lifecycle active\` to reopen. \`done\` requires a current task and
+a passing Git finalization check (dirty or unpushed work refuses, and nothing is
+written). Ordinary \`set-task\` calls never change lifecycle, and a transition
+that re-mints the session title tells you the new name to copy.
+
 **Dispatching a team.** Everything else here coordinates the agents already
 present. These three start new ones, and they differ by how long the objective
 outlives a single execution. \`${b} run <script>\` is one bounded pass:
