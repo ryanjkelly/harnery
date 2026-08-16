@@ -58,6 +58,8 @@ interface InstanceEvidence {
   lastTaskState?: CodecSourceEvidence;
   lastContext?: CodecSourceEvidence;
   identityName?: string;
+  /** Envelope parent_session_id from the newest event carrying one. */
+  parentEvidence?: { parent: string; event_id: string; ts: string };
   recentActions: CodecRecentAction[];
   /** Full recent action list for the expressive rules, ascending, capped. */
   actionsFull: ExpressiveAction[];
@@ -82,6 +84,9 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     if (!slot) {
       slot = { recentActions: [], actionsFull: [], openSubagents: 0 };
       byInstance.set(ev.instance_id, slot);
+    }
+    if (ev.parent_session_id) {
+      slot.parentEvidence = { parent: ev.parent_session_id, event_id: ev.event_id, ts: ev.ts };
     }
     switch (ev.event_type) {
       case "session.start":
@@ -347,6 +352,21 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       updated_at: hb.last_heartbeat,
     };
     panels.push(panel);
+  }
+
+  // Parentage (plan phase 3, "parentage first"): the envelope's
+  // parent_session_id is authoritative. The relationship is shown only when
+  // the join can be proved against another rendered panel — a parent outside
+  // the scene is omitted, never guessed. Adapter sessions carry the same id
+  // in session_id and instance_id, so panel instance ids are the join key.
+  const panelIds = new Set(panels.map((p) => p.instance_id));
+  for (const panel of panels) {
+    const parentEvidence = evidence.get(panel.instance_id)?.parentEvidence;
+    if (parentEvidence && panelIds.has(parentEvidence.parent)) {
+      panel.parent_instance_id = present(parentEvidence.parent, "event", "high", parentEvidence.ts, [
+        parentEvidence.event_id,
+      ]);
+    }
   }
 
   const workingCount = panels.filter((p) => p.activity.value === "working").length;

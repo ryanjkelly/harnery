@@ -103,7 +103,16 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
           {scene.panels.map((panel) => (
-            <CodecPanel key={panel.instance_id} panel={panel} />
+            <CodecPanel
+              key={panel.instance_id}
+              panel={panel}
+              parentName={
+                panel.parent_instance_id
+                  ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)
+                      ?.identity.display_name
+                  : undefined
+              }
+            />
           ))}
         </div>
       )}
@@ -120,7 +129,7 @@ const ATTENTION_RING: Record<string, string> = {
   completion: "ring-1 ring-emerald-400/60",
 };
 
-function CodecPanel({ panel }: { panel: CodecPanelScene }) {
+function CodecPanel({ panel, parentName }: { panel: CodecPanelScene; parentName?: string }) {
   const offline = panel.presence.value === "offline";
   const unknownPresence = panel.presence.value === "unknown";
 
@@ -201,6 +210,11 @@ function CodecPanel({ panel }: { panel: CodecPanelScene }) {
             title={`Attention: ${panel.attention.value} (expires ${panel.attention.expires_at ?? "soon"})`}
           >
             {panel.attention.value}
+          </Badge>
+        )}
+        {parentName && (
+          <Badge variant="outline" title={`Delegated by ${parentName} (event-backed parentage)`}>
+            ↳ {parentName}
           </Badge>
         )}
       </div>

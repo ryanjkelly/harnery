@@ -18,6 +18,7 @@ import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
 import { sanitizeLine } from "./sanitize";
+import { applySuggestions } from "./suggestions";
 
 /** How much of the log tail to fold. ~1KB/row → a few thousand recent rows. */
 const TAIL_BYTES = 4_000_000;
@@ -57,6 +58,14 @@ export async function readSanitizedTail(filePath = eventsPath()): Promise<CodecS
 export async function buildScene(now?: string): Promise<CodecScene> {
   const [snapshot, events] = [readAgents(), await readSanitizedTail()];
   const scene = projectScene({ snapshot, events, ...(now ? { now } : {}) });
+  // Optional styler suggestions: read-only merge of validated, expiring
+  // low-confidence styling into fallback-valued channels. Failure = no
+  // styling, never a degraded scene.
+  try {
+    applySuggestions(scene, events);
+  } catch {
+    // deterministic scene stands
+  }
   // Character assignment is presentation metadata layered on after the pure
   // projection; a registry failure leaves the fallback pack in place.
   try {
