@@ -21,6 +21,15 @@ export {
   sha256V2,
 } from "./canonical.ts";
 export {
+  ADAPTER_CAPABILITY_PROFILES_V2,
+  type AdapterCapabilityProfileV2,
+  type AdapterSignalV2,
+  adapterCapabilityProfileDigestV2,
+  adapterCapabilityProfileV2,
+  adapterSignalSupportV2,
+  type CapabilitySupportV2,
+} from "./capabilities.ts";
+export {
   type EventV2Catalog,
   type EventV2CatalogSegment,
   type EventV2SegmentManifest,
@@ -90,6 +99,13 @@ export {
   type HookSignalV2,
   normalizeHookEventV2,
 } from "./producers/hook.ts";
+export {
+  type HookProducerStateV2,
+  type RecordHookSignalV2Input,
+  type RecordHookSignalV2Result,
+  readHookProducerStateV2,
+  recordHookSignalV2,
+} from "./producers/recorder.ts";
 export {
   type LedgerDiagnosticCodeV2,
   type LedgerDiagnosticV2,

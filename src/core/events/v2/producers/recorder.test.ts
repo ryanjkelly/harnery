@@ -1,0 +1,235 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import { buildEventV2 } from "../builder.ts";
+import { canonicalJsonV2, sha256V2 } from "../canonical.ts";
+import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
+import {
+  type CandidateGenesisManifestV2,
+  type CandidateProfileV2,
+  candidateProfileDigestV2,
+  EVENT_V2_GENESIS_MANIFEST,
+  repairEventV2ControlPair,
+} from "../control.ts";
+import { loadOrCreateFingerprintKeyStoreV2 } from "../fingerprint-keys.ts";
+import { EVENT_V2_SCHEMA_DIGEST } from "../generated.ts";
+import { readActiveLedgerV2 } from "../reader.ts";
+import { eventV2Paths } from "../writer.ts";
+import { readHookProducerStateV2, recordHookSignalV2 } from "./recorder.ts";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("event ledger V2 persistent hook recorder", () => {
+  test("is inert without an exact candidate or active gate", () => {
+    const result = recordHookSignalV2({
+      ...baseInput(temporaryRoot(), "session-start", parsed({ session_id: "native" })),
+      mode: "active",
+    });
+    expect(result).toEqual({ state: "gate_closed", reason: "closed" });
+  });
+
+  test("preserves generation, sequence, turn, span, timing, and privacy across hook processes", () => {
+    const root = candidateRoot();
+    const nativeSession = "native-account-session";
+    const start = recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession, model: "sonnet" })),
+    );
+    const turn = recordHookSignalV2(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-secret", prompt: "patient secret" }),
+      ),
+    );
+    const requested = recordHookSignalV2({
+      ...baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "tool-secret",
+          tool_name: "Read",
+          tool_input: { file_path: "/workspace/project/src/index.ts", token: "API_SECRET_123" },
+        }),
+      ),
+      monotonic_ns: "1000000000",
+    });
+    const completed = recordHookSignalV2({
+      ...baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "tool-secret",
+          tool_name: "Read",
+          tool_response: "private output",
+        }),
+      ),
+      monotonic_ns: "1250000000",
+    });
+
+    expect([start.state, turn.state, requested.state, completed.state]).toEqual([
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+    ]);
+    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const hookEvents = events.filter((event) => event.producer.producer_id === "prd_hook");
+    expect(hookEvents.map((event) => event.producer.sequence)).toEqual([1, 2, 3, 4]);
+    expect(
+      new Set(hookEvents.map((event) => (event.scope as { generation_id: string }).generation_id))
+        .size,
+    ).toBe(1);
+    expect((hookEvents[0]?.links as { caused_by: string[] }).caused_by).toEqual([
+      events[0]?.event_id,
+    ]);
+    const toolEvents = hookEvents.filter(
+      (event) => event.event_type === "tool.requested" || event.event_type === "tool.completed",
+    );
+    expect(
+      new Set(toolEvents.map((event) => (event.links as { span_id: string }).span_id)).size,
+    ).toBe(1);
+    const completion = hookEvents.find((event) => event.event_type === "tool.completed");
+    expect(completion?.payload.duration_ms).toEqual({
+      state: "observed",
+      value: 250,
+      attestation: "derived",
+      confidence: "exact",
+    });
+    const durable = readFileSync(eventV2Paths(root).active, "utf8");
+    const state = readHookProducerStateV2(root, "claude-code", nativeSession);
+    expect(`${durable}${JSON.stringify(state)}`).not.toContain("patient secret");
+    expect(`${durable}${JSON.stringify(state)}`).not.toContain("API_SECRET_123");
+    expect(`${durable}${JSON.stringify(state)}`).not.toContain("private output");
+    expect(`${durable}${JSON.stringify(state)}`).not.toContain(nativeSession);
+  });
+
+  test("replays the exact pending event after a producer crash", () => {
+    const root = candidateRoot();
+    const input = baseInput(root, "session-start", parsed({ session_id: "retry-session" }));
+    expect(() =>
+      recordHookSignalV2({
+        ...input,
+        writerOptions: {
+          onStep: (step) => {
+            if (step === "ready_published") throw new Error("simulated producer kill");
+          },
+        },
+      }),
+    ).toThrow("simulated producer kill");
+
+    const recovered = recordHookSignalV2(input);
+    expect(recovered.state).toBe("recorded");
+    if (recovered.state === "recorded") expect(recovered.recovered).toBeTrue();
+    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    expect(events).toHaveLength(2);
+    expect(events[0]?.event_type).toBe("ledger.genesis");
+    expect(events[1]?.event_type).toBe("session.started");
+    expect(events[1]?.producer.sequence).toBe(1);
+  });
+});
+
+function candidateRoot(): string {
+  const root = temporaryRoot();
+  const keyStore = loadOrCreateFingerprintKeyStoreV2(
+    root,
+    () => new Date("2026-08-16T17:00:00.000Z"),
+  );
+  const profile: CandidateProfileV2 = {
+    initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
+    harnery_commit: "fixture",
+    host_repository_commit: "fixture",
+    producer_build_ids: ["build_fixture"],
+    adapter_capability_profile_digests: [
+      `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
+    ],
+    config_digest: sha256V2("config"),
+    canonicalizer_version: "harnery-jcs-nfc-v1",
+    fingerprint_version: "hmac-sha256-v1",
+    privacy_key_epoch: keyStore.active_epoch_id,
+    v1_terminal_digest: sha256V2("v1"),
+    v1_terminal_bytes: 1,
+    v1_terminal_rows: 1,
+    candidate_created_at: "2026-08-16T18:00:00.000Z",
+  };
+  const event = buildEventV2("ledger.genesis", {
+    producer: {
+      producer_id: "prd_cutover",
+      boot_id: "boot_cutover",
+      sequence: 1,
+      component: "recovery",
+      build_id: "build_fixture",
+      platform: "linux",
+    },
+    scope: { root_id: "root_fixture", instance_id: "inst_cutover" },
+    links: { caused_by: [] },
+    provenance: {
+      source_event: "cutover.genesis",
+      attestation: "operator",
+      confidence: "exact",
+      attribution: {
+        method: "explicit_argument",
+        state: "verified",
+        subject_instance_id: "inst_cutover",
+      },
+    },
+    payload: {
+      genesis_id: "gex_00000000-0000-0000-0000-000000000001",
+      genesis_profile_digest: candidateProfileDigestV2(profile),
+      contract_digest: sha256V2("contract"),
+      generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
+      v1_terminal_segment_digest: profile.v1_terminal_digest,
+      canonicalizer: "harnery-jcs-nfc-v1",
+      privacy_epoch_id: profile.privacy_key_epoch,
+      candidate_created_at: profile.candidate_created_at,
+    },
+  });
+  const manifest: CandidateGenesisManifestV2 = {
+    manifest_version: 1,
+    kind: "candidate_genesis",
+    profile,
+    event,
+  };
+  const path = join(root, EVENT_V2_GENESIS_MANIFEST);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${canonicalJsonV2(manifest)}\n`, { mode: 0o600 });
+  expect(repairEventV2ControlPair(root).state).toBe("candidate");
+  return root;
+}
+
+function baseInput(
+  root: string,
+  signal: Parameters<typeof recordHookSignalV2>[0]["signal"],
+  payload: ParsedPayload,
+) {
+  return {
+    coordRoot: root,
+    mode: "candidate" as const,
+    signal,
+    payload,
+    adapter: "claude-code" as const,
+    instance_id: "inst_fixture" as const,
+    producer_id: "prd_hook" as const,
+    build_id: "build_fixture" as const,
+    platform: "linux" as const,
+    adapterVersion: "1.0.0",
+    harnessVersion: "1.0.0",
+  };
+}
+
+function parsed(values: Partial<ParsedPayload>): ParsedPayload {
+  return { raw: {}, ...values };
+}
+
+function temporaryRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "harnery-v2-recorder-"));
+  roots.push(root);
+  return root;
+}

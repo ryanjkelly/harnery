@@ -35,11 +35,14 @@ export interface HookProducerContextV2 {
   capability_profile: `cap_${string}`;
   fingerprintContext: FingerprintContextV2;
   turn_native_id?: string;
+  turn_id?: `tid_${string}`;
   span_id?: `span_${string}`;
   caused_by?: `evt_${string}`[];
   event_id?: `evt_${string}`;
   observed_at?: string;
   recorded_at?: string;
+  monotonic_ns?: string;
+  clock_id?: `clk_${string}`;
   duration_ms?: number;
   tool_call_count?: number;
   response_bytes?: number;
@@ -59,9 +62,11 @@ export function normalizeHookEventV2(
   );
   const turnNative =
     payload.turn_id ?? context.turn_native_id ?? `${sessionNative}:${context.sequence}`;
-  const turnId = asTurnId(
-    normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
-  );
+  const turnId =
+    context.turn_id ??
+    asTurnId(
+      normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
+    );
   const generationScope = {
     root_id: context.root_id,
     instance_id: context.instance_id,
@@ -106,6 +111,8 @@ export function normalizeHookEventV2(
     provenance,
     observed_at: context.observed_at,
     recorded_at: context.recorded_at,
+    monotonic_ns: context.monotonic_ns,
+    clock_id: context.clock_id,
   };
   const causedBy = context.caused_by ?? [];
 
