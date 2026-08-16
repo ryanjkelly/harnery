@@ -33,6 +33,9 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useState } from "react";
+/* eslint-disable @next/next/no-img-element -- pack portraits are local
+ * runtime assets served by our own route; next/image optimization would
+ * re-encode already-sized webp files for no benefit. */
 
 const CATEGORY_ICONS: Record<CodecRecentAction["category"], typeof Search> = {
   research: Search,
@@ -227,10 +230,31 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
   );
 }
 
-/** Phase 1 portrait: a stable neutral treatment (initial letter). Character
- * packs replace this in Phase 4; the slot and sizing already match. */
+/** Character-pack portrait with the neutral-letter treatment as fallback for
+ * the fallback pack, a vanished asset, or a load error. The image swaps by
+ * expression; an offline/unknown presence subdues it. */
 function Portrait({ panel }: { panel: CodecPanelScene }) {
+  const [failed, setFailed] = useState(false);
   const letter = (panel.identity.display_name[0] ?? "?").toUpperCase();
+  const usePack = panel.character.pack_id !== "fallback-neutral" && !failed;
+
+  if (usePack) {
+    const src = `/api/codec-pack/${panel.character.pack_id}/${panel.expression.value}?v=${panel.character.pack_version}`;
+    return (
+      <img
+        src={src}
+        alt=""
+        aria-hidden
+        width={48}
+        height={48}
+        onError={() => setFailed(true)}
+        className={cn(
+          "size-12 flex-none rounded-md border object-cover",
+          panel.presence.value !== "online" && "opacity-70 grayscale",
+        )}
+      />
+    );
+  }
   return (
     <div
       aria-hidden

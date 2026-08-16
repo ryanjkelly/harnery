@@ -15,6 +15,7 @@ import fs from "node:fs";
 import { eventsPath, readAgents } from "@/lib/coord-reader";
 
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
+import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
 import { sanitizeLine } from "./sanitize";
 
@@ -55,7 +56,22 @@ export async function readSanitizedTail(filePath = eventsPath()): Promise<CodecS
 
 export async function buildScene(now?: string): Promise<CodecScene> {
   const [snapshot, events] = [readAgents(), await readSanitizedTail()];
-  return projectScene({ snapshot, events, ...(now ? { now } : {}) });
+  const scene = projectScene({ snapshot, events, ...(now ? { now } : {}) });
+  // Character assignment is presentation metadata layered on after the pure
+  // projection; a registry failure leaves the fallback pack in place.
+  try {
+    const characters = allocateCharacters(
+      scene.panels.map((p) => p.instance_id),
+      scene.generated_at,
+    );
+    for (const panel of scene.panels) {
+      const assigned = characters.get(panel.instance_id);
+      if (assigned) panel.character = assigned;
+    }
+  } catch {
+    // fallback pack stands
+  }
+  return scene;
 }
 
 export function eventsFilePath(): string {

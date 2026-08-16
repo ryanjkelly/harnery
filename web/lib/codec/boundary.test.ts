@@ -20,9 +20,13 @@ const ENTRYPOINTS = [
   "lib/codec/contracts.ts",
   "lib/codec/sanitize.ts",
   "lib/codec/projector.ts",
+  "lib/codec/expression.ts",
+  "lib/codec/validator.ts",
+  "lib/codec/packs.ts",
   "lib/codec/scene-source.ts",
   "app/api/codec-scene/route.ts",
   "app/api/codec-stream/route.ts",
+  "app/api/codec-pack/[pack]/[expression]/route.ts",
   "app/codec/page.tsx",
   "components/codec/CodecView.tsx",
 ];
