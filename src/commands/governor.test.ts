@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import { createGovernor, runGovernor } from "../core/governor/index.ts";
@@ -163,5 +163,93 @@ describe("governor command", () => {
     // rather than that review was exhausted.
     expect(shown.text()).toContain("reason: ");
     expect(shown.text()).toContain("producing no proposal");
+  });
+
+  test("list reports an unreadable goal without hiding readable goals", async () => {
+    cwd = process.cwd();
+    const root = mkdtempSync(join("/tmp", "harnery-governor-cli-list-"));
+    roots.push(root);
+    const workflow = join(root, "workflow.mjs");
+    writeFileSync(workflow, "export default async () => 'ok';\n");
+    createWorkItem({
+      coordRoot: root,
+      id: "list-root",
+      title: "List root",
+      objective: "Keep readable goals visible",
+      workflowPath: workflow,
+    });
+    for (const id of ["goal-cli-readable", "goal-cli-poisoned"]) {
+      createGovernor({
+        coordRoot: root,
+        id,
+        rootWorkId: "list-root",
+        specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
+      });
+    }
+    const poisonedPath = join(root, ".harnery", "governors", "goal-cli-poisoned", "intent.json");
+    const poisoned = JSON.parse(readFileSync(poisonedPath, "utf8")) as {
+      specialists: Record<string, Record<string, unknown>>;
+    };
+    poisoned.specialists.implementer!.harness = "codex";
+    writeFileSync(poisonedPath, `${JSON.stringify(poisoned, null, 2)}\n`);
+    process.chdir(root);
+
+    const output = captureEmit();
+    await createHarneryProgram({ emit: output.emit }).parseAsync([
+      "node",
+      "harn",
+      "governor",
+      "list",
+    ]);
+
+    expect(output.text()).toContain("goal-cli-readable");
+    expect(output.text()).toContain(
+      "warning  goal-cli-poisoned  unreadable: governor intent goal-cli-poisoned specialists are not canonical",
+    );
+    expect(output.text()).not.toContain("ERROR");
+  });
+
+  test("create names an unsupported specialist profile key", async () => {
+    cwd = process.cwd();
+    const root = mkdtempSync(join("/tmp", "harnery-governor-cli-create-"));
+    roots.push(root);
+    const workflow = join(root, "workflow.mjs");
+    const team = join(root, "team.json");
+    writeFileSync(workflow, "export default async () => 'ok';\n");
+    writeFileSync(
+      team,
+      `${JSON.stringify({
+        implementer: {
+          instructions: "Implement",
+          adapter: "codex",
+          timeoutMs: 60_000,
+        },
+      })}\n`,
+    );
+    createWorkItem({
+      coordRoot: root,
+      id: "create-root",
+      title: "Create root",
+      objective: "Reject unsupported governor profile keys",
+      workflowPath: workflow,
+    });
+    process.chdir(root);
+
+    const output = captureEmit();
+    await createHarneryProgram({ emit: output.emit }).parseAsync([
+      "node",
+      "harn",
+      "governor",
+      "create",
+      "create-root",
+      "--id",
+      "goal-cli-invalid-profile",
+      "--team",
+      team,
+      "--allow-single-adapter",
+    ]);
+
+    expect(output.text()).toContain('unsupported key \\"timeoutMs\\"');
+    expect(output.text()).toContain("allowed keys: instructions, adapter, effort, maxAttempts");
   });
 });

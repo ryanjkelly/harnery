@@ -1,6 +1,7 @@
 export {
   assertWorkId,
   listWorkItems,
+  listWorkItemsWithWarnings,
   readWorkItem,
   WORK_EVENT_SCHEMA_VERSION,
   WORK_INTENT_SCHEMA_VERSION,
@@ -9,6 +10,8 @@ export {
   type WorkEvent,
   type WorkEventType,
   type WorkIntent,
+  type WorkListResult,
+  type WorkListWarning,
   type WorkNextAction,
   type WorkProjection,
   type WorkRecord,

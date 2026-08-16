@@ -37,6 +37,13 @@ const MAX_ACCEPTANCE = 50;
 const MAX_INTENT_BYTES = 256 * 1024;
 const MAX_TEMPLATES = 20;
 const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const GOVERNOR_SPECIALIST_PROFILE_KEYS = [
+  "instructions",
+  "adapter",
+  "effort",
+  "maxAttempts",
+] as const;
+const GOVERNOR_SPECIALIST_PROFILE_KEY_SET = new Set<string>(GOVERNOR_SPECIALIST_PROFILE_KEYS);
 const FOREIGN_LEASE_STALE_MS = 24 * 60 * 60 * 1_000;
 /** Ceiling on CONSECUTIVE uncharged (upstream) replans (ADR 0046). Because an
  * uncharged replan does not spend `max_replans`, an unending vendor outage would
@@ -159,6 +166,16 @@ export interface GovernorRecord {
   plans: GovernorPlanRecord[];
 }
 
+export interface GovernorListWarning {
+  goal_id: string;
+  reason: string;
+}
+
+export interface GovernorListResult {
+  records: GovernorRecord[];
+  warnings: GovernorListWarning[];
+}
+
 export interface CreateGovernorInput {
   coordRoot: string;
   rootWorkId?: string;
@@ -175,6 +192,7 @@ export function createGovernor(input: CreateGovernorInput): GovernorRecord {
   const coordRoot = resolve(input.coordRoot);
   const id = input.id ?? newGovernorId();
   assertGovernorId(id);
+  assertGovernorSpecialistProfileKeys(input.specialists);
   const mission = input.mission ? normalizeMission(input.mission) : undefined;
   if (mission && !input.replanning) {
     throw new Error("governor mission requires a replanning policy");
@@ -231,16 +249,28 @@ export function readGovernorIgnoringLease(coordRoot: string, goalId: string): Go
 }
 
 export function listGovernors(coordRoot: string): GovernorRecord[] {
+  return listGovernorsWithWarnings(coordRoot).records;
+}
+
+export function listGovernorsWithWarnings(coordRoot: string): GovernorListResult {
   const base = join(resolve(coordRoot), ".harnery", "governors");
-  if (!existsSync(base)) return [];
+  if (!existsSync(base)) return { records: [], warnings: [] };
   const records: GovernorRecord[] = [];
+  const warnings: GovernorListWarning[] = [];
   for (const name of readdirSync(base)) {
     if (!GOAL_ID.test(name) || !existsSync(governorIntentPath(coordRoot, name))) continue;
-    records.push(readGovernor(coordRoot, name));
+    try {
+      records.push(readGovernor(coordRoot, name));
+    } catch (error) {
+      warnings.push({
+        goal_id: name,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  return records.sort((left, right) =>
-    right.intent.created_at.localeCompare(left.intent.created_at),
-  );
+  records.sort((left, right) => right.intent.created_at.localeCompare(left.intent.created_at));
+  warnings.sort((left, right) => left.goal_id.localeCompare(right.goal_id));
+  return { records, warnings };
 }
 
 export function collectGovernorWork(coordRoot: string, rootWorkId: string): WorkRecord[] {
@@ -880,6 +910,23 @@ function validateIntent(intent: GovernorIntent, goalId: string): void {
     throw new Error(`governor intent ${goalId} automation policy is not canonical`);
   }
   if (intent.replanning) validateReplanning(intent.replanning, specialists, intent.limits, goalId);
+}
+
+function assertGovernorSpecialistProfileKeys(
+  specialists: Readonly<Record<string, WorkflowSpecialistProfile>>,
+): void {
+  if (!specialists || typeof specialists !== "object" || Array.isArray(specialists)) return;
+  for (const [id, profile] of Object.entries(specialists)) {
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue;
+    const unsupported = Object.keys(profile)
+      .filter((key) => !GOVERNOR_SPECIALIST_PROFILE_KEY_SET.has(key))
+      .sort();
+    if (unsupported.length === 0) continue;
+    throw new Error(
+      `governor specialist ${id} has unsupported key ${JSON.stringify(unsupported[0])}; ` +
+        `allowed keys: ${GOVERNOR_SPECIALIST_PROFILE_KEYS.join(", ")}`,
+    );
+  }
 }
 
 function normalizeMission(input: CreateGovernorMissionInput): GovernorMission {

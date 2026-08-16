@@ -181,6 +181,16 @@ export interface WorkRecord {
   projection: WorkProjection;
 }
 
+export interface WorkListWarning {
+  work_id: string;
+  reason: string;
+}
+
+export interface WorkListResult {
+  records: WorkRecord[];
+  warnings: WorkListWarning[];
+}
+
 export interface CreateWorkItemInput {
   coordRoot: string;
   title: string;
@@ -271,14 +281,28 @@ export function readWorkItem(coordRoot: string, workId: string): WorkRecord {
 }
 
 export function listWorkItems(coordRoot: string): WorkRecord[] {
+  return listWorkItemsWithWarnings(coordRoot).records;
+}
+
+export function listWorkItemsWithWarnings(coordRoot: string): WorkListResult {
   const base = join(resolve(coordRoot), ".harnery", "work");
-  if (!existsSync(base)) return [];
+  if (!existsSync(base)) return { records: [], warnings: [] };
   const records: WorkRecord[] = [];
+  const warnings: WorkListWarning[] = [];
   for (const name of readdirSync(base)) {
     if (!WORK_ID.test(name) || !existsSync(join(base, name, "intent.json"))) continue;
-    records.push(readWorkItem(coordRoot, name));
+    try {
+      records.push(readWorkItem(coordRoot, name));
+    } catch (error) {
+      warnings.push({
+        work_id: name,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  return records.sort((a, b) => b.intent.created_at.localeCompare(a.intent.created_at));
+  records.sort((a, b) => b.intent.created_at.localeCompare(a.intent.created_at));
+  warnings.sort((a, b) => a.work_id.localeCompare(b.work_id));
+  return { records, warnings };
 }
 
 export function reconcileWorkItem(coordRoot: string, workId: string, actor?: string): WorkRecord {

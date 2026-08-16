@@ -16,6 +16,7 @@ import {
   cancelWorkItem,
   createWorkItem,
   listWorkItems,
+  listWorkItemsWithWarnings,
   openOperatorFindings,
   readWorkItem,
   reconcileWorkItem,
@@ -70,6 +71,37 @@ describe("durable work ledger", () => {
         workflowPath,
       }),
     ).toThrow();
+  });
+
+  test("work-set scans skip unreadable records and keep single-item reads strict", () => {
+    const { root, workflowPath } = fixture();
+    for (const id of ["work-readable", "work-poisoned"]) {
+      createWorkItem({
+        coordRoot: root,
+        id,
+        title: id,
+        objective: "Keep readable work available",
+        workflowPath,
+      });
+    }
+    const poisonedPath = join(root, ".harnery", "work", "work-poisoned", "intent.json");
+    const poisoned = JSON.parse(readFileSync(poisonedPath, "utf8")) as Record<string, unknown>;
+    poisoned.schema_version = 1;
+    writeFileSync(poisonedPath, `${JSON.stringify(poisoned, null, 2)}\n`);
+
+    expect(() => readWorkItem(root, "work-poisoned")).toThrow(
+      "work intent work-poisoned has an unsupported or mismatched schema",
+    );
+    expect(listWorkItems(root).map((record) => record.intent.id)).toEqual(["work-readable"]);
+    expect(listWorkItemsWithWarnings(root)).toMatchObject({
+      records: [{ intent: { id: "work-readable" } }],
+      warnings: [
+        {
+          work_id: "work-poisoned",
+          reason: "work intent work-poisoned has an unsupported or mismatched schema",
+        },
+      ],
+    });
   });
 
   test("derives dependency readiness without mutating the dependent", () => {

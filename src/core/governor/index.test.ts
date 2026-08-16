@@ -8,6 +8,8 @@ import {
   approveGovernorPlan,
   createGovernor,
   findCompletedMissionGoverning,
+  listGovernors,
+  listGovernorsWithWarnings,
   readGovernor,
   readGovernorPlan,
   rejectGovernorPlan,
@@ -104,6 +106,86 @@ describe("durable goal governor", () => {
         specialists: {},
       }),
     ).toThrow();
+  });
+
+  test("rejects governor-only specialist keys before writing an intent", () => {
+    const { root, passing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "profile-root",
+      title: "Profile root",
+      objective: "Reject an invalid governor profile",
+      workflowPath: passing,
+    });
+
+    expect(() =>
+      createGovernor({
+        coordRoot: root,
+        id: "goal-invalid-profile",
+        rootWorkId: "profile-root",
+        specialists: {
+          implementer: {
+            instructions: "Implement carefully",
+            adapter: "codex",
+            timeoutMs: 60_000,
+          },
+        },
+      }),
+    ).toThrow(
+      'governor specialist implementer has unsupported key "timeoutMs"; allowed keys: instructions, adapter, effort, maxAttempts',
+    );
+    expect(
+      existsSync(join(root, ".harnery", "governors", "goal-invalid-profile", "intent.json")),
+    ).toBe(false);
+  });
+
+  test("goal-set scans skip unreadable records and keep single-goal reads strict", () => {
+    const { root, passing } = fixture();
+    createWorkItem({
+      coordRoot: root,
+      id: "scan-root",
+      title: "Scan root",
+      objective: "Keep readable goals available",
+      workflowPath: passing,
+    });
+    for (const id of ["goal-readable", "goal-poisoned"]) {
+      createGovernor({
+        coordRoot: root,
+        id,
+        rootWorkId: "scan-root",
+        specialists: { implementer: { instructions: "Implement", adapter: "codex" } },
+      });
+    }
+    const poisonedPath = join(root, ".harnery", "governors", "goal-poisoned", "intent.json");
+    const poisoned = JSON.parse(readFileSync(poisonedPath, "utf8")) as {
+      specialists: Record<string, Record<string, unknown>>;
+    };
+    poisoned.specialists.implementer!.harness = "codex";
+    writeFileSync(poisonedPath, `${JSON.stringify(poisoned, null, 2)}\n`);
+
+    expect(() => readGovernor(root, "goal-poisoned")).toThrow(
+      "governor intent goal-poisoned specialists are not canonical",
+    );
+    expect(listGovernors(root).map((record) => record.intent.id)).toEqual(["goal-readable"]);
+    expect(listGovernorsWithWarnings(root)).toMatchObject({
+      records: [{ intent: { id: "goal-readable" } }],
+      warnings: [
+        {
+          goal_id: "goal-poisoned",
+          reason: "governor intent goal-poisoned specialists are not canonical",
+        },
+      ],
+    });
+
+    const warnings: string[] = [];
+    expect(
+      findCompletedMissionGoverning(root, "scan-root", (warning) => {
+        warnings.push(`${warning.goal_id}: ${warning.reason}`);
+      }),
+    ).toBeUndefined();
+    expect(warnings).toEqual([
+      "goal-poisoned: governor intent goal-poisoned specialists are not canonical",
+    ]);
   });
 
   test("runs a specialist dependency chain to explicit policy-authorized success", async () => {
