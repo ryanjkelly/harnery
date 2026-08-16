@@ -144,6 +144,7 @@ export function drainReadyEventsUnderLeaseV2(
   if (repairUnterminatedActiveFrame(paths.active)) {
     options.onStep?.("active_tail_repaired");
   }
+  requeueCommittedReceipts(paths.spool);
   const readyNames = readdirSync(paths.spool)
     .filter((name) => name.endsWith(".ready"))
     .sort();
@@ -172,6 +173,31 @@ export function drainReadyEventsUnderLeaseV2(
     closeSync(activeFd);
   }
   return committed;
+}
+
+/**
+ * A `.committed` receipt is created only after the active row is flushed. If
+ * the process dies before unlinking it, replaying the exact canonical row is
+ * safe: the validating reader deduplicates the event ID and detects conflicts.
+ */
+function requeueCommittedReceipts(spool: string): void {
+  const committedNames = readdirSync(spool)
+    .filter((name) => name.endsWith(".committed"))
+    .sort();
+  for (const committedName of committedNames) {
+    const committedPath = join(spool, committedName);
+    readAndValidateReadyRow(committedPath);
+    const readyPath = `${committedPath.slice(0, -".committed".length)}.ready`;
+    if (existsSync(readyPath)) {
+      if (readFileSync(readyPath, "utf8") !== readFileSync(committedPath, "utf8")) {
+        throw new Error("committed and ready receipts conflict");
+      }
+      unlinkSync(committedPath);
+    } else {
+      renameSync(committedPath, readyPath);
+    }
+    fsyncParentDirectory(readyPath);
+  }
 }
 
 export function eventV2Paths(coordRoot: string) {
@@ -323,7 +349,10 @@ function pidIsAlive(pid: number): boolean {
 }
 
 function assertSupportedPath(coordRoot: string): void {
-  if (/^(\\\\|\/\/wsl(?:\.localhost)?\/)/i.test(coordRoot)) {
+  if (
+    /^(\\\\|\/\/wsl(?:\.localhost)?\/)/i.test(coordRoot) ||
+    /^\/mnt\/[a-z](?:\/|$)/i.test(coordRoot)
+  ) {
     throw new Error("V2 writer refuses direct UNC or cross-boundary coordination roots");
   }
 }

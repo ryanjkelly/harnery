@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { buildEventV2 } from "./builder.ts";
 import { type FingerprintContextV2, fingerprintV2 } from "./canonical.ts";
 import type { EventV2 } from "./contract.ts";
 import { attestationIdV2, eventIdV2, generationIdV2, spanIdV2 } from "./ids.ts";
 import { readActiveLedgerV2 } from "./reader.ts";
-import { drainReadyEventsV2, eventV2Paths, writeEventV2 } from "./writer.ts";
+import { drainReadyEventsV2, type EventV2WriteStep, eventV2Paths, writeEventV2 } from "./writer.ts";
 
 const roots: string[] = [];
 
@@ -16,6 +16,89 @@ afterEach(() => {
 });
 
 describe("event ledger V2 WAL recovery", () => {
+  test("rejects direct UNC and WSL-mounted Windows roots before creating storage", () => {
+    const event = minimalStartedEvent(1);
+    for (const root of [
+      String.raw`\\wsl.localhost\Ubuntu-22.04\home\project`,
+      "//wsl.localhost/Ubuntu-22.04/home/project",
+      "/mnt/c/Users/operator/project",
+    ]) {
+      expect(() => writeEventV2(root, event)).toThrow(
+        "refuses direct UNC or cross-boundary coordination roots",
+      );
+    }
+  });
+
+  test(
+    "serializes 32 independent writer processes without loss or corruption",
+    async () => {
+      const root = temporaryRoot("event-v2-concurrency");
+      const childPath = resolve(
+        import.meta.dir,
+        "../../../../tests/fixtures/event-v2-writer-child.ts",
+      );
+      const children = Array.from({ length: 32 }, (_, index) =>
+        Bun.spawn([process.execPath, childPath, root, String(index)], {
+          stdout: "pipe",
+          stderr: "pipe",
+        }),
+      );
+      const exitCodes = await Promise.all(children.map(({ exited }) => exited));
+      if (exitCodes.some((code) => code !== 0)) {
+        const errors = await Promise.all(
+          children.map(({ stderr }) =>
+            stderr ? new Response(stderr).text() : Promise.resolve(""),
+          ),
+        );
+        throw new Error(`concurrent writer failed:${exitCodes.join(",")}:${errors.join("|")}`);
+      }
+
+      drainReadyEventsV2(root);
+      const read = readActiveLedgerV2(root);
+      expect(read.complete).toBe(true);
+      expect(read.diagnostics).toEqual([]);
+      expect(read.events).toHaveLength(32);
+      expect(new Set(read.events.map(({ event }) => event.event_id)).size).toBe(32);
+      expect(readdirSync(eventV2Paths(root).spool)).toEqual([]);
+    },
+    { timeout: 30_000 },
+  );
+
+  test("converges without residue after every writer kill point", () => {
+    const killPoints: EventV2WriteStep[] = [
+      "ready_temp_flushed",
+      "ready_published",
+      "active_row_appended",
+      "active_row_flushed",
+      "receipt_committed",
+      "receipt_removed",
+    ];
+    for (const killPoint of killPoints) {
+      const root = temporaryRoot(`event-v2-kill-${killPoint}`);
+      const event = minimalStartedEvent(1);
+      try {
+        writeEventV2(root, event, {
+          onStep: (step) => {
+            if (step === killPoint) throw new Error(`simulated kill:${killPoint}`);
+          },
+        });
+      } catch (error) {
+        expect((error as Error).message).toBe(`simulated kill:${killPoint}`);
+      }
+
+      if (killPoint === "ready_temp_flushed") {
+        expect(writeEventV2(root, event).state).toBe("committed");
+      } else {
+        drainReadyEventsV2(root);
+      }
+      const read = readActiveLedgerV2(root);
+      expect(read.complete).toBe(true);
+      expect(read.diagnostics).toEqual([]);
+      expect(read.events.map(({ event: row }) => row.event_id)).toEqual([event.event_id]);
+      expect(readdirSync(eventV2Paths(root).spool)).toEqual([]);
+    }
+  });
+
   test("deduplicates the exact replay left by a crash after the active row flush", () => {
     const root = temporaryRoot("event-v2-replay");
     const event = minimalStartedEvent(1);
