@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -12,8 +12,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
+import { acquireNoClobberLease } from "../../workflow/workspaces/leases.ts";
 import type { FingerprintContextV2 } from "./canonical.ts";
 
 const KEY_BYTES = 32;
@@ -129,25 +131,39 @@ function withKeyStoreLock<T>(coordRoot: string, operation: () => T): T {
   const privateDir = join(resolve(coordRoot), ".harnery/private");
   mkdirSync(privateDir, { recursive: true, mode: 0o700 });
   chmodSync(privateDir, 0o700);
-  const lockPath = join(privateDir, "fingerprint-keys.lock");
-  let fd: number | undefined;
+  const leasePath = join(privateDir, "fingerprint-key-lease");
+  const authority = createHash("sha256").update(resolve(coordRoot)).digest("hex");
+  let lease: ReturnType<typeof acquireNoClobberLease> | undefined;
   for (let attempt = 0; attempt < LOCK_RETRIES; attempt += 1) {
     try {
-      fd = openSync(lockPath, "wx", 0o600);
+      lease = acquireNoClobberLease({
+        path: leasePath,
+        scope: "event-v2-fingerprint-key",
+        authoritySha256: authority,
+        staleAfterMs: 5_000,
+        validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
+      });
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (attempt === LOCK_RETRIES - 1) throw error;
       Atomics.wait(sleepCell, 0, 0, LOCK_RETRY_MS);
     }
   }
-  if (fd === undefined) throw new Error("fingerprint key store publication lock is busy");
+  if (!lease) throw new Error("fingerprint key store publication lease is busy");
   try {
-    fsyncSync(fd);
     return operation();
   } finally {
-    closeSync(fd);
-    unlinkSync(lockPath);
-    fsyncParentDirectory(lockPath);
+    lease.release();
+  }
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 

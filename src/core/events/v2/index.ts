@@ -1,3 +1,15 @@
+export {
+  type AuthorityMutationV2,
+  type AuthorityReceiptV2,
+  type AuthorityReconcilerV2,
+  type AuthorityTransactionV2,
+  listPendingAuthorityTransactionsV2,
+  type PrepareAuthorityTransactionV2Input,
+  prepareAuthorityTransactionV2,
+  readAuthorityReceiptV2,
+  readAuthorityTransactionV2,
+  reconcileAuthorityTransactionV2,
+} from "./authority-outbox.ts";
 export { type BuildEventV2Input, buildEventV2 } from "./builder.ts";
 export {
   canonicalJsonV2,
@@ -49,6 +61,16 @@ export {
 } from "./fingerprint-keys.ts";
 export { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
 export { attestationIdV2, clockIdV2, eventIdV2, generationIdV2, spanIdV2 } from "./ids.ts";
+export {
+  EVENT_V2_LIVE_RELATIVE_ROOT,
+  janitorLiveDisplayV2,
+  type LiveDisplayInputV2,
+  type LiveDisplayJanitorResultV2,
+  type LiveDisplayRowV2,
+  readLiveDisplayV2,
+  safeIntentDisplayV2,
+  writeLiveDisplayV2,
+} from "./live-feed.ts";
 export {
   type LedgerDiagnosticCodeV2,
   type LedgerDiagnosticV2,
