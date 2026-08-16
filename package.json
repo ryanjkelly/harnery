@@ -97,6 +97,11 @@
       "types": "./dist/core/guard/index.d.ts",
       "import": "./dist/core/guard/index.js"
     },
+    "./core/events/v2": {
+      "bun": "./src/core/events/v2/index.ts",
+      "types": "./dist/core/events/v2/index.d.ts",
+      "import": "./dist/core/events/v2/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",
@@ -198,10 +203,13 @@
     "docs:build": "bun run --cwd docs build",
     "brand:showcase": "node scripts/build-brand-showcase.mjs",
     "verify:contracts": "bun run scripts/sync-verified-contracts.ts",
-    "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check"
+    "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check",
+    "generate:event-v2": "bun run scripts/generate-event-v2-contract.ts",
+    "check:event-v2": "bun run scripts/generate-event-v2-contract.ts --check"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "@sinclair/typebox": "^0.34.52",
     "axe-core": "^4.12.1",
     "commander": "^14.0.3",
     "gpt-tokenizer": "^3.4.0",
@@ -212,7 +220,8 @@
     "playwright": "^1.59.1",
     "pngjs": "^7.0.0",
     "turndown": "^7.2.4",
-    "turndown-plugin-gfm": "^1.0.2"
+    "turndown-plugin-gfm": "^1.0.2",
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
