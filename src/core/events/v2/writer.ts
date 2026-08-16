@@ -43,7 +43,17 @@ export interface WriteEventV2Result {
 export interface WriteEventV2Options {
   leaseMs?: number;
   now?: () => number;
+  onStep?: (step: EventV2WriteStep, eventId?: string) => void;
 }
+
+export type EventV2WriteStep =
+  | "ready_temp_flushed"
+  | "ready_published"
+  | "active_tail_repaired"
+  | "active_row_appended"
+  | "active_row_flushed"
+  | "receipt_committed"
+  | "receipt_removed";
 
 /**
  * Persist one already-normalized V2 event through the spool-first WAL.
@@ -66,11 +76,11 @@ export function writeEventV2(
   if (bytes > MAX_LINE_BYTES) {
     throw new Error(`event exceeds the V2 ${MAX_LINE_BYTES}-byte row limit`);
   }
-  const paths = ensureLayout(coordRoot);
+  const paths = ensureEventV2Layout(coordRoot);
   const rowDigest = sha256V2(row);
   const readyName = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${rowDigest.slice(7)}.ready`;
   const readyPath = join(paths.spool, readyName);
-  writeReadyRecord(paths.spool, readyPath, row);
+  writeReadyRecord(paths.spool, readyPath, row, event.event_id, options.onStep);
 
   try {
     drainReadyEventsV2(coordRoot, options);
@@ -95,7 +105,18 @@ export function writeEventV2(
 
 /** Drain every durable ready record under the fenced append lease. */
 export function drainReadyEventsV2(coordRoot: string, options: WriteEventV2Options = {}): number {
-  const paths = ensureLayout(coordRoot);
+  const paths = ensureEventV2Layout(coordRoot);
+  return withEventV2LedgerLease(coordRoot, options, () =>
+    drainReadyEventsUnderLeaseV2(paths, options),
+  );
+}
+
+export function withEventV2LedgerLease<T>(
+  coordRoot: string,
+  options: WriteEventV2Options,
+  operation: () => T,
+): T {
+  const paths = ensureEventV2Layout(coordRoot);
   const authority = createHash("sha256")
     .update(resolve(coordRoot))
     .update("\0")
@@ -110,33 +131,47 @@ export function drainReadyEventsV2(coordRoot: string, options: WriteEventV2Optio
     validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),
   });
   try {
-    repairUnterminatedActiveFrame(paths.active);
-    const readyNames = readdirSync(paths.spool)
-      .filter((name) => name.endsWith(".ready"))
-      .sort();
-    if (readyNames.length === 0) return 0;
-    const activeFd = openSync(paths.active, "a", 0o600);
-    let committed = 0;
-    try {
-      for (const readyName of readyNames) {
-        const readyPath = join(paths.spool, readyName);
-        const row = readAndValidateReadyRow(readyPath);
-        writeSync(activeFd, row, undefined, "utf8");
-        fsyncSync(activeFd);
-        const committedPath = `${readyPath.slice(0, -".ready".length)}.committed`;
-        renameSync(readyPath, committedPath);
-        fsyncParentDirectory(committedPath);
-        unlinkSync(committedPath);
-        fsyncParentDirectory(committedPath);
-        committed += 1;
-      }
-    } finally {
-      closeSync(activeFd);
-    }
-    return committed;
+    return operation();
   } finally {
     lease.release();
   }
+}
+
+export function drainReadyEventsUnderLeaseV2(
+  paths: ReturnType<typeof eventV2Paths>,
+  options: WriteEventV2Options = {},
+): number {
+  if (repairUnterminatedActiveFrame(paths.active)) {
+    options.onStep?.("active_tail_repaired");
+  }
+  const readyNames = readdirSync(paths.spool)
+    .filter((name) => name.endsWith(".ready"))
+    .sort();
+  if (readyNames.length === 0) return 0;
+  const activeFd = openSync(paths.active, "a", 0o600);
+  let committed = 0;
+  try {
+    for (const readyName of readyNames) {
+      const readyPath = join(paths.spool, readyName);
+      const row = readAndValidateReadyRow(readyPath);
+      const eventId = eventIdFromReadyName(readyName);
+      writeSync(activeFd, row, undefined, "utf8");
+      options.onStep?.("active_row_appended", eventId);
+      fsyncSync(activeFd);
+      options.onStep?.("active_row_flushed", eventId);
+      const committedPath = `${readyPath.slice(0, -".ready".length)}.committed`;
+      renameSync(readyPath, committedPath);
+      fsyncParentDirectory(committedPath);
+      options.onStep?.("receipt_committed", eventId);
+      unlinkSync(committedPath);
+      fsyncParentDirectory(committedPath);
+      options.onStep?.("receipt_removed", eventId);
+      committed += 1;
+    }
+  } finally {
+    closeSync(activeFd);
+  }
+  return committed;
 }
 
 export function eventV2Paths(coordRoot: string) {
@@ -144,6 +179,7 @@ export function eventV2Paths(coordRoot: string) {
   return {
     root,
     active: join(root, "active.ndjson"),
+    catalog: join(root, "catalog.json"),
     spool: join(root, "spool"),
     diagnostics: join(root, "diagnostics"),
     segments: join(root, "segments"),
@@ -152,7 +188,7 @@ export function eventV2Paths(coordRoot: string) {
   };
 }
 
-function ensureLayout(coordRoot: string) {
+export function ensureEventV2Layout(coordRoot: string) {
   assertSupportedPath(coordRoot);
   const paths = eventV2Paths(coordRoot);
   for (const path of [
@@ -177,17 +213,25 @@ function ensureLayout(coordRoot: string) {
   return paths;
 }
 
-function writeReadyRecord(spool: string, readyPath: string, row: string): void {
+function writeReadyRecord(
+  spool: string,
+  readyPath: string,
+  row: string,
+  eventId: string,
+  onStep?: WriteEventV2Options["onStep"],
+): void {
   const temporary = join(spool, `.tmp-${process.pid}-${randomUUID()}`);
   let fd: number | undefined;
   try {
     fd = openSync(temporary, "wx", 0o600);
     writeFileSync(fd, row, "utf8");
     fsyncSync(fd);
+    onStep?.("ready_temp_flushed", eventId);
     closeSync(fd);
     fd = undefined;
     renameSync(temporary, readyPath);
     fsyncParentDirectory(readyPath);
+    onStep?.("ready_published", eventId);
   } finally {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporary)) unlinkSync(temporary);
@@ -214,15 +258,15 @@ function readAndValidateReadyRow(path: string): string {
   return row;
 }
 
-function repairUnterminatedActiveFrame(activePath: string): void {
+function repairUnterminatedActiveFrame(activePath: string): boolean {
   const size = statSync(activePath).size;
-  if (size === 0) return;
+  if (size === 0) return false;
   const tailBytes = Math.min(size, MAX_LINE_BYTES + 1);
   const fd = openSync(activePath, "r");
   const tail = Buffer.allocUnsafe(tailBytes);
   try {
     const bytesRead = readFileTail(fd, tail, size - tailBytes);
-    if (bytesRead > 0 && tail[bytesRead - 1] === 0x0a) return;
+    if (bytesRead > 0 && tail[bytesRead - 1] === 0x0a) return false;
     const lastNewline = tail.lastIndexOf(0x0a, bytesRead - 1);
     if (lastNewline < 0 && size > MAX_LINE_BYTES) {
       throw new Error("active V2 tail exceeds the frame limit without a boundary");
@@ -239,6 +283,12 @@ function repairUnterminatedActiveFrame(activePath: string): void {
     closeSync(repairFd);
   }
   fsyncParentDirectory(activePath);
+  return true;
+}
+
+function eventIdFromReadyName(name: string): string | undefined {
+  const match = name.match(/^\d{16}-(evt_[0-9a-f-]{36})-/);
+  return match?.[1];
 }
 
 function readFileTail(fd: number, buffer: Buffer, position: number): number {

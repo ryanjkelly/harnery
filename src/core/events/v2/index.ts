@@ -9,6 +9,16 @@ export {
   sha256V2,
 } from "./canonical.ts";
 export {
+  type EventV2Catalog,
+  type EventV2CatalogSegment,
+  type EventV2SegmentManifest,
+  type RotateEventLedgerV2Result,
+  readEventV2Catalog,
+  readEventV2SegmentManifest,
+  recoverEventV2Catalog,
+  rotateEventLedgerV2,
+} from "./catalog.ts";
+export {
   type ContentDescriptorV2,
   ContentDescriptorV2Schema,
   EVENT_V2_CONTRACT_MAJOR,
@@ -26,6 +36,17 @@ export {
   type RuntimeAttestationV2,
   RuntimeAttestationV2Schema,
 } from "./contract.ts";
+export {
+  FINGERPRINT_KEY_STORE_RELATIVE_PATH,
+  type FingerprintKeyEpochV2,
+  type FingerprintKeyStoreV2,
+  fingerprintContextV2,
+  fingerprintKeyStorePathV2,
+  loadOrCreateFingerprintKeyStoreV2,
+  type RotateFingerprintEpochV2Options,
+  readFingerprintKeyStoreV2,
+  rotateFingerprintEpochV2,
+} from "./fingerprint-keys.ts";
 export { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
 export { attestationIdV2, clockIdV2, eventIdV2, generationIdV2, spanIdV2 } from "./ids.ts";
 export {
@@ -35,12 +56,14 @@ export {
   type ReadLedgerV2Options,
   type ReadLedgerV2Result,
   readActiveLedgerV2,
+  readLedgerV2,
 } from "./reader.ts";
 export { assertEventV2, type EventV2ValidationResult, validateEventV2 } from "./validate.ts";
 export {
   drainReadyEventsV2,
   EVENT_V2_LEDGER_RELATIVE_ROOT,
   type EventV2DurabilityState,
+  type EventV2WriteStep,
   eventV2Paths,
   type WriteEventV2Options,
   type WriteEventV2Result,

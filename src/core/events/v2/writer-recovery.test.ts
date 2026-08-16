@@ -1,0 +1,118 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildEventV2 } from "./builder.ts";
+import type { EventV2 } from "./contract.ts";
+import { attestationIdV2, eventIdV2, generationIdV2 } from "./ids.ts";
+import { readActiveLedgerV2 } from "./reader.ts";
+import { drainReadyEventsV2, eventV2Paths, writeEventV2 } from "./writer.ts";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("event ledger V2 WAL recovery", () => {
+  test("deduplicates the exact replay left by a crash after the active row flush", () => {
+    const root = temporaryRoot("event-v2-replay");
+    const event = minimalStartedEvent(1);
+    const first = writeEventV2(root, event, {
+      onStep: (step) => {
+        if (step === "active_row_flushed") throw new Error("simulated kill");
+      },
+    });
+
+    expect(first.state).toBe("ready");
+    expect(drainReadyEventsV2(root)).toBe(1);
+    const physicalRows = readFileSync(eventV2Paths(root).active, "utf8").trim().split("\n");
+    expect(physicalRows).toHaveLength(2);
+    const read = readActiveLedgerV2(root);
+    expect(read.events.map(({ event: row }) => row.event_id)).toEqual([event.event_id]);
+    expect(read.diagnostics).toEqual([]);
+    expect(read.complete).toBe(true);
+  });
+
+  test("truncates only an unterminated tail before replaying the durable ready row", () => {
+    const root = temporaryRoot("event-v2-partial");
+    const first = minimalStartedEvent(1);
+    const delayed = minimalStartedEvent(2);
+    expect(writeEventV2(root, first).state).toBe("committed");
+    expect(() =>
+      writeEventV2(root, delayed, {
+        onStep: (step) => {
+          if (step === "ready_published") throw new Error("simulated producer kill");
+        },
+      }),
+    ).toThrow("simulated producer kill");
+
+    const readyName = readdirSync(eventV2Paths(root).spool).find((name) => name.endsWith(".ready"));
+    expect(readyName).toBeDefined();
+    const readyRow = readFileSync(join(eventV2Paths(root).spool, readyName ?? ""), "utf8");
+    appendFileSync(eventV2Paths(root).active, readyRow.slice(0, 17), "utf8");
+    const steps: string[] = [];
+
+    expect(
+      drainReadyEventsV2(root, {
+        onStep: (step) => steps.push(step),
+      }),
+    ).toBe(1);
+    expect(steps).toContain("active_tail_repaired");
+    const read = readActiveLedgerV2(root);
+    expect(read.complete).toBe(true);
+    expect(read.events.map(({ event }) => event.event_id)).toEqual([
+      first.event_id,
+      delayed.event_id,
+    ]);
+  });
+});
+
+function temporaryRoot(label: string): string {
+  const root = mkdtempSync(join(tmpdir(), `${label}-`));
+  roots.push(root);
+  return root;
+}
+
+function minimalStartedEvent(sequence: number): EventV2 {
+  const generationId = generationIdV2();
+  const attestationId = attestationIdV2();
+  const eventId = eventIdV2();
+  return buildEventV2("session.started", {
+    event_id: eventId,
+    producer: {
+      producer_id: "prd_recovery-fixture",
+      boot_id: "boot_fixture",
+      sequence,
+      component: "agent-hook",
+      build_id: "build_fixture",
+      platform: "linux",
+    },
+    scope: {
+      root_id: "root_fixture",
+      instance_id: "inst_fixture",
+      session_id: `sid_${"b".repeat(64)}`,
+      generation_id: generationId,
+    },
+    attestation_id: attestationId,
+    links: { caused_by: [] },
+    provenance: {
+      source_event: "fixture.session_start",
+      attestation: "native",
+      confidence: "exact",
+      attribution: { method: "native_payload", state: "verified" },
+    },
+    payload: {
+      runtime_attestation: {
+        attestation_id: attestationId,
+        generation_id: generationId,
+        adapter: { state: "unsupported", capability: "adapter_identity" },
+        harness: { state: "unsupported", capability: "harness_identity" },
+        model: { state: "unsupported", capability: "model_identity" },
+        capability_profile: `cap_${"c".repeat(64)}`,
+        declared_by_event_id: eventId,
+      },
+      resume: { state: "not_applicable" },
+    },
+  }) as EventV2;
+}
