@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import type { Adapter } from "../../../hooks/events/schema.ts";
 import { buildEventV2 } from "../builder.ts";
 import { canonicalJsonV2, sha256V2 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
@@ -174,9 +175,63 @@ describe("event ledger V2 persistent hook recorder", () => {
     expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.delegations).toEqual([]);
     expect(readFileSync(eventV2Paths(root).active, "utf8")).not.toContain(nativeChild);
   });
+
+  test("refuses unsupported Codex terminal authority even if a stale hook invokes it", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-session";
+    expect(
+      recordHookSignalV2(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV2(
+        baseInput(
+          root,
+          "session-end",
+          parsed({ session_id: nativeSession, clean_exit: true }),
+          "codex",
+        ),
+      ),
+    ).toEqual({ state: "gate_closed", reason: "signal_not_approved:session_end" });
+    expect(readActiveLedgerV2(root).events.map(({ event }) => event.event_type)).toEqual([
+      "ledger.genesis",
+      "session.started",
+    ]);
+  });
+
+  test("records Cursor pre-compaction but refuses unsupported completion telemetry", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-session";
+    expect(
+      recordHookSignalV2(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "cursor"),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV2(
+        baseInput(
+          root,
+          "pre-compact",
+          parsed({ session_id: nativeSession, raw: { pre_tokens: 80, context_window_size: 100 } }),
+          "cursor",
+        ),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV2(
+        baseInput(
+          root,
+          "post-compact",
+          parsed({ session_id: nativeSession, raw: { post_tokens: 20, context_window_size: 100 } }),
+          "cursor",
+        ),
+      ),
+    ).toEqual({ state: "gate_closed", reason: "signal_not_approved:post_compaction" });
+  });
 });
 
-function candidateRoot(): string {
+function candidateRoot(adapter: Adapter = "claude-code"): string {
   const root = temporaryRoot();
   const keyStore = loadOrCreateFingerprintKeyStoreV2(
     root,
@@ -188,7 +243,7 @@ function candidateRoot(): string {
     host_repository_commit: "fixture",
     producer_build_ids: ["build_fixture"],
     adapter_capability_profile_digests: [
-      `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
+      `sha256:${adapterCapabilityProfileDigestV2(adapter).slice(4)}`,
     ],
     config_digest: sha256V2("config"),
     canonicalizer_version: "harnery-jcs-nfc-v1",
@@ -248,13 +303,14 @@ function baseInput(
   root: string,
   signal: Parameters<typeof recordHookSignalV2>[0]["signal"],
   payload: ParsedPayload,
+  adapter: Adapter = "claude-code",
 ) {
   return {
     coordRoot: root,
     mode: "candidate" as const,
     signal,
     payload,
-    adapter: "claude-code" as const,
+    adapter,
     instance_id: "inst_fixture" as const,
     producer_id: "prd_hook" as const,
     build_id: "build_fixture" as const,

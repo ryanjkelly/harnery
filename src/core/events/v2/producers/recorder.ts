@@ -19,7 +19,11 @@ import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { normalizeNativeIdV2 } from "../canonical.ts";
-import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
+import {
+  type AdapterSignalV2,
+  adapterCapabilityProfileDigestV2,
+  adapterSignalSupportV2,
+} from "../capabilities.ts";
 import type { EventV2 } from "../contract.ts";
 import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
@@ -117,6 +121,13 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
     !control.genesis.profile.adapter_capability_profile_digests.includes(expectedCapabilityDigest)
   ) {
     return { state: "gate_closed", reason: "capability_profile_not_approved" };
+  }
+  const requiredCapability = hookSignalCapability(input.signal);
+  if (adapterSignalSupportV2(input.adapter, requiredCapability) === "unsupported") {
+    return {
+      state: "gate_closed",
+      reason: `signal_not_approved:${requiredCapability}`,
+    };
   }
   const rootFingerprintContext = fingerprintContextV2(input.coordRoot, rootId, undefined, epochId);
   const nativeSession =
@@ -251,6 +262,35 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
     return { state: "recorded", event, durability, recovered: false };
   } finally {
     lease.release();
+  }
+}
+
+function hookSignalCapability(signal: HookSignalV2): AdapterSignalV2 {
+  switch (signal) {
+    case "session-start":
+      return "session_start";
+    case "session-end":
+      return "session_end";
+    case "user-prompt-submit":
+      return "prompt";
+    case "stop":
+    case "stop-failure":
+      return "turn_completion";
+    case "pre-tool-use":
+      return "tool_request";
+    case "post-tool-use":
+      return "tool_result";
+    case "post-tool-use-failure":
+      return "tool_failure";
+    case "permission-request":
+      return "permission";
+    case "sub-agent-start":
+    case "sub-agent-stop":
+      return "subagent";
+    case "pre-compact":
+      return "pre_compaction";
+    case "post-compact":
+      return "post_compaction";
   }
 }
 
