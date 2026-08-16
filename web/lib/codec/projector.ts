@@ -33,6 +33,7 @@ import {
   type Confidence,
   type Presented,
 } from "./contracts";
+import { deriveExpressiveChannels, type ExpressiveAction } from "./expression";
 
 /** Decay windows (ms) for rhythm cues; deterministic against `now`. */
 const JUST_STARTED_WINDOW_MS = 90_000;
@@ -50,6 +51,7 @@ interface InstanceEvidence {
   lastSessionStart?: CodecSourceEvidence;
   lastSessionEnd?: CodecSourceEvidence;
   lastPromptOrStart?: CodecSourceEvidence;
+  lastPrompt?: CodecSourceEvidence;
   lastTurnStop?: CodecSourceEvidence;
   lastAction?: CodecSourceEvidence;
   lastTaskSet?: CodecSourceEvidence;
@@ -57,7 +59,13 @@ interface InstanceEvidence {
   lastContext?: CodecSourceEvidence;
   identityName?: string;
   recentActions: CodecRecentAction[];
+  /** Full recent action list for the expressive rules, ascending, capped. */
+  actionsFull: ExpressiveAction[];
+  openSubagents: number;
 }
+
+/** Enough history for turn-scoped expressive rules without unbounded growth. */
+const ACTIONS_FULL_CAP = 24;
 
 const ACTION_TYPES = new Set([
   "tool.pre_use",
@@ -72,21 +80,30 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
   for (const ev of events) {
     let slot = byInstance.get(ev.instance_id);
     if (!slot) {
-      slot = { recentActions: [] };
+      slot = { recentActions: [], actionsFull: [], openSubagents: 0 };
       byInstance.set(ev.instance_id, slot);
     }
     switch (ev.event_type) {
       case "session.start":
-      case "subagent.start":
         slot.lastSessionStart = ev;
         slot.lastPromptOrStart = ev;
         break;
+      case "subagent.start":
+        // A subagent event lands on the parent instance: it seeds the rhythm
+        // (plan: just-started follows subagent.start) and opens coordination
+        // evidence, but it is NOT the parent's session lifecycle.
+        slot.lastPromptOrStart = ev;
+        slot.openSubagents += 1;
+        break;
       case "session.end":
-      case "subagent.stop":
         slot.lastSessionEnd = ev;
+        break;
+      case "subagent.stop":
+        slot.openSubagents = Math.max(0, slot.openSubagents - 1);
         break;
       case "user_prompt.submit":
         slot.lastPromptOrStart = ev;
+        slot.lastPrompt = ev;
         break;
       case "turn.stop":
         slot.lastTurnStop = ev;
@@ -108,6 +125,14 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     }
     if (ACTION_TYPES.has(ev.event_type)) {
       slot.lastAction = ev;
+      slot.actionsFull.push({
+        category: ev.category ?? "other",
+        outcome: ev.outcome ?? "unknown",
+        event_id: ev.event_id,
+        ts: ev.ts,
+        ...(ev.intent ? { intent: ev.intent } : {}),
+      });
+      if (slot.actionsFull.length > ACTIONS_FULL_CAP) slot.actionsFull.shift();
       // `tool.pre_use` opens an action and its post event closes it; the trail
       // wants completed-or-started glyphs, newest first, capped at three.
       if (ev.event_type !== "tool.pre_use" && ev.event_type !== "command.start") {
@@ -148,6 +173,10 @@ function presence(
   ev: InstanceEvidence | undefined,
   now: string,
 ): Presented<CodecPresence> {
+  // A fresh heartbeat is live evidence and outranks any recorded end: an
+  // adapter that restarts without a new session.start row must not render a
+  // living agent offline.
+  if (isActive) return present("online", "projection", "high", hb.last_heartbeat);
   const endTs = ms(ev?.lastSessionEnd?.ts);
   const startTs = ms(ev?.lastSessionStart?.ts);
   const endedAfterLastStart =
@@ -157,7 +186,6 @@ function presence(
       ev.lastSessionEnd.event_id,
     ]);
   }
-  if (isActive) return present("online", "projection", "high", hb.last_heartbeat);
   // A stale heartbeat is absence of evidence, not evidence of absence.
   return present("unknown", "projection", "low", hb.last_heartbeat ?? now);
 }
@@ -285,6 +313,21 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   for (const { hb, isActive } of rows) {
     const ev = evidence.get(hb.instance_id);
     const task = taskLabel(hb, ev);
+    const panelActivity = activity(hb);
+    const channels = deriveExpressiveChannels(
+      {
+        activity: panelActivity.value,
+        ...(ev?.lastPrompt
+          ? { lastPrompt: { ts: ev.lastPrompt.ts, event_id: ev.lastPrompt.event_id } }
+          : {}),
+        ...(ev?.lastTurnStop
+          ? { lastTurnStop: { ts: ev.lastTurnStop.ts, event_id: ev.lastTurnStop.event_id } }
+          : {}),
+        actions: ev?.actionsFull ?? [],
+        openSubagents: ev?.openSubagents ?? 0,
+      },
+      now,
+    );
     const panel: CodecPanelScene = {
       instance_id: hb.instance_id,
       identity: {
@@ -292,15 +335,14 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
         ...(task ? { task } : {}),
       },
       presence: presence(hb, isActive, ev, now),
-      activity: activity(hb),
+      activity: panelActivity,
       lifecycle: lifecycle(hb, ev),
-      // Phase 1: the expressive layer is not built; neutral is the deterministic
-      // default, not an inference.
-      expression: present("neutral", "projection", "high", now),
-      attention: present("none", "projection", "high", now),
+      expression: channels.expression,
+      attention: channels.attention,
       context_band: contextBand(hb.instance_id, ev, hb.last_heartbeat),
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
       recent_actions: ev?.recentActions ?? [],
+      ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
       character: { ...FALLBACK_PACK },
       updated_at: hb.last_heartbeat,
     };

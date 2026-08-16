@@ -108,6 +108,15 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   );
 }
 
+/** Attention overlays tint the panel edge; the house color grammar (sky =
+ * act now, amber = friction, red = error, emerald = done) carries state. */
+const ATTENTION_RING: Record<string, string> = {
+  input: "ring-1 ring-sky-400/60",
+  error: "ring-1 ring-red-500/70",
+  friction: "ring-1 ring-amber-400/50",
+  completion: "ring-1 ring-emerald-400/60",
+};
+
 function CodecPanel({ panel }: { panel: CodecPanelScene }) {
   const offline = panel.presence.value === "offline";
   const unknownPresence = panel.presence.value === "unknown";
@@ -117,6 +126,7 @@ function CodecPanel({ panel }: { panel: CodecPanelScene }) {
       aria-label={`Agent ${panel.identity.display_name}`}
       className={cn(
         "rounded-lg border bg-card p-3 text-card-foreground",
+        ATTENTION_RING[panel.attention.value],
         offline && "opacity-60",
         unknownPresence && "opacity-80",
       )}
@@ -133,6 +143,8 @@ function CodecPanel({ panel }: { panel: CodecPanelScene }) {
         </div>
         <ContextGauge panel={panel} />
       </div>
+
+      <FocusBubble panel={panel} />
 
       <div className="mt-3 flex flex-wrap items-center gap-1">
         <Badge
@@ -165,10 +177,53 @@ function CodecPanel({ panel }: { panel: CodecPanelScene }) {
             {panel.progress_rhythm.value}
           </Badge>
         )}
+        {panel.expression.value !== "neutral" && (
+          <Badge
+            variant="outline"
+            title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
+            className={cn(
+              panel.expression.provenance === "inferred" &&
+                "border-dashed text-muted-foreground",
+            )}
+          >
+            {panel.expression.value}
+            {panel.expression.provenance === "inferred" && (
+              <span className="ml-1 opacity-70">· inferred</span>
+            )}
+          </Badge>
+        )}
+        {panel.attention.value !== "none" && (
+          <Badge
+            variant={panel.attention.value === "error" ? "destructive" : "secondary"}
+            title={`Attention: ${panel.attention.value} (expires ${panel.attention.expires_at ?? "soon"})`}
+          >
+            {panel.attention.value}
+          </Badge>
+        )}
       </div>
 
       <ActionTrail actions={panel.recent_actions} />
     </section>
+  );
+}
+
+/** Intent capsule: solid treatment for event-backed focus, dotted + labeled
+ * for inferred. Never inner monologue; always carries a text equivalent. */
+function FocusBubble({ panel }: { panel: CodecPanelScene }) {
+  const bubble = panel.focus_bubble;
+  if (!bubble) return null;
+  const inferred = bubble.value.basis === "inferred";
+  return (
+    <p
+      className={cn(
+        "mt-2 inline-flex max-w-full items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs",
+        inferred ? "border-dashed text-muted-foreground" : "text-foreground",
+      )}
+      title={`Focus (${bubble.value.basis}): ${bubble.value.text}`}
+    >
+      <span className="truncate">{bubble.value.text}</span>
+      {inferred && <span className="flex-none opacity-70">· inferred</span>}
+    </p>
   );
 }
 
