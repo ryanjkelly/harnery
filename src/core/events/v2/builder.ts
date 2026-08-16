@@ -5,18 +5,29 @@ import { clockIdV2, eventIdV2 } from "./ids.ts";
 
 type EventWithoutDiscriminator<T extends EventTypeV2> = Omit<
   EventOfTypeV2<T>,
-  "contract" | "event_id" | "event_type" | "payload" | "time"
+  "attestation_id" | "contract" | "event_id" | "event_type" | "payload" | "time"
 >;
 
-export type BuildEventV2Input<T extends EventTypeV2> = EventWithoutDiscriminator<T> & {
-  payload: EventPayloadV2<T>;
-  event_id?: `evt_${string}`;
-  observed_at?: string;
-  recorded_at?: string;
-  monotonic_ns?: string;
-  clock_id?: `clk_${string}`;
-  skew?: "normal" | "regressed" | "unknown";
-};
+type RootEventTypeV2 =
+  | "ledger.genesis"
+  | "ledger.activated"
+  | "ledger.schema_advanced"
+  | "ledger.comparability_advanced";
+
+type AttestationInputV2<T extends EventTypeV2> = T extends RootEventTypeV2
+  ? { attestation_id?: never }
+  : { attestation_id: `att_${string}` };
+
+export type BuildEventV2Input<T extends EventTypeV2> = EventWithoutDiscriminator<T> &
+  AttestationInputV2<T> & {
+    payload: EventPayloadV2<T>;
+    event_id?: `evt_${string}`;
+    observed_at?: string;
+    recorded_at?: string;
+    monotonic_ns?: string;
+    clock_id?: `clk_${string}`;
+    skew?: "normal" | "regressed" | "unknown";
+  };
 
 export function buildEventV2<T extends EventTypeV2>(
   eventType: T,

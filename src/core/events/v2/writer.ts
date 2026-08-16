@@ -25,7 +25,7 @@ import type { EventV2 } from "./contract.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
 import { assertEventV2 } from "./validate.ts";
 
-const MAX_LINE_BYTES = 64 * 1024;
+const MAX_LINE_BYTES = 16 * 1024;
 const DEFAULT_LEASE_MS = 5_000;
 
 export const EVENT_V2_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v2" as const;

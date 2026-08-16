@@ -356,6 +356,7 @@
           "type": "object",
           "required": [
             "genesis_id",
+            "genesis_profile_digest",
             "contract_digest",
             "generated_schema_digest",
             "v1_terminal_segment_digest",
@@ -366,6 +367,10 @@
           "properties": {
             "genesis_id": {
               "pattern": "^gex_[0-9a-f-]{36}$",
+              "type": "string"
+            },
+            "genesis_profile_digest": {
+              "pattern": "^sha256:[a-f0-9]{64}$",
               "type": "string"
             },
             "contract_digest": {
@@ -750,6 +755,7 @@
           "additionalProperties": false,
           "type": "object",
           "required": [
+            "activation_id",
             "genesis_id",
             "candidate_digest",
             "approval_record_id",
@@ -757,6 +763,10 @@
             "activated_at"
           ],
           "properties": {
+            "activation_id": {
+              "pattern": "^act_[0-9a-f-]{36}$",
+              "type": "string"
+            },
             "genesis_id": {
               "pattern": "^gex_[0-9a-f-]{36}$",
               "type": "string"

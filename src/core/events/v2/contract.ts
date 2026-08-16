@@ -229,6 +229,7 @@ export const LedgerGenesisV2Schema = eventSchema(
   "ledger.genesis",
   StrictObject({
     genesis_id: Type.String({ pattern: "^gex_[0-9a-f-]{36}$" }),
+    genesis_profile_digest: Sha256,
     contract_digest: Sha256,
     generated_schema_digest: Sha256,
     v1_terminal_segment_digest: Sha256,
@@ -381,6 +382,7 @@ const StateTransitionSchema = StrictObject({
 export const LedgerActivatedV2Schema = eventSchema(
   "ledger.activated",
   StrictObject({
+    activation_id: Type.String({ pattern: "^act_[0-9a-f-]{36}$" }),
     genesis_id: Type.String({ pattern: "^gex_[0-9a-f-]{36}$" }),
     candidate_digest: Sha256,
     approval_record_id: SafeToken,

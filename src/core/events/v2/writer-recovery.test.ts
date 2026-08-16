@@ -3,8 +3,9 @@ import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEventV2 } from "./builder.ts";
+import { type FingerprintContextV2, fingerprintV2 } from "./canonical.ts";
 import type { EventV2 } from "./contract.ts";
-import { attestationIdV2, eventIdV2, generationIdV2 } from "./ids.ts";
+import { attestationIdV2, eventIdV2, generationIdV2, spanIdV2 } from "./ids.ts";
 import { readActiveLedgerV2 } from "./reader.ts";
 import { drainReadyEventsV2, eventV2Paths, writeEventV2 } from "./writer.ts";
 
@@ -65,6 +66,58 @@ describe("event ledger V2 WAL recovery", () => {
       first.event_id,
       delayed.event_id,
     ]);
+  });
+
+  test("rejects a valid event above the 16 KiB row ceiling before creating a WAL", () => {
+    const root = temporaryRoot("event-v2-oversize");
+    const generationId = generationIdV2();
+    const attestationId = attestationIdV2();
+    const fingerprintContext: FingerprintContextV2 = {
+      epochId: "pep_fixture",
+      epochKey: Buffer.alloc(32, 0x55),
+      rootId: "root_fixture",
+      generationId,
+    };
+    const event = buildEventV2("tool.requested", {
+      producer: {
+        producer_id: "prd_size-fixture",
+        boot_id: "boot_fixture",
+        sequence: 1,
+        component: "agent-hook",
+        build_id: "build_fixture",
+        platform: "linux",
+      },
+      scope: {
+        root_id: "root_fixture",
+        instance_id: "inst_fixture",
+        session_id: `sid_${"b".repeat(64)}`,
+        generation_id: generationId,
+        turn_id: `tid_${"d".repeat(64)}`,
+      },
+      attestation_id: attestationId,
+      links: { caused_by: [], span_id: spanIdV2() },
+      provenance: {
+        source_event: "fixture.tool_request",
+        attestation: "native",
+        confidence: "exact",
+        attribution: { method: "native_payload", state: "verified" },
+      },
+      payload: {
+        tool: { namespace: "fixture", name: "Read" },
+        input: { storage: "omitted", media_type: "application/json", bytes: 1 },
+        exact_input: fingerprintV2(fingerprintContext, "exact-input", null),
+        targets: Array.from({ length: 64 }, (_, index) => ({
+          kind: "workspace_path" as const,
+          access: "read" as const,
+          display: `${index}-${"x".repeat(230)}`,
+          fingerprint: fingerprintV2(fingerprintContext, `target-${index}`, index),
+          extractor_version: "fixture-v1",
+        })),
+      },
+    });
+
+    expect(() => writeEventV2(root, event)).toThrow("16384-byte row limit");
+    expect(readActiveLedgerV2(root).events).toEqual([]);
   });
 });
 

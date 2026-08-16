@@ -49,6 +49,20 @@ export {
   RuntimeAttestationV2Schema,
 } from "./contract.ts";
 export {
+  type ActivationManifestV2,
+  type CandidateGenesisManifestV2,
+  type CandidateProfileV2,
+  candidateManifestDigestV2,
+  candidateProfileDigestV2,
+  EVENT_V2_ACTIVATION_MANIFEST,
+  EVENT_V2_GENESIS_MANIFEST,
+  type EventV2ControlState,
+  type EventV2WriteMode,
+  eventV2WriteGateOpen,
+  readEventV2ControlState,
+  repairEventV2ControlPair,
+} from "./control.ts";
+export {
   FINGERPRINT_KEY_STORE_RELATIVE_PATH,
   type FingerprintKeyEpochV2,
   type FingerprintKeyStoreV2,
