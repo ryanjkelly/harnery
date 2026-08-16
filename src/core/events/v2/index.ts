@@ -74,6 +74,23 @@ export {
   repairEventV2ControlPair,
 } from "./control.ts";
 export {
+  type CoordinationGenerationViewV2,
+  type CoordinationViewV2,
+  CoordinationViewV2Error,
+  EVENT_V2_COORDINATION_VIEW_VERSION,
+  projectCoordinationViewV2,
+  readCoordinationViewV2,
+  requireAuthoritySafeCoordinationViewV2,
+} from "./coordination-view.ts";
+export {
+  EVENT_V2_FINALIZATION_VIEW_VERSION,
+  type FinalizationScopeV2,
+  FinalizationScopeV2Error,
+  type FinalizationScopeV2ErrorCode,
+  projectFinalizationScopeV2,
+  readFinalizationScopeV2,
+} from "./finalization-view.ts";
+export {
   FINGERPRINT_KEY_STORE_RELATIVE_PATH,
   type FingerprintKeyEpochV2,
   type FingerprintKeyStoreV2,

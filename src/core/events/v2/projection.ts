@@ -50,6 +50,7 @@ export interface GenerationSafetyStateV2 {
   session_id: string;
   started_event_id: string;
   started_at: string;
+  last_observed_at: string;
   attestation_id: string;
   phase: "live" | "terminal";
   activity: "working" | "needs_input" | "idle" | "terminal";
@@ -366,6 +367,7 @@ function applySessionStart(
     session_id: scope.session_id,
     started_event_id: event.event_id,
     started_at: event.time.observed_at,
+    last_observed_at: event.time.observed_at,
     attestation_id: event.attestation_id,
     phase: "live",
     activity: "idle",
@@ -565,6 +567,7 @@ function generationIdOf(event: EventV2): string | undefined {
 
 function touch(state: GenerationSafetyStateV2, positioned: PositionedEventV2): void {
   state.last_event_id = positioned.event.event_id;
+  state.last_observed_at = positioned.event.time.observed_at;
   state.last_segment_ordinal = positioned.position.segment_ordinal;
   state.last_byte_offset = positioned.position.byte_offset;
 }
