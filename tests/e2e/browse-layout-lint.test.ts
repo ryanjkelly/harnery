@@ -56,6 +56,8 @@ describe("browse layout lint", () => {
           { selector: ".clip-path-unknown", tolerancePx: 0 },
           { selector: ".clip-parent-box", tolerancePx: 0 },
           { selector: ".clip-parent-scroll", tolerancePx: 0 },
+          { selector: ".clip-sronly", tolerancePx: 0 },
+          { selector: ".clip-truncate", tolerancePx: 0 },
         ],
         overlap: [
           { selector: ".overlap-good", tolerancePx: 0 },
@@ -89,6 +91,8 @@ describe("browse layout lint", () => {
         "unknown",
         "fail",
         "pass",
+        "pass",
+        "pass",
       ]);
       expect(result.clip[8]?.unsupported).toEqual([]);
       expect(result.clip[9]?.unsupported).toEqual([]);
@@ -109,6 +113,16 @@ describe("browse layout lint", () => {
       // overflow:hidden box inside that scroller still is.
       expect(result.clip[4]?.issues).toEqual([]);
       expect(result.clip[5]?.issues).toEqual([]);
+      // sr-only content is clipped by design; ellipsis truncation belongs to
+      // the truncation check. Both pass clip with an audit-trail exclusion.
+      expect(result.clip[13]?.outcome).toBe("pass");
+      expect(result.clip[13]?.excluded).toEqual(
+        expect.arrayContaining([expect.objectContaining({ reason: "visually-hidden" })]),
+      );
+      expect(result.clip[14]?.outcome).toBe("pass");
+      expect(result.clip[14]?.excluded).toEqual(
+        expect.arrayContaining([expect.objectContaining({ reason: "ellipsis-truncation" })]),
+      );
       expect(result.clip[6]?.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ clippedBy: "div.inner" }),

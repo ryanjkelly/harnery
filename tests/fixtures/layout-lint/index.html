@@ -74,6 +74,13 @@
         background: #eef; border: 1px solid #99c; border-radius: 4px; padding: 1px 4px;
       }
       .crowd-chips { display: flex; gap: 2px; width: 300px; }
+      .clip-sronly span.sr {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
+      .clip-truncate p {
+        width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
     </style>
   </head>
   <body>
@@ -159,5 +166,11 @@
     <!-- flex tag row: blockified code chips 2px apart are controls, not
          crowded panels -->
     <section class="crowd-chips"><code>alpha.js</code><code>beta.js</code><code>gamma.js</code></section>
+    <!-- visually-hidden (sr-only) content is clipped BY DESIGN for assistive
+         tech; the clip gate must exclude it -->
+    <section class="clip-sronly" style="position: relative;">Visible label<span class="sr">Screen reader only description that would overflow its one pixel box</span></section>
+    <!-- single-line ellipsis truncation is deliberate; the truncation check
+         owns auditing it, the clip gate excludes it -->
+    <section class="clip-truncate"><p>This long label is designed to truncate with an ellipsis at one twenty pixels</p></section>
   </body>
 </html>

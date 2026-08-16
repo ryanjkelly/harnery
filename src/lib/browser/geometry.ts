@@ -24,7 +24,13 @@ export interface LayoutElementMeasurement {
 export interface LayoutExclusion {
   index: number;
   tag: string;
-  reason: "hidden" | "zero-area" | "out-of-flow" | "limit";
+  reason:
+    | "hidden"
+    | "zero-area"
+    | "out-of-flow"
+    | "limit"
+    | "visually-hidden"
+    | "ellipsis-truncation";
 }
 
 export interface AlignChild extends LayoutElementMeasurement {
@@ -507,6 +513,53 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
       return { x: clips.has(style.overflowX), y: clips.has(style.overflowY) };
     };
 
+    // The visually-hidden idiom (Tailwind `sr-only`, Bootstrap
+    // `visually-hidden`): a ~1px absolutely-positioned box whose content is
+    // clipped ON PURPOSE so it exists for assistive tech only. Its box is 1x1
+    // (not zero-area, so the zero-area exclusion misses it) and the legacy
+    // `clip: rect(0,0,0,0)` it relies on is not an overflow style, so nothing
+    // above recognizes it. Reporting it would flag every accessible page.
+    const isVisuallyHidden = (element: Element): boolean => {
+      const style = getComputedStyle(element);
+      if (style.position !== "absolute" && style.position !== "fixed") return false;
+      if (style.clip && style.clip !== "auto") return true;
+      const rect = element.getBoundingClientRect();
+      return rect.width <= 1 && rect.height <= 1 && style.overflow === "hidden";
+    };
+
+    const hasVisuallyHiddenAncestor = (start: Element | null, scope: Element): boolean => {
+      let current = start;
+      while (current && scope.contains(current)) {
+        if (isVisuallyHidden(current)) return true;
+        if (current === scope) break;
+        current = current.parentElement;
+      }
+      return false;
+    };
+
+    // Deliberate single-line truncation (`text-overflow: ellipsis` + nowrap +
+    // hidden overflow, the `truncate` utility): cutting the text is the
+    // design, and the dedicated truncation check owns auditing it. Only text
+    // under such an ancestor is exempt; element boxes still have to fit.
+    const ellipsizes = (element: Element): boolean => {
+      const style = getComputedStyle(element);
+      return (
+        style.textOverflow === "ellipsis" &&
+        style.whiteSpace === "nowrap" &&
+        (style.overflowX === "hidden" || style.overflowX === "clip")
+      );
+    };
+
+    const hasEllipsizingAncestor = (start: Element | null, scope: Element): boolean => {
+      let current = start;
+      while (current && scope.contains(current)) {
+        if (ellipsizes(current)) return true;
+        if (current === scope) break;
+        current = current.parentElement;
+      }
+      return false;
+    };
+
     // A scroller hides content the same way a clip does, but the reader can
     // reach it. Content below the fold of a capped table or right of a wide
     // code block is not a layout defect, so an axis stops being checked at the
@@ -698,6 +751,10 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "hidden" });
             return;
           }
+          if (hasVisuallyHiddenAncestor(element, container)) {
+            excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "visually-hidden" });
+            return;
+          }
           const rect = element.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) {
             excluded.push({ index, tag: element.tagName.toLowerCase(), reason: "zero-area" });
@@ -748,6 +805,22 @@ export function buildLayoutLintCheck(): (request: LayoutLintRequest) => LayoutLi
           }
           const owner = nearestBlockOwner(node, container);
           if (!owner) continue;
+          if (hasVisuallyHiddenAncestor(parent, container)) {
+            excluded.push({
+              index: measurementIndex++,
+              tag: parent.tagName.toLowerCase(),
+              reason: "visually-hidden",
+            });
+            continue;
+          }
+          if (hasEllipsizingAncestor(parent, container)) {
+            excluded.push({
+              index: measurementIndex++,
+              tag: parent.tagName.toLowerCase(),
+              reason: "ellipsis-truncation",
+            });
+            continue;
+          }
           let transformed = false;
           let current: Element | null = owner;
           while (current && container.contains(current)) {
