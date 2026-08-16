@@ -17,6 +17,7 @@ import { eventsPath, readAgents } from "@/lib/coord-reader";
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
+import { readRemotePanels } from "./remote-source";
 import { sanitizeLine } from "./sanitize";
 import { applySuggestions } from "./suggestions";
 
@@ -65,6 +66,17 @@ export async function buildScene(now?: string): Promise<CodecScene> {
     applySuggestions(scene, events);
   } catch {
     // deterministic scene stands
+  }
+  // Remote panels from peer machines' presence blobs (relay cache). Local
+  // panels win instance-id collisions: the local view is closer to the
+  // source when the same session is observed twice.
+  try {
+    const localIds = new Set(scene.panels.map((p) => p.instance_id));
+    for (const panel of readRemotePanels()) {
+      if (!localIds.has(panel.instance_id)) scene.panels.push(panel);
+    }
+  } catch {
+    // local scene stands
   }
   // Character assignment is presentation metadata layered on after the pure
   // projection; a registry failure leaves the fallback pack in place.

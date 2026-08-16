@@ -24,6 +24,7 @@ const ENTRYPOINTS = [
   "lib/codec/validator.ts",
   "lib/codec/packs.ts",
   "lib/codec/suggestions.ts",
+  "lib/codec/remote-source.ts",
   "lib/codec/scene-source.ts",
   "app/api/codec-scene/route.ts",
   "app/api/codec-stream/route.ts",

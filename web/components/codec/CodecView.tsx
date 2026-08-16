@@ -342,6 +342,14 @@ function CodecPanel({
             ↳ {parentName}
           </Badge>
         )}
+        {panel.machine && (
+          <Badge
+            variant="secondary"
+            title={`Running on ${panel.machine} (via the presence relay)`}
+          >
+            @ {panel.machine}
+          </Badge>
+        )}
       </div>
 
       <ActionTrail actions={panel.recent_actions} />

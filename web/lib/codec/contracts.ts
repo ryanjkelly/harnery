@@ -108,6 +108,8 @@ export interface CodecSourceEvidence {
 export interface CodecPanelScene {
   instance_id: string;
   identity: { display_name: string; task?: Presented<string> };
+  /** Present on panels sourced from another machine's presence blob. */
+  machine?: string;
   presence: Presented<CodecPresence>;
   activity: Presented<CodecActivity>;
   lifecycle: Presented<CodecLifecycle>;
