@@ -44,6 +44,58 @@ function validateSemantics(event: EventV2): string[] {
       issues.push("/payload/runtime_attestation/declared_by_event_id:mismatch");
     }
   }
+  if (event.event_type === "session.attestation_changed") {
+    const declaration = event.payload.runtime_attestation;
+    if (declaration.attestation_id !== event.attestation_id) {
+      issues.push("/payload/runtime_attestation/attestation_id:mismatch");
+    }
+    if (declaration.generation_id !== (event.scope as { generation_id: string }).generation_id) {
+      issues.push("/payload/runtime_attestation/generation_id:mismatch");
+    }
+    if (declaration.declared_by_event_id !== event.event_id) {
+      issues.push("/payload/runtime_attestation/declared_by_event_id:mismatch");
+    }
+    if (event.payload.prior_attestation_id === declaration.attestation_id) {
+      issues.push("/payload/prior_attestation_id:must_change");
+    }
+  }
+  if ((event.links as { caused_by: string[] }).caused_by.includes(event.event_id)) {
+    issues.push("/links/caused_by:self_reference");
+  }
+  if (
+    event.event_type === "session.termination_observed" &&
+    event.payload.observer_instance_id === event.payload.subject_instance_id
+  ) {
+    issues.push("/payload/observer_instance_id:observer_must_differ_from_subject");
+  }
+  if (
+    event.event_type === "progress.observed" &&
+    event.payload.evidence_event_ids.includes(event.event_id)
+  ) {
+    issues.push("/payload/evidence_event_ids:self_reference");
+  }
+  if (
+    (event.event_type === "coord.task_changed" ||
+      event.event_type === "coord.lifecycle_changed" ||
+      event.event_type === "coord.identity_attested" ||
+      event.event_type === "decision.state_changed") &&
+    !event.payload.authority.transaction_id
+  ) {
+    issues.push("/payload/authority/transaction_id:required_for_authority_transition");
+  }
+  if (
+    event.event_type === "coord.claim_changed" &&
+    event.payload.operation !== "denied" &&
+    !event.payload.authority.transaction_id
+  ) {
+    issues.push("/payload/authority/transaction_id:required_for_authority_transition");
+  }
+  if (
+    event.event_type === "ledger.activated" &&
+    event.payload.eligible_after_event_id !== event.event_id
+  ) {
+    issues.push("/payload/eligible_after_event_id:must_reference_activation_event");
+  }
   return issues;
 }
 

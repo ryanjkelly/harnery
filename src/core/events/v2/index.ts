@@ -72,6 +72,11 @@ export {
   writeLiveDisplayV2,
 } from "./live-feed.ts";
 export {
+  type HookProducerContextV2,
+  type HookSignalV2,
+  normalizeHookEventV2,
+} from "./producers/hook.ts";
+export {
   type LedgerDiagnosticCodeV2,
   type LedgerDiagnosticV2,
   type PositionedEventV2,
@@ -80,6 +85,12 @@ export {
   readActiveLedgerV2,
   readLedgerV2,
 } from "./reader.ts";
+export {
+  type ExtractTargetsV2Input,
+  exactToolInputFingerprintV2,
+  extractTargetsV2,
+  type TargetDescriptorV2,
+} from "./targets.ts";
 export { assertEventV2, type EventV2ValidationResult, validateEventV2 } from "./validate.ts";
 export {
   drainReadyEventsV2,

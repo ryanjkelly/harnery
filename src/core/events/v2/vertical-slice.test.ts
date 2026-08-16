@@ -129,7 +129,12 @@ describe("event ledger V2 vertical slice", () => {
       payload: {
         tool: { namespace: "claude", name: "Bash" },
         outcome: "succeeded",
-        duration_ms: 42,
+        duration_ms: {
+          state: "observed",
+          value: 42,
+          attestation: "derived",
+          confidence: "exact",
+        },
         result: {
           storage: "omitted",
           media_type: "text/plain",
