@@ -107,13 +107,27 @@ export {
   recordHookSignalV2,
 } from "./producers/recorder.ts";
 export {
+  type ClaimProjectionV2,
+  type DelegationProjectionV2,
+  EVENT_V2_SAFETY_REDUCER_BUILD,
+  type GenerationSafetyStateV2,
+  reduceSafetyProjectionV2,
+  type SafetyProjectionDiagnosticCodeV2,
+  type SafetyProjectionDiagnosticV2,
+  type SafetyProjectionV2,
+  type WaitProjectionV2,
+} from "./projection.ts";
+export {
+  type LedgerCursorV2,
   type LedgerDiagnosticCodeV2,
   type LedgerDiagnosticV2,
   type PositionedEventV2,
   type ReadLedgerV2Options,
   type ReadLedgerV2Result,
+  type ReadLedgerV2SinceResult,
   readActiveLedgerV2,
   readLedgerV2,
+  readLedgerV2Since,
 } from "./reader.ts";
 export {
   type ExtractTargetsV2Input,
