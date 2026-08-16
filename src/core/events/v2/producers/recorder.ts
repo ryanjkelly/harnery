@@ -29,7 +29,12 @@ import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
 import { attestationIdV2, clockIdV2, delegationIdV2, generationIdV2, spanIdV2 } from "../ids.ts";
 import { assertEventV2, validateEventV2 } from "../validate.ts";
-import { type WriteEventV2Options, type WriteEventV2Result, writeEventV2 } from "../writer.ts";
+import {
+  EVENT_V2_LEDGER_RELATIVE_ROOT,
+  type WriteEventV2Options,
+  type WriteEventV2Result,
+  writeEventV2,
+} from "../writer.ts";
 import { type HookSignalV2, normalizeHookEventV2 } from "./hook.ts";
 
 const STATE_FORMAT = "harnery-v2-hook-producer" as const;
@@ -418,14 +423,20 @@ function producerStatePath(
   adapter: Adapter,
   sessionHash: `hid_${string}`,
 ): string {
-  return join(resolve(coordRoot), ".harnery/private/v2-producers", adapter, `${sessionHash}.json`);
+  return join(
+    resolve(coordRoot),
+    EVENT_V2_LEDGER_RELATIVE_ROOT,
+    "private-producers",
+    adapter,
+    `${sessionHash}.json`,
+  );
 }
 
 function acquireStateLease(coordRoot: string, statePath: string) {
   const directory = join(statePath, "..");
+  const producerRoot = join(resolve(coordRoot), EVENT_V2_LEDGER_RELATIVE_ROOT, "private-producers");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(join(resolve(coordRoot), ".harnery/private"), 0o700);
-  chmodSync(join(resolve(coordRoot), ".harnery/private/v2-producers"), 0o700);
+  chmodSync(producerRoot, 0o700);
   chmodSync(directory, 0o700);
   return acquireNoClobberLease({
     path: `${statePath}.lease`,

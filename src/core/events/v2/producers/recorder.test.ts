@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
@@ -81,6 +89,12 @@ describe("event ledger V2 persistent hook recorder", () => {
       "recorded",
       "recorded",
     ]);
+    expect(existsSync(join(root, ".harnery/private/v2-producers"))).toBeFalse();
+    expect(
+      readdirSync(join(root, ".harnery/ledgers/v2/private-producers/claude-code")).filter((name) =>
+        name.endsWith(".json"),
+      ),
+    ).toHaveLength(1);
     const events = readActiveLedgerV2(root).events.map(({ event }) => event);
     const hookEvents = events.filter((event) => event.producer.producer_id === "prd_hook");
     expect(hookEvents.map((event) => event.producer.sequence)).toEqual([1, 2, 3, 4]);

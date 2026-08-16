@@ -277,7 +277,7 @@ function candidateRoot(): string {
 }
 
 function readPrivateProducerFiles(root: string): string {
-  const directory = join(root, ".harnery/private/v2-producers/agent-coord");
+  const directory = join(root, ".harnery/ledgers/v2/private-producers/agent-coord");
   return readdirSync(directory)
     .filter((name) => name.endsWith(".json"))
     .map((name) => readFileSync(join(directory, name), "utf8"))

@@ -279,7 +279,7 @@ function candidateRoot(): string {
 }
 
 function readPrivateProducerFiles(root: string): string {
-  const directory = join(root, ".harnery/private/v2-producers/session-tee");
+  const directory = join(root, ".harnery/ledgers/v2/private-producers/session-tee");
   return readdirSync(directory)
     .filter((name) => name.endsWith(".json"))
     .map((name) => readFileSync(join(directory, name), "utf8"))

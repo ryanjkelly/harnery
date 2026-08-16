@@ -23,7 +23,12 @@ import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
 import { clockIdV2, spanIdV2 } from "../ids.ts";
 import { validateEventV2 } from "../validate.ts";
-import { type WriteEventV2Options, type WriteEventV2Result, writeEventV2 } from "../writer.ts";
+import {
+  EVENT_V2_LEDGER_RELATIVE_ROOT,
+  type WriteEventV2Options,
+  type WriteEventV2Result,
+  writeEventV2,
+} from "../writer.ts";
 import {
   type CommandObservationV2,
   type CommandSignalV2,
@@ -264,16 +269,17 @@ function applyCommandEvent(
 function commandStatePath(coordRoot: string, commandSource: `hid_${string}`): string {
   return join(
     resolve(coordRoot),
-    ".harnery/private/v2-producers/session-tee",
+    EVENT_V2_LEDGER_RELATIVE_ROOT,
+    "private-producers/session-tee",
     `${commandSource}.json`,
   );
 }
 
 function acquireCommandLease(coordRoot: string, statePath: string) {
   const directory = join(statePath, "..");
+  const producerRoot = join(resolve(coordRoot), EVENT_V2_LEDGER_RELATIVE_ROOT, "private-producers");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(join(resolve(coordRoot), ".harnery/private"), 0o700);
-  chmodSync(join(resolve(coordRoot), ".harnery/private/v2-producers"), 0o700);
+  chmodSync(producerRoot, 0o700);
   chmodSync(directory, 0o700);
   return acquireNoClobberLease({
     path: `${statePath}.lease`,

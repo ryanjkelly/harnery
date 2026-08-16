@@ -30,6 +30,7 @@ import type { EventV2 } from "../contract.ts";
 import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
 import { clockIdV2 } from "../ids.ts";
+import { EVENT_V2_LEDGER_RELATIVE_ROOT } from "../writer.ts";
 import {
   type CoordinationAuthoritySignalV2,
   type CoordinationObservationBySignalV2,
@@ -305,16 +306,17 @@ function eventFromTransaction(transaction: AuthorityTransactionV2): EventV2 {
 function coordinationStatePath(coordRoot: string, producerSource: `hid_${string}`): string {
   return join(
     resolve(coordRoot),
-    ".harnery/private/v2-producers/agent-coord",
+    EVENT_V2_LEDGER_RELATIVE_ROOT,
+    "private-producers/agent-coord",
     `${producerSource}.json`,
   );
 }
 
 function acquireCoordinationLease(coordRoot: string, statePath: string) {
   const directory = join(statePath, "..");
+  const producerRoot = join(resolve(coordRoot), EVENT_V2_LEDGER_RELATIVE_ROOT, "private-producers");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(join(resolve(coordRoot), ".harnery/private"), 0o700);
-  chmodSync(join(resolve(coordRoot), ".harnery/private/v2-producers"), 0o700);
+  chmodSync(producerRoot, 0o700);
   chmodSync(directory, 0o700);
   return acquireNoClobberLease({
     path: `${statePath}.lease`,
