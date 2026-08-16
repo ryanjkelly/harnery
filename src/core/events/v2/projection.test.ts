@@ -90,7 +90,7 @@ describe("event ledger V2 safety projection", () => {
       { wait_id: "operator", outcome: "succeeded", resolution_reference: "operator_reply" },
       [priorEventId],
     ).event_id;
-    const target = fingerprintV2(
+    const targetFingerprint = fingerprintV2(
       {
         epochId: "pep_fixture",
         epochKey: Buffer.alloc(32, 0x44),
@@ -100,6 +100,13 @@ describe("event ledger V2 safety projection", () => {
       "claim-target",
       "src/example.ts",
     );
+    const target = {
+      kind: "workspace_path" as const,
+      access: "write" as const,
+      display: "src/example.ts",
+      fingerprint: targetFingerprint,
+      extractor_version: "fixture-v1",
+    };
     priorEventId = fixture.append(
       "coord.claim_changed",
       {
@@ -178,7 +185,7 @@ describe("event ledger V2 safety projection", () => {
   test("refuses an authority mutation whose subject attribution is not verified", () => {
     const fixture = createFixture();
     const started = fixture.append("session.started", startedPayload(fixture));
-    const target = fingerprintV2(
+    const targetFingerprint = fingerprintV2(
       {
         epochId: "pep_fixture",
         epochKey: Buffer.alloc(32, 0x55),
@@ -188,6 +195,13 @@ describe("event ledger V2 safety projection", () => {
       "claim-target",
       "src/unverified.ts",
     );
+    const target = {
+      kind: "workspace_path" as const,
+      access: "write" as const,
+      display: "src/unverified.ts",
+      fingerprint: targetFingerprint,
+      extractor_version: "fixture-v1",
+    };
     fixture.append(
       "coord.claim_changed",
       {

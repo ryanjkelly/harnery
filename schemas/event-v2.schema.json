@@ -17449,39 +17449,123 @@
               "additionalProperties": false,
               "type": "object",
               "required": [
-                "algorithm",
-                "canonicalizer",
-                "key_epoch",
-                "scope",
-                "digest"
+                "kind",
+                "access",
+                "fingerprint",
+                "extractor_version"
               ],
               "properties": {
-                "algorithm": {
-                  "const": "hmac-sha256",
-                  "type": "string"
-                },
-                "canonicalizer": {
-                  "const": "harnery-jcs-nfc-v1",
-                  "type": "string"
-                },
-                "key_epoch": {
-                  "pattern": "^pep_[a-zA-Z0-9._-]{1,128}$",
-                  "type": "string"
-                },
-                "scope": {
+                "kind": {
                   "anyOf": [
                     {
-                      "const": "generation",
+                      "const": "workspace_path",
                       "type": "string"
                     },
                     {
-                      "const": "root",
+                      "const": "external_path",
+                      "type": "string"
+                    },
+                    {
+                      "const": "url",
+                      "type": "string"
+                    },
+                    {
+                      "const": "query",
+                      "type": "string"
+                    },
+                    {
+                      "const": "pattern",
+                      "type": "string"
+                    },
+                    {
+                      "const": "artifact",
+                      "type": "string"
+                    },
+                    {
+                      "const": "service",
+                      "type": "string"
+                    },
+                    {
+                      "const": "resource",
                       "type": "string"
                     }
                   ]
                 },
-                "digest": {
-                  "pattern": "^sha256:[a-f0-9]{64}$",
+                "access": {
+                  "anyOf": [
+                    {
+                      "const": "read",
+                      "type": "string"
+                    },
+                    {
+                      "const": "write",
+                      "type": "string"
+                    },
+                    {
+                      "const": "execute",
+                      "type": "string"
+                    },
+                    {
+                      "const": "publish",
+                      "type": "string"
+                    },
+                    {
+                      "const": "delete",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unknown",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "display": {
+                  "maxLength": 240,
+                  "type": "string"
+                },
+                "fingerprint": {
+                  "additionalProperties": false,
+                  "type": "object",
+                  "required": [
+                    "algorithm",
+                    "canonicalizer",
+                    "key_epoch",
+                    "scope",
+                    "digest"
+                  ],
+                  "properties": {
+                    "algorithm": {
+                      "const": "hmac-sha256",
+                      "type": "string"
+                    },
+                    "canonicalizer": {
+                      "const": "harnery-jcs-nfc-v1",
+                      "type": "string"
+                    },
+                    "key_epoch": {
+                      "pattern": "^pep_[a-zA-Z0-9._-]{1,128}$",
+                      "type": "string"
+                    },
+                    "scope": {
+                      "anyOf": [
+                        {
+                          "const": "generation",
+                          "type": "string"
+                        },
+                        {
+                          "const": "root",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "digest": {
+                      "pattern": "^sha256:[a-f0-9]{64}$",
+                      "type": "string"
+                    }
+                  }
+                },
+                "extractor_version": {
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
                   "type": "string"
                 }
               }

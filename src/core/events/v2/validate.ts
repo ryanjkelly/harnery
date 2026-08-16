@@ -23,6 +23,22 @@ export function validateEventV2(value: unknown): EventV2ValidationResult {
 
 function validateSemantics(event: EventV2): string[] {
   const issues: string[] = [];
+  const targets =
+    event.event_type === "tool.requested"
+      ? event.payload.targets
+      : event.event_type === "coord.claim_changed"
+        ? [event.payload.target]
+        : [];
+  for (const [index, target] of targets.entries()) {
+    if (target.display === undefined) continue;
+    const prefix =
+      event.event_type === "tool.requested" ? `/payload/targets/${index}` : "/payload/target";
+    if (target.kind !== "workspace_path") {
+      issues.push(`${prefix}/display:forbidden_for_target_kind`);
+    } else if (!safeWorkspaceDisplay(target.display)) {
+      issues.push(`${prefix}/display:workspace_path_invalid`);
+    }
+  }
   if (event.producer.bridge === "codex-wsl" && event.producer.platform !== "linux") {
     issues.push("/producer/platform:codex-wsl_requires_linux_writer");
   }
@@ -91,12 +107,28 @@ function validateSemantics(event: EventV2): string[] {
     issues.push("/payload/authority/transaction_id:required_for_authority_transition");
   }
   if (
+    event.event_type === "coord.claim_changed" &&
+    event.payload.target.access !== event.payload.access
+  ) {
+    issues.push("/payload/target/access:must_match_claim_access");
+  }
+  if (
     event.event_type === "ledger.activated" &&
     event.payload.eligible_after_event_id !== event.event_id
   ) {
     issues.push("/payload/eligible_after_event_id:must_reference_activation_event");
   }
   return issues;
+}
+
+function safeWorkspaceDisplay(value: string): boolean {
+  return (
+    value === "." ||
+    (!value.startsWith("/") &&
+      !/^[a-zA-Z]:/.test(value) &&
+      !value.includes("\\") &&
+      !value.split("/").includes(".."))
+  );
 }
 
 export function assertEventV2(value: unknown): asserts value is EventV2 {

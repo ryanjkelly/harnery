@@ -294,38 +294,37 @@ export const TurnCompletedV2Schema = eventSchema(
   "turn",
 );
 
+export const TargetDescriptorV2Schema = StrictObject({
+  kind: Type.Union([
+    Type.Literal("workspace_path"),
+    Type.Literal("external_path"),
+    Type.Literal("url"),
+    Type.Literal("query"),
+    Type.Literal("pattern"),
+    Type.Literal("artifact"),
+    Type.Literal("service"),
+    Type.Literal("resource"),
+  ]),
+  access: Type.Union([
+    Type.Literal("read"),
+    Type.Literal("write"),
+    Type.Literal("execute"),
+    Type.Literal("publish"),
+    Type.Literal("delete"),
+    Type.Literal("unknown"),
+  ]),
+  display: Type.Optional(Type.String({ maxLength: 240 })),
+  fingerprint: FingerprintV2Schema,
+  extractor_version: SafeToken,
+});
+
 export const ToolRequestedV2Schema = eventSchema(
   "tool.requested",
   StrictObject({
     tool: StrictObject({ namespace: SafeToken, name: SafeToken }),
     input: ContentDescriptorV2Schema,
     exact_input: FingerprintV2Schema,
-    targets: Type.Array(
-      StrictObject({
-        kind: Type.Union([
-          Type.Literal("workspace_path"),
-          Type.Literal("external_path"),
-          Type.Literal("url"),
-          Type.Literal("query"),
-          Type.Literal("pattern"),
-          Type.Literal("artifact"),
-          Type.Literal("service"),
-          Type.Literal("resource"),
-        ]),
-        access: Type.Union([
-          Type.Literal("read"),
-          Type.Literal("write"),
-          Type.Literal("execute"),
-          Type.Literal("publish"),
-          Type.Literal("delete"),
-          Type.Literal("unknown"),
-        ]),
-        display: Type.Optional(Type.String({ maxLength: 240 })),
-        fingerprint: FingerprintV2Schema,
-        extractor_version: SafeToken,
-      }),
-      { maxItems: 64 },
-    ),
+    targets: Type.Array(TargetDescriptorV2Schema, { maxItems: 64 }),
   }),
   "turn",
   ToolLinksSchema,
@@ -648,7 +647,7 @@ export const CoordClaimChangedV2Schema = eventSchema(
       Type.Literal("released"),
       Type.Literal("denied"),
     ]),
-    target: FingerprintV2Schema,
+    target: TargetDescriptorV2Schema,
     access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
     authority: AuthorityReferenceSchema,
   }),
@@ -830,3 +829,4 @@ export type EventOfTypeV2<T extends EventTypeV2> = Extract<EventV2, { event_type
 export type EventPayloadV2<T extends EventTypeV2> = EventOfTypeV2<T>["payload"];
 export type RuntimeAttestationV2 = Static<typeof RuntimeAttestationV2Schema>;
 export type ContentDescriptorV2 = Static<typeof ContentDescriptorV2Schema>;
+export type TargetDescriptorV2 = Static<typeof TargetDescriptorV2Schema>;

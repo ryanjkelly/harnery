@@ -432,7 +432,7 @@ function validateTransactionBinding(transaction: AuthorityTransactionV2, event: 
       event.payload.subject_instance_id !== transaction.subject_instance_id ||
       event.payload.authority.transaction_id !== transaction.transaction_id ||
       event.payload.operation !== operation ||
-      event.payload.target.digest !== mutation.target_fingerprint ||
+      event.payload.target.fingerprint.digest !== mutation.target_fingerprint ||
       event.payload.access !== mutation.access
     ) {
       throw new Error("authority claim transaction does not match its event");

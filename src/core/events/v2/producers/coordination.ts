@@ -3,6 +3,7 @@ import { buildEventV2 } from "../builder.ts";
 import { type FingerprintContextV2, fingerprintV2, normalizeNativeIdV2 } from "../canonical.ts";
 import type { EventV2 } from "../contract.ts";
 import { eventIdV2 } from "../ids.ts";
+import { describePathTargetV2 } from "../targets.ts";
 
 export type CoordinationAuthoritySignalV2 =
   | "task-changed"
@@ -14,6 +15,7 @@ export type CoordinationAuthoritySignalV2 =
   | "wait-ended";
 
 export interface CoordinationProducerContextV2 {
+  coordRoot: string;
   root_id: `root_${string}`;
   instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
@@ -214,12 +216,26 @@ export function normalizeCoordinationAuthorityV2<S extends CoordinationAuthority
     }
     case "claim-changed": {
       const input = observation as ClaimChangedObservationV2;
-      const target = fingerprintV2(
-        context.fingerprintContext,
-        "coord.claim-target",
-        input.target,
-        "root",
-      );
+      const target =
+        typeof input.target === "string"
+          ? describePathTargetV2({
+              coordRoot: context.coordRoot,
+              value: input.target,
+              access: input.access,
+              fingerprintContext: context.fingerprintContext,
+              extractorVersion: "agent-coord-claim-v1",
+            })
+          : {
+              kind: "resource" as const,
+              access: input.access,
+              fingerprint: fingerprintV2(
+                context.fingerprintContext,
+                "semantic-target.resource",
+                input.target,
+                "root",
+              ),
+              extractor_version: "agent-coord-claim-v1",
+            };
       return {
         event: buildEventV2("coord.claim_changed", {
           ...common,
@@ -234,7 +250,7 @@ export function normalizeCoordinationAuthorityV2<S extends CoordinationAuthority
         }) as EventV2,
         mutation: {
           kind: input.operation === "acquired" ? "claim.acquire" : "claim.release",
-          target_fingerprint: target.digest,
+          target_fingerprint: target.fingerprint.digest as `sha256:${string}`,
           access: input.access,
         },
       };

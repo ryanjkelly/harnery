@@ -12,6 +12,27 @@ export interface ExtractTargetsV2Input {
   fingerprintContext: FingerprintContextV2;
 }
 
+export interface DescribePathTargetV2Input {
+  coordRoot: string;
+  value: string;
+  access: TargetDescriptorV2["access"];
+  fingerprintContext: FingerprintContextV2;
+  extractorVersion: string;
+}
+
+/** Describe one known path without exposing values outside the coordination root. */
+export function describePathTargetV2(input: DescribePathTargetV2Input): TargetDescriptorV2 {
+  return pathTarget(
+    {
+      coordRoot: input.coordRoot,
+      fingerprintContext: input.fingerprintContext,
+    },
+    input.value,
+    input.access,
+    input.extractorVersion,
+  );
+}
+
 /** Versioned, tool-specific target extraction. Unknown tools deliberately emit no guessed target. */
 export function extractTargetsV2(input: ExtractTargetsV2Input): TargetDescriptorV2[] {
   const record = plainRecord(input.toolInput);
@@ -87,7 +108,7 @@ export function exactToolInputFingerprintV2(
 }
 
 function pathTarget(
-  input: ExtractTargetsV2Input,
+  input: Pick<ExtractTargetsV2Input, "coordRoot" | "fingerprintContext">,
   value: string,
   access: TargetDescriptorV2["access"],
   version: string,

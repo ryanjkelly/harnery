@@ -169,6 +169,8 @@ export {
   readLedgerV2Since,
 } from "./reader.ts";
 export {
+  type DescribePathTargetV2Input,
+  describePathTargetV2,
   type ExtractTargetsV2Input,
   exactToolInputFingerprintV2,
   extractTargetsV2,

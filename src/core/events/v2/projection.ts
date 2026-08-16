@@ -82,6 +82,8 @@ export interface ClaimProjectionV2 {
   subject_instance_id: string;
   actor_instance_id: string;
   target_digest: string;
+  target_kind: string;
+  target_display?: string;
   access: "read" | "write";
   acquired_event_id: string;
   transaction_id: string;
@@ -436,7 +438,7 @@ function applyClaim(
   }
   const key = [
     event.payload.subject_instance_id,
-    event.payload.target.digest,
+    event.payload.target.fingerprint.digest,
     event.payload.access,
   ].join("\0");
   if (event.payload.operation === "released") {
@@ -474,7 +476,9 @@ function applyClaim(
     key,
     subject_instance_id: event.payload.subject_instance_id,
     actor_instance_id: event.payload.actor_instance_id,
-    target_digest: event.payload.target.digest,
+    target_digest: event.payload.target.fingerprint.digest,
+    target_kind: event.payload.target.kind,
+    target_display: event.payload.target.display,
     access: event.payload.access,
     acquired_event_id: event.event_id,
     transaction_id: event.payload.authority.transaction_id!,

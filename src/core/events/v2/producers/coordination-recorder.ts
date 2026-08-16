@@ -18,8 +18,8 @@ import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import {
-  type AuthorityReconcilerV2,
   type AuthorityReceiptV2,
+  type AuthorityReconcilerV2,
   type AuthorityTransactionV2,
   buildAuthorityTransactionV2,
   publishAuthorityTransactionV2,
@@ -30,12 +30,12 @@ import type { EventV2 } from "../contract.ts";
 import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
 import { clockIdV2 } from "../ids.ts";
-import { readHookProducerStateV2 } from "./recorder.ts";
 import {
   type CoordinationAuthoritySignalV2,
   type CoordinationObservationBySignalV2,
   normalizeCoordinationAuthorityV2,
 } from "./coordination.ts";
+import { readHookProducerStateV2 } from "./recorder.ts";
 
 const COORDINATION_STATE_FORMAT = "harnery-v2-coordination-producer" as const;
 const COORDINATION_STATE_VERSION = 1 as const;
@@ -189,6 +189,7 @@ export function recordCoordinationAuthorityV2<S extends CoordinationAuthoritySig
       state.privacy_epoch_id,
     );
     const normalized = normalizeCoordinationAuthorityV2(input.signal, input.observation, {
+      coordRoot: input.coordRoot,
       root_id: rootId,
       instance_id: state.actor_instance_id,
       session_id: state.session_id,

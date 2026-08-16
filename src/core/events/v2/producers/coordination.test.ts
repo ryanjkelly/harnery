@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("event ledger V2 coordination producer", () => {
-  test("fingerprints task and claim values at root scope without retaining their literals", () => {
+  test("fingerprints prose while retaining only policy-safe workspace claim paths", () => {
     const taskText = "Investigate customer token SECRET_TASK_123";
     const task = normalizeCoordinationAuthorityV2(
       "task-changed",
@@ -32,13 +32,13 @@ describe("event ledger V2 coordination producer", () => {
     expect(task.event.payload.reason_fingerprint?.scope).toBe("root");
     expect(canonicalJsonV2(task)).not.toContain(taskText);
 
-    const claimTarget = "private/customer-secrets.txt";
+    const claimTarget = "src/claim.ts";
     const claim = normalizeCoordinationAuthorityV2(
       "claim-changed",
       {
         native_observation_id: "native-claim-1",
         operation: "acquired",
-        target: { kind: "workspace_path", value: claimTarget },
+        target: claimTarget,
         access: "write",
       },
       context("txn_22222222-2222-4222-8222-222222222222"),
@@ -46,8 +46,32 @@ describe("event ledger V2 coordination producer", () => {
     expect(validateEventV2(claim.event).ok).toBe(true);
     expect(claim.mutation.kind).toBe("claim.acquire");
     if (claim.event.event_type !== "coord.claim_changed") throw new Error("unexpected event type");
-    expect(claim.event.payload.target.scope).toBe("root");
-    expect(canonicalJsonV2(claim)).not.toContain(claimTarget);
+    expect(claim.event.payload.target).toMatchObject({
+      kind: "workspace_path",
+      access: "write",
+      display: claimTarget,
+      fingerprint: { scope: "root" },
+    });
+
+    const externalClaim = normalizeCoordinationAuthorityV2(
+      "claim-changed",
+      {
+        native_observation_id: "native-claim-2",
+        operation: "acquired",
+        target: "/home/operator/customer-secret.txt",
+        access: "read",
+      },
+      context("txn_22222222-2222-4222-8222-222222222223"),
+    );
+    if (externalClaim.event.event_type !== "coord.claim_changed") {
+      throw new Error("unexpected event type");
+    }
+    expect(externalClaim.event.payload.target).toMatchObject({
+      kind: "external_path",
+      access: "read",
+    });
+    expect(externalClaim.event.payload.target.display).toBeUndefined();
+    expect(canonicalJsonV2(externalClaim)).not.toContain("customer-secret");
   });
 
   test("produces an outbox-bound event and mutation for every authority signal", () => {
@@ -145,6 +169,7 @@ describe("event ledger V2 coordination producer", () => {
 function context(transactionId: `txn_${string}`): CoordinationProducerContextV2 {
   const generationId = generationIdV2();
   return {
+    coordRoot: "/workspace/project",
     root_id: "root_fixture",
     instance_id: "inst_operator",
     session_id: `sid_${"a".repeat(64)}`,

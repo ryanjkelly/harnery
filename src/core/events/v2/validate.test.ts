@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { buildEventV2 } from "./builder.ts";
 import { fingerprintV2 } from "./canonical.ts";
-import { attestationIdV2, eventIdV2, generationIdV2 } from "./ids.ts";
+import { attestationIdV2, eventIdV2, generationIdV2, spanIdV2 } from "./ids.ts";
 import { validateEventV2 } from "./validate.ts";
 
 const generationId = generationIdV2();
@@ -103,5 +103,51 @@ describe("event ledger V2 semantic validation", () => {
     });
 
     expect(validateEventV2(event).ok).toBeFalse();
+  });
+
+  test("allows only safe workspace-relative target displays", () => {
+    const fingerprint = fingerprintV2(
+      {
+        epochId: "pep_fixture",
+        epochKey: Buffer.alloc(32, 0x44),
+        rootId: "root_fixture",
+        generationId,
+      },
+      "target",
+      "fixture",
+    );
+    const event = buildEventV2("tool.requested", {
+      producer,
+      scope: { ...scope, turn_id: `tid_${"d".repeat(64)}` },
+      attestation_id: attestationId,
+      links: { caused_by: [], span_id: spanIdV2() },
+      provenance,
+      payload: {
+        tool: { namespace: "fixture", name: "Read" },
+        input: { storage: "omitted", media_type: "application/json", bytes: 1 },
+        exact_input: fingerprint,
+        targets: [
+          {
+            kind: "external_path",
+            access: "read",
+            display: "/home/operator/secret.txt",
+            fingerprint,
+            extractor_version: "fixture-v1",
+          },
+          {
+            kind: "workspace_path",
+            access: "read",
+            display: "../escape.txt",
+            fingerprint,
+            extractor_version: "fixture-v1",
+          },
+        ],
+      },
+    });
+
+    expect(validateEventV2(event).issues).toEqual([
+      "/payload/targets/0/display:forbidden_for_target_kind",
+      "/payload/targets/1/display:workspace_path_invalid",
+    ]);
   });
 });
