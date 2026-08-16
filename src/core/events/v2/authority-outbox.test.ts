@@ -25,8 +25,10 @@ describe("event ledger V2 authority outbox", () => {
     const root = temporaryRoot("event-v2-outbox");
     const prior = sha256V2("active");
     const desired = sha256V2("done");
-    const event = minimalStartedEvent();
+    const transactionId = "txn_11111111-1111-4111-8111-111111111111";
+    const event = lifecycleEvent(transactionId, "done", "verified");
     const transaction = prepareAuthorityTransactionV2(root, {
+      transaction_id: transactionId,
       expected_prior_state_digest: prior,
       desired_state_digest: desired,
       actor_instance_id: "inst_operator",
@@ -61,13 +63,15 @@ describe("event ledger V2 authority outbox", () => {
     const root = temporaryRoot("event-v2-outbox-replay");
     const prior = sha256V2("prior");
     const desired = sha256V2("desired");
+    const transactionId = "txn_22222222-2222-4222-8222-222222222222";
     const transaction = prepareAuthorityTransactionV2(root, {
+      transaction_id: transactionId,
       expected_prior_state_digest: prior,
       desired_state_digest: desired,
       actor_instance_id: "inst_operator",
       subject_instance_id: "inst_worker",
       mutation: { kind: "identity.assume", identity_id: "persona_verified" },
-      event: minimalStartedEvent(),
+      event: identityEvent(transactionId, "persona_verified"),
     });
     let applyCount = 0;
     const receipt = reconcileAuthorityTransactionV2(root, transaction.transaction_id, {
@@ -93,17 +97,20 @@ describe("event ledger V2 authority outbox", () => {
     const root = temporaryRoot("event-v2-outbox-fail");
     const prior = sha256V2("prior");
     const desired = sha256V2("desired");
+    const transactionId = "txn_33333333-3333-4333-8333-333333333333";
+    const targetFingerprint = sha256V2("target");
     const transaction = prepareAuthorityTransactionV2(root, {
+      transaction_id: transactionId,
       expected_prior_state_digest: prior,
       desired_state_digest: desired,
       actor_instance_id: "inst_operator",
       subject_instance_id: "inst_worker",
       mutation: {
         kind: "claim.acquire",
-        target_fingerprint: sha256V2("target"),
+        target_fingerprint: targetFingerprint,
         access: "write",
       },
-      event: minimalStartedEvent(),
+      event: claimEvent(transactionId, targetFingerprint),
     });
     expect(() =>
       reconcileAuthorityTransactionV2(root, transaction.transaction_id, {
@@ -143,6 +150,23 @@ describe("event ledger V2 authority outbox", () => {
     ).toThrow("invalid");
     expect(existsSync(join(root, ".harnery/ledgers/v2/authority-outbox"))).toBe(false);
   });
+
+  test("rejects a valid event whose authority semantics do not match the mutation", () => {
+    const root = temporaryRoot("event-v2-outbox-mismatch");
+    const transactionId = "txn_44444444-4444-4444-8444-444444444444";
+    expect(() =>
+      prepareAuthorityTransactionV2(root, {
+        transaction_id: transactionId,
+        expected_prior_state_digest: sha256V2("active"),
+        desired_state_digest: sha256V2("done"),
+        actor_instance_id: "inst_operator",
+        subject_instance_id: "inst_worker",
+        mutation: { kind: "lifecycle.transition", state: "done", reason_code: "verified" },
+        event: lifecycleEvent(transactionId, "blocked", "verified"),
+      }),
+    ).toThrow("does not match its event");
+    expect(existsSync(join(root, ".harnery/ledgers/v2/authority-outbox"))).toBe(false);
+  });
 });
 
 function temporaryRoot(label: string): string {
@@ -167,7 +191,7 @@ function minimalStartedEvent(): EventV2 {
     },
     scope: {
       root_id: "root_fixture",
-      instance_id: "inst_worker",
+      instance_id: "inst_operator",
       session_id: `sid_${"b".repeat(64)}`,
       generation_id: generationId,
     },
@@ -177,7 +201,12 @@ function minimalStartedEvent(): EventV2 {
       source_event: "fixture.authority",
       attestation: "derived",
       confidence: "exact",
-      attribution: { method: "explicit_argument", state: "verified" },
+      attribution: {
+        method: "explicit_argument",
+        state: "verified",
+        observer_instance_id: "inst_operator",
+        subject_instance_id: "inst_worker",
+      },
     },
     payload: {
       runtime_attestation: {
@@ -192,4 +221,82 @@ function minimalStartedEvent(): EventV2 {
       resume: { state: "not_applicable" },
     },
   }) as EventV2;
+}
+
+function lifecycleEvent(
+  transactionId: `txn_${string}`,
+  state: "active" | "blocked" | "done",
+  reason: string,
+): EventV2 {
+  return buildAuthorityEvent("coord.lifecycle_changed", {
+    actor_instance_id: "inst_operator",
+    subject_instance_id: "inst_worker",
+    new_state: state,
+    reason,
+    authority: { transaction_id: transactionId },
+  });
+}
+
+function identityEvent(transactionId: `txn_${string}`, identityId: string): EventV2 {
+  return buildAuthorityEvent("coord.identity_attested", {
+    actor_instance_id: "inst_operator",
+    subject_instance_id: "inst_worker",
+    identity_id: identityId,
+    method: "explicit_assignment",
+    authority: { transaction_id: transactionId },
+  });
+}
+
+function claimEvent(transactionId: `txn_${string}`, targetDigest: `sha256:${string}`): EventV2 {
+  return buildAuthorityEvent("coord.claim_changed", {
+    actor_instance_id: "inst_operator",
+    subject_instance_id: "inst_worker",
+    operation: "acquired",
+    target: {
+      algorithm: "hmac-sha256",
+      canonicalizer: "harnery-jcs-nfc-v1",
+      key_epoch: "pep_fixture",
+      scope: "root",
+      digest: targetDigest,
+    },
+    access: "write",
+    authority: { transaction_id: transactionId },
+  });
+}
+
+function buildAuthorityEvent(
+  eventType: "coord.lifecycle_changed" | "coord.identity_attested" | "coord.claim_changed",
+  payload: Record<string, unknown>,
+): EventV2 {
+  const generationId = generationIdV2();
+  return buildEventV2(eventType, {
+    producer: {
+      producer_id: "prd_outbox-fixture",
+      boot_id: "boot_fixture",
+      sequence: 1,
+      component: "agent-coord",
+      build_id: "build_fixture",
+      platform: "linux",
+    },
+    scope: {
+      root_id: "root_fixture",
+      instance_id: "inst_operator",
+      session_id: `sid_${"b".repeat(64)}`,
+      generation_id: generationId,
+    },
+    attestation_id: attestationIdV2(),
+    links: { caused_by: [] },
+    provenance: {
+      source_event: "fixture.authority",
+      attestation: "derived",
+      confidence: "exact",
+      attribution: {
+        method: "explicit_argument",
+        state: "verified",
+        observer_instance_id: "inst_operator",
+        subject_instance_id: "inst_worker",
+      },
+    },
+    payload,
+  } as never) as EventV2;
 }

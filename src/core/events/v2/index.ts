@@ -113,6 +113,20 @@ export {
   recordCommandSignalV2,
 } from "./producers/command-recorder.ts";
 export {
+  type ClaimChangedObservationV2,
+  type CoordinationAuthoritySignalV2,
+  type CoordinationObservationBySignalV2,
+  type CoordinationProducerContextV2,
+  type DecisionStateChangedObservationV2,
+  type IdentityAttestedObservationV2,
+  type LifecycleChangedObservationV2,
+  type NormalizedCoordinationAuthorityV2,
+  normalizeCoordinationAuthorityV2,
+  type TaskChangedObservationV2,
+  type WaitEndedObservationV2,
+  type WaitStartedObservationV2,
+} from "./producers/coordination.ts";
+export {
   type HookProducerContextV2,
   type HookSignalV2,
   normalizeHookEventV2,

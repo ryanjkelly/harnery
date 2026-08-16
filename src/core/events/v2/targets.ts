@@ -32,7 +32,12 @@ export function extractTargetsV2(input: ExtractTargetsV2Input): TargetDescriptor
     descriptors.push({
       kind,
       access,
-      fingerprint: fingerprintV2(input.fingerprintContext, `semantic-target.${kind}`, value),
+      fingerprint: fingerprintV2(
+        input.fingerprintContext,
+        `semantic-target.${kind}`,
+        value,
+        "root",
+      ),
       extractor_version: version,
     });
   };
@@ -111,6 +116,7 @@ function pathTarget(
         input.fingerprintContext,
         "semantic-target.workspace-path",
         portable,
+        "root",
       ),
       extractor_version: version,
     };
@@ -122,6 +128,7 @@ function pathTarget(
       input.fingerprintContext,
       "semantic-target.external-path",
       value.normalize("NFC").replaceAll("\\", "/"),
+      "root",
     ),
     extractor_version: version,
   };

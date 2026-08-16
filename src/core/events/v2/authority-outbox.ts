@@ -25,6 +25,11 @@ const REASON_PATTERN = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 
 export type AuthorityMutationV2 =
   | {
+      kind: "task.transition";
+      state: "set" | "cleared";
+      task_fingerprint?: `sha256:${string}`;
+    }
+  | {
       kind: "lifecycle.transition";
       state: "active" | "blocked" | "done";
       reason_code?: string;
@@ -42,6 +47,29 @@ export type AuthorityMutationV2 =
       kind: "decision.resolve";
       decision_id: string;
       outcome: "approved" | "denied" | "deferred";
+    }
+  | {
+      kind: "wait.start";
+      wait_id: string;
+      wait_kind:
+        | "permission"
+        | "approval"
+        | "decision"
+        | "operator_input"
+        | "dependency"
+        | "scheduled";
+    }
+  | {
+      kind: "wait.end";
+      wait_id: string;
+      outcome:
+        | "succeeded"
+        | "failed"
+        | "cancelled"
+        | "timed_out"
+        | "denied"
+        | "interrupted"
+        | "unknown";
     };
 
 export interface PrepareAuthorityTransactionV2Input {
@@ -251,7 +279,9 @@ function validateTransaction(value: unknown): AuthorityTransactionV2 {
   if (record.event_id !== event.event_id || `${canonicalJsonV2(event)}\n` !== record.event_row) {
     throw new Error("authority transaction event row is not canonical or mismatched");
   }
-  return { ...(record as unknown as AuthorityTransactionV2), mutation };
+  const transaction = { ...(record as unknown as AuthorityTransactionV2), mutation };
+  validateTransactionBinding(transaction, event);
+  return transaction;
 }
 
 function validateMutation(value: unknown): AuthorityMutationV2 {
@@ -259,7 +289,20 @@ function validateMutation(value: unknown): AuthorityMutationV2 {
     throw new Error("authority mutation is invalid");
   }
   const mutation = value as Record<string, unknown>;
-  if (mutation.kind === "lifecycle.transition") {
+  if (mutation.kind === "task.transition") {
+    const allowed =
+      mutation.task_fingerprint === undefined ? "kind\0state" : "kind\0state\0task_fingerprint";
+    if (
+      Object.keys(mutation).sort().join("\0") !== allowed ||
+      !["set", "cleared"].includes(String(mutation.state)) ||
+      (mutation.state === "set" &&
+        (typeof mutation.task_fingerprint !== "string" ||
+          !SHA256_PATTERN.test(mutation.task_fingerprint))) ||
+      (mutation.state === "cleared" && mutation.task_fingerprint !== undefined)
+    ) {
+      throw new Error("authority task mutation is invalid");
+    }
+  } else if (mutation.kind === "lifecycle.transition") {
     const allowed = mutation.reason_code === undefined ? "kind\0state" : "kind\0reason_code\0state";
     if (
       Object.keys(mutation).sort().join("\0") !== allowed ||
@@ -295,10 +338,136 @@ function validateMutation(value: unknown): AuthorityMutationV2 {
     ) {
       throw new Error("authority decision mutation is invalid");
     }
+  } else if (mutation.kind === "wait.start") {
+    if (
+      Object.keys(mutation).sort().join("\0") !== "kind\0wait_id\0wait_kind" ||
+      typeof mutation.wait_id !== "string" ||
+      !SAFE_ID_PATTERN.test(mutation.wait_id) ||
+      !["permission", "approval", "decision", "operator_input", "dependency", "scheduled"].includes(
+        String(mutation.wait_kind),
+      )
+    ) {
+      throw new Error("authority wait-start mutation is invalid");
+    }
+  } else if (mutation.kind === "wait.end") {
+    if (
+      Object.keys(mutation).sort().join("\0") !== "kind\0outcome\0wait_id" ||
+      typeof mutation.wait_id !== "string" ||
+      !SAFE_ID_PATTERN.test(mutation.wait_id) ||
+      ![
+        "succeeded",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "denied",
+        "interrupted",
+        "unknown",
+      ].includes(String(mutation.outcome))
+    ) {
+      throw new Error("authority wait-end mutation is invalid");
+    }
   } else {
     throw new Error("authority mutation kind is unsupported");
   }
   return mutation as unknown as AuthorityMutationV2;
+}
+
+function validateTransactionBinding(transaction: AuthorityTransactionV2, event: EventV2): void {
+  if (
+    event.scope.instance_id !== transaction.actor_instance_id ||
+    event.provenance.attribution.state !== "verified" ||
+    event.provenance.attribution.observer_instance_id !== transaction.actor_instance_id ||
+    event.provenance.attribution.subject_instance_id !== transaction.subject_instance_id
+  ) {
+    throw new Error("authority transaction attribution does not match its event");
+  }
+  const mutation = transaction.mutation;
+  if (mutation.kind === "task.transition") {
+    if (
+      event.event_type !== "coord.task_changed" ||
+      event.payload.actor_instance_id !== transaction.actor_instance_id ||
+      event.payload.subject_instance_id !== transaction.subject_instance_id ||
+      event.payload.authority.transaction_id !== transaction.transaction_id ||
+      event.payload.new_state !== mutation.state ||
+      event.payload.reason_fingerprint?.digest !== mutation.task_fingerprint
+    ) {
+      throw new Error("authority task transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind === "lifecycle.transition") {
+    if (
+      event.event_type !== "coord.lifecycle_changed" ||
+      event.payload.actor_instance_id !== transaction.actor_instance_id ||
+      event.payload.subject_instance_id !== transaction.subject_instance_id ||
+      event.payload.authority.transaction_id !== transaction.transaction_id ||
+      event.payload.new_state !== mutation.state ||
+      event.payload.reason !== (mutation.reason_code ?? "lifecycle_transition")
+    ) {
+      throw new Error("authority lifecycle transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind === "claim.acquire" || mutation.kind === "claim.release") {
+    const operation = mutation.kind === "claim.acquire" ? "acquired" : "released";
+    if (
+      event.event_type !== "coord.claim_changed" ||
+      event.payload.actor_instance_id !== transaction.actor_instance_id ||
+      event.payload.subject_instance_id !== transaction.subject_instance_id ||
+      event.payload.authority.transaction_id !== transaction.transaction_id ||
+      event.payload.operation !== operation ||
+      event.payload.target.digest !== mutation.target_fingerprint ||
+      event.payload.access !== mutation.access
+    ) {
+      throw new Error("authority claim transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind === "identity.assume") {
+    if (
+      event.event_type !== "coord.identity_attested" ||
+      event.payload.actor_instance_id !== transaction.actor_instance_id ||
+      event.payload.subject_instance_id !== transaction.subject_instance_id ||
+      event.payload.authority.transaction_id !== transaction.transaction_id ||
+      event.payload.identity_id !== mutation.identity_id
+    ) {
+      throw new Error("authority identity transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind === "decision.resolve") {
+    if (
+      event.event_type !== "decision.state_changed" ||
+      event.payload.authority.transaction_id !== transaction.transaction_id ||
+      event.payload.decision_id !== mutation.decision_id ||
+      event.payload.new_state !== mutation.outcome
+    ) {
+      throw new Error("authority decision transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind === "wait.start") {
+    if (
+      event.event_type !== "interaction.wait_started" ||
+      event.payload.authority_reference !== transaction.transaction_id ||
+      event.payload.wait_id !== mutation.wait_id ||
+      event.payload.kind !== mutation.wait_kind
+    ) {
+      throw new Error("authority wait-start transaction does not match its event");
+    }
+    return;
+  }
+  if (mutation.kind !== "wait.end") {
+    throw new Error("authority transaction mutation binding is unsupported");
+  }
+  if (
+    event.event_type !== "interaction.wait_ended" ||
+    event.payload.resolution_reference !== transaction.transaction_id ||
+    event.payload.wait_id !== mutation.wait_id ||
+    event.payload.outcome !== mutation.outcome
+  ) {
+    throw new Error("authority wait-end transaction does not match its event");
+  }
 }
 
 function validateReceipt(value: unknown): AuthorityReceiptV2 {

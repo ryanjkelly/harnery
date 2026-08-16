@@ -20,6 +20,7 @@ describe("event ledger V2 target extractor registry", () => {
     });
     expect(workspace[0]?.kind).toBe("workspace_path");
     expect(workspace[0]?.display).toBe("src/index.ts");
+    expect(workspace[0]?.fingerprint.scope).toBe("root");
 
     const external = extractTargetsV2({
       coordRoot: "/workspace/project",
@@ -81,6 +82,7 @@ describe("event ledger V2 target extractor registry", () => {
       fingerprintContext: context,
     });
     expect(search[0]?.kind).toBe("query");
+    expect(search[0]?.fingerprint.scope).toBe("root");
     expect(search[0]?.display).toBeUndefined();
     expect(JSON.stringify(search)).not.toContain("customer health data");
   });
@@ -90,5 +92,6 @@ describe("event ledger V2 target extractor registry", () => {
     expect(exactToolInputFingerprintV2(context, "claude", "Read", value).digest).not.toBe(
       exactToolInputFingerprintV2(context, "claude", "Write", value).digest,
     );
+    expect(exactToolInputFingerprintV2(context, "claude", "Read", value).scope).toBe("generation");
   });
 });
