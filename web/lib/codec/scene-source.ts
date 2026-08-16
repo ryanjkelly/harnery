@@ -12,11 +12,14 @@
 
 import fs from "node:fs";
 
-import { eventsPath, readAgents } from "@/lib/coord-reader";
+import { coordRoot, eventsPath, readAgents } from "@/lib/coord-reader";
+import { readDurableWork } from "@/lib/work-reader";
+import { readWorkflowChildSessions } from "@/lib/workflow-reader";
 
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
+import { deriveRelationships } from "./relationships";
 import { readRemotePanels } from "./remote-source";
 import { sanitizeLine } from "./sanitize";
 import { applySuggestions } from "./suggestions";
@@ -79,18 +82,39 @@ export async function buildScene(now?: string): Promise<CodecScene> {
     // local scene stands
   }
   // Character assignment is presentation metadata layered on after the pure
-  // projection; a registry failure leaves the fallback pack in place.
+  // projection; a registry failure leaves the fallback pack in place. Remote
+  // panels are excluded — pack assets are machine-local, and binding a local
+  // pack to a remote session would burn roster slots on portraits that can
+  // never render.
   try {
+    const localPanels = scene.panels.filter((p) => !p.machine);
     const characters = allocateCharacters(
-      scene.panels.map((p) => p.instance_id),
+      localPanels.map((p) => p.instance_id),
       scene.generated_at,
     );
-    for (const panel of scene.panels) {
+    for (const panel of localPanels) {
       const assigned = characters.get(panel.instance_id);
       if (assigned) panel.character = assigned;
     }
   } catch {
     // fallback pack stands
+  }
+  // Relationship edges: parentage plus provable durable-work dependencies.
+  // Failure means no lines, never a degraded scene.
+  try {
+    const root = coordRoot();
+    const items = readDurableWork(root).map((r) => ({
+      id: r.projection.id,
+      state: r.projection.state,
+      dependencies: r.intent.dependencies ?? [],
+      unresolved_dependencies: r.projection.unresolved_dependencies ?? [],
+      ...(r.projection.latest_run_id ? { latest_run_id: r.projection.latest_run_id } : {}),
+    }));
+    scene.relationships = deriveRelationships(scene.panels, items, (runId) =>
+      readWorkflowChildSessions(root, runId).map((c) => c.sessionId),
+    );
+  } catch {
+    scene.relationships = [];
   }
   return scene;
 }

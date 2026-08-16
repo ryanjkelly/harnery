@@ -33,7 +33,7 @@ import {
   TestTube,
   Wrench,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./codec.module.css";
 /* eslint-disable @next/next/no-img-element -- pack portraits are local
  * runtime assets served by our own route; next/image optimization would
@@ -200,7 +200,8 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
           No active agents. Panels appear when a session starts.
         </p>
       ) : (
-        <div ref={gridRef}>
+        <div ref={gridRef} className="relative">
+          <RelationshipLines scene={scene} gridRef={gridRef} />
           <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
             {current.map((panel) => (
               <CodecPanel
@@ -234,6 +235,110 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   );
 }
 
+/** Relationship line colors: violet = shared coordination (delegation), and
+ * the dependency ramp cyan (active) / amber (waiting) / red (blocked). */
+const LINE_COLORS: Record<string, string> = {
+  "shared-coordination": "rgba(167, 139, 250, 0.55)",
+  active: "rgba(56, 189, 248, 0.55)",
+  waiting: "rgba(245, 158, 11, 0.6)",
+  blocked: "rgba(239, 68, 68, 0.6)",
+};
+
+interface LineGeom {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color: string;
+  label: string;
+}
+
+/** Persistent directional lines between panels, measured from the rendered
+ * grid. Lines are structure, not events: they redraw with the scene and on
+ * resize, and never animate into existence. */
+function RelationshipLines({
+  scene,
+  gridRef,
+}: {
+  scene: CodecScene;
+  gridRef: { current: HTMLDivElement | null };
+}) {
+  const [lines, setLines] = useState<LineGeom[]>([]);
+
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const nameOf = (id: string) =>
+      scene.panels.find((p) => p.instance_id === id)?.identity.display_name ?? id.slice(0, 8);
+
+    const measure = () => {
+      const gridRect = grid.getBoundingClientRect();
+      const next: LineGeom[] = [];
+      for (const rel of scene.relationships) {
+        const fromEl = grid.querySelector(`[data-instance="${CSS.escape(rel.from_instance_id)}"]`);
+        const toEl = grid.querySelector(`[data-instance="${CSS.escape(rel.to_instance_id)}"]`);
+        if (!fromEl || !toEl) continue;
+        const a = fromEl.getBoundingClientRect();
+        const b = toEl.getBoundingClientRect();
+        const colorKey = rel.kind === "shared-coordination" ? rel.kind : rel.status;
+        next.push({
+          id: rel.relationship_id,
+          x1: a.left + a.width / 2 - gridRect.left,
+          y1: a.top + a.height / 2 - gridRect.top,
+          x2: b.left + b.width / 2 - gridRect.left,
+          y2: b.top + b.height / 2 - gridRect.top,
+          color: LINE_COLORS[colorKey] ?? LINE_COLORS.active ?? "",
+          label:
+            rel.kind === "shared-coordination"
+              ? `${nameOf(rel.to_instance_id)} delegated by ${nameOf(rel.from_instance_id)}`
+              : `${nameOf(rel.to_instance_id)} depends on ${nameOf(rel.from_instance_id)} (${rel.status})`,
+        });
+      }
+      setLines(next);
+    };
+
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(grid);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [scene, gridRef]);
+
+  if (lines.length === 0) return null;
+  return (
+    <>
+      <svg
+        aria-hidden
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        style={{ zIndex: 1 }}
+      >
+        {lines.map((line) => (
+          <line
+            key={line.id}
+            x1={line.x1}
+            y1={line.y1}
+            x2={line.x2}
+            y2={line.y2}
+            stroke={line.color}
+            strokeWidth={2}
+            strokeLinecap="round"
+            className={styles.flowLine}
+          />
+        ))}
+      </svg>
+      <ul className="sr-only" aria-label="Agent relationships">
+        {lines.map((line) => (
+          <li key={line.id}>{line.label}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 /** Attention overlays tint the panel edge; the house color grammar (sky =
  * act now, amber = friction, red = error, emerald = done) carries state. */
 const ATTENTION_RING: Record<string, string> = {
@@ -260,7 +365,7 @@ function CodecPanel({
       aria-label={`Agent ${panel.identity.display_name}`}
       data-instance={panel.instance_id}
       className={cn(
-        "rounded-lg border bg-card p-3 text-card-foreground",
+        "relative z-[2] rounded-lg border bg-card p-3 text-card-foreground",
         ATTENTION_RING[panel.attention.value],
         panel.attention.value === "error" && styles.errorFlash,
         glowing ? styles.pingArrive : styles.pingArriveFade,
