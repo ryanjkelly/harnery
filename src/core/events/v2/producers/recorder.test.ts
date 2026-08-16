@@ -134,6 +134,46 @@ describe("event ledger V2 persistent hook recorder", () => {
     expect(events[1]?.event_type).toBe("session.started");
     expect(events[1]?.producer.sequence).toBe(1);
   });
+
+  test("pairs child-agent start and completion without persisting the native child identity", () => {
+    const root = candidateRoot();
+    const nativeSession = "parent-session";
+    const nativeChild = "child-account-secret";
+    expect(
+      recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })))
+        .state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV2(
+        baseInput(
+          root,
+          "sub-agent-start",
+          parsed({
+            session_id: nativeSession,
+            subagent_id: nativeChild,
+            raw: { agent_type: "reviewer" },
+          }),
+        ),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV2(
+        baseInput(
+          root,
+          "sub-agent-stop",
+          parsed({ session_id: nativeSession, subagent_id: nativeChild, exit_status: "ok" }),
+        ),
+      ).state,
+    ).toBe("recorded");
+
+    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const started = events.find((event) => event.event_type === "agent.started");
+    const completed = events.find((event) => event.event_type === "agent.completed");
+    expect(started?.payload.delegation_id).toBe(completed?.payload.delegation_id);
+    expect(started?.payload.child_generation_id).toBe(completed?.payload.child_generation_id);
+    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.delegations).toEqual([]);
+    expect(readFileSync(eventV2Paths(root).active, "utf8")).not.toContain(nativeChild);
+  });
 });
 
 function candidateRoot(): string {

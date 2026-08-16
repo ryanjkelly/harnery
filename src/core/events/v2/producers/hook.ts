@@ -2,6 +2,7 @@ import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { Adapter } from "../../../hooks/events/schema.ts";
 import { buildEventV2 } from "../builder.ts";
 import { type FingerprintContextV2, fingerprintV2, normalizeNativeIdV2 } from "../canonical.ts";
+import { adapterSignalSupportV2 } from "../capabilities.ts";
 import type { EventV2, RuntimeAttestationV2 } from "../contract.ts";
 import { eventIdV2 } from "../ids.ts";
 import { exactToolInputFingerprintV2, extractTargetsV2 } from "../targets.ts";
@@ -15,7 +16,11 @@ export type HookSignalV2 =
   | "pre-tool-use"
   | "post-tool-use"
   | "post-tool-use-failure"
-  | "permission-request";
+  | "permission-request"
+  | "sub-agent-start"
+  | "sub-agent-stop"
+  | "pre-compact"
+  | "post-compact";
 
 export interface HookProducerContextV2 {
   coordRoot: string;
@@ -46,6 +51,9 @@ export interface HookProducerContextV2 {
   duration_ms?: number;
   tool_call_count?: number;
   response_bytes?: number;
+  delegation_id?: `del_${string}`;
+  child_generation_id?: `gen_${string}`;
+  agent_role?: string;
 }
 
 /** Normalize one already-parsed hook payload directly into V2 without retaining its raw fields. */
@@ -290,7 +298,150 @@ export function normalizeHookEventV2(
         payload: { wait_id: waitId, kind: "permission" },
       }) as EventV2;
     }
+    case "sub-agent-start": {
+      if (!context.delegation_id || !context.child_generation_id) return null;
+      return buildEventV2("agent.started", {
+        ...common,
+        scope: generationScope,
+        links: {
+          caused_by: causedBy,
+          delegation_id: context.delegation_id,
+          parent_generation_id: context.generation_id,
+        },
+        payload: {
+          delegation_id: context.delegation_id,
+          child_generation_id: context.child_generation_id,
+          role: safeToken(context.agent_role ?? "agent", "agent"),
+        },
+      }) as EventV2;
+    }
+    case "sub-agent-stop": {
+      if (!context.delegation_id || !context.child_generation_id) return null;
+      return buildEventV2("agent.completed", {
+        ...common,
+        scope: generationScope,
+        links: {
+          caused_by: causedBy,
+          delegation_id: context.delegation_id,
+          parent_generation_id: context.generation_id,
+        },
+        payload: {
+          delegation_id: context.delegation_id,
+          child_generation_id: context.child_generation_id,
+          outcome:
+            payload.exit_status === "ok"
+              ? "succeeded"
+              : payload.exit_status === "interrupted"
+                ? "interrupted"
+                : payload.exit_status
+                  ? "failed"
+                  : "unknown",
+        },
+      }) as EventV2;
+    }
+    case "pre-compact":
+      return buildEventV2("context.compaction_started", {
+        ...common,
+        scope: generationScope,
+        links: { caused_by: causedBy },
+        payload: {
+          before: contextMeasurement(
+            inputContextMeasurement(payload, "before"),
+            context,
+            "pre_compaction",
+          ),
+          method: `${context.adapter.replaceAll("-", "_")}_hook`,
+        },
+      }) as EventV2;
+    case "post-compact":
+      return buildEventV2("context.compaction_completed", {
+        ...common,
+        scope: generationScope,
+        links: { caused_by: causedBy },
+        payload: {
+          outcome: "succeeded",
+          before: contextMeasurement(
+            inputContextMeasurement(payload, "before"),
+            context,
+            "pre_compaction",
+          ),
+          after: contextMeasurement(
+            inputContextMeasurement(payload, "after"),
+            context,
+            "post_compaction",
+          ),
+        },
+      }) as EventV2;
   }
+}
+
+function inputContextMeasurement(payload: ParsedPayload, phase: "before" | "after") {
+  const metadata = plainRecord(payload.raw.compact_metadata);
+  const usedKeys =
+    phase === "before"
+      ? ["pre_tokens", "pre_compact_tokens", "used_tokens"]
+      : ["post_tokens", "post_compact_tokens", "used_tokens"];
+  const limitKeys = [
+    "context_window_size",
+    "context_window_tokens",
+    "window_tokens",
+    "limit_tokens",
+  ];
+  return {
+    used: firstNumber(payload.raw, metadata, usedKeys),
+    limit: firstNumber(payload.raw, metadata, limitKeys),
+  };
+}
+
+function contextMeasurement(
+  measurement: { used?: number; limit?: number },
+  context: HookProducerContextV2,
+  capability: "pre_compaction" | "post_compaction",
+) {
+  if (adapterSignalSupportV2(context.adapter, capability) === "unsupported") {
+    return { state: "unsupported", capability } as const;
+  }
+  if (measurement.used === undefined || measurement.limit === undefined || measurement.limit < 1) {
+    return {
+      state: "expected_but_missing",
+      capability,
+      reason: "context_measurement_incomplete",
+    } as const;
+  }
+  return {
+    state: "observed",
+    value: {
+      used_tokens: Math.floor(measurement.used),
+      limit_tokens: Math.floor(measurement.limit),
+      remaining_tokens: Math.max(0, Math.floor(measurement.limit - measurement.used)),
+      measured_at: context.observed_at ?? context.recorded_at ?? new Date().toISOString(),
+      method: `${context.adapter.replaceAll("-", "_")}_hook`,
+    },
+    attestation: "native",
+    confidence: "exact",
+  } as const;
+}
+
+function firstNumber(
+  primary: Record<string, unknown>,
+  secondary: Record<string, unknown> | undefined,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    for (const source of [primary, secondary]) {
+      const value = source?.[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+    }
+  }
+  return undefined;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function observedIdentity(id: string, version: string | undefined) {

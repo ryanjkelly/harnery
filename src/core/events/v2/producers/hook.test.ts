@@ -114,6 +114,26 @@ describe("event ledger V2 hook producer", () => {
       capability: "turn_response_descriptor",
     });
   });
+
+  test("normalizes context measurements while preserving Cursor's unsupported post-compaction gap", () => {
+    const pre = normalizeHookEventV2(
+      "pre-compact",
+      parsed({ raw: { pre_tokens: 80, context_window_size: 100 } }),
+      { ...producerContext(), adapter: "cursor", sequence: 1 },
+    ) as Extract<EventV2, { event_type: "context.compaction_started" }>;
+    const post = normalizeHookEventV2(
+      "post-compact",
+      parsed({ raw: { pre_tokens: 80, post_tokens: 20, context_window_size: 100 } }),
+      { ...producerContext(), adapter: "cursor", sequence: 2 },
+    ) as Extract<EventV2, { event_type: "context.compaction_completed" }>;
+
+    expect(pre.payload.before.state).toBe("observed");
+    expect(post.payload.before.state).toBe("observed");
+    expect(post.payload.after).toEqual({
+      state: "unsupported",
+      capability: "post_compaction",
+    });
+  });
 });
 
 function producerContext(): HookProducerContextV2 {

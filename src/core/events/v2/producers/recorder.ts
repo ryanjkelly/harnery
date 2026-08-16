@@ -42,6 +42,13 @@ interface PendingEventV2 {
   event: EventV2;
 }
 
+interface DelegationStateV2 {
+  source_id: `hid_${string}`;
+  delegation_id: `del_${string}`;
+  child_generation_id: `gen_${string}`;
+  role: string;
+}
+
 export interface HookProducerStateV2 {
   format: typeof STATE_FORMAT;
   format_version: typeof STATE_VERSION;
@@ -60,6 +67,7 @@ export interface HookProducerStateV2 {
   started_event_id?: `evt_${string}`;
   terminal: boolean;
   spans: SpanStateV2[];
+  delegations: DelegationStateV2[];
   pending?: PendingEventV2;
 }
 
@@ -166,6 +174,7 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
     );
     const sourceId = sourceIdForSignal(input, rootFingerprintContext);
     let span: SpanStateV2 | undefined;
+    let delegation: DelegationStateV2 | undefined;
     if (input.signal === "pre-tool-use") {
       if (!sourceId) return { state: "unpairable_tool" };
       span = state.spans.find((candidate) => candidate.source_id === sourceId);
@@ -181,6 +190,23 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
       if (!sourceId) return { state: "unpairable_tool" };
       span = state.spans.find((candidate) => candidate.source_id === sourceId);
       if (!span) return { state: "unpairable_tool" };
+    }
+    if (input.signal === "sub-agent-start") {
+      if (!sourceId) return { state: "ignored" };
+      delegation = state.delegations.find((candidate) => candidate.source_id === sourceId);
+      if (!delegation) {
+        delegation = {
+          source_id: sourceId,
+          delegation_id: `del_${randomUUID()}`,
+          child_generation_id: generationIdV2(),
+          role: safeRole(input.payload.raw.agent_type),
+        };
+        state.delegations.push(delegation);
+      }
+    } else if (input.signal === "sub-agent-stop") {
+      if (!sourceId) return { state: "ignored" };
+      delegation = state.delegations.find((candidate) => candidate.source_id === sourceId);
+      if (!delegation) return { state: "ignored" };
     }
 
     const event = normalizeHookEventV2(input.signal, input.payload, {
@@ -207,6 +233,9 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
       clock_id: state.clock_id,
       duration_ms: durationMilliseconds(span?.started_monotonic_ns, input.monotonic_ns),
       tool_call_count: state.tool_call_count,
+      delegation_id: delegation?.delegation_id,
+      child_generation_id: delegation?.child_generation_id,
+      agent_role: delegation?.role,
     });
     if (!event) return { state: "ignored" };
     assertEventV2(event);
@@ -264,6 +293,7 @@ function newProducerState(
     last_event_id: boundaryEventId,
     terminal: false,
     spans: [],
+    delegations: [],
   };
 }
 
@@ -281,6 +311,12 @@ function applyCommittedEvent(state: HookProducerStateV2, event: EventV2): void {
     const completedSpan = (event.links as { span_id: `span_${string}` }).span_id;
     state.spans = state.spans.filter((span) => span.span_id !== completedSpan);
   }
+  if (event.event_type === "agent.completed") {
+    const completedDelegation = event.payload.delegation_id;
+    state.delegations = state.delegations.filter(
+      (delegation) => delegation.delegation_id !== completedDelegation,
+    );
+  }
   if (event.event_type === "turn.completed") {
     state.current_turn_id = undefined;
     state.tool_call_count = 0;
@@ -296,17 +332,20 @@ function sourceIdForSignal(
     input.signal === "pre-tool-use" ||
     input.signal === "post-tool-use" ||
     input.signal === "post-tool-use-failure";
+  const subagentSignal = input.signal === "sub-agent-start" || input.signal === "sub-agent-stop";
   const native = toolSignal
     ? input.payload.tool_use_id
-    : (input.payload.turn_id ??
-      (input.signal === "session-start"
-        ? (input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id)
-        : undefined));
+    : subagentSignal
+      ? (input.payload.subagent_id ?? input.payload.agent_id)
+      : (input.payload.turn_id ??
+        (input.signal === "session-start"
+          ? (input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id)
+          : undefined));
   return native
     ? normalizeNativeIdV2(
         context,
         `${input.adapter}.hook-source`,
-        `${toolSignal ? "tool" : input.signal}:${native}`,
+        `${toolSignal ? "tool" : subagentSignal ? "subagent" : input.signal}:${native}`,
       )
     : undefined;
 }
@@ -320,6 +359,15 @@ function durationMilliseconds(
   if (delta < 0n) return undefined;
   const milliseconds = Number(delta / 1_000_000n);
   return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
+}
+
+function safeRole(value: unknown): string {
+  if (typeof value !== "string") return "agent";
+  const normalized = value
+    .normalize("NFC")
+    .replace(/[^a-zA-Z0-9._:/+-]/g, "_")
+    .slice(0, 128);
+  return /^[a-zA-Z0-9]/.test(normalized) ? normalized : "agent";
 }
 
 function producerStatePath(
@@ -386,6 +434,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     "capability_profile",
     "clock_id",
     "current_turn_id",
+    "delegations",
     "format",
     "format_version",
     "generation_id",
@@ -417,6 +466,15 @@ function readProducerState(path: string): HookProducerStateV2 {
     state.tool_call_count < 0 ||
     typeof state.terminal !== "boolean" ||
     !Array.isArray(state.spans) ||
+    !Array.isArray(state.delegations) ||
+    state.delegations.length > 256 ||
+    state.delegations.some(
+      (delegation) =>
+        !/^hid_[a-f0-9]{64}$/.test(delegation.source_id) ||
+        !/^del_[0-9a-f-]{36}$/.test(delegation.delegation_id) ||
+        !/^gen_[0-9a-f-]{36}$/.test(delegation.child_generation_id) ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(delegation.role),
+    ) ||
     state.spans.length > 256 ||
     state.spans.some(
       (span) =>
