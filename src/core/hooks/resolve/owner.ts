@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
+import { resolveOwnerBySessionEnv } from "../../agents/coord-client.ts";
 import { checkPidToken } from "../../agents/state/proc-start.ts";
 
 /**
@@ -9,20 +10,18 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
  *
  * Precedence:
  *
- *   1. `HARNERY_AGENT_COORD_OWNER` env var. Set by adapter adapters when they know
- *      the owner identity at spawn time (Codex's apply_patch tool path uses
- *      this).
- *   2. Hook payload fields, in order: `agent_id` → `subagent_id` →
+ *   1. Hook payload fields, in order: `agent_id` → `subagent_id` →
  *      `session_id` → `conversation_id`. agent_id wins for CC subagent
  *      events; session_id is the parent-shape default.
- *   3. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
+ *   2. `HARNERY_AGENT_COORD_OWNER` outside bridge mode. Bridge-marked children
+ *      ignore this unvalidated override.
+ *   3. Adapter session environment matched to a live heartbeat.
+ *   4. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
  *      chain (up to 20 hops).
- *   4. `CODEX_THREAD_ID` env var, accepted only when a live heartbeat by that
- *      id exists under `.harnery/active/`. Codex sessions use their thread id
- *      as the heartbeat instance_id, and a Windows→WSL bridge forwards the
- *      var into process trees that descend from no registered process — the
- *      one place the pid walk can never land. Validated so a garbage value
- *      cannot fabricate an identity.
+ *
+ * Bridge-marked children fail closed after tier 3. A connector crosses a
+ * process-tree boundary, so pid ancestry and singleton state are not evidence
+ * of its logical session.
  *
  * Returns null when nothing resolves. Callers must treat null as "no owner"
  * and skip the event (Phase 2 fail-safe; Phase 3 will mint a temporary owner
@@ -33,13 +32,8 @@ export function resolveOwner(opts: {
   coordRoot: string;
 }): {
   instance_id: string;
-  source: "env" | "payload" | "pidmap-self" | "pidmap-ancestor" | "codex-env";
+  source: "env" | "payload" | "session_env" | "pidmap-self" | "pidmap-ancestor";
 } | null {
-  const env = coordEnv("AGENT_COORD_OWNER");
-  if (env && env.length > 0) {
-    return { instance_id: env, source: "env" };
-  }
-
   if (opts.payload) {
     for (const key of ["agent_id", "subagent_id", "session_id", "conversation_id"] as const) {
       const v = opts.payload[key];
@@ -48,6 +42,19 @@ export function resolveOwner(opts: {
       }
     }
   }
+
+  const bridge = coordEnv("AGENT_COORD_BRIDGE")?.trim();
+  const env = coordEnv("AGENT_COORD_OWNER");
+  if (env && env.length > 0 && !bridge) {
+    return { instance_id: env, source: "env" };
+  }
+
+  const bySession = resolveOwnerBySessionEnv(opts.coordRoot);
+  if (bySession) {
+    return { instance_id: bySession, source: "session_env" };
+  }
+
+  if (bridge) return null;
 
   // Pid-map ancestor walk. Start at own pid (the bash wrapper's bun child),
   // walk up through ppids. The pid-map is stamped keyed by the adapter PID, so
@@ -83,18 +90,6 @@ export function resolveOwner(opts: {
       pid = ppid;
       hops++;
     }
-  }
-
-  // Tier 4: Codex thread id, heartbeat-validated. Last because the pid map is
-  // more specific when it answers — an inherited env var can outlive the
-  // process tree it described, a live pid-map row cannot.
-  const codexThreadId = process.env.CODEX_THREAD_ID?.trim();
-  if (
-    codexThreadId &&
-    /^[A-Za-z0-9-]+$/.test(codexThreadId) &&
-    existsSync(join(opts.coordRoot, ".harnery", "active", `${codexThreadId}.json`))
-  ) {
-    return { instance_id: codexThreadId, source: "codex-env" };
   }
 
   return null;

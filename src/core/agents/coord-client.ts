@@ -412,8 +412,12 @@ export function resolveOwnerWithSource(): {
   owner: string | null;
   source: "env" | "pidmap" | "pidmap_fallback" | "session_env" | "active_singleton" | "none";
 } {
+  const bridge = process.env.HARNERY_AGENT_COORD_BRIDGE?.trim();
   const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
-  if (envOwner) {
+  // A bridge-marked child must prove identity through a live heartbeat. An
+  // inherited owner override is only a string, so trusting it here would let a
+  // stale or foreign environment bypass the bridge's fail-closed contract.
+  if (envOwner && !bridge) {
     return { owner: envOwner, source: "env" };
   }
 
@@ -434,6 +438,11 @@ export function resolveOwnerWithSource(): {
       return { owner: bySession, source: "session_env" };
     }
   }
+
+  // Connector children cross process-tree boundaries where pid ancestry is
+  // not logical session identity. Once marked, a missing or stale session
+  // heartbeat is terminal: never guess through pid-map or singleton fallback.
+  if (bridge) return { owner: null, source: "none" };
 
   if (!existsSync(resolve(root, ".harnery", "pid-map"))) return { owner: null, source: "none" };
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -96,7 +96,7 @@ function makeSandbox(): string {
   return root;
 }
 
-function harn(root: string, args: string[]) {
+function harn(root: string, args: string[], extraEnv: Record<string, string> = {}) {
   return spawnSync("bash", [HARN, ...args], {
     cwd: root,
     encoding: "utf8",
@@ -104,6 +104,10 @@ function harn(root: string, args: string[]) {
       ...process.env,
       HARNERY_COORD_ROOT_OVERRIDE: root,
       HARNERY_AGENT_COORD_OWNER: OWNER,
+      HARNERY_AGENT_COORD_BRIDGE: "",
+      HARNERY_AGENT_COORD_SESSION_ID: "",
+      CODEX_THREAD_ID: "",
+      ...extraEnv,
     },
   });
 }
@@ -200,5 +204,62 @@ describe("harn agents state surfaces", () => {
       activity: "unknown",
       task_state: "active",
     });
+  });
+});
+
+describe("codex-wsl bridge ping attribution", () => {
+  const TARGET = "surface-target";
+
+  function addTarget(root: string): string {
+    const heartbeat = path.join(root, ".harnery", "active", `${TARGET}.json`);
+    writeFileSync(
+      heartbeat,
+      JSON.stringify({
+        schema_version: 2,
+        instance_id: TARGET,
+        session_id: TARGET,
+        kind: "session",
+        name: "Target",
+        platform: "claude-code",
+        started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        files_touched: [],
+      }),
+    );
+    return heartbeat;
+  }
+
+  test("validated bridge session delivers ping as the Codex owner", () => {
+    const root = makeSandbox();
+    addTarget(root);
+    const result = harn(root, ["agents", "ping", "Target", "bridge verdict", "--json"], {
+      HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+      HARNERY_AGENT_COORD_PLATFORM: "codex",
+      HARNERY_AGENT_COORD_SESSION_ID: OWNER,
+      CODEX_THREAD_ID: OWNER,
+      HARNERY_AGENT_COORD_OWNER: "foreign-owner",
+    });
+    expect(result.status).toBe(0);
+    const delivered = JSON.parse(result.stdout) as {
+      from: string;
+      journal_path: string;
+    };
+    expect(delivered.from).toBe("Hollis");
+    expect(readFileSync(delivered.journal_path, "utf8")).toContain("from agent-Hollis");
+  });
+
+  test("invalid bridge session delivers no ping", () => {
+    const root = makeSandbox();
+    addTarget(root);
+    const result = harn(root, ["agents", "ping", "Target", "must not deliver", "--json"], {
+      HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+      HARNERY_AGENT_COORD_PLATFORM: "codex",
+      HARNERY_AGENT_COORD_SESSION_ID: "missing-thread",
+      CODEX_THREAD_ID: "missing-thread",
+      HARNERY_AGENT_COORD_OWNER: OWNER,
+    });
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("no_pidmap_entry");
+    expect(existsSync(path.join(root, ".harnery", "journal", `${TARGET}.md`))).toBe(false);
   });
 });

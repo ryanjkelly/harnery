@@ -9,7 +9,10 @@ import os from "node:os";
 import path from "node:path";
 import { findCoordRoot } from "../../src/core/hooks/resolve/coord-root.ts";
 import { detectAdapter } from "../../src/core/hooks/adapter/detect.ts";
-import { listPidmap, resolveOwner } from "../../src/core/hooks/resolve/owner.ts";
+import {
+  listPidmap,
+  resolveOwner as resolveHookOwner,
+} from "../../src/core/hooks/resolve/owner.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import {
   parsePidmapRowPlatform,
@@ -127,17 +130,21 @@ describe("detectAdapter", () => {
 describe("pid-map row format + resolveOwner", () => {
   let root: string;
   const savedOwner = process.env.HARNERY_AGENT_COORD_OWNER;
+  const savedBridge = process.env.HARNERY_AGENT_COORD_BRIDGE;
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-resolve-"));
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
     delete process.env.HARNERY_AGENT_COORD_OWNER;
+    delete process.env.HARNERY_AGENT_COORD_BRIDGE;
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
     if (savedOwner === undefined) delete process.env.HARNERY_AGENT_COORD_OWNER;
     else process.env.HARNERY_AGENT_COORD_OWNER = savedOwner;
+    if (savedBridge === undefined) delete process.env.HARNERY_AGENT_COORD_BRIDGE;
+    else process.env.HARNERY_AGENT_COORD_BRIDGE = savedBridge;
   });
 
   test("writePidmapRow writes `<instance_id>\\t<platform>` + is idempotent", () => {
@@ -152,19 +159,19 @@ describe("pid-map row format + resolveOwner", () => {
 
   test("resolveOwner honors HARNERY_AGENT_COORD_OWNER env (source=env)", () => {
     process.env.HARNERY_AGENT_COORD_OWNER = "env-owner-id";
-    expect(resolveOwner({ payload: null, coordRoot: root })).toEqual({
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toEqual({
       instance_id: "env-owner-id",
       source: "env",
     });
   });
 
   test("resolveOwner reads payload ids when env unset (source=payload)", () => {
-    const got = resolveOwner({ payload: { session_id: "pay-sess" }, coordRoot: root });
+    const got = resolveHookOwner({ payload: { session_id: "pay-sess" }, coordRoot: root });
     expect(got).toEqual({ instance_id: "pay-sess", source: "payload" });
   });
 
   test("resolveOwner payload precedence: agent_id > session_id", () => {
-    const got = resolveOwner({
+    const got = resolveHookOwner({
       payload: { agent_id: "agent-x", session_id: "sess-y" },
       coordRoot: root,
     });
@@ -180,7 +187,7 @@ describe("pid-map row format + resolveOwner", () => {
       "ghost-agent\tclaude-code\tl1",
       "utf8",
     );
-    expect(resolveOwner({ payload: null, coordRoot: root })).toBeNull();
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
   });
 
   test("resolveOwner still trusts a live row written before start tokens existed", () => {
@@ -189,7 +196,7 @@ describe("pid-map row format + resolveOwner", () => {
       "legacy-agent\tclaude-code",
       "utf8",
     );
-    expect(resolveOwner({ payload: null, coordRoot: root })?.instance_id).toBe("legacy-agent");
+    expect(resolveHookOwner({ payload: null, coordRoot: root })?.instance_id).toBe("legacy-agent");
   });
 
   test("platform parses out of a row that also carries a start token", () => {
@@ -203,7 +210,7 @@ describe("pid-map row format + resolveOwner", () => {
   test("resolveOwner returns null when env unset, no payload, no pid-map hit", () => {
     // empty pid-map dir + no payload → null (the test runner's pid chain has no
     // entry in this fresh tmp root)
-    expect(resolveOwner({ payload: null, coordRoot: root })).toBeNull();
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
   });
 });
 
@@ -277,12 +284,14 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
   const savedCursorAgent = process.env.CURSOR_AGENT;
   const savedPlatform = process.env.HARNERY_AGENT_COORD_PLATFORM;
   const savedRootOverride = process.env.HARNERY_COORD_ROOT_OVERRIDE;
+  const savedBridge = process.env.HARNERY_AGENT_COORD_BRIDGE;
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-session-env-"));
     activeDir = path.join(root, ".harnery", "active");
     mkdirSync(activeDir, { recursive: true });
     for (const k of SESSION_ID_ENV_KEYS) delete process.env[k];
+    delete process.env.HARNERY_AGENT_COORD_BRIDGE;
   });
 
   afterEach(() => {
@@ -297,6 +306,8 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     else process.env.HARNERY_AGENT_COORD_PLATFORM = savedPlatform;
     if (savedRootOverride === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
     else process.env.HARNERY_COORD_ROOT_OVERRIDE = savedRootOverride;
+    if (savedBridge === undefined) delete process.env.HARNERY_AGENT_COORD_BRIDGE;
+    else process.env.HARNERY_AGENT_COORD_BRIDGE = savedBridge;
   });
 
   const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -488,6 +499,87 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
       owner: "agent-current",
       source: "session_env",
     });
+  });
+});
+
+describe("codex-wsl bridge owner parity", () => {
+  let root: string;
+  let activeDir: string;
+  const ENV_KEYS = [
+    ...SESSION_ID_ENV_KEYS,
+    "HARNERY_AGENT_COORD_OWNER",
+    "HARNERY_AGENT_COORD_BRIDGE",
+    "HARNERY_AGENT_COORD_PLATFORM",
+    "HARNERY_COORD_ROOT_OVERRIDE",
+  ] as const;
+  const saved = ENV_KEYS.map((key) => [key, process.env[key]] as const);
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "harn-codex-wsl-owner-"));
+    activeDir = path.join(root, ".harnery", "active");
+    mkdirSync(activeDir, { recursive: true });
+    mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    for (const key of ENV_KEYS) delete process.env[key];
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
+    process.env.HARNERY_AGENT_COORD_BRIDGE = "codex-wsl";
+    process.env.HARNERY_AGENT_COORD_PLATFORM = "codex";
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  function writeHeartbeat(id: string, sessionId: string): void {
+    writeFileSync(
+      path.join(activeDir, `${id}.json`),
+      JSON.stringify({
+        instance_id: id,
+        session_id: sessionId,
+        kind: "session",
+        name: id,
+        platform: "codex",
+        last_heartbeat: new Date().toISOString(),
+      }),
+    );
+  }
+
+  test("validated bridge session beats inherited owner and conflicting pid-map", () => {
+    writeHeartbeat("codex-owner", "codex-thread");
+    writeHeartbeat("foreign-owner", "foreign-session");
+    writePidmapRow(root, process.pid, "foreign-owner", "claude-code");
+    process.env.HARNERY_AGENT_COORD_OWNER = "foreign-owner";
+    process.env.HARNERY_AGENT_COORD_SESSION_ID = "codex-thread";
+    process.env.CODEX_THREAD_ID = "codex-thread";
+
+    expect(resolveOwnerWithSource()).toEqual({
+      owner: "codex-owner",
+      source: "session_env",
+    });
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toEqual({
+      instance_id: "codex-owner",
+      source: "session_env",
+    });
+  });
+
+  test("invalid bridge session fails closed across both resolvers", () => {
+    writeHeartbeat("foreign-owner", "foreign-session");
+    writePidmapRow(root, process.pid, "foreign-owner", "claude-code");
+    process.env.HARNERY_AGENT_COORD_OWNER = "foreign-owner";
+    process.env.HARNERY_AGENT_COORD_SESSION_ID = "missing-thread";
+    process.env.CODEX_THREAD_ID = "missing-thread";
+
+    expect(resolveOwnerWithSource()).toEqual({ owner: null, source: "none" });
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
+  });
+
+  test("hook payload remains authoritative in bridge mode", () => {
+    expect(
+      resolveHookOwner({ payload: { session_id: "payload-owner" }, coordRoot: root }),
+    ).toEqual({ instance_id: "payload-owner", source: "payload" });
   });
 });
 

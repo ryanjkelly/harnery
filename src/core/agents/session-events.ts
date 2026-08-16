@@ -115,16 +115,21 @@ function canonicalData(
   type: SessionEventType,
   fields: Record<string, unknown>,
 ): Record<string, unknown> {
+  const attribution = {
+    ...(typeof fields.owner_source === "string" ? { owner_source: fields.owner_source } : {}),
+    ...(typeof fields.bridge === "string" ? { bridge: fields.bridge } : {}),
+  };
   switch (type) {
     case "command_start":
-      return { cmd_id: fields.cmd_id, intent: fields.intent, cmd: fields.cmd };
+      return { cmd_id: fields.cmd_id, intent: fields.intent, cmd: fields.cmd, ...attribution };
     case "output":
-      return { cmd_id: fields.cmd_id, stream: fields.stream, line: fields.line };
+      return { cmd_id: fields.cmd_id, stream: fields.stream, line: fields.line, ...attribution };
     case "command_end":
       return {
         cmd_id: fields.cmd_id,
         exit: fields.exit,
         duration_ms: fields.duration_ms,
+        ...attribution,
         ...(fields.signal ? { signal: fields.signal } : {}),
       };
     case "narration":
