@@ -380,7 +380,9 @@ function normalizeAdapter(value: unknown): "claude-code" | "cursor" | "codex" {
 }
 
 function progressTool(toolName: string | undefined): boolean {
-  return !!toolName && /^(Edit|Write|MultiEdit|apply_patch)$/i.test(toolName);
+  return (
+    !!toolName && /^(Edit|Write|NotebookEdit|MultiEdit|StrReplace|apply_patch)$/i.test(toolName)
+  );
 }
 
 function isRunQualityEvidenceType(eventType: string): boolean {

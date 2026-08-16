@@ -57,6 +57,28 @@ describe("file-backed run-quality coordinator", () => {
     expect(result.snapshot?.reason).toBe("insufficient_evidence");
   });
 
+  test.each([
+    "NotebookEdit",
+    "StrReplace",
+  ])("treats a successful %s outcome as progress", (toolName) => {
+    const project = root();
+    configure(project, "shadow");
+    heartbeat(project, "instance-a", "session-a");
+    ledger(project, [
+      event("01", "session.start", {}),
+      event("02", "tool.pre_use", { tool_name: toolName, input_hash: "write" }),
+      event("03", "tool.post_use", { tool_name: toolName, success: true }),
+    ]);
+
+    const result = evaluateRunQualityIfDue(
+      project,
+      new Date("2026-08-15T00:00:00.000Z"),
+      "instance-a",
+    );
+
+    expect(result.snapshot?.state.work_since_progress).toBe(0);
+  });
+
   test("follows a cursor event when live-ledger rotation moves it into the newest archive", () => {
     const project = root();
     configure(project, "shadow");
