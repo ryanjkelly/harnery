@@ -102,6 +102,17 @@ export {
   writeLiveDisplayV2,
 } from "./live-feed.ts";
 export {
+  type CommandObservationV2,
+  type CommandProducerContextV2,
+  type CommandSignalV2,
+  normalizeCommandEventV2,
+} from "./producers/command.ts";
+export {
+  type RecordCommandSignalV2Input,
+  type RecordCommandSignalV2Result,
+  recordCommandSignalV2,
+} from "./producers/command-recorder.ts";
+export {
   type HookProducerContextV2,
   type HookSignalV2,
   normalizeHookEventV2,

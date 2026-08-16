@@ -53,6 +53,7 @@ export interface HookProducerStateV2 {
   format: typeof STATE_FORMAT;
   format_version: typeof STATE_VERSION;
   adapter: Adapter;
+  instance_id: `inst_${string}`;
   session_id: `sid_${string}`;
   generation_id: `gen_${string}`;
   attestation_id: `att_${string}`;
@@ -136,6 +137,7 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
     if (
       state &&
       (state.adapter !== input.adapter ||
+        state.instance_id !== input.instance_id ||
         state.session_id !== sessionId ||
         state.privacy_epoch_id !== epochId ||
         state.capability_profile !== adapterCapabilityProfileDigestV2(input.adapter))
@@ -281,6 +283,7 @@ function newProducerState(
     format: STATE_FORMAT,
     format_version: STATE_VERSION,
     adapter: input.adapter,
+    instance_id: input.instance_id,
     session_id: sessionId,
     generation_id: generationIdV2(),
     attestation_id: attestationIdV2(),
@@ -438,6 +441,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     "format",
     "format_version",
     "generation_id",
+    "instance_id",
     "last_event_id",
     "next_sequence",
     "pending",
@@ -453,6 +457,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     state.format !== STATE_FORMAT ||
     state.format_version !== STATE_VERSION ||
     !["claude-code", "codex", "cursor"].includes(state.adapter) ||
+    !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(state.instance_id) ||
     !/^sid_[a-f0-9]{64}$/.test(state.session_id) ||
     !/^gen_[0-9a-f-]{36}$/.test(state.generation_id) ||
     !/^att_[0-9a-f-]{36}$/.test(state.attestation_id) ||
