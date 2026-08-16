@@ -3,9 +3,11 @@ export {
   type AuthorityReceiptV2,
   type AuthorityReconcilerV2,
   type AuthorityTransactionV2,
+  buildAuthorityTransactionV2,
   listPendingAuthorityTransactionsV2,
   type PrepareAuthorityTransactionV2Input,
   prepareAuthorityTransactionV2,
+  publishAuthorityTransactionV2,
   readAuthorityReceiptV2,
   readAuthorityTransactionV2,
   reconcileAuthorityTransactionV2,
@@ -126,6 +128,11 @@ export {
   type WaitEndedObservationV2,
   type WaitStartedObservationV2,
 } from "./producers/coordination.ts";
+export {
+  type RecordCoordinationAuthorityV2Input,
+  type RecordCoordinationAuthorityV2Result,
+  recordCoordinationAuthorityV2,
+} from "./producers/coordination-recorder.ts";
 export {
   type HookProducerContextV2,
   type HookSignalV2,

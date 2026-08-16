@@ -117,6 +117,13 @@ export function prepareAuthorityTransactionV2(
   coordRoot: string,
   input: PrepareAuthorityTransactionV2Input,
 ): AuthorityTransactionV2 {
+  return publishAuthorityTransactionV2(coordRoot, buildAuthorityTransactionV2(input));
+}
+
+/** Build and validate an authority transaction without touching durable state. */
+export function buildAuthorityTransactionV2(
+  input: PrepareAuthorityTransactionV2Input,
+): AuthorityTransactionV2 {
   assertEventV2(input.event);
   const transaction: AuthorityTransactionV2 = {
     format: "harnery-event-v2-authority-transaction",
@@ -130,6 +137,15 @@ export function prepareAuthorityTransactionV2(
     event_id: input.event.event_id,
     event_row: `${canonicalJsonV2(input.event)}\n`,
   };
+  validateTransaction(transaction);
+  return transaction;
+}
+
+/** Publish an already-built transaction exactly, preserving its pre-minted event. */
+export function publishAuthorityTransactionV2(
+  coordRoot: string,
+  transaction: AuthorityTransactionV2,
+): AuthorityTransactionV2 {
   validateTransaction(transaction);
   const paths = ensureEventV2Layout(coordRoot);
   const readyPath = authorityReadyPath(paths.authorityOutbox, transaction.transaction_id);
