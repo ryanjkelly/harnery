@@ -132,6 +132,11 @@
       "types": "./dist/lib/format.d.ts",
       "import": "./dist/lib/format.js"
     },
+    "./lib/headless": {
+      "bun": "./src/lib/headless/index.ts",
+      "types": "./dist/lib/headless/index.d.ts",
+      "import": "./dist/lib/headless/index.js"
+    },
     "./lib/http": {
       "bun": "./src/lib/http/index.ts",
       "types": "./dist/lib/http/index.d.ts",
