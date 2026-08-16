@@ -12,6 +12,10 @@ export function spanIdV2(): `span_${string}` {
   return `span_${uuidv7()}`;
 }
 
+export function delegationIdV2(): `del_${string}` {
+  return `del_${uuidv7()}`;
+}
+
 export function attestationIdV2(): `att_${string}` {
   return `att_${uuidv7()}`;
 }

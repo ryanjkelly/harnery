@@ -451,8 +451,7 @@ function applyClaim(
     delete projection.claims[key];
     return;
   }
-  const generationId =
-    projection.current_generation_by_instance[event.payload.subject_instance_id];
+  const generationId = projection.current_generation_by_instance[event.payload.subject_instance_id];
   const subject = generationId ? projection.generations[generationId] : undefined;
   if (subject?.phase !== "live") {
     addDiagnostic(projection, {
@@ -578,15 +577,19 @@ function addDiagnostic(
 }
 
 function authorityBlockingLedgerDiagnostic(code: string): boolean {
-  return code !== "unresolved_attestation" &&
+  return (
+    code !== "unresolved_attestation" &&
     code !== "wall_clock_regression_unmarked" &&
-    code !== "monotonic_clock_regression";
+    code !== "monotonic_clock_regression"
+  );
 }
 
 function authorityAttributionVerified(event: EventV2, subjectInstanceId?: string): boolean {
   const attribution = event.provenance.attribution;
-  return attribution.state === "verified" &&
+  return (
+    attribution.state === "verified" &&
     (attribution.subject_instance_id === undefined ||
       subjectInstanceId === undefined ||
-      attribution.subject_instance_id === subjectInstanceId);
+      attribution.subject_instance_id === subjectInstanceId)
+  );
 }

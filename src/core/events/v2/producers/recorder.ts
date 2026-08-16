@@ -23,7 +23,7 @@ import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
 import type { EventV2 } from "../contract.ts";
 import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
-import { attestationIdV2, clockIdV2, generationIdV2, spanIdV2 } from "../ids.ts";
+import { attestationIdV2, clockIdV2, delegationIdV2, generationIdV2, spanIdV2 } from "../ids.ts";
 import { assertEventV2, validateEventV2 } from "../validate.ts";
 import { type WriteEventV2Options, type WriteEventV2Result, writeEventV2 } from "../writer.ts";
 import { type HookSignalV2, normalizeHookEventV2 } from "./hook.ts";
@@ -197,7 +197,7 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
       if (!delegation) {
         delegation = {
           source_id: sourceId,
-          delegation_id: `del_${randomUUID()}`,
+          delegation_id: delegationIdV2(),
           child_generation_id: generationIdV2(),
           role: safeRole(input.payload.raw.agent_type),
         };

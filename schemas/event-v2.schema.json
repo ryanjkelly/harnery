@@ -228,7 +228,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -628,7 +628,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -1018,7 +1018,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -1419,7 +1419,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -1833,7 +1833,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -2899,7 +2899,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -3810,7 +3810,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -4212,7 +4212,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -4824,7 +4824,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -5244,7 +5244,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -5632,7 +5632,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -6054,7 +6054,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -6549,7 +6549,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -10195,7 +10195,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -10753,7 +10753,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -11316,7 +11316,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -12086,7 +12086,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -12550,7 +12550,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -12972,7 +12972,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -13106,7 +13106,7 @@
           ],
           "properties": {
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             },
             "child_generation_id": {
@@ -13408,7 +13408,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -13541,7 +13541,7 @@
           ],
           "properties": {
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             },
             "child_generation_id": {
@@ -13802,7 +13802,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -13935,7 +13935,7 @@
           ],
           "properties": {
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             },
             "child_generation_id": {
@@ -14224,7 +14224,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -14645,7 +14645,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -15066,7 +15066,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -15546,7 +15546,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -15974,7 +15974,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -16433,7 +16433,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -16892,7 +16892,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -17286,7 +17286,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -17762,7 +17762,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -18221,7 +18221,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -18665,7 +18665,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -19079,7 +19079,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -19477,7 +19477,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -19890,7 +19890,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -20288,7 +20288,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -20687,7 +20687,7 @@
               "type": "string"
             },
             "delegation_id": {
-              "pattern": "^del_[0-9a-f-]{36}$",
+              "pattern": "^del_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }

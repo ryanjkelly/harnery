@@ -83,7 +83,14 @@ export {
   rotateFingerprintEpochV2,
 } from "./fingerprint-keys.ts";
 export { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
-export { attestationIdV2, clockIdV2, eventIdV2, generationIdV2, spanIdV2 } from "./ids.ts";
+export {
+  attestationIdV2,
+  clockIdV2,
+  delegationIdV2,
+  eventIdV2,
+  generationIdV2,
+  spanIdV2,
+} from "./ids.ts";
 export {
   EVENT_V2_LIVE_RELATIVE_ROOT,
   janitorLiveDisplayV2,

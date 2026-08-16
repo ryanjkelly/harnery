@@ -157,7 +157,7 @@ const LinksSchema = StrictObject({
   span_id: Type.Optional(SpanId),
   parent_span_id: Type.Optional(SpanId),
   parent_generation_id: Type.Optional(GenerationId),
-  delegation_id: Type.Optional(Type.String({ pattern: "^del_[0-9a-f-]{36}$" })),
+  delegation_id: Type.Optional(Type.String({ pattern: `^del_${uuidV7Pattern}$` })),
 });
 
 const ToolLinksSchema = StrictObject({
@@ -544,7 +544,7 @@ export const ContextRecoveryInjectedV2Schema = eventSchema(
 export const AgentDelegatedV2Schema = eventSchema(
   "agent.delegated",
   StrictObject({
-    delegation_id: Type.String({ pattern: "^del_[0-9a-f-]{36}$" }),
+    delegation_id: Type.String({ pattern: `^del_${uuidV7Pattern}$` }),
     child_generation_id: GenerationId,
     role: SafeToken,
     ownership_fingerprint: FingerprintV2Schema,
@@ -554,7 +554,7 @@ export const AgentDelegatedV2Schema = eventSchema(
 export const AgentStartedV2Schema = eventSchema(
   "agent.started",
   StrictObject({
-    delegation_id: Type.String({ pattern: "^del_[0-9a-f-]{36}$" }),
+    delegation_id: Type.String({ pattern: `^del_${uuidV7Pattern}$` }),
     child_generation_id: GenerationId,
     role: SafeToken,
   }),
@@ -563,7 +563,7 @@ export const AgentStartedV2Schema = eventSchema(
 export const AgentCompletedV2Schema = eventSchema(
   "agent.completed",
   StrictObject({
-    delegation_id: Type.String({ pattern: "^del_[0-9a-f-]{36}$" }),
+    delegation_id: Type.String({ pattern: `^del_${uuidV7Pattern}$` }),
     child_generation_id: GenerationId,
     outcome: OutcomeV2Schema,
   }),
