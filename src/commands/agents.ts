@@ -3771,6 +3771,21 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
   const body = `from agent-${fromName}: ${message.trim()}`;
   const doc = appendEntry(peerOwner, "handoff", body);
 
+  // Canonical delivery record: sender is the envelope owner, recipient rides
+  // in data, so read-only observers can render the communication without
+  // joining journal files.
+  emitCanonical({
+    type: "state.ping",
+    owner: myOwner,
+    session: myHb?.session_id ?? myOwner,
+    adapter: normalizeAdapter(myHb?.platform),
+    data: {
+      peer_instance_id: peerOwner,
+      peer_name: name,
+      body_summary: truncate(message.trim(), 200),
+    },
+  });
+
   const data = {
     peer: name,
     peer_instance_id: peerOwner,

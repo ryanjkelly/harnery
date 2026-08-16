@@ -387,6 +387,19 @@ export type StatePresenceChange = EventEnvelope<
 
 export type StateHeartbeat = EventEnvelope<"state.heartbeat", Record<string, never>>;
 
+/** A directed agent-to-agent ping (delivered as a journal handoff entry).
+ * Records the complete delivery: sender (envelope owner), recipient, time,
+ * and a stable id via the envelope — so read-only observers (dashboards,
+ * presentation layers) can render communication without joining journals. */
+export type StatePing = EventEnvelope<
+  "state.ping",
+  {
+    peer_instance_id: string;
+    peer_name?: string;
+    body_summary: string;
+  }
+>;
+
 /** A live session adopted a durable persona/role. The event is authoritative
  * for replay; `.name-history` carries the same binding for heartbeat healing. */
 export type IdentityAssumed = EventEnvelope<
@@ -579,6 +592,7 @@ export type Event =
   | StateJournalAppend
   | StatePresenceChange
   | StateHeartbeat
+  | StatePing
   | IdentityAssumed
   | CouncilOpen
   | CouncilRoundOpen
