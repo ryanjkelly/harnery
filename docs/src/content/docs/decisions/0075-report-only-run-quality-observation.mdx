@@ -219,11 +219,19 @@ attestations, config digests, and minimum sample counts fixed before tuning.
   `attention` verdict;
 - every labeled runaway trace reaching at least `attention` no later than the
   first eligible evaluation after its configured signal threshold is met;
-- every labeled stalled trace reaching at least `attention` no later than the
-  first eligible evaluation at which its configured no-progress epoch count is
-  met; and
+- every evaluator-detectable labeled stalled trace reaching at least
+  `attention` no later than the first eligible evaluation at which its
+  configured no-progress epoch count is met; and
 - at least 30 known-healthy holdout traces per eligible adapter/role stratum and
-  10 positive holdout traces per scenario family and eligible adapter.
+  10 evaluator-detectable positive holdout traces per scenario family and
+  eligible adapter.
+
+Independently reviewed silent stalls that do not activate the evaluator's
+two-precursor corroboration rule remain labeled positives in the corpus. The
+manifest marks them as known blind spots, and replay reports their count and
+detection rate separately from the hard pass/fail gate. They do not satisfy the
+evaluator-detectable sample minimum. This preserves evidence of the blind spot
+without weakening corroboration or making `report` structurally unreachable.
 
 `partial` adapter attestation counts for a signal only when it explicitly
 permits the observed sample source. A signal represented on two or more
