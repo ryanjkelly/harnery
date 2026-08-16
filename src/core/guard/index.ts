@@ -2,6 +2,7 @@ export { DEFAULT_RUN_QUALITY_CONFIG, readRunQualityConfig } from "./config.ts";
 export type { RunQualityEvaluationResult } from "./coordinator.ts";
 export { evaluateRunQualityIfDue } from "./coordinator.ts";
 export { evaluateRunQuality } from "./evaluator.ts";
+export { normalizeRunQualityEventV2 } from "./evidence-v2.ts";
 export {
   readFreshRunQualitySnapshot,
   readRunQualitySnapshot,
