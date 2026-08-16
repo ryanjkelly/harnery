@@ -38,6 +38,7 @@ const ACCEPTED_TYPES = new Set([
   "state.task_set",
   "state.task_state",
   "state.heartbeat",
+  "state.ping",
   "identity.assumed",
 ]);
 
@@ -184,6 +185,12 @@ export function sanitizeEvent(raw: unknown): CodecSourceEvidence | null {
     case "identity.assumed": {
       const name = clampLabel(data.name);
       if (name) out.identity_name = name;
+      break;
+    }
+    case "state.ping": {
+      // Delivery record only: recipient id crosses, the message body does not.
+      const peer = str(data.peer_instance_id);
+      if (peer) out.ping_to = peer;
       break;
     }
     // session/subagent lifecycle, prompts, and turn stops carry type + ts only:

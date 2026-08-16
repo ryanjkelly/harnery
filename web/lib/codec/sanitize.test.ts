@@ -116,6 +116,17 @@ describe("sanitizeEvent", () => {
     expect(identity).toMatchObject({ identity_name: "Sara" });
   });
 
+  test("state.ping lifts the recipient id and drops the message body", () => {
+    const ping = sanitizeEvent({
+      ...BASE,
+      event_type: "state.ping",
+      data: { peer_instance_id: "inst-2", peer_name: "Tony", body_summary: SECRET_PROMPT },
+    });
+    expect(ping).toMatchObject({ ping_to: "inst-2" });
+    expect(JSON.stringify(ping)).not.toContain(SECRET_PROMPT);
+    expect(JSON.stringify(ping)).not.toContain("Tony");
+  });
+
   test("sanitizeLine drops malformed rows silently", () => {
     expect(sanitizeLine("")).toBeNull();
     expect(sanitizeLine("{not json")).toBeNull();

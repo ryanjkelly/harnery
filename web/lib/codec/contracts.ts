@@ -101,6 +101,8 @@ export interface CodecSourceEvidence {
   context_confidence?: "exact" | "reported" | "estimated";
   /** Durable display name from identity.assumed. */
   identity_name?: string;
+  /** Ping recipient from state.ping (delivery record); body never crosses. */
+  ping_to?: string;
 }
 
 export interface CodecPanelScene {

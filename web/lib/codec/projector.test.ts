@@ -192,6 +192,70 @@ describe("projectScene", () => {
     expect(trail.map((a) => a.category)).toEqual(["test", "diagnostic", "edit"]);
   });
 
+  test("evidence-backed panel survives a swept heartbeat; noise and stale evidence do not", () => {
+    const events = [
+      ev({ event_type: "identity.assumed", identity_name: "Quentin", ts: "2026-08-16T09:00:00.000Z" }),
+      ev({ event_type: "state.task_set", task: "Review fixes", ts: "2026-08-16T09:30:00.000Z" }),
+      ev({ event_type: "tool.pre_use", category: "research", outcome: "started", ts: "2026-08-16T10:03:00.000Z" }),
+      // a different instance with only incidental evidence: no panel
+      ev({ event_type: "state.heartbeat", instance_id: "inst-noise", ts: "2026-08-16T10:03:00.000Z" }),
+      // a third instance whose evidence is far outside the window: no panel
+      ev({ event_type: "tool.pre_use", instance_id: "inst-old", category: "edit", ts: "2026-08-16T05:00:00.000Z" }),
+      ev({ event_type: "identity.assumed", instance_id: "inst-old", identity_name: "Old", ts: "2026-08-16T05:00:00.000Z" }),
+    ];
+    const scene = projectScene({ snapshot: snapshot([]), events, now: NOW });
+    expect(scene.panels.map((p) => p.identity.display_name)).toEqual(["Quentin"]);
+    const q = scene.panels[0];
+    if (!q) throw new Error("panel missing");
+    // Non-end evidence 2 minutes old: online, event-backed, medium confidence.
+    expect(q.presence).toMatchObject({ value: "online", provenance: "event", confidence: "medium" });
+    expect(q.activity).toMatchObject({ value: "working", provenance: "event" });
+    expect(q.identity.task?.value).toBe("Review fixes");
+
+    // With a session.end as the newest lifecycle signal, the panel reads
+    // offline instead of online.
+    const endedScene = projectScene({
+      snapshot: snapshot([]),
+      events: [...events, ev({ event_type: "session.end", ts: "2026-08-16T10:04:00.000Z" })],
+      now: NOW,
+    });
+    expect(endedScene.panels[0]?.presence.value).toBe("offline");
+    expect(endedScene.panels[0]?.activity.value).toBe("idle");
+  });
+
+  test("a heartbeat panel is never duplicated by evidence", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({})]),
+      events: [ev({ event_type: "tool.pre_use", category: "research", ts: "2026-08-16T10:03:00.000Z" })],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+  });
+
+  test("ping transients render only unexpired and only between rendered panels", () => {
+    const panels = snapshot([hb({}), hb({ instance_id: "inst-2", name: "Kai" })]);
+    const scene = projectScene({
+      snapshot: panels,
+      events: [
+        // fresh ping between two panels: renders
+        ev({ event_type: "state.ping", ping_to: "inst-2", ts: "2026-08-16T10:04:57.000Z" }),
+        // expired ping: suppressed
+        ev({ event_type: "state.ping", ping_to: "inst-2", ts: "2026-08-16T10:00:00.000Z" }),
+        // ping to an un-paneled instance: suppressed, never guessed
+        ev({ event_type: "state.ping", ping_to: "inst-ghost", ts: "2026-08-16T10:04:58.000Z" }),
+      ],
+      now: NOW,
+    });
+    expect(scene.transients).toHaveLength(1);
+    expect(scene.transients[0]).toMatchObject({
+      kind: "message",
+      from_instance_id: "inst-1",
+      to_instance_id: "inst-2",
+      provenance: "event",
+    });
+    expect(Date.parse(scene.transients[0]?.expires_at ?? "")).toBeGreaterThan(Date.parse(NOW));
+  });
+
   test("team ambience is deterministic from activity", () => {
     const busy = projectScene({
       snapshot: snapshot([hb({}), hb({ instance_id: "inst-2", name: "Kai" })]),

@@ -43,6 +43,13 @@ const IN_MOTION_WINDOW_MS = 120_000;
 /** Hysteresis (percentage points) at context-band boundaries. */
 const BAND_HYSTERESIS_PP = 2;
 
+/** How long event evidence sustains a panel after its heartbeat is gone. */
+const EVIDENCE_PANEL_WINDOW_MS = 30 * 60_000;
+/** Fresh non-end evidence within this window reads as online (event-backed). */
+const EVIDENCE_ONLINE_WINDOW_MS = 5 * 60_000;
+/** Message transients expire quickly; a ping is a moment, not a state. */
+const MESSAGE_TRANSIENT_TTL_MS = 8_000;
+
 /** Context-band memory so a value hovering at a boundary does not flicker.
  * Presentation-only, per-process, rebuilt harmlessly on restart. */
 const lastBandByInstance = new Map<string, { band: CodecContextBand; remaining: number }>();
@@ -60,6 +67,11 @@ interface InstanceEvidence {
   identityName?: string;
   /** Envelope parent_session_id from the newest event carrying one. */
   parentEvidence?: { parent: string; event_id: string; ts: string };
+  /** Newest accepted event of any type, for evidence-panel recency. */
+  lastEventTs?: string;
+  /** Activity folded from events with the session-state reducer's table, so a
+   * panel can survive a swept heartbeat without inventing state. */
+  activityEvidence?: { value: CodecActivity; ts: string; event_id: string };
   recentActions: CodecRecentAction[];
   /** Full recent action list for the expressive rules, ascending, capped. */
   actionsFull: ExpressiveAction[];
@@ -87,6 +99,41 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     }
     if (ev.parent_session_id) {
       slot.parentEvidence = { parent: ev.parent_session_id, event_id: ev.event_id, ts: ev.ts };
+    }
+    slot.lastEventTs = ev.ts;
+    // Mirror of applySessionStateEvent's evidence table (session-state.ts):
+    // starts/stops → idle, prompts/tools → working, input requests →
+    // needs-input, command starts count only inside an open working state.
+    const setActivity = (value: CodecActivity) => {
+      slot.activityEvidence = { value, ts: ev.ts, event_id: ev.event_id };
+    };
+    switch (ev.event_type) {
+      case "session.start":
+      case "subagent.start":
+        setActivity("idle");
+        break;
+      case "user_prompt.submit":
+      case "tool.pre_use":
+        setActivity("working");
+        break;
+      case "interaction.input_requested":
+        setActivity("needs-input");
+        break;
+      case "command.start":
+        if (
+          slot.activityEvidence?.value === "working" ||
+          slot.activityEvidence?.value === "needs-input"
+        ) {
+          setActivity("working");
+        }
+        break;
+      case "turn.stop":
+      case "session.end":
+      case "subagent.stop":
+        setActivity("idle");
+        break;
+      default:
+        break;
     }
     switch (ev.event_type) {
       case "session.start":
@@ -354,6 +401,82 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     panels.push(panel);
   }
 
+  // Evidence-backed panels: a session whose heartbeat was stale-swept (or
+  // never registered) but whose canonical events are recent must degrade to
+  // honest unknowns instead of vanishing from the scene — a live agent
+  // disappearing mid-work is the one failure an operator cannot detect.
+  // Recency bounds the set; instances with only incidental evidence (no
+  // identity, task, prompt, or actions) are skipped as noise.
+  const paneled = new Set(panels.map((p) => p.instance_id));
+  for (const [instanceId, ev] of evidence) {
+    if (paneled.has(instanceId)) continue;
+    const lastTs = ms(ev.lastEventTs);
+    if (!Number.isFinite(lastTs) || nowMs - lastTs > EVIDENCE_PANEL_WINDOW_MS) continue;
+    if (!ev.identityName && !ev.lastTaskSet && !ev.lastPrompt && ev.actionsFull.length === 0) {
+      continue;
+    }
+
+    const endTs = ms(ev.lastSessionEnd?.ts);
+    const ended =
+      ev.lastSessionEnd !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
+    const evPresence: Presented<CodecPresence> = ended
+      ? present("offline", "event", "high", ev.lastSessionEnd?.ts ?? now, [
+          ev.lastSessionEnd?.event_id ?? "",
+        ])
+      : nowMs - lastTs <= EVIDENCE_ONLINE_WINDOW_MS
+        ? present("online", "event", "medium", ev.lastEventTs ?? now)
+        : present("unknown", "unknown", "low", ev.lastEventTs ?? now);
+    const evActivity: Presented<CodecActivity> = ev.activityEvidence
+      ? present(ev.activityEvidence.value, "event", "high", ev.activityEvidence.ts, [
+          ev.activityEvidence.event_id,
+        ])
+      : present("unknown", "unknown", "low", ev.lastEventTs ?? now);
+    const channels = deriveExpressiveChannels(
+      {
+        activity: evActivity.value,
+        ...(ev.lastPrompt
+          ? { lastPrompt: { ts: ev.lastPrompt.ts, event_id: ev.lastPrompt.event_id } }
+          : {}),
+        ...(ev.lastTurnStop
+          ? { lastTurnStop: { ts: ev.lastTurnStop.ts, event_id: ev.lastTurnStop.event_id } }
+          : {}),
+        actions: ev.actionsFull,
+        openSubagents: ev.openSubagents,
+      },
+      now,
+    );
+    const task =
+      ev.lastTaskSet?.task && !ev.lastTaskSet.task_cleared
+        ? present(ev.lastTaskSet.task, "event" as const, "high" as const, ev.lastTaskSet.ts, [
+            ev.lastTaskSet.event_id,
+          ])
+        : undefined;
+    const fallbackTs = ev.lastEventTs ?? now;
+    panels.push({
+      instance_id: instanceId,
+      identity: {
+        display_name: ev.identityName ?? instanceId.slice(0, 8),
+        ...(task ? { task } : {}),
+      },
+      presence: evPresence,
+      activity: evActivity,
+      lifecycle: ev.lastTaskState?.task_state
+        ? present(ev.lastTaskState.task_state, "event", "high", ev.lastTaskState.ts, [
+            ev.lastTaskState.event_id,
+          ])
+        : present("unknown", "unknown", "low", fallbackTs),
+      expression: channels.expression,
+      attention: channels.attention,
+      context_band: contextBand(instanceId, ev, fallbackTs),
+      progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),
+      recent_actions: ev.recentActions,
+      ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
+      character: { ...FALLBACK_PACK },
+      updated_at: fallbackTs,
+    });
+    paneled.add(instanceId);
+  }
+
   // Parentage (plan phase 3, "parentage first"): the envelope's
   // parent_session_id is authoritative. The relationship is shown only when
   // the join can be proved against another rendered panel — a parent outside
@@ -367,6 +490,30 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
         parentEvidence.event_id,
       ]);
     }
+  }
+
+  // Message transients: state.ping is a complete delivery record (sender in
+  // the envelope, recipient in data). A cue renders only while unexpired and
+  // only when both endpoints are rendered panels — a particle to nowhere is
+  // suppressed, never guessed.
+  const transients: CodecScene["transients"] = [];
+  const paneledIds = new Set(panels.map((p) => p.instance_id));
+  for (const ev of inputs.events) {
+    if (ev.event_type !== "state.ping" || !ev.ping_to) continue;
+    const occurredMs = ms(ev.ts);
+    if (!Number.isFinite(occurredMs)) continue;
+    const expiresMs = occurredMs + MESSAGE_TRANSIENT_TTL_MS;
+    if (expiresMs <= nowMs) continue;
+    if (!paneledIds.has(ev.instance_id) || !paneledIds.has(ev.ping_to)) continue;
+    transients.push({
+      cue_id: ev.event_id,
+      kind: "message",
+      from_instance_id: ev.instance_id,
+      to_instance_id: ev.ping_to,
+      occurred_at: ev.ts,
+      expires_at: new Date(expiresMs).toISOString(),
+      provenance: "event",
+    });
   }
 
   const workingCount = panels.filter((p) => p.activity.value === "working").length;
@@ -383,8 +530,8 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     ...(lastEvent ? { source_event_id: lastEvent.event_id } : {}),
     freshness: present("live", "projection", "high", now),
     panels,
-    relationships: [], // Phase 3: requires proved work/governor adapters
-    transients: [], // Phase 3: requires a delivery-record adapter
+    relationships: [], // still requires proved work/governor adapters
+    transients,
     team_ambience: present(ambience, "projection", panels.length ? "high" : "low", now),
     generated_at: now,
   };
