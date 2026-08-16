@@ -1,8 +1,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildEventV2 } from "./builder.ts";
 import { canonicalJsonV2, sha256V2 } from "./canonical.ts";
 import type { EventV2 } from "./contract.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
+import { activationIdV2, eventIdV2, genesisIdV2 } from "./ids.ts";
 import { type ReadLedgerV2Result, readActiveLedgerV2, readLedgerV2 } from "./reader.ts";
 import { validateEventV2 } from "./validate.ts";
 import { eventV2Paths, writeEventV2 } from "./writer.ts";
@@ -15,6 +17,7 @@ type ActivationEventV2 = Extract<EventV2, { event_type: "ledger.activated" }>;
 
 export interface CandidateProfileV2 {
   initial_schema_digest: `sha256:${string}`;
+  contract_source_digest: `sha256:${string}`;
   harnery_commit: string;
   host_repository_commit: string;
   producer_build_ids: string[];
@@ -47,6 +50,35 @@ export interface ActivationManifestV2 {
   event: ActivationEventV2;
 }
 
+export interface ControlProducerV2 {
+  producer_id: `prd_${string}`;
+  boot_id: `boot_${string}`;
+  sequence: number;
+  build_id: `build_${string}`;
+  platform: "linux" | "windows" | "macos" | "unknown";
+  bridge?: "codex-wsl";
+}
+
+export interface BuildCandidateGenesisManifestV2Input {
+  profile: CandidateProfileV2;
+  root_id: `root_${string}`;
+  instance_id: `inst_${string}`;
+  producer: ControlProducerV2;
+  genesis_id?: `gex_${string}`;
+  event_id?: `evt_${string}`;
+}
+
+export interface BuildActivationManifestV2Input {
+  candidate: CandidateGenesisManifestV2;
+  approval_record_id: string;
+  activation_approved_at: string;
+  producer: ControlProducerV2;
+  activation_id?: `act_${string}`;
+  event_id?: `evt_${string}`;
+}
+
+export type ControlManifestValidationV2<T> = { ok: true; value: T } | { ok: false; reason: string };
+
 export type EventV2ControlState =
   | { state: "closed"; reason: "no_candidate" }
   | {
@@ -69,6 +101,114 @@ export type EventV2ControlState =
   | { state: "invalid"; reason: string };
 
 export type EventV2WriteMode = "candidate" | "active";
+
+/** Build a complete immutable candidate packet without writing it or opening a gate. */
+export function buildCandidateGenesisManifestV2(
+  input: BuildCandidateGenesisManifestV2Input,
+): CandidateGenesisManifestV2 {
+  const profile: CandidateProfileV2 = {
+    ...input.profile,
+    producer_build_ids: [...input.profile.producer_build_ids].sort(),
+    adapter_capability_profile_digests: [
+      ...input.profile.adapter_capability_profile_digests,
+    ].sort(),
+  };
+  const event = buildEventV2("ledger.genesis", {
+    event_id: input.event_id,
+    producer: { ...input.producer, component: "recovery" },
+    scope: { root_id: input.root_id, instance_id: input.instance_id },
+    links: { caused_by: [] },
+    provenance: controlProvenance("cutover.genesis", input.instance_id),
+    observed_at: profile.candidate_created_at,
+    recorded_at: profile.candidate_created_at,
+    payload: {
+      genesis_id: input.genesis_id ?? genesisIdV2(),
+      genesis_profile_digest: candidateProfileDigestV2(profile),
+      contract_digest: profile.contract_source_digest,
+      generated_schema_digest: profile.initial_schema_digest,
+      v1_terminal_segment_digest: profile.v1_terminal_digest,
+      canonicalizer: profile.canonicalizer_version,
+      privacy_epoch_id: profile.privacy_key_epoch,
+      candidate_created_at: profile.candidate_created_at,
+    },
+  });
+  const manifest: CandidateGenesisManifestV2 = {
+    manifest_version: 1,
+    kind: "candidate_genesis",
+    profile,
+    event,
+  };
+  const validated = validateCandidateGenesisManifestV2(manifest);
+  if (!validated.ok) throw new Error(`candidate_genesis_invalid:${validated.reason}`);
+  return validated.value;
+}
+
+/** Build an approval-bound activation packet without writing it or opening a gate. */
+export function buildActivationManifestV2(
+  input: BuildActivationManifestV2Input,
+): ActivationManifestV2 {
+  const candidate = validateCandidateGenesisManifestV2(input.candidate);
+  if (!candidate.ok) throw new Error(`candidate_genesis_invalid:${candidate.reason}`);
+  const eventId = input.event_id ?? eventIdV2();
+  const activationId = input.activation_id ?? activationIdV2();
+  const candidateDigest = candidateManifestDigestV2(candidate.value);
+  const genesisId = candidate.value.event.payload.genesis_id as `gex_${string}`;
+  const scope = candidate.value.event.scope as {
+    root_id: `root_${string}`;
+    instance_id: `inst_${string}`;
+  };
+  const event = buildEventV2("ledger.activated", {
+    event_id: eventId,
+    producer: { ...input.producer, component: "recovery" },
+    scope,
+    links: { caused_by: [candidate.value.event.event_id] },
+    provenance: controlProvenance("cutover.activation", scope.instance_id),
+    observed_at: input.activation_approved_at,
+    recorded_at: input.activation_approved_at,
+    payload: {
+      activation_id: activationId,
+      genesis_id: genesisId,
+      candidate_digest: candidateDigest,
+      approval_record_id: input.approval_record_id,
+      eligible_after_event_id: eventId,
+      activated_at: input.activation_approved_at,
+    },
+  });
+  const manifest: ActivationManifestV2 = {
+    manifest_version: 1,
+    kind: "activation",
+    activation_id: activationId,
+    genesis_id: genesisId,
+    candidate_manifest_digest: candidateDigest,
+    approval_record_id: input.approval_record_id,
+    activation_approved_at: input.activation_approved_at,
+    event,
+  };
+  const validated = validateActivationManifestV2(manifest, candidate.value);
+  if (!validated.ok) throw new Error(`activation_invalid:${validated.reason}`);
+  return validated.value;
+}
+
+/** Validate an in-memory candidate with the same strict rules as the live gate. */
+export function validateCandidateGenesisManifestV2(
+  value: unknown,
+): ControlManifestValidationV2<CandidateGenesisManifestV2> {
+  return parseGenesisManifestValue(value);
+}
+
+/** Validate an in-memory activation against one exact candidate packet. */
+export function validateActivationManifestV2(
+  value: unknown,
+  candidate: CandidateGenesisManifestV2,
+): ControlManifestValidationV2<ActivationManifestV2> {
+  const validatedCandidate = validateCandidateGenesisManifestV2(candidate);
+  if (!validatedCandidate.ok) return fail(`candidate_${validatedCandidate.reason}`);
+  return parseActivationManifestValue(
+    value,
+    validatedCandidate.value,
+    candidateManifestDigestV2(validatedCandidate.value),
+  );
+}
 
 /**
  * Resolve the session/evidence gate from exact control-file and ledger-event pairs.
@@ -175,15 +315,20 @@ export function candidateManifestDigestV2(
 function readGenesisManifest(path: string): ParseResult<CandidateGenesisManifestV2> {
   const parsed = readJsonObject(path);
   if (!parsed.ok) return parsed;
-  if (!exactKeys(parsed.value, ["event", "kind", "manifest_version", "profile"])) {
+  return parseGenesisManifestValue(parsed.value);
+}
+
+function parseGenesisManifestValue(value: unknown): ParseResult<CandidateGenesisManifestV2> {
+  if (!isObject(value)) return fail("genesis_manifest_not_object");
+  if (!exactKeys(value, ["event", "kind", "manifest_version", "profile"])) {
     return fail("genesis_manifest_shape_invalid");
   }
-  if (parsed.value.manifest_version !== 1 || parsed.value.kind !== "candidate_genesis") {
+  if (value.manifest_version !== 1 || value.kind !== "candidate_genesis") {
     return fail("genesis_manifest_version_invalid");
   }
-  const profile = parseCandidateProfile(parsed.value.profile);
+  const profile = parseCandidateProfile(value.profile);
   if (!profile.ok) return profile;
-  const validation = validateEventV2(parsed.value.event);
+  const validation = validateEventV2(value.event);
   if (!validation.ok || validation.event?.event_type !== "ledger.genesis") {
     return fail("genesis_event_invalid");
   }
@@ -191,6 +336,7 @@ function readGenesisManifest(path: string): ParseResult<CandidateGenesisManifest
   if (
     event.contract.schema_digest !== EVENT_V2_SCHEMA_DIGEST ||
     event.payload.genesis_profile_digest !== candidateProfileDigestV2(profile.value) ||
+    event.payload.contract_digest !== profile.value.contract_source_digest ||
     event.payload.generated_schema_digest !== profile.value.initial_schema_digest ||
     event.payload.v1_terminal_segment_digest !== profile.value.v1_terminal_digest ||
     event.payload.canonicalizer !== profile.value.canonicalizer_version ||
@@ -212,8 +358,17 @@ function readActivationManifest(
 ): ParseResult<ActivationManifestV2> {
   const parsed = readJsonObject(path);
   if (!parsed.ok) return parsed;
+  return parseActivationManifestValue(parsed.value, genesis, candidateDigest);
+}
+
+function parseActivationManifestValue(
+  value: unknown,
+  genesis: CandidateGenesisManifestV2,
+  candidateDigest: `sha256:${string}`,
+): ParseResult<ActivationManifestV2> {
+  if (!isObject(value)) return fail("activation_manifest_not_object");
   if (
-    !exactKeys(parsed.value, [
+    !exactKeys(value, [
       "activation_approved_at",
       "activation_id",
       "approval_record_id",
@@ -226,24 +381,23 @@ function readActivationManifest(
   ) {
     return fail("activation_manifest_shape_invalid");
   }
-  if (parsed.value.manifest_version !== 1 || parsed.value.kind !== "activation") {
+  if (value.manifest_version !== 1 || value.kind !== "activation") {
     return fail("activation_manifest_version_invalid");
   }
   const activationId =
-    typeof parsed.value.activation_id === "string" &&
-    /^act_[0-9a-f-]{36}$/.test(parsed.value.activation_id)
-      ? parsed.value.activation_id
+    typeof value.activation_id === "string" && /^act_[0-9a-f-]{36}$/.test(value.activation_id)
+      ? value.activation_id
       : undefined;
-  const genesisId = safeString(parsed.value.genesis_id, "gex_");
-  const approvalRecordId = safeToken(parsed.value.approval_record_id);
-  const approvedAt = safeTimestamp(parsed.value.activation_approved_at);
+  const genesisId = safeString(value.genesis_id, "gex_");
+  const approvalRecordId = safeToken(value.approval_record_id);
+  const approvedAt = safeTimestamp(value.activation_approved_at);
   if (!activationId || !genesisId || !approvalRecordId || !approvedAt) {
     return fail("activation_manifest_fields_invalid");
   }
-  if (parsed.value.candidate_manifest_digest !== candidateDigest) {
+  if (value.candidate_manifest_digest !== candidateDigest) {
     return fail("activation_candidate_digest_mismatch");
   }
-  const validation = validateEventV2(parsed.value.event);
+  const validation = validateEventV2(value.event);
   if (!validation.ok || validation.event?.event_type !== "ledger.activated") {
     return fail("activation_event_invalid");
   }
@@ -280,6 +434,7 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> 
     "candidate_created_at",
     "canonicalizer_version",
     "config_digest",
+    "contract_source_digest",
     "fingerprint_version",
     "harnery_commit",
     "host_repository_commit",
@@ -293,6 +448,8 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> 
   if (!exactKeys(value, keys)) return fail("genesis_profile_shape_invalid");
   if (
     !isSha256(value.initial_schema_digest) ||
+    value.initial_schema_digest !== EVENT_V2_SCHEMA_DIGEST ||
+    !isSha256(value.contract_source_digest) ||
     !isSha256(value.config_digest) ||
     !isSha256(value.v1_terminal_digest) ||
     value.canonicalizer_version !== "harnery-jcs-nfc-v1" ||
@@ -301,8 +458,8 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> 
     !safeToken(value.host_repository_commit) ||
     !safeToken(value.fingerprint_version) ||
     !safeTimestamp(value.candidate_created_at) ||
-    !safeTokenArray(value.producer_build_ids) ||
-    !sha256Array(value.adapter_capability_profile_digests) ||
+    !sortedSafeTokenArray(value.producer_build_ids) ||
+    !sortedSha256Array(value.adapter_capability_profile_digests) ||
     !nonNegativeInteger(value.v1_terminal_bytes) ||
     !nonNegativeInteger(value.v1_terminal_rows)
   ) {
@@ -332,7 +489,20 @@ function readControlLedger(coordRoot: string): ReadLedgerV2Result {
   return readActiveLedgerV2(coordRoot);
 }
 
-type ParseResult<T> = { ok: true; value: T } | { ok: false; reason: string };
+type ParseResult<T> = ControlManifestValidationV2<T>;
+
+function controlProvenance(sourceEvent: string, subjectInstanceId: `inst_${string}`) {
+  return {
+    source_event: sourceEvent,
+    attestation: "operator" as const,
+    confidence: "exact" as const,
+    attribution: {
+      method: "explicit_argument" as const,
+      state: "verified" as const,
+      subject_instance_id: subjectInstanceId,
+    },
+  };
+}
 
 function readJsonObject(path: string): ParseResult<Record<string, unknown>> {
   try {
@@ -377,22 +547,22 @@ function isSha256(value: unknown): value is `sha256:${string}` {
   return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 }
 
-function safeTokenArray(value: unknown): value is string[] {
+function sortedSafeTokenArray(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
     value.length <= 64 &&
-    new Set(value).size === value.length &&
+    value.every((item, index) => index === 0 || value[index - 1]! < item) &&
     value.every((item) => safeToken(item) !== undefined)
   );
 }
 
-function sha256Array(value: unknown): value is string[] {
+function sortedSha256Array(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
     value.length <= 64 &&
-    new Set(value).size === value.length &&
+    value.every((item, index) => index === 0 || value[index - 1]! < item) &&
     value.every(isSha256)
   );
 }

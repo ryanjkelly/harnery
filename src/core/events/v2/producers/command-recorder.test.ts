@@ -217,6 +217,7 @@ function candidateRoot(): string {
   );
   const profile: CandidateProfileV2 = {
     initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
+    contract_source_digest: sha256V2("contract"),
     harnery_commit: "fixture",
     host_repository_commit: "fixture",
     producer_build_ids: ["build_fixture"],
@@ -256,7 +257,7 @@ function candidateRoot(): string {
     payload: {
       genesis_id: "gex_00000000-0000-0000-0000-000000000001",
       genesis_profile_digest: candidateProfileDigestV2(profile),
-      contract_digest: sha256V2("contract"),
+      contract_digest: profile.contract_source_digest,
       generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
       v1_terminal_segment_digest: profile.v1_terminal_digest,
       canonicalizer: "harnery-jcs-nfc-v1",

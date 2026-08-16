@@ -23,3 +23,11 @@ export function attestationIdV2(): `att_${string}` {
 export function clockIdV2(): `clk_${string}` {
   return `clk_${uuidv7()}`;
 }
+
+export function genesisIdV2(): `gex_${string}` {
+  return `gex_${uuidv7()}`;
+}
+
+export function activationIdV2(): `act_${string}` {
+  return `act_${uuidv7()}`;
+}

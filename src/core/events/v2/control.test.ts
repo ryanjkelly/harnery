@@ -6,6 +6,8 @@ import { buildEventV2 } from "./builder.ts";
 import { canonicalJsonV2, sha256V2 } from "./canonical.ts";
 import {
   type ActivationManifestV2,
+  buildActivationManifestV2,
+  buildCandidateGenesisManifestV2,
   type CandidateGenesisManifestV2,
   type CandidateProfileV2,
   candidateManifestDigestV2,
@@ -15,6 +17,8 @@ import {
   eventV2WriteGateOpen,
   readEventV2ControlState,
   repairEventV2ControlPair,
+  validateActivationManifestV2,
+  validateCandidateGenesisManifestV2,
 } from "./control.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
 import { eventIdV2 } from "./ids.ts";
@@ -24,6 +28,55 @@ const CREATED_AT = "2026-08-16T18:00:00.000Z";
 const APPROVED_AT = "2026-08-16T19:00:00.000Z";
 
 describe("event ledger V2 candidate and activation control gate", () => {
+  test("builds deterministic, validated candidate and approval packets without writing them", () => {
+    const profile = candidateManifest().profile;
+    profile.producer_build_ids = ["build_z", "build_a"];
+    profile.adapter_capability_profile_digests = [sha256V2("z-cap"), sha256V2("a-cap")];
+    const candidate = buildCandidateGenesisManifestV2({
+      profile,
+      root_id: "root_fixture",
+      instance_id: "inst_cutover",
+      producer: producer(1),
+      genesis_id: "gex_00000000-0000-0000-0000-000000000010",
+      event_id: "evt_00000000-0000-7000-8000-000000000010",
+    });
+    expect(candidate.profile.producer_build_ids).toEqual(["build_a", "build_z"]);
+    expect(candidate.profile.adapter_capability_profile_digests).toEqual(
+      [...profile.adapter_capability_profile_digests].sort(),
+    );
+    expect(validateCandidateGenesisManifestV2(candidate)).toEqual({ ok: true, value: candidate });
+
+    const activation = buildActivationManifestV2({
+      candidate,
+      approval_record_id: "approval_ryan_20260816",
+      activation_approved_at: APPROVED_AT,
+      producer: producer(2),
+      activation_id: "act_00000000-0000-0000-0000-000000000010",
+      event_id: "evt_00000000-0000-7000-8000-000000000011",
+    });
+    expect(activation.event.payload.eligible_after_event_id).toBe(activation.event.event_id);
+    expect(activation.candidate_manifest_digest).toBe(candidateManifestDigestV2(candidate));
+    expect(validateActivationManifestV2(activation, candidate)).toEqual({
+      ok: true,
+      value: activation,
+    });
+
+    const tampered = structuredClone(candidate);
+    tampered.profile.config_digest = sha256V2("tampered");
+    expect(validateCandidateGenesisManifestV2(tampered)).toEqual({
+      ok: false,
+      reason: "genesis_profile_binding_mismatch",
+    });
+    expect(() =>
+      buildActivationManifestV2({
+        candidate: tampered,
+        approval_record_id: "approval_ryan_20260816",
+        activation_approved_at: APPROVED_AT,
+        producer: producer(2),
+      }),
+    ).toThrow("candidate_genesis_invalid:genesis_profile_binding_mismatch");
+  });
+
   test("stays closed without control records and rejects an unbound genesis event", () => {
     const emptyRoot = tempRoot();
     expect(readEventV2ControlState(emptyRoot)).toEqual({ state: "closed", reason: "no_candidate" });
@@ -100,6 +153,7 @@ describe("event ledger V2 candidate and activation control gate", () => {
 function candidateManifest(): CandidateGenesisManifestV2 {
   const profile: CandidateProfileV2 = {
     initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
+    contract_source_digest: sha256V2("contract-source"),
     harnery_commit: "harnery-fixture",
     host_repository_commit: "host-fixture",
     producer_build_ids: ["build_fixture"],
@@ -121,7 +175,7 @@ function candidateManifest(): CandidateGenesisManifestV2 {
     payload: {
       genesis_id: "gex_00000000-0000-0000-0000-000000000001",
       genesis_profile_digest: candidateProfileDigestV2(profile),
-      contract_digest: sha256V2("contract-source"),
+      contract_digest: profile.contract_source_digest,
       generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
       v1_terminal_segment_digest: profile.v1_terminal_digest,
       canonicalizer: "harnery-jcs-nfc-v1",
@@ -164,11 +218,11 @@ function activationManifest(genesis: CandidateGenesisManifestV2): ActivationMani
 
 function producer(sequence: number) {
   return {
-    producer_id: "prd_cutover",
-    boot_id: "boot_cutover",
+    producer_id: "prd_cutover" as const,
+    boot_id: "boot_cutover" as const,
     sequence,
     component: "recovery" as const,
-    build_id: "build_fixture",
+    build_id: "build_fixture" as const,
     platform: "linux" as const,
   };
 }

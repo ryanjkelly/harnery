@@ -46,6 +46,7 @@ import { registerGrepCommand } from "./commands/grep.ts";
 import { registerInitCommand } from "./commands/init.ts";
 import { registerInstructionsCommand } from "./commands/instructions.ts";
 import { registerJournalCommand } from "./commands/journal.ts";
+import { registerLedgerV2Command } from "./commands/ledger-v2.ts";
 import { registerOutlineCommand } from "./commands/outline.ts";
 import { registerPolicyCommand } from "./commands/policy.ts";
 import { registerPresenceCommand } from "./commands/presence.ts";
@@ -287,6 +288,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCompletionCommand(program, emit, opts.context);
   registerCheckpointCommand(program, emit, opts.context);
   registerJournalCommand(program, emit);
+  registerLedgerV2Command(program, emit, opts.context);
   registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);
   registerDevtoolsCommand(program, emit);

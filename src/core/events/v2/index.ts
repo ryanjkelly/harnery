@@ -61,8 +61,14 @@ export {
 } from "./contract.ts";
 export {
   type ActivationManifestV2,
+  type BuildActivationManifestV2Input,
+  type BuildCandidateGenesisManifestV2Input,
+  buildActivationManifestV2,
+  buildCandidateGenesisManifestV2,
   type CandidateGenesisManifestV2,
   type CandidateProfileV2,
+  type ControlManifestValidationV2,
+  type ControlProducerV2,
   candidateManifestDigestV2,
   candidateProfileDigestV2,
   EVENT_V2_ACTIVATION_MANIFEST,
@@ -72,6 +78,8 @@ export {
   eventV2WriteGateOpen,
   readEventV2ControlState,
   repairEventV2ControlPair,
+  validateActivationManifestV2,
+  validateCandidateGenesisManifestV2,
 } from "./control.ts";
 export {
   type CoordinationGenerationViewV2,
@@ -103,11 +111,13 @@ export {
 } from "./fingerprint-keys.ts";
 export { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
 export {
+  activationIdV2,
   attestationIdV2,
   clockIdV2,
   delegationIdV2,
   eventIdV2,
   generationIdV2,
+  genesisIdV2,
   spanIdV2,
 } from "./ids.ts";
 export {
