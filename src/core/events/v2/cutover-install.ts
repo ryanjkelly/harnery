@@ -71,6 +71,7 @@ export type EpochCutoverV2Step =
   | CutoverV2Step
   | "candidate_install_intent_committed"
   | "candidate_packet_finalized"
+  | "previous_v2_fence_released"
   | "genesis_manifest_installed"
   | "genesis_event_repaired"
   | "catalog_initialized"
@@ -304,6 +305,8 @@ export function installCandidateV2(input: InstallCandidateV2Input): InstallCandi
   }
   if (stateBefore.state === "invalid")
     throw new Error(`candidate_gate_invalid:${stateBefore.reason}`);
+  releaseVerifiedV2ArchiveFence(coordRoot);
+  input.onStep?.("previous_v2_fence_released", EVENT_V2_LEDGER_RELATIVE_ROOT);
   const genesisPath = join(coordRoot, EVENT_V2_LEDGER_RELATIVE_ROOT, "genesis.json");
   writeImmutableCanonicalJson(genesisPath, candidate);
   input.onStep?.("genesis_manifest_installed", EVENT_V2_LEDGER_RELATIVE_ROOT);
@@ -591,6 +594,45 @@ function installV2ArchiveFence(source: string, manifest: V2EpochArchiveManifestV
   }
   writeImmutableCanonicalJson(source, fence);
   chmodSync(source, 0o400);
+  fsyncParentDirectory(source);
+}
+
+function releaseVerifiedV2ArchiveFence(coordRoot: string): void {
+  const source = join(coordRoot, EVENT_V2_LEDGER_RELATIVE_ROOT);
+  if (!existsSync(source)) return;
+  const stat = lstatSync(source);
+  if (stat.isDirectory() && !stat.isSymbolicLink()) return;
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) {
+    throw new Error("previous_v2_fence_path_unsafe");
+  }
+  const fence = readCanonicalJson<Record<string, unknown>>(source);
+  const keys = Object.keys(fence).sort();
+  const expectedKeys = [
+    "archive_relative_path",
+    "genesis_id",
+    "kind",
+    "manifest_version",
+    "tree_digest",
+  ];
+  if (
+    canonicalJsonV2(keys) !== canonicalJsonV2(expectedKeys) ||
+    fence.manifest_version !== 1 ||
+    fence.kind !== V2_ARCHIVE_FENCE_KIND ||
+    typeof fence.genesis_id !== "string" ||
+    !/^gex_[0-9a-f-]{36}$/.test(fence.genesis_id) ||
+    fence.archive_relative_path !== `${CANDIDATE_ARCHIVE_RELATIVE_ROOT}/${fence.genesis_id}` ||
+    typeof fence.tree_digest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(fence.tree_digest)
+  ) {
+    throw new Error("previous_v2_fence_invalid");
+  }
+  const archive = join(coordRoot, fence.archive_relative_path);
+  const entries = collectTree(archive);
+  if (sha256V2(canonicalJsonV2(entries)) !== fence.tree_digest) {
+    throw new Error("previous_v2_archive_changed");
+  }
+  chmodSync(source, 0o600);
+  unlinkSync(source);
   fsyncParentDirectory(source);
 }
 

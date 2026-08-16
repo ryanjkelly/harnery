@@ -194,6 +194,37 @@ describe("event ledger V2 installation and epoch rollback", () => {
     ).toBe("active");
   });
 
+  test("opens a replacement candidate only after verifying the archived-epoch fence", () => {
+    const fixture = installedCandidate();
+    const rollback = archiveEpochAndRollbackV2({
+      coordRoot: fixture.root,
+      artifactRoot: fixture.artifactRoot,
+      candidate: fixture.result.candidate,
+      snapshot: fixture.result.snapshot,
+      seal: fixture.result.seal,
+      now: NOW,
+    });
+    const archivedGenesis = readFileSync(
+      join(fixture.root, rollback.archive_relative_path, "genesis.json"),
+      "utf8",
+    );
+    const replacement = installCandidateV2({
+      coordRoot: fixture.root,
+      artifactRoot: join(fixture.root, ".harnery", "cutover-artifacts-replacement"),
+      packet: replacementPacketFixture(),
+      projectionPaths: [".harnery/active", ".harnery/.events-cursor"],
+      now: NOW,
+    });
+    expect(replacement.state).toBe("candidate");
+    expect(replacement.candidate.event.payload.genesis_id).not.toBe(
+      fixture.result.candidate.event.payload.genesis_id,
+    );
+    expect(readLedgerV2(fixture.root)).toMatchObject({ complete: true, diagnostics: [] });
+    expect(
+      readFileSync(join(fixture.root, rollback.archive_relative_path, "genesis.json"), "utf8"),
+    ).toBe(archivedGenesis);
+  });
+
   for (const killedAt of [
     "v2_archive_manifest_committed",
     "v2_rollback_intent_committed",
@@ -264,6 +295,26 @@ function packetFixture() {
     },
     genesis_id: "gex_00000000-0000-7000-8000-000000000001",
     event_id: "evt_00000000-0000-7000-8000-000000000002",
+  });
+}
+
+function replacementPacketFixture() {
+  return buildCandidateInstallPacketV2({
+    profile_base: {
+      ...profileBase(),
+      candidate_created_at: "2026-08-16T23:02:00.000Z",
+    },
+    root_id: "root_fixture",
+    instance_id: "inst_operator",
+    producer: {
+      producer_id: "prd_cutover",
+      boot_id: "boot_replacement",
+      sequence: 1,
+      build_id: "build_fixture",
+      platform: "linux",
+    },
+    genesis_id: "gex_00000000-0000-7000-8000-000000000005",
+    event_id: "evt_00000000-0000-7000-8000-000000000006",
   });
 }
 
