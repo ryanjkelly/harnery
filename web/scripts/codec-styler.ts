@@ -25,6 +25,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { harneryDir } from "../lib/coord-reader";
@@ -53,6 +54,17 @@ function probe(cmd: string, args: string[]): boolean {
 }
 
 /**
+ * Interpreters run from a neutral empty directory, never the worker's cwd.
+ * A harness launched inside a coordinated repo loads that repo's agent
+ * instructions and fires its hooks: the tiny classification request then
+ * registers a phantom session on the coordination roster, burns tokens on
+ * end-of-turn rituals, and can exceed MODEL_TIMEOUT_MS on ceremony alone
+ * (measured 42s vs 6s for the same one-line prompt). The classification
+ * needs zero project context, so an empty tmpdir is the correct home.
+ */
+const NEUTRAL_CWD = fs.mkdtempSync(path.join(os.tmpdir(), "codec-styler-"));
+
+/**
  * Resolve the cheapest WORKING local interpreter; null disables inference.
  * Presence is not enough (an installed harness can still fail headless on
  * expired auth), so each candidate must pass one tiny real request before it
@@ -68,6 +80,7 @@ function resolveInterpreter(): Interpreter | null {
         execFileSync("claude", ["-p", prompt, "--model", "fable"], {
           timeout: MODEL_TIMEOUT_MS,
           encoding: "utf8",
+          cwd: NEUTRAL_CWD,
         }),
     });
   }
@@ -78,6 +91,7 @@ function resolveInterpreter(): Interpreter | null {
         execFileSync("codex", ["exec", "-m", "gpt-5.6-luna", prompt], {
           timeout: MODEL_TIMEOUT_MS,
           encoding: "utf8",
+          cwd: NEUTRAL_CWD,
         }),
     });
   }
