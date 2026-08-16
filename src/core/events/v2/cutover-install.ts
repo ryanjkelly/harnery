@@ -20,6 +20,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fsyncParentDirectory } from "../../workflow/durable-record.ts";
 import { canonicalJsonV2, sha256V2 } from "./canonical.ts";
+import { recoverEventV2Catalog } from "./catalog.ts";
 import {
   type ActivationManifestV2,
   buildCandidateGenesisManifestV2,
@@ -72,6 +73,7 @@ export type EpochCutoverV2Step =
   | "candidate_packet_finalized"
   | "genesis_manifest_installed"
   | "genesis_event_repaired"
+  | "catalog_initialized"
   | "candidate_gate_open"
   | "activation_install_intent_committed"
   | "activation_manifest_installed"
@@ -313,6 +315,8 @@ export function installCandidateV2(input: InstallCandidateV2Input): InstallCandi
   if (canonicalJsonV2(repaired.genesis) !== canonicalJsonV2(candidate)) {
     throw new Error("candidate_gate_manifest_mismatch");
   }
+  recoverEventV2Catalog(coordRoot);
+  input.onStep?.("catalog_initialized");
   input.onStep?.("candidate_gate_open");
   return {
     state: "candidate",

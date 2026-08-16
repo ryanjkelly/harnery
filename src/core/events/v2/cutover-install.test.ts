@@ -21,6 +21,7 @@ import {
   installActivationV2,
   installCandidateV2,
 } from "./cutover-install.ts";
+import { readLedgerV2 } from "./reader.ts";
 import { writeEventV2 } from "./writer.ts";
 
 const roots: string[] = [];
@@ -51,6 +52,10 @@ describe("event ledger V2 installation and epoch rollback", () => {
       v1_terminal_rows: 2,
     });
     expect(readEventV2ControlState(fixture.root).state).toBe("candidate");
+    expect(readLedgerV2(fixture.root)).toMatchObject({
+      complete: true,
+      diagnostics: [],
+    });
 
     const activation = activationFor(fixture.result.candidate);
     const active = installActivationV2({
@@ -125,6 +130,38 @@ describe("event ledger V2 installation and epoch rollback", () => {
       now: NOW,
     });
     expect(result.state).toBe("candidate");
+  });
+
+  test("repairs an exact candidate after catalog initialization", () => {
+    const root = fixtureRoot();
+    const artifactRoot = join(root, ".harnery", "cutover-artifacts");
+    const packet = packetFixture();
+    let killed = false;
+    expect(() =>
+      installCandidateV2({
+        coordRoot: root,
+        artifactRoot,
+        packet,
+        projectionPaths: [".harnery/active", ".harnery/.events-cursor"],
+        now: NOW,
+        onStep(step) {
+          if (!killed && step === "catalog_initialized") {
+            killed = true;
+            throw new Error("killed:catalog_initialized");
+          }
+        },
+      }),
+    ).toThrow("killed:catalog_initialized");
+    expect(readLedgerV2(root)).toMatchObject({ complete: true, diagnostics: [] });
+    expect(
+      installCandidateV2({
+        coordRoot: root,
+        artifactRoot,
+        packet,
+        projectionPaths: [".harnery/active", ".harnery/.events-cursor"],
+        now: NOW,
+      }).state,
+    ).toBe("candidate");
   });
 
   test("repairs an exact activation after a manifest-first crash", () => {
