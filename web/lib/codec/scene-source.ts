@@ -11,11 +11,13 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 
 import { coordRoot, eventsPath, readAgents } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 import { readWorkflowChildSessions } from "@/lib/workflow-reader";
+import { readEventV2ControlState } from "../../../src/core/events/v2/control";
+import { readLedgerV2 } from "../../../src/core/events/v2/reader";
+import { eventV2Paths } from "../../../src/core/events/v2/writer";
 
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
@@ -61,7 +63,19 @@ async function readOneSanitizedTail(filePath: string): Promise<CodecSourceEviden
 }
 
 export async function readSanitizedTail(filePath?: string): Promise<CodecSourceEvidence[]> {
-  return readSanitizedTails(filePath ? [filePath] : eventsFilePaths());
+  if (filePath) return readSanitizedTails([filePath]);
+
+  const root = coordRoot();
+  const control = readEventV2ControlState(root);
+  if (control.state === "closed") return readSanitizedTails([eventsPath()]);
+  if (control.state !== "candidate" && control.state !== "active") return [];
+
+  const ledger = readLedgerV2(root);
+  if (!ledger.complete) return [];
+  const rows = ledger.events
+    .map(({ event }) => sanitizeLine(JSON.stringify(event)))
+    .filter((event): event is CodecSourceEvidence => event !== null);
+  return rows.slice(-Math.max(1, Math.floor(TAIL_BYTES / 1_000)));
 }
 
 export async function readSanitizedTails(filePaths: string[]): Promise<CodecSourceEvidence[]> {
@@ -139,5 +153,11 @@ export async function buildScene(now?: string): Promise<CodecScene> {
 }
 
 export function eventsFilePaths(): string[] {
-  return [eventsPath(), path.join(coordRoot(), ".harnery/ledgers/v2/active.ndjson")];
+  const control = readEventV2ControlState(coordRoot());
+  if (control.state === "closed") return [eventsPath()];
+  if (control.state === "candidate" || control.state === "active") {
+    const paths = eventV2Paths(coordRoot());
+    return [paths.active, paths.catalog];
+  }
+  return [];
 }

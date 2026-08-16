@@ -328,14 +328,28 @@ describe("evaluateCommit", () => {
 });
 
 describe("evaluateCommit identity resolution", () => {
-  const savedThread = process.env.CODEX_THREAD_ID;
-  const savedOwner = process.env.HARNERY_AGENT_COORD_OWNER;
+  const isolatedEnv = [
+    "HARNERY_AGENT_COORD_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CURSOR_SESSION_ID",
+    "CURSOR_CONVERSATION_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "HARNERY_AGENT_COORD_OWNER",
+    "HARNERY_AGENT_COORD_BRIDGE",
+  ] as const;
+  const savedEnv = Object.fromEntries(isolatedEnv.map((key) => [key, process.env[key]]));
+
+  beforeEach(() => {
+    for (const key of isolatedEnv) delete process.env[key];
+  });
 
   afterEach(() => {
-    if (savedThread === undefined) delete process.env.CODEX_THREAD_ID;
-    else process.env.CODEX_THREAD_ID = savedThread;
-    if (savedOwner === undefined) delete process.env.HARNERY_AGENT_COORD_OWNER;
-    else process.env.HARNERY_AGENT_COORD_OWNER = savedOwner;
+    for (const key of isolatedEnv) {
+      const value = savedEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
   test("resolves committer from CODEX_THREAD_ID when a matching heartbeat exists", () => {

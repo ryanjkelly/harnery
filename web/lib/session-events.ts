@@ -19,7 +19,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-
+import type { EventV2 } from "../../src/core/events/v2/contract";
+import { readEventV2ControlState } from "../../src/core/events/v2/control";
+import { readLedgerV2 } from "../../src/core/events/v2/reader";
+import { eventV2Paths } from "../../src/core/events/v2/writer";
 import { harneryDir } from "./coord-reader";
 
 export interface SessionEvent {
@@ -109,6 +112,9 @@ function resolveAgentName(instanceId: string | undefined): string {
  * line (`type` at top level) so a mid-migration file never breaks the viewer.
  */
 function project(raw: Record<string, unknown>): SessionEvent | null {
+  if (raw.contract && raw.schema_version === 2) {
+    return projectSessionEventV2(raw as unknown as EventV2);
+  }
   // Canonical envelope.
   if (typeof raw.event_type === "string") {
     const env = raw as CanonicalEnvelope;
@@ -154,12 +160,9 @@ function project(raw: Record<string, unknown>): SessionEvent | null {
       // main agents), so the /live command view drops the un-narrated ones as
       // noise, keeping subagent commands that DO carry a `# intent:`.
       const isSubagent =
-        !!env.session_id &&
-        !!env.instance_id &&
-        env.session_id !== env.instance_id;
+        !!env.session_id && !!env.instance_id && env.session_id !== env.instance_id;
       const intentRaw = typeof data.intent === "string" ? data.intent : "";
-      const intent =
-        intentRaw && intentRaw !== "(no intent)" ? intentRaw : undefined;
+      const intent = intentRaw && intentRaw !== "(no intent)" ? intentRaw : undefined;
       if (etype === "tool.pre_use") {
         if (isSubagent && !intent) return null; // drop un-narrated subagent spam
         const cmd = bashCommandText(data);
@@ -208,6 +211,81 @@ function project(raw: Record<string, unknown>): SessionEvent | null {
   return null;
 }
 
+/** Project privacy-safe V2 command/tool structure. V2 deliberately has no raw
+ * command, intent, input, or output body, so the live view renders executable
+ * identity and bounded byte metadata rather than reconstructing private text. */
+export function projectSessionEventV2(event: EventV2): SessionEvent | null {
+  const instanceId = event.scope.instance_id;
+  const base = {
+    ts: event.time.recorded_at,
+    instance_id: instanceId,
+    agent_name: resolveAgentName(instanceId),
+  };
+  switch (event.event_type) {
+    case "command.started":
+      return {
+        ...base,
+        type: "command_start",
+        cmd_id: eventSpanId(event),
+        cmd: event.payload.executable,
+        intent: event.payload.intent_kind,
+      };
+    case "command.output_observed":
+      return {
+        ...base,
+        type: "output",
+        cmd_id: eventSpanId(event),
+        stream: event.payload.stream === "combined" ? "stdout" : event.payload.stream,
+        line: `[${event.payload.stream}: ${event.payload.bytes} bytes recorded structurally]`,
+      };
+    case "command.completed":
+      return {
+        ...base,
+        type: "command_end",
+        cmd_id: eventSpanId(event),
+        exit:
+          event.payload.exit_code ??
+          (event.payload.outcome === "succeeded"
+            ? 0
+            : event.payload.outcome === "unknown"
+              ? null
+              : 1),
+        signal: event.payload.signal,
+        duration_ms: event.payload.duration_ms,
+      };
+    case "tool.requested":
+      return {
+        ...base,
+        type: "command_start",
+        cmd_id: eventSpanId(event),
+        cmd: `${event.payload.tool.namespace}.${event.payload.tool.name}`,
+      };
+    case "tool.completed":
+      return {
+        ...base,
+        type: "command_end",
+        cmd_id: eventSpanId(event),
+        exit:
+          event.payload.outcome === "succeeded"
+            ? 0
+            : event.payload.outcome === "unknown"
+              ? null
+              : 1,
+        duration_ms:
+          event.payload.duration_ms.state === "observed"
+            ? event.payload.duration_ms.value
+            : undefined,
+      };
+    default:
+      return null;
+  }
+}
+
+function eventSpanId(event: EventV2): string | undefined {
+  const links = event.links as { span_id?: unknown };
+  return typeof links.span_id === "string" ? links.span_id : undefined;
+}
+
 /** Pull a one-line, intent-comment-stripped command string out of a Bash tool
  * event's `tool_input` (which arrives as either an object or a JSON-encoded
  * string, depending on the producer). The leading `# intent: …` comment is
@@ -239,6 +317,11 @@ function bashCommandText(data: Record<string, unknown>): string {
 
 /** Path to the canonical stream the command viewer now reads. */
 export function sessionEventsPath(): string {
+  const root = path.dirname(harneryDir());
+  const control = readEventV2ControlState(root);
+  if (control.state === "candidate" || control.state === "active") {
+    return eventV2Paths(root).catalog;
+  }
   return path.join(harneryDir(), "events.ndjson");
 }
 
@@ -252,11 +335,15 @@ const TAIL_READ_BYTES = 8_000_000;
  * `SessionEvent` shape. Lines that fail to parse or aren't command events are
  * skipped. Returns at most `lines` events (most recent).
  */
-export async function readSessionEventsTail(opts: {
-  lines?: number;
-  agent?: string;
-} = {}): Promise<SessionEvent[]> {
+export async function readSessionEventsTail(
+  opts: { lines?: number; agent?: string } = {},
+): Promise<SessionEvent[]> {
   const { lines = 200, agent } = opts;
+  const v2 = readV2CommandEvents();
+  if (v2) {
+    const selected = agent ? v2.filter((event) => event.agent_name === agent) : v2;
+    return selected.length > lines ? selected.slice(-lines) : selected;
+  }
   const filePath = sessionEventsPath();
   try {
     const stat = await fs.promises.stat(filePath);
@@ -307,6 +394,14 @@ export async function readEventsAfter(
   offset: number,
   agent?: string,
 ): Promise<{ events: SessionEvent[]; newOffset: number }> {
+  const v2 = readV2CommandEvents();
+  if (v2) {
+    const appended = offset < v2.length ? v2.slice(offset) : [];
+    return {
+      events: agent ? appended.filter((event) => event.agent_name === agent) : appended,
+      newOffset: v2.length,
+    };
+  }
   const filePath = sessionEventsPath();
   try {
     const stat = await fs.promises.stat(filePath);
@@ -345,10 +440,27 @@ export async function readEventsAfter(
 
 /** Initial offset for tail-stream connect: end of current file. */
 export async function currentEventsFileSize(): Promise<number> {
+  const v2 = readV2CommandEvents();
+  if (v2) return v2.length;
   try {
     const stat = await fs.promises.stat(sessionEventsPath());
     return stat.size;
   } catch {
     return 0;
   }
+}
+
+/** Null means the V1 gate is closed; an array means V2 owns the source. An
+ * invalid or incomplete V2 control/ledger state intentionally yields no rows. */
+function readV2CommandEvents(): SessionEvent[] | null {
+  const root = path.dirname(harneryDir());
+  const control = readEventV2ControlState(root);
+  if (control.state === "closed") return null;
+  if (control.state !== "candidate" && control.state !== "active") return [];
+  const ledger = readLedgerV2(root);
+  if (!ledger.complete) return [];
+  const projected = ledger.events
+    .map(({ event }) => projectSessionEventV2(event))
+    .filter((event): event is SessionEvent => event !== null);
+  return projected;
 }

@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { canonicalJsonV2, sha256V2 } from "../../events/v2/canonical.ts";
+import { adapterCapabilityProfileDigestV2 } from "../../events/v2/capabilities.ts";
+import {
+  buildCandidateGenesisManifestV2,
+  EVENT_V2_GENESIS_MANIFEST,
+  repairEventV2ControlPair,
+} from "../../events/v2/control.ts";
+import { loadOrCreateFingerprintKeyStoreV2 } from "../../events/v2/fingerprint-keys.ts";
+import { EVENT_V2_SCHEMA_DIGEST } from "../../events/v2/generated.ts";
 import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "./stop-hook.ts";
 
 let root: string;
@@ -27,6 +36,43 @@ afterEach(() => {
 function writeEvents(events: Array<Record<string, unknown>>): void {
   const path = join(root, ".harnery", "events.ndjson");
   writeFileSync(path, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`, "utf8");
+}
+
+function openCandidateGate(): void {
+  const keyStore = loadOrCreateFingerprintKeyStoreV2(root);
+  const manifest = buildCandidateGenesisManifestV2({
+    profile: {
+      initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
+      contract_source_digest: sha256V2("contract"),
+      harnery_commit: "fixture",
+      host_repository_commit: "fixture",
+      producer_build_ids: ["build_fixture"],
+      adapter_capability_profile_digests: [
+        `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
+      ],
+      config_digest: sha256V2("config"),
+      canonicalizer_version: "harnery-jcs-nfc-v1",
+      fingerprint_version: "hmac-sha256-v1",
+      privacy_key_epoch: keyStore.active_epoch_id,
+      v1_terminal_digest: sha256V2("v1"),
+      v1_terminal_bytes: 1,
+      v1_terminal_rows: 1,
+      candidate_created_at: "2026-08-16T18:00:00.000Z",
+    },
+    root_id: "root_fixture",
+    instance_id: "inst_cutover",
+    producer: {
+      producer_id: "prd_cutover",
+      boot_id: "boot_cutover",
+      sequence: 1,
+      build_id: "build_fixture",
+      platform: "linux",
+    },
+  });
+  const path = join(root, EVENT_V2_GENESIS_MANIFEST);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${canonicalJsonV2(manifest)}\n`, { mode: 0o600 });
+  expect(repairEventV2ControlPair(root).state).toBe("candidate");
 }
 
 describe("evaluateStopHook", () => {
@@ -90,6 +136,32 @@ describe("evaluateStopHook", () => {
     const v = evaluateStopHook(root, { rule: "stop-hook", instance_id: "x" });
     expect(v.allow).toBe(true);
     expect(v.rule).toBe("stop-hook.no_history");
+  });
+
+  test("candidate gate fails open explicitly without consulting fenced V1 ritual history", () => {
+    writeEvents([
+      {
+        event_id: "v1-blocking-tool",
+        event_type: "tool.pre_use",
+        ts: new Date().toISOString(),
+        instance_id: "candidate-owner",
+        session_id: "candidate-owner",
+        adapter: "claude-code",
+        source: "test",
+        data: {},
+      },
+    ]);
+    openCandidateGate();
+
+    const verdict = evaluateStopHook(root, {
+      rule: "stop-hook",
+      instance_id: "candidate-owner",
+      adapter: "claude-code",
+    });
+
+    expect(verdict.allow).toBe(true);
+    expect(verdict.rule).toBe("stop-hook.v2_evidence_unavailable");
+    expect(verdict.reason).toContain("without reading fenced V1 history");
   });
 
   test("no canonical events for owner → defer-allow", () => {

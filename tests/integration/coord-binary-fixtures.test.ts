@@ -114,11 +114,24 @@ function run(
   root: string,
   extraEnv: Record<string, string> = {},
 ): RunResult {
+  const env = { ...process.env };
+  for (const key of [
+    "HARNERY_AGENT_COORD_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CURSOR_SESSION_ID",
+    "CURSOR_CONVERSATION_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "HARNERY_AGENT_COORD_OWNER",
+    "HARNERY_AGENT_COORD_BRIDGE",
+  ]) {
+    delete env[key];
+  }
   const r = spawnSync("bash", [bin, ...args], {
     input: payload,
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root, ...extraEnv },
+    env: { ...env, HARNERY_COORD_ROOT_OVERRIDE: root, ...extraEnv },
   });
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status };
 }

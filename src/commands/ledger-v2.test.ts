@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
@@ -19,15 +19,20 @@ afterEach(() => {
 });
 
 describe("ledger-v2 command", () => {
-  test("registers inspection and off-ledger preparation only", () => {
+  test("registers staged preparation plus explicit install, rollback, and rehearsal commands", () => {
     const command = createHarneryProgram().commands.find(
       (candidate) => candidate.name() === "ledger-v2",
     );
     expect(command?.commands.map((candidate) => candidate.name())).toEqual([
       "status",
       "prepare-candidate",
+      "prepare-candidate-install",
       "prepare-activation",
       "verify",
+      "install-candidate",
+      "install-activation",
+      "rollback-epoch",
+      "rehearse-cutover",
     ]);
   });
 
@@ -74,6 +79,55 @@ describe("ledger-v2 command", () => {
     expect(emitted).toMatchObject([{ installed: false }]);
   });
 
+  test("prepares a deterministic pre-seal candidate installation packet", async () => {
+    const root = tempRoot();
+    const profilePath = join(root, "profile-base.json");
+    const outputPath = join(root, "review", "candidate-install.json");
+    const {
+      v1_terminal_digest: _digest,
+      v1_terminal_bytes: _bytes,
+      v1_terminal_rows: _rows,
+      ...profileBase
+    } = profile();
+    writeFileSync(profilePath, JSON.stringify(profileBase), "utf8");
+    const emitted: unknown[] = [];
+    const program = createHarneryProgram({
+      context: { repoRoot: root, resolveCoordRoot: () => root },
+      emit: captureEmit(emitted),
+    });
+    await program.parseAsync([
+      "node",
+      "harn",
+      "ledger-v2",
+      "prepare-candidate-install",
+      "--profile-base",
+      profilePath,
+      "--out",
+      outputPath,
+      "--root-id",
+      "root_fixture",
+      "--instance-id",
+      "inst_operator",
+      "--producer-id",
+      "prd_cutover",
+      "--boot-id",
+      "boot_cutover",
+      "--sequence",
+      "1",
+      "--build-id",
+      "build_fixture",
+      "--platform",
+      "linux",
+    ]);
+
+    expect(JSON.parse(readFileSync(outputPath, "utf8"))).toMatchObject({
+      packet_version: 1,
+      kind: "candidate_install",
+      profile_base: profileBase,
+    });
+    expect(emitted).toMatchObject([{ kind: "candidate_install", installed: false }]);
+  });
+
   test("refuses live paths and existing staged files", () => {
     const root = tempRoot();
     const packet = buildCandidateGenesisManifestV2({
@@ -96,6 +150,31 @@ describe("ledger-v2 command", () => {
     writeStagedControlPacket(root, staged, packet);
     expect(() => writeStagedControlPacket(root, staged, packet)).toThrow(
       "staged_output_must_be_new",
+    );
+  });
+
+  test("rehearses the V1 hard fence and rollback only in an explicit temporary root", async () => {
+    const root = tempRoot();
+    mkdirSync(join(root, ".harnery", "active"), { recursive: true });
+    writeFileSync(join(root, ".harnery", "events.ndjson"), '{"event_id":"evt_v1"}\n');
+    writeFileSync(join(root, ".harnery", "active", "agent.json"), '{"task":"work"}\n');
+    const emitted: unknown[] = [];
+    const program = createHarneryProgram({ emit: captureEmit(emitted) });
+    await program.parseAsync([
+      "node",
+      "harn",
+      "ledger-v2",
+      "rehearse-cutover",
+      "--root",
+      root,
+      "--projection",
+      ".harnery/active",
+    ]);
+
+    expect(emitted).toMatchObject([{ ok: true, stale_writer_refused: true }]);
+    expect(readFileSync(join(root, ".harnery", "events.ndjson"), "utf8")).toBe("");
+    expect(readFileSync(join(root, ".harnery", "active", "agent.json"), "utf8")).toBe(
+      '{"task":"work"}\n',
     );
   });
 });

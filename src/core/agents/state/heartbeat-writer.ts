@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { resolveLiveEventLedgerRouteV2 } from "../../events/v2/live-routing.ts";
 import { emit } from "../events/emit.ts";
 import {
   type AgentActivity,
@@ -64,6 +65,7 @@ function emitHealthHeal(
   data: Record<string, unknown>,
 ): void {
   try {
+    if (resolveLiveEventLedgerRouteV2(coordRoot).state !== "v1") return;
     emit(coordRoot, {
       event_type: type,
       instance_id: instanceId,
@@ -278,6 +280,21 @@ export function releaseClaim(
   return mutate(coordRoot, instanceId, (hb) => ({
     ...hb,
     files_touched: (hb.files_touched ?? []).filter((p) => norm(p) !== target),
+  }));
+}
+
+/** Materialize one V2 write-claim authority transition into the heartbeat cache. */
+export function acquireClaim(
+  coordRoot: string,
+  instanceId: string,
+  path: string,
+): Heartbeat | null {
+  const norm = (p: string): string =>
+    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
+  const target = norm(path);
+  return mutate(coordRoot, instanceId, (hb) => ({
+    ...hb,
+    files_touched: [...new Set([...(hb.files_touched ?? []).map(norm), target])].sort(),
   }));
 }
 

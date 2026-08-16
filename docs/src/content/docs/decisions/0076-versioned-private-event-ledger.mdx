@@ -1,9 +1,9 @@
 ---
 title: "0076: Replace the canonical event ledger with a private V2 contract"
-description: "Proposed ADR: separate durable structural evidence from expiring operator display, then cut over through an attested candidate and activation boundary."
+description: "ADR: separate durable structural evidence from expiring operator display, then cut over through an attested candidate and activation boundary."
 ---
 
-**Status:** proposed (2026-08-16) · **Scope:** product tier (`core/events`, hooks, coordination, web projections)
+**Status:** accepted (2026-08-16) · **Scope:** product tier (`core/events`, hooks, coordination, web projections)
 
 ## Context
 
@@ -24,10 +24,11 @@ The existing stream cannot gain the missing identity, causality, privacy, and
 durability facts by adding another set of optional fields. Historical rows do
 not contain enough information to synthesize them later.
 
-## Proposed decision
+## Decision
 
-Introduce a separate `.harnery/ledgers/v2/` contract and eventually hard-cut
-live producers and readers to it. Keep the original files unchanged for audit.
+Introduce a separate `.harnery/ledgers/v2/` contract and hard-cut live
+producers and readers to it through an explicit candidate and activation. Keep
+the original files unchanged for audit.
 Do not dual-write, mix majors in one stream, or translate historical rows into
 V2 records.
 
@@ -112,16 +113,18 @@ candidate and activation boundary.
   inspect and package; a catalog and framed WAL address the known durability
   and reader problems without adding another runtime dependency.
 
-## Expected result and approval boundary
+## Approval and activation boundary
 
-The first implementation is inactive and writes only to temporary roots. It
-establishes the generated contract, privacy-safe builders, spool-first writer,
-and validating reader before producers or live readers move. Later slices add
-the remaining taxonomy, storage recovery, adapters, safety readers, web
-projections, and corpus admission.
+Ryan accepted this architecture on 2026-08-16 after review of the complete
+inactive implementation, failure tests, adapter coverage, consumer cutover,
+and rollback tooling. The accepted implementation includes the generated
+contract, privacy-safe builders, spool-first writer, validating reader,
+producer routing, coordination authority, web projections, corpus admission,
+and full-epoch rollback.
 
-This proposed ADR does not accept its own architecture and does not authorize a
-live cutover. Acceptance follows review of the complete inactive
-implementation. Live activation remains a separate decision over exact
-commits, contract and configuration digests, canary evidence, failure tests,
-and rollback proof. ADR 0075 remains accepted and report-only throughout.
+ADR acceptance does not open the live evidence boundary. A candidate remains
+ineligible until its exact commits, contract and configuration digests, canary
+evidence, failure tests, and rollback proof have passed. The separately
+approved activation packet is the sole authority that opens corpus admission,
+and it cannot admit a generation that began before activation. ADR 0075 remains
+accepted and report-only throughout.

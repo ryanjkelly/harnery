@@ -1,0 +1,158 @@
+---
+title: Cut over to event ledger V2
+description: Seal the V1 audit history, open a V2 candidate, activate a reviewed boundary, and restore V1 if a canary fails.
+sidebar:
+  order: 2
+---
+
+Event ledger V2 is a hard cutover. It does not dual-write, mix V1 and V2 rows,
+or infer V2 facts from old records. The cutover seals the current V1 bytes,
+replaces the V1 append path with a write fence, and opens a separate
+`.harnery/ledgers/v2/` epoch.
+
+The candidate gate is useful for canaries but grants no run-quality evidence
+eligibility. Only a separately approved activation packet opens that boundary,
+and only a generation that starts after the activation event may enter a V2
+corpus.
+
+## Before you begin
+
+- Drain every session that is not part of the cutover team. A stale V1 writer
+  must hit the fence, not race the seal.
+- Commit and push the exact Harnery and host-repository builds named by the
+  candidate profile. Do not change either commit during the cutover.
+- Keep run quality in `shadow` mode.
+- Put the cutover artifact directory outside the coordination root. It contains
+  the V1 audit manifest, projection snapshot, install intents, and rollback
+  records.
+- Run the complete release suite and a temporary-root rehearsal.
+- Record an operator approval only after candidate canaries pass. Approval must
+  name the candidate digest; it cannot authorize a later replacement.
+
+## Rehearse without touching live state
+
+Create an OS temporary root containing a representative V1 ledger and the
+projection paths that will be restored on rollback. Then run:
+
+```bash
+harn ledger-v2 rehearse-cutover \
+  --root <temporary-root> \
+  --projection .harnery/active .harnery/.events-cursor .harnery/guard
+```
+
+The command refuses a normal project root and the live V2 artifact path. A
+successful rehearsal proves the seal, exact fence, projection snapshot,
+rollback continuation, and kill-point recovery code without changing the live
+ledger.
+
+## Install the candidate
+
+Build a candidate profile base with the generated schema digest, contract
+source digest, exact Harnery and host commits, approved producer build IDs,
+adapter capability-profile digests, recording-config digest, canonicalizer and
+fingerprint versions, privacy-key epoch, and candidate timestamp. Do not add V1
+terminal facts; the installer derives those from the sealed bytes.
+
+Prepare the immutable install packet off-ledger:
+
+```bash
+harn ledger-v2 prepare-candidate-install \
+  --profile-base <profile-base.json> \
+  --out <candidate-install.json> \
+  --root-id <root-id> \
+  --instance-id <operator-instance-id> \
+  --producer-id <control-producer-id> \
+  --boot-id <control-boot-id> \
+  --sequence 1 \
+  --build-id <exact-build-id> \
+  --platform <platform>
+```
+
+Install that exact packet:
+
+```bash
+harn ledger-v2 install-candidate \
+  --root <coordination-root> \
+  --artifact-root <external-artifact-root> \
+  --packet <candidate-install.json> \
+  --projection .harnery/active .harnery/.events-cursor .harnery/guard
+```
+
+The installer writes an immutable intent before it changes live state. It then
+snapshots the projections, seals all V1 segments, installs the V1 path fence,
+finalizes the candidate with the exact terminal digest, and repairs the
+pre-minted genesis event. Repeating the same operation after a crash converges
+on the same bytes. A different packet is refused.
+
+Run candidate canaries for every eligible adapter and authority path. At a
+minimum, verify session start and end, prompt, tool request and result, command
+start and completion, task and claim mutations, terminal races, stale sweep and
+resume, web and Codec views, archive rotation, and run-quality exclusion.
+
+## Activate the evidence boundary
+
+After the candidate packet and canary evidence are reviewed, prepare an
+approval-bound activation packet:
+
+```bash
+harn ledger-v2 prepare-activation \
+  --candidate <final-candidate.json> \
+  --approval-record-id <durable-approval-id> \
+  --approved-at <timestamp-with-milliseconds-and-Z> \
+  --out <activation.json> \
+  --producer-id <control-producer-id> \
+  --boot-id <control-boot-id> \
+  --sequence 2 \
+  --build-id <exact-build-id> \
+  --platform <platform>
+
+harn ledger-v2 verify \
+  --candidate <final-candidate.json> \
+  --activation <activation.json>
+
+harn ledger-v2 install-activation \
+  --root <coordination-root> \
+  --artifact-root <external-artifact-root> \
+  --packet <activation.json>
+```
+
+Check `harn ledger-v2 status` after installation. It must report the exact
+active candidate and activation identifiers. Start a fresh session generation
+for the post-activation canary. Candidate generations never become eligible
+retroactively.
+
+## Roll back the complete epoch
+
+Rollback is epoch-wide. It never leaves a partially live V2 directory or edits
+the V2 evidence in place.
+
+```bash
+harn ledger-v2 rollback-epoch \
+  --root <coordination-root> \
+  --artifact-root <external-artifact-root> \
+  --candidate <final-candidate.json> \
+  --snapshot <projection-snapshot.json> \
+  --seal <v1-seal.json>
+```
+
+The command records an immutable rollback intent, moves the complete V2 tree to
+`.harnery/ledgers/v2-candidates/<genesis-id>/`, installs an archive fence at the
+old V2 path, verifies the archived tree digest, restores the exact projection
+snapshot, and creates a fresh V1 continuation file. The sealed V1 archives are
+not rewritten.
+
+Rollback is required if authority state becomes ambiguous, a privacy leak is
+found, a sequence gap cannot be repaired from the WAL, readers disagree about
+the active epoch, or safe agent work cannot resume within the cutover window.
+
+## Evidence rules after activation
+
+- Retain the pre-cutover V1 ledger and its external artifact manifest for audit.
+- Keep any reviewed V1 run-quality trace audit-only. Do not translate or admit
+  it into the V2 corpus.
+- Exclude candidate canaries and generations that began before activation.
+- Admit only complete generations from the validating V2 reader whose source
+  attestation matches the activation, commits, config digest, capability
+  profiles, schema digest, and privacy epoch.
+- Keep run quality in `shadow` until its separate evidence thresholds and review
+  gates are satisfied.

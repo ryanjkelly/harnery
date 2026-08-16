@@ -4,6 +4,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -228,13 +229,20 @@ export function ensureEventV2Layout(coordRoot: string) {
     chmodSync(path, 0o700);
   }
   if (!existsSync(paths.active)) {
-    const fd = openSync(paths.active, "wx", 0o600);
+    let fd: number | undefined;
     try {
+      fd = openSync(paths.active, "wx", 0o600);
       fsyncSync(fd);
+      fsyncParentDirectory(paths.active);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     } finally {
-      closeSync(fd);
+      if (fd !== undefined) closeSync(fd);
     }
-    fsyncParentDirectory(paths.active);
+  }
+  const active = lstatSync(paths.active);
+  if (!active.isFile() || active.isSymbolicLink() || (active.mode & 0o077) !== 0) {
+    throw new Error("active V2 ledger must be an owner-only regular file");
   }
   return paths;
 }

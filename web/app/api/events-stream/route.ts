@@ -15,8 +15,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { coordRoot, eventsPath, type EventRow, readEvents } from "@/lib/coord-reader";
+import { coordRoot, type EventRow, eventsPath, readEvents } from "@/lib/coord-reader";
 import { readWorkflowChildSessions, resolveRunCoordRoot } from "@/lib/workflow-reader";
+import { readEventV2ControlState } from "../../../../src/core/events/v2/control";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -73,6 +74,17 @@ export async function GET(request: Request): Promise<Response> {
   const filePath = runRoot?.foreign
     ? path.join(runRoot.root, ".harnery", "events.ndjson")
     : eventsPath();
+  const sourceRoot = runRoot?.foreign ? runRoot.root : coordRoot();
+  const control = readEventV2ControlState(sourceRoot);
+  if (control.state !== "closed") {
+    return streamV2Events(request, {
+      sourceRoot,
+      initialLines,
+      instanceFilter,
+      typeFilter,
+      resolveRunSessions,
+    });
+  }
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -163,15 +175,11 @@ export async function GET(request: Request): Promise<Response> {
         processing = true;
         try {
           while (!closed) {
-            const { events, newOffset } = await readEventsAfter(
-              filePath,
-              offset,
-              {
-                instanceId: instanceFilter,
-                type: typeFilter,
-                sessions: resolveRunSessions(),
-              },
-            );
+            const { events, newOffset } = await readEventsAfter(filePath, offset, {
+              instanceId: instanceFilter,
+              type: typeFilter,
+              sessions: resolveRunSessions(),
+            });
             offset = newOffset;
             for (const ev of events) send("event", ev);
             if (!dirtySinceLast) break;
@@ -245,7 +253,91 @@ export async function GET(request: Request): Promise<Response> {
     headers: {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
-      "connection": "keep-alive",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
+function streamV2Events(
+  request: Request,
+  options: {
+    sourceRoot: string;
+    initialLines: number;
+    instanceFilter?: string;
+    typeFilter?: string;
+    resolveRunSessions: () => Set<string> | undefined;
+  },
+): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      let poll: ReturnType<typeof setInterval> | null = null;
+      let heartbeat: ReturnType<typeof setInterval> | null = null;
+      const seen = new Set<string>();
+
+      const send = (event: string, data: unknown) => {
+        if (!closed) {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        }
+      };
+      const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        if (poll) clearInterval(poll);
+        if (heartbeat) clearInterval(heartbeat);
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
+      };
+      const read = () =>
+        readEvents({
+          limit: Number.MAX_SAFE_INTEGER,
+          instanceId: options.instanceFilter,
+          type: options.typeFilter,
+          sessions: options.resolveRunSessions(),
+          root: options.sourceRoot,
+        }).rows;
+
+      try {
+        const rows = read();
+        for (const row of rows) seen.add(row.event_id);
+        send("snapshot", { events: rows.slice(0, options.initialLines) });
+      } catch {
+        send("snapshot", { events: [] });
+      }
+
+      poll = setInterval(() => {
+        try {
+          const rows = read();
+          const fresh = rows.filter((row) => !seen.has(row.event_id)).reverse();
+          for (const row of fresh) {
+            seen.add(row.event_id);
+            send("event", row);
+          }
+        } catch {
+          send("stale", { reason: "v2_ledger_read_failed" });
+        }
+      }, 1_000);
+      heartbeat = setInterval(
+        () => send("heartbeat", { ts: new Date().toISOString() }),
+        HEARTBEAT_INTERVAL_MS,
+      );
+      send("ready", { pid: process.pid, ledger: "v2" });
+      request.signal.addEventListener("abort", cleanup);
+    },
+    cancel() {
+      // request abort owns cleanup
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
       "x-accel-buffering": "no",
     },
   });
@@ -281,10 +373,7 @@ async function readEventsTail(opts: TailOpts): Promise<EventRow[]> {
     let text: string;
     if (stat.size > 2_000_000) {
       const APPROX_BYTES_PER_LINE = 1024;
-      const startOffset = Math.max(
-        0,
-        stat.size - opts.lines * APPROX_BYTES_PER_LINE * 2,
-      );
+      const startOffset = Math.max(0, stat.size - opts.lines * APPROX_BYTES_PER_LINE * 2);
       const fh = await fs.promises.open(filePath, "r");
       try {
         const length = stat.size - startOffset;

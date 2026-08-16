@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { emit } from "../agents/events/emit.ts";
 import type { Heartbeat } from "../agents/index.ts";
 import { coordFreshnessSeconds } from "../config.ts";
+import { readEventV2ControlState } from "../events/v2/control.ts";
 import { readRunQualityConfig } from "./config.ts";
 import { evaluateRunQuality } from "./evaluator.ts";
+import { readRunQualityLiveSourceV2 } from "./live-source-v2.ts";
 import { resolveRunQualityRoleWait } from "./role-wait.ts";
 import {
   acquireEvaluationLock,
@@ -96,6 +98,21 @@ export function evaluateRunQualityIfDue(
   const deadline = Date.now() + config.evaluation_timeout_seconds * 1000;
   let timedOut = false;
   try {
+    const control = readEventV2ControlState(coordRoot);
+    if (control.state === "candidate" || control.state === "active") {
+      return evaluateRunQualityV2({
+        coordRoot,
+        now,
+        instanceId,
+        configResult,
+        deadline,
+        lockNonce: lock.nonce,
+      });
+    }
+    if (control.state !== "closed") {
+      throw new Error(`run_quality_v2_control_${control.state}`);
+    }
+
     const heartbeats = readLiveHeartbeats(coordRoot, now);
     const liveIds = new Set(heartbeats.map((heartbeat) => heartbeat.instance_id));
     const window = readGuardEventWindow(coordRoot, config.max_tail_bytes);
@@ -218,6 +235,88 @@ export function evaluateRunQualityIfDue(
   } finally {
     releaseEvaluationLock(coordRoot, lock.nonce);
   }
+}
+
+function evaluateRunQualityV2(input: {
+  coordRoot: string;
+  now: Date;
+  instanceId?: string;
+  configResult: Extract<RunQualityConfigResult, { valid: true }> | RunQualityConfigResult;
+  deadline: number;
+  lockNonce: string;
+}): RunQualityEvaluationResult {
+  const config = input.configResult.config;
+  if (!config) throw new Error("run_quality_v2_config_unavailable");
+  const source = readRunQualityLiveSourceV2(input.coordRoot, input.now);
+  const snapshots: RunQualitySnapshot[] = [];
+  for (const generation of source.generations) {
+    const previous = readRunQualitySnapshot(input.coordRoot, generation.instance_id) ?? undefined;
+    const previousIndex = previous?.evidence.last_event_id
+      ? generation.events.findIndex((event) => event.event_id === previous.evidence.last_event_id)
+      : -1;
+    const events =
+      previousIndex >= 0 ? generation.events.slice(previousIndex + 1) : generation.events;
+    const snapshot = evaluateRunQuality({
+      instance_id: generation.instance_id,
+      session_id: generation.session_id,
+      session_generation: generation.generation_id,
+      adapter: generation.adapter,
+      now: input.now.toISOString(),
+      config,
+      config_digest: input.configResult.digest,
+      events,
+      previous,
+      role_wait: generation.role_wait,
+      evidence: generation.evidence,
+      sufficient_history:
+        generation.sufficient_history &&
+        (!previous ||
+          previous.session_generation !== generation.generation_id ||
+          previousIndex >= 0),
+      live: true,
+    });
+    snapshots.push(snapshot);
+  }
+
+  assertCanPublish(input.coordRoot, input.lockNonce, input.deadline);
+  const liveIds = new Set(snapshots.map((snapshot) => snapshot.instance_id));
+  for (const snapshot of snapshots) {
+    assertCanPublish(input.coordRoot, input.lockNonce, input.deadline);
+    writeRunQualitySnapshot(input.coordRoot, snapshot, input.lockNonce);
+  }
+  cleanupOrphanSnapshots(input.coordRoot, liveIds);
+
+  const last = source.generations
+    .flatMap((generation) => generation.events)
+    .sort(
+      (left, right) =>
+        left.ts.localeCompare(right.ts) || left.event_id.localeCompare(right.event_id),
+    )
+    .at(-1);
+  writeGuardCursor(
+    input.coordRoot,
+    {
+      schema_version: 1,
+      segment: last ? `v2:${source.genesis_id}` : `v2:${source.genesis_id}:empty`,
+      last_event_id: last?.event_id,
+      next_eligible_at: new Date(
+        input.now.getTime() + config.evaluation_interval_seconds * 1000,
+      ).toISOString(),
+      config_digest: input.configResult.digest,
+      updated_at: input.now.toISOString(),
+    },
+    input.lockNonce,
+  );
+
+  return {
+    config: input.configResult,
+    evaluated: true,
+    busy: false,
+    timed_out: false,
+    snapshot: input.instanceId
+      ? (snapshots.find((snapshot) => snapshot.instance_id === input.instanceId) ?? null)
+      : null,
+  };
 }
 
 function normalizeEvidence(events: CanonicalGuardEvent[]): RunQualityEvidenceEvent[] {

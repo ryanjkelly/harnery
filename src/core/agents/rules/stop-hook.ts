@@ -33,6 +33,7 @@ import {
   endOfTurnStatusCommand,
   resolveBinName,
 } from "../../config.ts";
+import { readEventV2ControlState } from "../../events/v2/control.ts";
 
 export type { VerdictResult } from "./verdict.ts";
 
@@ -207,6 +208,19 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
       exit_code: 0,
       rule: "stop-hook.codex_observe_only",
       reason: "Codex Stop continuations must not replace the user-facing answer",
+    };
+  }
+
+  const eventControl = readEventV2ControlState(coordRoot);
+  if (eventControl.state !== "closed") {
+    return {
+      allow: true,
+      exit_code: 0,
+      rule: "stop-hook.v2_evidence_unavailable",
+      reason:
+        eventControl.state === "candidate" || eventControl.state === "active"
+          ? "V2 does not yet record the reply-visible ritual evidence required for authoritative Stop enforcement; failing open without reading fenced V1 history"
+          : `V2 control state is ${eventControl.state}; failing open without reading fenced V1 history`,
     };
   }
 

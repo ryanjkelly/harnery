@@ -7,13 +7,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findCoordRoot } from "../../src/core/hooks/resolve/coord-root.ts";
-import { detectAdapter } from "../../src/core/hooks/adapter/detect.ts";
-import {
-  listPidmap,
-  resolveOwner as resolveHookOwner,
-} from "../../src/core/hooks/resolve/owner.ts";
-import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import {
   parsePidmapRowPlatform,
   pidStartToken,
@@ -21,7 +14,14 @@ import {
   resolveOwnerWithSource,
   resolveSingleActiveOwner,
 } from "../../src/core/agents/coord-client.ts";
+import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
+import { detectAdapter } from "../../src/core/hooks/adapter/detect.ts";
+import { findCoordRoot } from "../../src/core/hooks/resolve/coord-root.ts";
+import {
+  listPidmap,
+  resolveOwner as resolveHookOwner,
+} from "../../src/core/hooks/resolve/owner.ts";
 
 // Mirror of the source's SESSION_ID_ENV_VARS (kept unexported there); used here
 // only to save/restore env across tests.
@@ -292,6 +292,7 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     mkdirSync(activeDir, { recursive: true });
     for (const k of SESSION_ID_ENV_KEYS) delete process.env[k];
     delete process.env.HARNERY_AGENT_COORD_BRIDGE;
+    delete process.env.HARNERY_AGENT_COORD_PLATFORM;
   });
 
   afterEach(() => {
@@ -577,9 +578,9 @@ describe("codex-wsl bridge owner parity", () => {
   });
 
   test("hook payload remains authoritative in bridge mode", () => {
-    expect(
-      resolveHookOwner({ payload: { session_id: "payload-owner" }, coordRoot: root }),
-    ).toEqual({ instance_id: "payload-owner", source: "payload" });
+    expect(resolveHookOwner({ payload: { session_id: "payload-owner" }, coordRoot: root })).toEqual(
+      { instance_id: "payload-owner", source: "payload" },
+    );
   });
 });
 

@@ -1,9 +1,10 @@
 /**
  * Image-feed reader for the harnery web UI.
  *
- * Source of truth is the canonical event stream: `image.captured` events in
- * `.harnery/events.ndjson` (emitted by agent-hooks when an agent views or
- * produces an image) point at content-addressed blobs in `.harnery/images/`.
+ * In closed mode, the source of truth is the V1 canonical event stream:
+ * `image.captured` events point at content-addressed blobs in `.harnery/images/`.
+ * V2 fails explicitly unavailable until its artifact reference carries the
+ * blob-address fields this reader needs; fenced V1 rows are never consulted.
  * This module groups those events by content hash (one card per distinct
  * image with a touch timeline) and resolves a blob path for the byte-serving
  * route. No sibling-JSON store: the event stream IS the context.
@@ -21,6 +22,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { readEventV2ControlState } from "../../src/core/events/v2/control";
 import { harneryDir, readAgents, readInstanceIdentities, scanEventsTail } from "./coord-reader";
 
 /** ext → HTTP content-type. Mirrors the IMAGE_EXTS set in the capture effect. */
@@ -84,6 +86,9 @@ export interface ImageCapturesResponse {
     dir: string;
     distinct: number;
     total_touches: number;
+    source: "v1" | "v2";
+    authoritative: boolean;
+    reason?: string;
   };
 }
 
@@ -114,6 +119,23 @@ function displayName(instanceId: string | undefined, nameMap: Record<string, str
 export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesResponse {
   const limit = opts.limit ?? 300;
   const dir = imagesDir();
+  const control = readEventV2ControlState(path.dirname(harneryDir()));
+  if (control.state !== "closed") {
+    return {
+      images: [],
+      meta: {
+        dir,
+        distinct: 0,
+        total_touches: 0,
+        source: "v2",
+        authoritative: false,
+        reason:
+          control.state === "candidate" || control.state === "active"
+            ? "V2 artifact observations do not yet expose the content-addressed blob key and extension required by the image feed"
+            : `V2 control state is ${control.state}; fenced V1 image history was not read`,
+      },
+    };
+  }
 
   const nameMap = buildNameMap();
   const blobExt = blobExtIndex(dir); // hash → ext present on disk
@@ -179,7 +201,13 @@ export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesR
 
   return {
     images: images.slice(0, limit),
-    meta: { dir, distinct: byHash.size, total_touches: totalTouches },
+    meta: {
+      dir,
+      distinct: byHash.size,
+      total_touches: totalTouches,
+      source: "v1",
+      authoritative: true,
+    },
   };
 }
 

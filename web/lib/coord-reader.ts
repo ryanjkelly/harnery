@@ -21,11 +21,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import {
-  type AgentActivity,
-  applySessionStateEvent,
-  type TaskState,
-} from "harnery/core/agents";
+import { type AgentActivity, applySessionStateEvent, type TaskState } from "harnery/core/agents";
+import { readEventV2ControlState } from "../../src/core/events/v2/control";
+import { readLedgerV2 } from "../../src/core/events/v2/reader";
 import {
   buildContributionMatrix,
   type ContributionMatrix,
@@ -613,6 +611,62 @@ export function readEvents(
     root?: string;
   } = {},
 ): EventsResponse {
+  const root = opts.root ?? coordRoot();
+  const control = readEventV2ControlState(root);
+  if (control.state === "candidate" || control.state === "active") {
+    const ledger = readLedgerV2(root);
+    const rows: EventRow[] = [];
+    if (ledger.complete) {
+      for (
+        let index = ledger.events.length - 1;
+        index >= 0 && rows.length < (opts.limit ?? 200);
+        index--
+      ) {
+        const event = ledger.events[index]!.event;
+        const row: EventRow = {
+          schema_version: 2,
+          event_id: event.event_id,
+          event_type: event.event_type,
+          ts: event.time.recorded_at,
+          instance_id: event.scope.instance_id,
+          session_id: "session_id" in event.scope ? event.scope.session_id : undefined,
+          source: event.provenance.source_event,
+          data: event.payload as Record<string, unknown>,
+        };
+        if (opts.instanceId && row.instance_id !== opts.instanceId) continue;
+        if (opts.type && row.event_type !== opts.type) continue;
+        if (
+          opts.sessions &&
+          !(
+            (row.session_id !== undefined && opts.sessions.has(row.session_id)) ||
+            (row.instance_id !== undefined && opts.sessions.has(row.instance_id))
+          )
+        ) {
+          continue;
+        }
+        rows.push(row);
+      }
+    }
+    return {
+      rows,
+      meta: {
+        path: path.join(root, ".harnery", "ledgers", "v2", "catalog.json"),
+        total_lines: ledger.events.length,
+        returned: rows.length,
+      },
+    };
+  }
+  if (control.state !== "closed") {
+    return {
+      rows: [],
+      meta: {
+        path: path.join(root, ".harnery", "ledgers", "v2"),
+        total_lines: 0,
+        returned: 0,
+      },
+    };
+  }
+
   const p = opts.root ? path.join(opts.root, ".harnery", "events.ndjson") : eventsPath();
   const limit = opts.limit ?? 200;
   const out: EventRow[] = [];
@@ -880,7 +934,10 @@ function applyIdentityState(
   identity.last_ts = mostRecentTimestamp(event.ts, identity.last_ts);
 }
 
-function isAtLeastAsRecent(candidate: string | null | undefined, current: string | null | undefined) {
+function isAtLeastAsRecent(
+  candidate: string | null | undefined,
+  current: string | null | undefined,
+) {
   if (!candidate) return !current;
   if (!current) return true;
   return Date.parse(candidate) >= Date.parse(current);

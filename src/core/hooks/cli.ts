@@ -47,6 +47,11 @@ import {
   readContextState,
   recordContextSample,
 } from "../context/index.ts";
+import {
+  type LiveEventLedgerRouteV2,
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../events/v2/live-routing.ts";
 import { ensureRelayDaemon, fetchPresence, publishPresence } from "../presence/index.ts";
 import { detectAdapter } from "./adapter/detect.ts";
 import {
@@ -76,7 +81,7 @@ import {
   runTurnSummary,
   soundForEvent,
 } from "./effects/index.ts";
-import { emit } from "./events/emit.ts";
+import { emit as emitV1 } from "./events/emit.ts";
 import { toolInputHash, toolTargetHash } from "./events/input-hash.ts";
 import type { Adapter } from "./events/schema.ts";
 import { canonicalize } from "./guard-path.ts";
@@ -148,6 +153,14 @@ function appendDebug(coordRoot: string, entry: Record<string, unknown>): void {
   } catch {
     /* swallow */
   }
+}
+
+function emitV1WhenRouted(
+  route: LiveEventLedgerRouteV2,
+  coordRoot: string,
+  input: Parameters<typeof emitV1>[1],
+): ReturnType<typeof emitV1> | undefined {
+  return route.state === "v1" ? emitV1(coordRoot, input) : undefined;
 }
 
 function logError(coordRoot: string | null, err: unknown, context: Record<string, unknown>): void {
@@ -569,6 +582,7 @@ async function main(): Promise<number> {
 
   const coordRoot = findCoordRoot(process.cwd());
   if (!coordRoot) return 0;
+  const ledgerRoute = resolveLiveEventLedgerRouteV2(coordRoot);
 
   // Always log a breadcrumb, useful when an event_type maps to null or owner
   // resolution fails. Stays cheap (one append) and self-prunes via repo log
@@ -616,23 +630,60 @@ async function main(): Promise<number> {
     instanceId: owner.instance_id,
   });
 
-  const envelope = emit(coordRoot, {
-    event_type: norm.event_type,
-    instance_id: owner.instance_id,
-    session_id: sessionId,
-    parent_session_id: payload?.parent_session_id,
-    turn_id: payload?.turn_id,
-    parent_turn_id: payload?.parent_turn_id,
-    adapter,
-    data,
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-  } as Parameters<typeof emit>[1]);
+  if (ledgerRoute.state === "blocked") {
+    appendDebug(coordRoot, {
+      ...debugBase,
+      skipped: "v2-control-blocked",
+      reason: ledgerRoute.reason,
+      event_type: norm.event_type,
+      owner_source: owner.source,
+    });
+    return 0;
+  }
+
+  const envelope =
+    ledgerRoute.state === "v1"
+      ? emitV1(coordRoot, {
+          event_type: norm.event_type,
+          instance_id: owner.instance_id,
+          session_id: sessionId,
+          parent_session_id: payload?.parent_session_id,
+          turn_id: payload?.turn_id,
+          parent_turn_id: payload?.parent_turn_id,
+          adapter,
+          data,
+          // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+        } as Parameters<typeof emitV1>[1])
+      : undefined;
+  const v2Result =
+    ledgerRoute.state === "v2"
+      ? recordLiveHookSignalV2({
+          coordRoot,
+          route: ledgerRoute,
+          eventName,
+          payload,
+          adapter,
+          instanceId: owner.instance_id,
+          ...(adapter === "codex" && isWslUncPath(payload?.cwd)
+            ? { bridge: "codex-wsl" as const }
+            : {}),
+        })
+      : undefined;
+  const v2EventId =
+    v2Result && "event" in v2Result
+      ? v2Result.event.event_id
+      : v2Result && "event_id" in v2Result
+        ? v2Result.event_id
+        : undefined;
 
   appendDebug(coordRoot, {
     ...debugBase,
     event_type: norm.event_type,
     owner_source: owner.source,
-    event_id: envelope.event_id,
+    ...(envelope?.event_id ? { event_id: envelope.event_id } : {}),
+    ...(v2EventId ? { event_v2_id: v2EventId } : {}),
+    ...(v2Result ? { event_v2_state: v2Result.state } : {}),
+    ...(v2Result && "reason" in v2Result ? { event_v2_reason: v2Result.reason } : {}),
   });
 
   // Activity is only useful while it is current. Stamp prompt and permission
@@ -644,7 +695,7 @@ async function main(): Promise<number> {
     norm.event_type === "interaction.input_requested"
   ) {
     try {
-      stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
+      if (envelope) stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
     } catch (err) {
       logError(coordRoot, err, { phase: "activity-projection" });
     }
@@ -665,7 +716,7 @@ async function main(): Promise<number> {
       if (sample) {
         const recorded = recordContextSample(coordRoot, owner.instance_id, sample);
         if (recorded.changed) {
-          emit(coordRoot, {
+          emitV1WhenRouted(ledgerRoute, coordRoot, {
             event_type: "context.sampled",
             instance_id: owner.instance_id,
             session_id: sessionId,
@@ -699,7 +750,7 @@ async function main(): Promise<number> {
         reason: "pre_compact",
         model: payload?.model,
       });
-      emit(coordRoot, {
+      emitV1WhenRouted(ledgerRoute, coordRoot, {
         event_type: "context.checkpoint.created",
         instance_id: owner.instance_id,
         session_id: sessionId,
@@ -749,7 +800,7 @@ async function main(): Promise<number> {
     let recovery: PreparedContextRecovery | null = null;
     if (payload?.source === "compact") {
       try {
-        emit(coordRoot, {
+        emitV1WhenRouted(ledgerRoute, coordRoot, {
           event_type: "context.compaction.completed",
           instance_id: owner.instance_id,
           session_id: sessionId,
@@ -781,6 +832,7 @@ async function main(): Promise<number> {
       if (injected && recovery) {
         completeRecoveryInjection(
           coordRoot,
+          ledgerRoute,
           owner.instance_id,
           sessionId,
           adapter,
@@ -922,6 +974,7 @@ async function main(): Promise<number> {
       if (injected && recovery) {
         completeRecoveryInjection(
           coordRoot,
+          ledgerRoute,
           owner.instance_id,
           sessionId,
           adapter,
@@ -1004,7 +1057,7 @@ async function main(): Promise<number> {
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
     const enforcementMode = stopEnforcementMode(verdict.rule);
-    emit(coordRoot, {
+    emitV1WhenRouted(ledgerRoute, coordRoot, {
       event_type: "stop.verdict",
       instance_id: owner.instance_id,
       session_id: sessionId,
@@ -1063,17 +1116,19 @@ async function main(): Promise<number> {
 
     // Image feed: a Read on an image file is the "agent viewed this" signal.
     // Capture the bytes (content-addressed, dedup'd) + emit image.captured.
-    try {
-      captureImages(coordRoot, {
-        eventType: "tool.pre_use",
-        data,
-        payload,
-        instanceId: owner.instance_id,
-        sessionId,
-        adapter,
-      });
-    } catch (err) {
-      logError(coordRoot, err, { phase: "pre-tool-use-image-capture" });
+    if (ledgerRoute.state === "v1") {
+      try {
+        captureImages(coordRoot, {
+          eventType: "tool.pre_use",
+          data,
+          payload,
+          instanceId: owner.instance_id,
+          sessionId,
+          adapter,
+        });
+      } catch (err) {
+        logError(coordRoot, err, { phase: "pre-tool-use-image-capture" });
+      }
     }
 
     // Windows-native Codex + WSL UNC only: block the one cross-shell shape
@@ -1087,7 +1142,7 @@ async function main(): Promise<number> {
       toolInput: payload?.tool_input,
     });
     if (unsafeShellReason) {
-      emit(coordRoot, {
+      emitV1WhenRouted(ledgerRoute, coordRoot, {
         event_type: "decision.block",
         instance_id: owner.instance_id,
         session_id: sessionId,
@@ -1111,6 +1166,7 @@ async function main(): Promise<number> {
     try {
       guardAllowed = await runPreToolUseGuard(
         coordRoot,
+        ledgerRoute,
         owner.instance_id,
         sessionId,
         data,
@@ -1120,7 +1176,7 @@ async function main(): Promise<number> {
       logError(coordRoot, err, { phase: "pre-tool-use-guard" });
     }
 
-    if (guardAllowed) {
+    if (guardAllowed && envelope) {
       try {
         stampSessionStateEvent(coordRoot, owner.instance_id, envelope);
       } catch (err) {
@@ -1149,7 +1205,7 @@ async function main(): Promise<number> {
         const truncated = shellCmd.length > 80 ? shellCmd.slice(0, 80) : shellCmd;
         const platform = adapterPlatform(adapter);
         for (const p of paths) {
-          emit(coordRoot, {
+          emitV1WhenRouted(ledgerRoute, coordRoot, {
             event_type: "decision.warn",
             instance_id: owner.instance_id,
             session_id: sessionId,
@@ -1159,7 +1215,7 @@ async function main(): Promise<number> {
               reason: `path=${p} cmd=${truncated} platform=${platform}`,
             },
             // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-          } as Parameters<typeof emit>[1]);
+          } as Parameters<typeof emitV1>[1]);
         }
       } catch (err) {
         logError(coordRoot, err, { phase: "shell-mutation-warn" });
@@ -1179,17 +1235,19 @@ async function main(): Promise<number> {
     // Image feed: a Bash command that wrote an image (harn browse, harn image,
     // --diff, …) is the "agent produced this" signal. Scan the command + its
     // output for freshly-written image paths and capture them.
-    try {
-      captureImages(coordRoot, {
-        eventType: "tool.post_use",
-        data,
-        payload,
-        instanceId: owner.instance_id,
-        sessionId,
-        adapter,
-      });
-    } catch (err) {
-      logError(coordRoot, err, { phase: "post-tool-use-image-capture" });
+    if (ledgerRoute.state === "v1") {
+      try {
+        captureImages(coordRoot, {
+          eventType: "tool.post_use",
+          data,
+          payload,
+          instanceId: owner.instance_id,
+          sessionId,
+          adapter,
+        });
+      } catch (err) {
+        logError(coordRoot, err, { phase: "post-tool-use-image-capture" });
+      }
     }
   }
 
@@ -1215,6 +1273,7 @@ function stopEnforcementMode(rule: string): "enforced" | "observe_only" | "exemp
 
 async function runPreToolUseGuard(
   coordRoot: string,
+  ledgerRoute: LiveEventLedgerRouteV2,
   instanceId: string,
   sessionId: string,
   data: Record<string, unknown>,
@@ -1231,7 +1290,7 @@ async function runPreToolUseGuard(
   // until a manual release-claim. Every deny path below must release first.
   const releaseGuardTargets = (reason: string): void => {
     for (const raw of rawTargets) {
-      emit(coordRoot, {
+      emitV1WhenRouted(ledgerRoute, coordRoot, {
         event_type: "claim.release",
         instance_id: instanceId,
         session_id: sessionId,
@@ -1327,7 +1386,7 @@ async function runPreToolUseGuard(
     // in the canonical stream too. This matters most for Codex apply_patch:
     // one tool call can claim several files, and tool.pre_use's clamped payload
     // is not a durable ownership representation for those targets.
-    emit(coordRoot, {
+    emitV1WhenRouted(ledgerRoute, coordRoot, {
       event_type: "claim.acquire",
       instance_id: instanceId,
       session_id: sessionId,
@@ -1829,6 +1888,7 @@ async function emitSessionStartSystemMessage(
 
 function completeRecoveryInjection(
   coordRoot: string,
+  ledgerRoute: LiveEventLedgerRouteV2,
   instanceId: string,
   sessionId: string,
   adapter: Adapter,
@@ -1836,7 +1896,7 @@ function completeRecoveryInjection(
   injectionEvent: "SessionStart" | "UserPromptSubmit",
 ): void {
   completeContextRecovery(coordRoot, { sessionId, instanceId });
-  emit(coordRoot, {
+  emitV1WhenRouted(ledgerRoute, coordRoot, {
     event_type: "context.recovery.injected",
     instance_id: instanceId,
     session_id: sessionId,

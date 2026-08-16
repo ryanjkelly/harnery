@@ -56,6 +56,10 @@ import {
   type TaskState,
 } from "../core/agents/state/session-state.ts";
 import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
+import { readEventV2ControlState } from "../core/events/v2/control.ts";
+import { projectCoordinationViewV2 } from "../core/events/v2/coordination-view.ts";
+import { liveInstanceIdV2 } from "../core/events/v2/live-routing.ts";
+import { readActiveLedgerV2, readLedgerV2 } from "../core/events/v2/reader.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
@@ -313,7 +317,7 @@ export function registerAgentsCommand(
   cmd
     .command("trace <name>")
     .description(
-      "Reconstruct one agent's coordination lifecycle from events.ndjson: " +
+      "Reconstruct one agent's coordination lifecycle from the active canonical event ledger: " +
         "session.start → prompts → turns → tools → heals/sweeps → claims → end, " +
         "in chronological order. The answer to 'what happened to this agent / why did " +
         "it vanish?' without hand-grepping the stream. Accepts a name (agent-Foo or Foo) " +
@@ -2433,11 +2437,8 @@ interface HealEvent {
   platform: string;
 }
 
-/**
- * One canonical event envelope from `.harnery/events.ndjson` (loose shape: we
- * only read the fields the health/heal aggregators need).
- */
-interface CanonicalEvent {
+/** Version-neutral diagnostic event shape projected from the active canonical ledger. */
+export interface CanonicalEvent {
   event_type: string;
   ts: string;
   instance_id?: string;
@@ -2445,19 +2446,85 @@ interface CanonicalEvent {
   data?: Record<string, unknown>;
 }
 
-/**
- * Read canonical events in a time window. The heal + council telemetry the
- * health/heal commands report lives here. Full-file read + ts filter is fine
- * for an on-demand diagnostic; events.ndjson is the canonical store.
- */
-function readCanonicalEventsInWindow(root: string, cutoffMs: number): CanonicalEvent[] {
+export interface AgentDiagnosticEventRead {
+  source: "v1" | "v2";
+  authoritative: boolean;
+  reason?: string;
+  truncated: boolean;
+  bytes: number;
+  events: CanonicalEvent[];
+}
+
+/** Read validated canonical events without crossing the V1/V2 control boundary. */
+export function readAgentDiagnosticEventsInWindow(
+  root: string,
+  cutoffMs: number,
+): AgentDiagnosticEventRead {
+  const control = readEventV2ControlState(root);
+  if (control.state === "candidate" || control.state === "active") {
+    const catalogPath = resolve(root, ".harnery", "ledgers", "v2", "catalog.json");
+    const ledger = existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root);
+    if (!ledger.complete) {
+      return {
+        source: "v2",
+        authoritative: false,
+        reason: `V2 ledger validation failed: ${ledger.diagnostics.map((item) => item.code).join(", ") || "incomplete"}`,
+        truncated: false,
+        bytes: ledger.bytes,
+        events: [],
+      };
+    }
+    const events: CanonicalEvent[] = [];
+    for (const { event } of ledger.events) {
+      const tsMs = Date.parse(event.time.recorded_at);
+      if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
+      events.push({
+        event_type: event.event_type,
+        ts: event.time.recorded_at,
+        instance_id: event.scope.instance_id,
+        data: event.payload as Record<string, unknown>,
+      });
+    }
+    return {
+      source: "v2",
+      authoritative: true,
+      truncated: false,
+      bytes: ledger.bytes,
+      events,
+    };
+  }
+  if (control.state !== "closed") {
+    return {
+      source: "v2",
+      authoritative: false,
+      reason: `V2 control state is ${control.state}; fenced V1 event history was not read`,
+      truncated: false,
+      bytes: 0,
+      events: [],
+    };
+  }
+
   const p = resolve(root, ".harnery", "events.ndjson");
-  if (!existsSync(p)) return [];
+  if (!existsSync(p)) {
+    return { source: "v1", authoritative: true, truncated: false, bytes: 0, events: [] };
+  }
   let raw: string;
+  let truncated = false;
+  let bytes = 0;
   try {
-    raw = readFileSync(p, "utf8");
+    bytes = statSync(p).size;
+    const tail = readStreamTailBounded(p, STREAM_SCAN_CAP_BYTES);
+    raw = tail.text;
+    truncated = tail.truncated;
   } catch {
-    return [];
+    return {
+      source: "v1",
+      authoritative: false,
+      reason: "V1 event stream is unreadable",
+      truncated: false,
+      bytes,
+      events: [],
+    };
   }
   const out: CanonicalEvent[] = [];
   for (const line of raw.split("\n")) {
@@ -2472,7 +2539,7 @@ function readCanonicalEventsInWindow(root: string, cutoffMs: number): CanonicalE
       /* skip malformed */
     }
   }
-  return out;
+  return { source: "v1", authoritative: true, truncated, bytes, events: out };
 }
 
 /** Normalize adapter event data into the heartbeat platform value. */
@@ -2579,7 +2646,8 @@ function runHealEvents(opts: {
   const cutoffMs = Date.now() - sinceSecs * 1000;
   const nameById = buildNameById(root);
   const events: HealEvent[] = [];
-  for (const ev of readCanonicalEventsInWindow(root, cutoffMs)) {
+  const diagnosticEvents = readAgentDiagnosticEventsInWindow(root, cutoffMs);
+  for (const ev of diagnosticEvents.events) {
     const heal = canonicalToHealEvent(ev, nameById);
     if (heal) events.push(heal);
   }
@@ -2616,6 +2684,14 @@ function runHealEvents(opts: {
 
   const data = {
     since: opts.since,
+    telemetry: {
+      source: diagnosticEvents.source,
+      authoritative: diagnosticEvents.authoritative && diagnosticEvents.source === "v1",
+      reason:
+        diagnosticEvents.source === "v2"
+          ? "V2 health observations do not preserve the legacy pid-map/heartbeat-heal taxonomy"
+          : diagnosticEvents.reason,
+    },
     total: events.length,
     by_reason: byReason,
     by_kind: byKind,
@@ -2627,7 +2703,17 @@ function runHealEvents(opts: {
 
   if (opts.csv) {
     emit.config({ format: "csv" });
-    emit.data(recent);
+    emit.data(
+      data.telemetry.authoritative
+        ? recent
+        : [
+            {
+              status: "unavailable",
+              source: data.telemetry.source,
+              reason: data.telemetry.reason,
+            },
+          ],
+    );
     return;
   }
   if (opts.json) {
@@ -2642,6 +2728,13 @@ function runHealEvents(opts: {
     lines.push(
       `Heal events: ${events.length} total in last ${opts.since} (health.pidmap_heal + health.heartbeat_heal)`,
     );
+    if (!data.telemetry.authoritative) {
+      lines.push(
+        `  unavailable: ${data.telemetry.reason ?? "diagnostic event source is incomplete"}`,
+      );
+      emit.text(`${lines.join("\n")}\n`);
+      return;
+    }
     lines.push("");
     if (events.length === 0) {
       lines.push("  (none; pid-map/heartbeat drift is not happening in this window)");
@@ -2693,6 +2786,11 @@ function runHealEvents(opts: {
 interface HealthReport {
   since: string;
   generated_at: string;
+  event_telemetry: {
+    source: "v1" | "v2";
+    authoritative: boolean;
+    reason?: string;
+  };
   active_agents: {
     total: number;
     by_platform: Record<string, number>;
@@ -2728,6 +2826,9 @@ interface HealthReport {
   };
   // Canonical event stream growth + drain lag.
   stream: {
+    source: "v1" | "v2";
+    authoritative: boolean;
+    reason?: string;
     bytes: number;
     lines: number;
     cursor_backlog: number;
@@ -2786,9 +2887,29 @@ function readHookErrors(
 }
 
 /** Canonical event stream size + drain lag (events appended after the cursor). */
-function readStreamStats(root: string): { bytes: number; lines: number; cursor_backlog: number } {
+function readStreamStats(root: string): HealthReport["stream"] {
+  const control = readEventV2ControlState(root);
+  if (control.state !== "closed") {
+    const read = readAgentDiagnosticEventsInWindow(root, 0);
+    return {
+      source: "v2",
+      authoritative: read.authoritative,
+      ...(read.reason ? { reason: read.reason } : {}),
+      bytes: read.bytes,
+      lines: read.events.length,
+      cursor_backlog: 0,
+    };
+  }
   const streamPath = resolve(root, ".harnery", "events.ndjson");
-  if (!existsSync(streamPath)) return { bytes: 0, lines: 0, cursor_backlog: 0 };
+  if (!existsSync(streamPath)) {
+    return {
+      source: "v1",
+      authoritative: true,
+      bytes: 0,
+      lines: 0,
+      cursor_backlog: 0,
+    };
+  }
   let bytes = 0;
   try {
     bytes = statSync(streamPath).size;
@@ -2825,7 +2946,13 @@ function readStreamStats(root: string): { bytes: number; lines: number; cursor_b
   } catch {
     /* ignore */
   }
-  return { bytes, lines, cursor_backlog: backlog };
+  return {
+    source: "v1",
+    authoritative: true,
+    bytes,
+    lines,
+    cursor_backlog: backlog,
+  };
 }
 
 /** One rendered line in a trace. */
@@ -2833,6 +2960,15 @@ interface TraceEntry {
   ts: string;
   event_type: string;
   detail: string;
+}
+
+export function traceInstanceIdsForEventSource(
+  nativeInstanceIds: readonly string[],
+  source: "v1" | "v2",
+): string[] {
+  return source === "v2"
+    ? nativeInstanceIds.map((instanceId) => liveInstanceIdV2(instanceId))
+    : [...nativeInstanceIds];
 }
 
 /** Map a canonical event to a concise trace line, or null to drop it. */
@@ -2844,6 +2980,12 @@ function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
   switch (ev.event_type) {
     case "session.start":
       detail = `${s("source") || "startup"}${s("model") ? ` · model=${s("model")}` : ""}${s("name") ? ` · ${s("name")}` : ""}`;
+      break;
+    case "session.started":
+      detail = "generation started";
+      break;
+    case "session.ended":
+      detail = `outcome=${s("outcome") || "unknown"}`;
       break;
     case "session.end":
       detail = `clean_exit=${d.clean_exit ?? "?"}`;
@@ -2860,14 +3002,45 @@ function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
     case "turn.stop":
       detail = `status_box=${d.status_box_present ?? "?"}${s("turn_summary") ? ` · ${clip(s("turn_summary"), 50)}` : ""}`;
       break;
+    case "turn.started":
+      detail = `intent=${s("intent_kind") || "unknown"}`;
+      break;
+    case "turn.completed":
+      detail = `outcome=${s("outcome") || "unknown"}`;
+      break;
     case "tool.pre_use":
       detail = `${s("tool_name")}${s("tool_target") || s("intent") ? ` · ${clip(s("tool_target") || s("intent"), 60)}` : ""}`;
+      break;
+    case "tool.requested":
+      detail = "tool requested (content omitted)";
+      break;
+    case "tool.completed":
+      detail = `outcome=${s("outcome") || "unknown"}`;
       break;
     case "state.task_set":
       detail = d.cleared ? "(cleared)" : clip(s("task"));
       break;
     case "state.task_state":
       detail = `${s("prior_state") || "active"} → ${s("state") || "active"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
+      break;
+    case "coord.task_changed":
+    case "coord.lifecycle_changed":
+      detail = `${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
+      break;
+    case "interaction.wait_started":
+      detail = s("kind") || "wait started";
+      break;
+    case "interaction.wait_ended":
+      detail = `outcome=${s("outcome") || "unknown"}`;
+      break;
+    case "artifact.observed":
+      detail = `operation=${s("operation") || "observed"}`;
+      break;
+    case "progress.observed":
+      detail = s("kind") || "progress";
+      break;
+    case "health.observed":
+      detail = `${s("subsystem") || "unknown"} · ${s("severity") || "unknown"} · ${s("condition") || "unknown"}`;
       break;
     case "interaction.input_requested":
       detail = s("request_kind") || s("tool_name") || "operator input requested";
@@ -2934,7 +3107,7 @@ function runTrace(
     if (candidates.length === 1) targetId = candidates[0]![0];
     else if (candidates.length > 1)
       targetId = candidates.map(([id]) => id).join("\x00"); // sentinel; resolved below
-    else if (/^[0-9a-f-]{8,}$/i.test(wanted)) targetId = wanted; // looks like an id not in history
+    else if (/^(?:inst_)?[0-9a-z._-]{8,}$/i.test(wanted)) targetId = wanted;
   }
   if (!targetId) {
     emit.error({
@@ -2946,32 +3119,17 @@ function runTrace(
 
   const sinceMs = opts.since ? Date.now() - (parseWindowSecs(opts.since) ?? 0) * 1000 : 0;
   const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 200);
-  const candidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
-
-  // Scan the stream tail once, bucket events by instance_id for the candidates.
-  // Bounded read: the ledger grows without bound and a whole-file readFileSync
-  // throws past V8's ~512MB string limit. A trace of an agent whose events all
-  // predate the window is reported as truncated rather than crashing.
-  const streamPath = resolve(root, ".harnery", "events.ndjson");
+  const diagnosticRead = readAgentDiagnosticEventsInWindow(root, sinceMs);
+  const nativeCandidateIds = targetId.includes("\x00") ? targetId.split("\x00") : [targetId];
+  const candidateIds = traceInstanceIdsForEventSource(nativeCandidateIds, diagnosticRead.source);
   const byId = new Map<string, CanonicalEvent[]>();
-  const { text: streamText, truncated: streamTruncated } = readStreamTailBounded(
-    streamPath,
-    STREAM_SCAN_CAP_BYTES,
-  );
-  for (const line of streamText.split("\n")) {
-    if (!line) continue;
-    try {
-      const ev = JSON.parse(line) as CanonicalEvent;
-      if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
-      if (sinceMs && Date.parse(ev.ts) < sinceMs) continue;
-      const arr = byId.get(ev.instance_id) ?? [];
-      arr.push(ev);
-      byId.set(ev.instance_id, arr);
-    } catch {
-      /* skip */
-    }
+  for (const ev of diagnosticRead.events) {
+    if (!ev.instance_id || !candidateIds.includes(ev.instance_id)) continue;
+    const arr = byId.get(ev.instance_id) ?? [];
+    arr.push(ev);
+    byId.set(ev.instance_id, arr);
   }
-  if (streamTruncated) {
+  if (diagnosticRead.truncated) {
     process.stderr.write(
       `note: event ledger exceeds ${Math.round(STREAM_SCAN_CAP_BYTES / 1024 / 1024)}MB; traced only the most recent window (older events omitted)\n`,
     );
@@ -2992,7 +3150,36 @@ function runTrace(
   }
 
   const events = byId.get(resolvedId) ?? [];
-  const state = foldSessionState(events, { instance_id: resolvedId });
+  let state = foldSessionState(events, { instance_id: resolvedId });
+  if (diagnosticRead.source === "v2" && diagnosticRead.authoritative) {
+    try {
+      const catalogPath = resolve(root, ".harnery", "ledgers", "v2", "catalog.json");
+      const view = projectCoordinationViewV2(
+        existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root),
+      );
+      const generation =
+        view.instances[resolvedId] ??
+        Object.values(view.terminal_generations).find(
+          (candidate) => candidate.instance_id === resolvedId,
+        );
+      if (generation) {
+        const taskState = generation.task_state;
+        state = {
+          activity: generation.activity === "terminal" ? "idle" : generation.activity,
+          activity_updated_at: generation.last_observed_at,
+          activity_source: "event-v2-coordination-view",
+          task_state:
+            taskState === "active" || taskState === "blocked" || taskState === "done"
+              ? taskState
+              : "active",
+          task_state_updated_at: generation.last_observed_at,
+        };
+      }
+    } catch {
+      diagnosticRead.authoritative = false;
+      diagnosticRead.reason = "V2 coordination projection is unavailable";
+    }
+  }
   const lines = events
     .map((ev) => traceLine(ev, !!opts.allTools))
     .filter((l): l is TraceEntry => l !== null)
@@ -3000,9 +3187,21 @@ function runTrace(
     // appended later), so append-order ≠ chronological order.
     .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   const shown = lines.slice(-limit);
-  const displayName = nameById.get(resolvedId) ?? resolvedId.slice(0, 8);
+  const nativeResolvedId =
+    diagnosticRead.source === "v2"
+      ? nativeCandidateIds[candidateIds.indexOf(resolvedId)]
+      : resolvedId;
+  const displayName =
+    nameById.get(resolvedId) ??
+    (nativeResolvedId ? nameById.get(nativeResolvedId) : undefined) ??
+    resolvedId.slice(0, 8);
 
   const result = {
+    event_source: {
+      contract: diagnosticRead.source,
+      authoritative: diagnosticRead.authoritative,
+      reason: diagnosticRead.reason ?? null,
+    },
     name: displayName,
     instance_id: resolvedId,
     other_instances: candidateIds.filter((id) => id !== resolvedId),
@@ -3027,6 +3226,9 @@ function runTrace(
   process.stdout.write(
     `  activity=${state.activity} · lifecycle=${state.task_state}${state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
   ); // lint-ok-emission: human trace view
+  if (!diagnosticRead.authoritative) {
+    process.stdout.write(`  unavailable: ${diagnosticRead.reason ?? "event source incomplete"}\n`); // lint-ok-emission: explicit no-fallback diagnostic
+  }
   if (shown.length === 0) {
     process.stdout.write("  (no events)\n"); // lint-ok-emission: human trace view
     return;
@@ -3072,7 +3274,8 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const sweptByReason: Record<string, number> = {};
 
   const nameById = buildNameById(root);
-  for (const ev of readCanonicalEventsInWindow(root, cutoffMs)) {
+  const diagnosticEvents = readAgentDiagnosticEventsInWindow(root, cutoffMs);
+  for (const ev of diagnosticEvents.events) {
     const healEv = canonicalToHealEvent(ev, nameById);
     if (healEv) {
       heal.push(healEv);
@@ -3234,6 +3437,18 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const report: HealthReport = {
     since: opts.since,
     generated_at: new Date().toISOString(),
+    event_telemetry: {
+      source: diagnosticEvents.source,
+      authoritative: diagnosticEvents.authoritative && diagnosticEvents.source === "v1",
+      ...(diagnosticEvents.source === "v2"
+        ? {
+            reason:
+              "V2 health observations do not preserve the legacy heal and council event taxonomy",
+          }
+        : diagnosticEvents.reason
+          ? { reason: diagnosticEvents.reason }
+          : {}),
+    },
     active_agents: {
       total: activeTotal,
       by_platform: activeByPlatform,
@@ -3312,6 +3527,10 @@ function renderHealthBox(report: HealthReport): void {
 
   const rows: Array<[string, string]> = [
     ["window", `last ${report.since}`],
+    [
+      "event source",
+      `${report.event_telemetry.source.toUpperCase()} · ${report.event_telemetry.authoritative ? "validated" : `unavailable (${report.event_telemetry.reason ?? "incomplete"})`}`,
+    ],
     ["active", activeStr],
     [
       "heals",

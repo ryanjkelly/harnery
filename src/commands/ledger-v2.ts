@@ -11,6 +11,19 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import {
+  rehearseCutoverV2,
+  type V1ProjectionSnapshotManifestV2,
+  type V1SealManifestV2,
+} from "../core/events/v2/cutover.ts";
+import {
+  archiveEpochAndRollbackV2,
+  buildCandidateInstallPacketV2,
+  type CandidateInstallPacketV2,
+  type CandidateProfileBaseV2,
+  installActivationV2,
+  installCandidateV2,
+} from "../core/events/v2/cutover-install.ts";
+import {
   type ActivationManifestV2,
   buildActivationManifestV2,
   buildCandidateGenesisManifestV2,
@@ -20,6 +33,7 @@ import {
   candidateManifestDigestV2,
   canonicalJsonV2,
   readEventV2ControlState,
+  sha256V2,
   validateActivationManifestV2,
   validateCandidateGenesisManifestV2,
 } from "../core/events/v2/index.ts";
@@ -33,7 +47,7 @@ interface ProducerOptions {
   platform: string;
 }
 
-/** Operator-only staging and inspection. This command never installs a live control record. */
+/** Operator-only staging, installation, and rollback for the V2 control boundary. */
 export function registerLedgerV2Command(
   program: Command,
   emit: EmitContext,
@@ -41,7 +55,7 @@ export function registerLedgerV2Command(
 ): void {
   const command = program
     .command("ledger-v2")
-    .description("Inspect or stage event-ledger V2 control packets without activating them");
+    .description("Inspect, stage, install, or roll back event-ledger V2 control packets");
 
   command
     .command("status")
@@ -89,6 +103,43 @@ export function registerLedgerV2Command(
         });
       } catch (error) {
         emitFailure(emit, "ledger_v2_candidate_prepare_failed", error);
+      }
+    },
+  );
+
+  addProducerOptions(
+    command
+      .command("prepare-candidate-install")
+      .description("Write a pre-seal candidate installation packet to a new staging path")
+      .requiredOption("--profile-base <path>", "Candidate profile JSON without V1 terminal facts")
+      .requiredOption("--out <path>", "New off-ledger output file")
+      .requiredOption("--root-id <id>", "Canonical root_ identity")
+      .requiredOption("--instance-id <id>", "Operator inst_ identity"),
+  ).action(
+    (
+      options: ProducerOptions & {
+        profileBase: string;
+        out: string;
+        rootId: string;
+        instanceId: string;
+      },
+    ) => {
+      try {
+        const root = coordRoot(context);
+        const packet = buildCandidateInstallPacketV2({
+          profile_base: readJson(options.profileBase) as CandidateProfileBaseV2,
+          root_id: prefixed(options.rootId, "root_"),
+          instance_id: prefixed(options.instanceId, "inst_"),
+          producer: producer(options),
+        });
+        const path = writeStagedInstallPacket(root, options.out, packet);
+        emit.file(path, {
+          kind: packet.kind,
+          packet_digest: canonicalPacketDigest(packet),
+          installed: false,
+        });
+      } catch (error) {
+        emitFailure(emit, "ledger_v2_candidate_install_prepare_failed", error);
       }
     },
   );
@@ -155,6 +206,110 @@ export function registerLedgerV2Command(
         });
       } catch (error) {
         emitFailure(emit, "ledger_v2_verify_failed", error);
+      }
+    });
+
+  command
+    .command("install-candidate")
+    .description("Snapshot projections, seal V1, and install one exact candidate packet")
+    .requiredOption("--root <path>", "Explicit coordination root")
+    .requiredOption("--artifact-root <path>", "External immutable cutover artifact root")
+    .requiredOption("--packet <path>", "Candidate installation packet")
+    .requiredOption("--projection <paths...>", "Disposable .harnery projection path(s)")
+    .action(
+      (options: { root: string; artifactRoot: string; packet: string; projection: string[] }) => {
+        try {
+          const result = installCandidateV2({
+            coordRoot: resolve(options.root),
+            artifactRoot: resolve(options.artifactRoot),
+            packet: readJson(options.packet) as CandidateInstallPacketV2,
+            projectionPaths: options.projection,
+          });
+          emit.data({
+            state: result.state,
+            candidate_manifest_digest: result.candidate_manifest_digest,
+            genesis_id: result.candidate.event.payload.genesis_id,
+            artifact_root: resolve(options.artifactRoot),
+          });
+        } catch (error) {
+          emitFailure(emit, "ledger_v2_candidate_install_failed", error);
+        }
+      },
+    );
+
+  command
+    .command("install-activation")
+    .description("Install one exact approval-bound activation packet")
+    .requiredOption("--root <path>", "Explicit coordination root")
+    .requiredOption("--artifact-root <path>", "External immutable cutover artifact root")
+    .requiredOption("--packet <path>", "Approval-bound activation packet")
+    .action((options: { root: string; artifactRoot: string; packet: string }) => {
+      try {
+        const result = installActivationV2({
+          coordRoot: resolve(options.root),
+          artifactRoot: resolve(options.artifactRoot),
+          activation: readJson(options.packet) as ActivationManifestV2,
+        });
+        emit.data({
+          state: result.state,
+          candidate_manifest_digest: result.candidate_manifest_digest,
+          activation_id: result.activation.activation_id,
+          artifact_root: resolve(options.artifactRoot),
+        });
+      } catch (error) {
+        emitFailure(emit, "ledger_v2_activation_install_failed", error);
+      }
+    });
+
+  command
+    .command("rollback-epoch")
+    .description("Archive the complete V2 epoch and restore the exact V1 snapshot")
+    .requiredOption("--root <path>", "Explicit coordination root")
+    .requiredOption("--artifact-root <path>", "External immutable cutover artifact root")
+    .requiredOption("--candidate <path>", "Finalized candidate manifest")
+    .requiredOption("--snapshot <path>", "V1 projection snapshot manifest")
+    .requiredOption("--seal <path>", "V1 seal manifest")
+    .action(
+      (options: {
+        root: string;
+        artifactRoot: string;
+        candidate: string;
+        snapshot: string;
+        seal: string;
+      }) => {
+        try {
+          const result = archiveEpochAndRollbackV2({
+            coordRoot: resolve(options.root),
+            artifactRoot: resolve(options.artifactRoot),
+            candidate: validatedCandidate(readJson(options.candidate)),
+            snapshot: readJson(options.snapshot) as V1ProjectionSnapshotManifestV2,
+            seal: readJson(options.seal) as V1SealManifestV2,
+          });
+          emit.data(result);
+        } catch (error) {
+          emitFailure(emit, "ledger_v2_epoch_rollback_failed", error);
+        }
+      },
+    );
+
+  command
+    .command("rehearse-cutover")
+    .description("Seal and roll back V1 in an explicit OS temporary root")
+    .requiredOption("--root <path>", "Existing temporary coordination root")
+    .requiredOption(
+      "--projection <paths...>",
+      "Disposable .harnery projection path(s) to snapshot and restore",
+    )
+    .action((options: { root: string; projection: string[] }) => {
+      try {
+        emit.data(
+          rehearseCutoverV2({
+            root: options.root,
+            projectionPaths: options.projection,
+          }),
+        );
+      } catch (error) {
+        emitFailure(emit, "ledger_v2_cutover_rehearsal_failed", error);
       }
     });
 }
@@ -225,6 +380,31 @@ export function writeStagedControlPacket(
   }
   fsyncParentDirectory(output);
   return output;
+}
+
+function writeStagedInstallPacket(
+  coordRootPath: string,
+  outputPath: string,
+  packet: CandidateInstallPacketV2,
+): string {
+  const output = resolve(outputPath);
+  const liveRoot = resolve(coordRootPath, ".harnery", "ledgers", "v2");
+  if (inside(liveRoot, output)) throw new Error("live_control_path_forbidden");
+  if (existsSync(output)) throw new Error("staged_output_must_be_new");
+  mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
+  const fd = openSync(output, "wx", 0o600);
+  try {
+    writeFileSync(fd, `${canonicalJsonV2(packet)}\n`, "utf8");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  fsyncParentDirectory(output);
+  return output;
+}
+
+function canonicalPacketDigest(packet: CandidateInstallPacketV2): `sha256:${string}` {
+  return sha256V2(canonicalJsonV2(packet));
 }
 
 function inside(root: string, candidate: string): boolean {

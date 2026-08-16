@@ -14,6 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "nod
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { emit } from "../events/emit.ts";
+import { recordLiveSweepObservationV2 } from "../live-lifecycle-v2.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
 function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
@@ -22,7 +23,7 @@ function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
   return "claude-code";
 }
 
-/** Emit a best-effort health.heartbeat_swept event. Telemetry only, never throws. */
+/** Record the sweep before deleting authority state. V2 ambiguity fails closed. */
 function emitSwept(
   coordRoot: string,
   instanceId: string,
@@ -30,8 +31,22 @@ function emitSwept(
   sessionId: string,
   reason: "stale" | "unparseable" | "missing_ts",
   ageSecs?: number,
-): void {
+): boolean {
   try {
+    const routed = recordLiveSweepObservationV2({
+      coordRoot,
+      owner: instanceId,
+      nativeSessionId: sessionId,
+      adapter,
+      observation:
+        reason === "stale"
+          ? "stale_heartbeat"
+          : reason === "unparseable"
+            ? "unparseable_heartbeat"
+            : "missing_timestamp",
+      ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
+    });
+    if (routed.state !== "v1") return true;
     emit(coordRoot, {
       event_type: "health.heartbeat_swept",
       instance_id: instanceId,
@@ -41,8 +56,9 @@ function emitSwept(
       data: { reason, ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}) },
       // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
     } as Parameters<typeof emit>[1]);
+    return true;
   } catch {
-    /* telemetry only, never break the sweep */
+    return false;
   }
 }
 
@@ -105,9 +121,14 @@ export function staleSweep(coordRoot: string): {
         // Unparseable: only reap if the file itself is mtime-old.
         if (mtimeSecs(path) < cutoff) {
           try {
+            const ageSecs = nowSec - mtimeSecs(path);
+            if (
+              !emitSwept(coordRoot, idFromFile, "claude-code", idFromFile, "unparseable", ageSecs)
+            ) {
+              continue;
+            }
             unlinkSync(path);
             heartbeatsRemoved.push(f);
-            emitSwept(coordRoot, idFromFile, "claude-code", idFromFile, "unparseable");
           } catch {
             /* swallow */
           }
@@ -125,9 +146,20 @@ export function staleSweep(coordRoot: string): {
       if (!parsed.last_heartbeat || !Number.isFinite(ts)) {
         // No / NaN last_heartbeat: can't trust content; gate on mtime.
         if (mtimeSecs(path) < cutoff) {
+          if (
+            !emitSwept(
+              coordRoot,
+              instanceId,
+              adapter,
+              sessionId,
+              "missing_ts",
+              nowSec - mtimeSecs(path),
+            )
+          ) {
+            continue;
+          }
           unlinkSync(path);
           heartbeatsRemoved.push(f);
-          emitSwept(coordRoot, instanceId, adapter, sessionId, "missing_ts");
         } else if (parsed.instance_id) {
           liveInstanceIds.add(parsed.instance_id);
         }
@@ -136,9 +168,11 @@ export function staleSweep(coordRoot: string): {
 
       if (ts < cutoff) {
         // Legitimate stale prune (valid timestamp, past the freshness cutoff).
+        if (!emitSwept(coordRoot, instanceId, adapter, sessionId, "stale", nowSec - ts)) {
+          continue;
+        }
         unlinkSync(path);
         heartbeatsRemoved.push(f);
-        emitSwept(coordRoot, instanceId, adapter, sessionId, "stale", nowSec - ts);
         continue;
       }
 

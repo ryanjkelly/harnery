@@ -18,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { emit } from "../events/emit.ts";
+import { recordLiveClaimChangeV2 } from "../live-authority-v2.ts";
 
 const FRESHNESS_SECS = 600;
 
@@ -31,6 +32,7 @@ interface PeerView {
   files_touched: string[];
   last_heartbeat: string;
   session_id: string;
+  platform?: string;
   /** parent_instance_id from heartbeat, present for subagent rows. Used by
    *  the group-ownership check (sibling subagents + parent share a group
    *  and don't block each other's claims).
@@ -79,7 +81,9 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
     // prune the claim from their heartbeat and allow the edit. Skips when the
     // file doesn't exist (intent-to-create claim); that surface IS load-bearing.
     if (isFileCommittedClean(coordRoot, req.path)) {
-      pruneClaimFromPeer(coordRoot, conflict.instance_id, req.path);
+      if (!releaseClaimThroughLedger(coordRoot, conflict.instance_id, req.path, req)) {
+        return authorityUnavailable(req.path, "release the stale claim on");
+      }
       // Fall through to ordering check + allow.
     } else {
       return {
@@ -140,14 +144,20 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
       }
       // Every blocker is a finished (committed-clean) edit: prune them so they
       // stop constraining future acquisitions, then fall through to allow.
-      for (const p of blockers) pruneClaimFromPeer(coordRoot, req.instance_id, p);
+      for (const p of blockers) {
+        if (!releaseClaimThroughLedger(coordRoot, req.instance_id, p, req)) {
+          return authorityUnavailable(p, "release the completed claim on");
+        }
+      }
     }
   }
 
   // Acquire the claim: atomic check-and-set. Adds req.path to my
   // files_touched if not already present.
   if (req.mode !== "read") {
-    addClaimToOwner(coordRoot, req.instance_id, req.path);
+    if (!acquireClaimThroughLedger(coordRoot, req)) {
+      return authorityUnavailable(req.path, "acquire");
+    }
   }
 
   return { allow: true, exit_code: 0, rule: "claim.pass" };
@@ -207,6 +217,7 @@ function readPeers(coordRoot: string): PeerView[] {
         session_id?: string;
         files_touched?: string[];
         last_heartbeat?: string;
+        platform?: string;
         parent_instance_id?: string;
         parent_session_id?: string;
       };
@@ -224,6 +235,7 @@ function readPeers(coordRoot: string): PeerView[] {
         session_id: hb.session_id ?? hb.instance_id,
         files_touched: hb.files_touched ?? [],
         last_heartbeat: hb.last_heartbeat ?? "",
+        platform: hb.platform,
         parent_instance_id: inferredParent,
       });
     } catch {
@@ -337,4 +349,63 @@ function pruneClaimFromPeer(coordRoot: string, instanceId: string, relPath: stri
   } catch {
     /* silent */
   }
+}
+
+function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolean {
+  const owner = readPeers(coordRoot).find((peer) => peer.instance_id === req.instance_id);
+  try {
+    const routed = recordLiveClaimChangeV2({
+      coordRoot,
+      owner: req.instance_id,
+      nativeSessionId: req.session_id ?? owner?.session_id ?? req.instance_id,
+      adapter: adapterFromPlatform(owner?.platform),
+      operation: "acquired",
+      path: req.path,
+      access: "write",
+    });
+    if (routed.state === "v1") addClaimToOwner(coordRoot, req.instance_id, req.path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseClaimThroughLedger(
+  coordRoot: string,
+  subjectInstanceId: string,
+  relPath: string,
+  actor: ClaimRequest,
+): boolean {
+  const owner = readPeers(coordRoot).find((peer) => peer.instance_id === actor.instance_id);
+  try {
+    const routed = recordLiveClaimChangeV2({
+      coordRoot,
+      owner: actor.instance_id,
+      subject: subjectInstanceId,
+      nativeSessionId: actor.session_id ?? owner?.session_id ?? actor.instance_id,
+      adapter: adapterFromPlatform(owner?.platform),
+      operation: "released",
+      path: relPath,
+      access: "write",
+    });
+    if (routed.state === "v1") pruneClaimFromPeer(coordRoot, subjectInstanceId, relPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
+  if (platform === "cursor") return "cursor";
+  if (platform === "codex") return "codex";
+  return "claude-code";
+}
+
+function authorityUnavailable(path: string, operation: string): VerdictResult {
+  return {
+    allow: false,
+    exit_code: 2,
+    rule: "claim.authority_unavailable",
+    reason: `Cannot safely ${operation} ${path}; V2 authority is unavailable.`,
+  };
 }

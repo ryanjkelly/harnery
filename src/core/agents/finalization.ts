@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../config.ts";
+import { readFinalizationScopeV2 } from "../events/v2/finalization-view.ts";
+import { liveInstanceIdV2, resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
 import { readStreamTailBounded } from "./events/consume.ts";
 
 const CLAIM_HISTORY_CAP_BYTES = 128 * 1024 * 1024;
@@ -96,6 +98,16 @@ export function readSessionWriteClaims(
   instanceId: string,
   sessionId: string,
 ): SessionWriteClaims {
+  const route = resolveLiveEventLedgerRouteV2(coordRoot);
+  if (route.state === "blocked") return { paths: [], complete: false };
+  if (route.state === "v2") {
+    try {
+      const scope = readFinalizationScopeV2(coordRoot, liveInstanceIdV2(instanceId));
+      return { paths: scope.files_touched, complete: true };
+    } catch {
+      return { paths: [], complete: false };
+    }
+  }
   const streamPath = join(coordRoot, ".harnery", "events.ndjson");
   const { text, truncated } = readStreamTailBounded(streamPath, CLAIM_HISTORY_CAP_BYTES);
   const paths = new Set<string>();
