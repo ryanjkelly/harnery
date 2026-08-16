@@ -11,6 +11,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 
 import { coordRoot, eventsPath, readAgents } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
@@ -27,7 +28,7 @@ import { applySuggestions } from "./suggestions";
 /** How much of the log tail to fold. ~1KB/row → a few thousand recent rows. */
 const TAIL_BYTES = 4_000_000;
 
-export async function readSanitizedTail(filePath = eventsPath()): Promise<CodecSourceEvidence[]> {
+async function readOneSanitizedTail(filePath: string): Promise<CodecSourceEvidence[]> {
   let text: string;
   try {
     const stat = await fs.promises.stat(filePath);
@@ -57,6 +58,24 @@ export async function readSanitizedTail(filePath = eventsPath()): Promise<CodecS
     if (evidence) out.push(evidence);
   }
   return out;
+}
+
+export async function readSanitizedTail(filePath?: string): Promise<CodecSourceEvidence[]> {
+  return readSanitizedTails(filePath ? [filePath] : eventsFilePaths());
+}
+
+export async function readSanitizedTails(filePaths: string[]): Promise<CodecSourceEvidence[]> {
+  const rows = (await Promise.all(filePaths.map(readOneSanitizedTail))).flat();
+  rows.sort(
+    (left, right) =>
+      Date.parse(left.ts) - Date.parse(right.ts) || left.event_id.localeCompare(right.event_id),
+  );
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.event_id)) return false;
+    seen.add(row.event_id);
+    return true;
+  });
 }
 
 export async function buildScene(now?: string): Promise<CodecScene> {
@@ -119,6 +138,6 @@ export async function buildScene(now?: string): Promise<CodecScene> {
   return scene;
 }
 
-export function eventsFilePath(): string {
-  return eventsPath();
+export function eventsFilePaths(): string[] {
+  return [eventsPath(), path.join(coordRoot(), ".harnery/ledgers/v2/active.ndjson")];
 }

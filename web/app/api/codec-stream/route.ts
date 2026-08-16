@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 
-import { buildScene, eventsFilePath } from "@/lib/codec/scene-source";
+import { buildScene, eventsFilePaths } from "@/lib/codec/scene-source";
 import type { CodecScene } from "@/lib/codec/contracts";
 
 export const dynamic = "force-dynamic";
@@ -37,11 +37,11 @@ function sceneSignature(scene: CodecScene): string {
 
 export async function GET(request: Request): Promise<Response> {
   const encoder = new TextEncoder();
-  const filePath = eventsFilePath();
+  const filePaths = eventsFilePaths();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let watcher: fs.FSWatcher | null = null;
+      const watchers: fs.FSWatcher[] = [];
       let heartbeat: ReturnType<typeof setInterval> | null = null;
       let scenePoll: ReturnType<typeof setInterval> | null = null;
       let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -64,7 +64,7 @@ export async function GET(request: Request): Promise<Response> {
         if (closed) return;
         closed = true;
         try {
-          watcher?.close();
+          for (const watcher of watchers) watcher.close();
         } catch {
           /* ignore */
         }
@@ -118,12 +118,14 @@ export async function GET(request: Request): Promise<Response> {
 
       // 2. Event-log appends schedule a coalesced rebuild.
       try {
-        if (fs.existsSync(filePath)) {
-          watcher = fs.watch(filePath, () => scheduleScene());
+        for (const filePath of filePaths) {
+          if (!fs.existsSync(filePath)) continue;
+          const watcher = fs.watch(filePath, () => scheduleScene());
           watcher.on("error", () => {
             send("stale", { reason: "watcher_error" });
             cleanup();
           });
+          watchers.push(watcher);
         }
       } catch {
         // non-fatal; the scene poll below keeps things flowing
@@ -148,7 +150,7 @@ export async function GET(request: Request): Promise<Response> {
     headers: {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
-      "connection": "keep-alive",
+      connection: "keep-alive",
       "x-accel-buffering": "no",
     },
   });

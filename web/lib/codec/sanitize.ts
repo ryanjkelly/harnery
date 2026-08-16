@@ -12,10 +12,9 @@
  * closed): the projector renders `unknown` rather than guessing.
  */
 
-import type {
-  CodecActionCategory,
-  CodecSourceEvidence,
-} from "./contracts";
+import type { CodecActionCategory, CodecSourceEvidence } from "./contracts";
+import type { EventV2 } from "../../../src/core/events/v2/contract";
+import { validateEventV2 } from "../../../src/core/events/v2/validate";
 
 /** Longest intent/task string allowed across the boundary. */
 const MAX_LABEL_CHARS = 120;
@@ -97,7 +96,7 @@ export function categorizeTool(toolName: string | undefined): CodecActionCategor
 export function sanitizeEvent(raw: unknown): CodecSourceEvidence | null {
   if (typeof raw !== "object" || raw === null) return null;
   const row = raw as Record<string, unknown>;
-  if (row.schema_version !== 1) return null;
+  if (row.schema_version !== 1) return sanitizeEventV2(raw);
 
   const eventType = str(row.event_type);
   const eventId = str(row.event_id);
@@ -201,6 +200,134 @@ export function sanitizeEvent(raw: unknown): CodecSourceEvidence | null {
   }
 
   return out;
+}
+
+/** Reduce a fully validated event-ledger V2 row into Codec's stable evidence shape. */
+function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
+  const validation = validateEventV2(raw);
+  if (!validation.ok) return null;
+  const event = raw as EventV2;
+  if (!("session_id" in event.scope)) return null;
+  const links = event.links as { parent_generation_id?: string };
+  const base: CodecSourceEvidence = {
+    schema_version: 1,
+    event_id: event.event_id,
+    event_type: event.event_type,
+    ts: event.time.observed_at,
+    instance_id: event.scope.instance_id,
+    session_id: event.scope.session_id,
+    ...(links.parent_generation_id
+      ? { parent_session_id: links.parent_generation_id }
+      : {}),
+  };
+
+  switch (event.event_type) {
+    case "session.started":
+      base.event_type = "session.start";
+      return base;
+    case "session.ended":
+      base.event_type = "session.end";
+      return base;
+    case "agent.started":
+      base.event_type = "subagent.start";
+      return base;
+    case "agent.completed":
+      base.event_type = "subagent.stop";
+      return base;
+    case "turn.started":
+      base.event_type = "user_prompt.submit";
+      return base;
+    case "turn.completed":
+      base.event_type = "turn.stop";
+      return base;
+    case "tool.requested": {
+      base.event_type = "tool.pre_use";
+      base.tool_name = event.payload.tool.name;
+      base.category = categorizeTool(event.payload.tool.name);
+      base.outcome = "started";
+      return base;
+    }
+    case "tool.completed": {
+      base.event_type = "tool.post_use";
+      base.tool_name = event.payload.tool.name;
+      base.category = categorizeTool(event.payload.tool.name);
+      base.outcome = codecOutcome(event.payload.outcome);
+      return base;
+    }
+    case "command.started":
+      base.event_type = "command.start";
+      base.category = "diagnostic";
+      base.outcome = "started";
+      base.intent = clampLabel(event.payload.intent_kind);
+      return base;
+    case "command.completed":
+      base.event_type = "command.end";
+      base.category = "diagnostic";
+      base.outcome = codecOutcome(event.payload.outcome);
+      return base;
+    case "interaction.wait_started":
+      base.event_type = "interaction.input_requested";
+      return base;
+    case "context.observed": {
+      if (event.payload.measurement.state !== "observed") return null;
+      base.event_type = "context.sampled";
+      base.used_percent = Math.min(
+        100,
+        (event.payload.measurement.value.used_tokens /
+          event.payload.measurement.value.limit_tokens) *
+          100,
+      );
+      base.context_confidence = evidenceConfidence(
+        event.payload.measurement.attestation,
+        event.payload.measurement.confidence,
+      );
+      return base;
+    }
+    case "coord.task_changed":
+      base.event_type = "state.task_set";
+      base.task_cleared = event.payload.new_state === "cleared";
+      return base;
+    case "coord.lifecycle_changed":
+      if (
+        event.payload.new_state !== "active" &&
+        event.payload.new_state !== "blocked" &&
+        event.payload.new_state !== "done"
+      ) {
+        return null;
+      }
+      base.event_type = "state.task_state";
+      base.task_state = event.payload.new_state;
+      return base;
+    case "coord.identity_attested":
+      base.event_type = "identity.assumed";
+      base.identity_name = clampLabel(event.payload.identity_id);
+      return base;
+    default:
+      return null;
+  }
+}
+
+function codecOutcome(outcome: string): CodecSourceEvidence["outcome"] {
+  if (outcome === "succeeded") return "ok";
+  if (
+    outcome === "failed" ||
+    outcome === "cancelled" ||
+    outcome === "timed_out" ||
+    outcome === "denied" ||
+    outcome === "interrupted"
+  ) {
+    return "error";
+  }
+  return "unknown";
+}
+
+function evidenceConfidence(
+  attestation: string,
+  confidence: string,
+): CodecSourceEvidence["context_confidence"] {
+  if (attestation === "native" && confidence === "exact") return "exact";
+  if (attestation === "native" || attestation === "derived") return "reported";
+  return "estimated";
 }
 
 /** Parse and sanitize one ndjson line; malformed rows drop silently. */
