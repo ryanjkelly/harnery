@@ -131,7 +131,7 @@ export interface V2EpochArchiveManifestV2 {
   created_at: string;
   genesis_id: `gex_${string}`;
   candidate_manifest_digest: `sha256:${string}`;
-  control_state: "candidate" | "active";
+  control_state: "candidate" | "active" | "repairable" | "invalid";
   entries: V2ArchiveEntryV2[];
   tree_digest: `sha256:${string}`;
   archive_relative_path: string;
@@ -434,10 +434,12 @@ export function archiveEpochAndRollbackV2(
   let archiveManifest = readOptionalCanonicalJson<V2EpochArchiveManifestV2>(archiveManifestPath);
   if (!archiveManifest) {
     const control = readEventV2ControlState(coordRoot);
-    if (control.state !== "candidate" && control.state !== "active") {
+    if (control.state === "closed") {
       throw new Error(`v2_archive_requires_open_epoch:${control.state}`);
     }
-    if (canonicalJsonV2(control.genesis) !== canonicalJsonV2(candidate)) {
+    const installedGenesis =
+      control.state === "invalid" ? readInstalledCandidateForRollback(coordRoot) : control.genesis;
+    if (canonicalJsonV2(installedGenesis) !== canonicalJsonV2(candidate)) {
       throw new Error("v2_archive_candidate_mismatch");
     }
     const entries = collectTree(source);
@@ -568,11 +570,19 @@ function validateArchiveManifest(
     manifest.genesis_id !== candidate.event.payload.genesis_id ||
     manifest.candidate_manifest_digest !== candidateManifestDigestV2(candidate) ||
     manifest.archive_relative_path !== archiveRelativePath ||
-    (manifest.control_state !== "candidate" && manifest.control_state !== "active") ||
+    !["candidate", "active", "repairable", "invalid"].includes(manifest.control_state) ||
     sha256V2(canonicalJsonV2(manifest.entries)) !== manifest.tree_digest
   ) {
     throw new Error("v2_archive_manifest_invalid");
   }
+}
+
+function readInstalledCandidateForRollback(coordRoot: string): CandidateGenesisManifestV2 {
+  const path = join(coordRoot, EVENT_V2_LEDGER_RELATIVE_ROOT, "genesis.json");
+  const candidate = readCanonicalJson<CandidateGenesisManifestV2>(path);
+  const validated = validateCandidateGenesisManifestV2(candidate);
+  if (!validated.ok) throw new Error(`installed_candidate_invalid:${validated.reason}`);
+  return validated.value;
 }
 
 function installV2ArchiveFence(source: string, manifest: V2EpochArchiveManifestV2): void {

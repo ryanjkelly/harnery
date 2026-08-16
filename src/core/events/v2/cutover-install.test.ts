@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   lstatSync,
@@ -223,6 +224,27 @@ describe("event ledger V2 installation and epoch rollback", () => {
     expect(
       readFileSync(join(fixture.root, rollback.archive_relative_path, "genesis.json"), "utf8"),
     ).toBe(archivedGenesis);
+  });
+
+  test("archives an integrity-invalid candidate by authenticating its installed genesis", () => {
+    const fixture = installedCandidate();
+    appendFileSync(
+      join(fixture.root, ".harnery", "ledgers", "v2", "active.ndjson"),
+      '{"malformed":true}\n',
+    );
+    expect(readEventV2ControlState(fixture.root).state).toBe("invalid");
+    const rollback = archiveEpochAndRollbackV2({
+      coordRoot: fixture.root,
+      artifactRoot: fixture.artifactRoot,
+      candidate: fixture.result.candidate,
+      snapshot: fixture.result.snapshot,
+      seal: fixture.result.seal,
+      now: NOW,
+    });
+    expect(rollback.state).toBe("v1_restored");
+    expect(
+      readFileSync(join(fixture.root, rollback.archive_relative_path, "active.ndjson"), "utf8"),
+    ).toContain("malformed");
   });
 
   for (const killedAt of [

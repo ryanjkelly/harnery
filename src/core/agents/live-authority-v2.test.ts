@@ -51,11 +51,15 @@ describe("live V2 coordination cutover", () => {
         .state,
     ).toBe("recorded");
 
-    expect(
-      readActiveLedgerV2(root)
-        .events.map(({ event }) => event.event_type)
-        .filter((type) => type.startsWith("coord.")),
-    ).toEqual(["coord.task_changed", "coord.claim_changed", "coord.lifecycle_changed"]);
+    const coordinationEvents = readActiveLedgerV2(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type.startsWith("coord."));
+    expect(coordinationEvents.map((event) => event.event_type)).toEqual([
+      "coord.task_changed",
+      "coord.claim_changed",
+      "coord.lifecycle_changed",
+    ]);
+    expect(coordinationEvents.every((event) => event.time.monotonic_ns === undefined)).toBeTrue();
     expect(existsSync(join(root, ".harnery/events.ndjson"))).toBe(false);
     expect(readHeartbeat(root, "operator")).toMatchObject({
       task: "Ship V2",

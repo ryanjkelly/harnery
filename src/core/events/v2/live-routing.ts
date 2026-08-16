@@ -95,7 +95,7 @@ export function recordLiveHookSignalV2(input: {
     build_id: input.route.build_id,
     platform: livePlatformV2(),
     ...(input.bridge ? { bridge: input.bridge } : {}),
-    monotonic_ns: input.monotonic_ns ?? process.hrtime.bigint().toString(),
+    monotonic_ns: input.monotonic_ns,
   });
 }
 

@@ -193,7 +193,6 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV2>(
     platform: livePlatformV2(),
     expected_prior_state_digest: authorityStateDigest(expected),
     desired_state_digest: authorityStateDigest(desired),
-    monotonic_ns: process.hrtime.bigint().toString(),
     reconciler: {
       readStateDigest: () => authorityStateDigest(requireHeartbeat(input.coordRoot, subject)),
       apply: (_mutation: AuthorityMutationV2) => apply(),

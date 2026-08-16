@@ -17,6 +17,7 @@ import {
   recordLiveHookSignalV2,
   resolveLiveEventLedgerRouteV2,
 } from "./live-routing.ts";
+import { readActiveLedgerV2 } from "./reader.ts";
 
 const roots: string[] = [];
 
@@ -45,6 +46,23 @@ describe("live V2 ledger routing", () => {
     });
 
     expect(result.state).toBe("recorded");
+    expect(
+      recordLiveHookSignalV2({
+        coordRoot: root,
+        route,
+        eventName: "user-prompt-submit",
+        payload: { session_id: "native-session", prompt: "continue", raw: {} },
+        adapter: "claude-code",
+        instanceId: "agent-Helene",
+      }).state,
+    ).toBe("recorded");
+    const ledger = readActiveLedgerV2(root);
+    expect(ledger).toMatchObject({ complete: true, diagnostics: [] });
+    expect(
+      ledger.events
+        .filter(({ event }) => event.producer.producer_id === "prd_agent-hook")
+        .every(({ event }) => event.time.monotonic_ns === undefined),
+    ).toBeTrue();
     expect(liveInstanceIdV2("agent-Helene")).toBe("inst_agent-Helene");
     expect(Bun.file(join(root, ".harnery/events.ndjson")).size).toBe(0);
   });
