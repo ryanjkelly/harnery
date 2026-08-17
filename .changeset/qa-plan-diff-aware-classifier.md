@@ -1,0 +1,5 @@
+---
+"harnery": minor
+---
+
+Diff-aware QA planning: `harn browse --qa-plan` classifies the rendered page against a persisted baseline and emits a machine-readable review manifest (change class, scope selectors, required contexts, provider-call ceiling) before any vision spend. Text/data-only edits plan zero model calls; a local component change scopes review to its stable anchor (`#id` / `data-qa-scope`); stylesheet changes, unprovable boundaries, and missing baselines widen — never narrow. `--qa-snapshot` persists a render (signature, DOM, full-page screenshot) as the baseline atomically; `--qa-target`, `--qa-theme`, `--qa-state`, `--qa-scope`, and `--qa-states` control keying and explicit inputs. New `harnery/lib/browser` exports: `classifySignatures`, `buildQaManifest`, `saveQaSnapshot`, `loadQaSnapshot`, `resolveQaBaseline`, and the `QaSignature`/`QaManifest` type family; the browser client gains `qaSignature()` (structural fingerprints plus applied-stylesheet digests, including fetched external sheets).

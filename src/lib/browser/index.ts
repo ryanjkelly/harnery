@@ -93,6 +93,32 @@ export {
   extractObservedIp,
   WEBRTC_PROXY_ONLY_ARG,
 } from "./proxy.js";
+export {
+  buildQaManifest,
+  type ChangeClass,
+  type ClassifyOptions,
+  classifySignatures,
+  fnv1a32,
+  type ManifestOptions,
+  type QaClassification,
+  type QaContext,
+  type QaManifest,
+  type QaNodeSignature,
+  type QaScope,
+  type QaSignature,
+  type QaStylesheetSignature,
+} from "./qa-plan.js";
+export {
+  listQaSnapshotTargets,
+  loadQaSnapshot,
+  QA_SNAPSHOT_DIR,
+  type QaSnapshotStoreOptions,
+  qaSnapshotKey,
+  type ResolvedQaBaseline,
+  resolveQaBaseline,
+  type StoredQaSnapshot,
+  saveQaSnapshot,
+} from "./qa-snapshot.js";
 export type {
   RuntHit,
   RuntsResult,

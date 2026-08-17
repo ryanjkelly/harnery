@@ -34,6 +34,16 @@ import {
   wslHeadedLaunchArgs,
 } from "../lib/browser/index.ts";
 import {
+  buildQaManifest,
+  classifySignatures,
+  type QaClassification,
+  type QaContext,
+  type QaManifest,
+  type QaScope,
+  type QaSignature,
+} from "../lib/browser/qa-plan.ts";
+import { resolveQaBaseline, saveQaSnapshot } from "../lib/browser/qa-snapshot.ts";
+import {
   type BrowserSessionServer,
   startBrowserSessionServer,
 } from "../lib/browser/session-control.ts";
@@ -181,6 +191,14 @@ interface BrowseOpts {
   diff?: string;
   diffThreshold?: string;
   diffFail?: boolean;
+  // Diff-aware QA planning (qa-plan.ts / qa-snapshot.ts)
+  qaPlan?: boolean;
+  qaSnapshot?: boolean;
+  qaTarget?: string;
+  qaTheme?: string;
+  qaState?: string;
+  qaScope?: string[];
+  qaStates?: string[];
   // Next.js dev-overlay capture (auto-on; --no-dev-overlay opts out)
   devOverlay?: boolean;
 }
@@ -591,6 +609,54 @@ export function registerBrowseCommand(
       "Exit non-zero if --diff mismatchRatio exceeds --diff-threshold; requires --diff.",
     )
     .option(
+      "--qa-plan",
+      "Classify this render against the persisted QA baseline and emit a review manifest " +
+        "(change class, scope selectors, required contexts, provider-call ceiling) under " +
+        "`qaPlan` in the JSON envelope — BEFORE any vision spend. Text/data-only edits plan " +
+        "zero model calls; ambiguity widens, never narrows. Baseline comes from the snapshot " +
+        "store (seed one with --qa-snapshot); no baseline classifies as `unknown`.",
+    )
+    .option(
+      "--qa-snapshot",
+      "Persist this render (signature + DOM + full-page screenshot) as the QA baseline for the " +
+        "target + context, replacing any prior snapshot atomically. Run it on a page state you " +
+        "trust — typically right after a passing QA run — so the next --qa-plan inherits its " +
+        "baseline for free.",
+    )
+    .option(
+      "--qa-target <key>",
+      "Override the snapshot-store key (default: the url argument). Lets a production render " +
+        "seed the baseline for a local file/route: browse the prod URL with --qa-snapshot " +
+        "--qa-target <local-target>, then --qa-plan the local target.",
+    )
+    .option(
+      "--qa-theme <theme>",
+      "Context label for the QA snapshot store: light | dark (default light). Labels the " +
+        "stored/compared context; it does not switch the page's rendered theme.",
+      "light",
+    )
+    .option(
+      "--qa-state <name>",
+      "Context state label for the QA snapshot store (default 'default').",
+      "default",
+    )
+    .option(
+      "--qa-scope <selector>",
+      "Explicit scope selector from the producing task (repeatable) — resolution-order rung 1; " +
+        "overrides lifted anchors in the --qa-plan manifest.",
+      (value: string, previous: string[] = []) => [...previous, value],
+      [] as string[],
+    )
+    .option(
+      "--qa-states <names>",
+      "Comma-separated interaction states to review (promotes the plan to interaction-state).",
+      (value: string) =>
+        value
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+    )
+    .option(
       "--no-dev-overlay",
       "Skip auto-capture of Next.js dev-overlay issues. Default: capture every queued error (kind/code/message/stack) when a <nextjs-portal> shadow root is present. Necessary because Next.js 16 + React 19 route hydration errors + most React warnings through onCaughtError → next-devtools' errorQueue, NOT through console.error, so Playwright's standard listener doesn't see them. Surfaces them in the JSON envelope under `devOverlay`.",
     )
@@ -818,6 +884,20 @@ async function runBrowse(
           opts.checkContrast !== undefined ? { scope: contentScope(opts.checkContrast) } : null,
       });
     }
+    // Diff-aware QA planning. Signature capture must also happen BEFORE any
+    // annotation overlays are injected — an annotation box is a DOM change.
+    let qaPlan: QaPlanReport | undefined;
+    if (opts.qaPlan || opts.qaSnapshot) {
+      qaPlan = await runQaPlanning(browser, url, navResult.url, opts);
+      if (qaPlan?.manifest) {
+        const m = qaPlan.manifest;
+        emit.log(
+          `qa-plan: class=${m.change_class} scopes=${m.scopes.map((s) => s.selector).join(",") || "-"} ` +
+            `contexts=${m.contexts.length} model-calls<=${m.predicted.model_calls_ceiling} baseline=${m.baseline_source}`,
+          "info",
+        );
+      }
+    }
     // Vision critique. Capture tiles BEFORE any annotation overlays are injected
     // so the model sees the real page, not our boxes.
     let critique: CritiqueResult | undefined;
@@ -948,6 +1028,7 @@ async function runBrowse(
         asserts,
         devOverlay,
         batchResult,
+        qaPlan,
       );
     } else {
       await runTrioMode(
@@ -966,6 +1047,7 @@ async function runBrowse(
         asserts,
         devOverlay,
         batchResult,
+        qaPlan,
       );
     }
 
@@ -1209,6 +1291,7 @@ async function runPrintMode(
   asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
+  qaPlan: QaPlanReport | undefined,
 ): Promise<void> {
   let body: string | null = null;
   if (opts.html) {
@@ -1243,6 +1326,7 @@ async function runPrintMode(
     if (critique) result.critique = critique;
     if (asserts) result.asserts = asserts;
     if (devOverlay) result.devOverlay = devOverlay;
+    if (qaPlan) result.qaPlan = qaPlan;
     if (batchResult && batchResult.clipboardReads.length > 0) {
       result.batchClipboardReads = batchResult.clipboardReads;
     }
@@ -1279,6 +1363,7 @@ async function runTrioMode(
   asserts: AssertResult[] | undefined,
   devOverlay: DevOverlayResult | undefined,
   batchResult: BatchResult | undefined,
+  qaPlan: QaPlanReport | undefined,
 ): Promise<void> {
   const prefix = resolveOutPrefix(opts.out);
   mkdirSync(dirname(prefix), { recursive: true });
@@ -1351,6 +1436,7 @@ async function runTrioMode(
   if (critique) envelope.critique = critique;
   if (asserts) envelope.asserts = asserts;
   if (devOverlay) envelope.devOverlay = devOverlay;
+  if (qaPlan) envelope.qaPlan = qaPlan;
   if (batchResult && batchResult.clipboardReads.length > 0) {
     envelope.batchClipboardReads = batchResult.clipboardReads;
   }
@@ -1811,6 +1897,100 @@ function applyContentFailGates(opts: BrowseOpts, content: ContentChecksResult | 
 // ---------------------------------------------------------------------------
 // Vision critique tiling
 // ---------------------------------------------------------------------------
+
+/** What `--qa-plan` / `--qa-snapshot` put in the JSON envelope. */
+interface QaPlanReport {
+  manifest?: QaManifest;
+  classification?: QaClassification;
+  snapshotSaved?: { path: string; target: string; context: QaContext };
+  signature: { nodes: number; stylesheets: number; truncated: boolean };
+}
+
+/**
+ * Diff-aware QA planning inside a browse run: capture the page's QA signature
+ * (before any annotation overlay mutates the DOM), classify against the
+ * persisted baseline, and/or persist this render as the new baseline.
+ * Classification and manifest math live in lib/browser/qa-plan.ts; this
+ * helper only supplies the live-page inputs (signature, page height, explicit
+ * scope match counts).
+ */
+async function runQaPlanning(
+  browser: Browser,
+  targetArg: string,
+  renderedUrl: string,
+  opts: BrowseOpts,
+): Promise<QaPlanReport> {
+  const context: QaContext = {
+    viewport: opts.viewport ?? "desktop",
+    theme: opts.qaTheme === "dark" ? "dark" : "light",
+    state: opts.qaState ?? "default",
+  };
+  const target = opts.qaTarget ?? targetArg;
+  const captured = await browser.qaSignature();
+  const signature: QaSignature = {
+    url: renderedUrl,
+    capturedAt: new Date().toISOString(),
+    nodes: captured.nodes,
+    stylesheets: captured.stylesheets,
+    ...(captured.truncated ? { truncated: true } : {}),
+  };
+  const report: QaPlanReport = {
+    signature: {
+      nodes: captured.nodes.length,
+      stylesheets: captured.stylesheets.length,
+      truncated: captured.truncated,
+    },
+  };
+
+  if (opts.qaPlan) {
+    const baseline = await resolveQaBaseline({ target, context });
+    const classification = classifySignatures(baseline.signature, signature);
+    // Full-page tile ceiling from the real page height and the critique
+    // tiling knobs, so the predicted cost matches what --check-critique
+    // would actually spend.
+    const pageHeight = await browser.currentPage.evaluate(() =>
+      Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+    );
+    const band = Number.parseInt(opts.checkCritiqueBand ?? "1400", 10);
+    const overlap = Number.parseInt(opts.checkCritiqueOverlap ?? "120", 10);
+    const maxTiles = Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10);
+    const estimatedFullPageTiles = Math.min(
+      maxTiles,
+      Math.max(1, Math.ceil(pageHeight / Math.max(1, band - overlap))),
+    );
+    const explicitScopes: QaScope[] = [];
+    for (const selector of opts.qaScope ?? []) {
+      const matches = await browser.currentPage.evaluate(
+        (sel) => document.querySelectorAll(sel).length,
+        selector,
+      );
+      explicitScopes.push({ selector, reason: "explicit input (--qa-scope)", matches });
+    }
+    report.classification = classification;
+    report.manifest = buildQaManifest(classification, {
+      baselineSource: baseline.source,
+      ...(explicitScopes.length > 0 ? { explicitScopes } : {}),
+      ...(opts.qaStates?.length ? { states: opts.qaStates } : {}),
+      estimatedFullPageTiles,
+    });
+  }
+
+  if (opts.qaSnapshot) {
+    const screenshotPng = await browser.currentPage.screenshot({ fullPage: true, type: "png" });
+    const saved = saveQaSnapshot(
+      target,
+      context,
+      { signature, domHtml: captured.domHtml, screenshotPng },
+      {},
+    );
+    report.snapshotSaved = { path: saved.path, target, context };
+    emit.log(
+      `qa-snapshot: saved baseline for ${target} [${context.viewport}/${context.theme}/${context.state}]`,
+      "info",
+    );
+  }
+  return report;
+}
 
 async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise<CritiqueTile[]> {
   const maxTiles = Math.max(1, Number.parseInt(opts.checkCritiqueMaxTiles ?? "24", 10));

@@ -685,6 +685,167 @@ export class Browser {
   }
 
   /**
+   * Capture the page's QA signature for diff-aware classification
+   * (qa-plan.ts): a structural fingerprint per element (path, tag, canonical
+   * attributes, direct-text digest, nearest stable-ancestor anchor) plus
+   * applied-stylesheet digests. DOM equality alone never proves a change is
+   * text-only — a one-line edit to a linked stylesheet changes zero DOM bytes
+   * and every pixel — so external sheet text is fetched and digested too; an
+   * unreadable sheet records digest "unavailable" and the classifier widens.
+   */
+  async qaSignature(): Promise<{
+    nodes: Array<{
+      path: string;
+      tag: string;
+      attrs: string;
+      text?: string;
+      anchor?: { selector: string; path: string };
+    }>;
+    stylesheets: Array<{ key: string; kind: "external" | "inline"; digest: string }>;
+    domHtml: string;
+    truncated: boolean;
+  }> {
+    return await this.currentPage.evaluate(async () => {
+      const MAX_NODES = 20_000;
+      const fnv = (text: string): string => {
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < text.length; i++) {
+          hash ^= text.charCodeAt(i);
+          hash = Math.imul(hash, 0x01000193);
+        }
+        return `${(hash >>> 0).toString(16).padStart(8, "0")}-${text.length}`;
+      };
+
+      // Anchor uniqueness prepass: an id or data-qa-scope value that appears
+      // more than once is not a stable anchor.
+      const idCount = new Map<string, number>();
+      for (const el of Array.from(document.querySelectorAll("[id]"))) {
+        idCount.set(el.id, (idCount.get(el.id) ?? 0) + 1);
+      }
+      const scopeCount = new Map<string, number>();
+      for (const el of Array.from(document.querySelectorAll("[data-qa-scope]"))) {
+        const v = el.getAttribute("data-qa-scope") ?? "";
+        scopeCount.set(v, (scopeCount.get(v) ?? 0) + 1);
+      }
+      const anchorFor = (el: Element): string | null => {
+        if (el.id && idCount.get(el.id) === 1) return `#${CSS.escape(el.id)}`;
+        const scope = el.getAttribute("data-qa-scope");
+        if (scope && scopeCount.get(scope) === 1) {
+          return `[data-qa-scope="${scope.replace(/"/g, '\\"')}"]`;
+        }
+        return null;
+      };
+
+      const SKIP = new Set(["SCRIPT", "NOSCRIPT", "TEMPLATE", "STYLE", "LINK", "META"]);
+      // Leaves whose subtree is fingerprinted as one opaque unit (mirrors the
+      // replaced-element treatment in visual atoms).
+      const LEAF = new Set(["SVG", "CANVAS", "VIDEO", "IFRAME", "OBJECT"]);
+      const nodes: Array<{
+        path: string;
+        tag: string;
+        attrs: string;
+        text?: string;
+        anchor?: { selector: string; path: string };
+      }> = [];
+      let truncated = false;
+
+      const visit = (
+        el: Element,
+        path: string,
+        anchor: { selector: string; path: string } | undefined,
+      ): void => {
+        if (nodes.length >= MAX_NODES) {
+          truncated = true;
+          return;
+        }
+        const tag = el.tagName.toLowerCase();
+        const attrs = el
+          .getAttributeNames()
+          .sort()
+          .map((name) => `${name}=${el.getAttribute(name) ?? ""}`)
+          .join("\x1f");
+        const isLeaf = LEAF.has(el.tagName.toUpperCase());
+        let text: string | undefined;
+        if (isLeaf) {
+          const inner = el.innerHTML;
+          if (inner) text = fnv(inner);
+        } else {
+          let direct = "";
+          for (const child of Array.from(el.childNodes)) {
+            if (child.nodeType === Node.TEXT_NODE) direct += child.textContent ?? "";
+          }
+          const normalized = direct.replace(/\s+/g, " ").trim();
+          if (normalized) text = fnv(normalized);
+        }
+        nodes.push({
+          path,
+          tag,
+          attrs,
+          ...(text !== undefined ? { text } : {}),
+          ...(anchor ? { anchor } : {}),
+        });
+        if (isLeaf) return;
+        const own = anchorFor(el);
+        const childAnchor = own ? { selector: own, path } : anchor;
+        let index = 0;
+        for (const child of Array.from(el.children)) {
+          if (SKIP.has(child.tagName.toUpperCase())) continue;
+          visit(child, `${path}>${child.tagName.toLowerCase()}:${index}`, childAnchor);
+          index++;
+        }
+      };
+      if (document.body) visit(document.body, "body", undefined);
+
+      const stylesheets: Array<{ key: string; kind: "external" | "inline"; digest: string }> = [];
+      let inlineIdx = 0;
+      for (const sheet of Array.from(document.styleSheets)) {
+        const href = sheet.href;
+        const key = href ?? `inline:${inlineIdx}`;
+        if (!href) inlineIdx++;
+        let digest = "unavailable";
+        try {
+          digest = fnv(
+            Array.from(sheet.cssRules)
+              .map((rule) => rule.cssText)
+              .join("\n"),
+          );
+        } catch {
+          // Cross-origin: cssRules throws. Fetch the sheet text instead; a
+          // CORS-blocked fetch leaves the digest "unavailable" on purpose.
+          if (href) {
+            try {
+              const res = await fetch(href);
+              if (res.ok) digest = fnv(await res.text());
+            } catch {
+              /* stays unavailable */
+            }
+          }
+        }
+        stylesheets.push({ key, kind: href ? "external" : "inline", digest });
+      }
+      let adoptedIdx = 0;
+      for (const sheet of document.adoptedStyleSheets ?? []) {
+        try {
+          stylesheets.push({
+            key: `adopted:${adoptedIdx}`,
+            kind: "inline",
+            digest: fnv(
+              Array.from(sheet.cssRules)
+                .map((rule) => rule.cssText)
+                .join("\n"),
+            ),
+          });
+        } catch {
+          stylesheets.push({ key: `adopted:${adoptedIdx}`, kind: "inline", digest: "unavailable" });
+        }
+        adoptedIdx++;
+      }
+
+      return { nodes, stylesheets, domHtml: document.documentElement.outerHTML, truncated };
+    });
+  }
+
+  /**
    * Capture a full-page screenshot from an explicit capture viewport and
    * evaluate the caller's final evidence expression immediately before the
    * pixels are written. Playwright normally manages the full-page viewport

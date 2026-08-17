@@ -313,6 +313,38 @@ reconciliation).
 | `--diff-threshold <ratio>` | `mismatchRatio` below which the diff is a match (0–1). Default `0.01` (1%). |
 | `--diff-fail` | Exit non-zero if `mismatchRatio` exceeds the threshold. |
 
+### Diff-aware QA planning
+
+Vision review costs the same whether you changed one word or the whole theme —
+unless something classifies the change first. `--qa-plan` compares the rendered
+page against a persisted baseline signature (per-element structure, attributes,
+direct-text digests, applied-stylesheet digests) and emits a review manifest
+under `qaPlan` in the JSON envelope before any model call is made: the change
+class, the stable scope selectors that contain it, the render contexts worth
+reviewing, and the provider-call ceiling.
+
+| Flag | Description |
+| --- | --- |
+| `--qa-plan` | Classify this render against the persisted baseline and emit the review manifest. No baseline classifies as `unknown` and widens to full coverage. |
+| `--qa-snapshot` | Persist this render (signature + DOM + full-page screenshot) as the QA baseline for the target + context, atomically. Run on a page state you trust. |
+| `--qa-target <key>` | Override the snapshot-store key (default: the url argument) — lets a production render seed the baseline for a local route. |
+| `--qa-theme <theme>` | Context label for the store: `light` \| `dark` (default `light`). Labels only; it does not switch the page theme. |
+| `--qa-state <name>` | Context state label (default `default`). |
+| `--qa-scope <selector>` | Explicit scope selector from the producing task (repeatable); overrides lifted anchors. |
+| `--qa-states <names>` | Comma-separated interaction states to review; promotes the plan to `interaction-state`. |
+
+The classes: `text-data-only` (only direct text changed — zero vision calls),
+`local-visual` (structural changes contained by stable anchors — scoped review
+in light contexts), `interaction-state` (explicit states requested),
+`large-structural` (stylesheet changed, unprovable boundary, or multi-region
+change — full desktop/mobile and light/dark matrix), and `unknown` (no or
+truncated baseline — widened, never treated as text-only). Ambiguity always
+widens: a one-line edit to a linked stylesheet changes zero DOM bytes and every
+pixel, so DOM equality alone never proves a change is text-only — stylesheet
+digests (external sheets fetched and hashed) must match too. Stable anchors are
+unique `#id`s or `data-qa-scope` attributes; nested anchors dedupe to the
+outermost root so a container is reviewed once, not per descendant.
+
 ### Diagnostics
 
 | Flag | Description |
