@@ -49,18 +49,29 @@ export interface CritiqueResult {
   outcome: "pass" | "fail" | "skipped";
   /** Set when skipped or a provider call failed. */
   error?: string;
+  /** Host-reported provider provenance (route, attempts, fallbacks, usage). */
+  provider_meta?: Record<string, unknown>;
 }
 
 /**
  * The host-injected model call. Given one tile and the rubric, return the
  * findings for that tile. Throwing is caught and surfaced as an error finding
  * so one bad tile never sinks the run.
+ *
+ * Optional properties let the host shape execution without widening the call
+ * contract: `concurrency` caps how many tiles run at once (default 4 — tiles
+ * are independent, and the wall-clock win is roughly the cap factor), and
+ * `meta()` is read once after the run so route/usage provenance lands on the
+ * result envelope.
  */
-export type CritiqueProvider = (input: {
+export type CritiqueProvider = ((input: {
   url: string;
   rubric: string;
   tile: CritiqueTile;
-}) => Promise<CritiqueFinding[]>;
+}) => Promise<CritiqueFinding[]>) & {
+  concurrency?: number;
+  meta?: () => Record<string, unknown> | undefined;
+};
 
 export const DEFAULT_CRITIQUE_RUBRIC = [
   "You are reviewing one vertical slice of a rendered web page for visual defects.",
@@ -250,20 +261,41 @@ export async function runCritique(args: {
         "no critiqueProvider injected by the host (see HarneryProgramContext.critiqueProvider)",
     };
   }
-  const findings: CritiqueFinding[] = [];
-  for (const tile of tiles) {
-    try {
-      const tileFindings = await provider({ url, rubric, tile });
-      findings.push(...tileFindings.map((f) => ({ ...f, tile: tile.index })));
-    } catch (err: unknown) {
-      findings.push({
-        tile: tile.index,
-        severity: "high",
-        category: "provider-error",
-        description: `critique provider failed on ${tile.label}: ${err instanceof Error ? err.message : String(err)}`,
-      });
+  // Tiles are judged independently, so run them concurrently (bounded) and
+  // reassemble findings in tile order so artifacts stay deterministic.
+  const concurrency = Math.max(1, Math.min(provider.concurrency ?? 4, tiles.length || 1));
+  const perTile: CritiqueFinding[][] = tiles.map(() => []);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const i = cursor++;
+      if (i >= tiles.length) return;
+      const tile = tiles[i];
+      try {
+        const tileFindings = await provider({ url, rubric, tile });
+        perTile[i] = tileFindings.map((f) => ({ ...f, tile: tile.index }));
+      } catch (err: unknown) {
+        perTile[i] = [
+          {
+            tile: tile.index,
+            severity: "high",
+            category: "provider-error",
+            description: `critique provider failed on ${tile.label}: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ];
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const findings = perTile.flat();
   const outcome = findings.some((f) => f.severity === "high") ? "fail" : "pass";
-  return { rule: "critique", tiles: tiles.length, provider: true, findings, outcome };
+  const meta = provider.meta?.();
+  return {
+    rule: "critique",
+    tiles: tiles.length,
+    provider: true,
+    findings,
+    outcome,
+    ...(meta ? { provider_meta: meta } : {}),
+  };
 }
