@@ -45,6 +45,10 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../state/live-coordination-view.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
 import { formatPendingCouncils } from "./session-context.ts";
 
@@ -63,10 +67,10 @@ interface HeartbeatRow {
   activity?: AgentActivity;
   task_state?: TaskState;
   task_state_reason?: string;
-  task_updated_at?: string;
+  task_updated_at?: string | null;
   suggested_session_name?: string;
   session_name_seen_for?: string;
-  turn_summary?: string;
+  turn_summary?: string | null;
   workflow_run_id?: string;
 }
 
@@ -160,7 +164,7 @@ function renderTurnRitualReminder(
   selfInstanceId: string,
   adapter: string,
 ): string {
-  const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
 
   const bin = resolveBinName(coordRoot);
@@ -178,7 +182,7 @@ function renderTurnRitualReminder(
 }
 
 function renderStatusFooterReminder(coordRoot: string, selfInstanceId: string): string {
-  const hb = readHeartbeat(join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`));
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (!hb || hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) return "";
 
   const statusCommand = endOfTurnStatusCommand(coordRoot);
@@ -200,14 +204,8 @@ function computeFocusNudgeIfChanged(
   selfInstanceId: string,
   opts: { sessionNameNudge: boolean; taskNudge: boolean },
 ): string {
-  const hbPath = join(coordRoot, ".harnery", "active", `${selfInstanceId}.json`);
-  if (!existsSync(hbPath)) return "";
-  let hb: HeartbeatRow;
-  try {
-    hb = JSON.parse(readFileSync(hbPath, "utf8"));
-  } catch {
-    return "";
-  }
+  const hb = readLiveCoordinationRow(coordRoot, selfInstanceId);
+  if (!hb) return "";
 
   const hashFile = join(coordRoot, ".harnery", `.last-task-nudge-hash.${selfInstanceId}`);
   // Subagents and workflow children have no human-owned session/tab to rename.
@@ -287,23 +285,18 @@ function computePeerTableIfChanged(
   selfInstanceId: string,
   selfSessionIdFallback: string,
 ): string {
-  const activeDir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(activeDir)) return "";
-
   // Read self heartbeat for session_id (group key); fall back to the caller's hint.
   let mySessionId = selfSessionIdFallback;
-  const selfHb = readHeartbeat(join(activeDir, `${selfInstanceId}.json`));
+  const rows = readLiveCoordinationRows(coordRoot);
+  const selfHb = readLiveCoordinationRow(coordRoot, selfInstanceId);
   if (selfHb?.session_id) mySessionId = selfHb.session_id;
   if (!mySessionId) return "";
 
-  // Collect peer heartbeats.
-  const peers: HeartbeatRow[] = [];
-  for (const f of readdirSync(activeDir)) {
-    if (!f.endsWith(".json")) continue;
-    const hb = readHeartbeat(join(activeDir, f));
-    if (!hb?.instance_id || hb.instance_id === selfInstanceId) continue;
-    peers.push(hb);
-  }
+  // Collect peers from the selected ledger route. Under V2 this is the
+  // canonical projection, never the legacy active directory.
+  const peers: HeartbeatRow[] = rows.filter(
+    (heartbeat) => heartbeat.instance_id && heartbeat.instance_id !== selfInstanceId,
+  );
   // Cross-machine presence (ADR 0016): sessions on other machines, from the
   // locally-fetched presence refs. Advisory (no claim blocking in v1).
   const remote = readRemoteMachinesSafe(coordRoot);
@@ -447,14 +440,6 @@ function computeCouncilPendingIfChanged(
 }
 
 /* ---------- helpers ---------- */
-
-function readHeartbeat(path: string): HeartbeatRow | null {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as HeartbeatRow;
-  } catch {
-    return null;
-  }
-}
 
 function safeRead(path: string): string {
   try {

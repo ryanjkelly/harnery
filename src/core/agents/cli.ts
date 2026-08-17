@@ -436,12 +436,11 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       const positional = args.filter((a) => !a.startsWith("--"));
       const sessionId = positional[0];
       const model = positional[1];
-      const before = writer.readHeartbeat(root, owner);
       let hb: ReturnType<typeof writer.healHeartbeat>;
       try {
         const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
         const mode = liveCoordinationWriteModeV2(root);
-        if (mode !== "v1" && !before) {
+        if (mode !== "v1") {
           const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
           const { liveInstanceIdV2 } = await import("../events/v2/live-routing.ts");
           const projected = readCoordinationViewV2(root).instances[liveInstanceIdV2(owner)];
@@ -454,15 +453,26 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
               adapter: adapterFromPlatform(adapter),
             });
           }
+          const { ensureLiveCoordinationHeartbeat } = await import(
+            "./state/live-coordination-view.ts"
+          );
+          hb = ensureLiveCoordinationHeartbeat(
+            root,
+            owner,
+            sessionId ?? owner,
+            adapterFromPlatform(adapter),
+            model,
+          );
+        } else {
+          hb = writer.healHeartbeat(
+            root,
+            owner,
+            sessionId,
+            model,
+            adapter,
+            forkedFrom ? { forkedFrom } : undefined,
+          );
         }
-        hb = writer.healHeartbeat(
-          root,
-          owner,
-          sessionId,
-          model,
-          adapter,
-          forkedFrom ? { forkedFrom } : undefined,
-        );
       } catch (error) {
         process.stderr.write(
           `agent-coord heal-heartbeat: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
@@ -475,6 +485,27 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
     case "stamp-tool-activity": {
       const toolName = args[0] ?? "";
       const target = args.slice(1).join(" ");
+      try {
+        const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
+        if (liveCoordinationWriteModeV2(root) !== "v1") {
+          const prior = writer.readHeartbeat(root, owner);
+          const { ensureLiveCoordinationHeartbeat } = await import(
+            "./state/live-coordination-view.ts"
+          );
+          ensureLiveCoordinationHeartbeat(
+            root,
+            owner,
+            prior?.schema_version === 2 ? prior.session_id : owner,
+            adapterFromPlatform(prior?.schema_version === 2 ? prior.platform : undefined),
+            prior?.schema_version === 2 ? prior.model : undefined,
+          );
+        }
+      } catch (error) {
+        process.stderr.write(
+          `agent-coord stamp-tool-activity: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
+        );
+        return 1;
+      }
       const hb = writer.stampToolActivity(root, owner, toolName, target);
       if (!hb) return 1;
       process.stdout.write(
@@ -1059,7 +1090,10 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
           : gh.collectCheckoutRemoved(cwd, rest[1] ?? "", rest[2] ?? "");
       if (paths.length === 0) return 0;
       const { resolveOwner } = await import("../hooks/resolve/owner.ts");
-      const owner = resolveOwner({ payload: null, coordRoot: root })?.instance_id;
+      const owner = resolveOwner({
+        payload: null,
+        coordRoot: root,
+      })?.instance_id;
       if (!owner) return 0;
       const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
       const reason = event === "post-commit" ? ("commit" as const) : ("checkout" as const);

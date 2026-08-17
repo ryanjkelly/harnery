@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sha256V2 } from "./canonical.ts";
 import { buildActivationManifestV2, readEventV2ControlState } from "./control.ts";
+import { projectionSnapshotDigestV2 } from "./cutover.ts";
 import {
   archiveEpochAndRollbackV2,
   buildCandidateInstallPacketV2,
@@ -57,6 +58,16 @@ describe("event ledger V2 installation and epoch rollback", () => {
       complete: true,
       diagnostics: [],
     });
+    expect(existsSync(join(fixture.root, ".harnery", "active"))).toBeFalse();
+    expect(existsSync(join(fixture.root, ".harnery", ".events-cursor"))).toBeFalse();
+    const cleared = join(
+      fixture.artifactRoot,
+      "cleared-projections",
+      projectionSnapshotDigestV2(fixture.result.snapshot).slice("sha256:".length),
+    );
+    expect(readFileSync(join(cleared, ".harnery", "active", "agent.json"), "utf8")).toBe(
+      '{"task":"before"}\n',
+    );
 
     const activation = activationFor(fixture.result.candidate);
     const active = installActivationV2({
@@ -67,6 +78,7 @@ describe("event ledger V2 installation and epoch rollback", () => {
     expect(active.state).toBe("active");
     expect(readEventV2ControlState(fixture.root).state).toBe("active");
 
+    mkdirSync(join(fixture.root, ".harnery", "active"), { recursive: true });
     writeFileSync(join(fixture.root, ".harnery", "active", "agent.json"), '{"changed":true}\n');
     const rollback = archiveEpochAndRollbackV2({
       coordRoot: fixture.root,
@@ -131,6 +143,62 @@ describe("event ledger V2 installation and epoch rollback", () => {
       now: NOW,
     });
     expect(result.state).toBe("candidate");
+  });
+
+  for (const killedAt of [
+    "projection_clear_intent_committed",
+    "projection_root_cleared",
+    "projection_clear_complete_committed",
+  ] satisfies EpochCutoverV2Step[]) {
+    test(`recovers projection clearing after a kill at ${killedAt}`, () => {
+      const root = fixtureRoot();
+      const artifactRoot = join(root, ".harnery", "cutover-artifacts");
+      const packet = packetFixture();
+      let killed = false;
+      expect(() =>
+        installCandidateV2({
+          coordRoot: root,
+          artifactRoot,
+          packet,
+          projectionPaths: [".harnery/active", ".harnery/.events-cursor"],
+          now: NOW,
+          onStep(step) {
+            if (!killed && step === killedAt) {
+              killed = true;
+              throw new Error(`killed:${step}`);
+            }
+          },
+        }),
+      ).toThrow(`killed:${killedAt}`);
+      expect(readEventV2ControlState(root).state).toBe("closed");
+      const result = installCandidateV2({
+        coordRoot: root,
+        artifactRoot,
+        packet,
+        projectionPaths: [".harnery/active", ".harnery/.events-cursor"],
+        now: NOW,
+      });
+      expect(result.state).toBe("candidate");
+      expect(existsSync(join(root, ".harnery", "active"))).toBeFalse();
+      expect(existsSync(join(root, ".harnery", ".events-cursor"))).toBeFalse();
+    });
+  }
+
+  test("refuses durable coordination paths before snapshot or V1 seal", () => {
+    const root = fixtureRoot();
+    mkdirSync(join(root, ".harnery", "journal"), { recursive: true });
+    writeFileSync(join(root, ".harnery", "journal", "agent.md"), "durable\n");
+    expect(() =>
+      installCandidateV2({
+        coordRoot: root,
+        artifactRoot: join(root, ".harnery", "cutover-artifacts"),
+        packet: packetFixture(),
+        projectionPaths: [".harnery/active", ".harnery/journal"],
+        now: NOW,
+      }),
+    ).toThrow("durable_projection_clear_forbidden:.harnery/journal");
+    expect(lstatSync(join(root, ".harnery", "events.ndjson")).isFile()).toBeTrue();
+    expect(readFileSync(join(root, ".harnery", "journal", "agent.md"), "utf8")).toBe("durable\n");
   });
 
   test("repairs an exact candidate after catalog initialization", () => {

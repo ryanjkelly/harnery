@@ -15,10 +15,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { emit } from "../events/emit.ts";
 import { recordLiveClaimChangeV2 } from "../live-authority-v2.ts";
+import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
 const FRESHNESS_SECS = 600;
 
@@ -205,44 +206,27 @@ function addClaimToOwner(coordRoot: string, instanceId: string, relPath: string)
 }
 
 function readPeers(coordRoot: string): PeerView[] {
-  const out: PeerView[] = [];
-  const path = join(coordRoot, ".harnery", "active");
-  if (!existsSync(path)) return out;
-  for (const f of readdirSync(path)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(join(path, f), "utf8")) as {
-        instance_id?: string;
-        name?: string;
-        session_id?: string;
-        files_touched?: string[];
-        last_heartbeat?: string;
-        platform?: string;
-        parent_instance_id?: string;
-        parent_session_id?: string;
-      };
-      if (!hb.instance_id) continue;
-      // Derive parent_instance_id: explicit field first, then infer from
-      // session_id-differs-from-instance_id (the subagent shape:
-      // instance_id is the agent_id, session_id is the parent session).
-      const inferredParent =
-        hb.parent_instance_id ??
-        hb.parent_session_id ??
-        (hb.session_id && hb.session_id !== hb.instance_id ? hb.session_id : undefined);
-      out.push({
-        instance_id: hb.instance_id,
-        name: hb.name,
-        session_id: hb.session_id ?? hb.instance_id,
-        files_touched: hb.files_touched ?? [],
-        last_heartbeat: hb.last_heartbeat ?? "",
-        platform: hb.platform,
-        parent_instance_id: inferredParent,
-      });
-    } catch {
-      /* skip */
-    }
-  }
-  return out;
+  return readLiveCoordinationRows(coordRoot).map((heartbeat) => {
+    // V2 supplies explicit parent lineage. The session-id inference is a V1
+    // compatibility rule only; V2 session IDs are opaque fingerprints and
+    // must never be interpreted as instance IDs.
+    const inferredParent =
+      heartbeat.parent_instance_id ??
+      (heartbeat.schema_version === 2
+        ? undefined
+        : heartbeat.session_id !== heartbeat.instance_id
+          ? heartbeat.session_id
+          : undefined);
+    return {
+      instance_id: heartbeat.instance_id,
+      name: heartbeat.name,
+      session_id: heartbeat.session_id,
+      files_touched: heartbeat.files_touched ?? [],
+      last_heartbeat: heartbeat.last_heartbeat ?? "",
+      platform: heartbeat.platform,
+      parent_instance_id: inferredParent,
+    };
+  });
 }
 
 /**

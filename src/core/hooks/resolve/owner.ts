@@ -30,6 +30,10 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
 export function resolveOwner(opts: {
   payload: Record<string, unknown> | null;
   coordRoot: string;
+  /** V1-only fallback that joins adapter session env to `.harnery/active/`.
+   * Candidate/active V2 callers must disable it so a fenced projection can
+   * never become attribution evidence. */
+  allowHeartbeatSessionFallback?: boolean;
 }): {
   instance_id: string;
   source: "env" | "payload" | "session_env" | "pidmap-self" | "pidmap-ancestor";
@@ -49,9 +53,11 @@ export function resolveOwner(opts: {
     return { instance_id: env, source: "env" };
   }
 
-  const bySession = resolveOwnerBySessionEnv(opts.coordRoot);
-  if (bySession) {
-    return { instance_id: bySession, source: "session_env" };
+  if (opts.allowHeartbeatSessionFallback !== false) {
+    const bySession = resolveOwnerBySessionEnv(opts.coordRoot);
+    if (bySession) {
+      return { instance_id: bySession, source: "session_env" };
+    }
   }
 
   if (bridge) return null;

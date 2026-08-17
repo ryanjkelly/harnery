@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { resolveBinName, resolveHooksSetupHint } from "../../config.ts";
 import { harneryVersion, loadAdapterWiring } from "../../hooks/adapter/wiring.ts";
 import { readRemoteMachines } from "../../presence/index.ts";
+import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { readForkParent } from "../state/names.ts";
 import type { AgentActivity, TaskState } from "../state/session-state.ts";
 
@@ -31,7 +32,7 @@ interface HeartbeatRow {
   activity?: AgentActivity;
   task_state?: TaskState;
   task_state_reason?: string;
-  turn_summary?: string;
+  turn_summary?: string | null;
 }
 
 export interface RenderOpts {
@@ -154,22 +155,11 @@ function formatRemoteMachines(coordRoot: string): string {
   }
 }
 
-/** Read all peer heartbeats from .harnery/active/, excluding self. */
+/** Read peers from the selected ledger route, excluding self. */
 function readActivePeers(coordRoot: string, selfInstanceId: string): HeartbeatRow[] {
-  const out: HeartbeatRow[] = [];
-  const dir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(dir)) return out;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as HeartbeatRow;
-      if (!hb.instance_id || hb.instance_id === selfInstanceId) continue;
-      out.push(hb);
-    } catch {
-      /* skip */
-    }
-  }
-  return out;
+  return readLiveCoordinationRows(coordRoot).filter(
+    (heartbeat) => heartbeat.instance_id && heartbeat.instance_id !== selfInstanceId,
+  );
 }
 
 /**
@@ -360,7 +350,9 @@ function extractFirstSubmodule(gitmodulesPath: string): string | null {
  * superproject) via a `git rev-parse --git-dir` vs `--git-common-dir` check.
  */
 function isLinkedWorktree(coordRoot: string): boolean {
-  const dir = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-dir"], { encoding: "utf8" });
+  const dir = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-dir"], {
+    encoding: "utf8",
+  });
   const common = spawnSync("git", ["-C", coordRoot, "rev-parse", "--git-common-dir"], {
     encoding: "utf8",
   });

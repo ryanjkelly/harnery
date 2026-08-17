@@ -21,9 +21,10 @@ import {
   type Heartbeat,
   readHeartbeat,
   releaseClaim,
-  setTask,
+  setV2TaskState,
   stampSessionStateEvent,
 } from "./state/heartbeat-writer.ts";
+import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-view.ts";
 
 export const LIVE_COORDINATION_V2_PRODUCER_ID = "prd_agent-coord" as const;
 
@@ -52,11 +53,15 @@ export function recordLiveTaskChangeV2(
   input: LiveAuthorityBaseV2 & { task: string },
 ): LiveCoordinationAuthorityV2Result {
   if (liveCoordinationWriteModeV2(input.coordRoot) === "v1") return { state: "v1" };
-  const before = requireHeartbeat(input.coordRoot, input.subject ?? input.owner);
+  const before = requireHeartbeat(input, input.subject ?? input.owner);
   const cleared = input.task.length === 0;
-  const desired = { ...before, task: cleared ? undefined : input.task };
-  if (authorityStateDigest(before) === authorityStateDigest(desired)) {
-    if (!setTask(input.coordRoot, input.subject ?? input.owner, input.task)) {
+  const desired = {
+    ...before,
+    task: undefined,
+    v2_task_state: cleared ? ("cleared" as const) : ("set" as const),
+  };
+  if (cleared && authorityStateDigest(before) === authorityStateDigest(desired)) {
+    if (!setV2TaskState(input.coordRoot, input.subject ?? input.owner, "cleared")) {
       throw new LiveCoordinationAuthorityV2Error("task_materialization_failed");
     }
     return { state: "unchanged" };
@@ -72,7 +77,9 @@ export function recordLiveTaskChangeV2(
     before,
     desired,
     () => {
-      if (!setTask(input.coordRoot, input.subject ?? input.owner, input.task)) {
+      if (
+        !setV2TaskState(input.coordRoot, input.subject ?? input.owner, cleared ? "cleared" : "set")
+      ) {
         throw new LiveCoordinationAuthorityV2Error("task_materialization_failed");
       }
     },
@@ -88,11 +95,11 @@ export function recordLiveLifecycleChangeV2(
 ): LiveCoordinationAuthorityV2Result {
   if (liveCoordinationWriteModeV2(input.coordRoot) === "v1") return { state: "v1" };
   const subject = input.subject ?? input.owner;
-  const before = requireHeartbeat(input.coordRoot, subject);
+  const before = requireHeartbeat(input, subject);
   const desired: Heartbeat = {
     ...before,
     task_state: input.state,
-    task_state_reason: input.reason || undefined,
+    task_state_reason: undefined,
   };
   if (authorityStateDigest(before) === authorityStateDigest(desired)) return { state: "unchanged" };
   const observedAt = input.observedAt ?? new Date().toISOString();
@@ -111,7 +118,7 @@ export function recordLiveLifecycleChangeV2(
         !stampSessionStateEvent(input.coordRoot, subject, {
           event_type: "state.task_state",
           ts: observedAt,
-          data: { state: input.state, reason: input.reason ?? null },
+          data: { state: input.state, reason: null },
         })
       ) {
         throw new LiveCoordinationAuthorityV2Error("lifecycle_materialization_failed");
@@ -129,7 +136,7 @@ export function recordLiveClaimChangeV2(
 ): LiveCoordinationAuthorityV2Result {
   if (liveCoordinationWriteModeV2(input.coordRoot) === "v1") return { state: "v1" };
   const subject = input.subject ?? input.owner;
-  const before = requireHeartbeat(input.coordRoot, subject);
+  const before = requireHeartbeat(input, subject);
   const canonical = canonicalClaimPath(input.coordRoot, input.path);
   const desiredFiles =
     input.operation === "acquired"
@@ -194,7 +201,13 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV2>(
     expected_prior_state_digest: authorityStateDigest(expected),
     desired_state_digest: authorityStateDigest(desired),
     reconciler: {
-      readStateDigest: () => authorityStateDigest(requireHeartbeat(input.coordRoot, subject)),
+      readStateDigest: () => {
+        const heartbeat = readHeartbeat(input.coordRoot, subject);
+        if (!heartbeat || heartbeat.v2_generation_id !== expected.v2_generation_id) {
+          throw new LiveCoordinationAuthorityV2Error(`heartbeat_generation_mismatch:${subject}`);
+        }
+        return authorityStateDigest(heartbeat);
+      },
       apply: (_mutation: AuthorityMutationV2) => apply(),
     },
   });
@@ -219,8 +232,13 @@ export function liveCoordinationWriteModeV2(coordRoot: string): EventV2WriteMode
   return route.state === "v1" ? "v1" : route.mode;
 }
 
-function requireHeartbeat(coordRoot: string, owner: string): Heartbeat {
-  const heartbeat = readHeartbeat(coordRoot, owner);
+function requireHeartbeat(input: LiveAuthorityBaseV2, owner: string): Heartbeat {
+  const heartbeat = ensureLiveCoordinationHeartbeat(
+    input.coordRoot,
+    owner,
+    owner === input.owner ? input.nativeSessionId : owner,
+    input.adapter,
+  );
   if (!heartbeat) throw new LiveCoordinationAuthorityV2Error(`heartbeat_missing:${owner}`);
   return heartbeat;
 }
@@ -228,10 +246,10 @@ function requireHeartbeat(coordRoot: string, owner: string): Heartbeat {
 function authorityStateDigest(heartbeat: Heartbeat): `sha256:${string}` {
   return sha256V2(
     canonicalJsonV2({
-      instance_id: heartbeat.instance_id,
-      session_id: heartbeat.session_id,
-      task: heartbeat.task ?? null,
-      task_state: heartbeat.task_state ?? "active",
+      instance_id: heartbeat.v2_instance_id ?? heartbeat.instance_id,
+      generation_id: heartbeat.v2_generation_id ?? null,
+      task_state: heartbeat.v2_task_state ?? (heartbeat.task ? "set" : "cleared"),
+      lifecycle_state: heartbeat.task_state ?? "active",
       task_state_reason: heartbeat.task_state_reason ?? null,
       files_touched: [...new Set(heartbeat.files_touched ?? [])].sort(),
     }),

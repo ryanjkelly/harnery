@@ -34,6 +34,7 @@ import {
 import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
 import { projectHeartbeats } from "../agents/state/heartbeat-projector.ts";
 import { stampSessionStateEvent } from "../agents/state/heartbeat-writer.ts";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { shellMutationPaths } from "../agents/state/shell-mutation.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
@@ -265,6 +266,7 @@ interface BuildContext {
   raw: string;
   adapter: Adapter;
   instanceId: string;
+  ledgerRoute: LiveEventLedgerRouteV2;
 }
 
 function buildEventData(
@@ -402,9 +404,11 @@ function buildEventData(
         // and which name that refers to. Reported on every stop while a name
         // exists (the stop-hook.session_name verdict reads it per turn); the
         // transcript scan itself stops once the name has been sighted.
-        ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, lastAssistantMessage, (name) =>
-          scanAssistantTextIncludes(p?.transcript_path, name),
-        ),
+        ...(ctx.ledgerRoute.state === "v1"
+          ? sessionNamePresence(ctx.coordRoot, ctx.instanceId, lastAssistantMessage, (name) =>
+              scanAssistantTextIncludes(p?.transcript_path, name),
+            )
+          : {}),
         ...(fileLinkTelemetry ?? {}),
         stop_hook_active: p?.stop_hook_active,
       };
@@ -610,7 +614,11 @@ async function main(): Promise<number> {
   }
 
   const payload = parsePayload(raw, adapter);
-  const owner = resolveOwner({ payload: payload?.raw ?? null, coordRoot });
+  const owner = resolveOwner({
+    payload: payload?.raw ?? null,
+    coordRoot,
+    allowHeartbeatSessionFallback: ledgerRoute.state === "v1",
+  });
   if (!owner) {
     appendDebug(coordRoot, {
       ...debugBase,
@@ -628,6 +636,7 @@ async function main(): Promise<number> {
     raw,
     adapter,
     instanceId: owner.instance_id,
+    ledgerRoute,
   });
 
   if (ledgerRoute.state === "blocked") {
@@ -823,6 +832,7 @@ async function main(): Promise<number> {
     try {
       const injected = await emitSessionStartSystemMessage(
         coordRoot,
+        ledgerRoute,
         owner.instance_id,
         sessionId,
         data,
@@ -847,9 +857,11 @@ async function main(): Promise<number> {
     // pull peers'. Both are throttled + fail-silent; network runs detached.
     // When a relay is configured, also make sure the live-socket daemon runs.
     try {
-      publishPresence(coordRoot);
+      if (ledgerRoute.state === "v1") {
+        publishPresence(coordRoot);
+        ensureRelayDaemon(coordRoot);
+      }
       fetchPresence(coordRoot);
-      ensureRelayDaemon(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-presence" });
     }
@@ -859,7 +871,12 @@ async function main(): Promise<number> {
   // agnostic since v0.5.0.
   if (norm.event_type === "session.end") {
     try {
-      cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
+      cleanupSessionEnd(
+        coordRoot,
+        ledgerRoute,
+        owner.instance_id,
+        (data.reason as string) ?? "unknown",
+      );
     } catch (err) {
       logError(coordRoot, err, { phase: "session-end-cleanup" });
     }
@@ -872,7 +889,7 @@ async function main(): Promise<number> {
     // Presence: publish the post-cleanup state so peers see this session gone
     // promptly rather than waiting out the remote-stale window.
     try {
-      publishPresence(coordRoot);
+      if (ledgerRoute.state === "v1") publishPresence(coordRoot);
     } catch (err) {
       logError(coordRoot, err, { phase: "session-end-presence" });
     }
@@ -910,7 +927,12 @@ async function main(): Promise<number> {
   // Phase 8: SubagentStop: delete subagent heartbeat + log.
   if (norm.event_type === "subagent.stop") {
     try {
-      cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
+      cleanupSessionEnd(
+        coordRoot,
+        ledgerRoute,
+        owner.instance_id,
+        (data.reason as string) ?? "unknown",
+      );
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
         spawnSync(
@@ -965,6 +987,7 @@ async function main(): Promise<number> {
     try {
       const injected = await emitUserPromptSubmitSystemMessage(
         coordRoot,
+        ledgerRoute,
         owner.instance_id,
         sessionId,
         adapter,
@@ -997,7 +1020,12 @@ async function main(): Promise<number> {
     // the status_checked / task_set / status_box_present evidence (codex
     // doesn't emit those live; this re-emits turn.stop after agent-hook's own,
     // so the verdict reads the replay's box signal as the latest).
-    if (adapter === "codex" && payload?.transcript_path && existsSync(payload.transcript_path)) {
+    if (
+      ledgerRoute.state === "v1" &&
+      adapter === "codex" &&
+      payload?.transcript_path &&
+      existsSync(payload.transcript_path)
+    ) {
       try {
         replayCodexJsonl({
           coordRoot,
@@ -1015,7 +1043,9 @@ async function main(): Promise<number> {
     // auto-summary.
     if (adapter === "claude-code") {
       runSessionSyncExtension(coordRoot, false);
-      runTurnSummary(coordRoot, owner.instance_id, sessionId, payload?.transcript_path);
+      if (ledgerRoute.state === "v1") {
+        runTurnSummary(coordRoot, owner.instance_id, sessionId, payload?.transcript_path);
+      }
     }
 
     // Master-state heartbeat projection. Drains events.ndjson since the last
@@ -1026,12 +1056,14 @@ async function main(): Promise<number> {
     // (the events are real regardless of whether the agent gets nagged), and after
     // codex-replay above so codex's replayed events are included in the drain.
     // Not an emitter (consumes + writes heartbeats), so no emitter/consumer conflict.
-    try {
-      const result = consumeSince(coordRoot);
-      projectHeartbeats(coordRoot, result.events);
-      if (result.lastEventId) writeCursor(coordRoot, result.lastEventId);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "stop-projection" });
+    if (ledgerRoute.state === "v1") {
+      try {
+        const result = consumeSince(coordRoot);
+        projectHeartbeats(coordRoot, result.events);
+        if (result.lastEventId) writeCursor(coordRoot, result.lastEventId);
+      } catch (err) {
+        logError(coordRoot, err, { phase: "stop-projection" });
+      }
     }
 
     // Presence: publish AFTER the projection above so the blob carries this
@@ -1039,8 +1071,10 @@ async function main(): Promise<number> {
     // the push itself runs detached. The relay daemon (when configured) is
     // re-ensured here too — it self-exits on idle, and the next turn revives it.
     try {
-      publishPresence(coordRoot);
-      ensureRelayDaemon(coordRoot);
+      if (ledgerRoute.state === "v1") {
+        publishPresence(coordRoot);
+        ensureRelayDaemon(coordRoot);
+      }
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-presence" });
     }
@@ -1100,15 +1134,17 @@ async function main(): Promise<number> {
       // minted; verified 2026-08-05), so the fork's new instance first
       // materializes right here. Gate detection on "no heartbeat yet" so the
       // transcript scan runs once per instance lifetime, not per tool call.
-      let forkedFrom: string | undefined;
-      if (
-        adapter === "claude-code" &&
-        payload?.transcript_path &&
-        !existsSync(join(coordRoot, ".harnery", "active", `${owner.instance_id}.json`))
-      ) {
-        forkedFrom = detectForkParent(payload.transcript_path, owner.instance_id);
+      if (ledgerRoute.state === "v1") {
+        let forkedFrom: string | undefined;
+        if (
+          adapter === "claude-code" &&
+          payload?.transcript_path &&
+          !existsSync(join(coordRoot, ".harnery", "active", `${owner.instance_id}.json`))
+        ) {
+          forkedFrom = detectForkParent(payload.transcript_path, owner.instance_id);
+        }
+        healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, adapter, forkedFrom);
       }
-      healHeartbeatViaCli(coordRoot, owner.instance_id, sessionId, adapter, forkedFrom);
       refreshPidmap(coordRoot, owner.instance_id, adapter, payload?.pid);
     } catch (err) {
       logError(coordRoot, err, { phase: "pre-tool-use-heal" });
@@ -1226,10 +1262,12 @@ async function main(): Promise<number> {
   // Phase 7: PostToolUse: stamp last_tool + last_tool_target on heartbeat.
   // Adapter-agnostic for the same reason as tool.pre_use above.
   if (norm.event_type === "tool.post_use") {
-    try {
-      stampToolActivity(coordRoot, owner.instance_id, data);
-    } catch (err) {
-      logError(coordRoot, err, { phase: "post-tool-use-stamp" });
+    if (ledgerRoute.state === "v1") {
+      try {
+        stampToolActivity(coordRoot, owner.instance_id, data);
+      } catch (err) {
+        logError(coordRoot, err, { phase: "post-tool-use-stamp" });
+      }
     }
 
     // Image feed: a Bash command that wrote an image (harn browse, harn image,
@@ -1255,7 +1293,7 @@ async function main(): Promise<number> {
   // never landed; the claim is stale). Adapter-agnostic.
   if (norm.event_type === "tool.post_use_failure") {
     try {
-      releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
+      releaseClaimOnFailure(coordRoot, ledgerRoute, owner.instance_id, data, payload?.raw);
     } catch (err) {
       logError(coordRoot, err, { phase: "post-tool-use-failure-release" });
     }
@@ -1612,6 +1650,7 @@ function stampToolActivity(
 
 function releaseClaimOnFailure(
   coordRoot: string,
+  ledgerRoute: LiveEventLedgerRouteV2,
   instanceId: string,
   data: Record<string, unknown>,
   rawPayload: Record<string, unknown> | undefined,
@@ -1653,6 +1692,14 @@ function releaseClaimOnFailure(
       : filePath;
   }
 
+  // In V2 the release is an authority event, not a heartbeat mutation. Avoid
+  // creating a disposable cache for a failure that never acquired a claim,
+  // but release the exact path when the validated projection says it is held.
+  if (ledgerRoute.state === "v2") {
+    const row = readLiveCoordinationRow(coordRoot, instanceId);
+    if (!row?.files_touched?.includes(canonical)) return;
+  }
+
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
   if (!existsSync(agentCoordBin)) return;
   spawnSync(agentCoordBin, ["release-claim", instanceId, canonical], {
@@ -1662,15 +1709,22 @@ function releaseClaimOnFailure(
   });
 }
 
-function cleanupSessionEnd(coordRoot: string, instanceId: string, reason: string): void {
+function cleanupSessionEnd(
+  coordRoot: string,
+  ledgerRoute: LiveEventLedgerRouteV2,
+  instanceId: string,
+  reason: string,
+): void {
   // Remove heartbeat from the canonical .harnery/active/ dir.
   const path = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-  try {
-    if (existsSync(path)) {
-      require("node:fs").unlinkSync(path);
+  if (ledgerRoute.state === "v1") {
+    try {
+      if (existsSync(path)) {
+        require("node:fs").unlinkSync(path);
+      }
+    } catch {
+      /* swallow */
     }
-  } catch {
-    /* swallow */
   }
   // Sweep pid-map entries pointing to this instance
   const pidmapDir = join(coordRoot, ".harnery", "pid-map");
@@ -1706,6 +1760,7 @@ function cleanupSessionEnd(coordRoot: string, instanceId: string, reason: string
 
 async function emitUserPromptSubmitSystemMessage(
   coordRoot: string,
+  ledgerRoute: LiveEventLedgerRouteV2,
   instanceId: string,
   sessionId: string,
   adapter: Adapter,
@@ -1716,17 +1771,20 @@ async function emitUserPromptSubmitSystemMessage(
   let additionalContext = "";
 
   if (existsSync(agentCoordBin)) {
-    // Look up the agent's name from its heartbeat (for council pending rendering).
+    // The legacy heartbeat is fenced after the V2 boundary. Its name is only
+    // optional council-rendering context, never grounds for a fallback read.
     let agentName = "";
-    try {
-      const fs = require("node:fs") as typeof import("node:fs");
-      const hbPath = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-      if (fs.existsSync(hbPath)) {
-        const hb = JSON.parse(fs.readFileSync(hbPath, "utf8")) as { name?: string };
-        agentName = hb.name ?? "";
+    if (ledgerRoute.state === "v1") {
+      try {
+        const fs = require("node:fs") as typeof import("node:fs");
+        const hbPath = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
+        if (fs.existsSync(hbPath)) {
+          const hb = JSON.parse(fs.readFileSync(hbPath, "utf8")) as { name?: string };
+          agentName = hb.name ?? "";
+        }
+      } catch {
+        /* fall through with empty name; peer table still renders */
       }
-    } catch {
-      /* fall through with empty name; peer table still renders */
     }
 
     const args = ["prompt-context", "--instance", instanceId, "--session", sessionId];
@@ -1809,6 +1867,7 @@ function adapterPlatform(adapter: Adapter): string {
 
 async function emitSessionStartSystemMessage(
   coordRoot: string,
+  ledgerRoute: LiveEventLedgerRouteV2,
   instanceId: string,
   sessionId: string,
   emittedData: Record<string, unknown>,
@@ -1821,8 +1880,11 @@ async function emitSessionStartSystemMessage(
     // Sync-project so the heartbeat exists for downstream readers (peer table,
     // wiring check, council invites).
     spawnSync(agentCoordBin, ["project"], { encoding: "utf8", timeout: 3000 });
-    // Stale-sweep dead peers before rendering peer table.
-    spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
+    // Stale-sweep is a V1 projection janitor. V2 lifecycle state is derived
+    // from its validated ledger and must not inspect or mutate fenced files.
+    if (ledgerRoute.state === "v1") {
+      spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
+    }
 
     // SESSION_START activity log line, fired across all adapters.
     const model = (emittedData.model as string | undefined) ?? "unknown";

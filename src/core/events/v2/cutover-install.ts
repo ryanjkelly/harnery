@@ -36,6 +36,7 @@ import {
 import {
   type CutoverV2Step,
   createProjectionSnapshotV2,
+  type ProjectionSnapshotEntryV2,
   projectionSnapshotDigestV2,
   rollbackV1LedgerV2,
   sealV1LedgerV2,
@@ -71,6 +72,9 @@ export type EpochCutoverV2Step =
   | CutoverV2Step
   | "candidate_install_intent_committed"
   | "candidate_packet_finalized"
+  | "projection_clear_intent_committed"
+  | "projection_root_cleared"
+  | "projection_clear_complete_committed"
   | "previous_v2_fence_released"
   | "genesis_manifest_installed"
   | "genesis_event_repaired"
@@ -182,6 +186,20 @@ interface V2EpochRollbackIntentV2 {
   archive_relative_path: string;
 }
 
+interface ProjectionClearIntentV2 {
+  manifest_version: 1;
+  kind: "v1_projection_clear_intent";
+  snapshot_digest: `sha256:${string}`;
+  roots: string[];
+}
+
+interface ProjectionClearCompleteV2 {
+  manifest_version: 1;
+  kind: "v1_projection_clear_complete";
+  snapshot_digest: `sha256:${string}`;
+  roots: string[];
+}
+
 export function buildCandidateInstallPacketV2(input: {
   profile_base: CandidateProfileBaseV2;
   root_id: `root_${string}`;
@@ -250,6 +268,7 @@ export function installCandidateV2(input: InstallCandidateV2Input): InstallCandi
   const artifactRoot = assertArtifactRoot(coordRoot, input.artifactRoot);
   const packet = validateCandidateInstallPacketV2(input.packet);
   const projectionPaths = [...new Set(input.projectionPaths)].sort();
+  assertDisposableProjectionPaths(projectionPaths);
   const intent: CandidateInstallIntentV2 = {
     manifest_version: 1,
     kind: "candidate_install_intent",
@@ -305,6 +324,13 @@ export function installCandidateV2(input: InstallCandidateV2Input): InstallCandi
   }
   if (stateBefore.state === "invalid")
     throw new Error(`candidate_gate_invalid:${stateBefore.reason}`);
+  clearDisposableProjectionPaths(
+    coordRoot,
+    artifactRoot,
+    snapshot,
+    stateBefore.state === "candidate",
+    input.onStep,
+  );
   releaseVerifiedV2ArchiveFence(coordRoot);
   input.onStep?.("previous_v2_fence_released", EVENT_V2_LEDGER_RELATIVE_ROOT);
   const genesisPath = join(coordRoot, EVENT_V2_LEDGER_RELATIVE_ROOT, "genesis.json");
@@ -512,6 +538,134 @@ export function archiveEpochAndRollbackV2(
   };
 }
 
+function clearDisposableProjectionPaths(
+  coordRoot: string,
+  artifactRoot: string,
+  snapshot: V1ProjectionSnapshotManifestV2,
+  gateAlreadyOpen: boolean,
+  onStep?: InstallCandidateV2Input["onStep"],
+): void {
+  const snapshotDigest = projectionSnapshotDigestV2(snapshot);
+  const roots = [...snapshot.roots].sort();
+  assertDisposableProjectionPaths(roots);
+  const intent: ProjectionClearIntentV2 = {
+    manifest_version: 1,
+    kind: "v1_projection_clear_intent",
+    snapshot_digest: snapshotDigest,
+    roots,
+  };
+  writeImmutableCanonicalJson(join(artifactRoot, "projection-clear-intent.json"), intent);
+  onStep?.("projection_clear_intent_committed");
+  const clearedRoot = join(
+    artifactRoot,
+    "cleared-projections",
+    snapshotDigest.slice("sha256:".length),
+  );
+  const completePath = join(artifactRoot, "projection-clear-complete.json");
+  const completed = readOptionalCanonicalJson<ProjectionClearCompleteV2>(completePath);
+  if (
+    completed &&
+    canonicalJsonV2(completed) !== canonicalJsonV2({ ...intent, kind: completed.kind })
+  ) {
+    throw new Error("projection_clear_complete_conflict");
+  }
+
+  for (const root of roots) {
+    const source = resolveInside(coordRoot, root);
+    const destination = resolveInside(clearedRoot, root);
+    if (existsSync(destination)) {
+      assertProjectionRootMatches(clearedRoot, root, snapshot);
+      if (existsSync(source) && !gateAlreadyOpen) {
+        throw new Error(`projection_recreated_before_candidate:${root}`);
+      }
+      continue;
+    }
+    if (gateAlreadyOpen) throw new Error(`cleared_projection_artifact_missing:${root}`);
+    if (!existsSync(source)) throw new Error(`projection_clear_source_missing:${root}`);
+    assertProjectionRootMatches(coordRoot, root, snapshot);
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    renameSync(source, destination);
+    fsyncParentDirectory(source);
+    fsyncParentDirectory(destination);
+    assertProjectionRootMatches(clearedRoot, root, snapshot);
+    onStep?.("projection_root_cleared", root);
+  }
+
+  if (!gateAlreadyOpen) {
+    for (const root of roots) {
+      if (existsSync(resolveInside(coordRoot, root))) {
+        throw new Error(`projection_recreated_before_candidate:${root}`);
+      }
+    }
+  }
+  const complete: ProjectionClearCompleteV2 = {
+    manifest_version: 1,
+    kind: "v1_projection_clear_complete",
+    snapshot_digest: snapshotDigest,
+    roots,
+  };
+  writeImmutableCanonicalJson(completePath, complete);
+  onStep?.("projection_clear_complete_committed");
+}
+
+function assertProjectionRootMatches(
+  baseRoot: string,
+  root: string,
+  snapshot: V1ProjectionSnapshotManifestV2,
+): void {
+  const expected = snapshot.entries
+    .filter((entry) => entry.relative_path === root || entry.relative_path.startsWith(`${root}/`))
+    .sort((left, right) => left.relative_path.localeCompare(right.relative_path));
+  const actual = collectProjectionEntries(baseRoot, root);
+  if (canonicalJsonV2(actual) !== canonicalJsonV2(expected)) {
+    throw new Error(`projection_clear_snapshot_mismatch:${root}`);
+  }
+}
+
+function collectProjectionEntries(
+  baseRoot: string,
+  relativePath: string,
+): ProjectionSnapshotEntryV2[] {
+  const path = resolveInside(baseRoot, relativePath);
+  if (!existsSync(path)) throw new Error(`projection_clear_path_missing:${relativePath}`);
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) throw new Error(`projection_clear_symlink_forbidden:${relativePath}`);
+  if (stat.isFile()) {
+    const facts = inspectStableFile(path);
+    return [
+      {
+        relative_path: relativePath,
+        kind: "file",
+        mode: stat.mode & 0o777,
+        bytes: facts.bytes,
+        digest: facts.digest,
+      },
+    ];
+  }
+  if (!stat.isDirectory()) throw new Error(`projection_clear_path_unsupported:${relativePath}`);
+  const entries: ProjectionSnapshotEntryV2[] = [
+    { relative_path: relativePath, kind: "directory", mode: stat.mode & 0o777 },
+  ];
+  for (const name of readdirSync(path).sort()) {
+    entries.push(...collectProjectionEntries(baseRoot, `${relativePath}/${name}`));
+  }
+  return entries.sort((left, right) => left.relative_path.localeCompare(right.relative_path));
+}
+
+function assertDisposableProjectionPaths(paths: readonly string[]): void {
+  const allowed = new Set([
+    ".harnery/.events-cursor",
+    ".harnery/.identity-index.json",
+    ".harnery/active",
+    ".harnery/guard",
+    ".harnery/pid-map",
+  ]);
+  if (paths.length === 0) throw new Error("candidate_projection_paths_required");
+  for (const path of paths) {
+    if (!allowed.has(path)) throw new Error(`durable_projection_clear_forbidden:${path}`);
+  }
+}
+
 function collectTree(root: string): V2ArchiveEntryV2[] {
   if (!existsSync(root)) throw new Error("v2_epoch_root_missing");
   const rootStat = lstatSync(root);
@@ -659,6 +813,15 @@ function assertArtifactRoot(coordRoot: string, value: string): string {
 function inside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
+
+function resolveInside(root: string, relativePath: string): string {
+  if (isAbsolute(relativePath)) throw new Error(`absolute_path_forbidden:${relativePath}`);
+  const candidate = resolve(root, relativePath);
+  if (!inside(resolve(root), candidate) || candidate === resolve(root)) {
+    throw new Error(`path_outside_root:${relativePath}`);
+  }
+  return candidate;
 }
 
 function packetKeys(): string[] {

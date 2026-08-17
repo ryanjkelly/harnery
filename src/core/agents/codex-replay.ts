@@ -18,6 +18,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
 import { emit } from "./events/emit.ts";
 
 interface CodexEntry {
@@ -41,8 +42,18 @@ export interface CodexReplayOpts {
   lastAssistantMessage?: string;
 }
 
-export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number } {
+export function replayCodexJsonl(opts: CodexReplayOpts): { emitted: number; skipped?: string } {
   const { coordRoot, sessionId, instanceId, jsonlPath, lastAssistantMessage } = opts;
+  const route = resolveLiveEventLedgerRouteV2(coordRoot);
+  if (route.state !== "v1") {
+    return {
+      emitted: 0,
+      skipped:
+        route.state === "v2"
+          ? `v2_${route.mode}_does_not_replay_v1_events`
+          : `v2_route_blocked:${route.reason}`,
+    };
+  }
   if (!existsSync(jsonlPath)) return { emitted: 0 };
 
   let raw: string;

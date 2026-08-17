@@ -28,7 +28,13 @@ import {
   recordLiveResumeObservationV2,
   recordLiveSweepObservationV2,
 } from "./live-lifecycle-v2.ts";
+import { renderPromptContext } from "./render/prompt-context.ts";
+import { renderSessionContext } from "./render/session-context.ts";
 import { healHeartbeat, readHeartbeat } from "./state/heartbeat-writer.ts";
+import {
+  ensureLiveCoordinationHeartbeat,
+  readLiveCoordinationRows,
+} from "./state/live-coordination-view.ts";
 
 const roots: string[] = [];
 
@@ -40,10 +46,16 @@ describe("live V2 coordination cutover", () => {
   test("records task, claim, and lifecycle authority without writing a V1 row", () => {
     const root = startedRoot();
 
+    expect(existsSync(join(root, ".harnery/active/operator.json"))).toBe(false);
+
     expect(recordLiveTaskChangeV2(liveInput(root, { task: "Ship V2" })).state).toBe("recorded");
     expect(
       recordLiveClaimChangeV2(
-        liveInput(root, { operation: "acquired", path: "src/live.ts", access: "write" }),
+        liveInput(root, {
+          operation: "acquired",
+          path: "src/live.ts",
+          access: "write",
+        }),
       ).state,
     ).toBe("recorded");
     expect(
@@ -62,10 +74,14 @@ describe("live V2 coordination cutover", () => {
     expect(coordinationEvents.every((event) => event.time.monotonic_ns === undefined)).toBeTrue();
     expect(existsSync(join(root, ".harnery/events.ndjson"))).toBe(false);
     expect(readHeartbeat(root, "operator")).toMatchObject({
-      task: "Ship V2",
+      schema_version: 2,
       task_state: "blocked",
       files_touched: ["src/live.ts"],
+      v2_instance_id: "inst_operator",
+      v2_task_state: "set",
     });
+    expect(readHeartbeat(root, "operator")?.task).toBeUndefined();
+    expect(readHeartbeat(root, "operator")?.task_state_reason).toBeUndefined();
     expect(readCoordinationViewV2(root)).toMatchObject({
       source_complete: true,
       authority_safe: true,
@@ -79,8 +95,93 @@ describe("live V2 coordination cutover", () => {
     });
   });
 
+  test("heals a new generation and replaces stale V1 cache state before task and claim", () => {
+    const root = startedRoot();
+    const active = join(root, ".harnery/active/operator.json");
+    mkdirSync(dirname(active), { recursive: true });
+    writeFileSync(
+      active,
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "operator",
+        session_id: "stale-session",
+        platform: "cursor",
+        last_heartbeat: "2020-01-01T00:00:00.000Z",
+        started_at: "2020-01-01T00:00:00.000Z",
+        files_touched: ["stale-v1.ts"],
+        task: "stale V1 task",
+      }),
+    );
+
+    expect(
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).toMatchObject({
+      schema_version: 2,
+      session_id: "native-session",
+      files_touched: [],
+      v2_instance_id: "inst_operator",
+    });
+    expect(readHeartbeat(root, "operator")?.task).toBeUndefined();
+    expect(recordLiveTaskChangeV2(liveInput(root, { task: "fresh V2 task" })).state).toBe(
+      "recorded",
+    );
+    expect(
+      recordLiveClaimChangeV2(
+        liveInput(root, {
+          operation: "acquired",
+          path: "fresh-v2.ts",
+          access: "write",
+        }),
+      ).state,
+    ).toBe("recorded");
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      files_touched: ["fresh-v2.ts"],
+      v2_task_state: "set",
+    });
+    expect(JSON.stringify(readHeartbeat(root, "operator"))).not.toContain("fresh V2 task");
+  });
+
+  test("hook context excludes populated stale V1 active rows in candidate mode", () => {
+    const root = startedRoot();
+    const stale = join(root, ".harnery/active/stale-peer.json");
+    mkdirSync(dirname(stale), { recursive: true });
+    writeFileSync(
+      stale,
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "stale-peer",
+        session_id: "stale-session",
+        name: "Zombie",
+        kind: "session",
+        platform: "cursor",
+        started_at: "2020-01-01T00:00:00.000Z",
+        last_heartbeat: "2020-01-01T00:00:00.000Z",
+        files_touched: ["stale-only.ts"],
+        task: "legacy task",
+      }),
+    );
+
+    expect(readLiveCoordinationRows(root).map((row) => row.instance_id)).toEqual(["operator"]);
+    const session = renderSessionContext({
+      coordRoot: root,
+      instanceId: "operator",
+      sessionId: "native-session",
+      agentName: "Operator",
+    });
+    const prompt = renderPromptContext({
+      coordRoot: root,
+      instanceId: "operator",
+      sessionId: "native-session",
+    });
+    expect(`${session}\n${prompt}`).not.toContain("Zombie");
+    expect(`${session}\n${prompt}`).not.toContain("stale-only.ts");
+  });
+
   test("fails closed when a terminal hook wins the lifecycle race", () => {
     const root = startedRoot();
+    expect(
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
+    ).not.toBeNull();
     expect(
       recordHookSignalV2({
         coordRoot: root,
@@ -96,9 +197,9 @@ describe("live V2 coordination cutover", () => {
     ).toBe("recorded");
 
     expect(() => recordLiveLifecycleChangeV2(liveInput(root, { state: "done" }))).toThrow(
-      "generation_unavailable",
+      "heartbeat_missing",
     );
-    expect(readHeartbeat(root, "operator")?.task_state).toBeUndefined();
+    expect(readHeartbeat(root, "operator")?.task_state).toBe("active");
   });
 
   test("keeps a stale sweep provisional and clears it on native resume", () => {
@@ -148,21 +249,6 @@ function startedRoot(): string {
     }).state,
   ).toBe("recorded");
   recoverEventV2Catalog(root);
-  const now = new Date().toISOString();
-  const active = join(root, ".harnery/active/operator.json");
-  mkdirSync(dirname(active), { recursive: true });
-  writeFileSync(
-    active,
-    JSON.stringify({
-      schema_version: 1,
-      instance_id: "operator",
-      session_id: "native-session",
-      platform: "claude-code",
-      last_heartbeat: now,
-      started_at: now,
-      files_touched: [],
-    }),
-  );
   return root;
 }
 
