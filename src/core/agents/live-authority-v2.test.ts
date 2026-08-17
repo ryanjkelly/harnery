@@ -19,6 +19,7 @@ import { EVENT_V2_SCHEMA_DIGEST } from "../events/v2/generated.ts";
 import { recordHookSignalV2 } from "../events/v2/producers/recorder.ts";
 import { readActiveLedgerV2 } from "../events/v2/reader.ts";
 import type { ParsedPayload } from "../hooks/adapter/parse.ts";
+import type { Adapter } from "../hooks/events/schema.ts";
 import {
   recordLiveClaimChangeV2,
   recordLiveLifecycleChangeV2,
@@ -141,6 +142,35 @@ describe("live V2 coordination cutover", () => {
     expect(JSON.stringify(readHeartbeat(root, "operator"))).not.toContain("fresh V2 task");
   });
 
+  test("bootstraps Codex authority from runtime attestation when no cache exists", () => {
+    const root = startedRoot("codex");
+
+    // Deliberately supply the historical fallback adapter. The validated V2
+    // generation is Codex and must override this guess for every authority
+    // mutation before the first local cache exists.
+    expect(recordLiveTaskChangeV2(liveInput(root, { task: "Codex canary" })).state).toBe(
+      "recorded",
+    );
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      platform: "codex",
+      v2_task_state: "set",
+    });
+    expect(
+      recordLiveClaimChangeV2(
+        liveInput(root, { operation: "acquired", path: "codex-canary.ts", access: "write" }),
+      ).state,
+    ).toBe("recorded");
+    expect(recordLiveLifecycleChangeV2(liveInput(root, { state: "blocked" })).state).toBe(
+      "recorded",
+    );
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      schema_version: 2,
+      platform: "codex",
+      files_touched: ["codex-canary.ts"],
+      task_state: "blocked",
+    });
+  });
+
   test("hook context excludes populated stale V1 active rows in candidate mode", () => {
     const root = startedRoot();
     const stale = join(root, ".harnery/active/stale-peer.json");
@@ -233,15 +263,15 @@ function liveInput<T extends object>(root: string, extra: T) {
   };
 }
 
-function startedRoot(): string {
-  const root = candidateRoot();
+function startedRoot(adapter: Adapter = "claude-code"): string {
+  const root = candidateRoot(adapter);
   expect(
     recordHookSignalV2({
       coordRoot: root,
       mode: "candidate",
       signal: "session-start",
       payload: parsed({ session_id: "native-session" }),
-      adapter: "claude-code",
+      adapter,
       instance_id: "inst_operator",
       producer_id: "prd_agent-hook",
       build_id: "build_fixture",
@@ -256,7 +286,7 @@ function parsed(values: Partial<ParsedPayload>): ParsedPayload {
   return { raw: {}, ...values };
 }
 
-function candidateRoot(): string {
+function candidateRoot(adapter: Adapter = "claude-code"): string {
   const root = mkdtempSync(join(tmpdir(), "harnery-live-coord-v2-"));
   roots.push(root);
   const keyStore = loadOrCreateFingerprintKeyStoreV2(
@@ -270,7 +300,7 @@ function candidateRoot(): string {
     host_repository_commit: "fixture",
     producer_build_ids: ["build_fixture"],
     adapter_capability_profile_digests: [
-      `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
+      `sha256:${adapterCapabilityProfileDigestV2(adapter).slice(4)}`,
     ],
     config_digest: sha256V2("config"),
     canonicalizer_version: "harnery-jcs-nfc-v1",

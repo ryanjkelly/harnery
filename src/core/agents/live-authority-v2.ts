@@ -24,7 +24,10 @@ import {
   setV2TaskState,
   stampSessionStateEvent,
 } from "./state/heartbeat-writer.ts";
-import { ensureLiveCoordinationHeartbeat } from "./state/live-coordination-view.ts";
+import {
+  ensureLiveCoordinationHeartbeat,
+  liveCoordinationAdapterV2,
+} from "./state/live-coordination-view.ts";
 
 export const LIVE_COORDINATION_V2_PRODUCER_ID = "prd_agent-coord" as const;
 
@@ -185,13 +188,15 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV2>(
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
   if (route.state === "v1") return { state: "v1" };
   if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
+  const adapter = liveCoordinationAdapterV2(input.coordRoot, input.owner);
+  if (!adapter) throw new LiveCoordinationAuthorityV2Error("actor_generation_missing");
   const subject = input.subject ?? input.owner;
   const result = recordAuthority({
     coordRoot: input.coordRoot,
     mode: route.mode,
     signal,
     observation,
-    adapter: input.adapter,
+    adapter,
     native_actor_session_id: input.nativeSessionId,
     actor_instance_id: liveInstanceIdV2(input.owner),
     subject_instance_id: liveInstanceIdV2(subject),

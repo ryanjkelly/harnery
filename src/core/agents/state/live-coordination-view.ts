@@ -86,6 +86,28 @@ export function readLiveCoordinationRow(
 }
 
 /**
+ * Resolve the adapter from the current authority-safe V2 generation. A live
+ * V2 generation is stronger evidence than a missing or stale heartbeat, so
+ * callers must never substitute another adapter when this function succeeds.
+ */
+export function liveCoordinationAdapterV2(
+  coordRoot: string,
+  nativeInstanceId: string,
+): Adapter | null {
+  const route = resolveLiveEventLedgerRouteV2(coordRoot);
+  if (route.state === "v1") return null;
+  if (route.state === "blocked") throw new Error(`event_v2_coordination_view:${route.reason}`);
+  const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
+  const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
+  if (!generation?.authority_eligible) return null;
+  const adapter = observedAdapter(generation);
+  if (!isAdapter(adapter)) {
+    throw new Error("event_v2_coordination_view:adapter_not_observed");
+  }
+  return adapter;
+}
+
+/**
  * Ensure the current V2 generation has a mutation target. The resulting file
  * is explicitly generation-bound and disposable: V2 remains the source of
  * truth, while the cache gives the crash-safe authority outbox an atomic local
@@ -106,8 +128,12 @@ export function ensureLiveCoordinationHeartbeat(
   const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
   const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
   if (!generation?.authority_eligible) return null;
+  const generationAdapter = observedAdapter(generation);
+  if (!isAdapter(generationAdapter)) {
+    throw new Error("event_v2_coordination_view:adapter_not_observed");
+  }
   const current = readHeartbeat(coordRoot, nativeInstanceId);
-  if (isCurrentCache(current, generation)) return current;
+  if (isCurrentCache(current, generation) && current.platform === generationAdapter) return current;
 
   const resolved = resolveName(coordRoot, nativeInstanceId, nativeSessionId);
   const projected = projectHeartbeatV2(generation, undefined, nativeInstanceId);
@@ -119,8 +145,8 @@ export function ensureLiveCoordinationHeartbeat(
     name: resolved?.name ?? "",
     kind: resolved?.kind ?? projected.kind,
     agent_id: resolved?.agent_id ?? (resolved?.kind === "subagent" ? nativeInstanceId : ""),
-    model: model ?? projected.model ?? "",
-    platform: adapter,
+    model: projected.model ?? model ?? "",
+    platform: generationAdapter,
     v2_instance_id: generation.instance_id as `inst_${string}`,
     v2_generation_id: generation.generation_id as `gen_${string}`,
     v2_projection_event_id: generation.last_event_id,
@@ -220,6 +246,10 @@ function projectHeartbeatV2(
 function observedAdapter(generation: CoordinationGenerationViewV2): string | undefined {
   const observation = generation.runtime_attestation.adapter;
   return observation.state === "observed" ? observation.value.id : undefined;
+}
+
+function isAdapter(value: string | undefined): value is Adapter {
+  return value === "claude-code" || value === "cursor" || value === "codex";
 }
 
 function observedModel(generation: CoordinationGenerationViewV2): string | undefined {

@@ -13,6 +13,7 @@ import { readHookProducerStateV2 } from "../events/v2/producers/recorder.ts";
 import { writeEventV2 } from "../events/v2/writer.ts";
 import type { Adapter } from "../hooks/events/schema.ts";
 import { LiveCoordinationAuthorityV2Error } from "./live-authority-v2.ts";
+import { liveCoordinationAdapterV2 } from "./state/live-coordination-view.ts";
 
 export type LiveLifecycleObservationV2Result =
   | { state: "v1" }
@@ -43,8 +44,9 @@ export function recordLiveSweepObservationV2(
 export function recordLiveResumeObservationV2(
   input: LiveLifecycleObservationBaseV2,
 ): LiveLifecycleObservationV2Result {
-  const hook = requireHookState(input);
-  return recordObservation(input, "session.resumed", {
+  const normalized = withAttestedAdapter(input);
+  const hook = requireHookState(normalized);
+  return recordObservation(normalized, "session.resumed", {
     prior_generation_id: hook.generation_id,
     continuity: "native",
     evidence_reference: "heartbeat_recreated",
@@ -70,6 +72,7 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
   if (route.state === "v1") return { state: "v1" };
   if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
+  input = withAttestedAdapter(input);
   const control = readEventV2ControlState(input.coordRoot);
   if (control.state !== route.mode) {
     throw new LiveCoordinationAuthorityV2Error("control_state_changed");
@@ -123,6 +126,12 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
   const event = buildEventV2(eventType, { ...common, payload } as never) as EventV2;
   writeEventV2(input.coordRoot, event);
   return { state: "recorded", event };
+}
+
+function withAttestedAdapter<T extends LiveLifecycleObservationBaseV2>(input: T): T {
+  const adapter = liveCoordinationAdapterV2(input.coordRoot, input.owner);
+  if (!adapter) return input;
+  return { ...input, adapter };
 }
 
 function requireHookState(input: LiveLifecycleObservationBaseV2) {
