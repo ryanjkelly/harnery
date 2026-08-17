@@ -358,6 +358,8 @@ export interface EndSessionResult {
   ok: boolean;
   instance_id: string;
   terminal_event_recorded: boolean;
+  terminal_event_queued: boolean;
+  request_id?: string;
   error?: string;
 }
 
@@ -367,16 +369,42 @@ export async function endSession(instanceId: string): Promise<EndSessionResult> 
       ok: false,
       instance_id: instanceId,
       terminal_event_recorded: false,
+      terminal_event_queued: false,
       error: "invalid instance_id",
     };
   }
   const result = await runHelper(["end-session", instanceId]);
-  return result.ok
-    ? { ok: true, instance_id: instanceId, terminal_event_recorded: true }
-    : {
-        ok: false,
-        instance_id: instanceId,
-        terminal_event_recorded: false,
-        error: result.stderr.trim() || `session finalizer exited ${result.exit_code}`,
-      };
+  if (!result.ok) {
+    return {
+      ok: false,
+      instance_id: instanceId,
+      terminal_event_recorded: false,
+      terminal_event_queued: false,
+      error: result.stderr.trim() || `session finalizer exited ${result.exit_code}`,
+    };
+  }
+  try {
+    const payload = JSON.parse(result.stdout.trim()) as {
+      state?: string;
+      request?: { request_id?: string };
+    };
+    const queued = payload.state === "queued" || payload.state === "already_requested";
+    const recorded = payload.state === "recorded" || payload.state === "already_ended";
+    if (!queued && !recorded) throw new Error(`unexpected finalizer state: ${payload.state}`);
+    return {
+      ok: true,
+      instance_id: instanceId,
+      terminal_event_recorded: recorded,
+      terminal_event_queued: queued,
+      ...(payload.request?.request_id ? { request_id: payload.request.request_id } : {}),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      instance_id: instanceId,
+      terminal_event_recorded: false,
+      terminal_event_queued: false,
+      error: `invalid finalizer response: ${(err as Error).message}`,
+    };
+  }
 }

@@ -86,6 +86,13 @@ grace period, or reconcile idle, parent/run completion, stale, superseded, and
 host-loss observations. Every path converges on one leased finalizer, so a
 generation receives at most one terminal event and cannot be resurrected.
 
+An agent can request its own end from the closing status command even though
+that command still belongs to an open tool span and turn. Harnery persists the
+intent, waits for the matching `tool.completed` and `turn.completed`, then lets
+the stop hook record `session.ended`. Starting new work cancels the request.
+The terminal row therefore never appears before the work that proves the turn
+closed.
+
 Automatic policy ends clean coordination state but do not qualify as
 run-quality evidence. Verified archive ends require an independent ambiguity
 review before corpus admission.

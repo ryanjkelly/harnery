@@ -77,6 +77,8 @@ export interface SessionFinalizationRequestV2 {
   not_before: string;
   last_event_id: `evt_${string}`;
   observation_event_id?: `evt_${string}`;
+  requested_turn_id?: `tid_${string}`;
+  allowed_open_span_ids?: `span_${string}`[];
   coordination_finalized: boolean;
   status: "pending" | "cancelled" | "completed";
   cancelled_at?: string;
@@ -107,6 +109,16 @@ export interface EndSessionExplicitV2Input {
   coordination_finalized: boolean;
 }
 
+export interface RequestSessionEndExplicitV2Input extends EndSessionExplicitV2Input {}
+
+export type RequestSessionEndExplicitV2Result =
+  | ReturnType<typeof endSessionExplicitV2>
+  | { state: "busy" }
+  | { state: "generation_unavailable" }
+  | { state: "delegated_work_open"; count: number }
+  | { state: "queued"; request: SessionFinalizationRequestV2 }
+  | { state: "already_requested"; request: SessionFinalizationRequestV2 };
+
 export interface ObserveHostDisappearedV2Input {
   coordRoot: string;
   instance_id: `inst_${string}`;
@@ -132,6 +144,75 @@ export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
     coordination_finalized: input.coordination_finalized,
     confidence: "exact",
   });
+}
+
+/**
+ * Request an explicit end without weakening the terminal writer's open-work
+ * guard. When invoked from inside an adapter turn, the request is committed
+ * first and the stop hook reconciles it after that exact turn has closed.
+ */
+export function requestSessionEndExplicitV2(
+  input: RequestSessionEndExplicitV2Input,
+): RequestSessionEndExplicitV2Result {
+  const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
+  if (route.state !== "v2") {
+    return { state: "unavailable" as const, reason: route.state === "v1" ? "v1" : route.reason };
+  }
+  let lease: ReturnType<typeof acquireNoClobberLease>;
+  try {
+    lease = acquireFinalizationReconcileLease(input.coordRoot);
+  } catch {
+    return { state: "busy" as const };
+  }
+  try {
+    const record = listHookProducerStateRecordsV2(input.coordRoot, { includeTerminal: true }).find(
+      ({ state }) =>
+        state.instance_id === input.instance_id && state.generation_id === input.generation_id,
+    );
+    if (!record) return { state: "generation_unavailable" as const };
+    if (record.state.terminal) {
+      return { state: "already_ended" as const, event_id: record.state.last_event_id };
+    }
+    if (record.state.delegations.length > 0) {
+      return {
+        state: "delegated_work_open" as const,
+        count: record.state.delegations.length,
+      };
+    }
+    if (!record.state.current_turn_id && record.state.spans.length === 0) {
+      return endSessionExplicitV2(input);
+    }
+    const existing = listRequests(input.coordRoot).find(
+      (request) =>
+        request.status === "pending" &&
+        request.generation_id === record.state.generation_id &&
+        request.trigger === "explicit_end",
+    );
+    if (existing) return { state: "already_requested" as const, request: existing };
+    const observedAt = input.observed_at ?? new Date().toISOString();
+    const request = ensureRequest(input.coordRoot, record, {
+      trigger: "explicit_end",
+      reason: "approved_explicit_end",
+      outcome: input.outcome ?? "succeeded",
+      observedAt,
+      notBefore: observedAt,
+      ageMs: 0,
+      coordinationFinalized: input.coordination_finalized,
+      route,
+      requestedTurnId: record.state.current_turn_id,
+      allowedOpenSpanIds: record.state.spans.map(({ span_id }) => span_id),
+    });
+    if (!request) return { state: "generation_unavailable" as const };
+    return { state: "queued" as const, request };
+  } finally {
+    lease.release();
+  }
+}
+
+export function hasPendingExplicitSessionEndV2(coordRoot: string): boolean {
+  return listRequests(coordRoot).some(
+    (request) => request.status === "pending" && request.trigger === "explicit_end",
+  );
 }
 
 /** Accept a host supervisor's observation without granting it terminal authority. */
@@ -291,7 +372,18 @@ export function reconcileSessionFinalizationV2(
         result.already_terminal += 1;
         continue;
       }
-      if (record.state.last_event_id !== request.last_event_id) {
+      if (request.trigger === "explicit_end") {
+        const state = explicitEndReadiness(request, record, events);
+        if (state === "pending") {
+          result.pending += 1;
+          continue;
+        }
+        if (state === "cancel") {
+          cancelRequest(coordRoot, request, now.toISOString());
+          result.cancelled += 1;
+          continue;
+        }
+      } else if (record.state.last_event_id !== request.last_event_id) {
         cancelRequest(coordRoot, request, now.toISOString());
         result.cancelled += 1;
         continue;
@@ -312,7 +404,10 @@ export function reconcileSessionFinalizationV2(
         observed_at: now.toISOString(),
         caused_by_event_id: request.observation_event_id,
         coordination_finalized: request.coordination_finalized,
-        confidence: request.trigger === "verified_archive" ? "exact" : "medium",
+        confidence:
+          request.trigger === "verified_archive" || request.trigger === "explicit_end"
+            ? "exact"
+            : "medium",
       });
       if (ended.state === "recorded") {
         completeRequest(coordRoot, request, ended.event.event_id as `evt_${string}`);
@@ -497,6 +592,8 @@ interface RequestInput {
   coordinationFinalized: boolean;
   route: Extract<ReturnType<typeof resolveLiveEventLedgerRouteV2>, { state: "v2" }>;
   cause?: `evt_${string}`;
+  requestedTurnId?: `tid_${string}`;
+  allowedOpenSpanIds?: `span_${string}`[];
 }
 
 function ensureRequest(
@@ -526,6 +623,8 @@ function ensureRequest(
     observed_at: input.observedAt,
     not_before: input.notBefore,
     last_event_id: record.state.last_event_id,
+    ...(input.requestedTurnId ? { requested_turn_id: input.requestedTurnId } : {}),
+    ...(input.allowedOpenSpanIds ? { allowed_open_span_ids: [...input.allowedOpenSpanIds] } : {}),
     coordination_finalized: input.coordinationFinalized,
     status: "pending",
   };
@@ -534,6 +633,51 @@ function ensureRequest(
   writeEventV2(coordRoot, observation);
   writeRequest(coordRoot, request, true);
   return request;
+}
+
+function explicitEndReadiness(
+  request: SessionFinalizationRequestV2,
+  record: HookProducerStateRecordV2,
+  events: EventV2[],
+): "pending" | "ready" | "cancel" {
+  if (record.state.delegations.length > 0) return "cancel";
+  if (record.state.current_turn_id && record.state.current_turn_id !== request.requested_turn_id)
+    return "cancel";
+  const allowedSpans = new Set(request.allowed_open_span_ids ?? []);
+  if (record.state.spans.some(({ span_id }) => !allowedSpans.has(span_id))) return "cancel";
+  if (record.state.current_turn_id || record.state.spans.length > 0) return "pending";
+  if (!request.observation_event_id || !request.requested_turn_id) return "cancel";
+  const observationIndex = events.findIndex(
+    (event) => event.event_id === request.observation_event_id,
+  );
+  if (observationIndex < 0) return "cancel";
+  const later = events
+    .slice(observationIndex + 1)
+    .filter(
+      (event) =>
+        "generation_id" in event.scope && event.scope.generation_id === request.generation_id,
+    );
+  if (
+    later.some((event) =>
+      [
+        "turn.started",
+        "tool.requested",
+        "agent.delegated",
+        "agent.started",
+        "session.resumed",
+      ].includes(event.event_type),
+    )
+  ) {
+    return "cancel";
+  }
+  return later.some(
+    (event) =>
+      event.event_type === "turn.completed" &&
+      "turn_id" in event.scope &&
+      event.scope.turn_id === request.requested_turn_id,
+  )
+    ? "ready"
+    : "pending";
 }
 
 function buildObservationEvent(

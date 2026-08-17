@@ -781,14 +781,8 @@ async function handleEndSession(root: string, rest: string[]): Promise<number> {
     ({ state }) => state.instance_id === instanceId,
   );
   if (!record) return 2;
-  if (
-    record.state.current_turn_id ||
-    record.state.spans.length > 0 ||
-    record.state.delegations.length > 0
-  )
-    return 3;
-  const { endSessionExplicitV2 } = await import("./session-finalizer-v2.ts");
-  const result = endSessionExplicitV2({
+  const { requestSessionEndExplicitV2 } = await import("./session-finalizer-v2.ts");
+  const result = requestSessionEndExplicitV2({
     coordRoot: root,
     instance_id: record.state.instance_id,
     generation_id: record.state.generation_id,
@@ -796,7 +790,14 @@ async function handleEndSession(root: string, rest: string[]): Promise<number> {
     coordination_finalized: false,
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  return result.state === "recorded" || result.state === "already_ended" ? 0 : 2;
+  return result.state === "recorded" ||
+    result.state === "already_ended" ||
+    result.state === "queued" ||
+    result.state === "already_requested"
+    ? 0
+    : result.state === "delegated_work_open"
+      ? 3
+      : 2;
 }
 
 async function handlePromptContext(root: string, rest: string[]): Promise<number> {

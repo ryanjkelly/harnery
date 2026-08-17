@@ -33,6 +33,7 @@ harn agents whoami              # this agent's name + instance_id + files claime
 harn agents list                # all active agents (folds transients by default)
 harn agents status              # status box (name, age, files, peers, task)
 harn agents status --end-turn   # issue the box only after owned Git work is finalized
+harn agents status --end-turn --end-session # final status, then end after this turn closes
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
 harn agents lifecycle <state>   # declare active, blocked, or done task lifecycle
 harn agents end                 # record an authoritative V2 end after final checks
@@ -126,7 +127,10 @@ The three orientation commands.
   the required final call: Harnery checks the current session's held paths,
   enclosing submodule pointers, and touched repositories before issuing the
   box. Dirty held work or commits missing from a configured remote make the
-  command fail instead.
+  command fail instead. Add `--end-session` to the closing call to durably
+  request an approved terminal event after this exact turn closes. It requires
+  `--end-turn`; the status box reports `queued after this turn` while the stop
+  hook finishes the sequence.
 
 ### set-task
 
@@ -212,10 +216,19 @@ process cannot resolve its session anchor.
 ### end and reconcile
 
 `harn agents end` is a deliberate V2 session-finalization command. It refuses
-while the generation has an open turn, tool span, delegated child, or
-unfinished Git claim. On success it appends one approved `session.ended` event
-and seals that producer generation against later activity. Use `--session-id`
-or `--instance-id` when automatic identity resolution is unavailable.
+delegated children and unfinished Git claims. If the generation is already
+idle, it appends one approved `session.ended` event immediately. If the command
+runs inside an open turn or tool span, it durably queues the end for the stop
+hook. The request is bound to that turn and its existing spans; any new turn,
+tool request, delegation, or resume cancels it instead of terminating new work.
+Use `--session-id` or `--instance-id` when automatic identity resolution is
+unavailable.
+
+For an agent ending itself, prefer the one-command closing ritual:
+
+```bash
+harn agents status --end-turn --end-session
+```
 
 `harn agents reconcile` performs one crash-safe lifecycle pass. It discovers
 verified adapter archives, long-idle sessions, parent and run completion,

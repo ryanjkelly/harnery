@@ -51,10 +51,20 @@ terminal, `agent.completed`, `run.completed`, stale-sweep, duplicate live
 generation, and explicit host-loss evidence are discovered during the same
 pass.
 
-Explicit end is stricter. It refuses an open turn, tool span, delegated child,
-or unfinished Git claim. The web control calls the canonical finalizer and no
-longer deletes a heartbeat file. A failed or unsafe finalizer never falls back
-to a V1 row or filesystem deletion.
+Explicit end is stricter. It refuses a delegated child or unfinished Git
+claim. When the request comes from inside the turn it is trying to end, Harnery
+first writes a durable end request tied to that exact turn and its already-open
+tool spans. The adapter stop hook may emit the terminal event only after the
+spans and turn close. A new turn, new tool request, new delegation, or resume
+cancels the request. This avoids both a self-deadlock and premature
+termination.
+
+`harn agents status --end-turn --end-session` combines the repository hygiene
+check, final status output, and durable end request in one final command. The
+web control uses the same path: it records immediately for an idle generation
+or reports that the end is queued for the current turn. Neither path deletes a
+heartbeat file. A failed or unsafe finalizer never falls back to a V1 row or
+filesystem deletion.
 
 ## Evidence eligibility
 
@@ -90,6 +100,10 @@ from vanished.
 **Let every failsafe emit its own terminal row.** Competing writers create
 terminal races and make deduplication a reader concern. One leased finalizer
 keeps exactly-once authority at the write boundary.
+
+**Disable the open-turn guard for `/end`.** The command itself runs inside a
+tool span and turn, but bypassing the guard would let the terminal row precede
+real completion. A durable deferred request preserves the ordering invariant.
 
 **Admit idle and stale closures to the corpus.** These signals are useful for
 cleanup but too ambiguous to label run quality without independent review.

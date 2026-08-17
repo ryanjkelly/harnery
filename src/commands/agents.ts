@@ -47,9 +47,9 @@ import {
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import {
-  endSessionExplicitV2,
   observeHostDisappearedV2,
   reconcileSessionFinalizationV2,
+  requestSessionEndExplicitV2,
 } from "../core/agents/session-finalizer-v2.ts";
 import {
   buildLifecycleSuggestedName,
@@ -279,14 +279,20 @@ export function registerAgentsCommand(
       "Treat this as the turn's closing status: issue the box only when this session's held paths are committed and their repositories are pushed",
     )
     .option(
+      "--end-session",
+      "After the closing status, durably request an authoritative session end as soon as this exact turn closes (requires --end-turn)",
+    )
+    .option(
       "--session-id <id>",
       "Lookup heartbeat by session_id directly, bypassing the ppid walk. " +
         "Use this when calling from a hook (the hook's process tree may not lead back to Claude Code's session pid). " +
         "The Stop hook payload includes session_id; pass it through.",
     )
-    .action((opts: { endTurn?: boolean; json?: boolean; sessionId?: string }) => {
-      runStatus(opts);
-    });
+    .action(
+      (opts: { endTurn?: boolean; endSession?: boolean; json?: boolean; sessionId?: string }) => {
+        runStatus(opts);
+      },
+    );
 
   cmd
     .command("suggest-name [description...]")
@@ -378,7 +384,7 @@ export function registerAgentsCommand(
   cmd
     .command("end")
     .description(
-      "Finalize the current V2 session explicitly after work, claims, turns, tool spans, and delegated children are closed.",
+      "Finalize the current V2 session explicitly, or durably queue finalization until the current turn and tool spans close.",
     )
     .option("--session-id <id>", "Native adapter session id to finalize")
     .option("--instance-id <id>", "Canonical V2 instance id to finalize")
@@ -623,12 +629,11 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
     return failCommand("session_identity_missing", "live V2 generation disappeared");
   }
   const state = record.state;
-  const open: string[] = [];
-  if (state.current_turn_id) open.push("turn");
-  if (state.spans.length > 0) open.push(`${state.spans.length} tool span(s)`);
-  if (state.delegations.length > 0) open.push(`${state.delegations.length} delegated child(ren)`);
-  if (open.length > 0) {
-    return failCommand("session_work_open", `cannot finalize while ${open.join(", ")} remain open`);
+  if (state.delegations.length > 0) {
+    return failCommand(
+      "session_work_open",
+      `cannot finalize while ${state.delegations.length} delegated child(ren) remain open`,
+    );
   }
   const history = readSessionWriteClaims(root, state.instance_id, state.session_id);
   const finalized = checkGitFinalization(root, history.paths, {
@@ -640,7 +645,7 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
       formatGitFinalizationFailure(finalized, resolveBinName(root)),
     );
   }
-  const result = endSessionExplicitV2({
+  const result = requestSessionEndExplicitV2({
     coordRoot: root,
     instance_id: state.instance_id,
     generation_id: state.generation_id,
@@ -654,15 +659,31 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
       | "unknown",
     coordination_finalized: true,
   });
-  if (result.state !== "recorded" && result.state !== "already_ended") {
+  if (
+    result.state !== "recorded" &&
+    result.state !== "already_ended" &&
+    result.state !== "queued" &&
+    result.state !== "already_requested"
+  ) {
     return failCommand("session_end_failed", JSON.stringify(result));
   }
+  const terminalEventId =
+    result.state === "recorded"
+      ? result.event.event_id
+      : result.state === "already_ended"
+        ? result.event_id
+        : undefined;
+  const requestId =
+    result.state === "queued" || result.state === "already_requested"
+      ? result.request.request_id
+      : undefined;
   emit.data({
     ok: true,
     state: result.state,
     instance_id: state.instance_id,
     generation_id: state.generation_id,
-    terminal_event_id: result.state === "recorded" ? result.event.event_id : result.event_id,
+    ...(terminalEventId ? { terminal_event_id: terminalEventId } : {}),
+    ...(requestId ? { request_id: requestId } : {}),
     authority: "approved",
     reason: "approved_explicit_end",
   });
@@ -2135,7 +2156,12 @@ function runSuggestName(
   process.stdout.write(`${suggestedName}\n`); // lint-ok-emission: chat-paste path
 }
 
-function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string }): void {
+function runStatus(opts: {
+  endTurn?: boolean;
+  endSession?: boolean;
+  json?: boolean;
+  sessionId?: string;
+}): void {
   const root = monorepoRoot();
   if (!root) {
     emit.error({
@@ -2143,6 +2169,14 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
       message: "not in an agent session; coord_root() returned null",
     });
     process.exit(1);
+  }
+  if (opts.endSession && !opts.endTurn) {
+    emit.error({
+      code: "end_session_requires_end_turn",
+      message: "--end-session requires --end-turn so Git finalization is verified first",
+    });
+    process.exitCode = 1;
+    return;
   }
 
   // Identity resolution: prefer explicit --session-id (hook-friendly), fall
@@ -2204,6 +2238,44 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
       included_self: true,
     },
   });
+
+  let sessionEnd:
+    | { state: "queued" | "already_requested"; request_id: string }
+    | { state: "recorded" | "already_ended"; terminal_event_id?: string }
+    | undefined;
+  if (opts.endSession) {
+    const canonicalInstanceId = liveInstanceIdV2(hb.instance_id);
+    const records = listHookProducerStateRecordsV2(root, { includeTerminal: true }).filter(
+      ({ state }) => state.instance_id === canonicalInstanceId,
+    );
+    if (records.length !== 1 || !records[0]) {
+      emit.error({
+        code: "session_identity_ambiguous",
+        message: `expected one V2 generation for ${canonicalInstanceId}; found ${records.length}`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    const state = records[0].state;
+    const requested = requestSessionEndExplicitV2({
+      coordRoot: root,
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      outcome: "succeeded",
+      coordination_finalized: true,
+    });
+    if (requested.state === "queued" || requested.state === "already_requested") {
+      sessionEnd = { state: requested.state, request_id: requested.request.request_id };
+    } else if (requested.state === "recorded") {
+      sessionEnd = { state: requested.state, terminal_event_id: requested.event.event_id };
+    } else if (requested.state === "already_ended") {
+      sessionEnd = { state: requested.state, terminal_event_id: requested.event_id };
+    } else {
+      emit.error({ code: "session_end_failed", message: JSON.stringify(requested) });
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   const startedAtMs = Date.parse(hb.started_at);
   const ageSecs = Number.isFinite(startedAtMs)
@@ -2318,6 +2390,7 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
     timestamp_local: timeStr,
     ...(quality ? { quality } : {}),
     ...(finalization ? { finalization } : {}),
+    ...(sessionEnd ? { session_end: sessionEnd } : {}),
   };
 
   if (opts.json) {
@@ -2356,6 +2429,15 @@ function runStatus(opts: { endTurn?: boolean; json?: boolean; sessionId?: string
   if (quality) {
     const idx = rows.findIndex((row) => row[0] === "time");
     rows.splice(idx, 0, ["quality", formatRunQuality(quality.status, quality.signal_ids)]);
+  }
+  if (sessionEnd) {
+    const idx = rows.findIndex((row) => row[0] === "time");
+    rows.splice(idx, 0, [
+      "session end",
+      sessionEnd.state === "queued" || sessionEnd.state === "already_requested"
+        ? "queued after this turn"
+        : "recorded",
+    ]);
   }
   // Box rendering needs predictable stdout regardless of TTY/pipe detection:
   // agent runs this via Bash (no TTY) and pastes captured stdout into chat.

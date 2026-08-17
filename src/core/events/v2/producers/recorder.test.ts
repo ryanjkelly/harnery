@@ -16,6 +16,7 @@ import {
   listSessionFinalizationRequestsV2,
   observeHostDisappearedV2,
   reconcileSessionFinalizationV2,
+  requestSessionEndExplicitV2,
 } from "../../../agents/session-finalizer-v2.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { Adapter } from "../../../hooks/events/schema.ts";
@@ -262,6 +263,90 @@ describe("event ledger V2 persistent hook recorder", () => {
       authority: "approved",
       reason: "approved_explicit_end",
     });
+  });
+
+  test("queues an explicit end inside a live turn and finalizes after that turn closes", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-deferred-end";
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV2(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "end-command", tool_name: "Bash" }),
+        "codex",
+      ),
+    );
+    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    if (!state) throw new Error("producer state missing");
+    expect(
+      requestSessionEndExplicitV2({
+        coordRoot: root,
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("queued");
+    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+      finalized: 0,
+      pending: 1,
+    });
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "end-command", tool_name: "Bash" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+      finalized: 1,
+      pending: 0,
+      cancelled: 0,
+    });
+    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeTrue();
+    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({
+      trigger: "explicit_end",
+      status: "completed",
+    });
+  });
+
+  test("cancels a deferred explicit end when new work starts", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-cancel-deferred-end";
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV2(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
+    );
+    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    if (!state) throw new Error("producer state missing");
+    expect(
+      requestSessionEndExplicitV2({
+        coordRoot: root,
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        coordination_finalized: true,
+      }).state,
+    ).toBe("queued");
+    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    recordHookSignalV2(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
+    );
+    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+      finalized: 0,
+      cancelled: 1,
+    });
+    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeFalse();
+    expect(listSessionFinalizationRequestsV2(root)[0]?.status).toBe("cancelled");
   });
 
   test("gives verified archive a cancellation grace period before finalizing", () => {

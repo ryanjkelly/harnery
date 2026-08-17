@@ -1115,6 +1115,23 @@ async function main(): Promise<number> {
       const { emitStopBlock } = await import("./adapter/output.ts");
       return emitStopBlock(adapter, verdict, coordRoot);
     }
+
+    // An explicit end requested from inside this turn cannot be authoritative
+    // until the adapter has committed turn.completed above. Reconcile only
+    // when such a request exists; any later real work cancels it in the
+    // finalizer instead of being terminated underneath the agent.
+    if (ledgerRoute.state === "v2") {
+      try {
+        const { hasPendingExplicitSessionEndV2, reconcileSessionFinalizationV2 } = await import(
+          "../agents/session-finalizer-v2.ts"
+        );
+        if (hasPendingExplicitSessionEndV2(coordRoot)) {
+          reconcileSessionFinalizationV2(coordRoot);
+        }
+      } catch (err) {
+        logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });
+      }
+    }
   }
 
   // Phase 7: PreToolUse: heartbeat + pid-map self-heal on every tool call.

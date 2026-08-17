@@ -11,6 +11,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  listSessionFinalizationRequestsV2,
+  requestSessionEndExplicitV2,
+} from "../agents/session-finalizer-v2.ts";
 import { canonicalJsonV2, sha256V2 } from "../events/v2/canonical.ts";
 import { adapterCapabilityProfileDigestV2 } from "../events/v2/capabilities.ts";
 import {
@@ -20,6 +24,7 @@ import {
 } from "../events/v2/control.ts";
 import { loadOrCreateFingerprintKeyStoreV2 } from "../events/v2/fingerprint-keys.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "../events/v2/generated.ts";
+import { readHookProducerStateV2 } from "../events/v2/producers/recorder.ts";
 import { readActiveLedgerV2 } from "../events/v2/reader.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
@@ -186,6 +191,55 @@ describe("agent-hook V2 hard cut", () => {
     expect(ledger.events.some(({ event }) => event.event_type === "session.started")).toBeTrue();
     expect(ledger.events.some(({ event }) => event.event_type === "session.ended")).toBeTrue();
     expect(ledger.events.length).toBeGreaterThan(2);
+  });
+
+  test("stop hook completes an explicit end queued by its own open tool span", () => {
+    const root = candidateRoot();
+    const owner = "deferred-end-owner";
+    const hook = (event: string, payload: Record<string, unknown>) => {
+      const result = run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+      expect(result.status).toBe(0);
+    };
+    hook("session-start", { session_id: owner, cwd: root, source: "startup" });
+    hook("user-prompt-submit", { session_id: owner, cwd: root, prompt: "finish" });
+    hook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "end-tool",
+      tool_input: { command: "harn agents status --end-turn --end-session" },
+    });
+    const state = readHookProducerStateV2(root, "claude-code", owner);
+    if (!state) throw new Error("producer state missing");
+    expect(
+      requestSessionEndExplicitV2({
+        coordRoot: root,
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        coordination_finalized: true,
+      }).state,
+    ).toBe("queued");
+    hook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "end-tool",
+      tool_input: { command: "harn agents status --end-turn --end-session" },
+      tool_response: "queued",
+    });
+    hook("stop", {
+      session_id: owner,
+      cwd: root,
+      last_assistant_message: "done",
+    });
+    expect(readHookProducerStateV2(root, "claude-code", owner)?.terminal).toBeTrue();
+    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({
+      trigger: "explicit_end",
+      status: "completed",
+    });
+    expect(
+      readActiveLedgerV2(root).events.filter(({ event }) => event.event_type === "session.ended"),
+    ).toHaveLength(1);
   });
 });
 
