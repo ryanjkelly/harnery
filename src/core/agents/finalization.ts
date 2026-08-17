@@ -44,6 +44,9 @@ export interface GitFinalizationResult {
   claim_history_complete: boolean;
   dirty_paths: string[];
   unpushed_repos: string[];
+  behind_repos: string[];
+  stale_submodules: string[];
+  diverged_submodules: string[];
   host_output_paths: string[];
   unsupported_paths: UnsupportedFinalizationPath[];
   unverifiable_paths: string[];
@@ -446,6 +449,64 @@ function repoSyncState(repoRoot: string): "synced" | "unpushed" | "unverifiable"
   return containing.stdout.trim().length > 0 ? "synced" : "unpushed";
 }
 
+function repoIsBehindUpstream(repoRoot: string): boolean {
+  if (!repoHasRemote(repoRoot)) return false;
+  const upstream = git(
+    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+    repoRoot,
+  );
+  if (upstream.status !== 0) return false;
+  const behind = git(["rev-list", "--count", "HEAD..@{upstream}"], repoRoot);
+  return behind.status === 0 && Number.parseInt(behind.stdout.trim(), 10) > 0;
+}
+
+function rootSubmoduleFreshness(repoRoot: string): {
+  stale: string[];
+  diverged: string[];
+} {
+  const modules = git(
+    ["config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+    repoRoot,
+  );
+  if (modules.status !== 0 || modules.stdout.trim().length === 0) {
+    return { stale: [], diverged: [] };
+  }
+
+  const stale: string[] = [];
+  const diverged: string[] = [];
+  for (const line of modules.stdout.trim().split("\n")) {
+    const path = line.trim().split(/\s+/).at(-1);
+    if (!path) continue;
+    const target = git(["rev-parse", `HEAD:${path}`], repoRoot);
+    const checkout = git(["rev-parse", "HEAD"], join(repoRoot, path));
+    if (target.status !== 0 || checkout.status !== 0) {
+      stale.push(path);
+      continue;
+    }
+    const targetSha = target.stdout.trim();
+    const checkoutSha = checkout.stdout.trim();
+    if (targetSha === checkoutSha) continue;
+
+    const checkoutBehind = git(
+      ["merge-base", "--is-ancestor", checkoutSha, targetSha],
+      join(repoRoot, path),
+    );
+    if (checkoutBehind.status === 0) {
+      stale.push(path);
+      continue;
+    }
+    const checkoutAhead = git(
+      ["merge-base", "--is-ancestor", targetSha, checkoutSha],
+      join(repoRoot, path),
+    );
+    // A checkout ahead of its gitlink is in-flight local work. Its owning
+    // session is responsible for the eventual pointer bump; unrelated turns
+    // must not be blocked globally while that work is active.
+    if (checkoutAhead.status !== 0) diverged.push(path);
+  }
+  return { stale: stale.sort(), diverged: diverged.sort() };
+}
+
 /** Compare gitlink commits without treating dirty contents inside the child as a pointer change. */
 function gitlinkIsDirty(parentRoot: string, gitlink: string): boolean {
   const head = git(["rev-parse", `HEAD:${gitlink}`], parentRoot);
@@ -518,11 +579,17 @@ export function checkGitFinalization(
     if (syncState === "unverifiable") unverifiableRepos.push(label);
   }
 
+  const behindRepos = repoIsBehindUpstream(root) ? ["."] : [];
+  const submoduleFreshness = rootSubmoduleFreshness(root);
+
   const result: GitFinalizationResult = {
     ok: false,
     claim_history_complete: options.claimHistoryComplete ?? true,
     dirty_paths: [...dirtyPaths].sort(),
     unpushed_repos: [...new Set(unpushedRepos)].sort(),
+    behind_repos: behindRepos,
+    stale_submodules: submoduleFreshness.stale,
+    diverged_submodules: submoduleFreshness.diverged,
     host_output_paths: [...hostOutputPaths].sort(),
     unsupported_paths: unsupportedPaths.sort(
       (a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason),
@@ -535,6 +602,9 @@ export function checkGitFinalization(
     result.claim_history_complete &&
     result.dirty_paths.length === 0 &&
     result.unpushed_repos.length === 0 &&
+    result.behind_repos.length === 0 &&
+    result.stale_submodules.length === 0 &&
+    result.diverged_submodules.length === 0 &&
     result.unsupported_paths.length === 0 &&
     result.unverifiable_paths.length === 0 &&
     result.unverifiable_repos.length === 0;
@@ -553,6 +623,24 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
     lines.push(
       "Repositories with commits not on their remote:",
       ...result.unpushed_repos.map((repo) => `  - ${repo}`),
+    );
+  }
+  if (result.behind_repos.length > 0) {
+    lines.push(
+      "Repositories behind their upstream:",
+      ...result.behind_repos.map((repo) => `  - ${repo}`),
+    );
+  }
+  if (result.stale_submodules.length > 0) {
+    lines.push(
+      "Submodule checkouts behind their parent gitlinks:",
+      ...result.stale_submodules.map((path) => `  - ${path}`),
+    );
+  }
+  if (result.diverged_submodules.length > 0) {
+    lines.push(
+      "Submodule checkouts diverged from their parent gitlinks:",
+      ...result.diverged_submodules.map((path) => `  - ${path}`),
     );
   }
   if (result.unsupported_paths.length > 0) {
@@ -578,11 +666,23 @@ export function formatGitFinalizationFailure(result: GitFinalizationResult, bin:
   if (
     result.dirty_paths.length > 0 ||
     result.unpushed_repos.length > 0 ||
+    result.behind_repos.length > 0 ||
+    result.stale_submodules.length > 0 ||
+    result.diverged_submodules.length > 0 ||
     result.unverifiable_paths.length > 0 ||
     result.unverifiable_repos.length > 0
   ) {
     lines.push(
       `Commit and push the owned Git work, then rerun \`${bin} agents status --end-turn\`.`,
+    );
+  }
+  if (
+    result.behind_repos.length > 0 ||
+    result.stale_submodules.length > 0 ||
+    result.diverged_submodules.length > 0
+  ) {
+    lines.push(
+      "Run the host repository's safe sync command, resolve any reported submodule state, then rerun the guarded status.",
     );
   }
   if (result.unsupported_paths.length > 0) {

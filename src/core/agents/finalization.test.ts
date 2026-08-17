@@ -266,6 +266,86 @@ describe("checkGitFinalization", () => {
     expect(result.dirty_paths).toEqual([]);
   });
 
+  test("blocks a clean submodule checkout that is behind the parent gitlink", () => {
+    const childRemote = join(temp, "child-remote.git");
+    const childSeed = join(temp, "child-seed");
+    const parent = join(temp, "parent");
+    initRepo(childRemote, true);
+    initRepo(childSeed);
+    writeFileSync(join(childSeed, "owned.txt"), "one\n");
+    commitAll(childSeed, "one");
+    const oldChild = git(childSeed, "rev-parse", "HEAD");
+    git(childSeed, "remote", "add", "origin", childRemote);
+    git(childSeed, "push", "-u", "origin", "HEAD:master");
+    initRepo(parent);
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", childRemote, "child");
+    commitAll(parent, "add child");
+
+    writeFileSync(join(childSeed, "owned.txt"), "two\n");
+    commitAll(childSeed, "two");
+    const newChild = git(childSeed, "rev-parse", "HEAD");
+    git(childSeed, "push", "origin", "HEAD:master");
+    git(join(parent, "child"), "fetch", "origin", "master");
+    git(join(parent, "child"), "checkout", "--detach", newChild);
+    commitAll(parent, "bump child");
+    git(join(parent, "child"), "checkout", "--detach", oldChild);
+
+    const result = checkGitFinalization(parent, []);
+    expect(result.ok).toBe(false);
+    expect(result.stale_submodules).toEqual(["child"]);
+    expect(formatGitFinalizationFailure(result, "harn")).toContain(
+      "Submodule checkouts behind their parent gitlinks",
+    );
+  });
+
+  test("does not globally block an unrelated turn on a submodule checkout ahead of its gitlink", () => {
+    const childRemote = join(temp, "child-remote.git");
+    const childSeed = join(temp, "child-seed");
+    const parent = join(temp, "parent");
+    initRepo(childRemote, true);
+    initRepo(childSeed);
+    writeFileSync(join(childSeed, "owned.txt"), "one\n");
+    commitAll(childSeed, "one");
+    git(childSeed, "remote", "add", "origin", childRemote);
+    git(childSeed, "push", "-u", "origin", "HEAD:master");
+    initRepo(parent);
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", childRemote, "child");
+    commitAll(parent, "add child");
+
+    git(join(parent, "child"), "config", "user.email", "test@example.invalid");
+    git(join(parent, "child"), "config", "user.name", "Test");
+    writeFileSync(join(parent, "child", "owned.txt"), "local work\n");
+    commitAll(join(parent, "child"), "local work");
+
+    const result = checkGitFinalization(parent, []);
+    expect(result.ok).toBe(true);
+    expect(result.stale_submodules).toEqual([]);
+    expect(result.diverged_submodules).toEqual([]);
+  });
+
+  test("blocks when the coordination repository is behind its fetched upstream", () => {
+    const remote = join(temp, "remote.git");
+    const repo = join(temp, "repo");
+    const peer = join(temp, "peer");
+    initRepo(remote, true);
+    initRepo(repo);
+    writeFileSync(join(repo, "owned.txt"), "one\n");
+    commitAll(repo, "one");
+    git(repo, "remote", "add", "origin", remote);
+    git(repo, "push", "-u", "origin", "HEAD:master");
+    git(temp, "clone", "--quiet", remote, peer);
+    git(peer, "config", "user.email", "test@example.invalid");
+    git(peer, "config", "user.name", "Test");
+    writeFileSync(join(peer, "owned.txt"), "two\n");
+    commitAll(peer, "two");
+    git(peer, "push", "origin", "HEAD:master");
+    git(repo, "fetch", "origin", "master");
+
+    const result = checkGitFinalization(repo, []);
+    expect(result.ok).toBe(false);
+    expect(result.behind_repos).toEqual(["."]);
+  });
+
   test("checks an authorized sibling Git repository through dirty, local, unpushed, and pushed states", () => {
     const coord = join(temp, "coord");
     const sibling = join(temp, "sibling");
