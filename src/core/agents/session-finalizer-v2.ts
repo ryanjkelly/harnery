@@ -39,6 +39,8 @@ import { readCodexArchiveObservationsV2 } from "./codex-archive-v2.ts";
 
 const REQUEST_FORMAT = "harnery-v2-session-finalization-request" as const;
 const REQUEST_VERSION = 1 as const;
+/** A pending explicit end older than this is cancelled (never terminalized) so a wedged request cannot outlive its usefulness; re-requesting is cheap. */
+const EXPLICIT_END_PENDING_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 export type SessionFinalizationTriggerV2 =
   | "explicit_end"
@@ -118,7 +120,16 @@ export type RequestSessionEndExplicitV2Result =
   | { state: "generation_unavailable" }
   | { state: "delegated_work_open"; count: number }
   | { state: "queued"; request: SessionFinalizationRequestV2 }
-  | { state: "already_requested"; request: SessionFinalizationRequestV2 };
+  | {
+      state: "already_requested";
+      request: SessionFinalizationRequestV2;
+      /** What the pending request is still waiting on, so a repeated explicit end reports its exact blocker instead of a bare refusal. */
+      blocker: {
+        open_span_ids: `span_${string}`[];
+        current_turn_open: boolean;
+        pending_age_ms: number;
+      };
+    };
 
 export interface ObserveHostDisappearedV2Input {
   coordRoot: string;
@@ -189,7 +200,17 @@ export function requestSessionEndExplicitV2(
         request.generation_id === record.state.generation_id &&
         request.trigger === "explicit_end",
     );
-    if (existing) return { state: "already_requested" as const, request: existing };
+    if (existing) {
+      return {
+        state: "already_requested" as const,
+        request: existing,
+        blocker: {
+          open_span_ids: record.state.spans.map(({ span_id }) => span_id),
+          current_turn_open: Boolean(record.state.current_turn_id),
+          pending_age_ms: Math.max(0, Date.now() - Date.parse(existing.observed_at)),
+        },
+      };
+    }
     const observedAt = input.observed_at ?? new Date().toISOString();
     const request = ensureRequest(input.coordRoot, record, {
       trigger: "explicit_end",
@@ -383,6 +404,18 @@ export function reconcileSessionFinalizationV2(
       if (request.trigger === "explicit_end") {
         const state = explicitEndReadiness(request, record, events);
         if (state === "pending") {
+          // Expiry: a pending explicit end whose allowed span never closes has
+          // no other escape (readiness re-evaluates to pending forever, and a
+          // second request is refused while one is pending). Cancelling is
+          // safe and non-destructive — the agent can simply re-request — so
+          // age alone is sufficient authority to cancel, never to terminalize.
+          const pendingAgeMs = now.getTime() - Date.parse(request.observed_at);
+          if (pendingAgeMs > EXPLICIT_END_PENDING_EXPIRY_MS) {
+            cancelRequest(coordRoot, request, now.toISOString());
+            result.cancelled += 1;
+            result.diagnostics.push(`expired_pending_explicit_end:${request.request_id}`);
+            continue;
+          }
           result.pending += 1;
           continue;
         }

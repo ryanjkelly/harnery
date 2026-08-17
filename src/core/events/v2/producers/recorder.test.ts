@@ -744,3 +744,73 @@ describe("event ledger V2 hook intake spool", () => {
     expect(files.length).toBe(1);
   });
 });
+
+describe("pending explicit-end expiry", () => {
+  test("a wedged explicit end (orphan allowed span) is cancelled after the grace period, never terminalized", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-wedged-end";
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-w" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "orphan-call", tool_name: "Bash" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    if (!state) throw new Error("missing producer state");
+    const queued = requestSessionEndExplicitV2({
+      coordRoot: root,
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      outcome: "succeeded",
+      coordination_finalized: true,
+    });
+    expect(queued.state).toBe("queued");
+
+    // A second explicit end reports the exact blocker instead of a bare refusal.
+    const repeated = requestSessionEndExplicitV2({
+      coordRoot: root,
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      outcome: "succeeded",
+      coordination_finalized: true,
+    });
+    expect(repeated.state).toBe("already_requested");
+    if (repeated.state === "already_requested") {
+      expect(repeated.blocker.open_span_ids.length).toBe(1);
+      expect(repeated.blocker.current_turn_open).toBeFalse();
+    }
+
+    // Inside the grace period the request stays pending.
+    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+      pending: 1,
+      cancelled: 0,
+    });
+    // Past the grace period it is cancelled (a safe, reversible transition) —
+    // never terminalized from age alone.
+    const future = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    const expired = reconcileSessionFinalizationV2(root, {
+      archive_observations: [],
+      now: future,
+    });
+    expect(expired.cancelled).toBe(1);
+    expect(
+      expired.diagnostics.some((d) => d.startsWith("expired_pending_explicit_end:")),
+    ).toBeTrue();
+    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeFalse();
+    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({ status: "cancelled" });
+  });
+});
