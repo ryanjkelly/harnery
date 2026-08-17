@@ -154,6 +154,61 @@ describe("event ledger V2 persistent coordination recorder", () => {
     expect(events).toHaveLength(1);
     expect(readPrivateProducerFiles(root)).not.toContain(secretTask);
   });
+
+  test("completes a reconcilable stale pending transaction left by a crashed writer", () => {
+    const root = startedRoot();
+    let state = sha256V2("prior");
+    const input = {
+      coordRoot: root,
+      mode: "candidate" as const,
+      signal: "task-changed" as const,
+      observation: {
+        native_observation_id: "crashed-task",
+        state: "set" as const,
+        task: "Crash between apply and bookkeeping",
+      },
+      adapter: "claude-code" as const,
+      native_actor_session_id: "native-session",
+      actor_instance_id: "inst_operator" as const,
+      subject_instance_id: "inst_worker" as const,
+      producer_id: "prd_coord" as const,
+      build_id: "build_fixture" as const,
+      platform: "linux" as const,
+      expected_prior_state_digest: sha256V2("prior"),
+      desired_state_digest: sha256V2("desired"),
+      reconciler: {
+        readStateDigest: () => state,
+        apply: () => {
+          // The mutation lands durably, then the writer dies before the
+          // recorder clears its pending bookkeeping.
+          state = sha256V2("desired");
+          throw new Error("simulated writer death after apply");
+        },
+      },
+    };
+    expect(() => recordCoordinationAuthorityV2(input)).toThrow(
+      "simulated writer death after apply",
+    );
+
+    // A DIFFERENT observation used to be refused forever (the crashed hook
+    // observation never retries). The stale transaction reconciles cleanly
+    // (state already at its desired digest), so it completes and the new
+    // observation records normally.
+    const next = recordCoordinationAuthorityV2(
+      lifecycleInput(root, "later-observation", state, sha256V2("after"), {
+        readStateDigest: () => state,
+        apply: () => {
+          state = sha256V2("after");
+        },
+      }),
+    );
+    expect(next.state).toBe("recorded");
+    if (next.state === "recorded") expect(next.recovered).toBe(false);
+    const events = readActiveLedgerV2(root).events.filter(
+      ({ event }) => event.producer.component === "agent-coord",
+    );
+    expect(events).toHaveLength(2);
+  });
 });
 
 function lifecycleInput(

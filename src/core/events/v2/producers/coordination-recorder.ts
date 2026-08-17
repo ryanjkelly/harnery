@@ -109,8 +109,10 @@ export type RecordCoordinationAuthorityV2Result =
 
 /**
  * Record and apply an authority-bearing coordination transition through the
- * spool-first outbox. It is inert until an exact V2 gate is open and refuses
- * to guess how to recover a different pending mutation.
+ * spool-first outbox. It is inert until an exact V2 gate is open. A stale
+ * pending transaction left by a crashed writer is completed when the
+ * idempotent outbox can still settle it; a pending mutation that cannot be
+ * settled is refused rather than guessed at.
  */
 export function recordCoordinationAuthorityV2<S extends CoordinationAuthoritySignalV2>(
   input: RecordCoordinationAuthorityV2Input<S>,
@@ -153,24 +155,50 @@ export function recordCoordinationAuthorityV2<S extends CoordinationAuthoritySig
     }
     if (state?.pending) {
       if (state.pending.source_id !== sourceId) {
-        return {
-          state: "pending_transaction",
-          transaction_id: state.pending.transaction.transaction_id,
-          mutation_kind: state.pending.transaction.mutation.kind,
-        };
+        // A writer that died mid-commit leaves `pending` owned by an
+        // observation that will never retry (hook observations are one-shot).
+        // When the stale transaction can still be settled through the
+        // idempotent outbox — its receipt already exists, or its ready record
+        // reconciles cleanly — nothing is guessed: complete the bookkeeping
+        // and continue with the current observation. Anything short of that
+        // still refuses rather than guessing at a conflicting mutation.
+        const stale = state.pending;
+        try {
+          publishAuthorityTransactionV2(input.coordRoot, stale.transaction);
+          reconcileAuthorityTransactionV2(
+            input.coordRoot,
+            stale.transaction.transaction_id,
+            input.reconciler,
+          );
+        } catch {
+          return {
+            state: "pending_transaction",
+            transaction_id: stale.transaction.transaction_id,
+            mutation_kind: stale.transaction.mutation.kind,
+          };
+        }
+        applyCoordinationEvent(
+          state,
+          stale.source_id,
+          stale.transaction,
+          eventFromTransaction(stale.transaction),
+        );
+        state.pending = undefined;
+        publishCoordinationState(path, state);
+      } else {
+        const pending = state.pending;
+        publishAuthorityTransactionV2(input.coordRoot, pending.transaction);
+        const receipt = reconcileAuthorityTransactionV2(
+          input.coordRoot,
+          pending.transaction.transaction_id,
+          input.reconciler,
+        );
+        const event = eventFromTransaction(pending.transaction);
+        applyCoordinationEvent(state, pending.source_id, pending.transaction, event);
+        state.pending = undefined;
+        publishCoordinationState(path, state);
+        return { state: "recorded", event, receipt, recovered: true };
       }
-      const pending = state.pending;
-      publishAuthorityTransactionV2(input.coordRoot, pending.transaction);
-      const receipt = reconcileAuthorityTransactionV2(
-        input.coordRoot,
-        pending.transaction.transaction_id,
-        input.reconciler,
-      );
-      const event = eventFromTransaction(pending.transaction);
-      applyCoordinationEvent(state, pending.source_id, pending.transaction, event);
-      state.pending = undefined;
-      publishCoordinationState(path, state);
-      return { state: "recorded", event, receipt, recovered: true };
     }
     const already = state?.observations.find((observation) => observation.source_id === sourceId);
     if (already) {
