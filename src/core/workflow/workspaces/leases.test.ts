@@ -64,6 +64,20 @@ describe("no-clobber workspace leases", () => {
     expect(readdirSync(path).filter((entry) => entry.startsWith("owner-"))).toEqual([]);
   });
 
+  test("accepts a lease directory created by a concurrent contender", () => {
+    const path = join(tempRoot("workspace-lease-directory-race"), "operation.lease");
+    const lease = acquireNoClobberLease({
+      path,
+      scope: "binding",
+      authoritySha256: DIGEST,
+      staleAfterMs: 60_000,
+      onLeaseDirectoryCreate: () => mkdirSync(path, { mode: 0o700 }),
+    });
+
+    expect(readCurrentOwner(path).owner_id).toBe(lease.owner.owner_id);
+    lease.release();
+  });
+
   test("recovers an exact stale owner through one recovery claimant", () => {
     const path = join(tempRoot("workspace-lease-stale"), "operation.lease");
     let now = Date.parse("2026-01-01T00:00:00.000Z");

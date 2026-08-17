@@ -50,6 +50,8 @@ export interface AcquireNoClobberLeaseInput {
   now?: () => number;
   pid?: number;
   host?: string;
+  /** Fault-injection hook immediately before the lease directory is created. */
+  onLeaseDirectoryCreate?: () => void;
   /** Fault-injection hook after contention is observed and before owner inspection. */
   onContention?: () => void;
   onRecoveryStep?: (step: LeaseRecoveryStep) => void;
@@ -77,7 +79,7 @@ interface RecoveryClaim {
 export function acquireNoClobberLease(input: AcquireNoClobberLeaseInput): NoClobberLease {
   validateInput(input);
   const leaseDir = resolve(input.path);
-  ensureLeaseDirectory(leaseDir);
+  ensureLeaseDirectory(leaseDir, input.onLeaseDirectoryCreate);
 
   const now = input.now ?? Date.now;
   const created = now();
@@ -199,13 +201,20 @@ function validateInput(input: AcquireNoClobberLeaseInput): void {
   }
 }
 
-function ensureLeaseDirectory(leaseDir: string): void {
+function ensureLeaseDirectory(leaseDir: string, onCreate?: () => void): void {
   mkdirSync(dirname(leaseDir), { recursive: true, mode: 0o700 });
-  if (existsSync(leaseDir) && !lstatSync(leaseDir).isDirectory()) {
+  let created = false;
+  onCreate?.();
+  try {
+    mkdirSync(leaseDir, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  if (!lstatSync(leaseDir).isDirectory()) {
     throw new Error(`lease path is not a directory: ${leaseDir}`);
   }
-  if (!existsSync(leaseDir)) {
-    mkdirSync(leaseDir, { mode: 0o700 });
+  if (created) {
     fsyncDirectory(dirname(leaseDir));
   }
 }
