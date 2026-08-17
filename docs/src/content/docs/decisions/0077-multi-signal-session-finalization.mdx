@@ -1,0 +1,95 @@
+---
+title: "0077: Converge lifecycle signals on one session finalizer"
+description: "ADR: preserve native termination authority while giving archive, explicit end, idle, cascade, stale, and host-loss observations one crash-safe V2 finalization path."
+---
+
+**Status:** accepted (2026-08-17) · **Scope:** product tier (`core/agents`, `core/events/v2`, adapters, web)
+
+## Context
+
+Some harnesses report a trustworthy session-end callback and some do not. A
+finished response is not the end of a session. Removing a task from a sidebar
+is also not enough by itself: users can restore archived tasks, applications
+can crash, and a host may disappear without delivering a final callback.
+
+The V2 ledger already separates a native terminal event from a provisional
+cleanup observation. The missing piece was a safe way to combine several weak
+signals without inventing native telemetry or writing competing terminal rows.
+
+## Decision
+
+Harnery has one canonical approved finalizer. Native callbacks continue to
+write `session.ended` with `authority: "native"`. Every non-native path uses the
+same private producer state, lease, pending-event recovery, and append-only V2
+writer to emit at most one `session.ended` with `authority: "approved"`.
+
+The approved reason identifies the source:
+
+- `approved_explicit_end` for `harn agents end` and the `/end` skill;
+- `approved_verified_archive` for a durable adapter archive observation after
+  its cancellation grace period; and
+- `policy_*` for idle timeout, parent or run completion, delegated-agent
+  completion, stale sweep, supersession, and host disappearance.
+
+An archive observation is adapter-specific. Codex reads only `id`, `archived`,
+`archived_at`, and `updated_at_ms` from a private snapshot of its local state
+database, then joins the ID to Harnery's HMAC-addressed producer state. It does
+not ingest titles, prompts, response bodies, working directories, or model
+metadata. Other harnesses can submit the same normalized archive observation
+through `harn agents observe-archive`.
+
+An archive waits 10 minutes by default. Unarchiving or any subsequent Harnery
+activity cancels the pending request. Idle sessions are observed after three
+days and become policy-terminal after seven days. Cascades and host-loss
+observations wait one hour by default. All requests are durable owner-only
+records, and reconciliation is serialized by a no-clobber lease.
+
+`harn agents reconcile` runs one pass. `--watch` turns it into the host
+supervisor loop; its default interval is 15 minutes. V2 session start also runs
+one fail-soft pass, so ordinary work repairs missed scheduled runs. Parent
+terminal, `agent.completed`, `run.completed`, stale-sweep, duplicate live
+generation, and explicit host-loss evidence are discovered during the same
+pass.
+
+Explicit end is stricter. It refuses an open turn, tool span, delegated child,
+or unfinished Git claim. The web control calls the canonical finalizer and no
+longer deletes a heartbeat file. A failed or unsafe finalizer never falls back
+to a V1 row or filesystem deletion.
+
+## Evidence eligibility
+
+Finalization authority and evidence eligibility remain separate. Native ends
+and deliberate explicit ends can enter candidate collection. Verified archive
+ends carry `terminal_ambiguity_review_required`, because archive is reversible
+and needs a reviewer to confirm the task really ended. Automatic `policy_*`
+ends remain useful for coordination cleanup but are excluded from the
+run-quality corpus. They cannot turn uncertainty into labeled evidence.
+
+## Consequences
+
+Sessions now have several recovery paths without producing several terminal
+authorities. A stale producer cannot resurrect a finalized generation. The
+system retains the reason and completeness of every approved end, while raw
+adapter identity stays out of the ledger.
+
+The design does not claim that every harness exposes archive state. Basic V2
+compatibility only requires normal event capture. Archive-assisted finalization
+is an adapter capability; explicit end, idle reconciliation, ledger cascades,
+and host supervision remain available when it is absent.
+
+## Rejected alternatives
+
+**Treat archive as a native session end.** Archive is reversible and the
+Codex UI does not promise a terminal callback, so it remains an approved,
+review-gated observation.
+
+**Delete heartbeat files.** This destroys a projection without recording
+terminal authority and leaves the evidence corpus unable to distinguish ended
+from vanished.
+
+**Let every failsafe emit its own terminal row.** Competing writers create
+terminal races and make deduplication a reader concern. One leased finalizer
+keeps exactly-once authority at the write boundary.
+
+**Admit idle and stale closures to the corpus.** These signals are useful for
+cleanup but too ambiguous to label run quality without independent review.

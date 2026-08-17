@@ -16,5 +16,5 @@ export async function POST(req: Request): Promise<Response> {
   if (!safeOwnerId(instance_id)) {
     return Response.json({ error: "invalid instance_id" }, { status: 400 });
   }
-  return Response.json(endSession(instance_id));
+  return Response.json(await endSession(instance_id));
 }

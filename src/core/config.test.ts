@@ -13,6 +13,7 @@ import {
   endOfTurnStatusCommand,
   pinnedBinName,
   resolveBinName,
+  sessionFinalizationConfig,
   stripJsonComments,
   syncJsoncConfig,
 } from "./config.ts";
@@ -243,6 +244,41 @@ describe("coordFreshnessSeconds", () => {
     const root = makeRoot(`{ "coord": { "freshness_seconds": -5 } }`);
     roots.push(root);
     expect(coordFreshnessSeconds(root)).toBe(DEFAULT_FRESHNESS_SECS);
+  });
+});
+
+describe("sessionFinalizationConfig", () => {
+  test("uses safe defaults and clamps idle finalization after observation", () => {
+    const empty = makeRoot(`{}`);
+    const configured = makeRoot(
+      JSON.stringify({
+        coord: {
+          finalization: {
+            archive_grace_seconds: 90,
+            idle_observe_seconds: 500,
+            idle_finalize_seconds: 100,
+            cascade_grace_seconds: 30,
+            reconcile_interval_seconds: 45,
+          },
+        },
+      }),
+    );
+    expect(sessionFinalizationConfig(empty)).toMatchObject({
+      archiveGraceSeconds: 600,
+      idleObserveSeconds: 259_200,
+      idleFinalizeSeconds: 604_800,
+      cascadeGraceSeconds: 3_600,
+      reconcileIntervalSeconds: 900,
+    });
+    expect(sessionFinalizationConfig(configured)).toEqual({
+      archiveGraceSeconds: 90,
+      idleObserveSeconds: 500,
+      idleFinalizeSeconds: 500,
+      cascadeGraceSeconds: 30,
+      reconcileIntervalSeconds: 45,
+    });
+    rmSync(empty, { recursive: true, force: true });
+    rmSync(configured, { recursive: true, force: true });
   });
 });
 

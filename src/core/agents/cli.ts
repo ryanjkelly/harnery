@@ -766,6 +766,39 @@ async function handleStaleSweep(root: string, _rest: string[]): Promise<number> 
   return 0;
 }
 
+async function handleReconcileFinalization(root: string): Promise<number> {
+  const { reconcileSessionFinalizationV2 } = await import("./session-finalizer-v2.ts");
+  const result = reconcileSessionFinalizationV2(root);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return result.diagnostics.some((item) => item === "ledger_not_authority_safe") ? 2 : 0;
+}
+
+async function handleEndSession(root: string, rest: string[]): Promise<number> {
+  const instanceId = rest[0];
+  if (!instanceId || !/^inst_[A-Za-z0-9._-]+$/.test(instanceId)) return 2;
+  const { listHookProducerStateRecordsV2 } = await import("../events/v2/producers/recorder.ts");
+  const record = listHookProducerStateRecordsV2(root, { includeTerminal: false }).find(
+    ({ state }) => state.instance_id === instanceId,
+  );
+  if (!record) return 2;
+  if (
+    record.state.current_turn_id ||
+    record.state.spans.length > 0 ||
+    record.state.delegations.length > 0
+  )
+    return 3;
+  const { endSessionExplicitV2 } = await import("./session-finalizer-v2.ts");
+  const result = endSessionExplicitV2({
+    coordRoot: root,
+    instance_id: record.state.instance_id,
+    generation_id: record.state.generation_id,
+    outcome: "interrupted",
+    coordination_finalized: false,
+  });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+  return result.state === "recorded" || result.state === "already_ended" ? 0 : 2;
+}
+
 async function handlePromptContext(root: string, rest: string[]): Promise<number> {
   const args: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
@@ -1175,6 +1208,14 @@ async function main(): Promise<number> {
 
   if (subcommand === "stale-sweep") {
     return handleStaleSweep(root, rest);
+  }
+
+  if (subcommand === "reconcile-finalization") {
+    return handleReconcileFinalization(root);
+  }
+
+  if (subcommand === "end-session") {
+    return handleEndSession(root, rest);
   }
 
   if (subcommand === "session-context") {

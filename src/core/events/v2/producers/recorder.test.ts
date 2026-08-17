@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
@@ -10,6 +11,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { readCodexArchiveObservationsV2 } from "../../../agents/codex-archive-v2.ts";
+import {
+  listSessionFinalizationRequestsV2,
+  observeHostDisappearedV2,
+  reconcileSessionFinalizationV2,
+} from "../../../agents/session-finalizer-v2.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { Adapter } from "../../../hooks/events/schema.ts";
 import { buildEventV2 } from "../builder.ts";
@@ -26,7 +33,11 @@ import { loadOrCreateFingerprintKeyStoreV2 } from "../fingerprint-keys.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "../generated.ts";
 import { readActiveLedgerV2 } from "../reader.ts";
 import { eventV2Paths } from "../writer.ts";
-import { readHookProducerStateV2, recordHookSignalV2 } from "./recorder.ts";
+import {
+  readHookProducerStateV2,
+  recordApprovedSessionEndV2,
+  recordHookSignalV2,
+} from "./recorder.ts";
 
 const roots: string[] = [];
 
@@ -212,6 +223,154 @@ describe("event ledger V2 persistent hook recorder", () => {
       "ledger.genesis",
       "session.started",
     ]);
+  });
+
+  test("records one approved terminal and prevents resurrection", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-approved-end";
+    expect(
+      recordHookSignalV2(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      ).state,
+    ).toBe("recorded");
+    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    expect(state).toBeDefined();
+    if (!state) throw new Error("producer state missing");
+    const input = {
+      coordRoot: root,
+      mode: "candidate" as const,
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      build_id: "build_fixture" as const,
+      platform: "linux" as const,
+      reason: "approved_explicit_end" as const,
+      outcome: "succeeded" as const,
+      coordination_finalized: true,
+    };
+    expect(recordApprovedSessionEndV2(input).state).toBe("recorded");
+    expect(recordApprovedSessionEndV2(input).state).toBe("already_ended");
+    expect(
+      recordHookSignalV2(
+        baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
+      ).state,
+    ).not.toBe("recorded");
+    const terminal = readActiveLedgerV2(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "session.ended");
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]?.payload).toMatchObject({
+      authority: "approved",
+      reason: "approved_explicit_end",
+    });
+  });
+
+  test("gives verified archive a cancellation grace period before finalizing", () => {
+    const root = candidateRoot("codex");
+    writeFileSync(
+      join(root, ".harnery/config.jsonc"),
+      JSON.stringify({ coord: { finalization: { archive_grace_seconds: 60 } } }),
+    );
+    const nativeSession = "codex-archive-grace";
+    expect(
+      recordHookSignalV2(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      ).state,
+    ).toBe("recorded");
+    const observedAt = "2026-08-17T12:00:00.000Z";
+    const first = reconcileSessionFinalizationV2(root, {
+      now: new Date(observedAt),
+      archive_observations: [
+        {
+          adapter: "codex",
+          native_session_id: nativeSession,
+          archived: true,
+          observed_at: observedAt,
+        },
+      ],
+    });
+    expect(first).toMatchObject({ observed: 1, finalized: 0, pending: 1 });
+    expect(listSessionFinalizationRequestsV2(root)[0]?.status).toBe("pending");
+    const second = reconcileSessionFinalizationV2(root, {
+      now: new Date("2026-08-17T12:01:01.000Z"),
+      archive_observations: [],
+    });
+    expect(second.finalized).toBe(1);
+    const terminal = readActiveLedgerV2(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "session.ended");
+    expect(terminal?.payload).toMatchObject({
+      authority: "approved",
+      reason: "approved_verified_archive",
+    });
+  });
+
+  test("reads only known Codex archive identities from a private database snapshot", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "known-codex-thread";
+    expect(
+      recordHookSignalV2(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      ).state,
+    ).toBe("recorded");
+    const databasePath = join(root, "codex-state.sqlite");
+    const database = new Database(databasePath);
+    database.run(
+      "CREATE TABLE threads (id TEXT PRIMARY KEY, archived INTEGER NOT NULL, archived_at INTEGER, updated_at_ms INTEGER NOT NULL)",
+    );
+    database.run("INSERT INTO threads VALUES (?, 1, ?, ?)", [
+      nativeSession,
+      1_776_668_400,
+      1_776_668_400_000,
+    ]);
+    database.run("INSERT INTO threads VALUES (?, 1, ?, ?)", [
+      "unrelated-private-thread",
+      1_776_668_401,
+      1_776_668_401_000,
+    ]);
+    database.close();
+    expect(readCodexArchiveObservationsV2(root, { databasePath }).observations).toEqual([
+      {
+        adapter: "codex",
+        native_session_id: nativeSession,
+        archived: true,
+        observed_at: "2026-04-20T07:00:00.000Z",
+      },
+    ]);
+    expect(readFileSync(eventV2Paths(root).active, "utf8")).not.toContain(nativeSession);
+  });
+
+  test("keeps host loss provisional until the cascade grace expires", () => {
+    const root = candidateRoot("codex");
+    writeFileSync(
+      join(root, ".harnery/config.jsonc"),
+      JSON.stringify({ coord: { finalization: { cascade_grace_seconds: 30 } } }),
+    );
+    const nativeSession = "host-loss-session";
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    if (!state) throw new Error("producer state missing");
+    expect(
+      observeHostDisappearedV2({
+        coordRoot: root,
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        observed_at: "2026-08-17T13:00:00.000Z",
+      }).state,
+    ).toBe("observed");
+    expect(
+      reconcileSessionFinalizationV2(root, {
+        now: new Date("2026-08-17T13:00:29.000Z"),
+        archive_observations: [],
+      }).finalized,
+    ).toBe(0);
+    expect(
+      reconcileSessionFinalizationV2(root, {
+        now: new Date("2026-08-17T13:00:31.000Z"),
+        archive_observations: [],
+      }).finalized,
+    ).toBe(1);
   });
 
   test("records Cursor pre-compaction but refuses unsupported completion telemetry", () => {

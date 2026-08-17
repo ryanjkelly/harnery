@@ -36,7 +36,7 @@ export function EndSessionButton({ instanceId, name }: { instanceId: string; nam
   if (confirming) {
     return (
       <span className="inline-flex items-center gap-2 text-xs">
-        <span>End {name}'s session? (operator escape hatch, removes the heartbeat file)</span>
+        <span>End {name}'s session? (records an authoritative V2 terminal event)</span>
         <button
           type="button"
           onClick={endIt}

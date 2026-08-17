@@ -30,6 +30,22 @@ export const DEFAULT_BIN_NAME = "harn";
 /** Heartbeat-freshness default (seconds): the sweep window when nothing overrides it. */
 export const DEFAULT_FRESHNESS_SECS = 600;
 
+export interface SessionFinalizationConfig {
+  archiveGraceSeconds: number;
+  idleObserveSeconds: number;
+  idleFinalizeSeconds: number;
+  cascadeGraceSeconds: number;
+  reconcileIntervalSeconds: number;
+}
+
+export const DEFAULT_SESSION_FINALIZATION_CONFIG: SessionFinalizationConfig = {
+  archiveGraceSeconds: 600,
+  idleObserveSeconds: 3 * 24 * 60 * 60,
+  idleFinalizeSeconds: 7 * 24 * 60 * 60,
+  cascadeGraceSeconds: 60 * 60,
+  reconcileIntervalSeconds: 15 * 60,
+};
+
 export type AgentFinalizationDisposition = "git" | "output";
 
 export interface AgentFinalizationRoot {
@@ -88,7 +104,17 @@ interface HarneryConfig {
    * Coord-layer tunables. `freshness_seconds` is the heartbeat age above which
    * the sweeper prunes an agent (default 600). Read via `coordFreshnessSeconds()`.
    */
-  coord?: { freshness_seconds?: number; run_quality?: unknown };
+  coord?: {
+    freshness_seconds?: number;
+    run_quality?: unknown;
+    finalization?: {
+      archive_grace_seconds?: number;
+      idle_observe_seconds?: number;
+      idle_finalize_seconds?: number;
+      cascade_grace_seconds?: number;
+      reconcile_interval_seconds?: number;
+    };
+  };
   /**
    * Managed working-artifact defaults. `default_retention_days` is the
    * create-time TTL when the caller does not pass `artifacts create --days`.
@@ -498,6 +524,35 @@ export function coordFreshnessSeconds(coordRoot?: string | null): number {
   const root = coordRoot ?? findCoordRoot();
   if (root) return posIntOr(readConfig(root).coord?.freshness_seconds, DEFAULT_FRESHNESS_SECS);
   return DEFAULT_FRESHNESS_SECS;
+}
+
+/** Policy for converging independent termination signals on one finalizer. */
+export function sessionFinalizationConfig(coordRoot?: string | null): SessionFinalizationConfig {
+  const root = coordRoot ?? findCoordRoot();
+  const configured = root ? readConfig(root).coord?.finalization : undefined;
+  const defaults = DEFAULT_SESSION_FINALIZATION_CONFIG;
+  const archiveGraceSeconds = posIntOr(
+    configured?.archive_grace_seconds,
+    defaults.archiveGraceSeconds,
+  );
+  const idleObserveSeconds = posIntOr(
+    configured?.idle_observe_seconds,
+    defaults.idleObserveSeconds,
+  );
+  const idleFinalizeSeconds = Math.max(
+    idleObserveSeconds,
+    posIntOr(configured?.idle_finalize_seconds, defaults.idleFinalizeSeconds),
+  );
+  return {
+    archiveGraceSeconds,
+    idleObserveSeconds,
+    idleFinalizeSeconds,
+    cascadeGraceSeconds: posIntOr(configured?.cascade_grace_seconds, defaults.cascadeGraceSeconds),
+    reconcileIntervalSeconds: posIntOr(
+      configured?.reconcile_interval_seconds,
+      defaults.reconcileIntervalSeconds,
+    ),
+  };
 }
 
 /**

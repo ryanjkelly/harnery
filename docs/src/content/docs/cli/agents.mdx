@@ -35,6 +35,9 @@ harn agents status              # status box (name, age, files, peers, task)
 harn agents status --end-turn   # issue the box only after owned Git work is finalized
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
 harn agents lifecycle <state>   # declare active, blocked, or done task lifecycle
+harn agents end                 # record an authoritative V2 end after final checks
+harn agents reconcile           # reconcile archive, idle, cascade, and host-loss signals
+harn agents reconcile --watch   # run the host supervisor loop
 harn agents identity assume <name-or-id> # continue a durable role in this session
 harn agents show <name>         # deep-dive on one peer: registry state + session history
 harn agents trace <name>        # reconstruct one agent's lifecycle from the event ledger
@@ -205,6 +208,32 @@ The per-prompt reminder and Claude Code Stop rule remain active until the new
 name is observed. Titles are projections for people; editing a title never
 changes the underlying lifecycle. Pass `--session-id <id>` when the calling
 process cannot resolve its session anchor.
+
+### end and reconcile
+
+`harn agents end` is a deliberate V2 session-finalization command. It refuses
+while the generation has an open turn, tool span, delegated child, or
+unfinished Git claim. On success it appends one approved `session.ended` event
+and seals that producer generation against later activity. Use `--session-id`
+or `--instance-id` when automatic identity resolution is unavailable.
+
+`harn agents reconcile` performs one crash-safe lifecycle pass. It discovers
+verified adapter archives, long-idle sessions, parent and run completion,
+delegated-agent completion, stale sweeps, duplicate live generations, and
+previously submitted host-loss observations. `--watch` repeats the pass at
+`coord.finalization.reconcile_interval_seconds`.
+
+Archive observations can also enter through:
+
+```bash
+harn agents observe-archive --adapter codex --session-id <native-id>
+harn agents observe-archive --adapter codex --session-id <native-id> --unarchived
+```
+
+Unarchiving or subsequent activity cancels the pending archive request. A host
+supervisor can submit a provisional loss signal with
+`observe-host-disappeared`; it cannot bypass the configured grace period. See
+[ADR 0077](/decisions/0077-multi-signal-session-finalization/).
 
 ### suggest-name
 

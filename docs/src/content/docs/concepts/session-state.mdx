@@ -74,6 +74,22 @@ The compatibility default is `active` when an older heartbeat or event stream
 has no lifecycle event. A blocked state may carry a reason. Reopening the task
 clears an obsolete blocker reason.
 
+## Session finalization
+
+Task lifecycle and session lifecycle are separate. `lifecycle done` says the
+declared task is complete; `agents end` records terminal authority for the V2
+session. A completed response (`turn.completed`) ends only one response.
+
+Native harness callbacks remain the strongest end signal. When a harness lacks
+one, Harnery can approve an explicit end, wait through a reversible archive
+grace period, or reconcile idle, parent/run completion, stale, superseded, and
+host-loss observations. Every path converges on one leased finalizer, so a
+generation receives at most one terminal event and cannot be resurrected.
+
+Automatic policy ends clean coordination state but do not qualify as
+run-quality evidence. Verified archive ends require an independent ambiguity
+review before corpus admission.
+
 ## Session-name projection
 
 A lifecycle change can re-mint the human-facing session name:

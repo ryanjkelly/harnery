@@ -47,6 +47,11 @@ import {
   resolveOwnerWithSource,
 } from "../core/agents/index.ts";
 import {
+  endSessionExplicitV2,
+  observeHostDisappearedV2,
+  reconcileSessionFinalizationV2,
+} from "../core/agents/session-finalizer-v2.ts";
+import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
 } from "../core/agents/state/heartbeat-writer.ts";
@@ -55,10 +60,18 @@ import {
   foldSessionState,
   type TaskState,
 } from "../core/agents/state/session-state.ts";
-import { coordFreshnessSeconds, resolveBinName } from "../core/config.ts";
+import {
+  coordFreshnessSeconds,
+  resolveBinName,
+  sessionFinalizationConfig,
+} from "../core/config.ts";
 import { readEventV2ControlState } from "../core/events/v2/control.ts";
 import { projectCoordinationViewV2 } from "../core/events/v2/coordination-view.ts";
 import { liveInstanceIdV2 } from "../core/events/v2/live-routing.ts";
+import {
+  listHookProducerStateRecordsV2,
+  readHookProducerStateV2,
+} from "../core/events/v2/producers/recorder.ts";
 import { readActiveLedgerV2, readLedgerV2 } from "../core/events/v2/reader.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
@@ -363,6 +376,60 @@ export function registerAgentsCommand(
     });
 
   cmd
+    .command("end")
+    .description(
+      "Finalize the current V2 session explicitly after work, claims, turns, tool spans, and delegated children are closed.",
+    )
+    .option("--session-id <id>", "Native adapter session id to finalize")
+    .option("--instance-id <id>", "Canonical V2 instance id to finalize")
+    .option(
+      "--outcome <outcome>",
+      "succeeded | failed | cancelled | timed_out | denied | interrupted | unknown",
+      "succeeded",
+    )
+    .action((opts: { sessionId?: string; instanceId?: string; outcome: string }) => {
+      runEndSession(opts);
+    });
+
+  cmd
+    .command("reconcile")
+    .description(
+      "Reconcile archive, idle, parent/run completion, stale, superseded, and host lifecycle signals into V2 session finalization.",
+    )
+    .option("--watch", "Keep reconciling until interrupted")
+    .option("--interval-seconds <n>", "Watch interval in seconds")
+    .option("--json", "JSON output")
+    .action(async (opts: { watch?: boolean; intervalSeconds?: string; json?: boolean }) => {
+      await runSessionReconcile(opts);
+    });
+
+  cmd
+    .command("observe-archive")
+    .description(
+      "Record an adapter archive or unarchive observation and reconcile it through the canonical V2 finalizer.",
+    )
+    .requiredOption("--adapter <id>", "claude-code | codex | cursor")
+    .requiredOption("--session-id <id>", "Native adapter session id")
+    .option("--unarchived", "Cancel a pending archive finalization")
+    .option("--observed-at <iso>", "Observation time (defaults to now)")
+    .action(
+      (opts: { adapter: string; sessionId: string; unarchived?: boolean; observedAt?: string }) =>
+        runObserveArchive(opts),
+    );
+
+  cmd
+    .command("observe-host-disappeared")
+    .description(
+      "Record a provisional host-loss observation; finalization follows only after the configured cascade grace period.",
+    )
+    .requiredOption("--instance-id <id>", "Canonical V2 instance id")
+    .requiredOption("--generation-id <id>", "Canonical V2 generation id")
+    .option("--observed-at <iso>", "Observation time (defaults to now)")
+    .action((opts: { instanceId: string; generationId: string; observedAt?: string }) => {
+      runObserveHostDisappeared(opts);
+    });
+
+  cmd
     .command("release-claim <path>")
     .description(
       "Drop a file claim from your heartbeat. Operator escape hatch when a " +
@@ -512,6 +579,189 @@ export function registerAgentsCommand(
       },
     );
   registerIdentityCommands(cmd);
+}
+
+const SESSION_OUTCOMES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "denied",
+  "interrupted",
+  "unknown",
+]);
+
+function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome: string }) {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (!SESSION_OUTCOMES.has(opts.outcome)) {
+    return failCommand("invalid_outcome", "invalid session outcome");
+  }
+  const target = opts.instanceId ?? opts.sessionId ?? resolveOwner();
+  if (!target) {
+    return failCommand(
+      "session_identity_missing",
+      "could not resolve the current session; pass --session-id or --instance-id",
+    );
+  }
+  const byInstance = listHookProducerStateRecordsV2(root, { includeTerminal: false }).filter(
+    ({ state }) => state.instance_id === target,
+  );
+  const byNative = (["claude-code", "codex", "cursor"] as const).flatMap((adapter) => {
+    const state = readHookProducerStateV2(root, adapter, target);
+    return state && !state.terminal ? [{ path: "", modified_at_ms: 0, state }] : [];
+  });
+  const matches = byInstance.length > 0 ? byInstance : byNative;
+  if (matches.length !== 1) {
+    return failCommand(
+      "session_identity_ambiguous",
+      `expected one live V2 generation for the target; found ${matches.length}`,
+    );
+  }
+  const record = matches[0];
+  if (!record) {
+    return failCommand("session_identity_missing", "live V2 generation disappeared");
+  }
+  const state = record.state;
+  const open: string[] = [];
+  if (state.current_turn_id) open.push("turn");
+  if (state.spans.length > 0) open.push(`${state.spans.length} tool span(s)`);
+  if (state.delegations.length > 0) open.push(`${state.delegations.length} delegated child(ren)`);
+  if (open.length > 0) {
+    return failCommand("session_work_open", `cannot finalize while ${open.join(", ")} remain open`);
+  }
+  const history = readSessionWriteClaims(root, state.instance_id, state.session_id);
+  const finalized = checkGitFinalization(root, history.paths, {
+    claimHistoryComplete: history.complete,
+  });
+  if (!finalized.ok) {
+    return failCommand(
+      "git_not_finalized",
+      formatGitFinalizationFailure(finalized, resolveBinName(root)),
+    );
+  }
+  const result = endSessionExplicitV2({
+    coordRoot: root,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    outcome: opts.outcome as
+      | "succeeded"
+      | "failed"
+      | "cancelled"
+      | "timed_out"
+      | "denied"
+      | "interrupted"
+      | "unknown",
+    coordination_finalized: true,
+  });
+  if (result.state !== "recorded" && result.state !== "already_ended") {
+    return failCommand("session_end_failed", JSON.stringify(result));
+  }
+  emit.data({
+    ok: true,
+    state: result.state,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    terminal_event_id: result.state === "recorded" ? result.event.event_id : result.event_id,
+    authority: "approved",
+    reason: "approved_explicit_end",
+  });
+}
+
+async function runSessionReconcile(opts: {
+  watch?: boolean;
+  intervalSeconds?: string;
+  json?: boolean;
+}): Promise<void> {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (opts.json) emit.config({ format: "json" });
+  const interval = opts.intervalSeconds
+    ? Number.parseInt(opts.intervalSeconds, 10)
+    : sessionFinalizationConfig(root).reconcileIntervalSeconds;
+  if (!Number.isSafeInteger(interval) || interval < 1) {
+    return failCommand("invalid_interval", "interval-seconds must be a positive integer");
+  }
+  let stopped = false;
+  do {
+    emit.data(reconcileSessionFinalizationV2(root));
+    if (!opts.watch || stopped) return;
+    await new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, interval * 1_000);
+      const stop = () => {
+        stopped = true;
+        clearTimeout(timer);
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        resolvePromise();
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+  } while (opts.watch && !stopped);
+}
+
+function runObserveArchive(opts: {
+  adapter: string;
+  sessionId: string;
+  unarchived?: boolean;
+  observedAt?: string;
+}) {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (!(["claude-code", "codex", "cursor"] as string[]).includes(opts.adapter)) {
+    return failCommand("invalid_adapter", "adapter must be claude-code, codex, or cursor");
+  }
+  const adapter = opts.adapter as "claude-code" | "codex" | "cursor";
+  const observedAt = opts.observedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(observedAt))) {
+    return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
+  }
+  emit.data(
+    reconcileSessionFinalizationV2(root, {
+      now: new Date(observedAt),
+      archive_observations: [
+        {
+          adapter,
+          native_session_id: opts.sessionId,
+          archived: !opts.unarchived,
+          observed_at: observedAt,
+        },
+      ],
+    }),
+  );
+}
+
+function runObserveHostDisappeared(opts: {
+  instanceId: string;
+  generationId: string;
+  observedAt?: string;
+}) {
+  const root = monorepoRoot();
+  if (!root) return failCommand("not_in_repo", "not in an agent session");
+  if (!/^inst_[A-Za-z0-9._-]+$/.test(opts.instanceId)) {
+    return failCommand("invalid_instance_id", "invalid V2 instance id");
+  }
+  if (!/^gen_[A-Za-z0-9._-]+$/.test(opts.generationId)) {
+    return failCommand("invalid_generation_id", "invalid V2 generation id");
+  }
+  const observedAt = opts.observedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(observedAt))) {
+    return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
+  }
+  emit.data(
+    observeHostDisappearedV2({
+      coordRoot: root,
+      instance_id: opts.instanceId as `inst_${string}`,
+      generation_id: opts.generationId as `gen_${string}`,
+      observed_at: observedAt,
+    }),
+  );
+}
+
+function failCommand(code: string, message: string): void {
+  emit.error({ code, message });
+  process.exitCode = 1;
 }
 
 function registerIdentityCommands(parent: Command): void {

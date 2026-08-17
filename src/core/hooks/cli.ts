@@ -1884,6 +1884,15 @@ async function emitSessionStartSystemMessage(
     // from its validated ledger and must not inspect or mutate fenced files.
     if (ledgerRoute.state === "v1") {
       spawnSync(agentCoordBin, ["stale-sweep"], { encoding: "utf8", timeout: 3000 });
+    } else if (ledgerRoute.state === "v2") {
+      // Opportunistic reconciliation makes normal session starts a failsafe
+      // for archive, idle, cascade, and host lifecycle observations. This is
+      // fail-soft: the current session start remains independent.
+      spawnSync(agentCoordBin, ["reconcile-finalization"], {
+        encoding: "utf8",
+        timeout: 5000,
+        env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: coordRoot },
+      });
     }
 
     // SESSION_START activity log line, fired across all adapters.

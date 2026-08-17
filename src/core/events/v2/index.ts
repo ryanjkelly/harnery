@@ -220,10 +220,16 @@ export {
   normalizeHookEventV2,
 } from "./producers/hook.ts";
 export {
+  type ApprovedSessionEndReasonV2,
+  type HookProducerStateRecordV2,
   type HookProducerStateV2,
+  listHookProducerStateRecordsV2,
+  type RecordApprovedSessionEndV2Input,
+  type RecordApprovedSessionEndV2Result,
   type RecordHookSignalV2Input,
   type RecordHookSignalV2Result,
   readHookProducerStateV2,
+  recordApprovedSessionEndV2,
   recordHookSignalV2,
 } from "./producers/recorder.ts";
 export {

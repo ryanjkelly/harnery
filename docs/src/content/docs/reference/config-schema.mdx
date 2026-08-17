@@ -88,9 +88,27 @@ Env override per process: `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0`.
 | Field                 | Type    | Default | Description |
 | --------------------- | ------- | ------- | ----------- |
 | `freshness_seconds`   | number  | `600`   | Heartbeat age (seconds) above which the sweeper prunes an agent (10 min) |
+| `finalization`        | object  | see below | Multi-signal V2 session-finalization grace periods |
 | `run_quality`         | object  | `{ "mode": "off" }` | Report-only run-quality observation (see below) |
 
 Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env → this `config.jsonc` key → `600`.
+
+### `coord.finalization`
+
+These bounds control the canonical V2 reconciler. Archive and policy signals
+are provisional until their grace period expires. Any new session activity
+cancels a pending request.
+
+| Field | Default | Purpose |
+| ----- | ------- | ------- |
+| `archive_grace_seconds` | `600` | Delay before a verified archive may end a session |
+| `idle_observe_seconds` | `259200` | Inactivity before Harnery creates an idle observation (3 days) |
+| `idle_finalize_seconds` | `604800` | Inactivity before idle policy finalization (7 days) |
+| `cascade_grace_seconds` | `3600` | Delay for parent, stale, superseded, and host-loss cascades |
+| `reconcile_interval_seconds` | `900` | Default interval for `agents reconcile --watch` |
+
+All values are positive integers. `idle_finalize_seconds` is clamped to at
+least `idle_observe_seconds`. See [ADR 0077](/decisions/0077-multi-signal-session-finalization/).
 
 ### `coord.run_quality`
 

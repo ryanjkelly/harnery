@@ -19,6 +19,7 @@ import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import { buildEventV2 } from "../builder.ts";
 import { normalizeNativeIdV2 } from "../canonical.ts";
 import {
   type AdapterSignalV2,
@@ -105,6 +106,52 @@ export type RecordHookSignalV2Result =
   | { state: "already_started"; event_id: string }
   | { state: "unpairable_tool" }
   | { state: "ignored" }
+  | { state: "recorded"; event: EventV2; durability: WriteEventV2Result; recovered: boolean };
+
+export type ApprovedSessionEndReasonV2 =
+  | "approved_explicit_end"
+  | "approved_verified_archive"
+  | "policy_idle_timeout"
+  | "policy_parent_terminal"
+  | "policy_stale_sweep"
+  | "policy_agent_completed"
+  | "policy_run_completed"
+  | "policy_superseded"
+  | "policy_host_disappeared";
+
+export interface HookProducerStateRecordV2 {
+  path: string;
+  modified_at_ms: number;
+  state: HookProducerStateV2;
+}
+
+export interface RecordApprovedSessionEndV2Input {
+  coordRoot: string;
+  mode: EventV2WriteMode;
+  instance_id: `inst_${string}`;
+  generation_id: `gen_${string}`;
+  build_id: `build_${string}`;
+  platform: "linux" | "windows" | "macos" | "unknown";
+  reason: ApprovedSessionEndReasonV2;
+  outcome:
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "timed_out"
+    | "denied"
+    | "interrupted"
+    | "unknown";
+  observed_at?: string;
+  caused_by_event_id?: `evt_${string}`;
+  coordination_finalized?: boolean;
+  confidence?: "exact" | "high" | "medium" | "low";
+  writerOptions?: WriteEventV2Options;
+}
+
+export type RecordApprovedSessionEndV2Result =
+  | { state: "gate_closed"; reason: string }
+  | { state: "generation_unavailable"; reason: string }
+  | { state: "already_ended"; event_id?: `evt_${string}` }
   | { state: "recorded"; event: EventV2; durability: WriteEventV2Result; recovered: boolean };
 
 /**
@@ -269,6 +316,173 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
   } finally {
     lease.release();
   }
+}
+
+/**
+ * End one exact live generation under the same private-state lease used by its
+ * native hook producer. This is the only approved-authority terminal writer:
+ * archive reconciliation, explicit `/end`, and policy cascades all converge
+ * here so they cannot race each other or append activity after termination.
+ */
+export function recordApprovedSessionEndV2(
+  input: RecordApprovedSessionEndV2Input,
+): RecordApprovedSessionEndV2Result {
+  const control = readEventV2ControlState(input.coordRoot);
+  if (control.state !== input.mode) {
+    return { state: "gate_closed", reason: control.state };
+  }
+  const matches = listHookProducerStateRecordsV2(input.coordRoot, { includeTerminal: true }).filter(
+    ({ state }) =>
+      state.instance_id === input.instance_id && state.generation_id === input.generation_id,
+  );
+  if (matches.length !== 1) {
+    return {
+      state: "generation_unavailable",
+      reason: matches.length === 0 ? "not_found" : "ambiguous",
+    };
+  }
+  const record = matches[0]!;
+  const lease = acquireStateLease(input.coordRoot, record.path);
+  try {
+    const state = readProducerState(record.path);
+    if (state.instance_id !== input.instance_id || state.generation_id !== input.generation_id) {
+      return { state: "generation_unavailable", reason: "authority_changed" };
+    }
+    let recovered = false;
+    if (state.pending) {
+      const pending = state.pending.event;
+      const durability = writeEventV2(input.coordRoot, pending, input.writerOptions);
+      applyCommittedEvent(state, pending);
+      state.pending = undefined;
+      publishProducerState(record.path, state);
+      recovered = true;
+      if (pending.event_type === "session.ended") {
+        return { state: "recorded", event: pending, durability, recovered };
+      }
+    }
+    if (state.terminal) return { state: "already_ended", event_id: state.last_event_id };
+    if (!state.started_event_id || !state.last_event_id) {
+      return { state: "generation_unavailable", reason: "session_start_missing" };
+    }
+
+    const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+    const context = fingerprintContextV2(
+      input.coordRoot,
+      rootId,
+      state.generation_id,
+      state.privacy_epoch_id,
+    );
+    const expected = [
+      "session_started",
+      "turn_closed",
+      "tool_spans_closed",
+      "delegated_children_closed",
+      "coordination_finalized",
+    ];
+    const observed = [
+      ...(state.started_event_id ? ["session_started"] : []),
+      ...(!state.current_turn_id ? ["turn_closed"] : []),
+      ...(state.spans.length === 0 ? ["tool_spans_closed"] : []),
+      ...(state.delegations.length === 0 ? ["delegated_children_closed"] : []),
+      ...(input.coordination_finalized ? ["coordination_finalized"] : []),
+    ];
+    const observedSet = new Set(observed);
+    const missing = expected.filter((field) => !observedSet.has(field));
+    const causedBy = [
+      ...new Set([state.last_event_id, input.caused_by_event_id].filter(Boolean)),
+    ] as [`evt_${string}`, ...`evt_${string}`[]] | [];
+    const event = buildEventV2("session.ended", {
+      producer: {
+        producer_id: "prd_agent-finalizer",
+        boot_id: `boot_${randomUUID()}`,
+        sequence: 1,
+        component: "agent-coord",
+        build_id: input.build_id,
+        platform: input.platform,
+      },
+      scope: {
+        root_id: rootId,
+        instance_id: state.instance_id,
+        session_id: state.session_id,
+        generation_id: state.generation_id,
+      },
+      attestation_id: state.attestation_id,
+      links: { caused_by: causedBy },
+      provenance: {
+        source_event: `agent-coord.session-finalizer.${input.reason}`,
+        attestation: "derived",
+        confidence: input.confidence ?? "high",
+        source_record_id: normalizeNativeIdV2(
+          context,
+          "agent-coord.approved-session-end",
+          `${input.reason}\0${state.generation_id}\0${input.observed_at ?? "now"}`,
+        ),
+        attribution: {
+          method: "explicit_argument",
+          state: "verified",
+          observer_instance_id: state.instance_id,
+          subject_instance_id: state.instance_id,
+        },
+      },
+      observed_at: input.observed_at,
+      monotonic_ns: process.hrtime.bigint().toString(),
+      clock_id: state.clock_id,
+      payload: {
+        outcome: input.outcome,
+        authority: "approved",
+        reason: input.reason,
+        completeness: {
+          state: "observed",
+          value: { expected, observed, missing },
+          attestation: "derived",
+          confidence: input.confidence ?? "high",
+        },
+      },
+    }) as EventV2;
+    assertEventV2(event);
+
+    state.pending = { event };
+    publishProducerState(record.path, state);
+    const durability = writeEventV2(input.coordRoot, event, input.writerOptions);
+    applyCommittedEvent(state, event);
+    state.pending = undefined;
+    publishProducerState(record.path, state);
+    return { state: "recorded", event, durability, recovered };
+  } finally {
+    lease.release();
+  }
+}
+
+export function listHookProducerStateRecordsV2(
+  coordRoot: string,
+  options: { includeTerminal?: boolean } = {},
+): HookProducerStateRecordV2[] {
+  const control = readEventV2ControlState(coordRoot);
+  if (control.state !== "candidate" && control.state !== "active") return [];
+  const producerRoot = join(resolve(coordRoot), EVENT_V2_LEDGER_RELATIVE_ROOT, "private-producers");
+  if (!existsSync(producerRoot)) return [];
+  const records: HookProducerStateRecordV2[] = [];
+  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+    const directory = join(producerRoot, adapter);
+    if (!existsSync(directory)) continue;
+    const metadata = lstatSync(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("V2 producer state directory is unsafe");
+    }
+    for (const name of readdirSync(directory).filter((entry) =>
+      /^hid_[a-f0-9]{64}\.json$/.test(entry),
+    )) {
+      const path = join(directory, name);
+      const state = readProducerState(path);
+      if (!options.includeTerminal && state.terminal) continue;
+      records.push({ path, modified_at_ms: lstatSync(path).mtimeMs, state });
+    }
+  }
+  return records.sort(
+    (left, right) =>
+      left.state.generation_id.localeCompare(right.state.generation_id) ||
+      left.path.localeCompare(right.path),
+  );
 }
 
 function hookSignalCapability(signal: HookSignalV2): AdapterSignalV2 {

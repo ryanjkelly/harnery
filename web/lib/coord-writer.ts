@@ -8,16 +8,16 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isSafeInstanceId, resolveContainedFile } from "harnery/core/agents";
 import {
   appendEntry,
   archiveJournal,
-  parseJournal,
   JOURNAL_CATEGORIES,
   type JournalCategory,
   journalPath,
+  parseJournal,
   serializeJournal,
 } from "harnery/core/journal";
 import { activeDir, coordRoot } from "./coord-reader";
@@ -357,32 +357,26 @@ export function pingAgent(targetInstanceId: string, message: string): PingResult
 export interface EndSessionResult {
   ok: boolean;
   instance_id: string;
-  removed_from: string;
+  terminal_event_recorded: boolean;
   error?: string;
 }
 
-export function endSession(instanceId: string): EndSessionResult {
+export async function endSession(instanceId: string): Promise<EndSessionResult> {
   if (!safeOwnerId(instanceId)) {
-    return { ok: false, instance_id: instanceId, removed_from: "", error: "invalid instance_id" };
-  }
-  const p = heartbeatPath(instanceId);
-  if (!existsSync(p)) {
     return {
       ok: false,
       instance_id: instanceId,
-      removed_from: p,
-      error: "heartbeat not found",
+      terminal_event_recorded: false,
+      error: "invalid instance_id",
     };
   }
-  try {
-    unlinkSync(p);
-    return { ok: true, instance_id: instanceId, removed_from: p };
-  } catch (err) {
-    return {
-      ok: false,
-      instance_id: instanceId,
-      removed_from: p,
-      error: (err as Error).message,
-    };
-  }
+  const result = await runHelper(["end-session", instanceId]);
+  return result.ok
+    ? { ok: true, instance_id: instanceId, terminal_event_recorded: true }
+    : {
+        ok: false,
+        instance_id: instanceId,
+        terminal_event_recorded: false,
+        error: result.stderr.trim() || `session finalizer exited ${result.exit_code}`,
+      };
 }
