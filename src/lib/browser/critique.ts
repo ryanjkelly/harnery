@@ -26,6 +26,9 @@ export interface CritiqueTile {
   label: string;
   /** Document-space Y offset of the tile's top, so findings map to a place. */
   scrollY: number;
+  /** Document-space X offset (0 for full-width bands; element-relative for
+   * selector tiles). Optional for backward compatibility — treat absent as 0. */
+  x?: number;
   width: number;
   height: number;
   /** Base64 PNG of the tile (no data: prefix). */
@@ -71,6 +74,9 @@ export type CritiqueProvider = ((input: {
 }) => Promise<CritiqueFinding[]>) & {
   concurrency?: number;
   meta?: () => Record<string, unknown> | undefined;
+  /** Long-edge pixel budget of the routed model's vision input. The tiler
+   * clamps band height to it so tiles are never downscaled by the provider. */
+  tileBudgetPx?: number;
 };
 
 export const DEFAULT_CRITIQUE_RUBRIC = [
@@ -197,6 +203,7 @@ export function tilesFromFullPage(
       index: rect.index,
       label: rect.label,
       scrollY: sy,
+      x: sx,
       width: w,
       height: h,
       pngBase64: PNG.sync.write(dst).toString("base64"),

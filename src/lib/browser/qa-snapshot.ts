@@ -25,6 +25,7 @@ import {
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fnv1a32, type QaContext, type QaSignature } from "./qa-plan.js";
+import type { PersistedCritique } from "./qa-reuse.js";
 
 const SNAPSHOT_DIR = resolve(homedir(), ".cache", "harnery", "qa-snapshots");
 
@@ -39,6 +40,9 @@ export interface StoredQaSnapshot {
   path: string;
   domHtmlPath?: string;
   screenshotPath?: string;
+  /** Critique results persisted with the snapshot (full-coverage runs only) —
+   * what the band-diff reuse layer replays for provably-unchanged regions. */
+  critique?: PersistedCritique;
 }
 
 /** Filesystem-safe key for a target URL/file + render context. The digest
@@ -73,6 +77,7 @@ export function saveQaSnapshot(
     signature: QaSignature;
     domHtml?: string;
     screenshotPng?: Buffer;
+    critique?: PersistedCritique;
   },
   opts: QaSnapshotStoreOptions = {},
 ): StoredQaSnapshot {
@@ -86,6 +91,9 @@ export function saveQaSnapshot(
   }
   if (content.screenshotPng !== undefined) {
     writeFileSync(resolve(staging, "screenshot.png"), content.screenshotPng);
+  }
+  if (content.critique !== undefined) {
+    writeFileSync(resolve(staging, "critique.json"), `${JSON.stringify(content.critique)}\n`);
   }
   rmSync(dir, { recursive: true, force: true });
   renameSync(staging, dir);
@@ -117,11 +125,24 @@ export function loadQaSnapshot(
     }
     const domHtmlPath = resolve(dir, "dom.html");
     const screenshotPath = resolve(dir, "screenshot.png");
+    const critiquePath = resolve(dir, "critique.json");
+    let critique: PersistedCritique | undefined;
+    if (existsSync(critiquePath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(critiquePath, "utf8")) as PersistedCritique;
+        if (parsed && typeof parsed.contract_version === "number" && Array.isArray(parsed.tiles)) {
+          critique = parsed;
+        }
+      } catch {
+        // corrupt critique.json degrades to a reuse miss, never an error
+      }
+    }
     return {
       signature,
       path: dir,
       ...(existsSync(domHtmlPath) ? { domHtmlPath } : {}),
       ...(existsSync(screenshotPath) ? { screenshotPath } : {}),
+      ...(critique ? { critique } : {}),
     };
   } catch {
     return null;

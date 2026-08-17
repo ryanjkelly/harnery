@@ -332,6 +332,8 @@ reviewing, and the provider-call ceiling.
 | `--qa-state <name>` | Context state label (default `default`). |
 | `--qa-scope <selector>` | Explicit scope selector from the producing task (repeatable); overrides lifted anchors. |
 | `--qa-states <names>` | Comma-separated interaction states to review; promotes the plan to `interaction-state`. |
+| `--qa-reuse` | With `--check-critique`: reuse the baseline run's verdicts for tiles whose pixels provably didn't change (band-diff against the persisted snapshot screenshot). Only clean regions reuse — baseline findings or any pixel drift force a fresh review. Stats land under `qaReuse`. |
+| `--qa-reuse-threshold <ratio>` | Mismatch ratio at or below which a clean tile region is reused (default `0.001`; lower toward 0 for stricter reuse). |
 
 The classes: `text-data-only` (only direct text changed — zero vision calls),
 `local-visual` (structural changes contained by stable anchors — scoped review
@@ -344,6 +346,14 @@ pixel, so DOM equality alone never proves a change is text-only — stylesheet
 digests (external sheets fetched and hashed) must match too. Stable anchors are
 unique `#id`s or `data-qa-scope` attributes; nested anchors dedupe to the
 outermost root so a container is reviewed once, not per descendant.
+
+Reuse closes the loop: `--qa-snapshot` on a critique run persists the verdicts
+with the screenshot, and the next `--check-critique --qa-reuse` run pixel-diffs
+each tile's document rect against that baseline and skips the model call for
+clean, finding-free regions that match at or below the strict threshold. Reuse
+can produce false re-reviews, never false passes: a region with baseline
+findings is always re-reviewed, a rubric or contract change is a whole-run
+miss, and a partially-reused run is never persisted as the next baseline.
 
 ### Diagnostics
 
