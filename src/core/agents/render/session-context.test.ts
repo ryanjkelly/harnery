@@ -51,7 +51,7 @@ describe("renderSessionContext", () => {
   test("recorded fork lineage names the parent in the authority clause", () => {
     writeFileSync(
       join(root, ".harnery", ".name-history"),
-      [
+      `${[
         JSON.stringify({
           instance_id: "parent-1",
           name: "Hazel",
@@ -67,7 +67,7 @@ describe("renderSessionContext", () => {
           forked_from: "parent-1",
           ts: "2026-01-01T00:01:00Z",
         }),
-      ].join("\n") + "\n",
+      ].join("\n")}\n`,
     );
     const out = renderSessionContext({
       coordRoot: root,

@@ -161,7 +161,7 @@ describe("assumeIdentity fork-ancestor guard", () => {
     // since exited (no heartbeat), the exact hole liveness checks can't see.
     writeFileSync(
       path.join(root, ".harnery", ".name-history"),
-      [
+      `${[
         JSON.stringify({
           instance_id: "parent-1",
           name: "Hazel",
@@ -177,7 +177,7 @@ describe("assumeIdentity fork-ancestor guard", () => {
           forked_from: "parent-1",
           ts: "2026-01-01T00:01:00Z",
         }),
-      ].join("\n") + "\n",
+      ].join("\n")}\n`,
     );
   });
 
