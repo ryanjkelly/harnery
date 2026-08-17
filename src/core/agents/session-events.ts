@@ -200,7 +200,14 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
       ...(fields.bridge === "codex-wsl" ? { bridge: "codex-wsl" as const } : {}),
       monotonic_ns: process.hrtime.bigint().toString(),
     });
-    if (result.state !== "recorded" && result.state !== "already_recorded") {
+    if (result.state === "generation_unavailable") {
+      writeProducerDiagnosticV2(coordRoot, "command_emit_unjoinable", {
+        type,
+        instance_id: instanceId,
+        signal: command.signal,
+        reason: result.reason,
+      });
+    } else if (result.state !== "recorded" && result.state !== "already_recorded") {
       writeProducerDiagnosticV2(coordRoot, "command_emit_rejected", {
         type,
         instance_id: instanceId,

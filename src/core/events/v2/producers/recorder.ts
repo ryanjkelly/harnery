@@ -450,7 +450,6 @@ function processHookSignalLocked(
     if (
       state &&
       (state.adapter !== input.adapter ||
-        state.instance_id !== input.instance_id ||
         state.session_id !== sessionId ||
         state.privacy_epoch_id !== epochId ||
         state.capability_profile !== adapterCapabilityProfileDigestV2(input.adapter))
@@ -664,7 +663,11 @@ function processHookSignalLocked(
       adapterVersion: input.adapterVersion,
       harnessVersion: input.harnessVersion,
       root_id: rootId,
-      instance_id: input.instance_id,
+      // Native subagent tool hooks can carry the parent's session id while
+      // resolving to a child process instance. The session-keyed producer
+      // state remains the generation authority; route those signals through
+      // its instance instead of rejecting or forging a child/parent scope.
+      instance_id: state.instance_id,
       generation_id: state.generation_id,
       attestation_id: state.attestation_id,
       producer_id: input.producer_id,

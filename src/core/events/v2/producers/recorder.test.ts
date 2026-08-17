@@ -205,6 +205,61 @@ describe("event ledger V2 persistent hook recorder", () => {
     expect(readFileSync(eventV2Paths(root).active, "utf8")).not.toContain(nativeChild);
   });
 
+  test("routes child-process tool hooks through the native session owner", () => {
+    const root = candidateRoot();
+    const nativeSession = "shared-parent-session";
+    const parentInstance = "inst_parent" as const;
+    const childInstance = "inst_child" as const;
+    expect(
+      recordHookSignalV2({
+        ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
+        instance_id: parentInstance,
+      }).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV2({
+        ...baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: "turn-1", prompt: "delegate" }),
+        ),
+        instance_id: parentInstance,
+      }).state,
+    ).toBe("recorded");
+
+    const requested = recordHookSignalV2({
+      ...baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "child-tool", tool_name: "Read" }),
+      ),
+      instance_id: childInstance,
+    });
+    const completed = recordHookSignalV2({
+      ...baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "child-tool",
+          tool_name: "Read",
+          tool_response: "done",
+        }),
+      ),
+      instance_id: childInstance,
+    });
+
+    expect([requested.state, completed.state]).toEqual(["recorded", "recorded"]);
+    const toolEvents = readActiveLedgerV2(root)
+      .events.map(({ event }) => event)
+      .filter(
+        (event) => event.event_type === "tool.requested" || event.event_type === "tool.completed",
+      );
+    expect(toolEvents).toHaveLength(2);
+    expect(toolEvents.every((event) => event.scope.instance_id === parentInstance)).toBeTrue();
+    expect(toolEvents.some((event) => event.scope.instance_id === childInstance)).toBeFalse();
+  });
+
   test("refuses unsupported Codex terminal authority even if a stale hook invokes it", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-session";

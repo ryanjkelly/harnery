@@ -58,6 +58,7 @@ import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
 } from "../core/agents/state/heartbeat-writer.ts";
+import { readLiveCoordinationRows } from "../core/agents/state/live-coordination-view.ts";
 import {
   type AgentActivity,
   foldSessionState,
@@ -3138,6 +3139,7 @@ interface HealthReport {
     reason?: string;
   };
   active_agents: {
+    source: "heartbeat-cache" | "event-ledger-v2";
     total: number;
     by_platform: Record<string, number>;
     by_kind: Record<string, number>;
@@ -3167,8 +3169,13 @@ interface HealthReport {
   // bug (e.g. a stop-projection crash that caused ~200 errors/day until it was fixed).
   hook_errors: {
     total: number;
+    last_1h: number;
+    latest_at: string | null;
     by_phase: Record<string, number>;
+    by_error: Record<string, number>;
     top: Array<{ phase: string; count: number; sample: string }>;
+    top_errors: Array<{ error: string; count: number; phase: string }>;
+    recent_top_errors: Array<{ error: string; count: number; phase: string }>;
   };
   // Canonical event stream growth + drain lag.
   stream: {
@@ -3228,7 +3235,10 @@ export type EventLedgerHealthV2 =
       diagnostics_spool: {
         total: number;
         last_24h: number;
+        last_1h: number;
+        latest_at: string | null;
         by_category: Record<string, { total: number; last_24h: number }>;
+        recent_by_category: Record<string, { last_1h: number; latest_at: string | null }>;
       };
       span_pressure: Array<{ instance_id: string; generation_id: string; span_count: number }>;
       collection_errors: string[];
@@ -3326,24 +3336,44 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
   // contents): `<category>-<orderkey>.json` where the orderkey leads with a
   // zero-padded epoch-ms, which also gives the last-24h split for free.
   const byCategory: Record<string, { total: number; last_24h: number }> = {};
+  const recentByCategory: Extract<
+    EventLedgerHealthV2,
+    { state: "live" }
+  >["diagnostics_spool"]["recent_by_category"] = {};
   let diagnosticsTotal = 0;
   let diagnostics24h = 0;
+  let diagnostics1h = 0;
+  let latestDiagnosticMs = Number.NEGATIVE_INFINITY;
   try {
     const diagnosticsDir = join(resolve(root), EVENT_V2_LEDGER_RELATIVE_ROOT, "diagnostics");
     if (existsSync(diagnosticsDir)) {
       const dayAgoMs = nowMs - 24 * 60 * 60 * 1000;
+      const hourAgoMs = nowMs - 60 * 60 * 1000;
       for (const name of readdirSync(diagnosticsDir)) {
         const match = /^(.+)-(\d{15})-\d{20}-\d+-[0-9a-f-]+\.json$/.exec(name);
         const category = match?.[1];
         const epochMs = Number(match?.[2]);
         if (!category) continue;
         const entry = byCategory[category] ?? { total: 0, last_24h: 0 };
+        const recent = recentByCategory[category] ?? { last_1h: 0, latest_at: null };
         byCategory[category] = entry;
+        recentByCategory[category] = recent;
         entry.total += 1;
         diagnosticsTotal += 1;
-        if (Number.isFinite(epochMs) && epochMs >= dayAgoMs) {
-          entry.last_24h += 1;
-          diagnostics24h += 1;
+        if (Number.isFinite(epochMs)) {
+          const recordedAt = new Date(epochMs).toISOString();
+          if (!recent.latest_at || epochMs > Date.parse(recent.latest_at)) {
+            recent.latest_at = recordedAt;
+          }
+          latestDiagnosticMs = Math.max(latestDiagnosticMs, epochMs);
+          if (epochMs >= dayAgoMs) {
+            entry.last_24h += 1;
+            diagnostics24h += 1;
+          }
+          if (epochMs >= hourAgoMs) {
+            recent.last_1h += 1;
+            diagnostics1h += 1;
+          }
         }
       }
     }
@@ -3363,7 +3393,12 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
     diagnostics_spool: {
       total: diagnosticsTotal,
       last_24h: diagnostics24h,
+      last_1h: diagnostics1h,
+      latest_at: Number.isFinite(latestDiagnosticMs)
+        ? new Date(latestDiagnosticMs).toISOString()
+        : null,
       by_category: byCategory,
+      recent_by_category: recentByCategory,
     },
     span_pressure: spanPressure,
     collection_errors: collectionErrors,
@@ -3371,27 +3406,59 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
 }
 
 /** Tally agent-hook failures (.harnery/debug/agent-hook.errors.ndjson) in the
- * window, grouped by `phase`. Each line is {ts, error, phase, ...}. A dominant
- * phase points straight at a systemic hook bug. */
-function readHookErrors(
+ * window by exact error and phase, while separating current-hour failures from
+ * historical rows. Each line is {ts, error, phase, ...}. */
+export function readHookErrors(
   root: string,
   cutoffMs: number,
+  nowMs = Date.now(),
 ): {
   total: number;
+  last1h: number;
+  latestAt: string | null;
   byPhase: Record<string, number>;
+  byError: Record<string, number>;
   top: Array<{ phase: string; count: number; sample: string }>;
+  topErrors: Array<{ error: string; count: number; phase: string }>;
+  recentTopErrors: Array<{ error: string; count: number; phase: string }>;
 } {
   const p = resolve(root, ".harnery", "debug", "agent-hook.errors.ndjson");
   const byPhase: Record<string, number> = {};
+  const byError: Record<string, number> = {};
   const sampleByPhase: Record<string, string> = {};
+  const errorPhaseCounts = new Map<string, { error: string; phase: string; count: number }>();
+  const recentErrorPhaseCounts = new Map<string, { error: string; phase: string; count: number }>();
   let total = 0;
-  if (!existsSync(p)) return { total: 0, byPhase, top: [] };
+  let last1h = 0;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  if (!existsSync(p)) {
+    return {
+      total: 0,
+      last1h: 0,
+      latestAt: null,
+      byPhase,
+      byError,
+      top: [],
+      topErrors: [],
+      recentTopErrors: [],
+    };
+  }
   let raw: string;
   try {
     raw = readFileSync(p, "utf8");
   } catch {
-    return { total: 0, byPhase, top: [] };
+    return {
+      total: 0,
+      last1h: 0,
+      latestAt: null,
+      byPhase,
+      byError,
+      top: [],
+      topErrors: [],
+      recentTopErrors: [],
+    };
   }
+  const hourAgoMs = nowMs - 60 * 60 * 1000;
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -3399,8 +3466,21 @@ function readHookErrors(
       const tsMs = e.ts ? Date.parse(e.ts) : Number.NaN;
       if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
       const phase = e.phase ?? "(unknown)";
+      const error = e.error ?? "(unknown)";
       byPhase[phase] = (byPhase[phase] ?? 0) + 1;
+      byError[error] = (byError[error] ?? 0) + 1;
       if (!sampleByPhase[phase] && e.error) sampleByPhase[phase] = e.error;
+      const errorPhaseKey = `${error}\0${phase}`;
+      const errorPhase = errorPhaseCounts.get(errorPhaseKey) ?? { error, phase, count: 0 };
+      errorPhase.count += 1;
+      errorPhaseCounts.set(errorPhaseKey, errorPhase);
+      latestMs = Math.max(latestMs, tsMs);
+      if (tsMs >= hourAgoMs) {
+        last1h += 1;
+        const recent = recentErrorPhaseCounts.get(errorPhaseKey) ?? { error, phase, count: 0 };
+        recent.count += 1;
+        recentErrorPhaseCounts.set(errorPhaseKey, recent);
+      }
       total++;
     } catch {
       /* skip malformed */
@@ -3410,7 +3490,22 @@ function readHookErrors(
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([phase, count]) => ({ phase, count, sample: sampleByPhase[phase] ?? "" }));
-  return { total, byPhase, top };
+  const topErrors = [...errorPhaseCounts.values()]
+    .sort((left, right) => right.count - left.count || left.error.localeCompare(right.error))
+    .slice(0, 5);
+  const recentTopErrors = [...recentErrorPhaseCounts.values()]
+    .sort((left, right) => right.count - left.count || left.error.localeCompare(right.error))
+    .slice(0, 5);
+  return {
+    total,
+    last1h,
+    latestAt: Number.isFinite(latestMs) ? new Date(latestMs).toISOString() : null,
+    byPhase,
+    byError,
+    top,
+    topErrors,
+    recentTopErrors,
+  };
 }
 
 /** Canonical event stream size + drain lag (events appended after the cursor). */
@@ -3804,6 +3899,90 @@ function runTrace(
   }
 }
 
+export interface ActiveAgentHealthSummary {
+  source: "heartbeat-cache" | "event-ledger-v2";
+  total: number;
+  by_platform: Record<string, number>;
+  by_kind: Record<string, number>;
+  by_schema_version: Record<string, number>;
+  stale: number;
+}
+
+type ActiveHealthHeartbeat = {
+  instance_id: string;
+  platform?: string;
+  kind?: string;
+  schema_version?: number;
+  last_heartbeat?: string;
+};
+
+/**
+ * V2 generations, not disposable heartbeat caches, are the active-agent
+ * authority after cutover. V1 retains the legacy cache scan.
+ */
+export function collectActiveAgentHealth(
+  root: string,
+  nowMs = Date.now(),
+): ActiveAgentHealthSummary {
+  let source: ActiveAgentHealthSummary["source"] = "heartbeat-cache";
+  let heartbeats: ActiveHealthHeartbeat[] = [];
+  try {
+    const control = readEventV2ControlState(root);
+    if (control.state === "candidate" || control.state === "active") {
+      source = "event-ledger-v2";
+      heartbeats = readLiveCoordinationRows(root);
+    }
+  } catch {
+    // The event-ledger section reports the authority read failure. Do not
+    // substitute stale cache rows for a live V2 route.
+    source = "event-ledger-v2";
+  }
+  if (source === "heartbeat-cache") {
+    const activeDir = resolve(root, ".harnery/active");
+    if (existsSync(activeDir)) {
+      for (const file of readdirSync(activeDir)) {
+        if (!file.endsWith(".json")) continue;
+        try {
+          const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
+          if (parsed && typeof parsed.instance_id === "string")
+            heartbeats.push(parsed as ActiveHealthHeartbeat);
+        } catch {
+          // Broken cache rows are reported by the zombie counter.
+        }
+      }
+    }
+  }
+
+  const byPlatform: Record<string, number> = {};
+  const byKind: Record<string, number> = {};
+  const bySchema: Record<string, number> = {};
+  let stale = 0;
+  for (const heartbeat of heartbeats) {
+    const platform = formatPlatformLabel(heartbeat.platform);
+    byPlatform[platform] = (byPlatform[platform] ?? 0) + 1;
+    const kind = heartbeat.kind ?? "unknown";
+    byKind[kind] = (byKind[kind] ?? 0) + 1;
+    const schemaVersion = (heartbeat as { schema_version?: number }).schema_version;
+    const schemaKey = schemaVersion === undefined ? "v0" : `v${schemaVersion}`;
+    bySchema[schemaKey] = (bySchema[schemaKey] ?? 0) + 1;
+    const lastObservedMs = heartbeat.last_heartbeat
+      ? Date.parse(heartbeat.last_heartbeat)
+      : Number.NaN;
+    const ageMs = Number.isFinite(lastObservedMs)
+      ? nowMs - lastObservedMs
+      : Number.POSITIVE_INFINITY;
+    if (ageMs > freshnessCutoffSecs() * 1000) stale += 1;
+  }
+  return {
+    source,
+    total: heartbeats.length,
+    by_platform: byPlatform,
+    by_kind: byKind,
+    by_schema_version: bySchema,
+    stale,
+  };
+}
+
 function runHealth(opts: { since: string; json?: boolean }): void {
   if (opts.json) emit.config({ format: "json" });
 
@@ -3825,7 +4004,8 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     process.exit(1);
   }
 
-  const cutoffMs = Date.now() - sinceSecs * 1000;
+  const nowMs = Date.now();
+  const cutoffMs = nowMs - sinceSecs * 1000;
   const activeDir = resolve(root, ".harnery/active");
   const councilsDir = resolve(root, ".harnery/councils");
 
@@ -3865,7 +4045,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     }
   }
 
-  const hookErrors = readHookErrors(root, cutoffMs);
+  const hookErrors = readHookErrors(root, cutoffMs, nowMs);
   const stream = readStreamStats(root);
   const eventLedger = collectEventLedgerHealthV2(root);
 
@@ -3887,19 +4067,13 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     .slice(0, 5)
     .map(([agent, count]) => ({ agent, count }));
 
-  // Active heartbeats: scan ALL files in active/, classify fresh vs stale ourselves.
-  const activeByPlatform: Record<string, number> = {};
-  const activeByKind: Record<string, number> = {};
-  const activeBySchema: Record<string, number> = {};
-  let activeTotal = 0;
-  let staleHeartbeats = 0;
+  const activeAgents = collectActiveAgentHealth(root, nowMs);
   // Zombies: files in active/ that are broken: unparseable, nameless, or an
   // absurd (epoch-ish) last_heartbeat. These show as `agent-unknown` ghosts and
   // mean dead files the sweep isn't reaping.
   let zombieCount = 0;
   const zombieSamples: string[] = [];
   const ABSURD_AGE_MS = 24 * 60 * 60 * 1000; // > 1 day = clearly not a live, self-healing agent
-  const nowMs = Date.now();
   if (existsSync(activeDir)) {
     for (const file of readdirSync(activeDir)) {
       if (!file.endsWith(".json")) continue;
@@ -3916,17 +4090,8 @@ function runHealth(opts: { since: string; json?: boolean }): void {
           zombieSamples.push(`${idFromFile.slice(0, 12)} (unparseable/no-id)`);
         continue;
       }
-      activeTotal++;
-      const platform = formatPlatformLabel(hb.platform);
-      activeByPlatform[platform] = (activeByPlatform[platform] ?? 0) + 1;
-      const kind = hb.kind ?? "unknown";
-      activeByKind[kind] = (activeByKind[kind] ?? 0) + 1;
-      const sv = (hb as { schema_version?: number }).schema_version;
-      const schemaKey = sv === undefined ? "v0" : `v${sv}`;
-      activeBySchema[schemaKey] = (activeBySchema[schemaKey] ?? 0) + 1;
       const lastHbMs = hb.last_heartbeat ? Date.parse(hb.last_heartbeat) : Number.NaN;
       const ageMs = Number.isFinite(lastHbMs) ? nowMs - lastHbMs : Number.POSITIVE_INFINITY;
-      if (ageMs > freshnessCutoffSecs() * 1000) staleHeartbeats++;
       // Zombie heuristics on a parseable heartbeat: no name, or an age so large
       // it can only be a broken/epoch timestamp (a real agent would have healed).
       if (!hb.name || hb.name === "unknown" || ageMs > ABSURD_AGE_MS) {
@@ -3958,26 +4123,31 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       );
     }
   }
-  if (staleHeartbeats > 0) {
+  if (activeAgents.stale > 0) {
+    const noun = activeAgents.source === "event-ledger-v2" ? "V2 generation" : "heartbeat";
+    const action =
+      activeAgents.source === "event-ledger-v2"
+        ? "lifecycle reconciliation may be delayed"
+        : "heal mechanism may not be firing";
     anomalies.push(
-      `${staleHeartbeats} active heartbeat(s) older than ${Math.floor(freshnessCutoffSecs() / 60)}min; heal mechanism may not be firing`,
+      `${activeAgents.stale} active ${noun}(s) without activity for ${Math.floor(freshnessCutoffSecs() / 60)}min; ${action}`,
     );
   }
-  const unexpectedSchemas = Object.keys(activeBySchema).filter((k) => k !== "v1");
+  const expectedSchema = activeAgents.source === "event-ledger-v2" ? "v2" : "v1";
+  const unexpectedSchemas = Object.keys(activeAgents.by_schema_version).filter(
+    (schema) => schema !== expectedSchema,
+  );
   if (unexpectedSchemas.length > 0) {
     anomalies.push(
-      `Unexpected heartbeat schema versions in use: ${unexpectedSchemas.join(", ")} (expected v1)`,
+      `Unexpected active-agent schema versions in use: ${unexpectedSchemas.join(", ")} (expected ${expectedSchema})`,
     );
   }
-  // agent-hook failures: a dominant phase is the fastest pointer to a systemic
-  // hook bug (this is the signal that would have surfaced the stop-projection
-  // crash immediately instead of after an hour of log-grepping).
-  if (hookErrors.total > 0) {
-    const top = hookErrors.top[0];
-    const detail = top
-      ? `: top phase '${top.phase}' x${top.count}${top.sample ? ` (${top.sample.slice(0, 80)})` : ""}`
-      : "";
-    anomalies.push(`agent-hook errored ${hookErrors.total}x in ${opts.since}${detail}`);
+  // Only recent hook failures are active anomalies. Historical rows remain in
+  // the report with exact error signatures and their latest timestamp.
+  if (hookErrors.last1h > 0) {
+    const top = hookErrors.recentTopErrors[0];
+    const detail = top ? `: top '${top.error.slice(0, 80)}' x${top.count} (${top.phase})` : "";
+    anomalies.push(`agent-hook errored ${hookErrors.last1h}x in the last hour${detail}`);
   }
   if (stream.cursor_backlog > 500) {
     anomalies.push(
@@ -4040,11 +4210,12 @@ function runHealth(opts: { since: string; json?: boolean }): void {
           : {}),
     },
     active_agents: {
-      total: activeTotal,
-      by_platform: activeByPlatform,
-      by_kind: activeByKind,
-      by_schema_version: activeBySchema,
-      stale: staleHeartbeats,
+      source: activeAgents.source,
+      total: activeAgents.total,
+      by_platform: activeAgents.by_platform,
+      by_kind: activeAgents.by_kind,
+      by_schema_version: activeAgents.by_schema_version,
+      stale: activeAgents.stale,
     },
     heal_events: {
       total: heal.length,
@@ -4060,7 +4231,16 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       closed_in_window: councilClosed,
     },
     swept_events: { total: sweptTotal, by_reason: sweptByReason },
-    hook_errors: { total: hookErrors.total, by_phase: hookErrors.byPhase, top: hookErrors.top },
+    hook_errors: {
+      total: hookErrors.total,
+      last_1h: hookErrors.last1h,
+      latest_at: hookErrors.latestAt,
+      by_phase: hookErrors.byPhase,
+      by_error: hookErrors.byError,
+      top: hookErrors.top,
+      top_errors: hookErrors.topErrors,
+      recent_top_errors: hookErrors.recentTopErrors,
+    },
     stream,
     zombies: { count: zombieCount, samples: zombieSamples },
     event_ledger: eventLedger,
@@ -4105,7 +4285,9 @@ function renderHealthBox(report: HealthReport): void {
   if (report.councils.archived_in_window > 0)
     councilParts.push(`${report.councils.archived_in_window} archived`);
 
-  const activeStr = `${report.active_agents.total}${platforms ? ` (${platforms})` : ""}${schemas ? ` · ${schemas}` : ""}${report.active_agents.stale > 0 ? ` · ${report.active_agents.stale} stale` : ""}`;
+  const activeSource =
+    report.active_agents.source === "event-ledger-v2" ? "ledger" : "heartbeat cache";
+  const activeStr = `${report.active_agents.total}${platforms ? ` (${platforms})` : ""}${schemas ? ` · ${schemas}` : ""}${report.active_agents.stale > 0 ? ` · ${report.active_agents.stale} stale` : ""} · ${activeSource}`;
 
   const sweptReasonStr = Object.entries(report.swept_events.by_reason)
     .map(([r, n]) => `${r} ${n}`)
@@ -4113,7 +4295,7 @@ function renderHealthBox(report: HealthReport): void {
   const hookErrStr =
     report.hook_errors.total === 0
       ? "0"
-      : `${report.hook_errors.total}${report.hook_errors.top[0] ? ` (${report.hook_errors.top[0].phase} x${report.hook_errors.top[0].count})` : ""}`;
+      : `${report.hook_errors.total} in window · ${report.hook_errors.last_1h} in 1h`;
   const streamStr = `${(report.stream.bytes / 1048576).toFixed(1)}MB · ${report.stream.lines} lines · ${report.stream.cursor_backlog} behind`;
 
   const ledger = report.event_ledger;
@@ -4133,7 +4315,7 @@ function renderHealthBox(report: HealthReport): void {
       `open spans ${ledger.open_spans.total}${orphanGenerations > 0 ? ` (${orphanGenerations} gen turn-closed)` : ""}`,
       `pending ends ${ledger.pending_finalizations.length}${pendingAges ? ` (${pendingAges})` : ""}`,
       `intake ${ledger.intake_spool.total}`,
-      `diagnostics ${ledger.diagnostics_spool.total}${ledger.diagnostics_spool.last_24h > 0 ? ` (${ledger.diagnostics_spool.last_24h} in 24h)` : ""}`,
+      `diagnostics ${ledger.diagnostics_spool.total} (${ledger.diagnostics_spool.last_1h} in 1h / ${ledger.diagnostics_spool.last_24h} in 24h)`,
     ].join(" · ");
   }
 

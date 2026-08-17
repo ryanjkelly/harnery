@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalJsonV2, sha256V2 } from "../events/v2/canonical.ts";
@@ -106,6 +114,35 @@ describe("session event live ledger routing", () => {
     expect(readFileSync(join(root, ".harnery/ledgers/v2/active.ndjson"), "utf8")).not.toContain(
       secret,
     );
+  });
+
+  test("classifies a command outside an open turn as unjoinable", () => {
+    const root = candidateRoot();
+    const instanceId = "agent-v2-no-turn";
+    process.env.HARNERY_EVENTS_PATH = join(root, ".harnery/session-events.ndjson");
+    const route = resolveLiveEventLedgerRouteV2(root);
+    if (route.state !== "v2") throw new Error("expected V2 route");
+    expect(
+      recordLiveHookSignalV2({
+        coordRoot: root,
+        route,
+        eventName: "session-start",
+        payload: { session_id: "native-v2-no-turn", raw: {} },
+        adapter: "claude-code",
+        instanceId,
+      }).state,
+    ).toBe("recorded");
+
+    writeSessionEvent("command_start", {
+      instance_id: instanceId,
+      cmd_id: "cmd-no-turn",
+      cmd: "acme agents status",
+      intent: "inspect status",
+    });
+
+    const diagnostics = readdirSync(join(root, ".harnery/ledgers/v2/diagnostics"));
+    expect(diagnostics.some((name) => name.startsWith("command_emit_unjoinable-"))).toBeTrue();
+    expect(diagnostics.some((name) => name.startsWith("command_emit_rejected-"))).toBeFalse();
   });
 });
 
