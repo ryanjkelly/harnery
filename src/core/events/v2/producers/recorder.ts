@@ -1017,7 +1017,6 @@ export function recordApprovedSessionEndV2(
         },
       },
       observed_at: input.observed_at,
-      monotonic_ns: process.hrtime.bigint().toString(),
       clock_id: state.clock_id,
       payload: {
         outcome: input.outcome,

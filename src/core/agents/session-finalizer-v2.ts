@@ -145,6 +145,7 @@ export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
   if (route.state !== "v2") {
     return { state: "unavailable" as const, reason: route.state === "v1" ? "v1" : route.reason };
   }
+  const observedAt = input.observed_at ?? new Date().toISOString();
   try {
     closeAbandonedCommandSpansV2({
       coordRoot: input.coordRoot,
@@ -152,6 +153,7 @@ export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
       generation_id: input.generation_id,
       build_id: route.build_id,
       platform: livePlatformV2(),
+      observed_at: observedAt,
     });
   } catch {
     // Command spans never block a session end; the closer is best effort.
@@ -165,7 +167,7 @@ export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
     platform: livePlatformV2(),
     reason: "approved_explicit_end",
     outcome: input.outcome ?? "succeeded",
-    observed_at: input.observed_at,
+    observed_at: observedAt,
     coordination_finalized: input.coordination_finalized,
     confidence: "exact",
   });
@@ -479,6 +481,7 @@ export function reconcileSessionFinalizationV2(
           generation_id: request.generation_id,
           build_id: route.build_id,
           platform: livePlatformV2(),
+          observed_at: now.toISOString(),
         });
       } catch {
         result.diagnostics.push(`command_closer_failed:${request.request_id}`);

@@ -17,7 +17,7 @@ import { loadOrCreateFingerprintKeyStoreV2 } from "../fingerprint-keys.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "../generated.ts";
 import { readActiveLedgerV2 } from "../reader.ts";
 import { eventV2Paths } from "../writer.ts";
-import { recordCommandSignalV2 } from "./command-recorder.ts";
+import { closeAbandonedCommandSpansV2, recordCommandSignalV2 } from "./command-recorder.ts";
 import { recordHookSignalV2 } from "./recorder.ts";
 
 const roots: string[] = [];
@@ -152,7 +152,46 @@ describe("event ledger V2 persistent session-tee recorder", () => {
     expect(commandEvents).toHaveLength(1);
     expect(commandEvents[0]?.event.event_type).toBe("command.started");
   });
+
+  test("recovers an abandoned command without reusing process-local monotonic time", () => {
+    const root = startedTurnRoot();
+    expect(
+      recordCommandSignalV2({
+        ...commandInput(root, "command-start"),
+        monotonic_ns: "999999999999",
+      }).state,
+    ).toBe("recorded");
+    const observedAt = new Date(Date.now() + 1_000).toISOString();
+
+    expect(
+      closeAbandonedCommandSpansV2({
+        coordRoot: root,
+        mode: "candidate",
+        generation_id: commandGeneration(root),
+        build_id: "build_fixture",
+        platform: "linux",
+        observed_at: observedAt,
+      }),
+    ).toEqual({ closed: 1, skipped: 0 });
+
+    const ledger = readActiveLedgerV2(root);
+    expect(ledger.diagnostics).toEqual([]);
+    const completion = ledger.events.find(
+      ({ event }) =>
+        event.event_type === "command.completed" && event.payload.outcome === "unknown",
+    )?.event;
+    expect(completion?.time.observed_at).toBe(observedAt);
+    expect(completion?.time.monotonic_ns).toBeUndefined();
+  });
 });
+
+function commandGeneration(root: string): `gen_${string}` {
+  const started = readActiveLedgerV2(root).events.find(
+    ({ event }) => event.event_type === "command.started",
+  )?.event;
+  if (!started || !("generation_id" in started.scope)) throw new Error("command start missing");
+  return started.scope.generation_id as `gen_${string}`;
+}
 
 function startedTurnRoot(): string {
   const root = candidateRoot();

@@ -206,6 +206,7 @@ export interface CloseAbandonedCommandSpansV2Input {
   generation_id: `gen_${string}`;
   build_id: `build_${string}`;
   platform: "linux" | "windows" | "macos" | "unknown";
+  observed_at: string;
   writerOptions?: WriteEventV2Options;
 }
 
@@ -303,7 +304,7 @@ export function closeAbandonedCommandSpansV2(
             subject_instance_id: state.instance_id,
           },
         },
-        monotonic_ns: process.hrtime.bigint().toString(),
+        observed_at: input.observed_at,
         clock_id: state.clock_id,
         payload: {
           outcome: "unknown",
