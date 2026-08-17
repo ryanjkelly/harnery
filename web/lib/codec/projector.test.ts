@@ -24,6 +24,7 @@ function snapshot(active: Heartbeat[], stale: Heartbeat[] = []): AgentsSnapshot 
   return {
     active,
     stale,
+    terminal: [],
     claims: [],
     meta: { scanned_dir: "/tmp", count: active.length + stale.length, invalid: [], stale_threshold_seconds: 300 },
   };

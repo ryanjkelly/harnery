@@ -22,8 +22,15 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { type AgentActivity, applySessionStateEvent, type TaskState } from "harnery/core/agents";
+import { listSessionFinalizationRequestsV2 } from "../../src/core/agents/session-finalizer-v2";
 import { readEventV2ControlState } from "../../src/core/events/v2/control";
-import { readLedgerV2 } from "../../src/core/events/v2/reader";
+import {
+  type CoordinationGenerationViewV2,
+  projectCoordinationViewV2,
+} from "../../src/core/events/v2/coordination-view";
+import { liveInstanceIdV2 } from "../../src/core/events/v2/live-routing";
+import { listHookProducerStateRecordsV2 } from "../../src/core/events/v2/producers/recorder";
+import { readActiveLedgerV2, readLedgerV2 } from "../../src/core/events/v2/reader";
 import {
   buildContributionMatrix,
   type ContributionMatrix,
@@ -104,6 +111,20 @@ export interface Heartbeat {
   last_tool_target?: string | null;
   model?: string | null;
   age_seconds: number;
+  coord_source?: "heartbeat" | "ledger";
+  ledger_state?: AgentLedgerStateV2;
+  generation_id?: string;
+  open_span_count?: number;
+}
+
+export type AgentLedgerStateV2 = "live" | "ending" | "recovery-required" | "terminal";
+
+export interface AgentLedgerRecordV2 {
+  instance_id: string;
+  generation_id: string;
+  state: AgentLedgerStateV2;
+  open_span_count: number;
+  generation: CoordinationGenerationViewV2;
 }
 
 export interface InvalidHeartbeat {
@@ -114,6 +135,7 @@ export interface InvalidHeartbeat {
 export interface AgentsSnapshot {
   active: Heartbeat[];
   stale: Heartbeat[];
+  terminal: Heartbeat[];
   claims: ClaimRow[];
   meta: {
     scanned_dir: string;
@@ -189,8 +211,30 @@ function readHeartbeats(): { all: Heartbeat[]; invalid: InvalidHeartbeat[]; dir:
 export function readAgents(): AgentsSnapshot {
   const { all, invalid, dir } = readHeartbeats();
 
+  const ledgerRecords = readAgentLedgerRecordsV2();
+  const represented = new Set<string>();
+  for (const heartbeat of all) {
+    heartbeat.coord_source = "heartbeat";
+    const canonicalId = liveInstanceIdV2(heartbeat.instance_id);
+    const record = ledgerRecords.get(heartbeat.instance_id) ?? ledgerRecords.get(canonicalId);
+    if (!record) continue;
+    represented.add(record.instance_id);
+    heartbeat.ledger_state = record.state;
+    heartbeat.generation_id = record.generation_id;
+    heartbeat.open_span_count = record.open_span_count;
+  }
+  for (const record of ledgerRecords.values()) {
+    if (record.state === "terminal" || represented.has(record.instance_id)) continue;
+    all.push(heartbeatFromLedgerRecord(record));
+  }
+  all.sort((a, b) => b.last_heartbeat.localeCompare(a.last_heartbeat));
+
   const active = all.filter((h) => h.age_seconds < STALE_AGE_SECONDS);
   const stale = all.filter((h) => h.age_seconds >= STALE_AGE_SECONDS);
+  const terminal = [...ledgerRecords.values()]
+    .filter((record) => record.state === "terminal" && !represented.has(record.instance_id))
+    .map(heartbeatFromLedgerRecord)
+    .sort((a, b) => b.last_heartbeat.localeCompare(a.last_heartbeat));
 
   const claims: ClaimRow[] = [];
   for (const hb of all) {
@@ -208,6 +252,7 @@ export function readAgents(): AgentsSnapshot {
   return {
     active,
     stale,
+    terminal,
     claims,
     meta: {
       scanned_dir: dir,
@@ -219,8 +264,14 @@ export function readAgents(): AgentsSnapshot {
 }
 
 export function readAgent(instanceId: string): Heartbeat | null {
-  const { all } = readHeartbeats();
-  return all.find((h) => h.instance_id === instanceId) ?? null;
+  const snapshot = readAgents();
+  return (
+    [...snapshot.active, ...snapshot.stale].find(
+      (heartbeat) =>
+        heartbeat.instance_id === instanceId ||
+        liveInstanceIdV2(heartbeat.instance_id) === instanceId,
+    ) ?? null
+  );
 }
 
 /**
@@ -242,6 +293,9 @@ export function readAgent(instanceId: string): Heartbeat | null {
  * Returns null when no identity exists for the instance (→ genuine notFound).
  */
 export function readEndedAgent(instanceId: string): Heartbeat | null {
+  const records = readAgentLedgerRecordsV2();
+  const terminal = records.get(instanceId) ?? records.get(liveInstanceIdV2(instanceId));
+  if (terminal?.state === "terminal") return heartbeatFromLedgerRecord(terminal);
   const identity = readInstanceIdentities()[instanceId];
   if (!identity) return null;
   // Newest event ts for this instance = best "last seen" proxy. readEvents
@@ -272,6 +326,130 @@ export function readEndedAgent(instanceId: string): Heartbeat | null {
     model: null,
     age_seconds: ageSec,
   };
+}
+
+export function classifyAgentLedgerStateV2(input: {
+  terminal: boolean;
+  pending_finalization: boolean;
+  open_span_count: number;
+  turn_open: boolean;
+}): AgentLedgerStateV2 {
+  if (input.terminal) return "terminal";
+  if (input.pending_finalization) return "ending";
+  if (input.open_span_count > 0 && !input.turn_open) return "recovery-required";
+  return "live";
+}
+
+function readAgentLedgerRecordsV2(): Map<string, AgentLedgerRecordV2> {
+  const root = coordRoot();
+  const control = readEventV2ControlState(root);
+  if (control.state !== "candidate" && control.state !== "active") return new Map();
+  try {
+    const catalogPath = path.join(root, ".harnery", "ledgers", "v2", "catalog.json");
+    const read = existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root);
+    if (!read.complete) return new Map();
+    const view = projectCoordinationViewV2(read);
+    const pending = new Set<string>(
+      listSessionFinalizationRequestsV2(root)
+        .filter((request) => request.status === "pending")
+        .map((request) => request.generation_id),
+    );
+    const openSpans = new Map<string, { count: number; turn_open: boolean }>();
+    for (const { state } of listHookProducerStateRecordsV2(root)) {
+      if (state.spans.length === 0) continue;
+      openSpans.set(state.generation_id, {
+        count: state.spans.length,
+        turn_open: Boolean(state.current_turn_id),
+      });
+    }
+    const records = new Map<string, AgentLedgerRecordV2>();
+    for (const generation of [
+      ...Object.values(view.instances),
+      ...Object.values(view.terminal_generations),
+    ]) {
+      const spans = openSpans.get(generation.generation_id) ?? { count: 0, turn_open: false };
+      const record: AgentLedgerRecordV2 = {
+        instance_id: generation.instance_id,
+        generation_id: generation.generation_id,
+        state: classifyAgentLedgerStateV2({
+          terminal: generation.phase === "terminal",
+          pending_finalization: pending.has(generation.generation_id),
+          open_span_count: spans.count,
+          turn_open: spans.turn_open,
+        }),
+        open_span_count: spans.count,
+        generation,
+      };
+      const current = records.get(generation.instance_id);
+      if (!current || current.generation.last_observed_at < generation.last_observed_at) {
+        records.set(generation.instance_id, record);
+      }
+    }
+    return records;
+  } catch {
+    return new Map();
+  }
+}
+
+function heartbeatFromLedgerRecord(record: AgentLedgerRecordV2): Heartbeat {
+  const generation = record.generation;
+  const observedAt = generation.last_observed_at;
+  const observedMs = Date.parse(observedAt);
+  const adapter = generation.runtime_attestation.adapter;
+  return {
+    instance_id: generation.instance_id,
+    name: nameForLedgerInstance(generation.instance_id),
+    kind: generation.parent_generation_id ? "subagent" : "session",
+    platform: adapter.state === "observed" ? adapter.value.id : null,
+    session_id: generation.session_id,
+    started_at: generation.started_at,
+    last_heartbeat: observedAt,
+    files_touched: generation.files_touched,
+    task: null,
+    activity: generation.activity === "terminal" ? "idle" : generation.activity,
+    activity_updated_at: observedAt,
+    activity_source: "event-v2-coordination-view",
+    task_state: normalizeTaskState(generation.task_state),
+    task_state_updated_at: observedAt,
+    task_state_reason: null,
+    turn_summary: null,
+    last_tool: null,
+    last_tool_target: null,
+    model: null,
+    age_seconds: Number.isFinite(observedMs)
+      ? Math.max(0, Math.floor((Date.now() - observedMs) / 1000))
+      : 0,
+    coord_source: "ledger",
+    ledger_state: record.state,
+    generation_id: generation.generation_id,
+    open_span_count: record.open_span_count,
+  };
+}
+
+function nameForLedgerInstance(instanceId: string): string {
+  const historyPath = path.join(harneryDir(), ".name-history");
+  if (existsSync(historyPath)) {
+    for (const line of readFileSync(historyPath, "utf8").split("\n").reverse()) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as { instance_id?: string; name?: string };
+        if (
+          entry.name &&
+          entry.instance_id &&
+          (entry.instance_id === instanceId || liveInstanceIdV2(entry.instance_id) === instanceId)
+        ) {
+          return entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
+        }
+      } catch {
+        // Ignore malformed history rows; the instance prefix remains an honest fallback.
+      }
+    }
+  }
+  return instanceId.slice(0, 8);
+}
+
+function normalizeTaskState(value: string | undefined): TaskState {
+  return value === "blocked" || value === "done" ? value : "active";
 }
 
 export interface JournalEntry {

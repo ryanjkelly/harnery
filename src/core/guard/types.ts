@@ -52,10 +52,18 @@ export type RunQualityEvidenceKind =
   | "tool_call"
   | "tool_success"
   | "tool_failure"
+  | "tool_pairing_incomplete"
+  | "command_pairing_incomplete"
+  | "recovered_terminal"
   | "context_sample"
   | "progress"
   | "compaction_started"
   | "compaction_completed";
+
+export type RunQualityCorpusCategoryV2 = Extract<
+  RunQualityEvidenceKind,
+  "tool_pairing_incomplete" | "command_pairing_incomplete" | "recovered_terminal"
+>;
 
 export interface RunQualityEvidenceEvent {
   event_id: string;

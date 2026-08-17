@@ -52,6 +52,7 @@ import {
   observeHostDisappearedV2,
   reconcileSessionFinalizationV2,
   requestSessionEndExplicitV2,
+  type SessionFinalizationRequestV2,
 } from "../core/agents/session-finalizer-v2.ts";
 import {
   buildLifecycleSuggestedName,
@@ -3482,7 +3483,7 @@ function readStreamStats(root: string): HealthReport["stream"] {
 }
 
 /** One rendered line in a trace. */
-interface TraceEntry {
+export interface TraceEntry {
   ts: string;
   event_type: string;
   detail: string;
@@ -3498,10 +3499,16 @@ export function traceInstanceIdsForEventSource(
 }
 
 /** Map a canonical event to a concise trace line, or null to drop it. */
-function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
+export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
   const d = (ev.data ?? {}) as Record<string, unknown>;
   const s = (k: string): string => (typeof d[k] === "string" ? (d[k] as string) : "");
   const clip = (v: string, n = 70): string => (v.length <= n ? v : `${v.slice(0, n - 1)}…`);
+  const recovery =
+    typeof d.recovery === "object" && d.recovery !== null
+      ? (d.recovery as { reason?: unknown })
+      : null;
+  const recoveryReason = typeof recovery?.reason === "string" ? recovery.reason : "";
+  const recoveryDetail = recoveryReason ? ` · RECOVERY reason=${recoveryReason}` : "";
   let detail = "";
   switch (ev.event_type) {
     case "session.start":
@@ -3538,10 +3545,14 @@ function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
       detail = `${s("tool_name")}${s("tool_target") || s("intent") ? ` · ${clip(s("tool_target") || s("intent"), 60)}` : ""}`;
       break;
     case "tool.requested":
-      detail = "tool requested (content omitted)";
+      detail = `tool requested (content omitted)${recoveryDetail}`;
       break;
     case "tool.completed":
-      detail = `outcome=${s("outcome") || "unknown"}`;
+      detail = `outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
+      break;
+    case "command.completed":
+      if (!allTools && !recoveryReason) return null;
+      detail = `outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
       break;
     case "state.task_set":
       detail = d.cleared ? "(cleared)" : clip(s("task"));
@@ -3603,6 +3614,19 @@ function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
       return null;
   }
   return { ts: ev.ts, event_type: ev.event_type, detail };
+}
+
+export function pendingFinalizationTraceEntries(
+  requests: readonly SessionFinalizationRequestV2[],
+  instanceId: string,
+): TraceEntry[] {
+  return requests
+    .filter((request) => request.status === "pending" && request.instance_id === instanceId)
+    .map((request) => ({
+      ts: request.observed_at,
+      event_type: "session.finalization_pending",
+      detail: `trigger=${request.trigger} · request=${request.request_id}${request.allowed_open_span_ids?.length ? ` · allowed_open_spans=${request.allowed_open_span_ids.length}` : ""}`,
+    }));
 }
 
 function runTrace(
@@ -3706,9 +3730,23 @@ function runTrace(
       diagnosticRead.reason = "V2 coordination projection is unavailable";
     }
   }
-  const lines = events
-    .map((ev) => traceLine(ev, !!opts.allTools))
-    .filter((l): l is TraceEntry => l !== null)
+  let pendingFinalizations: SessionFinalizationRequestV2[] = [];
+  if (diagnosticRead.source === "v2") {
+    try {
+      pendingFinalizations = listSessionFinalizationRequestsV2(root).filter(
+        (request) => request.status === "pending" && request.instance_id === resolvedId,
+      );
+    } catch {
+      diagnosticRead.authoritative = false;
+      diagnosticRead.reason = "V2 finalization requests are unreadable";
+    }
+  }
+  const lines = [
+    ...events
+      .map((ev) => traceLine(ev, !!opts.allTools))
+      .filter((l): l is TraceEntry => l !== null),
+    ...pendingFinalizationTraceEntries(pendingFinalizations, resolvedId),
+  ]
     // Sort by timestamp, not file order: codex replays events (original ts,
     // appended later), so append-order ≠ chronological order.
     .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
@@ -3731,6 +3769,7 @@ function runTrace(
     name: displayName,
     instance_id: resolvedId,
     other_instances: candidateIds.filter((id) => id !== resolvedId),
+    pending_finalizations: pendingFinalizations,
     total_events: events.length,
     activity: state.activity,
     activity_updated_at: state.activity_updated_at ?? null,

@@ -146,6 +146,10 @@ function applyEvidence(
         input.config.thresholds.compaction_grace_seconds,
       );
       return true;
+    case "tool_pairing_incomplete":
+    case "command_pairing_incomplete":
+    case "recovered_terminal":
+      return false;
   }
 }
 

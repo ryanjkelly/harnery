@@ -2,7 +2,11 @@ export { DEFAULT_RUN_QUALITY_CONFIG, readRunQualityConfig } from "./config.ts";
 export type { RunQualityEvaluationResult } from "./coordinator.ts";
 export { evaluateRunQualityIfDue } from "./coordinator.ts";
 export { evaluateRunQuality } from "./evaluator.ts";
-export { normalizeRunQualityEventV2 } from "./evidence-v2.ts";
+export {
+  isRunQualityCorpusCategoryV2,
+  normalizeRunQualityEventV2,
+  normalizeRunQualityPairingV2,
+} from "./evidence-v2.ts";
 export type {
   RunQualityLiveGenerationV2,
   RunQualityLiveSourceV2,
@@ -20,6 +24,7 @@ export type {
   EvaluateRunQualityInput,
   RunQualityConfig,
   RunQualityConfigResult,
+  RunQualityCorpusCategoryV2,
   RunQualityEvidenceEvent,
   RunQualityMode,
   RunQualityRoleWait,

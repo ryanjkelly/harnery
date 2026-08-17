@@ -36,6 +36,24 @@ describe("V2 live run-quality source", () => {
       "tool_call",
       "tool_success",
     ]);
+    expect(source.generations[0]?.corpus_categories).toEqual([]);
+  });
+
+  test("keeps pairing categories separate from behavioral evidence", () => {
+    const fixture = generationFixture("codex");
+    const incomplete = fixture.events.filter((event) => event.event_type !== "tool.completed");
+    const source = projectRunQualityLiveSourceV2(
+      completeRead(incomplete),
+      "gex_fixture",
+      "active",
+      new Date("2026-08-16T20:00:00.000Z"),
+    );
+
+    expect(source.generations[0]?.corpus_categories).toEqual(["tool_pairing_incomplete"]);
+    expect(source.generations[0]?.events.map(({ kind }) => kind)).toEqual([
+      "progress",
+      "tool_call",
+    ]);
   });
 
   test("preserves unresolved adapter identity instead of coercing it", () => {

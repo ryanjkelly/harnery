@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildEventV2, type EventV2, eventIdV2 } from "../events/v2/index.ts";
-import { normalizeRunQualityEventV2 } from "./evidence-v2.ts";
+import { normalizeRunQualityEventV2, normalizeRunQualityPairingV2 } from "./evidence-v2.ts";
 
 describe("shared V2 run-quality evidence adapter", () => {
   test("normalizes hashes without exposing fingerprint metadata", () => {
@@ -91,6 +91,57 @@ describe("shared V2 run-quality evidence adapter", () => {
     expect(
       normalizeRunQualityEventV2(observed, new Map([[completed.event_id, completed]])),
     ).toEqual([expect.objectContaining({ event_id: observed.event_id, kind: "progress" })]);
+  });
+
+  test("separates recovered terminals and tool/command pairing gaps", () => {
+    const toolRequested = buildEventV2("tool.requested", {
+      ...common(1),
+      links: { caused_by: [], span_id: "span_tool_fixture" },
+      payload: {
+        tool: { namespace: "fixture", name: "Read" },
+        input: { storage: "omitted", media_type: "application/json", bytes: 4 },
+        exact_input: fingerprint("a"),
+        targets: [],
+      },
+    });
+    const commandStarted = buildEventV2("command.started", {
+      ...common(2),
+      links: { caused_by: [], span_id: "span_command_fixture" },
+      payload: {
+        executable: "fixture",
+        executable_class: "fixture",
+        exact_command: fingerprint("b"),
+        intent_kind: "test",
+        intent_length: 4,
+        sensitive_argument_count: 0,
+      },
+    });
+    const recovered = buildEventV2("command.completed", {
+      ...common(1),
+      producer: {
+        ...common(1).producer,
+        boot_id: "boot_recovery",
+        component: "recovery",
+      },
+      links: { caused_by: [], span_id: "span_recovered_fixture" },
+      provenance: {
+        ...common(1).provenance,
+        attestation: "derived",
+        confidence: "medium",
+      },
+      payload: {
+        outcome: "unknown",
+        duration_ms: 0,
+        recovery: { reason: "command_completion_not_observed" },
+      },
+    });
+
+    expect(normalizeRunQualityEventV2(recovered)).toEqual([
+      expect.objectContaining({ kind: "recovered_terminal", event_id: recovered.event_id }),
+    ]);
+    expect(
+      normalizeRunQualityPairingV2([toolRequested, commandStarted]).map(({ kind }) => kind),
+    ).toEqual(["tool_pairing_incomplete", "command_pairing_incomplete"]);
   });
 });
 

@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-
+import { AgentChip } from "@/components/AgentChip";
+import { AgentLedgerStateBadge } from "@/components/AgentLedgerStateBadge";
 import { AgentStateBadges } from "@/components/AgentStateBadges";
 import { EndSessionButton } from "@/components/EndSessionButton";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
@@ -29,11 +30,7 @@ import { NO_DATA } from "@/lib/format/no-data";
 
 export const dynamic = "force-dynamic";
 
-export default async function AgentDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const decoded = decodeURIComponent(id);
   // Live heartbeat wins. When it's gone (session ended / file pruned) fall back
@@ -41,17 +38,16 @@ export default async function AgentDetailPage({
   // card's "Open" button never dead-ends at a 404 for a stale agent. Call
   // notFound only when neither a heartbeat nor a durable identity exists.
   const live = readAgent(decoded);
-  const isLive = !!live;
   const hb = live ?? readEndedAgent(decoded);
   if (!hb) notFound();
+  const hasHeartbeat = hb.coord_source !== "ledger" && !!live;
+  const isTerminal = hb.ledger_state === "terminal" || !live;
 
   const journal = readJournal(decoded);
   const journalPath = path.join(journalDir(), `${decoded}.md`);
-  const journalBody = existsSync(journalPath)
-    ? readFileSync(journalPath, "utf-8")
-    : null;
+  const journalBody = existsSync(journalPath) ? readFileSync(journalPath, "utf-8") : null;
   const archives = listJournalArchives(decoded);
-  const events = readEvents({ instanceId: decoded, limit: 60 });
+  const events = readEvents({ instanceId: hb.generation_id ? hb.instance_id : decoded, limit: 60 });
 
   return (
     <>
@@ -64,7 +60,7 @@ export default async function AgentDetailPage({
         </nav>
         <header className="mb-6 flex items-baseline justify-between flex-wrap gap-3">
           <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2 flex-wrap">
-            <span className="font-mono">agent-{hb.name}</span>
+            <AgentChip name={hb.name} />
             <Badge variant="outline">{hb.platform ?? "unknown"}</Badge>
             {hb.kind && <Badge variant="secondary">{hb.kind}</Badge>}
             <AgentStateBadges
@@ -72,14 +68,10 @@ export default async function AgentDetailPage({
               taskState={hb.task_state}
               reason={hb.task_state_reason}
             />
-            {!isLive && (
-              <Badge variant="outline" className="border-amber-500/40 text-amber-400">
-                session ended
-              </Badge>
-            )}
+            {hb.ledger_state && <AgentLedgerStateBadge state={hb.ledger_state} />}
           </h1>
           <div className="text-xs text-muted-foreground">
-            {isLive ? ageLabel(hb.age_seconds) : `last seen ${ageLabel(hb.age_seconds)}`}
+            {isTerminal ? `last seen ${ageLabel(hb.age_seconds)}` : ageLabel(hb.age_seconds)}
           </div>
         </header>
 
@@ -93,17 +85,9 @@ export default async function AgentDetailPage({
                 <span className="text-muted-foreground">instance_id</span>
                 <span className="font-mono break-all">{hb.instance_id}</span>
                 <span className="text-muted-foreground">session_id</span>
-                <span className="font-mono break-all">
-                  {hb.session_id ?? NO_DATA}
-                </span>
+                <span className="font-mono break-all">{hb.session_id ?? NO_DATA}</span>
                 <span className="text-muted-foreground">started</span>
-                <span>
-                  {hb.started_at ? (
-                    <FormattedDateTime iso={hb.started_at} />
-                  ) : (
-                    NO_DATA
-                  )}
-                </span>
+                <span>{hb.started_at ? <FormattedDateTime iso={hb.started_at} /> : NO_DATA}</span>
                 <span className="text-muted-foreground">last heartbeat</span>
                 <span>
                   <FormattedDateTime iso={hb.last_heartbeat} />
@@ -114,18 +98,11 @@ export default async function AgentDetailPage({
                 <span className="font-mono">
                   {hb.last_tool ?? NO_DATA}
                   {hb.last_tool_target && (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      · {hb.last_tool_target}
-                    </span>
+                    <span className="text-muted-foreground"> · {hb.last_tool_target}</span>
                   )}
                 </span>
                 <span className="text-muted-foreground">task</span>
-                <span>
-                  {hb.task ?? (
-                    <span className="text-muted-foreground italic">none</span>
-                  )}
-                </span>
+                <span>{hb.task ?? <span className="text-muted-foreground italic">none</span>}</span>
                 <span className="text-muted-foreground">activity</span>
                 <span>
                   {hb.activity}
@@ -140,16 +117,26 @@ export default async function AgentDetailPage({
                     <span className="text-muted-foreground">: {hb.task_state_reason}</span>
                   )}
                 </span>
+                {hb.generation_id && (
+                  <>
+                    <span className="text-muted-foreground">ledger generation</span>
+                    <span className="font-mono break-all">{hb.generation_id}</span>
+                  </>
+                )}
+                {hb.open_span_count !== undefined && hb.open_span_count > 0 && (
+                  <>
+                    <span className="text-muted-foreground">open tool spans</span>
+                    <span>{hb.open_span_count}</span>
+                  </>
+                )}
                 {hb.turn_summary && (
                   <>
                     <span className="text-muted-foreground">turn summary</span>
-                    <span className="text-muted-foreground">
-                      {hb.turn_summary}
-                    </span>
+                    <span className="text-muted-foreground">{hb.turn_summary}</span>
                   </>
                 )}
               </div>
-              {isLive && (
+              {hasHeartbeat && !isTerminal && (
                 <div className="mt-4 flex gap-2">
                   <EndSessionButton instanceId={hb.instance_id} name={hb.name} />
                 </div>
@@ -163,19 +150,12 @@ export default async function AgentDetailPage({
             </CardHeader>
             <CardContent>
               {hb.files_touched.length === 0 ? (
-                <p className="text-muted-foreground text-sm italic">
-                  No file claims.
-                </p>
+                <p className="text-muted-foreground text-sm italic">No file claims.</p>
               ) : (
                 <ul className="text-xs space-y-1 max-h-60 overflow-y-auto">
                   {hb.files_touched.map((p) => (
-                    <li
-                      key={p}
-                      className="flex items-center justify-between gap-2 group"
-                    >
-                      <span className="font-mono break-all min-w-0 flex-1">
-                        {p}
-                      </span>
+                    <li key={p} className="flex items-center justify-between gap-2 group">
+                      <span className="font-mono break-all min-w-0 flex-1">{p}</span>
                       <ReleaseClaimButton
                         instanceId={hb.instance_id}
                         path={p}
@@ -189,23 +169,16 @@ export default async function AgentDetailPage({
           </Card>
         </div>
 
-        {isLive ? (
+        {hasHeartbeat && !isTerminal ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-            <NudgeBox
-              instanceId={hb.instance_id}
-              agentName={`agent-${hb.name}`}
-            />
-            <HealActions
-              instanceId={hb.instance_id}
-              agentName={`agent-${hb.name}`}
-            />
+            <NudgeBox instanceId={hb.instance_id} agentName={`agent-${hb.name}`} />
+            <HealActions instanceId={hb.instance_id} agentName={`agent-${hb.name}`} />
           </div>
         ) : (
-          <div className="mb-4 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-muted-foreground">
-            This agent&apos;s session has ended, so this view is read-only. Identity and recent
-            activity are reconstructed from the durable event log; the live heartbeat (task, file
-            claims, model) and the heal / nudge / kill actions are unavailable. They return
-            automatically if the agent starts a new session.
+          <div className="mb-4 rounded-md border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+            This view is read-only because no live heartbeat is available. Ledger lifecycle and
+            recent activity remain visible; task, model, and operator actions return automatically
+            if the agent resumes.
           </div>
         )}
 
@@ -216,7 +189,7 @@ export default async function AgentDetailPage({
             journal={journal}
             rawBody={journalBody}
             archiveCount={archives.length}
-            readOnly={!isLive}
+            readOnly={!hasHeartbeat || isTerminal}
           />
         </div>
 

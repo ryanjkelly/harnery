@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalJsonV2, type EventV2 } from "../events/v2/index.ts";
-import type { RunQualityEvidenceEvent } from "./types.ts";
+import type { RunQualityCorpusCategoryV2, RunQualityEvidenceEvent } from "./types.ts";
 
 interface GenerationScope {
   root_id: string;
@@ -24,6 +24,7 @@ export function normalizeRunQualityEventV2(
   priorEvents: ReadonlyMap<string, EventV2> = new Map(),
 ): RunQualityEvidenceEvent[] {
   const base = { event_id: event.event_id, ts: event.time.observed_at };
+  const recovery = recoveryCategory(event, base);
   switch (event.event_type) {
     case "tool.requested":
       return [
@@ -35,6 +36,7 @@ export function normalizeRunQualityEventV2(
             event.payload.targets.map(({ fingerprint }) => fingerprint.digest),
           ),
         },
+        ...recovery,
       ];
     case "tool.completed":
       return [
@@ -42,7 +44,10 @@ export function normalizeRunQualityEventV2(
           ...base,
           kind: event.payload.outcome === "succeeded" ? "tool_success" : "tool_failure",
         },
+        ...recovery,
       ];
+    case "command.completed":
+      return recovery;
     case "turn.started":
       return [{ ...base, kind: "progress" }];
     case "progress.observed":
@@ -67,6 +72,102 @@ export function normalizeRunQualityEventV2(
     default:
       return [];
   }
+}
+
+/**
+ * Derive generation-level pairing markers from validated events. The markers
+ * are audit metadata, not behavioral guard evidence: callers keep them in a
+ * separate corpus-category dimension.
+ */
+export function normalizeRunQualityPairingV2(
+  events: readonly EventV2[],
+): RunQualityEvidenceEvent[] {
+  const spans = new Map<
+    string,
+    {
+      tool_requested: EventV2[];
+      tool_completed: EventV2[];
+      command_started: EventV2[];
+      command_completed: EventV2[];
+    }
+  >();
+  for (const event of events) {
+    if (
+      event.event_type !== "tool.requested" &&
+      event.event_type !== "tool.completed" &&
+      event.event_type !== "command.started" &&
+      event.event_type !== "command.completed"
+    ) {
+      continue;
+    }
+    const spanId = (event.links as { span_id?: string }).span_id;
+    if (!spanId) continue;
+    const span = spans.get(spanId) ?? {
+      tool_requested: [],
+      tool_completed: [],
+      command_started: [],
+      command_completed: [],
+    };
+    if (event.event_type === "tool.requested") span.tool_requested.push(event);
+    else if (event.event_type === "tool.completed") span.tool_completed.push(event);
+    else if (event.event_type === "command.started") span.command_started.push(event);
+    else span.command_completed.push(event);
+    spans.set(spanId, span);
+  }
+
+  const markers: RunQualityEvidenceEvent[] = [];
+  for (const span of spans.values()) {
+    if (
+      (span.tool_requested.length > 0 || span.tool_completed.length > 0) &&
+      (span.tool_requested.length !== 1 || span.tool_completed.length !== 1)
+    ) {
+      markers.push(
+        pairingMarker("tool_pairing_incomplete", span.tool_requested, span.tool_completed),
+      );
+    }
+    if (
+      (span.command_started.length > 0 || span.command_completed.length > 0) &&
+      (span.command_started.length !== 1 || span.command_completed.length !== 1)
+    ) {
+      markers.push(
+        pairingMarker("command_pairing_incomplete", span.command_started, span.command_completed),
+      );
+    }
+  }
+  return markers;
+}
+
+export function isRunQualityCorpusCategoryV2(
+  kind: RunQualityEvidenceEvent["kind"],
+): kind is RunQualityCorpusCategoryV2 {
+  return (
+    kind === "tool_pairing_incomplete" ||
+    kind === "command_pairing_incomplete" ||
+    kind === "recovered_terminal"
+  );
+}
+
+function recoveryCategory(
+  event: EventV2,
+  base: Pick<RunQualityEvidenceEvent, "event_id" | "ts">,
+): RunQualityEvidenceEvent[] {
+  if (!("recovery" in event.payload) || event.payload.recovery === undefined) return [];
+  return [{ ...base, kind: "recovered_terminal" }];
+}
+
+function pairingMarker(
+  kind: Extract<
+    RunQualityCorpusCategoryV2,
+    "tool_pairing_incomplete" | "command_pairing_incomplete"
+  >,
+  left: EventV2[],
+  right: EventV2[],
+): RunQualityEvidenceEvent {
+  const witness = [...left, ...right].sort(
+    (a, b) =>
+      a.time.observed_at.localeCompare(b.time.observed_at) || a.event_id.localeCompare(b.event_id),
+  )[0]!;
+  return { event_id: witness.event_id, ts: witness.time.observed_at, kind };
 }
 
 function trustedProgress(

@@ -21,13 +21,43 @@ import path from "node:path";
 import {
   __resetCoordRootCache,
   __resetIdentityIndexCache,
+  classifyAgentLedgerStateV2,
   type IdentityIndex,
   mergeIdentitiesFromChunk,
-  readEvents,
   readAgents,
   readEndedAgent,
+  readEvents,
   refreshIdentityIndex,
 } from "./coord-reader.ts";
+
+describe("V2 agent ledger states", () => {
+  test("distinguishes pending ends, orphan signatures, and terminals", () => {
+    expect(
+      classifyAgentLedgerStateV2({
+        terminal: false,
+        pending_finalization: true,
+        open_span_count: 2,
+        turn_open: false,
+      }),
+    ).toBe("ending");
+    expect(
+      classifyAgentLedgerStateV2({
+        terminal: false,
+        pending_finalization: false,
+        open_span_count: 2,
+        turn_open: false,
+      }),
+    ).toBe("recovery-required");
+    expect(
+      classifyAgentLedgerStateV2({
+        terminal: true,
+        pending_finalization: false,
+        open_span_count: 0,
+        turn_open: false,
+      }),
+    ).toBe("terminal");
+  });
+});
 
 function freshRoot(): string {
   const root = mkdtempSync(path.join(os.tmpdir(), "harn-idx-"));

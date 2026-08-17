@@ -5,8 +5,16 @@ import {
   readLedgerV2,
   reduceSafetyProjectionV2,
 } from "../events/v2/index.ts";
-import { normalizeRunQualityEventV2 } from "./evidence-v2.ts";
-import type { RunQualityEvidenceEvent, RunQualityRoleWait } from "./types.ts";
+import {
+  isRunQualityCorpusCategoryV2,
+  normalizeRunQualityEventV2,
+  normalizeRunQualityPairingV2,
+} from "./evidence-v2.ts";
+import type {
+  RunQualityCorpusCategoryV2,
+  RunQualityEvidenceEvent,
+  RunQualityRoleWait,
+} from "./types.ts";
 
 export type RunQualityLiveEpochStateV2 = "candidate" | "active";
 
@@ -16,6 +24,7 @@ export interface RunQualityLiveGenerationV2 {
   generation_id: string;
   adapter: string;
   events: RunQualityEvidenceEvent[];
+  corpus_categories: RunQualityCorpusCategoryV2[];
   role_wait: RunQualityRoleWait;
   evidence: {
     first_event_id?: string;
@@ -92,9 +101,16 @@ export function projectRunQualityLiveSourceV2(
     if (started?.event_type !== "session.started") continue;
     const prior = new Map<string, EventV2>();
     const evidenceEvents: RunQualityEvidenceEvent[] = [];
+    const corpusCategories = new Set<RunQualityCorpusCategoryV2>();
     for (const { event } of positioned) {
-      evidenceEvents.push(...normalizeRunQualityEventV2(event, prior));
+      for (const normalized of normalizeRunQualityEventV2(event, prior)) {
+        if (isRunQualityCorpusCategoryV2(normalized.kind)) corpusCategories.add(normalized.kind);
+        else evidenceEvents.push(normalized);
+      }
       prior.set(event.event_id, event);
+    }
+    for (const marker of normalizeRunQualityPairingV2(positioned.map(({ event }) => event))) {
+      if (isRunQualityCorpusCategoryV2(marker.kind)) corpusCategories.add(marker.kind);
     }
     const first = evidenceEvents[0];
     const last = evidenceEvents.at(-1);
@@ -108,6 +124,7 @@ export function projectRunQualityLiveSourceV2(
       generation_id: state.generation_id,
       adapter: observedAdapter(started),
       events: evidenceEvents,
+      corpus_categories: [...corpusCategories].sort(),
       role_wait: roleWait(state.waits, state.started_at, now),
       evidence: {
         first_event_id: first?.event_id,
