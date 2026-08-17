@@ -1826,7 +1826,22 @@ async function captureCritiqueTiles(browser: Browser, opts: BrowseOpts): Promise
     typeof opts.checkCritique === "string"
       ? await browser.elementTiles(opts.checkCritique)
       : undefined;
-  const tiles = tilesFromFullPage(buffer, { elementRects, bandHeight: band, overlap, maxTiles });
+  // Content-aware seams: atoms let band cuts snap into gaps and over-tall
+  // selector tiles band internally. Extraction failing is never fatal — the
+  // tiler falls back to fixed bands, today's behavior.
+  let atoms: Awaited<ReturnType<Browser["visualAtoms"]>> | undefined;
+  try {
+    atoms = await browser.visualAtoms();
+  } catch {
+    atoms = undefined;
+  }
+  const tiles = tilesFromFullPage(buffer, {
+    elementRects,
+    bandHeight: band,
+    overlap,
+    maxTiles,
+    atoms,
+  });
 
   if (elementRects && elementRects.length > maxTiles) {
     emit.log(

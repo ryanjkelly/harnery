@@ -120,6 +120,14 @@ export type {
   TargetSizeProfile,
   TargetSizeResult,
 } from "./target-size.js";
+export {
+  bandOversizedRect,
+  cutCost,
+  type SnapOptions,
+  type SnapSeam,
+  snappedBandRects,
+  type VisualAtom,
+} from "./tiling.js";
 export type {
   CheckVisibilityOptions,
   VisibilityResult,

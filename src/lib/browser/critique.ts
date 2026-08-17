@@ -18,6 +18,7 @@
 //      orchestration live here; the model call lives in the host.
 
 import { PNG } from "pngjs";
+import { bandOversizedRect, snappedBandRects, type VisualAtom } from "./tiling.js";
 
 export interface CritiqueTile {
   index: number;
@@ -112,6 +113,13 @@ export function bandRects(
  * resolution. Pass `elementRects` for semantic (per-element) tiling; otherwise
  * the page is banded from the actual image height. Rects are clamped to the
  * image so an off-by-one never throws.
+ *
+ * When `atoms` are supplied (see tiling.ts), band seams snap into content
+ * gaps instead of cutting at fixed offsets, and element rects taller than the
+ * band budget are banded internally rather than shipped as one over-tall tile
+ * the provider would downscale. Atom coordinates must be in the same pixel
+ * space as the screenshot (identical at deviceScaleFactor 1; scale them if
+ * the capture DPR differs).
  */
 export function tilesFromFullPage(
   fullPageBuffer: Buffer,
@@ -120,20 +128,46 @@ export function tilesFromFullPage(
     bandHeight?: number;
     overlap?: number;
     maxTiles: number;
+    atoms?: VisualAtom[];
   },
 ): CritiqueTile[] {
   const png = PNG.sync.read(fullPageBuffer);
-  const rects =
-    opts.elementRects && opts.elementRects.length > 0
-      ? opts.elementRects.map((r, index) => ({ index, ...r }))
-      : bandRects(png.height, png.width, opts.bandHeight ?? 1400, opts.overlap ?? 120).map((b) => ({
-          index: b.index,
-          label: `band ${b.index + 1}`,
-          x: b.x,
-          y: b.y,
-          width: b.width,
-          height: b.height,
-        }));
+  const snapOpts = {
+    bandHeight: opts.bandHeight ?? 1400,
+    overlap: opts.overlap ?? 120,
+  };
+  let rects: Array<{
+    index: number;
+    label: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
+  if (opts.elementRects && opts.elementRects.length > 0) {
+    const expanded = opts.atoms
+      ? opts.elementRects.flatMap((r) => bandOversizedRect(r, opts.atoms ?? [], snapOpts))
+      : opts.elementRects;
+    rects = expanded.map((r, index) => ({ index, ...r }));
+  } else if (opts.atoms && opts.atoms.length > 0) {
+    rects = snappedBandRects(0, png.height, 0, png.width, opts.atoms, snapOpts).rects.map((b) => ({
+      index: b.index,
+      label: `band ${b.index + 1}`,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+    }));
+  } else {
+    rects = bandRects(png.height, png.width, snapOpts.bandHeight, snapOpts.overlap).map((b) => ({
+      index: b.index,
+      label: `band ${b.index + 1}`,
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+    }));
+  }
   const tiles: CritiqueTile[] = [];
   for (const rect of rects.slice(0, opts.maxTiles)) {
     const sx = Math.max(0, Math.min(Math.round(rect.x), png.width - 1));

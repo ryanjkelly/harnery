@@ -627,6 +627,64 @@ export class Browser {
   }
 
   /**
+   * Extract the page's visual atoms for content-aware tiling (tiling.ts):
+   * text line boxes (one per rendered line, so a cut between the lines of a
+   * paragraph is legal), replaced/intrinsically-visual elements, and small
+   * bordered boxes (cards, callouts — height-capped so section wrappers
+   * don't count). Coordinates are document-space CSS px.
+   */
+  async visualAtoms(): Promise<
+    Array<{ kind: "text-line" | "replaced" | "box"; top: number; bottom: number }>
+  > {
+    return await this.currentPage.evaluate(() => {
+      const atoms: Array<{ kind: "text-line" | "replaced" | "box"; top: number; bottom: number }> =
+        [];
+      const sy = window.scrollY;
+
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null = walker.nextNode();
+      while (node) {
+        if (node.textContent && node.textContent.trim().length > 0) {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const r of Array.from(range.getClientRects())) {
+            if (r.height > 0 && r.width > 0) {
+              atoms.push({ kind: "text-line", top: r.top + sy, bottom: r.bottom + sy });
+            }
+          }
+        }
+        node = walker.nextNode();
+      }
+
+      for (const el of Array.from(
+        document.querySelectorAll("img, svg, canvas, video, input, button, select, textarea, hr"),
+      )) {
+        // Children of an inline <svg> are covered by the root svg's rect.
+        if (el instanceof SVGElement && el.ownerSVGElement) continue;
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.width > 0) {
+          atoms.push({ kind: "replaced", top: r.top + sy, bottom: r.bottom + sy });
+        }
+      }
+
+      for (const el of Array.from(document.body.querySelectorAll("*"))) {
+        if (el instanceof SVGElement) continue;
+        const cs = getComputedStyle(el);
+        const hasEdge =
+          (Number.parseFloat(cs.borderTopWidth) > 0 && cs.borderTopStyle !== "none") ||
+          Number.parseFloat(cs.borderRadius) > 0;
+        if (!hasEdge) continue;
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.height <= 600 && r.width > 0) {
+          atoms.push({ kind: "box", top: r.top + sy, bottom: r.bottom + sy });
+        }
+      }
+
+      return atoms;
+    });
+  }
+
+  /**
    * Capture a full-page screenshot from an explicit capture viewport and
    * evaluate the caller's final evidence expression immediately before the
    * pixels are written. Playwright normally manages the full-page viewport
