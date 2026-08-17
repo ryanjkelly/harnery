@@ -48,6 +48,7 @@ import {
   sessionIdentityFromEnv,
 } from "../core/agents/index.ts";
 import {
+  listSessionFinalizationRequestsV2,
   observeHostDisappearedV2,
   reconcileSessionFinalizationV2,
   requestSessionEndExplicitV2,
@@ -70,10 +71,15 @@ import { readEventV2ControlState } from "../core/events/v2/control.ts";
 import { projectCoordinationViewV2 } from "../core/events/v2/coordination-view.ts";
 import { liveInstanceIdV2 } from "../core/events/v2/live-routing.ts";
 import {
+  listHookIntakeGroupsV2,
+  listHookIntakeRecordsV2,
+} from "../core/events/v2/producers/intake.ts";
+import {
   listHookProducerStateRecordsV2,
   readHookProducerStateV2,
 } from "../core/events/v2/producers/recorder.ts";
 import { readActiveLedgerV2, readLedgerV2 } from "../core/events/v2/reader.ts";
+import { EVENT_V2_LEDGER_RELATIVE_ROOT } from "../core/events/v2/writer.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
@@ -3179,7 +3185,188 @@ interface HealthReport {
     count: number;
     samples: string[];
   };
+  // V2 event-ledger producer health: open tool spans, pending finalization
+  // requests, intake/diagnostics spool depth, span-count pressure.
+  event_ledger: EventLedgerHealthV2;
   anomalies: string[];
+}
+
+/** Open-span soft watermark per producer state. The producer-state reader
+ * hard-caps at 256 spans (a state file beyond it fails to load), so surfacing
+ * pressure at half that gives room to act before reads start failing. */
+const SPAN_PRESSURE_SOFT_WATERMARK = 128;
+
+export type EventLedgerHealthV2 =
+  | { state: "unavailable"; reason: string }
+  | {
+      state: "live";
+      mode: "candidate" | "active";
+      open_spans: {
+        total: number;
+        generations: Array<{
+          instance_id: string;
+          generation_id: string;
+          adapter: string;
+          span_count: number;
+          /** False = spans are open with NO open turn: the orphan signature
+           * (a turn ended without its tool spans being closed). */
+          turn_open: boolean;
+        }>;
+      };
+      pending_finalizations: Array<{
+        request_id: string;
+        trigger: string;
+        generation_id: string;
+        age_ms: number;
+        allowed_open_span_count: number;
+      }>;
+      intake_spool: {
+        total: number;
+        groups: Array<{ adapter: string; session_hash: string; count: number }>;
+      };
+      diagnostics_spool: {
+        total: number;
+        last_24h: number;
+        by_category: Record<string, { total: number; last_24h: number }>;
+      };
+      span_pressure: Array<{ instance_id: string; generation_id: string; span_count: number }>;
+      collection_errors: string[];
+    };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Read-only health counters for the V2 event ledger's producer surfaces. Never
+ * mutates ledger state (no control repair, no spool drain) and never throws:
+ * a non-live route returns `{ state: "unavailable" }`, and each sub-surface
+ * that fails to read lands in `collection_errors` instead of aborting the rest.
+ */
+export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): EventLedgerHealthV2 {
+  let control: ReturnType<typeof readEventV2ControlState>;
+  try {
+    control = readEventV2ControlState(root);
+  } catch (error) {
+    return { state: "unavailable", reason: `control read failed: ${errorText(error)}` };
+  }
+  if (control.state !== "candidate" && control.state !== "active") {
+    return {
+      state: "unavailable",
+      reason:
+        control.state === "closed"
+          ? "V1 stream is live (no V2 ledger)"
+          : `${control.state}: ${control.reason}`,
+    };
+  }
+
+  const collectionErrors: string[] = [];
+
+  // 1) Open tool spans per live (non-terminal) generation + span-count pressure.
+  const generations: Extract<EventLedgerHealthV2, { state: "live" }>["open_spans"]["generations"] =
+    [];
+  const spanPressure: Extract<EventLedgerHealthV2, { state: "live" }>["span_pressure"] = [];
+  try {
+    for (const { state } of listHookProducerStateRecordsV2(root)) {
+      if (state.spans.length >= SPAN_PRESSURE_SOFT_WATERMARK) {
+        spanPressure.push({
+          instance_id: state.instance_id,
+          generation_id: state.generation_id,
+          span_count: state.spans.length,
+        });
+      }
+      if (state.spans.length === 0) continue;
+      generations.push({
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        adapter: state.adapter,
+        span_count: state.spans.length,
+        turn_open: Boolean(state.current_turn_id),
+      });
+    }
+  } catch (error) {
+    collectionErrors.push(`producer states unreadable: ${errorText(error)}`);
+  }
+
+  // 2) Pending finalization requests with age + trigger.
+  const pending: Extract<EventLedgerHealthV2, { state: "live" }>["pending_finalizations"] = [];
+  try {
+    for (const request of listSessionFinalizationRequestsV2(root)) {
+      if (request.status !== "pending") continue;
+      const observedMs = Date.parse(request.observed_at);
+      pending.push({
+        request_id: request.request_id,
+        trigger: request.trigger,
+        generation_id: request.generation_id,
+        age_ms: Number.isFinite(observedMs) ? Math.max(0, nowMs - observedMs) : -1,
+        allowed_open_span_count: request.allowed_open_span_ids?.length ?? 0,
+      });
+    }
+  } catch (error) {
+    collectionErrors.push(`finalization requests unreadable: ${errorText(error)}`);
+  }
+
+  // 3) Intake spool depth (queued hook signals awaiting a lease-holder drain).
+  let intakeTotal = 0;
+  const intakeGroups: Extract<EventLedgerHealthV2, { state: "live" }>["intake_spool"]["groups"] =
+    [];
+  try {
+    for (const group of listHookIntakeGroupsV2(root)) {
+      const count = listHookIntakeRecordsV2(group.directory).length;
+      if (count === 0) continue;
+      intakeTotal += count;
+      intakeGroups.push({ adapter: group.adapter, session_hash: group.session_hash, count });
+    }
+  } catch (error) {
+    collectionErrors.push(`intake spool unreadable: ${errorText(error)}`);
+  }
+
+  // 4) Diagnostics spool counts by category. Filenames only (never the
+  // contents): `<category>-<orderkey>.json` where the orderkey leads with a
+  // zero-padded epoch-ms, which also gives the last-24h split for free.
+  const byCategory: Record<string, { total: number; last_24h: number }> = {};
+  let diagnosticsTotal = 0;
+  let diagnostics24h = 0;
+  try {
+    const diagnosticsDir = join(resolve(root), EVENT_V2_LEDGER_RELATIVE_ROOT, "diagnostics");
+    if (existsSync(diagnosticsDir)) {
+      const dayAgoMs = nowMs - 24 * 60 * 60 * 1000;
+      for (const name of readdirSync(diagnosticsDir)) {
+        const match = /^(.+)-(\d{15})-\d{20}-\d+-[0-9a-f-]+\.json$/.exec(name);
+        const category = match?.[1];
+        const epochMs = Number(match?.[2]);
+        if (!category) continue;
+        const entry = byCategory[category] ?? { total: 0, last_24h: 0 };
+        byCategory[category] = entry;
+        entry.total += 1;
+        diagnosticsTotal += 1;
+        if (Number.isFinite(epochMs) && epochMs >= dayAgoMs) {
+          entry.last_24h += 1;
+          diagnostics24h += 1;
+        }
+      }
+    }
+  } catch (error) {
+    collectionErrors.push(`diagnostics spool unreadable: ${errorText(error)}`);
+  }
+
+  return {
+    state: "live",
+    mode: control.state,
+    open_spans: {
+      total: generations.reduce((sum, generation) => sum + generation.span_count, 0),
+      generations,
+    },
+    pending_finalizations: pending,
+    intake_spool: { total: intakeTotal, groups: intakeGroups },
+    diagnostics_spool: {
+      total: diagnosticsTotal,
+      last_24h: diagnostics24h,
+      by_category: byCategory,
+    },
+    span_pressure: spanPressure,
+    collection_errors: collectionErrors,
+  };
 }
 
 /** Tally agent-hook failures (.harnery/debug/agent-hook.errors.ndjson) in the
@@ -3641,6 +3828,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
 
   const hookErrors = readHookErrors(root, cutoffMs);
   const stream = readStreamStats(root);
+  const eventLedger = collectEventLedgerHealthV2(root);
 
   // Canonical health.* events carry the full instance_id, already resolved to
   // `agent-<name>` (or `agent-<hex8>` fallback) by canonicalToHealEvent via
@@ -3772,6 +3960,30 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `${zombieCount} zombie heartbeat(s) in active/ (${zombieSamples.join(", ")}); broken files the sweep isn't reaping`,
     );
   }
+  if (eventLedger.state === "live") {
+    // Open spans whose generation has no open turn: the turn ended without its
+    // tool spans closing, so an explicit end can only queue, never finalize.
+    const orphanGenerations = eventLedger.open_spans.generations.filter(
+      (generation) => !generation.turn_open,
+    );
+    if (orphanGenerations.length > 0) {
+      const orphanSpans = orphanGenerations.reduce(
+        (sum, generation) => sum + generation.span_count,
+        0,
+      );
+      anomalies.push(
+        `${orphanSpans} open tool span(s) across ${orphanGenerations.length} generation(s) with no open turn; orphaned spans block clean session end`,
+      );
+    }
+    for (const pressure of eventLedger.span_pressure) {
+      anomalies.push(
+        `${pressure.instance_id} (${pressure.generation_id}) holds ${pressure.span_count} open spans (soft watermark ${SPAN_PRESSURE_SOFT_WATERMARK}; the reader's 256-span cap makes the state unreadable)`,
+      );
+    }
+    for (const collectionError of eventLedger.collection_errors) {
+      anomalies.push(`event-ledger health: ${collectionError}`);
+    }
+  }
 
   const report: HealthReport = {
     since: opts.since,
@@ -3812,6 +4024,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     hook_errors: { total: hookErrors.total, by_phase: hookErrors.byPhase, top: hookErrors.top },
     stream,
     zombies: { count: zombieCount, samples: zombieSamples },
+    event_ledger: eventLedger,
     anomalies,
   };
 
@@ -3864,6 +4077,27 @@ function renderHealthBox(report: HealthReport): void {
       : `${report.hook_errors.total}${report.hook_errors.top[0] ? ` (${report.hook_errors.top[0].phase} x${report.hook_errors.top[0].count})` : ""}`;
   const streamStr = `${(report.stream.bytes / 1048576).toFixed(1)}MB · ${report.stream.lines} lines · ${report.stream.cursor_backlog} behind`;
 
+  const ledger = report.event_ledger;
+  let ledgerStr: string;
+  if (ledger.state !== "live") {
+    ledgerStr = `unavailable (${ledger.reason})`;
+  } else {
+    const orphanGenerations = ledger.open_spans.generations.filter(
+      (generation) => !generation.turn_open,
+    ).length;
+    const pendingAges = ledger.pending_finalizations
+      .map((request) =>
+        request.age_ms < 0 ? "age?" : formatAge(Math.floor(request.age_ms / 1000)),
+      )
+      .join(", ");
+    ledgerStr = [
+      `open spans ${ledger.open_spans.total}${orphanGenerations > 0 ? ` (${orphanGenerations} gen turn-closed)` : ""}`,
+      `pending ends ${ledger.pending_finalizations.length}${pendingAges ? ` (${pendingAges})` : ""}`,
+      `intake ${ledger.intake_spool.total}`,
+      `diagnostics ${ledger.diagnostics_spool.total}${ledger.diagnostics_spool.last_24h > 0 ? ` (${ledger.diagnostics_spool.last_24h} in 24h)` : ""}`,
+    ].join(" · ");
+  }
+
   const rows: Array<[string, string]> = [
     ["window", `last ${report.since}`],
     [
@@ -3879,6 +4113,7 @@ function renderHealthBox(report: HealthReport): void {
     ["swept", `${report.swept_events.total}${sweptReasonStr ? ` (${sweptReasonStr})` : ""}`],
     ["hook errors", hookErrStr],
     ["stream", streamStr],
+    ["event ledger", ledgerStr],
     [
       "zombies",
       report.zombies.count === 0

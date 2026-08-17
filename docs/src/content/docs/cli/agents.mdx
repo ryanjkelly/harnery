@@ -316,6 +316,13 @@ The layer's own diagnostics.
   detection, and anomalies. Built for a daily
   glance or dashboard ingestion. `--since <window>` sets the window (default
   `24h`); `--json` for structured output.
+  When the V2 event ledger is live, an `event ledger` section adds read-only
+  producer counters: open tool spans per live generation (flagging generations
+  whose turn has closed while spans stayed open — the orphan signature that
+  blocks a clean session end), pending finalization requests with trigger and
+  age, intake-spool depth, diagnostics-spool counts by category (with a
+  last-24h split), and span-count pressure against the producer-state cap. On
+  a V1 stream the section reports `unavailable` instead.
 - **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
   self-heal had to correct drift. Sustained high counts point at an upstream
   process-spawn bug. `--since <window>` (default `7d`), `--limit <n>` (default
