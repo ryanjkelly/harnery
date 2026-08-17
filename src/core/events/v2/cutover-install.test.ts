@@ -16,6 +16,7 @@ import { sha256V2 } from "./canonical.ts";
 import { buildActivationManifestV2, readEventV2ControlState } from "./control.ts";
 import { projectionSnapshotDigestV2 } from "./cutover.ts";
 import {
+  advanceEpochV2,
   archiveEpochAndRollbackV2,
   buildCandidateInstallPacketV2,
   type CandidateProfileBaseV2,
@@ -23,6 +24,7 @@ import {
   installActivationV2,
   installCandidateV2,
 } from "./cutover-install.ts";
+import { EVENT_V2_SCHEMA_DIGEST } from "./generated.ts";
 import { readLedgerV2 } from "./reader.ts";
 import { writeEventV2 } from "./writer.ts";
 
@@ -394,6 +396,183 @@ describe("event ledger V2 installation and epoch rollback", () => {
   }
 });
 
+describe("event ledger V2 epoch advance", () => {
+  function activeEpochFixture() {
+    const fixture = installedCandidate();
+    installActivationV2({
+      coordRoot: fixture.root,
+      artifactRoot: fixture.artifactRoot,
+      activation: activationFor(fixture.result.candidate),
+    });
+    const intakeDir = join(
+      fixture.root,
+      ".harnery",
+      "ledgers",
+      "v2",
+      "intake",
+      "hook",
+      "claude-code",
+      "a".repeat(64),
+    );
+    mkdirSync(intakeDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(intakeDir, "0000000000000001-row.json"), '{"kind":"fixture-intake"}\n');
+    return fixture;
+  }
+
+  function advancePacketFixture() {
+    return buildCandidateInstallPacketV2({
+      profile_base: {
+        ...profileBase(),
+        candidate_created_at: "2026-08-17T18:00:00.000Z",
+      },
+      root_id: "root_fixture",
+      instance_id: "inst_operator",
+      producer: {
+        producer_id: "prd_cutover",
+        boot_id: "boot_advance",
+        sequence: 1,
+        build_id: "build_fixture",
+        platform: "linux",
+      },
+      genesis_id: "gex_00000000-0000-7000-8000-00000000000a",
+      event_id: "evt_00000000-0000-7000-8000-00000000000b",
+    });
+  }
+
+  test("archives the live epoch, activates the new candidate, and carries intake rows", () => {
+    const fixture = activeEpochFixture();
+    const priorGenesisId = fixture.result.candidate.event.payload.genesis_id as `gex_${string}`;
+    const advanceArtifacts = join(fixture.root, ".harnery", "advance-artifacts");
+    const result = advanceEpochV2({
+      coordRoot: fixture.root,
+      artifactRoot: advanceArtifacts,
+      packet: advancePacketFixture(),
+      approvalRecordId: "approval_advance_fixture",
+      approvedAt: "2026-08-17T18:01:00.000Z",
+      now: NOW,
+    });
+
+    expect(result.state).toBe("active");
+    expect(result.prior_genesis_id).toBe(priorGenesisId);
+    expect(result.genesis_id).toBe("gex_00000000-0000-7000-8000-00000000000a");
+    expect(result.carried_intake_rows).toBe(1);
+    expect(readEventV2ControlState(fixture.root).state).toBe("active");
+    expect(readLedgerV2(fixture.root)).toMatchObject({ complete: true, diagnostics: [] });
+
+    const archived = join(fixture.root, result.archive_relative_path);
+    expect(readFileSync(join(archived, "genesis.json"), "utf8")).toContain(priorGenesisId);
+    expect(existsSync(join(archived, "activation.json"))).toBeTrue();
+
+    const carriedRow = join(
+      fixture.root,
+      ".harnery",
+      "ledgers",
+      "v2",
+      "intake",
+      "hook",
+      "claude-code",
+      "a".repeat(64),
+      "0000000000000001-row.json",
+    );
+    expect(readFileSync(carriedRow, "utf8")).toBe('{"kind":"fixture-intake"}\n');
+
+    const state = readEventV2ControlState(fixture.root);
+    if (state.state !== "active") throw new Error("expected active state");
+    expect(state.genesis.profile.v1_terminal_rows).toBeGreaterThan(0);
+
+    const rerun = advanceEpochV2({
+      coordRoot: fixture.root,
+      artifactRoot: advanceArtifacts,
+      packet: advancePacketFixture(),
+      approvalRecordId: "approval_advance_fixture",
+      approvedAt: "2026-08-17T18:01:00.000Z",
+      now: NOW,
+    });
+    expect(rerun.genesis_id).toBe(result.genesis_id);
+    expect(rerun.activation_id).toBe(result.activation_id);
+  });
+
+  test("refuses a packet that reuses the live genesis id and a missing live epoch", () => {
+    const fixture = activeEpochFixture();
+    expect(() =>
+      advanceEpochV2({
+        coordRoot: fixture.root,
+        artifactRoot: join(fixture.root, ".harnery", "advance-artifacts"),
+        packet: packetFixture(),
+        approvalRecordId: "approval_advance_fixture",
+        now: NOW,
+      }),
+    ).toThrow("advance_packet_reuses_prior_genesis_id");
+
+    const emptyRoot = fixtureRoot();
+    expect(() =>
+      advanceEpochV2({
+        coordRoot: emptyRoot,
+        artifactRoot: join(emptyRoot, ".harnery", "advance-artifacts"),
+        packet: advancePacketFixture(),
+        approvalRecordId: "approval_advance_fixture",
+        now: NOW,
+      }),
+    ).toThrow("advance_requires_live_epoch");
+  });
+
+  for (const killedAt of [
+    "intake_carried",
+    "advance_root_archived",
+    "v2_archive_fence_installed",
+    "genesis_manifest_installed",
+    "catalog_initialized",
+  ] satisfies EpochCutoverV2Step[]) {
+    test(`resumes an advance after a kill at ${killedAt}`, () => {
+      const fixture = activeEpochFixture();
+      const advanceArtifacts = join(fixture.root, ".harnery", "advance-artifacts");
+      let killed = false;
+      expect(() =>
+        advanceEpochV2({
+          coordRoot: fixture.root,
+          artifactRoot: advanceArtifacts,
+          packet: advancePacketFixture(),
+          approvalRecordId: "approval_advance_fixture",
+          approvedAt: "2026-08-17T18:01:00.000Z",
+          now: NOW,
+          onStep(step) {
+            if (!killed && step === killedAt) {
+              killed = true;
+              throw new Error(`killed:${step}`);
+            }
+          },
+        }),
+      ).toThrow(`killed:${killedAt}`);
+      const result = advanceEpochV2({
+        coordRoot: fixture.root,
+        artifactRoot: advanceArtifacts,
+        packet: advancePacketFixture(),
+        approvalRecordId: "approval_advance_fixture",
+        approvedAt: "2026-08-17T18:01:00.000Z",
+        now: NOW,
+      });
+      expect(result.state).toBe("active");
+      expect(readEventV2ControlState(fixture.root).state).toBe("active");
+      expect(
+        readFileSync(
+          join(
+            fixture.root,
+            ".harnery",
+            "ledgers",
+            "v2",
+            "intake",
+            "hook",
+            "claude-code",
+            "a".repeat(64),
+            "0000000000000001-row.json",
+          ),
+          "utf8",
+        ),
+      ).toBe('{"kind":"fixture-intake"}\n');
+    });
+  }
+});
+
 function installedCandidate() {
   const root = fixtureRoot();
   const artifactRoot = join(root, ".harnery", "cutover-artifacts");
@@ -463,8 +642,7 @@ function activationFor(candidate: ReturnType<typeof installedCandidate>["result"
 
 function profileBase(): CandidateProfileBaseV2 {
   return {
-    initial_schema_digest:
-      "sha256:f302cc7e0aef30779efb7f2be9ac9e3f200e0394be26a73f94afe9cbeb70cc35",
+    initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
     contract_source_digest: sha256V2("contract-source"),
     harnery_commit: "harnery-fixture",
     host_repository_commit: "host-fixture",

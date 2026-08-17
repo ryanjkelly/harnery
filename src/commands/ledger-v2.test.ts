@@ -32,6 +32,7 @@ describe("ledger-v2 command", () => {
       "verify",
       "install-candidate",
       "install-activation",
+      "advance-epoch",
       "rollback-epoch",
       "rehearse-cutover",
     ]);

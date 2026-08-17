@@ -150,4 +150,134 @@ describe("event ledger V2 semantic validation", () => {
       "/payload/targets/1/display:workspace_path_invalid",
     ]);
   });
+
+  const turnScope = { ...scope, turn_id: `tid_${"d".repeat(64)}` as const };
+  const derivedProvenance = { ...provenance, attestation: "derived" as const };
+  const toolCompletedPayload = {
+    tool: { namespace: "fixture", name: "Read" },
+    outcome: "unknown" as const,
+    duration_ms: { state: "unknown" as const, reason: "not_observed" },
+    result: { storage: "omitted" as const, media_type: "application/json", bytes: 0 },
+  };
+  const commandCompletedPayload = {
+    outcome: "unknown" as const,
+    duration_ms: 0,
+  };
+
+  function toolCompleted(overrides: {
+    provenance?: typeof provenance | typeof derivedProvenance;
+    payload?: Record<string, unknown>;
+  }) {
+    return buildEventV2("tool.completed", {
+      producer,
+      scope: turnScope,
+      attestation_id: attestationId,
+      links: { caused_by: [], span_id: spanIdV2() },
+      provenance: overrides.provenance ?? provenance,
+      payload: { ...toolCompletedPayload, ...overrides.payload } as never,
+    });
+  }
+
+  test("requires recovery on derived tool events and forbids it on native ones", () => {
+    expect(validateEventV2(toolCompleted({ provenance: derivedProvenance })).issues).toContain(
+      "/payload/recovery:required_for_derived_tool_event",
+    );
+    expect(
+      validateEventV2(
+        toolCompleted({
+          payload: { recovery: { reason: "completion_not_observed_before_turn_end" } },
+        }),
+      ).issues,
+    ).toContain("/payload/recovery:requires_derived_attestation");
+    expect(
+      validateEventV2(
+        toolCompleted({
+          provenance: derivedProvenance,
+          payload: { recovery: { reason: "completion_not_observed_before_turn_end" } },
+        }),
+      ).ok,
+    ).toBeTrue();
+  });
+
+  test("pins recovered completions to an unknown outcome", () => {
+    expect(
+      validateEventV2(
+        toolCompleted({
+          provenance: derivedProvenance,
+          payload: {
+            outcome: "succeeded",
+            recovery: { reason: "explicit_end_salvage", requested_event_id: eventIdV2() },
+          },
+        }),
+      ).issues,
+    ).toContain("/payload/outcome:recovery_requires_unknown_outcome");
+  });
+
+  test("binds recovery reasons to their event types", () => {
+    expect(
+      validateEventV2(
+        toolCompleted({
+          provenance: derivedProvenance,
+          payload: { recovery: { reason: "request_not_observed" } },
+        }),
+      ).issues,
+    ).toContain("/payload/recovery/reason:invalid_for_tool_completed");
+
+    const derivedRequest = buildEventV2("tool.requested", {
+      producer,
+      scope: turnScope,
+      attestation_id: attestationId,
+      links: { caused_by: [], span_id: spanIdV2() },
+      provenance: derivedProvenance,
+      payload: {
+        tool: { namespace: "fixture", name: "Read" },
+        input: { storage: "omitted", media_type: "application/json", bytes: 1 },
+        exact_input: fingerprintV2(
+          {
+            epochId: "pep_fixture",
+            epochKey: Buffer.alloc(32, 0x44),
+            rootId: "root_fixture",
+            generationId,
+          },
+          "input",
+          "fixture",
+        ),
+        targets: [],
+        recovery: { reason: "request_not_observed", requested_event_id: eventIdV2() },
+      },
+    });
+    expect(validateEventV2(derivedRequest).issues).toContain(
+      "/payload/recovery/requested_event_id:forbidden_on_derived_request",
+    );
+  });
+
+  test("recovered commands carry zero duration, no exit code, and the command reason", () => {
+    const command = (payload: Record<string, unknown>) =>
+      buildEventV2("command.completed", {
+        producer: { ...producer, component: "session-tee" as const },
+        scope: turnScope,
+        attestation_id: attestationId,
+        links: { caused_by: [], span_id: spanIdV2() },
+        provenance: derivedProvenance,
+        payload: { ...commandCompletedPayload, ...payload } as never,
+      });
+
+    expect(validateEventV2(command({})).ok).toBeTrue();
+    expect(
+      validateEventV2(command({ recovery: { reason: "command_completion_not_observed" } })).ok,
+    ).toBeTrue();
+    expect(
+      validateEventV2(
+        command({
+          duration_ms: 12,
+          exit_code: 1,
+          recovery: { reason: "explicit_end_salvage" },
+        }),
+      ).issues,
+    ).toEqual([
+      "/payload/recovery/reason:invalid_for_command_completed",
+      "/payload/duration_ms:recovery_requires_zero_duration",
+      "/payload/exit_code:forbidden_on_recovered_command",
+    ]);
+  });
 });

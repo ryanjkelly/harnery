@@ -293,7 +293,9 @@ function v2Event(eventType: EventTypeV2, payload: Record<string, unknown>, tool 
     links: { caused_by: [], ...(tool ? { span_id: spanIdV2() } : {}) },
     provenance: {
       source_event: "fixture.codec",
-      attestation: "derived",
+      // Native mirrors production hook tool events; ADR 0078 forbids derived
+      // tool events that carry no recovery block.
+      attestation: "native",
       confidence: "exact",
       attribution: {
         method: "explicit_argument",

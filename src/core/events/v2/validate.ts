@@ -118,6 +118,70 @@ function validateSemantics(event: EventV2): string[] {
   ) {
     issues.push("/payload/eligible_after_event_id:must_reference_activation_event");
   }
+  issues.push(...validateRecoverySemantics(event));
+  return issues;
+}
+
+/**
+ * ADR 0078: the `recovery` block marks a machinery-minted recovery event.
+ * Presence requires derived attestation and (on completions) an unknown
+ * outcome; reason codes bind to event types. Tool events are bidirectional
+ * (derived requires recovery); command events are exempt from the forward
+ * direction because CLI-teed command telemetry is attested derived in normal
+ * operation.
+ */
+function validateRecoverySemantics(event: EventV2): string[] {
+  if (
+    event.event_type !== "tool.requested" &&
+    event.event_type !== "tool.completed" &&
+    event.event_type !== "command.completed"
+  ) {
+    return [];
+  }
+  const issues: string[] = [];
+  const recovery = event.payload.recovery;
+  if (!recovery) {
+    if (event.event_type !== "command.completed" && event.provenance.attestation === "derived") {
+      issues.push("/payload/recovery:required_for_derived_tool_event");
+    }
+    return issues;
+  }
+  if (event.provenance.attestation !== "derived") {
+    issues.push("/payload/recovery:requires_derived_attestation");
+  }
+  if (recovery.requested_event_id === event.event_id) {
+    issues.push("/payload/recovery/requested_event_id:self_reference");
+  }
+  if (event.event_type === "tool.requested") {
+    if (recovery.reason !== "request_not_observed") {
+      issues.push("/payload/recovery/reason:invalid_for_tool_requested");
+    }
+    if (recovery.requested_event_id !== undefined) {
+      issues.push("/payload/recovery/requested_event_id:forbidden_on_derived_request");
+    }
+    return issues;
+  }
+  if (event.payload.outcome !== "unknown") {
+    issues.push("/payload/outcome:recovery_requires_unknown_outcome");
+  }
+  if (event.event_type === "command.completed") {
+    if (recovery.reason !== "command_completion_not_observed") {
+      issues.push("/payload/recovery/reason:invalid_for_command_completed");
+    }
+    if (event.payload.duration_ms !== 0) {
+      issues.push("/payload/duration_ms:recovery_requires_zero_duration");
+    }
+    if (event.payload.exit_code !== undefined) {
+      issues.push("/payload/exit_code:forbidden_on_recovered_command");
+    }
+    return issues;
+  }
+  if (
+    recovery.reason === "request_not_observed" ||
+    recovery.reason === "command_completion_not_observed"
+  ) {
+    issues.push("/payload/recovery/reason:invalid_for_tool_completed");
+  }
   return issues;
 }
 

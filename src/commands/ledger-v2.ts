@@ -16,6 +16,7 @@ import {
   type V1SealManifestV2,
 } from "../core/events/v2/cutover.ts";
 import {
+  advanceEpochV2,
   archiveEpochAndRollbackV2,
   buildCandidateInstallPacketV2,
   type CandidateInstallPacketV2,
@@ -260,6 +261,37 @@ export function registerLedgerV2Command(
         emitFailure(emit, "ledger_v2_activation_install_failed", error);
       }
     });
+
+  command
+    .command("advance-epoch")
+    .description("Quiesce, archive the live epoch read-only, and activate a new candidate")
+    .requiredOption("--root <path>", "Explicit coordination root")
+    .requiredOption("--artifact-root <path>", "External immutable cutover artifact root")
+    .requiredOption("--packet <path>", "Candidate installation packet built by this build")
+    .requiredOption("--approval-record-id <id>", "Durable approval record identifier")
+    .option("--approved-at <timestamp>", "Approval timestamp with milliseconds and Z")
+    .action(
+      (options: {
+        root: string;
+        artifactRoot: string;
+        packet: string;
+        approvalRecordId: string;
+        approvedAt?: string;
+      }) => {
+        try {
+          const result = advanceEpochV2({
+            coordRoot: resolve(options.root),
+            artifactRoot: resolve(options.artifactRoot),
+            packet: readJson(options.packet) as CandidateInstallPacketV2,
+            approvalRecordId: options.approvalRecordId,
+            approvedAt: options.approvedAt,
+          });
+          emit.data(result);
+        } catch (error) {
+          emitFailure(emit, "ledger_v2_epoch_advance_failed", error);
+        }
+      },
+    );
 
   command
     .command("rollback-epoch")

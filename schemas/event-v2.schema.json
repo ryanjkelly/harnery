@@ -7894,6 +7894,47 @@
                   }
                 }
               }
+            },
+            "recovery": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "anyOf": [
+                    {
+                      "const": "request_not_observed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completion_not_observed_before_turn_end",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completion_not_observed_before_next_turn",
+                      "type": "string"
+                    },
+                    {
+                      "const": "span_cap_pressure",
+                      "type": "string"
+                    },
+                    {
+                      "const": "explicit_end_salvage",
+                      "type": "string"
+                    },
+                    {
+                      "const": "command_completion_not_observed",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "requested_event_id": {
+                  "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -8574,6 +8615,47 @@
                 },
                 "code": {
                   "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+                  "type": "string"
+                }
+              }
+            },
+            "recovery": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "anyOf": [
+                    {
+                      "const": "request_not_observed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completion_not_observed_before_turn_end",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completion_not_observed_before_next_turn",
+                      "type": "string"
+                    },
+                    {
+                      "const": "span_cap_pressure",
+                      "type": "string"
+                    },
+                    {
+                      "const": "explicit_end_salvage",
+                      "type": "string"
+                    },
+                    {
+                      "const": "command_completion_not_observed",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "requested_event_id": {
+                  "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                   "type": "string"
                 }
               }
@@ -9944,6 +10026,47 @@
             "error_class": {
               "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
+            },
+            "recovery": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "anyOf": [
+                    {
+                      "const": "request_not_observed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completion_not_observed_before_turn_end",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completion_not_observed_before_next_turn",
+                      "type": "string"
+                    },
+                    {
+                      "const": "span_cap_pressure",
+                      "type": "string"
+                    },
+                    {
+                      "const": "explicit_end_salvage",
+                      "type": "string"
+                    },
+                    {
+                      "const": "command_completion_not_observed",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "requested_event_id": {
+                  "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                }
+              }
             }
           }
         }

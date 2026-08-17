@@ -116,8 +116,11 @@ export {
   verifyV1SealV2,
 } from "./cutover.ts";
 export {
+  type AdvanceEpochV2Input,
+  type AdvanceEpochV2Result,
   type ArchiveEpochAndRollbackV2Input,
   type ArchiveEpochAndRollbackV2Result,
+  advanceEpochV2,
   archiveEpochAndRollbackV2,
   buildCandidateInstallPacketV2,
   type CandidateInstallPacketV2,

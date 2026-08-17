@@ -13,6 +13,7 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -23,6 +24,7 @@ import { canonicalJsonV2, sha256V2 } from "./canonical.ts";
 import { recoverEventV2Catalog } from "./catalog.ts";
 import {
   type ActivationManifestV2,
+  buildActivationManifestV2,
   buildCandidateGenesisManifestV2,
   type CandidateGenesisManifestV2,
   type CandidateProfileV2,
@@ -46,7 +48,7 @@ import {
   v1SealManifestDigestV2,
 } from "./cutover.ts";
 import { eventIdV2, genesisIdV2 } from "./ids.ts";
-import { EVENT_V2_LEDGER_RELATIVE_ROOT } from "./writer.ts";
+import { drainReadyEventsV2, EVENT_V2_LEDGER_RELATIVE_ROOT, eventV2Paths } from "./writer.ts";
 
 const CANDIDATE_ARCHIVE_RELATIVE_ROOT = ".harnery/ledgers/v2-candidates" as const;
 const V2_ARCHIVE_FENCE_KIND = "v2_archived_path_fence" as const;
@@ -89,7 +91,16 @@ export type EpochCutoverV2Step =
   | "v2_root_archived"
   | "v2_archive_fence_installed"
   | "v2_archive_verified"
-  | "v2_archive_record_committed";
+  | "v2_archive_record_committed"
+  | "advance_intent_committed"
+  | "ready_spool_drained"
+  | "intake_carried"
+  | "advance_archive_manifest_committed"
+  | "advance_root_archived"
+  | "advance_terminal_facts_committed"
+  | "advance_candidate_finalized"
+  | "intake_restored"
+  | "advance_complete_committed";
 
 export interface InstallCandidateV2Input {
   coordRoot: string;
@@ -538,6 +549,415 @@ export function archiveEpochAndRollbackV2(
   };
 }
 
+export interface AdvanceEpochV2Input {
+  coordRoot: string;
+  artifactRoot: string;
+  packet: CandidateInstallPacketV2;
+  approvalRecordId: string;
+  approvedAt?: string;
+  now?: () => number;
+  onStep?: (step: EpochCutoverV2Step, relativePath?: string) => void;
+}
+
+export interface AdvanceEpochV2Result {
+  state: "active";
+  prior_genesis_id: `gex_${string}`;
+  genesis_id: `gex_${string}`;
+  candidate_manifest_digest: `sha256:${string}`;
+  activation_id: `act_${string}`;
+  archive_relative_path: string;
+  tree_digest: `sha256:${string}`;
+  drained_ready_rows: number;
+  carried_intake_rows: number;
+  archived_intake_rows: number;
+}
+
+interface EpochAdvanceIntentV2 {
+  manifest_version: 1;
+  kind: "v2_epoch_advance_intent";
+  prior_genesis_id: `gex_${string}`;
+  packet_digest: `sha256:${string}`;
+  approval_record_id: string;
+}
+
+interface EpochAdvanceArchiveManifestV2 {
+  manifest_version: 1;
+  kind: "v2_epoch_advance_archive";
+  created_at: string;
+  prior_genesis_id: `gex_${string}`;
+  entries: V2ArchiveEntryV2[];
+  tree_digest: `sha256:${string}`;
+  archive_relative_path: string;
+}
+
+interface EpochAdvanceTerminalFactsV2 {
+  manifest_version: 1;
+  kind: "v2_epoch_advance_terminal";
+  prior_genesis_id: `gex_${string}`;
+  terminal_digest: `sha256:${string}`;
+  terminal_bytes: number;
+  terminal_rows: number;
+}
+
+interface EpochAdvanceCompleteV2 {
+  manifest_version: 1;
+  kind: "v2_epoch_advance_complete";
+  prior_genesis_id: `gex_${string}`;
+  genesis_id: `gex_${string}`;
+  candidate_manifest_digest: `sha256:${string}`;
+  activation_id: `act_${string}`;
+  archive_relative_path: string;
+  tree_digest: `sha256:${string}`;
+}
+
+/**
+ * Advance the live V2 ledger to a fresh epoch under a new schema digest
+ * (ADR 0078): quiesce the ready spool, carry undrained intake rows across,
+ * archive every byte of the prior epoch read-only under its genesis ID, then
+ * install and activate one exact new candidate whose terminal-segment anchor
+ * is the archived epoch's active ledger file. Idempotent and crash-resumable
+ * through the same immutable artifact records the install flow uses.
+ */
+export function advanceEpochV2(input: AdvanceEpochV2Input): AdvanceEpochV2Result {
+  const coordRoot = resolve(input.coordRoot);
+  const artifactRoot = assertArtifactRoot(coordRoot, input.artifactRoot);
+  const packet = validateCandidateInstallPacketV2(input.packet);
+  const packetDigest = sha256V2(canonicalJsonV2(packet));
+  const source = join(coordRoot, EVENT_V2_LEDGER_RELATIVE_ROOT);
+  const carriedIntakeRoot = join(artifactRoot, "carried-intake");
+
+  const completePath = join(artifactRoot, "advance-complete.json");
+  const alreadyComplete = readOptionalCanonicalJson<EpochAdvanceCompleteV2>(completePath);
+  if (alreadyComplete) {
+    if (
+      alreadyComplete.kind !== "v2_epoch_advance_complete" ||
+      alreadyComplete.genesis_id !== packet.genesis_id
+    ) {
+      throw new Error("advance_complete_record_conflict");
+    }
+    restoreCarriedIntake(carriedIntakeRoot, coordRoot, input.onStep);
+    return {
+      state: "active",
+      prior_genesis_id: alreadyComplete.prior_genesis_id,
+      genesis_id: alreadyComplete.genesis_id,
+      candidate_manifest_digest: alreadyComplete.candidate_manifest_digest,
+      activation_id: alreadyComplete.activation_id,
+      archive_relative_path: alreadyComplete.archive_relative_path,
+      tree_digest: alreadyComplete.tree_digest,
+      drained_ready_rows: 0,
+      carried_intake_rows: 0,
+      archived_intake_rows: 0,
+    };
+  }
+
+  // Phase 1: quiesce, carry, and archive the live epoch (skipped on resume).
+  let drainedReadyRows = 0;
+  let carriedIntakeRows = 0;
+  const archiveManifestPath = join(artifactRoot, "advance-archive-manifest.json");
+  let archiveManifest =
+    readOptionalCanonicalJson<EpochAdvanceArchiveManifestV2>(archiveManifestPath);
+  const liveEpochPresent =
+    existsSync(source) &&
+    lstatSync(source).isDirectory() &&
+    existsSync(join(source, "genesis.json"));
+  const liveGenesisId = liveEpochPresent
+    ? readPriorGenesisIdLoose(join(source, "genesis.json"))
+    : undefined;
+  // A live root already carrying the packet's genesis is a resumed advance
+  // that crashed after its genesis install, not a fresh epoch to archive.
+  const resumingInstalledEpoch =
+    liveGenesisId === packet.genesis_id && archiveManifest !== undefined;
+  if (liveEpochPresent && liveGenesisId && !resumingInstalledEpoch) {
+    const priorGenesisId = liveGenesisId;
+    if (priorGenesisId === packet.genesis_id) {
+      throw new Error("advance_packet_reuses_prior_genesis_id");
+    }
+    const intent: EpochAdvanceIntentV2 = {
+      manifest_version: 1,
+      kind: "v2_epoch_advance_intent",
+      prior_genesis_id: priorGenesisId,
+      packet_digest: packetDigest,
+      approval_record_id: input.approvalRecordId,
+    };
+    writeImmutableCanonicalJson(join(artifactRoot, "advance-intent.json"), intent);
+    input.onStep?.("advance_intent_committed");
+
+    drainedReadyRows = drainReadyEventsV2(coordRoot);
+    const spool = eventV2Paths(coordRoot).spool;
+    const undrained = readdirSync(spool).filter(
+      (name) => name.endsWith(".ready") || name.endsWith(".committed"),
+    );
+    if (undrained.length > 0) {
+      throw new Error(`advance_requires_drained_spool:${undrained.length}`);
+    }
+    input.onStep?.("ready_spool_drained");
+
+    const intakeDir = join(source, "intake");
+    if (existsSync(intakeDir) && !existsSync(carriedIntakeRoot)) {
+      carriedIntakeRows = countFilesRecursively(intakeDir);
+      if (carriedIntakeRows > 0) {
+        mkdirSync(dirname(carriedIntakeRoot), { recursive: true, mode: 0o700 });
+        renameSync(intakeDir, carriedIntakeRoot);
+        fsyncParentDirectory(carriedIntakeRoot);
+        fsyncParentDirectory(intakeDir);
+        input.onStep?.("intake_carried");
+      }
+    }
+
+    if (!archiveManifest) {
+      const entries = collectTree(source);
+      archiveManifest = {
+        manifest_version: 1,
+        kind: "v2_epoch_advance_archive",
+        created_at: new Date((input.now ?? Date.now)()).toISOString(),
+        prior_genesis_id: priorGenesisId,
+        entries,
+        tree_digest: sha256V2(canonicalJsonV2(entries)),
+        archive_relative_path: `${CANDIDATE_ARCHIVE_RELATIVE_ROOT}/${priorGenesisId}`,
+      };
+      writeImmutableCanonicalJson(archiveManifestPath, archiveManifest);
+      input.onStep?.("advance_archive_manifest_committed");
+    }
+    if (archiveManifest.prior_genesis_id !== priorGenesisId) {
+      throw new Error("advance_archive_manifest_conflict");
+    }
+    const archive = join(coordRoot, archiveManifest.archive_relative_path);
+    if (existsSync(archive)) throw new Error("advance_archive_destination_collision");
+    assertTreeMatches(source, archiveManifest);
+    mkdirSync(dirname(archive), { recursive: true, mode: 0o700 });
+    renameSync(source, archive);
+    fsyncParentDirectory(source);
+    fsyncParentDirectory(archive);
+    input.onStep?.("advance_root_archived", archiveManifest.archive_relative_path);
+    installV2ArchiveFence(source, {
+      genesis_id: archiveManifest.prior_genesis_id,
+      archive_relative_path: archiveManifest.archive_relative_path,
+      tree_digest: archiveManifest.tree_digest,
+    });
+    input.onStep?.("v2_archive_fence_installed", EVENT_V2_LEDGER_RELATIVE_ROOT);
+    assertTreeMatches(archive, archiveManifest);
+    input.onStep?.("v2_archive_verified", archiveManifest.archive_relative_path);
+  } else if (!archiveManifest) {
+    throw new Error("advance_requires_live_epoch");
+  }
+
+  const archivedIntakeRows = archiveManifest.entries.filter(
+    (entry) => entry.kind === "file" && entry.relative_path.startsWith("intake/"),
+  ).length;
+
+  // Phase 2: derive terminal facts from the archived epoch and install the
+  // new candidate and activation through the standard control gates.
+  const archivePath = join(coordRoot, archiveManifest.archive_relative_path);
+  const terminalFactsPath = join(artifactRoot, "advance-terminal-facts.json");
+  let terminalFacts = readOptionalCanonicalJson<EpochAdvanceTerminalFactsV2>(terminalFactsPath);
+  if (!terminalFacts) {
+    const facts = inspectTerminatedNdjson(join(archivePath, "active.ndjson"));
+    terminalFacts = {
+      manifest_version: 1,
+      kind: "v2_epoch_advance_terminal",
+      prior_genesis_id: archiveManifest.prior_genesis_id,
+      terminal_digest: facts.digest,
+      terminal_bytes: facts.bytes,
+      terminal_rows: facts.rows,
+    };
+    writeImmutableCanonicalJson(terminalFactsPath, terminalFacts);
+    input.onStep?.("advance_terminal_facts_committed");
+  }
+
+  releaseVerifiedV2ArchiveFence(coordRoot);
+  input.onStep?.("previous_v2_fence_released", EVENT_V2_LEDGER_RELATIVE_ROOT);
+
+  const candidatePath = join(artifactRoot, "advance-candidate.json");
+  const existingCandidate = readOptionalCanonicalJson<CandidateGenesisManifestV2>(candidatePath);
+  const candidate =
+    existingCandidate ??
+    buildCandidateGenesisManifestV2({
+      profile: {
+        ...packet.profile_base,
+        v1_terminal_digest: terminalFacts.terminal_digest,
+        v1_terminal_bytes: terminalFacts.terminal_bytes,
+        v1_terminal_rows: terminalFacts.terminal_rows,
+      },
+      root_id: packet.root_id,
+      instance_id: packet.instance_id,
+      producer: packet.producer,
+      genesis_id: packet.genesis_id,
+      event_id: packet.event_id,
+    });
+  if (existingCandidate) {
+    const validated = validateCandidateGenesisManifestV2(existingCandidate);
+    if (!validated.ok || existingCandidate.event.payload.genesis_id !== packet.genesis_id) {
+      throw new Error("advance_candidate_record_conflict");
+    }
+  } else {
+    writeImmutableCanonicalJson(candidatePath, candidate);
+    input.onStep?.("advance_candidate_finalized");
+  }
+
+  const genesisPath = join(source, "genesis.json");
+  writeImmutableCanonicalJson(genesisPath, candidate);
+  input.onStep?.("genesis_manifest_installed", EVENT_V2_LEDGER_RELATIVE_ROOT);
+  const repaired = repairEventV2ControlPair(coordRoot);
+  input.onStep?.("genesis_event_repaired");
+  if (repaired.state !== "candidate" && repaired.state !== "active") {
+    throw new Error(`advance_candidate_gate_not_open:${repaired.state}`);
+  }
+  if (canonicalJsonV2(repaired.genesis) !== canonicalJsonV2(candidate)) {
+    throw new Error("advance_candidate_gate_manifest_mismatch");
+  }
+  recoverEventV2Catalog(coordRoot);
+  input.onStep?.("catalog_initialized");
+
+  const activationPath = join(artifactRoot, "advance-activation.json");
+  let activation = readOptionalCanonicalJson<ActivationManifestV2>(activationPath);
+  if (!activation) {
+    activation = buildActivationManifestV2({
+      candidate,
+      approval_record_id: input.approvalRecordId,
+      activation_approved_at: input.approvedAt ?? new Date((input.now ?? Date.now)()).toISOString(),
+      producer: { ...packet.producer, sequence: packet.producer.sequence + 1 },
+    });
+    writeImmutableCanonicalJson(activationPath, activation);
+  }
+  const activated = installActivationV2({
+    coordRoot,
+    artifactRoot,
+    activation,
+    onStep: input.onStep,
+  });
+
+  restoreCarriedIntake(carriedIntakeRoot, coordRoot, input.onStep);
+
+  const complete: EpochAdvanceCompleteV2 = {
+    manifest_version: 1,
+    kind: "v2_epoch_advance_complete",
+    prior_genesis_id: archiveManifest.prior_genesis_id,
+    genesis_id: packet.genesis_id,
+    candidate_manifest_digest: activated.candidate_manifest_digest,
+    activation_id: activated.activation.activation_id,
+    archive_relative_path: archiveManifest.archive_relative_path,
+    tree_digest: archiveManifest.tree_digest,
+  };
+  writeImmutableCanonicalJson(completePath, complete);
+  input.onStep?.("advance_complete_committed");
+
+  return {
+    state: "active",
+    prior_genesis_id: complete.prior_genesis_id,
+    genesis_id: complete.genesis_id,
+    candidate_manifest_digest: complete.candidate_manifest_digest,
+    activation_id: complete.activation_id,
+    archive_relative_path: complete.archive_relative_path,
+    tree_digest: complete.tree_digest,
+    drained_ready_rows: drainedReadyRows,
+    carried_intake_rows: carriedIntakeRows,
+    archived_intake_rows: archivedIntakeRows,
+  };
+}
+
+/**
+ * The prior epoch may predate this build's contract, so only the genesis ID is
+ * read, without digest or canonical validation. Every byte is preserved by the
+ * archive regardless.
+ */
+function readPriorGenesisIdLoose(path: string): `gex_${string}` {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error("advance_prior_genesis_unreadable");
+  }
+  const genesisId = (parsed as { event?: { payload?: { genesis_id?: unknown } } })?.event?.payload
+    ?.genesis_id;
+  if (typeof genesisId !== "string" || !/^gex_[0-9a-f-]{36}$/.test(genesisId)) {
+    throw new Error("advance_prior_genesis_id_invalid");
+  }
+  return genesisId as `gex_${string}`;
+}
+
+function restoreCarriedIntake(
+  carriedIntakeRoot: string,
+  coordRoot: string,
+  onStep?: AdvanceEpochV2Input["onStep"],
+): void {
+  if (!existsSync(carriedIntakeRoot)) return;
+  const destination = join(coordRoot, EVENT_V2_LEDGER_RELATIVE_ROOT, "intake");
+  let moved = 0;
+  const moveTree = (fromDir: string, toDir: string): void => {
+    mkdirSync(toDir, { recursive: true, mode: 0o700 });
+    for (const name of readdirSync(fromDir).sort()) {
+      const from = join(fromDir, name);
+      const to = join(toDir, name);
+      const stat = lstatSync(from);
+      if (stat.isSymbolicLink()) throw new Error(`carried_intake_symlink_forbidden:${name}`);
+      if (stat.isDirectory()) {
+        moveTree(from, to);
+        rmdirIfEmpty(from);
+        continue;
+      }
+      if (!stat.isFile()) throw new Error(`carried_intake_entry_unsupported:${name}`);
+      if (existsSync(to)) throw new Error(`carried_intake_destination_collision:${name}`);
+      renameSync(from, to);
+      moved += 1;
+    }
+  };
+  moveTree(carriedIntakeRoot, destination);
+  fsyncParentDirectory(destination);
+  rmdirIfEmpty(carriedIntakeRoot);
+  if (moved > 0) onStep?.("intake_restored");
+}
+
+function rmdirIfEmpty(path: string): void {
+  try {
+    if (existsSync(path) && readdirSync(path).length === 0) rmdirSync(path);
+  } catch {
+    // Leftover empty carried-intake directories are harmless artifacts.
+  }
+}
+
+function countFilesRecursively(root: string): number {
+  let count = 0;
+  for (const name of readdirSync(root)) {
+    const path = join(root, name);
+    const stat = lstatSync(path);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) count += countFilesRecursively(path);
+    else if (stat.isFile()) count += 1;
+  }
+  return count;
+}
+
+/** Hash, size, and row-count a terminated NDJSON ledger file without loading it whole. */
+function inspectTerminatedNdjson(path: string): {
+  bytes: number;
+  rows: number;
+  digest: `sha256:${string}`;
+} {
+  if (!existsSync(path)) throw new Error("advance_terminal_ledger_missing");
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("advance_terminal_ledger_unsafe");
+  const fd = openSync(path, "r");
+  const hash = createHash("sha256");
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  let rows = 0;
+  let bytes = 0;
+  let lastByte: number | undefined;
+  try {
+    for (;;) {
+      const read = readSync(fd, chunk, 0, chunk.byteLength, null);
+      if (read === 0) break;
+      const slice = chunk.subarray(0, read);
+      hash.update(slice);
+      bytes += read;
+      lastByte = slice.at(-1);
+      for (const byte of slice) if (byte === 0x0a) rows += 1;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  if (bytes > 0 && lastByte !== 0x0a) throw new Error("advance_terminal_ledger_unterminated");
+  return { bytes, rows, digest: `sha256:${hash.digest("hex")}` };
+}
+
 function clearDisposableProjectionPaths(
   coordRoot: string,
   artifactRoot: string,
@@ -703,7 +1123,10 @@ function collectTreeDirectory(
   }
 }
 
-function assertTreeMatches(root: string, manifest: V2EpochArchiveManifestV2): void {
+function assertTreeMatches(
+  root: string,
+  manifest: Pick<V2EpochArchiveManifestV2, "entries" | "tree_digest">,
+): void {
   const actual = collectTree(root);
   if (
     canonicalJsonV2(actual) !== canonicalJsonV2(manifest.entries) ||
@@ -739,7 +1162,10 @@ function readInstalledCandidateForRollback(coordRoot: string): CandidateGenesisM
   return validated.value;
 }
 
-function installV2ArchiveFence(source: string, manifest: V2EpochArchiveManifestV2): void {
+function installV2ArchiveFence(
+  source: string,
+  manifest: Pick<V2EpochArchiveManifestV2, "genesis_id" | "archive_relative_path" | "tree_digest">,
+): void {
   const fence = {
     manifest_version: 1,
     kind: V2_ARCHIVE_FENCE_KIND,

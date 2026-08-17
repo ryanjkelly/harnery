@@ -33,6 +33,26 @@ export const OutcomeV2Schema = Type.Union([
   Type.Literal("unknown"),
 ]);
 
+export const RecoveryReasonV2Schema = Type.Union([
+  Type.Literal("request_not_observed"),
+  Type.Literal("completion_not_observed_before_turn_end"),
+  Type.Literal("completion_not_observed_before_next_turn"),
+  Type.Literal("span_cap_pressure"),
+  Type.Literal("explicit_end_salvage"),
+  Type.Literal("command_completion_not_observed"),
+]);
+
+/**
+ * Marker of a machinery-minted recovery event (ADR 0078). Presence requires
+ * derived attestation; on completions it also requires an unknown outcome.
+ * `requested_event_id` links a derived terminal to the span's original
+ * request event when producer state still holds it.
+ */
+export const RecoveryV2Schema = StrictObject({
+  reason: RecoveryReasonV2Schema,
+  requested_event_id: Type.Optional(EventId),
+});
+
 export const FingerprintV2Schema = StrictObject({
   algorithm: Type.Literal("hmac-sha256"),
   canonicalizer: Type.Literal("harnery-jcs-nfc-v1"),
@@ -325,6 +345,7 @@ export const ToolRequestedV2Schema = eventSchema(
     input: ContentDescriptorV2Schema,
     exact_input: FingerprintV2Schema,
     targets: Type.Array(TargetDescriptorV2Schema, { maxItems: 64 }),
+    recovery: Type.Optional(RecoveryV2Schema),
   }),
   "turn",
   ToolLinksSchema,
@@ -338,6 +359,7 @@ export const ToolCompletedV2Schema = eventSchema(
     duration_ms: ObservationV2Schema(Type.Integer({ minimum: 0 })),
     result: ContentDescriptorV2Schema,
     error: Type.Optional(StrictObject({ class: SafeToken, code: Type.Optional(SafeToken) })),
+    recovery: Type.Optional(RecoveryV2Schema),
   }),
   "turn",
   ToolLinksSchema,
@@ -506,6 +528,7 @@ export const CommandCompletedV2Schema = eventSchema(
     signal: Type.Optional(SafeToken),
     duration_ms: Type.Integer({ minimum: 0 }),
     error_class: Type.Optional(SafeToken),
+    recovery: Type.Optional(RecoveryV2Schema),
   }),
   "turn",
   ToolLinksSchema,
@@ -828,5 +851,7 @@ export type EventTypeV2 = EventV2["event_type"];
 export type EventOfTypeV2<T extends EventTypeV2> = Extract<EventV2, { event_type: T }>;
 export type EventPayloadV2<T extends EventTypeV2> = EventOfTypeV2<T>["payload"];
 export type RuntimeAttestationV2 = Static<typeof RuntimeAttestationV2Schema>;
+export type RecoveryV2 = Static<typeof RecoveryV2Schema>;
+export type RecoveryReasonV2 = Static<typeof RecoveryReasonV2Schema>;
 export type ContentDescriptorV2 = Static<typeof ContentDescriptorV2Schema>;
 export type TargetDescriptorV2 = Static<typeof TargetDescriptorV2Schema>;
