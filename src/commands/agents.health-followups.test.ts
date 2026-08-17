@@ -15,7 +15,12 @@ import { EVENT_V2_SCHEMA_DIGEST } from "../core/events/v2/generated.ts";
 import { writeProducerDiagnosticV2 } from "../core/events/v2/producers/intake.ts";
 import { recordHookSignalV2 } from "../core/events/v2/producers/recorder.ts";
 import type { ParsedPayload } from "../core/hooks/adapter/parse.ts";
-import { collectActiveAgentHealth, collectEventLedgerHealthV2, readHookErrors } from "./agents.ts";
+import {
+  collectActiveAgentHealth,
+  collectEventLedgerHealthV2,
+  collectStatusPeerHealth,
+  readHookErrors,
+} from "./agents.ts";
 
 const roots: string[] = [];
 
@@ -59,6 +64,43 @@ describe("agent health follow-up diagnostics", () => {
       by_schema_version: { v2: 1 },
       stale: 0,
     });
+  });
+
+  test("uses V2 generations instead of stale heartbeat caches for status peers", () => {
+    const root = candidateRoot();
+    for (const [sessionId, instanceId, producerId] of [
+      ["self-session", "inst_self", "prd_self"],
+      ["peer-session", "inst_peer", "prd_peer"],
+    ] as const) {
+      expect(
+        recordHookSignalV2({
+          coordRoot: root,
+          mode: "candidate",
+          signal: "session-start",
+          payload: parsed({ session_id: sessionId }),
+          adapter: "claude-code",
+          instance_id: instanceId,
+          producer_id: producerId,
+          build_id: "build_fixture",
+          platform: "linux",
+        }).state,
+      ).toBe("recorded");
+    }
+    recoverEventV2Catalog(root);
+    const staleCache = join(root, ".harnery/active/stale-v1.json");
+    mkdirSync(dirname(staleCache), { recursive: true });
+    writeFileSync(
+      staleCache,
+      JSON.stringify({
+        schema_version: 1,
+        instance_id: "stale-v1",
+        last_heartbeat: "2020-01-01T00:00:00.000Z",
+      }),
+    );
+
+    const status = collectStatusPeerHealth(root, "self");
+    expect(status.stale).toBe(0);
+    expect(status.livePeers.map((peer) => peer.instance_id)).toEqual(["peer"]);
   });
 
   test("reports category recency separately from cumulative diagnostic counts", () => {

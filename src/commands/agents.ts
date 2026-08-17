@@ -2297,30 +2297,7 @@ function runStatus(opts: {
     ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
     : 0;
 
-  const activeDir = resolve(root, ".harnery", "active");
-  const nowSec = Math.floor(Date.now() / 1000);
-  const cutoff = nowSec - freshnessCutoffSecs();
-  const livePeers: Heartbeat[] = [];
-  let peersStale = 0;
-  if (existsSync(activeDir)) {
-    for (const file of readdirSync(activeDir)) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const raw = readFileSync(resolve(activeDir, file), "utf8");
-        const peer = JSON.parse(raw) as Heartbeat;
-        if (!peer || typeof peer.instance_id !== "string") continue;
-        if (peer.instance_id === myOwner) continue;
-        const ts = Date.parse(peer.last_heartbeat);
-        if (Number.isFinite(ts) && ts / 1000 >= cutoff) {
-          livePeers.push(peer);
-        } else {
-          peersStale++;
-        }
-      } catch {
-        // skip malformed
-      }
-    }
-  }
+  const { livePeers, stale: peersStale } = collectStatusPeerHealth(root, myOwner);
 
   // Sort: file-holders first (by file count desc), then idle peers by recency.
   livePeers.sort((a, b) => {
@@ -2502,7 +2479,7 @@ function formatList(items: string[], cap: number, emptyLabel: string): string {
 }
 
 function formatPeers(
-  peers: Heartbeat[],
+  peers: StatusPeerHeartbeat[],
   cap: number,
   staleCount: number,
   remoteMachines: RemoteMachine[] = [],
@@ -2533,6 +2510,60 @@ function formatPeers(
     main = `${main}; ${remote.join(", ")}${extra > 0 ? `, +${extra} more` : ""}`;
   }
   return main;
+}
+
+type StatusPeerHeartbeat = {
+  instance_id: string;
+  last_heartbeat: string;
+  files_touched?: string[];
+  name?: string;
+  platform?: string;
+};
+
+export function collectStatusPeerHealth(
+  root: string,
+  myOwner: string,
+  nowMs = Date.now(),
+): { livePeers: StatusPeerHeartbeat[]; stale: number } {
+  let rows: StatusPeerHeartbeat[] = [];
+  let useHeartbeatCache = true;
+  try {
+    const control = readEventV2ControlState(root);
+    if (control.state === "candidate" || control.state === "active") {
+      useHeartbeatCache = false;
+      rows = readLiveCoordinationRows(root);
+    }
+  } catch {
+    // V2 authority failures must not resurrect disposable legacy cache rows.
+    useHeartbeatCache = false;
+  }
+  if (useHeartbeatCache) {
+    const activeDir = resolve(root, ".harnery", "active");
+    if (existsSync(activeDir)) {
+      for (const file of readdirSync(activeDir)) {
+        if (!file.endsWith(".json")) continue;
+        try {
+          const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
+          if (parsed && typeof parsed.instance_id === "string") {
+            rows.push(parsed as StatusPeerHeartbeat);
+          }
+        } catch {
+          // Malformed cache rows remain invisible to status.
+        }
+      }
+    }
+  }
+
+  const cutoffMs = nowMs - freshnessCutoffSecs() * 1000;
+  const livePeers: StatusPeerHeartbeat[] = [];
+  let stale = 0;
+  for (const peer of rows) {
+    if (peer.instance_id === myOwner) continue;
+    const observedAtMs = Date.parse(peer.last_heartbeat);
+    if (Number.isFinite(observedAtMs) && observedAtMs >= cutoffMs) livePeers.push(peer);
+    else stale += 1;
+  }
+  return { livePeers, stale };
 }
 
 function fmtTokens(n: number): string {
