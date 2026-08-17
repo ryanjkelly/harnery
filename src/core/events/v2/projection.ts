@@ -466,7 +466,8 @@ function applyClaim(
     });
     return;
   }
-  if (projection.claims[key]) {
+  const held = projection.claims[key];
+  if (held && held.subject_instance_id !== event.payload.subject_instance_id) {
     addDiagnostic(projection, {
       code: "claim_acquire_conflict",
       event_id: event.event_id,
@@ -474,6 +475,8 @@ function applyClaim(
     });
     return;
   }
+  // A re-acquire by the current holder is idempotent (the guard may re-assert
+  // a holding it cannot see across an epoch boundary): refresh, never conflict.
   projection.claims[key] = {
     key,
     subject_instance_id: event.payload.subject_instance_id,
