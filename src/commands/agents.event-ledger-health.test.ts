@@ -44,12 +44,14 @@ describe("event-ledger health counters", () => {
   test("reports an orphan open span, a pending explicit end, and spool depths", () => {
     const root = candidateRoot();
     const nativeSession = "native-health-session";
+    const adapter = "cursor" as const;
 
     // session-start + turn + pre-tool-use (opens a span) + stop (closes the
     // turn, leaving the span open with no open turn: the orphan signature).
     expect(
-      recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })))
-        .state,
+      recordHookSignalV2(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), adapter),
+      ).state,
     ).toBe("recorded");
     expect(
       recordHookSignalV2(
@@ -57,6 +59,7 @@ describe("event-ledger health counters", () => {
           root,
           "user-prompt-submit",
           parsed({ session_id: nativeSession, turn_id: "turn-1", prompt: "go" }),
+          adapter,
         ),
       ).state,
     ).toBe("recorded");
@@ -66,16 +69,17 @@ describe("event-ledger health counters", () => {
           root,
           "pre-tool-use",
           parsed({ session_id: nativeSession, tool_use_id: "tool-1", tool_name: "Read" }),
+          adapter,
         ),
       ).state,
     ).toBe("recorded");
     expect(
       recordHookSignalV2(
-        baseInput(root, "stop", parsed({ session_id: nativeSession, turn_id: "turn-1" })),
+        baseInput(root, "stop", parsed({ session_id: nativeSession, turn_id: "turn-1" }), adapter),
       ).state,
     ).toBe("recorded");
 
-    const producer = readHookProducerStateV2(root, "claude-code", nativeSession);
+    const producer = readHookProducerStateV2(root, adapter, nativeSession);
     if (!producer) throw new Error("expected producer state");
     expect(producer.spans).toHaveLength(1);
     expect(producer.current_turn_id).toBeUndefined();
@@ -96,7 +100,7 @@ describe("event-ledger health counters", () => {
       mode: "candidate",
       signal: "post-tool-use",
       payload: parsed({ session_id: "other-session", tool_use_id: "tool-9" }),
-      adapter: "claude-code",
+      adapter,
       instance_id: "inst_fixture",
       producer_id: "prd_hook",
       build_id: "build_fixture",
@@ -116,7 +120,7 @@ describe("event-ledger health counters", () => {
     expect(health.open_spans.generations[0]).toMatchObject({
       instance_id: producer.instance_id,
       generation_id: producer.generation_id,
-      adapter: "claude-code",
+      adapter,
       span_count: 1,
       turn_open: false,
     });
@@ -134,7 +138,7 @@ describe("event-ledger health counters", () => {
     expect(health.intake_spool.total).toBe(1);
     expect(health.intake_spool.groups).toEqual([
       {
-        adapter: "claude-code",
+        adapter,
         session_hash: `hid_${"a".repeat(64)}`,
         count: 1,
       },
@@ -162,6 +166,7 @@ function candidateRoot(): string {
       producer_build_ids: ["build_fixture"],
       adapter_capability_profile_digests: [
         `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
+        `sha256:${adapterCapabilityProfileDigestV2("cursor").slice(4)}`,
       ],
       config_digest: sha256V2("config"),
       canonicalizer_version: "harnery-jcs-nfc-v1",
@@ -193,13 +198,14 @@ function baseInput(
   root: string,
   signal: Parameters<typeof recordHookSignalV2>[0]["signal"],
   payload: ParsedPayload,
+  adapter: "claude-code" | "cursor" = "claude-code",
 ) {
   return {
     coordRoot: root,
     mode: "candidate" as const,
     signal,
     payload,
-    adapter: "claude-code" as const,
+    adapter,
     instance_id: "inst_fixture" as const,
     producer_id: "prd_hook" as const,
     build_id: "build_fixture" as const,
