@@ -18,6 +18,7 @@ import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 const MAX_LEASE_BYTES = 8 * 1024;
+const MAX_CONTENTION_OBSERVATION_ATTEMPTS = 8;
 const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 
 export interface NoClobberLeaseOwner {
@@ -49,6 +50,8 @@ export interface AcquireNoClobberLeaseInput {
   now?: () => number;
   pid?: number;
   host?: string;
+  /** Fault-injection hook after contention is observed and before owner inspection. */
+  onContention?: () => void;
   onRecoveryStep?: (step: LeaseRecoveryStep) => void;
 }
 
@@ -105,20 +108,32 @@ export function acquireNoClobberLease(input: AcquireNoClobberLeaseInput): NoClob
       reclaimAbandonedRecovery(leaseDir, recoveryPath, input, now());
     }
 
-    try {
-      linkSync(ownerPath, currentPath);
-      fsyncDirectory(leaseDir);
-      assertExactOwner(currentPath, ownerPath, ownerBytes, owner);
-      if (existsSync(recoveryPath)) {
-        unlinkExactCurrent(currentPath, ownerPath);
-        throw new Error(`lease ${input.scope} recovery is already in progress`);
+    let observed: ReturnType<typeof readOwner> | undefined;
+    for (let attempt = 0; attempt < MAX_CONTENTION_OBSERVATION_ATTEMPTS; attempt += 1) {
+      try {
+        linkSync(ownerPath, currentPath);
+        fsyncDirectory(leaseDir);
+        assertExactOwner(currentPath, ownerPath, ownerBytes, owner);
+        if (existsSync(recoveryPath)) {
+          unlinkExactCurrent(currentPath, ownerPath);
+          throw new Error(`lease ${input.scope} recovery is already in progress`);
+        }
+        return leaseHandle(leaseDir, ownerPath, ownerBytes, owner);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
-      return leaseHandle(leaseDir, ownerPath, ownerBytes, owner);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
 
-    const observed = readOwner(currentPath);
+      input.onContention?.();
+      try {
+        observed = readOwner(currentPath);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    if (observed === undefined) {
+      throw new Error(`lease ${input.scope} changed repeatedly during contention`);
+    }
     if (leaseIsLive(observed.owner, now(), input.staleAfterMs)) {
       throw new Error(`lease ${input.scope} is held by a live or unexpired owner`);
     }
@@ -377,10 +392,23 @@ function readOwner(path: string): { owner: NoClobberLeaseOwner; bytes: string } 
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("lease owner is not a plain file");
     size = stat.size;
   } catch (error) {
-    throw new Error(`lease owner cannot be inspected: ${(error as Error).message}`);
+    const inspectionError = new Error(
+      `lease owner cannot be inspected: ${(error as Error).message}`,
+    ) as NodeJS.ErrnoException;
+    inspectionError.code = (error as NodeJS.ErrnoException).code;
+    throw inspectionError;
   }
   if (size <= 0 || size > MAX_LEASE_BYTES) throw new Error("lease owner bytes are invalid");
-  const bytes = readFileSync(path, "utf8");
+  let bytes: string;
+  try {
+    bytes = readFileSync(path, "utf8");
+  } catch (error) {
+    const inspectionError = new Error(
+      `lease owner cannot be read: ${(error as Error).message}`,
+    ) as NodeJS.ErrnoException;
+    inspectionError.code = (error as NodeJS.ErrnoException).code;
+    throw inspectionError;
+  }
   let value: unknown;
   try {
     value = JSON.parse(bytes);

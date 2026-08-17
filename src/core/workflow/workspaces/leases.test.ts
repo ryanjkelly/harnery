@@ -38,6 +38,32 @@ describe("no-clobber workspace leases", () => {
     expect(existsSync(join(path, "current"))).toBe(false);
   });
 
+  test("retries when a contended owner releases before inspection", () => {
+    const path = join(tempRoot("workspace-lease-release-race"), "operation.lease");
+    const first = acquireNoClobberLease({
+      path,
+      scope: "binding",
+      authoritySha256: DIGEST,
+      staleAfterMs: 60_000,
+    });
+    let contentions = 0;
+    const second = acquireNoClobberLease({
+      path,
+      scope: "binding",
+      authoritySha256: DIGEST,
+      staleAfterMs: 60_000,
+      onContention: () => {
+        contentions += 1;
+        first.release();
+      },
+    });
+
+    expect(contentions).toBe(1);
+    expect(readCurrentOwner(path).owner_id).toBe(second.owner.owner_id);
+    second.release();
+    expect(readdirSync(path).filter((entry) => entry.startsWith("owner-"))).toEqual([]);
+  });
+
   test("recovers an exact stale owner through one recovery claimant", () => {
     const path = join(tempRoot("workspace-lease-stale"), "operation.lease");
     let now = Date.parse("2026-01-01T00:00:00.000Z");
