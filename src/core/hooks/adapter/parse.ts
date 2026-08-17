@@ -72,7 +72,9 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     subagent_id: pickStr(json, "subagent_id"),
     conversation_id: conversationId,
     parent_session_id: parentSessionId,
-    turn_id: pickStr(json, "turn_id"),
+    // Claude Code names its native turn identifier prompt_id; both are the
+    // adapter's turn-scoped id and feed native turn stamping (ADR 0078).
+    turn_id: pickStr(json, "turn_id") ?? pickStr(json, "prompt_id"),
     parent_turn_id: pickStr(json, "parent_turn_id"),
     transcript_path: pickStr(json, "transcript_path"),
     cwd: pickStr(json, "cwd"),

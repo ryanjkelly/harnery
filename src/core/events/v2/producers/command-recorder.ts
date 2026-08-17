@@ -6,6 +6,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -17,12 +18,13 @@ import { join, resolve } from "node:path";
 import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import { buildEventV2 } from "../builder.ts";
 import { normalizeNativeIdV2 } from "../canonical.ts";
 import type { EventV2 } from "../contract.ts";
 import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
 import { clockIdV2, spanIdV2 } from "../ids.ts";
-import { validateEventV2 } from "../validate.ts";
+import { assertEventV2, validateEventV2 } from "../validate.ts";
 import {
   EVENT_V2_LEDGER_RELATIVE_ROOT,
   type WriteEventV2Options,
@@ -198,6 +200,132 @@ export function recordCommandSignalV2(
   }
 }
 
+export interface CloseAbandonedCommandSpansV2Input {
+  coordRoot: string;
+  mode: EventV2WriteMode;
+  generation_id: `gen_${string}`;
+  build_id: `build_${string}`;
+  platform: "linux" | "windows" | "macos" | "unknown";
+  writerOptions?: WriteEventV2Options;
+}
+
+export interface CloseAbandonedCommandSpansV2Result {
+  closed: number;
+  skipped: number;
+}
+
+/**
+ * Session-end command closer (ADR 0078): every non-terminal command span of
+ * the ending generation gets a derived `command.completed` with an unknown
+ * outcome, so a `process.exit` or SIGKILL that outran the CLI's finalize can
+ * no longer leave the generation with an unpaired command forever. Command
+ * spans never block turns; this exists for corpus honesty and invariant 11.
+ */
+export function closeAbandonedCommandSpansV2(
+  input: CloseAbandonedCommandSpansV2Input,
+): CloseAbandonedCommandSpansV2Result {
+  const result: CloseAbandonedCommandSpansV2Result = { closed: 0, skipped: 0 };
+  const control = readEventV2ControlState(input.coordRoot);
+  if (control.state !== input.mode) return result;
+  const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+  const directory = join(
+    resolve(input.coordRoot),
+    EVENT_V2_LEDGER_RELATIVE_ROOT,
+    "private-producers/session-tee",
+  );
+  if (!existsSync(directory)) return result;
+  for (const name of readdirSync(directory).filter((entry) =>
+    /^hid_[a-f0-9]{64}\.json$/.test(entry),
+  )) {
+    const path = join(directory, name);
+    let preview: CommandRecorderStateV2;
+    try {
+      preview = readCommandState(path);
+    } catch {
+      result.skipped += 1;
+      continue;
+    }
+    if (preview.generation_id !== input.generation_id || preview.terminal) continue;
+    let lease: ReturnType<typeof acquireCommandLease>;
+    try {
+      lease = acquireCommandLease(input.coordRoot, path);
+    } catch {
+      result.skipped += 1;
+      continue;
+    }
+    try {
+      const state = readCommandState(path);
+      if (state.generation_id !== input.generation_id) continue;
+      if (state.pending) {
+        const pending = state.pending;
+        writeEventV2(input.coordRoot, pending.event, input.writerOptions);
+        applyCommandEvent(state, pending.source_id, pending.event);
+        state.pending = undefined;
+        publishCommandState(path, state);
+      }
+      if (state.terminal) continue;
+      const context = fingerprintContextV2(
+        input.coordRoot,
+        rootId,
+        state.generation_id,
+        state.privacy_epoch_id,
+      );
+      const sourceId = normalizeNativeIdV2(
+        context,
+        "session-tee.observation",
+        `recovery:${state.span_id}`,
+      );
+      const event = buildEventV2("command.completed", {
+        producer: {
+          producer_id: "prd_agent-finalizer",
+          boot_id: `boot_${randomUUID()}`,
+          sequence: 1,
+          component: "session-tee",
+          build_id: input.build_id,
+          platform: input.platform,
+        },
+        scope: {
+          root_id: rootId,
+          instance_id: state.instance_id,
+          session_id: state.session_id,
+          generation_id: state.generation_id,
+          turn_id: state.turn_id,
+        },
+        attestation_id: state.attestation_id,
+        links: { caused_by: [state.last_event_id], span_id: state.span_id },
+        provenance: {
+          source_event: "session-tee.recovery",
+          attestation: "derived",
+          confidence: "medium",
+          attribution: {
+            method: "session_env",
+            state: "verified",
+            subject_instance_id: state.instance_id,
+          },
+        },
+        monotonic_ns: process.hrtime.bigint().toString(),
+        clock_id: state.clock_id,
+        payload: {
+          outcome: "unknown",
+          duration_ms: 0,
+          recovery: { reason: "command_completion_not_observed" },
+        },
+      }) as EventV2;
+      assertEventV2(event);
+      state.pending = { source_id: sourceId, event };
+      publishCommandState(path, state);
+      writeEventV2(input.coordRoot, event, input.writerOptions);
+      applyCommandEvent(state, sourceId, event);
+      state.pending = undefined;
+      publishCommandState(path, state);
+      result.closed += 1;
+    } finally {
+      lease.release();
+    }
+  }
+  return result;
+}
+
 function newCommandState(
   input: RecordCommandSignalV2Input,
   hook: NonNullable<ReturnType<typeof readHookProducerStateByInstanceV2>>,
@@ -258,7 +386,9 @@ function applyCommandEvent(
   sourceId: `hid_${string}`,
   event: EventV2,
 ): void {
-  state.next_sequence += 1;
+  // Only events on the state's own producer chain advance its sequence; the
+  // finalizer's derived closer uses a fresh boot at sequence 1.
+  if (event.producer.boot_id === state.boot_id) state.next_sequence += 1;
   state.last_event_id = event.event_id as `evt_${string}`;
   state.observations.push({ source_id: sourceId, event_id: event.event_id as `evt_${string}` });
   if (state.observations.length > MAX_OBSERVATIONS) state.observations.shift();

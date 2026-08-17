@@ -70,11 +70,17 @@ export function normalizeHookEventV2(
   );
   const turnNative =
     payload.turn_id ?? context.turn_native_id ?? `${sessionNative}:${context.sequence}`;
-  const turnId =
-    context.turn_id ??
-    asTurnId(
-      normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
-    );
+  // A native payload turn id outranks the producer-state stamp: a lost or late
+  // user-prompt-submit hook must not mis-attribute this event to a stale turn
+  // (ADR 0078 turn attribution).
+  const turnId = payload.turn_id
+    ? asTurnId(
+        normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, payload.turn_id),
+      )
+    : (context.turn_id ??
+      asTurnId(
+        normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
+      ));
   const generationScope = {
     root_id: context.root_id,
     instance_id: context.instance_id,

@@ -49,12 +49,34 @@ import {
 } from "./intake.ts";
 
 const STATE_FORMAT = "harnery-v2-hook-producer" as const;
-const STATE_VERSION = 1 as const;
+const STATE_VERSION = 2 as const;
+
+/** ADR 0078 recovery policy constants. */
+const CLOSED_SPAN_TURN_RETENTION = 2;
+const CLOSED_SPAN_MEMORY_CAP = 512;
+const SPAN_SOFT_WATERMARK = 128;
+/**
+ * Adapters whose turn-boundary recovery and mid-flight onboarding are enabled.
+ * Kept in code, outside the digested capability profiles, so tuning recovery
+ * never changes an adapter capability digest (ADR 0078).
+ */
+const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<Adapter> = new Set(["claude-code", "codex"]);
 
 interface SpanStateV2 {
   source_id: `hid_${string}`;
   span_id: `span_${string}`;
   started_monotonic_ns?: string;
+  turn_id?: `tid_${string}`;
+  turn_stamp?: "native_payload" | "producer_state";
+  requested_event_id?: `evt_${string}`;
+  tool_name?: string;
+}
+
+interface ClosedSpanV2 {
+  source_id: `hid_${string}`;
+  span_id: `span_${string}`;
+  closed_event_id: `evt_${string}`;
+  turn_ordinal: number;
 }
 
 interface PendingEventV2 {
@@ -89,6 +111,8 @@ export interface HookProducerStateV2 {
   terminal: boolean;
   spans: SpanStateV2[];
   delegations: DelegationStateV2[];
+  closed_spans: ClosedSpanV2[];
+  turn_ordinal: number;
   pending?: PendingEventV2;
 }
 
@@ -114,6 +138,8 @@ export type RecordHookSignalV2Result =
   | { state: "missing_session_start" }
   | { state: "already_started"; event_id: string }
   | { state: "unpairable_tool"; reason: "missing_tool_use_id" | "no_open_span" }
+  /** A late signal for a span already closed in memory; preserved in diagnostics, never re-opened. */
+  | { state: "suppressed"; reason: "closed_span" }
   | { state: "ignored" }
   /** Durably queued in the intake spool; a lease holder or drain hook records it. */
   | { state: "spooled" }
@@ -452,14 +478,40 @@ function processHookSignalLocked(
       }
       state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
     } else if (!state || state.terminal) {
-      writeProducerDiagnosticV2(input.coordRoot, "missing_session_start", {
+      // Mid-flight onboarding (ADR 0078): a live session with no producer
+      // state in this epoch (fresh epoch, lost session-start hook) opens a
+      // new generation with a derived session.started so its activity is
+      // recorded instead of refused. A TERMINAL state never re-onboards:
+      // resurrection after authoritative termination stays forbidden.
+      // Onboarding requires the payload's own native session identity: an
+      // env-attributed signal must not mint a generation under a hash derived
+      // from the observer instance (that would split the real session).
+      const nativeSessionIdentity =
+        input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id;
+      const onboardable =
+        !state &&
+        RECOVERY_ENABLED_ADAPTERS.has(input.adapter) &&
+        input.signal !== "session-end" &&
+        nativeSessionIdentity !== undefined;
+      if (!onboardable) {
+        writeProducerDiagnosticV2(input.coordRoot, "missing_session_start", {
+          adapter: input.adapter,
+          instance_id: input.instance_id,
+          signal: input.signal,
+          session_hash: sessionHash,
+          payload: input.payload,
+        });
+        return { state: "missing_session_start" };
+      }
+      state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
+      const onboarding = buildMidFlightSessionStart(input, state, rootId);
+      commitEventLocked(input, state, path, onboarding);
+      writeProducerDiagnosticV2(input.coordRoot, "mid_flight_onboarding", {
         adapter: input.adapter,
         instance_id: input.instance_id,
         signal: input.signal,
         session_hash: sessionHash,
-        payload: input.payload,
       });
-      return { state: "missing_session_start" };
     }
 
     const fingerprintContext = fingerprintContextV2(
@@ -468,24 +520,125 @@ function processHookSignalLocked(
       state.generation_id,
       state.privacy_epoch_id,
     );
+    const recoveryEnabled = RECOVERY_ENABLED_ADAPTERS.has(input.adapter);
+    const nativeTid = input.payload.turn_id
+      ? (normalizeNativeIdV2(
+          fingerprintContext,
+          `${input.adapter}.turn`,
+          input.payload.turn_id,
+        ).replace(/^hid_/, "tid_") as `tid_${string}`)
+      : undefined;
+
+    // Turn-boundary recovery (ADR 0078): a turn terminal is authoritative for
+    // the spans it owns. Derived terminals land BEFORE the native turn event.
+    if (recoveryEnabled && (input.signal === "stop" || input.signal === "stop-failure")) {
+      const endingTid = nativeTid ?? state.current_turn_id;
+      if (endingTid) {
+        sweepOpenSpans(
+          input,
+          state,
+          path,
+          rootId,
+          (candidate) => candidate.turn_id !== undefined && candidate.turn_id === endingTid,
+          "completion_not_observed_before_turn_end",
+        );
+      }
+    } else if (recoveryEnabled && input.signal === "user-prompt-submit") {
+      sweepOpenSpans(
+        input,
+        state,
+        path,
+        rootId,
+        (candidate) =>
+          candidate.turn_id !== undefined &&
+          (nativeTid === undefined || candidate.turn_id !== nativeTid),
+        "completion_not_observed_before_next_turn",
+      );
+    }
+
     const sourceId = sourceIdForSignal(input, rootFingerprintContext);
     let span: SpanStateV2 | undefined;
     let delegation: DelegationStateV2 | undefined;
     if (input.signal === "pre-tool-use") {
       if (!sourceId) return unpairableTool(input, sessionHash, "missing_tool_use_id");
+      if (state.closed_spans.some((closed) => closed.source_id === sourceId)) {
+        // A late pre for a closed span must never open a fresh span: that is
+        // the pre/post-inversion orphan (ADR 0078).
+        return suppressClosedSpanSignal(input, sessionHash, "late_pre_suppressed");
+      }
+      if (recoveryEnabled && state.spans.length >= SPAN_SOFT_WATERMARK) {
+        const currentTid = nativeTid ?? state.current_turn_id;
+        sweepOpenSpans(
+          input,
+          state,
+          path,
+          rootId,
+          (candidate) => candidate.turn_id !== undefined && candidate.turn_id !== currentTid,
+          "span_cap_pressure",
+        );
+      }
       span = state.spans.find((candidate) => candidate.source_id === sourceId);
       if (!span) {
         span = {
           source_id: sourceId,
           span_id: spanIdV2(),
           ...(input.monotonic_ns ? { started_monotonic_ns: input.monotonic_ns } : {}),
+          ...(input.payload.tool_name ? { tool_name: safeRole(input.payload.tool_name) } : {}),
         };
         state.spans.push(span);
       }
     } else if (input.signal === "post-tool-use" || input.signal === "post-tool-use-failure") {
       if (!sourceId) return unpairableTool(input, sessionHash, "missing_tool_use_id");
       span = state.spans.find((candidate) => candidate.source_id === sourceId);
-      if (!span) return unpairableTool(input, sessionHash, "no_open_span");
+      if (!span) {
+        if (state.closed_spans.some((closed) => closed.source_id === sourceId)) {
+          return suppressClosedSpanSignal(input, sessionHash, "late_post_suppressed");
+        }
+        if (!recoveryEnabled) return unpairableTool(input, sessionHash, "no_open_span");
+        // Unmatched post (ADR 0078): record a derived request and pair the
+        // native completion on a fresh span instead of discarding the result.
+        span = {
+          source_id: sourceId,
+          span_id: spanIdV2(),
+          ...(input.payload.tool_name ? { tool_name: safeRole(input.payload.tool_name) } : {}),
+        };
+        const derivedRequest = normalizeHookEventV2("pre-tool-use", input.payload, {
+          coordRoot: input.coordRoot,
+          adapter: input.adapter,
+          adapterVersion: input.adapterVersion,
+          harnessVersion: input.harnessVersion,
+          root_id: rootId,
+          instance_id: input.instance_id,
+          generation_id: state.generation_id,
+          attestation_id: state.attestation_id,
+          producer_id: input.producer_id,
+          boot_id: state.boot_id,
+          sequence: state.next_sequence,
+          build_id: input.build_id,
+          platform: input.platform,
+          bridge: input.bridge,
+          capability_profile: state.capability_profile,
+          fingerprintContext,
+          turn_id: state.current_turn_id,
+          span_id: span.span_id,
+          caused_by: state.last_event_id ? [state.last_event_id] : [],
+          monotonic_ns: input.monotonic_ns,
+          clock_id: state.clock_id,
+        });
+        if (!derivedRequest) return unpairableTool(input, sessionHash, "no_open_span");
+        derivedRequest.provenance = {
+          ...derivedRequest.provenance,
+          attestation: "derived",
+          confidence: input.payload.tool_input !== undefined ? "high" : "medium",
+        };
+        (derivedRequest.payload as { recovery?: { reason: string } }).recovery = {
+          reason: "request_not_observed",
+        };
+        state.spans.push(span);
+        commitEventLocked(input, state, path, derivedRequest);
+        span.requested_event_id = derivedRequest.event_id as `evt_${string}`;
+        stampSpanTurn(span, derivedRequest, input, state);
+      }
     }
     if (input.signal === "sub-agent-start") {
       if (!sourceId) return { state: "ignored" };
@@ -534,18 +687,208 @@ function processHookSignalLocked(
       agent_role: delegation?.role,
     });
     if (!event) return { state: "ignored" };
-    assertEventV2(event);
-
-    state.pending = { ...(sourceId ? { source_id: sourceId } : {}), event };
-    publishProducerState(path, state);
-    const durability = writeEventV2(input.coordRoot, event, input.writerOptions);
-    applyCommittedEvent(state, event);
-    state.pending = undefined;
-    publishProducerState(path, state);
+    if (input.signal === "pre-tool-use" && span && !span.requested_event_id) {
+      span.requested_event_id = event.event_id as `evt_${string}`;
+      stampSpanTurn(span, event, input, state);
+    }
+    const durability = commitEventLocked(input, state, path, event, sourceId);
     return { state: "recorded", event, durability, recovered: false };
   } finally {
     // The session's state lease is held by the draining caller.
   }
+}
+
+/**
+ * Stamp the span with the turn its request event was attributed to. No stamp
+ * is written without a real turn context: a native payload turn id or an open
+ * producer-state turn. Unstamped spans are excluded from every boundary and
+ * cap sweep (fail closed; explicit-end salvage may still reach them).
+ */
+function stampSpanTurn(
+  span: SpanStateV2,
+  requestEvent: EventV2,
+  input: RecordHookSignalV2Input,
+  state: HookProducerStateV2,
+): void {
+  if (input.payload.turn_id) {
+    span.turn_id = (requestEvent.scope as { turn_id: `tid_${string}` }).turn_id;
+    span.turn_stamp = "native_payload";
+  } else if (state.current_turn_id) {
+    span.turn_id = state.current_turn_id;
+    span.turn_stamp = "producer_state";
+  }
+}
+
+/** The single pending-publish/write/apply/publish cycle every locked event commit uses. */
+function commitEventLocked(
+  input: RecordHookSignalV2Input,
+  state: HookProducerStateV2,
+  path: string,
+  event: EventV2,
+  sourceId?: `hid_${string}`,
+): WriteEventV2Result {
+  assertEventV2(event);
+  state.pending = { ...(sourceId ? { source_id: sourceId } : {}), event };
+  publishProducerState(path, state);
+  const durability = writeEventV2(input.coordRoot, event, input.writerOptions);
+  applyCommittedEvent(state, event);
+  state.pending = undefined;
+  publishProducerState(path, state);
+  return durability;
+}
+
+/**
+ * Terminalize every open span matching the predicate with a derived
+ * `tool.completed` (ADR 0078). One event per span, committed sequentially
+ * through the pending cycle so a crash replays exactly one.
+ */
+function sweepOpenSpans(
+  input: RecordHookSignalV2Input,
+  state: HookProducerStateV2,
+  path: string,
+  rootId: `root_${string}`,
+  matches: (span: SpanStateV2) => boolean,
+  reason:
+    | "completion_not_observed_before_turn_end"
+    | "completion_not_observed_before_next_turn"
+    | "span_cap_pressure",
+): void {
+  for (const span of [...state.spans]) {
+    if (!matches(span)) continue;
+    const event = buildDerivedToolCompleted(input, state, rootId, span, reason);
+    commitEventLocked(input, state, path, event);
+  }
+}
+
+function buildDerivedToolCompleted(
+  input: RecordHookSignalV2Input,
+  state: HookProducerStateV2,
+  rootId: `root_${string}`,
+  span: SpanStateV2,
+  reason:
+    | "completion_not_observed_before_turn_end"
+    | "completion_not_observed_before_next_turn"
+    | "span_cap_pressure"
+    | "explicit_end_salvage",
+  producerOverride?: { producer_id: `prd_${string}`; boot_id: `boot_${string}`; sequence: number },
+  observedAt?: string,
+): EventV2 {
+  const baseConfidence =
+    reason === "completion_not_observed_before_turn_end" || reason === "explicit_end_salvage"
+      ? "medium"
+      : "low";
+  const confidence =
+    span.turn_stamp === "producer_state" && baseConfidence === "medium" ? "low" : baseConfidence;
+  const event = buildEventV2("tool.completed", {
+    producer: {
+      producer_id: producerOverride?.producer_id ?? input.producer_id,
+      boot_id: producerOverride?.boot_id ?? state.boot_id,
+      sequence: producerOverride?.sequence ?? state.next_sequence,
+      component: "agent-hook",
+      build_id: input.build_id,
+      platform: input.platform,
+      ...(input.bridge ? { bridge: input.bridge } : {}),
+    },
+    scope: {
+      root_id: rootId,
+      instance_id: state.instance_id,
+      session_id: state.session_id,
+      generation_id: state.generation_id,
+      turn_id: span.turn_id as `tid_${string}`,
+    },
+    attestation_id: state.attestation_id,
+    links: {
+      caused_by: state.last_event_id ? [state.last_event_id] : [],
+      span_id: span.span_id,
+    },
+    provenance: {
+      source_event: `${input.adapter}.recovery`,
+      attestation: "derived",
+      confidence,
+      attribution: {
+        method: span.turn_stamp === "native_payload" ? "native_payload" : "session_env",
+        state: "verified",
+        subject_instance_id: state.instance_id,
+      },
+    },
+    observed_at: observedAt,
+    monotonic_ns: process.hrtime.bigint().toString(),
+    clock_id: state.clock_id,
+    payload: {
+      tool: { namespace: input.adapter, name: span.tool_name ?? "unknown_tool" },
+      outcome: "unknown",
+      duration_ms: { state: "unknown", reason: "completion_not_observed" },
+      result: { storage: "omitted", media_type: "application/octet-stream", bytes: 0 },
+      recovery: {
+        reason,
+        ...(span.requested_event_id ? { requested_event_id: span.requested_event_id } : {}),
+      },
+    },
+  }) as EventV2;
+  assertEventV2(event);
+  return event;
+}
+
+/**
+ * A derived `session.started` for a live session Harnery first observed
+ * mid-flight (fresh epoch or lost session-start hook). Records that the
+ * session exists without claiming the adapter delivered a start signal.
+ */
+function buildMidFlightSessionStart(
+  input: RecordHookSignalV2Input,
+  state: HookProducerStateV2,
+  rootId: `root_${string}`,
+): EventV2 {
+  const fingerprintContext = fingerprintContextV2(
+    input.coordRoot,
+    rootId,
+    state.generation_id,
+    state.privacy_epoch_id,
+  );
+  const event = normalizeHookEventV2("session-start", input.payload, {
+    coordRoot: input.coordRoot,
+    adapter: input.adapter,
+    adapterVersion: input.adapterVersion,
+    harnessVersion: input.harnessVersion,
+    root_id: rootId,
+    instance_id: input.instance_id,
+    generation_id: state.generation_id,
+    attestation_id: state.attestation_id,
+    producer_id: input.producer_id,
+    boot_id: state.boot_id,
+    sequence: state.next_sequence,
+    build_id: input.build_id,
+    platform: input.platform,
+    bridge: input.bridge,
+    capability_profile: state.capability_profile,
+    fingerprintContext,
+    caused_by: state.last_event_id ? [state.last_event_id] : [],
+    monotonic_ns: input.monotonic_ns,
+    clock_id: state.clock_id,
+  });
+  if (!event) throw new Error("mid-flight session start could not be normalized");
+  event.provenance = { ...event.provenance, attestation: "derived", confidence: "medium" };
+  (event.payload as { resume?: unknown }).resume = {
+    state: "unknown",
+    reason: "mid_flight_onboarding",
+  };
+  assertEventV2(event);
+  return event;
+}
+
+function suppressClosedSpanSignal(
+  input: RecordHookSignalV2Input,
+  sessionHash: `hid_${string}`,
+  category: "late_pre_suppressed" | "late_post_suppressed",
+): RecordHookSignalV2Result {
+  writeProducerDiagnosticV2(input.coordRoot, category, {
+    adapter: input.adapter,
+    instance_id: input.instance_id,
+    signal: input.signal,
+    session_hash: sessionHash,
+    payload: input.payload,
+  });
+  return { state: "suppressed", reason: "closed_span" };
 }
 
 /**
@@ -683,6 +1026,123 @@ export function recordApprovedSessionEndV2(
   }
 }
 
+export interface SalvageOpenSpansV2Input {
+  coordRoot: string;
+  mode: EventV2WriteMode;
+  instance_id: `inst_${string}`;
+  generation_id: `gen_${string}`;
+  allowed_span_ids: readonly `span_${string}`[];
+  requested_turn_id?: `tid_${string}`;
+  build_id: `build_${string}`;
+  platform: "linux" | "windows" | "macos" | "unknown";
+  observed_at?: string;
+  writerOptions?: WriteEventV2Options;
+}
+
+export type SalvageOpenSpansV2Result =
+  | { state: "gate_closed"; reason: string }
+  | { state: "generation_unavailable"; reason: string }
+  | { state: "salvaged"; closed: number };
+
+/**
+ * Explicit-end salvage (ADR 0078): terminalize exactly the approved open-span
+ * set with derived recovery terminals so an authorized end stops wedging
+ * behind spans nothing else can close. Runs under the same private-state
+ * lease as the native producer; spans outside the approved set are refused by
+ * the caller's eligibility gate and never touched here.
+ */
+export function salvageOpenSpansV2(input: SalvageOpenSpansV2Input): SalvageOpenSpansV2Result {
+  const control = readEventV2ControlState(input.coordRoot);
+  if (control.state !== input.mode) {
+    return { state: "gate_closed", reason: control.state };
+  }
+  const matches = listHookProducerStateRecordsV2(input.coordRoot).filter(
+    ({ state }) =>
+      state.instance_id === input.instance_id && state.generation_id === input.generation_id,
+  );
+  if (matches.length !== 1) {
+    return {
+      state: "generation_unavailable",
+      reason: matches.length === 0 ? "not_found" : "ambiguous",
+    };
+  }
+  const record = matches[0]!;
+  const lease = acquireStateLeaseWithRetry(input.coordRoot, record.path, 2);
+  if (!lease) return { state: "generation_unavailable", reason: "busy" };
+  try {
+    const state = readProducerState(record.path);
+    if (
+      state.instance_id !== input.instance_id ||
+      state.generation_id !== input.generation_id ||
+      state.terminal
+    ) {
+      return { state: "generation_unavailable", reason: "authority_changed" };
+    }
+    const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+    const salvageInput: RecordHookSignalV2Input = {
+      coordRoot: input.coordRoot,
+      mode: input.mode,
+      signal: "stop",
+      payload: { raw: {} },
+      adapter: state.adapter,
+      instance_id: state.instance_id,
+      producer_id: "prd_agent-finalizer",
+      build_id: input.build_id,
+      platform: input.platform,
+      writerOptions: input.writerOptions,
+    };
+    if (state.pending) {
+      const pendingEvent = state.pending.event;
+      writeEventV2(input.coordRoot, pendingEvent, input.writerOptions);
+      applyCommittedEvent(state, pendingEvent);
+      state.pending = undefined;
+      publishProducerState(record.path, state);
+    }
+    const allowed = new Set(input.allowed_span_ids);
+    const fingerprintContext = fingerprintContextV2(
+      input.coordRoot,
+      rootId,
+      state.generation_id,
+      state.privacy_epoch_id,
+    );
+    // Salvage runs outside the hook producer chain: a fresh boot starting at
+    // sequence 1 keeps the reader's per-(producer, boot) continuity intact.
+    const salvageBoot = `boot_${randomUUID()}` as `boot_${string}`;
+    let salvageSequence = 1;
+    let closed = 0;
+    for (const span of [...state.spans]) {
+      if (!allowed.has(span.span_id)) continue;
+      if (!span.turn_id) {
+        // An unstamped span still needs a turn scope; the requested turn is
+        // the only honest owner the explicit end named, and a salvage-scoped
+        // synthetic id is the last resort.
+        span.turn_id =
+          input.requested_turn_id ??
+          (`tid_${normalizeNativeIdV2(
+            fingerprintContext,
+            `${state.adapter}.turn`,
+            `salvage:${span.span_id}`,
+          ).slice(4)}` as `tid_${string}`);
+      }
+      const event = buildDerivedToolCompleted(
+        salvageInput,
+        state,
+        rootId,
+        span,
+        "explicit_end_salvage",
+        { producer_id: "prd_agent-finalizer", boot_id: salvageBoot, sequence: salvageSequence },
+        input.observed_at,
+      );
+      salvageSequence += 1;
+      commitEventLocked(salvageInput, state, record.path, event);
+      closed += 1;
+    }
+    return { state: "salvaged", closed };
+  } finally {
+    lease.release();
+  }
+}
+
 export function listHookProducerStateRecordsV2(
   coordRoot: string,
   options: { includeTerminal?: boolean } = {},
@@ -813,21 +1273,42 @@ function newProducerState(
     terminal: false,
     spans: [],
     delegations: [],
+    closed_spans: [],
+    turn_ordinal: 0,
   };
 }
 
 function applyCommittedEvent(state: HookProducerStateV2, event: EventV2): void {
-  state.next_sequence += 1;
+  // Sequence continuity is keyed on (producer_id, boot_id): only events that
+  // ride the state's own producer chain advance it. Finalizer-authored events
+  // (fresh boot, sequence 1) must not create gaps in the hook chain.
+  if (event.producer.boot_id === state.boot_id) state.next_sequence += 1;
   state.last_event_id = event.event_id as `evt_${string}`;
   if (event.event_type === "session.started") {
     state.started_event_id = event.event_id as `evt_${string}`;
   }
   if (event.event_type === "turn.started") {
     state.current_turn_id = (event.scope as { turn_id: `tid_${string}` }).turn_id;
+    state.turn_ordinal += 1;
+    state.closed_spans = state.closed_spans.filter(
+      (closed) => closed.turn_ordinal >= state.turn_ordinal - CLOSED_SPAN_TURN_RETENTION,
+    );
   }
   if (event.event_type === "tool.requested") state.tool_call_count += 1;
   if (event.event_type === "tool.completed") {
     const completedSpan = (event.links as { span_id: `span_${string}` }).span_id;
+    const closing = state.spans.find((span) => span.span_id === completedSpan);
+    if (closing) {
+      state.closed_spans.push({
+        source_id: closing.source_id,
+        span_id: closing.span_id,
+        closed_event_id: event.event_id as `evt_${string}`,
+        turn_ordinal: state.turn_ordinal,
+      });
+      if (state.closed_spans.length > CLOSED_SPAN_MEMORY_CAP) {
+        state.closed_spans = state.closed_spans.slice(-CLOSED_SPAN_MEMORY_CAP);
+      }
+    }
     state.spans = state.spans.filter((span) => span.span_id !== completedSpan);
   }
   if (event.event_type === "agent.completed") {
@@ -972,12 +1453,21 @@ function readProducerState(path: string): HookProducerStateV2 {
     throw new Error("V2 producer state is invalid");
   }
   const state = parsed as HookProducerStateV2;
+  // In-place additive upgrade from format 1 (pre-ADR-0078): the new fields
+  // default empty; an old build reading a version-2 file still throws, and its
+  // signal is already durable in the intake spool.
+  if ((state as { format_version: number }).format_version === 1 && state.format === STATE_FORMAT) {
+    state.format_version = STATE_VERSION;
+    state.closed_spans ??= [];
+    state.turn_ordinal ??= 0;
+  }
   const allowedKeys = new Set([
     "adapter",
     "attestation_id",
     "boot_id",
     "capability_profile",
     "clock_id",
+    "closed_spans",
     "current_turn_id",
     "delegations",
     "format",
@@ -993,6 +1483,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     "started_event_id",
     "terminal",
     "tool_call_count",
+    "turn_ordinal",
   ]);
   if (
     Object.keys(state).some((key) => !allowedKeys.has(key)) ||
@@ -1027,8 +1518,28 @@ function readProducerState(path: string): HookProducerStateV2 {
       (span) =>
         !/^hid_[a-f0-9]{64}$/.test(span.source_id) ||
         !/^span_[0-9a-f-]{36}$/.test(span.span_id) ||
-        (span.started_monotonic_ns !== undefined && !/^\d+$/.test(span.started_monotonic_ns)),
+        (span.started_monotonic_ns !== undefined && !/^\d+$/.test(span.started_monotonic_ns)) ||
+        (span.turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(span.turn_id)) ||
+        (span.turn_stamp !== undefined &&
+          span.turn_stamp !== "native_payload" &&
+          span.turn_stamp !== "producer_state") ||
+        (span.requested_event_id !== undefined &&
+          !/^evt_[0-9a-f-]{36}$/.test(span.requested_event_id)) ||
+        (span.tool_name !== undefined &&
+          !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(span.tool_name)),
     ) ||
+    !Array.isArray(state.closed_spans) ||
+    state.closed_spans.length > CLOSED_SPAN_MEMORY_CAP ||
+    state.closed_spans.some(
+      (closed) =>
+        !/^hid_[a-f0-9]{64}$/.test(closed.source_id) ||
+        !/^span_[0-9a-f-]{36}$/.test(closed.span_id) ||
+        !/^evt_[0-9a-f-]{36}$/.test(closed.closed_event_id) ||
+        !Number.isSafeInteger(closed.turn_ordinal) ||
+        closed.turn_ordinal < 0,
+    ) ||
+    !Number.isSafeInteger(state.turn_ordinal) ||
+    state.turn_ordinal < 0 ||
     (state.current_turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(state.current_turn_id)) ||
     (state.last_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id)) ||
     (state.started_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.started_event_id)) ||

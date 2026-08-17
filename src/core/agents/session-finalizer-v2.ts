@@ -21,6 +21,7 @@ import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
 import type { EventV2 } from "../events/v2/contract.ts";
 import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
 import { livePlatformV2, resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
+import { closeAbandonedCommandSpansV2 } from "../events/v2/producers/command-recorder.ts";
 import {
   type ApprovedSessionEndReasonV2,
   drainHookIntakeSpoolV2,
@@ -28,6 +29,7 @@ import {
   listHookProducerStateRecordsV2,
   readHookProducerStateV2,
   recordApprovedSessionEndV2,
+  salvageOpenSpansV2,
 } from "../events/v2/producers/recorder.ts";
 import { readActiveLedgerV2, readLedgerV2 } from "../events/v2/reader.ts";
 import { assertEventV2 } from "../events/v2/validate.ts";
@@ -142,6 +144,17 @@ export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
   if (route.state !== "v2") {
     return { state: "unavailable" as const, reason: route.state === "v1" ? "v1" : route.reason };
+  }
+  try {
+    closeAbandonedCommandSpansV2({
+      coordRoot: input.coordRoot,
+      mode: route.mode,
+      generation_id: input.generation_id,
+      build_id: route.build_id,
+      platform: livePlatformV2(),
+    });
+  } catch {
+    // Command spans never block a session end; the closer is best effort.
   }
   return recordApprovedSessionEndV2({
     coordRoot: input.coordRoot,
@@ -402,7 +415,33 @@ export function reconcileSessionFinalizationV2(
         continue;
       }
       if (request.trigger === "explicit_end") {
-        const state = explicitEndReadiness(request, record, events);
+        let state = explicitEndReadiness(request, record, events);
+        if (state === "pending" && explicitEndSalvageEligible(request, record, events)) {
+          // Salvage (ADR 0078) precedes expiry: the requested turn is closed
+          // and every remaining span is in the approved set, so derived
+          // recovery terminals complete the end instead of cancelling it.
+          const salvaged = salvageOpenSpansV2({
+            coordRoot,
+            mode: route.mode,
+            instance_id: request.instance_id,
+            generation_id: request.generation_id,
+            allowed_span_ids: request.allowed_open_span_ids ?? [],
+            requested_turn_id: request.requested_turn_id,
+            build_id: route.build_id,
+            platform: livePlatformV2(),
+            observed_at: now.toISOString(),
+          });
+          if (salvaged.state === "salvaged") {
+            result.diagnostics.push(
+              `salvaged_explicit_end:${request.request_id}:${salvaged.closed}`,
+            );
+            state = "ready";
+          } else {
+            // Salvage-eligible requests are exempt from expiry; retry next pass.
+            result.pending += 1;
+            continue;
+          }
+        }
         if (state === "pending") {
           // Expiry: a pending explicit end whose allowed span never closes has
           // no other escape (readiness re-evaluates to pending forever, and a
@@ -432,6 +471,17 @@ export function reconcileSessionFinalizationV2(
       if (Date.parse(request.not_before) > now.getTime()) {
         result.pending += 1;
         continue;
+      }
+      try {
+        closeAbandonedCommandSpansV2({
+          coordRoot,
+          mode: route.mode,
+          generation_id: request.generation_id,
+          build_id: route.build_id,
+          platform: livePlatformV2(),
+        });
+      } catch {
+        result.diagnostics.push(`command_closer_failed:${request.request_id}`);
       }
       const ended = recordApprovedSessionEndV2({
         coordRoot,
@@ -692,25 +742,8 @@ function explicitEndReadiness(
     (event) => event.event_id === request.observation_event_id,
   );
   if (observationIndex < 0) return "cancel";
-  const later = events
-    .slice(observationIndex + 1)
-    .filter(
-      (event) =>
-        "generation_id" in event.scope && event.scope.generation_id === request.generation_id,
-    );
-  if (
-    later.some((event) =>
-      [
-        "turn.started",
-        "tool.requested",
-        "agent.delegated",
-        "agent.started",
-        "session.resumed",
-      ].includes(event.event_type),
-    )
-  ) {
-    return "cancel";
-  }
+  const later = laterGenerationEvents(events, observationIndex, request.generation_id);
+  if (later.some(isNativeNewWork)) return "cancel";
   return later.some(
     (event) =>
       event.event_type === "turn.completed" &&
@@ -719,6 +752,68 @@ function explicitEndReadiness(
   )
     ? "ready"
     : "pending";
+}
+
+function laterGenerationEvents(
+  events: EventV2[],
+  observationIndex: number,
+  generationId: `gen_${string}`,
+): EventV2[] {
+  return events
+    .slice(observationIndex + 1)
+    .filter(
+      (event) => "generation_id" in event.scope && event.scope.generation_id === generationId,
+    );
+}
+
+/**
+ * Only NATIVE new work cancels a pending explicit end (ADR 0078, invariant 3):
+ * derived recovery events — including the derived requests post-only call
+ * classes generate constantly — never revoke an approved end.
+ */
+function isNativeNewWork(event: EventV2): boolean {
+  return (
+    event.provenance.attestation !== "derived" &&
+    [
+      "turn.started",
+      "tool.requested",
+      "agent.delegated",
+      "agent.started",
+      "session.resumed",
+    ].includes(event.event_type)
+  );
+}
+
+/**
+ * Salvage eligibility (ADR 0078): the requested turn has a committed terminal
+ * (or the request captured no turn and the state shows none open), no native
+ * new work followed the request, and every remaining open span is in the
+ * approved set. Anything else stays pending or cancels through readiness.
+ */
+function explicitEndSalvageEligible(
+  request: SessionFinalizationRequestV2,
+  record: HookProducerStateRecordV2,
+  events: EventV2[],
+): boolean {
+  if (record.state.delegations.length > 0) return false;
+  if (record.state.current_turn_id) return false;
+  if (record.state.spans.length === 0) return false;
+  const allowedSpans = new Set(request.allowed_open_span_ids ?? []);
+  if (record.state.spans.some(({ span_id }) => !allowedSpans.has(span_id))) return false;
+  if (!request.observation_event_id) return false;
+  const observationIndex = events.findIndex(
+    (event) => event.event_id === request.observation_event_id,
+  );
+  if (observationIndex < 0) return false;
+  const later = laterGenerationEvents(events, observationIndex, request.generation_id);
+  if (later.some(isNativeNewWork)) return false;
+  if (!request.requested_turn_id) return true;
+  return later.some(
+    (event) =>
+      event.event_type === "turn.completed" &&
+      "turn_id" in event.scope &&
+      event.scope.turn_id === request.requested_turn_id,
+  );
 }
 
 function buildObservationEvent(

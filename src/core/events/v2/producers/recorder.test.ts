@@ -696,10 +696,12 @@ describe("event ledger V2 hook intake spool", () => {
     expect(ledger.events.map(({ event }) => event.event_type)).toContain("turn.started");
   });
 
-  test("an unpairable post is preserved in diagnostics with content redacted", () => {
-    const root = candidateRoot();
+  test("an unpairable post on a recovery-disabled adapter is preserved in diagnostics with content redacted", () => {
+    const root = candidateRoot("cursor");
     const nativeSession = "unpairable-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "cursor"),
+    );
     const result = recordHookSignalV2(
       baseInput(
         root,
@@ -710,6 +712,7 @@ describe("event ledger V2 hook intake spool", () => {
           tool_name: "Bash",
           tool_response: { output: "RAW_TOOL_OUTPUT_SECRET" },
         }),
+        "cursor",
       ),
     );
     expect(result).toEqual({ state: "unpairable_tool", reason: "no_open_span" });
@@ -720,6 +723,196 @@ describe("event ledger V2 hook intake spool", () => {
     expect(contents).toContain("no_open_span");
     expect(contents).toContain("never-seen");
     expect(contents).toContain("sha256");
+  });
+
+  test("an unmatched post on a recovery-enabled adapter mints a derived request and pairs the native completion", () => {
+    const root = candidateRoot();
+    const nativeSession = "recovered-post-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    const result = recordHookSignalV2(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "request-lost",
+          tool_name: "Bash",
+          tool_input: { command: "echo hi" },
+          tool_response: { output: "RAW_TOOL_OUTPUT_SECRET" },
+        }),
+      ),
+    );
+    expect(result.state).toBe("recorded");
+    if (result.state !== "recorded") throw new Error("expected recorded");
+    expect(result.event.event_type).toBe("tool.completed");
+    expect(result.event.provenance.attestation).toBe("native");
+
+    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const derivedRequest = rows.find((event) => event.event_type === "tool.requested");
+    if (!derivedRequest || derivedRequest.event_type !== "tool.requested") {
+      throw new Error("derived request missing");
+    }
+    expect(derivedRequest.provenance.attestation).toBe("derived");
+    expect(derivedRequest.provenance.confidence).toBe("high");
+    expect(derivedRequest.payload.recovery).toEqual({ reason: "request_not_observed" });
+    expect((derivedRequest.links as { span_id: string }).span_id).toBe(
+      (result.event.links as { span_id: string }).span_id,
+    );
+    // The pair closed the span: it lives in closed-span memory, not open spans.
+    const state = readHookProducerStateV2(root, "claude-code", nativeSession);
+    expect(state?.spans.length).toBe(0);
+    expect(state?.closed_spans.length).toBe(1);
+  });
+
+  test("late signals for a closed span are suppressed, never re-opened", () => {
+    const root = candidateRoot();
+    const nativeSession = "late-signal-session";
+    const base = { session_id: nativeSession, tool_use_id: "call-1", tool_name: "Read" };
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV2(baseInput(root, "pre-tool-use", parsed(base)));
+    recordHookSignalV2(baseInput(root, "post-tool-use", parsed(base)));
+
+    const latePost = recordHookSignalV2(baseInput(root, "post-tool-use", parsed(base)));
+    expect(latePost).toEqual({ state: "suppressed", reason: "closed_span" });
+    const latePre = recordHookSignalV2(baseInput(root, "pre-tool-use", parsed(base)));
+    expect(latePre).toEqual({ state: "suppressed", reason: "closed_span" });
+    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.spans.length).toBe(0);
+    expect(
+      diagnosticsFiles(root).filter((name) => name.startsWith("late_pre_suppressed-")).length,
+    ).toBe(1);
+    expect(
+      diagnosticsFiles(root).filter((name) => name.startsWith("late_post_suppressed-")).length,
+    ).toBe(1);
+  });
+
+  test("a stop boundary terminalizes the ending turn's stamped spans before turn.completed", () => {
+    const root = candidateRoot();
+    const nativeSession = "boundary-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV2(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, prompt: "go" })),
+    );
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "lost-call", tool_name: "Bash" }),
+      ),
+    );
+    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession })));
+
+    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const derived = rows.find(
+      (event) =>
+        event.event_type === "tool.completed" && event.provenance.attestation === "derived",
+    );
+    if (!derived || derived.event_type !== "tool.completed") {
+      throw new Error("derived terminal missing");
+    }
+    expect(derived.payload.outcome).toBe("unknown");
+    expect(derived.payload.recovery?.reason).toBe("completion_not_observed_before_turn_end");
+    expect(derived.payload.recovery?.requested_event_id).toBeDefined();
+    const turnCompleted = rows.find((event) => event.event_type === "turn.completed");
+    expect(rows.indexOf(derived)).toBeLessThan(rows.indexOf(turnCompleted as never));
+    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.spans.length).toBe(0);
+  });
+
+  test("a lost stop is recovered at the next turn start", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "lost-stop-session";
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-1" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          turn_id: "turn-1",
+          tool_use_id: "abandoned",
+          tool_name: "shell",
+        }),
+        "codex",
+      ),
+    );
+    // Stop hook lost; the next prompt starts turn-2.
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-2" }),
+        "codex",
+      ),
+    );
+    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const derived = rows.find(
+      (event) =>
+        event.event_type === "tool.completed" && event.provenance.attestation === "derived",
+    );
+    if (!derived || derived.event_type !== "tool.completed") {
+      throw new Error("derived terminal missing");
+    }
+    expect(derived.payload.recovery?.reason).toBe("completion_not_observed_before_next_turn");
+    expect(derived.provenance.confidence).toBe("low");
+    expect(readHookProducerStateV2(root, "codex", nativeSession)?.spans.length).toBe(0);
+  });
+
+  test("a mid-flight session onboards with a derived session.started; a terminal one never resurrects", () => {
+    const root = candidateRoot();
+    const nativeSession = "mid-flight-session";
+    const result = recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "first-signal", tool_name: "Bash" }),
+      ),
+    );
+    expect(result.state).toBe("recorded");
+    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const started = rows.find((event) => event.event_type === "session.started");
+    if (!started || started.event_type !== "session.started") {
+      throw new Error("derived session.started missing");
+    }
+    expect(started.provenance.attestation).toBe("derived");
+    expect(started.payload.resume).toEqual({
+      state: "unknown",
+      reason: "mid_flight_onboarding",
+    });
+
+    // Authoritative termination still refuses later signals.
+    const state = readHookProducerStateV2(root, "claude-code", nativeSession);
+    if (!state) throw new Error("missing state");
+    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession })));
+    expect(
+      recordApprovedSessionEndV2({
+        coordRoot: root,
+        mode: "candidate",
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        build_id: "build_fixture",
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+    const afterEnd = recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "zombie", tool_name: "Bash" }),
+      ),
+    );
+    expect(afterEnd.state).toBe("missing_session_start");
   });
 
   test("a poison intake record is quarantined and the drain continues", () => {
@@ -746,7 +939,7 @@ describe("event ledger V2 hook intake spool", () => {
 });
 
 describe("pending explicit-end expiry", () => {
-  test("a wedged explicit end (orphan allowed span) is cancelled after the grace period, never terminalized", () => {
+  test("a wedged explicit end (turn never closes) is cancelled after the grace period, never terminalized", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-wedged-end";
     recordHookSignalV2(
@@ -764,11 +957,17 @@ describe("pending explicit-end expiry", () => {
       baseInput(
         root,
         "pre-tool-use",
-        parsed({ session_id: nativeSession, tool_use_id: "orphan-call", tool_name: "Bash" }),
+        parsed({
+          session_id: nativeSession,
+          turn_id: "turn-w",
+          tool_use_id: "orphan-call",
+          tool_name: "Bash",
+        }),
         "codex",
       ),
     );
-    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    // The stop hook is lost: the turn never closes, so salvage stays
+    // ineligible (open turn) and the wedge this expiry mechanism targets forms.
     const state = readHookProducerStateV2(root, "codex", nativeSession);
     if (!state) throw new Error("missing producer state");
     const queued = requestSessionEndExplicitV2({
@@ -791,7 +990,7 @@ describe("pending explicit-end expiry", () => {
     expect(repeated.state).toBe("already_requested");
     if (repeated.state === "already_requested") {
       expect(repeated.blocker.open_span_ids.length).toBe(1);
-      expect(repeated.blocker.current_turn_open).toBeFalse();
+      expect(repeated.blocker.current_turn_open).toBeTrue();
     }
 
     // Inside the grace period the request stays pending.
@@ -812,5 +1011,54 @@ describe("pending explicit-end expiry", () => {
     ).toBeTrue();
     expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeFalse();
     expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({ status: "cancelled" });
+  });
+
+  test("a closed-turn explicit end with approved orphan spans salvages instead of expiring", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-salvage-end";
+    recordHookSignalV2(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    // No turn context: the orphan span stays unstamped, survives the stop
+    // boundary sweep (fail closed), and only explicit-end salvage can reach it.
+    recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "orphan-call", tool_name: "Bash" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    expect(readHookProducerStateV2(root, "codex", nativeSession)?.spans.length).toBe(1);
+
+    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    if (!state) throw new Error("missing producer state");
+    const queued = requestSessionEndExplicitV2({
+      coordRoot: root,
+      instance_id: state.instance_id,
+      generation_id: state.generation_id,
+      outcome: "succeeded",
+      coordination_finalized: true,
+    });
+    expect(queued.state).toBe("queued");
+
+    const reconciled = reconcileSessionFinalizationV2(root, { archive_observations: [] });
+    expect(reconciled.finalized).toBe(1);
+    expect(reconciled.diagnostics.some((d) => d.startsWith("salvaged_explicit_end:"))).toBeTrue();
+    const rows = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const salvage = rows.find(
+      (event) =>
+        event.event_type === "tool.completed" &&
+        event.payload.recovery?.reason === "explicit_end_salvage",
+    );
+    if (!salvage || salvage.event_type !== "tool.completed") {
+      throw new Error("salvage terminal missing");
+    }
+    expect(salvage.payload.outcome).toBe("unknown");
+    const ended = rows.find((event) => event.event_type === "session.ended");
+    expect(ended).toBeDefined();
+    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeTrue();
+    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({ status: "completed" });
   });
 });
