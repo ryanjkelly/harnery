@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
@@ -7,6 +7,29 @@ import { readEventV2ControlState } from "../events/v2/control.ts";
 import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
 import { listHookProducerStateRecordsV2 } from "../events/v2/producers/recorder.ts";
 import type { SessionArchiveObservationV2 } from "./session-finalizer-v2.ts";
+
+const require = createRequire(import.meta.url);
+
+type SqliteDatabase = {
+  query: (sql: string) => { all: () => unknown[] };
+  close: () => void;
+};
+
+/** bun:sqlite is Bun-only. The web dashboard runs under Node and must be able
+ * to import this module without crashing; a missing engine returns no rows. */
+function openReadonlyDatabase(path: string): SqliteDatabase | null {
+  try {
+    const { Database } = require("bun:sqlite") as {
+      Database: new (
+        filename: string,
+        options?: { readonly?: boolean; strict?: boolean },
+      ) => SqliteDatabase;
+    };
+    return new Database(path, { readonly: true, strict: true });
+  } catch {
+    return null;
+  }
+}
 
 export interface CodexArchiveScanResultV2 {
   observations: SessionArchiveObservationV2[];
@@ -47,7 +70,11 @@ export function readCodexArchiveObservationsV2(
       const source = `${databasePath}${suffix}`;
       if (existsSync(source)) copyFileSync(source, `${snapshotPath}${suffix}`);
     }
-    const db = new Database(snapshotPath, { readonly: true, strict: true });
+    const db = openReadonlyDatabase(snapshotPath);
+    if (!db) {
+      diagnostics.push("codex_archive_sqlite_unavailable");
+      return { observations: [], diagnostics };
+    }
     try {
       const rows = db
         .query("SELECT id, archived, archived_at, updated_at_ms FROM threads")

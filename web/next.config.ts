@@ -8,6 +8,10 @@ const nextConfig: NextConfig = {
   // The web UI imports readers from harnery's src/ (one level up). Pin
   // the tracing root so Next includes those files when building.
   outputFileTracingRoot: path.resolve(dirname, ".."),
+  // bun:sqlite is a Bun builtin. The dashboard runs under Node; leave it
+  // external so a reader that optionally probes Codex state can fail closed
+  // instead of crashing the whole app at import time.
+  serverExternalPackages: ["bun:sqlite"],
 
   // harnery source uses ESM-style `.js`-suffixed imports inside `.ts` files
   // (e.g. `export * from "./coord-client.js"`). Bun resolves that natively;
