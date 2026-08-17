@@ -45,6 +45,7 @@ import {
   resolveOwner,
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
+  sessionIdentityFromEnv,
 } from "../core/agents/index.ts";
 import {
   observeHostDisappearedV2,
@@ -1870,13 +1871,19 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // Identity: prefer explicit --session-id (the ppid-walk-free escape hatch,
   // mirrors `status`), fall back to the ppid walk. Cursor shell tool calls
   // don't descend from a pid-map-registered anchor, so the walk can miss there.
+  // Final fallback: the adapter/connector-stamped session id from the
+  // environment. set-task is the session's REGISTRATION point — a fresh
+  // (bridge) session has no heartbeat yet, so the heartbeat-validated resolver
+  // returns null by design, and erroring here orphans the session's first
+  // ritual command. The env id carries the same trust as an explicit
+  // --session-id, and set-task mints the heartbeat exactly as that path does.
   if (!opts?.sessionId) ensureCursorSession(root);
-  const myOwner = opts?.sessionId ?? resolveOwner();
+  const myOwner = opts?.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
     emit.error({
       code: "no_pidmap_entry",
       message:
-        "not in an agent session; ppid walk found no pid-map entry (pass --session-id to bypass)",
+        "not in an agent session; no session-id environment identity and the ppid walk found no pid-map entry (pass --session-id to bypass)",
     });
     process.exit(1);
   }

@@ -13,6 +13,7 @@ import {
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
   resolveSingleActiveOwner,
+  sessionIdentityFromEnv,
 } from "../../src/core/agents/coord-client.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
@@ -500,6 +501,33 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
       owner: "agent-current",
       source: "session_env",
     });
+  });
+});
+
+describe("sessionIdentityFromEnv (unvalidated registration-point identity)", () => {
+  const SAVED = SESSION_ID_ENV_KEYS.map((k) => [k, process.env[k]] as const);
+
+  beforeEach(() => {
+    for (const k of SESSION_ID_ENV_KEYS) delete process.env[k];
+  });
+
+  afterEach(() => {
+    for (const [k, v] of SAVED) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  test("returns the stamped session id with NO live heartbeat required", () => {
+    // A fresh bridge session has no heartbeat until its first set-task, so the
+    // heartbeat-validated resolver returns null there by design; the
+    // registration-point identity must still be readable.
+    process.env.CODEX_THREAD_ID = "fresh-thread-no-heartbeat";
+    expect(sessionIdentityFromEnv()).toBe("fresh-thread-no-heartbeat");
+  });
+
+  test("returns null when no session-id env var is present", () => {
+    expect(sessionIdentityFromEnv()).toBeNull();
   });
 });
 

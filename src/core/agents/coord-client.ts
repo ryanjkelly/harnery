@@ -518,6 +518,18 @@ const SESSION_ID_ENV_VARS = [
 ] as const;
 
 /** Read normalized candidates from the first non-empty adapter session-id env var. */
+/**
+ * First adapter/bridge-stamped session id from the environment, WITHOUT the
+ * live-heartbeat validation resolveOwnerBySessionEnv applies. A fresh session
+ * has no heartbeat until its first set-task, so heartbeat-validated resolution
+ * returns null there by design; commands that REGISTER a session (set-task)
+ * may use this id directly — it carries the same trust as an explicit
+ * `--session-id` argument, because the adapter or connector stamped it.
+ */
+export function sessionIdentityFromEnv(): string | null {
+  return sessionIdsFromEnv()[0] ?? null;
+}
+
 function sessionIdsFromEnv(): string[] {
   for (const key of SESSION_ID_ENV_VARS) {
     const v = process.env[key]?.trim();
