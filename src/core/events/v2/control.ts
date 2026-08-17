@@ -333,6 +333,9 @@ function parseGenesisManifestValue(value: unknown): ParseResult<CandidateGenesis
     return fail("genesis_event_invalid");
   }
   const event = validation.event as GenesisEventV2;
+  if (event.producer.sequence !== 1) {
+    return fail("genesis_producer_sequence_invalid");
+  }
   if (
     event.contract.schema_digest !== EVENT_V2_SCHEMA_DIGEST ||
     event.payload.genesis_profile_digest !== candidateProfileDigestV2(profile.value) ||
@@ -402,6 +405,9 @@ function parseActivationManifestValue(
     return fail("activation_event_invalid");
   }
   const event = validation.event as ActivationEventV2;
+  if (!activationProducerSequenceValid(genesis.event, event)) {
+    return fail("activation_producer_sequence_invalid");
+  }
   if (
     genesisId !== genesis.event.payload.genesis_id ||
     event.payload.activation_id !== activationId ||
@@ -425,6 +431,19 @@ function parseActivationManifestValue(
       event,
     },
   };
+}
+
+/** Mirror the reader's sequence key: a continuing boot advances, while a new boot starts at one. */
+function activationProducerSequenceValid(
+  genesis: GenesisEventV2,
+  activation: ActivationEventV2,
+): boolean {
+  const sameBoot =
+    activation.producer.producer_id === genesis.producer.producer_id &&
+    activation.producer.boot_id === genesis.producer.boot_id;
+  return sameBoot
+    ? activation.producer.sequence === genesis.producer.sequence + 1
+    : activation.producer.sequence === 1;
 }
 
 function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> {

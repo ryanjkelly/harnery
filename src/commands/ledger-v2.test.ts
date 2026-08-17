@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHarneryProgram, type EmitContext } from "../commander.ts";
 import {
+  buildActivationManifestV2,
   buildCandidateGenesisManifestV2,
   type CandidateProfileV2,
   EVENT_V2_SCHEMA_DIGEST,
@@ -151,6 +152,59 @@ describe("ledger-v2 command", () => {
     expect(() => writeStagedControlPacket(root, staged, packet)).toThrow(
       "staged_output_must_be_new",
     );
+  });
+
+  test("verify rejects a staged activation packet with a fresh boot sequence gap", async () => {
+    const root = tempRoot();
+    const candidate = buildCandidateGenesisManifestV2({
+      profile: profile(),
+      root_id: "root_fixture",
+      instance_id: "inst_operator",
+      producer: {
+        producer_id: "prd_cutover",
+        boot_id: "boot_cutover",
+        sequence: 1,
+        build_id: "build_fixture",
+        platform: "linux",
+      },
+    });
+    const activation = buildActivationManifestV2({
+      candidate,
+      approval_record_id: "approval_fixture",
+      activation_approved_at: "2026-08-16T19:00:00.000Z",
+      producer: {
+        producer_id: "prd_cutover",
+        boot_id: "boot_activation",
+        sequence: 1,
+        build_id: "build_fixture",
+        platform: "linux",
+      },
+    });
+    activation.event.producer.sequence = 2;
+    const candidatePath = join(root, "review", "candidate.json");
+    const activationPath = join(root, "review", "activation.json");
+    mkdirSync(join(root, "review"), { recursive: true });
+    writeFileSync(candidatePath, JSON.stringify(candidate), "utf8");
+    writeFileSync(activationPath, JSON.stringify(activation), "utf8");
+    const emitted: unknown[] = [];
+    const program = createHarneryProgram({ emit: captureEmit(emitted) });
+
+    await program.parseAsync([
+      "node",
+      "harn",
+      "ledger-v2",
+      "verify",
+      "--candidate",
+      candidatePath,
+      "--activation",
+      activationPath,
+    ]);
+
+    expect(emitted).toContainEqual({
+      code: "ledger_v2_verify_failed",
+      message: "activation_invalid:activation_producer_sequence_invalid",
+    });
+    expect(emitted).not.toContainEqual(expect.objectContaining({ ok: true }));
   });
 
   test("rehearses the V1 hard fence and rollback only in an explicit temporary root", async () => {

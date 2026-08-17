@@ -77,6 +77,48 @@ describe("event ledger V2 candidate and activation control gate", () => {
     ).toThrow("candidate_genesis_invalid:genesis_profile_binding_mismatch");
   });
 
+  test("enforces reader-consistent producer sequences for genesis and activation packets", () => {
+    const candidate = candidateManifest();
+
+    const sameBoot = buildActivationManifestV2({
+      candidate,
+      approval_record_id: "approval_same_boot",
+      activation_approved_at: APPROVED_AT,
+      producer: producer(2),
+    });
+    expect(validateActivationManifestV2(sameBoot, candidate).ok).toBeTrue();
+
+    const freshBoot = buildActivationManifestV2({
+      candidate,
+      approval_record_id: "approval_fresh_boot",
+      activation_approved_at: APPROVED_AT,
+      producer: { ...producer(1), boot_id: "boot_activation" },
+    });
+    expect(validateActivationManifestV2(freshBoot, candidate).ok).toBeTrue();
+
+    const freshBootGap = structuredClone(freshBoot);
+    freshBootGap.event.producer.sequence = 2;
+    expect(validateActivationManifestV2(freshBootGap, candidate)).toEqual({
+      ok: false,
+      reason: "activation_producer_sequence_invalid",
+    });
+    expect(() =>
+      buildActivationManifestV2({
+        candidate,
+        approval_record_id: "approval_fresh_boot_gap",
+        activation_approved_at: APPROVED_AT,
+        producer: { ...producer(2), boot_id: "boot_activation_gap" },
+      }),
+    ).toThrow("activation_invalid:activation_producer_sequence_invalid");
+
+    const invalidGenesis = structuredClone(candidate);
+    invalidGenesis.event.producer.sequence = 2;
+    expect(validateCandidateGenesisManifestV2(invalidGenesis)).toEqual({
+      ok: false,
+      reason: "genesis_producer_sequence_invalid",
+    });
+  });
+
   test("stays closed without control records and rejects an unbound genesis event", () => {
     const emptyRoot = tempRoot();
     expect(readEventV2ControlState(emptyRoot)).toEqual({ state: "closed", reason: "no_candidate" });

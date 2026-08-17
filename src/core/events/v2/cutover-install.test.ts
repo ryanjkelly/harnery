@@ -263,6 +263,42 @@ describe("event ledger V2 installation and epoch rollback", () => {
     ).toBe("active");
   });
 
+  test("rejects an activation packet with a fresh boot sequence gap before any live write", () => {
+    const fixture = installedCandidate();
+    const activation = buildActivationManifestV2({
+      candidate: fixture.result.candidate,
+      approval_record_id: "approval_fixture",
+      activation_approved_at: "2026-08-16T23:01:00.000Z",
+      producer: {
+        producer_id: "prd_cutover",
+        boot_id: "boot_activation",
+        sequence: 1,
+        build_id: "build_fixture",
+        platform: "linux",
+      },
+    });
+    activation.event.producer.sequence = 2;
+    const before = readFileSync(
+      join(fixture.root, ".harnery", "ledgers", "v2", "active.ndjson"),
+      "utf8",
+    );
+
+    expect(() =>
+      installActivationV2({
+        coordRoot: fixture.root,
+        artifactRoot: fixture.artifactRoot,
+        activation,
+      }),
+    ).toThrow("activation_invalid:activation_producer_sequence_invalid");
+    expect(readEventV2ControlState(fixture.root).state).toBe("candidate");
+    expect(
+      existsSync(join(fixture.root, ".harnery", "ledgers", "v2", "activation.json")),
+    ).toBeFalse();
+    expect(
+      readFileSync(join(fixture.root, ".harnery", "ledgers", "v2", "active.ndjson"), "utf8"),
+    ).toBe(before);
+  });
+
   test("opens a replacement candidate only after verifying the archived-epoch fence", () => {
     const fixture = installedCandidate();
     const rollback = archiveEpochAndRollbackV2({
