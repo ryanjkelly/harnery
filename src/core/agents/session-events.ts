@@ -18,6 +18,7 @@ import {
 } from "../events/v2/live-routing.ts";
 import type { CommandObservationV2, CommandSignalV2 } from "../events/v2/producers/command.ts";
 import { recordCommandSignalV2 } from "../events/v2/producers/command-recorder.ts";
+import { writeProducerDiagnosticV2 } from "../events/v2/producers/intake.ts";
 import { readHookProducerStateByInstanceV2 } from "../events/v2/producers/recorder.ts";
 import { normalizeAdapter, resolveEmitRoot } from "./canonical-emit.ts";
 import { emit as emitV1 } from "./events/emit.ts";
@@ -176,10 +177,17 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
     if (route.state === "blocked" || type === "narration") return;
     const liveInstanceId = liveInstanceIdV2(instanceId);
     const hook = readHookProducerStateByInstanceV2(coordRoot, liveInstanceId);
-    if (!hook) return;
+    if (!hook) {
+      writeProducerDiagnosticV2(coordRoot, "command_emit_unjoinable", {
+        type,
+        instance_id: instanceId,
+        reason: "hook_generation_not_found",
+      });
+      return;
+    }
     const command = commandSignalAndObservation(type, fields);
     if (!command) return;
-    recordCommandSignalV2({
+    const result = recordCommandSignalV2({
       coordRoot,
       mode: route.mode,
       signal: command.signal,
@@ -192,8 +200,26 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
       ...(fields.bridge === "codex-wsl" ? { bridge: "codex-wsl" as const } : {}),
       monotonic_ns: process.hrtime.bigint().toString(),
     });
-  } catch {
-    /* telemetry only, never break the command */
+    if (result.state !== "recorded" && result.state !== "already_recorded") {
+      writeProducerDiagnosticV2(coordRoot, "command_emit_rejected", {
+        type,
+        instance_id: instanceId,
+        signal: command.signal,
+        result_state: result.state,
+      });
+    }
+  } catch (error) {
+    // Telemetry must never break the command, but the loss is preserved.
+    try {
+      const coordRoot = dirname(dirname(canonicalEventsPath()));
+      writeProducerDiagnosticV2(coordRoot, "command_emit_failed", {
+        type,
+        instance_id: instanceId,
+        error: String(error),
+      });
+    } catch {
+      /* diagnostics are best-effort */
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -20,6 +21,7 @@ import {
 } from "../../../agents/session-finalizer-v2.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { Adapter } from "../../../hooks/events/schema.ts";
+import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV2 } from "../builder.ts";
 import { canonicalJsonV2, sha256V2 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
@@ -35,6 +37,7 @@ import { EVENT_V2_SCHEMA_DIGEST } from "../generated.ts";
 import { readActiveLedgerV2 } from "../reader.ts";
 import { eventV2Paths } from "../writer.ts";
 import {
+  drainHookIntakeSpoolV2,
   readHookProducerStateV2,
   recordApprovedSessionEndV2,
   recordHookSignalV2,
@@ -588,3 +591,156 @@ function temporaryRoot(): string {
   roots.push(root);
   return root;
 }
+
+describe("event ledger V2 hook intake spool", () => {
+  const LEDGER_ROOT = ".harnery/ledgers/v2";
+
+  function statePathFor(root: string, adapter = "claude-code"): string {
+    const directory = join(root, LEDGER_ROOT, "private-producers", adapter);
+    const name = readdirSync(directory).find((entry) => entry.endsWith(".json"));
+    if (!name) throw new Error("no producer state file");
+    return join(directory, name);
+  }
+
+  function holdStateLease(root: string, statePath: string) {
+    return acquireNoClobberLease({
+      path: `${statePath}.lease`,
+      scope: "event-v2-hook-producer",
+      authoritySha256: createHash("sha256")
+        .update(join(root))
+        .update("\0")
+        .update(statePath)
+        .digest("hex"),
+      staleAfterMs: 5_000,
+    });
+  }
+
+  function intakeDir(root: string, adapter = "claude-code"): string {
+    return join(root, LEDGER_ROOT, "intake", "hook", adapter);
+  }
+
+  function intakeEntryCount(root: string, adapter = "claude-code"): number {
+    const directory = intakeDir(root, adapter);
+    if (!existsSync(directory)) return 0;
+    return readdirSync(directory)
+      .map((group) => readdirSync(join(directory, group)).length)
+      .reduce((sum, count) => sum + count, 0);
+  }
+
+  function diagnosticsFiles(root: string): string[] {
+    const directory = join(root, LEDGER_ROOT, "diagnostics");
+    return existsSync(directory) ? readdirSync(directory) : [];
+  }
+
+  test("a lease-contended signal spools durably and the next signal drains it in order", () => {
+    const root = candidateRoot();
+    const nativeSession = "spool-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    const statePath = statePathFor(root);
+    const lease = holdStateLease(root, statePath);
+    try {
+      const contended = recordHookSignalV2(
+        baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: "turn-a", prompt: "queued" }),
+        ),
+      );
+      expect(contended).toEqual({ state: "spooled" });
+      expect(intakeEntryCount(root)).toBe(1);
+    } finally {
+      lease.release();
+    }
+    const next = recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "call-1", tool_name: "Bash" }),
+      ),
+    );
+    expect(next.state).toBe("recorded");
+    expect(intakeEntryCount(root)).toBe(0);
+    const ledger = readActiveLedgerV2(root);
+    const types = ledger.events.map(({ event }) => event.event_type);
+    expect(types).toContain("turn.started");
+    const requested = ledger.events.find(({ event }) => event.event_type === "tool.requested");
+    const turn = ledger.events.find(({ event }) => event.event_type === "turn.started");
+    expect((requested?.event.scope as { turn_id?: string }).turn_id).toBe(
+      (turn?.event.scope as { turn_id?: string }).turn_id,
+    );
+  });
+
+  test("reconcile-style drain records a marooned final signal with no later hook", () => {
+    const root = candidateRoot();
+    const nativeSession = "marooned-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    const statePath = statePathFor(root);
+    const lease = holdStateLease(root, statePath);
+    try {
+      const contended = recordHookSignalV2(
+        baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: "turn-final", prompt: "last signal" }),
+        ),
+      );
+      expect(contended).toEqual({ state: "spooled" });
+    } finally {
+      lease.release();
+    }
+    const drained = drainHookIntakeSpoolV2(root);
+    expect(drained.groups_with_records).toBe(1);
+    expect(drained.groups_drained).toBe(1);
+    expect(intakeEntryCount(root)).toBe(0);
+    const ledger = readActiveLedgerV2(root);
+    expect(ledger.events.map(({ event }) => event.event_type)).toContain("turn.started");
+  });
+
+  test("an unpairable post is preserved in diagnostics with content redacted", () => {
+    const root = candidateRoot();
+    const nativeSession = "unpairable-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    const result = recordHookSignalV2(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "never-seen",
+          tool_name: "Bash",
+          tool_response: { output: "RAW_TOOL_OUTPUT_SECRET" },
+        }),
+      ),
+    );
+    expect(result).toEqual({ state: "unpairable_tool", reason: "no_open_span" });
+    const files = diagnosticsFiles(root).filter((name) => name.startsWith("unpairable_tool-"));
+    expect(files.length).toBe(1);
+    const contents = readFileSync(join(root, LEDGER_ROOT, "diagnostics", files[0]!), "utf8");
+    expect(contents).not.toContain("RAW_TOOL_OUTPUT_SECRET");
+    expect(contents).toContain("no_open_span");
+    expect(contents).toContain("never-seen");
+    expect(contents).toContain("sha256");
+  });
+
+  test("a poison intake record is quarantined and the drain continues", () => {
+    const root = candidateRoot();
+    const nativeSession = "poison-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    const adapterDir = intakeDir(root);
+    const group = readdirSync(adapterDir)[0]!;
+    writeFileSync(join(adapterDir, group, "0000000000000-poison.json"), "not json", {
+      mode: 0o600,
+    });
+    const next = recordHookSignalV2(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-b", prompt: "after poison" }),
+      ),
+    );
+    expect(next.state).toBe("recorded");
+    expect(intakeEntryCount(root)).toBe(0);
+    const files = diagnosticsFiles(root).filter((name) => name.startsWith("intake_unreadable-"));
+    expect(files.length).toBe(1);
+  });
+});

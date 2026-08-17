@@ -23,6 +23,7 @@ import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
 import { livePlatformV2, resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
 import {
   type ApprovedSessionEndReasonV2,
+  drainHookIntakeSpoolV2,
   type HookProducerStateRecordV2,
   listHookProducerStateRecordsV2,
   readHookProducerStateV2,
@@ -278,6 +279,13 @@ export function reconcileSessionFinalizationV2(
     return result;
   }
   try {
+    // Terminal drain: pick up intake records whose appender lost the state
+    // lease and exited with no later signal to drain them.
+    try {
+      drainHookIntakeSpoolV2(coordRoot);
+    } catch {
+      result.diagnostics.push("intake_drain_failed");
+    }
     const now = options.now ?? new Date();
     const policy = sessionFinalizationConfig(coordRoot);
     const ledger =

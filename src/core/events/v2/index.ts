@@ -221,6 +221,8 @@ export {
 } from "./producers/hook.ts";
 export {
   type ApprovedSessionEndReasonV2,
+  type DrainHookIntakeSpoolV2Result,
+  drainHookIntakeSpoolV2,
   type HookProducerStateRecordV2,
   type HookProducerStateV2,
   listHookProducerStateRecordsV2,

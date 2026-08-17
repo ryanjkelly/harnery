@@ -38,6 +38,15 @@ import {
   writeEventV2,
 } from "../writer.ts";
 import { type HookSignalV2, normalizeHookEventV2 } from "./hook.ts";
+import {
+  appendHookIntakeRecordV2,
+  type HookIntakeRecordV2,
+  hookIntakeGroupDirV2,
+  listHookIntakeGroupsV2,
+  listHookIntakeRecordsV2,
+  removeIntakeRecordV2,
+  writeProducerDiagnosticV2,
+} from "./intake.ts";
 
 const STATE_FORMAT = "harnery-v2-hook-producer" as const;
 const STATE_VERSION = 1 as const;
@@ -104,8 +113,10 @@ export type RecordHookSignalV2Result =
   | { state: "gate_closed"; reason: string }
   | { state: "missing_session_start" }
   | { state: "already_started"; event_id: string }
-  | { state: "unpairable_tool" }
+  | { state: "unpairable_tool"; reason: "missing_tool_use_id" | "no_open_span" }
   | { state: "ignored" }
+  /** Durably queued in the intake spool; a lease holder or drain hook records it. */
+  | { state: "spooled" }
   | { state: "recorded"; event: EventV2; durability: WriteEventV2Result; recovered: boolean };
 
 export type ApprovedSessionEndReasonV2 =
@@ -154,48 +165,260 @@ export type RecordApprovedSessionEndV2Result =
   | { state: "already_ended"; event_id?: `evt_${string}` }
   | { state: "recorded"; event: EventV2; durability: WriteEventV2Result; recovered: boolean };
 
+type OpenHookControlStateV2 = Extract<
+  ReturnType<typeof readEventV2ControlState>,
+  { state: "candidate" } | { state: "active" }
+>;
+
+const STATE_LEASE_RETRY_ATTEMPTS = 8;
+const STATE_LEASE_RETRY_DELAY_MS = 25;
+
 /**
  * Record one hook signal through a private, crash-recoverable producer state file.
  * The function is inert unless the exact requested candidate or active gate is open.
+ *
+ * Delivery guarantee: the parsed signal is appended to a durable intake spool
+ * BEFORE any producer state is read or validated, so a lost lease, a crash, or
+ * a state-format mismatch never destroys a delivered signal. Whichever process
+ * holds the session's state lease drains the spool in append order and rescans
+ * until an empty pass; reconcile and session-start hooks drain any group whose
+ * final appender never got the lease.
  */
 export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSignalV2Result {
   const control = readEventV2ControlState(input.coordRoot);
   if (control.state !== input.mode) {
     return { state: "gate_closed", reason: control.state };
   }
+  const gate = hookSignalGate(control, input.adapter, input.signal);
+  if (gate) return gate;
+  const rootId = control.genesis.event.scope.root_id as `root_${string}`;
+  const epochId = control.genesis.profile.privacy_key_epoch;
+  const rootFingerprintContext = fingerprintContextV2(input.coordRoot, rootId, undefined, epochId);
+  const sessionHash = sessionHashForSignal(input, rootFingerprintContext);
+  const path = producerStatePath(input.coordRoot, input.adapter, sessionHash);
+  const spoolPath = appendHookIntakeRecordV2(input.coordRoot, sessionHash, intakeRecord(input));
+  const lease = acquireStateLeaseWithRetry(input.coordRoot, path, STATE_LEASE_RETRY_ATTEMPTS);
+  if (!lease) return { state: "spooled" };
+  try {
+    return (
+      drainSessionIntakeLocked(input.coordRoot, control, input.adapter, sessionHash, path, {
+        path: spoolPath,
+        input,
+      }) ?? { state: "spooled" }
+    );
+  } finally {
+    lease.release();
+  }
+}
+
+function hookSignalGate(
+  control: OpenHookControlStateV2,
+  adapter: Adapter,
+  signal: HookSignalV2,
+): RecordHookSignalV2Result | undefined {
+  const expectedCapabilityDigest = `sha256:${adapterCapabilityProfileDigestV2(adapter).slice(4)}`;
+  if (
+    !control.genesis.profile.adapter_capability_profile_digests.includes(expectedCapabilityDigest)
+  ) {
+    return { state: "gate_closed", reason: "capability_profile_not_approved" };
+  }
+  const requiredCapability = hookSignalCapability(signal);
+  if (adapterSignalSupportV2(adapter, requiredCapability) === "unsupported") {
+    return {
+      state: "gate_closed",
+      reason: `signal_not_approved:${requiredCapability}`,
+    };
+  }
+  return undefined;
+}
+
+function sessionHashForSignal(
+  input: Pick<RecordHookSignalV2Input, "payload" | "adapter" | "instance_id">,
+  context: ReturnType<typeof fingerprintContextV2>,
+): `hid_${string}` {
+  const nativeSession =
+    input.payload.session_id ??
+    input.payload.conversation_id ??
+    input.payload.agent_id ??
+    input.instance_id;
+  return normalizeNativeIdV2(context, `${input.adapter}.session`, nativeSession);
+}
+
+function intakeRecord(input: RecordHookSignalV2Input): HookIntakeRecordV2 {
+  return {
+    format: "harnery-v2-hook-intake",
+    format_version: 1,
+    mode: input.mode,
+    signal: input.signal,
+    payload: input.payload,
+    adapter: input.adapter,
+    instance_id: input.instance_id,
+    producer_id: input.producer_id,
+    build_id: input.build_id,
+    platform: input.platform,
+    ...(input.bridge ? { bridge: input.bridge } : {}),
+    ...(input.adapterVersion ? { adapterVersion: input.adapterVersion } : {}),
+    ...(input.harnessVersion ? { harnessVersion: input.harnessVersion } : {}),
+    ...(input.monotonic_ns ? { monotonic_ns: input.monotonic_ns } : {}),
+  };
+}
+
+function inputForIntakeRecord(
+  coordRoot: string,
+  record: HookIntakeRecordV2,
+): RecordHookSignalV2Input {
+  return {
+    coordRoot,
+    mode: record.mode,
+    signal: record.signal,
+    payload: record.payload,
+    adapter: record.adapter,
+    instance_id: record.instance_id,
+    producer_id: record.producer_id,
+    build_id: record.build_id,
+    platform: record.platform,
+    ...(record.bridge ? { bridge: record.bridge } : {}),
+    ...(record.adapterVersion ? { adapterVersion: record.adapterVersion } : {}),
+    ...(record.harnessVersion ? { harnessVersion: record.harnessVersion } : {}),
+    ...(record.monotonic_ns ? { monotonic_ns: record.monotonic_ns } : {}),
+  };
+}
+
+interface OwnIntakeRecordV2 {
+  path: string;
+  input: RecordHookSignalV2Input;
+}
+
+/**
+ * Drain one session's intake spool under its held state lease. Records are
+ * processed in append order and deleted only after their outcome is durably
+ * published; the loop rescans until an empty pass so appends that landed while
+ * draining are still picked up. A record that throws is preserved in the
+ * diagnostics spool and removed so it cannot poison the drain; the caller's
+ * own record rethrows to keep today's error visibility.
+ */
+function drainSessionIntakeLocked(
+  coordRoot: string,
+  control: OpenHookControlStateV2,
+  adapter: Adapter,
+  sessionHash: `hid_${string}`,
+  statePath: string,
+  own?: OwnIntakeRecordV2,
+): RecordHookSignalV2Result | undefined {
+  const directory = hookIntakeGroupDirV2(coordRoot, adapter, sessionHash);
+  let ownResult: RecordHookSignalV2Result | undefined;
+  for (;;) {
+    const entries = listHookIntakeRecordsV2(directory);
+    if (entries.length === 0) break;
+    for (const entry of entries) {
+      const isOwn = own !== undefined && entry.path === own.path;
+      let result: RecordHookSignalV2Result | undefined;
+      if (!entry.record) {
+        writeProducerDiagnosticV2(coordRoot, "intake_unreadable", { path: entry.path });
+      } else if (entry.record.mode !== control.state) {
+        writeProducerDiagnosticV2(coordRoot, "intake_gate_mismatch", {
+          observed_gate: control.state,
+          ...entry.record,
+        });
+      } else {
+        const recordInput = isOwn ? own.input : inputForIntakeRecord(coordRoot, entry.record);
+        try {
+          result = processHookSignalLocked(control, recordInput, sessionHash, statePath);
+        } catch (error) {
+          writeProducerDiagnosticV2(coordRoot, "intake_poison", {
+            error: String(error),
+            ...entry.record,
+          });
+          removeIntakeRecordV2(entry.path);
+          if (isOwn) throw error;
+          continue;
+        }
+      }
+      removeIntakeRecordV2(entry.path);
+      if (isOwn) ownResult = result ?? { state: "spooled" };
+    }
+  }
+  return ownResult;
+}
+
+export interface DrainHookIntakeSpoolV2Result {
+  groups_with_records: number;
+  groups_drained: number;
+  groups_skipped_busy: number;
+}
+
+/**
+ * Drain every session's pending intake records. This is the terminal drainer:
+ * it does not depend on a "next signal" ever arriving for a session, so it is
+ * wired into reconcile and session-start paths to pick up a final signal whose
+ * appender lost the lease and exited.
+ */
+export function drainHookIntakeSpoolV2(coordRoot: string): DrainHookIntakeSpoolV2Result {
+  const result: DrainHookIntakeSpoolV2Result = {
+    groups_with_records: 0,
+    groups_drained: 0,
+    groups_skipped_busy: 0,
+  };
+  const control = readEventV2ControlState(coordRoot);
+  if (control.state !== "candidate" && control.state !== "active") return result;
+  for (const group of listHookIntakeGroupsV2(coordRoot)) {
+    if (listHookIntakeRecordsV2(group.directory).length === 0) continue;
+    result.groups_with_records += 1;
+    const statePath = producerStatePath(coordRoot, group.adapter, group.session_hash);
+    const lease = acquireStateLeaseWithRetry(coordRoot, statePath, 2);
+    if (!lease) {
+      result.groups_skipped_busy += 1;
+      continue;
+    }
+    try {
+      drainSessionIntakeLocked(coordRoot, control, group.adapter, group.session_hash, statePath);
+      result.groups_drained += 1;
+    } finally {
+      lease.release();
+    }
+  }
+  return result;
+}
+
+function acquireStateLeaseWithRetry(
+  coordRoot: string,
+  statePath: string,
+  attempts: number,
+): ReturnType<typeof acquireStateLease> | undefined {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return acquireStateLease(coordRoot, statePath);
+    } catch (error) {
+      const message = String(error);
+      const contended =
+        message.includes("held by a live or unexpired owner") ||
+        message.includes("recovery is already in progress");
+      if (!contended) throw error;
+      if (attempt < attempts) sleepSync(STATE_LEASE_RETRY_DELAY_MS);
+    }
+  }
+  return undefined;
+}
+
+function sleepSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** The pre-spool body of the recorder: requires the session's state lease to be held. */
+function processHookSignalLocked(
+  control: OpenHookControlStateV2,
+  input: RecordHookSignalV2Input,
+  sessionHash: `hid_${string}`,
+  path: string,
+): RecordHookSignalV2Result {
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
   const epochId = control.genesis.profile.privacy_key_epoch;
   const boundaryEventId =
     control.state === "candidate"
       ? control.genesis.event.event_id
       : control.activation.event.event_id;
-  const expectedCapabilityDigest = `sha256:${adapterCapabilityProfileDigestV2(input.adapter).slice(4)}`;
-  if (
-    !control.genesis.profile.adapter_capability_profile_digests.includes(expectedCapabilityDigest)
-  ) {
-    return { state: "gate_closed", reason: "capability_profile_not_approved" };
-  }
-  const requiredCapability = hookSignalCapability(input.signal);
-  if (adapterSignalSupportV2(input.adapter, requiredCapability) === "unsupported") {
-    return {
-      state: "gate_closed",
-      reason: `signal_not_approved:${requiredCapability}`,
-    };
-  }
   const rootFingerprintContext = fingerprintContextV2(input.coordRoot, rootId, undefined, epochId);
-  const nativeSession =
-    input.payload.session_id ??
-    input.payload.conversation_id ??
-    input.payload.agent_id ??
-    input.instance_id;
-  const sessionHash = normalizeNativeIdV2(
-    rootFingerprintContext,
-    `${input.adapter}.session`,
-    nativeSession,
-  );
   const sessionId = `sid_${sessionHash.slice(4)}` as `sid_${string}`;
-  const path = producerStatePath(input.coordRoot, input.adapter, sessionHash);
-  const lease = acquireStateLease(input.coordRoot, path);
   try {
     let state = existsSync(path) ? readProducerState(path) : undefined;
     if (
@@ -229,6 +452,13 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
       }
       state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
     } else if (!state || state.terminal) {
+      writeProducerDiagnosticV2(input.coordRoot, "missing_session_start", {
+        adapter: input.adapter,
+        instance_id: input.instance_id,
+        signal: input.signal,
+        session_hash: sessionHash,
+        payload: input.payload,
+      });
       return { state: "missing_session_start" };
     }
 
@@ -242,7 +472,7 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
     let span: SpanStateV2 | undefined;
     let delegation: DelegationStateV2 | undefined;
     if (input.signal === "pre-tool-use") {
-      if (!sourceId) return { state: "unpairable_tool" };
+      if (!sourceId) return unpairableTool(input, sessionHash, "missing_tool_use_id");
       span = state.spans.find((candidate) => candidate.source_id === sourceId);
       if (!span) {
         span = {
@@ -253,9 +483,9 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
         state.spans.push(span);
       }
     } else if (input.signal === "post-tool-use" || input.signal === "post-tool-use-failure") {
-      if (!sourceId) return { state: "unpairable_tool" };
+      if (!sourceId) return unpairableTool(input, sessionHash, "missing_tool_use_id");
       span = state.spans.find((candidate) => candidate.source_id === sourceId);
-      if (!span) return { state: "unpairable_tool" };
+      if (!span) return unpairableTool(input, sessionHash, "no_open_span");
     }
     if (input.signal === "sub-agent-start") {
       if (!sourceId) return { state: "ignored" };
@@ -314,7 +544,7 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
     publishProducerState(path, state);
     return { state: "recorded", event, durability, recovered: false };
   } finally {
-    lease.release();
+    // The session's state lease is held by the draining caller.
   }
 }
 
@@ -611,6 +841,22 @@ function applyCommittedEvent(state: HookProducerStateV2, event: EventV2): void {
     state.tool_call_count = 0;
   }
   if (event.event_type === "session.ended") state.terminal = true;
+}
+
+function unpairableTool(
+  input: RecordHookSignalV2Input,
+  sessionHash: `hid_${string}`,
+  reason: "missing_tool_use_id" | "no_open_span",
+): RecordHookSignalV2Result {
+  writeProducerDiagnosticV2(input.coordRoot, "unpairable_tool", {
+    reason,
+    adapter: input.adapter,
+    instance_id: input.instance_id,
+    signal: input.signal,
+    session_hash: sessionHash,
+    payload: input.payload,
+  });
+  return { state: "unpairable_tool", reason };
 }
 
 function sourceIdForSignal(
