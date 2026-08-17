@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
@@ -259,15 +259,31 @@ function hookSignalGate(
 }
 
 function sessionHashForSignal(
-  input: Pick<RecordHookSignalV2Input, "payload" | "adapter" | "instance_id">,
+  input: Pick<RecordHookSignalV2Input, "coordRoot" | "payload" | "adapter" | "instance_id">,
   context: ReturnType<typeof fingerprintContextV2>,
 ): `hid_${string}` {
   const nativeSession =
-    input.payload.session_id ??
-    input.payload.conversation_id ??
-    input.payload.agent_id ??
-    input.instance_id;
-  return normalizeNativeIdV2(context, `${input.adapter}.session`, nativeSession);
+    input.payload.session_id ?? input.payload.conversation_id ?? input.payload.agent_id;
+  if (nativeSession !== undefined) {
+    return normalizeNativeIdV2(context, `${input.adapter}.session`, nativeSession);
+  }
+
+  // Cursor carries native session identity only on its start signal. Later
+  // hooks may still have an exact coordination instance, so reuse its single
+  // live producer authority instead of hashing the instance into a second
+  // state path. Ambiguous or absent matches keep the fail-closed fallback.
+  if (input.adapter === "cursor") {
+    const matches = listHookProducerStateRecordsV2(input.coordRoot).filter(
+      ({ state }) => state.adapter === input.adapter && state.instance_id === input.instance_id,
+    );
+    if (matches.length === 1) {
+      const name = basename(matches[0]!.path);
+      if (/^hid_[a-f0-9]{64}\.json$/.test(name)) {
+        return name.slice(0, -".json".length) as `hid_${string}`;
+      }
+    }
+  }
+  return normalizeNativeIdV2(context, `${input.adapter}.session`, input.instance_id);
 }
 
 function intakeRecord(input: RecordHookSignalV2Input): HookIntakeRecordV2 {

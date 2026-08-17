@@ -260,6 +260,56 @@ describe("event ledger V2 persistent hook recorder", () => {
     expect(toolEvents.some((event) => event.scope.instance_id === childInstance)).toBeFalse();
   });
 
+  test("routes identity-less Cursor hooks through their live instance authority", () => {
+    const root = candidateRoot("cursor");
+    const start = recordHookSignalV2(
+      baseInput(
+        root,
+        "session-start",
+        parsed({ conversation_id: "cursor-conversation" }),
+        "cursor",
+      ),
+    );
+    const turn = recordHookSignalV2(
+      baseInput(root, "user-prompt-submit", parsed({ turn_id: "cursor-turn" }), "cursor"),
+    );
+    const requested = recordHookSignalV2(
+      baseInput(
+        root,
+        "pre-tool-use",
+        parsed({ tool_use_id: "cursor-tool", tool_name: "Read" }),
+        "cursor",
+      ),
+    );
+    const completed = recordHookSignalV2(
+      baseInput(
+        root,
+        "post-tool-use",
+        parsed({ tool_use_id: "cursor-tool", tool_name: "Read", tool_response: "done" }),
+        "cursor",
+      ),
+    );
+
+    expect([start.state, turn.state, requested.state, completed.state]).toEqual([
+      "recorded",
+      "recorded",
+      "recorded",
+      "recorded",
+    ]);
+    expect(
+      readdirSync(join(root, ".harnery/ledgers/v2/private-producers/cursor")).filter((name) =>
+        name.endsWith(".json"),
+      ),
+    ).toHaveLength(1);
+    const events = readActiveLedgerV2(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.producer.producer_id === "prd_hook");
+    expect(
+      new Set(events.map((event) => (event.scope as { generation_id: string }).generation_id)).size,
+    ).toBe(1);
+    expect(events.every((event) => event.scope.instance_id === "inst_fixture")).toBeTrue();
+  });
+
   test("refuses unsupported Codex terminal authority even if a stale hook invokes it", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-session";
