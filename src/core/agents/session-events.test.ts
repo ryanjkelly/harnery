@@ -49,7 +49,7 @@ describe("session event live ledger routing", () => {
     const root = candidateRoot();
     const instanceId = "agent-v2-fixture";
     const nativeSession = "native-v2-session";
-    configureSession(root, instanceId, nativeSession);
+    process.env.HARNERY_EVENTS_PATH = join(root, ".harnery/session-events.ndjson");
     const route = resolveLiveEventLedgerRouteV2(root);
     if (route.state !== "v2") throw new Error("expected V2 route");
     expect(
@@ -102,6 +102,7 @@ describe("session event live ledger routing", () => {
       "command.completed",
     ]);
     expect(existsSync(join(root, ".harnery/events.ndjson"))).toBeFalse();
+    expect(existsSync(join(root, ".harnery/active", `${instanceId}.json`))).toBeFalse();
     expect(readFileSync(join(root, ".harnery/ledgers/v2/active.ndjson"), "utf8")).not.toContain(
       secret,
     );

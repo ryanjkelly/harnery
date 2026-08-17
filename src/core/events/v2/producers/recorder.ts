@@ -4,11 +4,12 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -318,6 +319,32 @@ export function readHookProducerStateV2(
   return existsSync(path) ? readProducerState(path) : undefined;
 }
 
+export function readHookProducerStateByInstanceV2(
+  coordRoot: string,
+  instanceId: `inst_${string}`,
+): HookProducerStateV2 | undefined {
+  const control = readEventV2ControlState(coordRoot);
+  if (control.state !== "candidate" && control.state !== "active") return undefined;
+  const producerRoot = join(resolve(coordRoot), EVENT_V2_LEDGER_RELATIVE_ROOT, "private-producers");
+  if (!existsSync(producerRoot)) return undefined;
+  const matches: HookProducerStateV2[] = [];
+  for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+    const directory = join(producerRoot, adapter);
+    if (!existsSync(directory)) continue;
+    const metadata = lstatSync(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("V2 producer state directory is unsafe");
+    }
+    for (const name of readdirSync(directory).filter((entry) =>
+      /^hid_[a-f0-9]{64}\.json$/.test(entry),
+    )) {
+      const state = readProducerState(join(directory, name));
+      if (state.instance_id === instanceId && !state.terminal) matches.push(state);
+    }
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function newProducerState(
   input: RecordHookSignalV2Input,
   sessionId: `sid_${string}`,
@@ -470,7 +497,11 @@ function publishProducerState(path: string, state: HookProducerStateV2): void {
 }
 
 function readProducerState(path: string): HookProducerStateV2 {
-  if ((statSync(path).mode & 0o077) !== 0) throw new Error("V2 producer state is not owner-only");
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("V2 producer state path is unsafe");
+  }
+  if ((metadata.mode & 0o077) !== 0) throw new Error("V2 producer state is not owner-only");
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));

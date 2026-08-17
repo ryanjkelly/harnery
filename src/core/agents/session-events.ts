@@ -18,6 +18,7 @@ import {
 } from "../events/v2/live-routing.ts";
 import type { CommandObservationV2, CommandSignalV2 } from "../events/v2/producers/command.ts";
 import { recordCommandSignalV2 } from "../events/v2/producers/command-recorder.ts";
+import { readHookProducerStateByInstanceV2 } from "../events/v2/producers/recorder.ts";
 import { normalizeAdapter, resolveEmitRoot } from "./canonical-emit.ts";
 import { emit as emitV1 } from "./events/emit.ts";
 
@@ -159,10 +160,10 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
   try {
     // coordRoot = the dir containing `.harnery/`; canonicalEventsPath() anchors it.
     const coordRoot = dirname(dirname(canonicalEventsPath()));
-    const enrich = enrichFromHeartbeat(coordRoot, instanceId);
-    if (!enrich) return;
     const route = resolveLiveEventLedgerRouteV2(coordRoot);
     if (route.state === "v1") {
+      const enrich = enrichFromHeartbeat(coordRoot, instanceId);
+      if (!enrich) return;
       emitV1(coordRoot, {
         event_type: eventType,
         instance_id: instanceId,
@@ -173,6 +174,9 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
       return;
     }
     if (route.state === "blocked" || type === "narration") return;
+    const liveInstanceId = liveInstanceIdV2(instanceId);
+    const hook = readHookProducerStateByInstanceV2(coordRoot, liveInstanceId);
+    if (!hook) return;
     const command = commandSignalAndObservation(type, fields);
     if (!command) return;
     recordCommandSignalV2({
@@ -180,9 +184,8 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
       mode: route.mode,
       signal: command.signal,
       observation: command.observation,
-      adapter: enrich.adapter,
-      native_session_id: enrich.session_id,
-      instance_id: liveInstanceIdV2(instanceId),
+      adapter: hook.adapter,
+      instance_id: liveInstanceId,
       producer_id: LIVE_COMMAND_V2_PRODUCER_ID,
       build_id: route.build_id,
       platform: livePlatformV2(),

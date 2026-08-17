@@ -179,7 +179,6 @@ function commandInput(root: string, signal: Parameters<typeof recordCommandSigna
     signal,
     observation: { native_command_id: "cmd-native-1" },
     adapter: "claude-code" as const,
-    native_session_id: "native-session",
     instance_id: "inst_fixture" as const,
     producer_id: "prd_session-tee" as const,
     build_id: "build_fixture" as const,

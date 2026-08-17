@@ -34,7 +34,7 @@ import {
   type CommandSignalV2,
   normalizeCommandEventV2,
 } from "./command.ts";
-import { readHookProducerStateV2 } from "./recorder.ts";
+import { readHookProducerStateByInstanceV2 } from "./recorder.ts";
 
 const COMMAND_STATE_FORMAT = "harnery-v2-command-producer" as const;
 const COMMAND_STATE_VERSION = 1 as const;
@@ -76,7 +76,6 @@ export interface RecordCommandSignalV2Input {
   signal: CommandSignalV2;
   observation: CommandObservationV2;
   adapter: Adapter;
-  native_session_id: string;
   instance_id: `inst_${string}`;
   producer_id: `prd_${string}`;
   build_id: `build_${string}`;
@@ -106,8 +105,8 @@ export function recordCommandSignalV2(
   if (control.state !== input.mode) {
     return { state: "gate_closed", reason: control.state };
   }
-  const hook = readHookProducerStateV2(input.coordRoot, input.adapter, input.native_session_id);
-  if (!hook || hook.terminal || hook.instance_id !== input.instance_id) {
+  const hook = readHookProducerStateByInstanceV2(input.coordRoot, input.instance_id);
+  if (!hook || hook.adapter !== input.adapter) {
     return { state: "generation_unavailable", reason: "hook_generation_not_joinable" };
   }
   if (!hook.current_turn_id) {
@@ -119,7 +118,7 @@ export function recordCommandSignalV2(
   const commandSource = normalizeNativeIdV2(
     rootContext,
     "session-tee.command",
-    `${input.adapter}\0${input.native_session_id}\0${input.observation.native_command_id}`,
+    `${input.adapter}\0${hook.session_id}\0${input.observation.native_command_id}`,
   );
   const sourceId = observationSourceId(input, rootContext);
   if (!sourceId) return { state: "missing_observation_id" };
@@ -201,7 +200,7 @@ export function recordCommandSignalV2(
 
 function newCommandState(
   input: RecordCommandSignalV2Input,
-  hook: NonNullable<ReturnType<typeof readHookProducerStateV2>>,
+  hook: NonNullable<ReturnType<typeof readHookProducerStateByInstanceV2>>,
   epochId: `pep_${string}`,
 ): CommandRecorderStateV2 {
   return {
@@ -226,7 +225,7 @@ function newCommandState(
 
 function matchesHookState(
   state: CommandRecorderStateV2,
-  hook: NonNullable<ReturnType<typeof readHookProducerStateV2>>,
+  hook: NonNullable<ReturnType<typeof readHookProducerStateByInstanceV2>>,
   input: RecordCommandSignalV2Input,
   epochId: string,
 ): boolean {
