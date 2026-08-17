@@ -118,14 +118,15 @@ export async function buildScene(now?: string): Promise<CodecScene> {
   // projection; a registry failure leaves the fallback pack in place. Remote
   // panels are excluded — pack assets are machine-local, and binding a local
   // pack to a remote session would burn roster slots on portraits that can
-  // never render.
+  // never render. Offline and unknown panels keep the fallback letter pack
+  // so the six-character roster stays on live sessions.
   try {
-    const localPanels = scene.panels.filter((p) => !p.machine);
+    const localLive = scene.panels.filter((p) => !p.machine && p.presence.value === "online");
     const characters = allocateCharacters(
-      localPanels.map((p) => p.instance_id),
+      localLive.map((p) => p.instance_id),
       scene.generated_at,
     );
-    for (const panel of localPanels) {
+    for (const panel of localLive) {
       const assigned = characters.get(panel.instance_id);
       if (assigned) panel.character = assigned;
     }

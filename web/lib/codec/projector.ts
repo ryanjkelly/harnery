@@ -351,15 +351,37 @@ export interface ProjectSceneInputs {
   now?: string;
 }
 
+function staleHeartbeatIsRecentlyEnded(
+  ev: InstanceEvidence | undefined,
+  nowMs: number,
+): boolean {
+  const endTs = ms(ev?.lastSessionEnd?.ts);
+  const startTs = ms(ev?.lastSessionStart?.ts);
+  if (!ev?.lastSessionEnd || !Number.isFinite(endTs)) return false;
+  if (Number.isFinite(startTs) && endTs <= startTs) return false;
+  return nowMs - endTs <= EVIDENCE_PANEL_WINDOW_MS;
+}
+
 export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const now = inputs.now ?? new Date().toISOString();
   const nowMs = ms(now);
   const evidence = foldEvidence(inputs.events);
+  const heartbeatName = new Map<string, string>();
+  for (const hb of [...inputs.snapshot.active, ...inputs.snapshot.stale]) {
+    heartbeatName.set(hb.instance_id, hb.name);
+  }
 
   const panels: CodecPanelScene[] = [];
+  // Live heartbeats always render. Stale heartbeat files are leftovers unless
+  // a recent session.end puts them in Recently ended — otherwise they drowned
+  // the live grid (dozens of unknown/idle tiles with no task). Recent work
+  // without a fresh heartbeat still surfaces through the evidence-backed
+  // path below, so a mid-work agent cannot vanish.
   const rows: Array<{ hb: Heartbeat; isActive: boolean }> = [
     ...inputs.snapshot.active.map((hb) => ({ hb, isActive: true })),
-    ...inputs.snapshot.stale.map((hb) => ({ hb, isActive: false })),
+    ...inputs.snapshot.stale
+      .filter((hb) => staleHeartbeatIsRecentlyEnded(evidence.get(hb.instance_id), nowMs))
+      .map((hb) => ({ hb, isActive: false })),
   ];
 
   for (const { hb, isActive } of rows) {
@@ -402,23 +424,21 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   }
 
   // Evidence-backed panels: a session whose heartbeat was stale-swept (or
-  // never registered) but whose canonical events are recent must degrade to
-  // honest unknowns instead of vanishing from the scene — a live agent
-  // disappearing mid-work is the one failure an operator cannot detect.
-  // Recency bounds the set; instances with only incidental evidence (no
-  // identity, task, prompt, or actions) are skipped as noise.
+  // never registered) but whose canonical events are still live must not
+  // vanish mid-work. Leftover named sessions without recent work are noise.
   const paneled = new Set(panels.map((p) => p.instance_id));
   for (const [instanceId, ev] of evidence) {
     if (paneled.has(instanceId)) continue;
     const lastTs = ms(ev.lastEventTs);
     if (!Number.isFinite(lastTs) || nowMs - lastTs > EVIDENCE_PANEL_WINDOW_MS) continue;
-    if (!ev.identityName && !ev.lastTaskSet && !ev.lastPrompt && ev.actionsFull.length === 0) {
-      continue;
-    }
-
+    const hasWork = Boolean(ev.lastTaskSet || ev.lastPrompt || ev.actionsFull.length > 0);
     const endTs = ms(ev.lastSessionEnd?.ts);
     const ended =
       ev.lastSessionEnd !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
+    if (!hasWork && !ended) continue;
+    // Quiet leftovers are not live Codec tiles. Non-ended evidence older than
+    // the online window used to render as presence=unknown and refill the grid.
+    if (!ended && nowMs - lastTs > EVIDENCE_ONLINE_WINDOW_MS) continue;
     const evPresence: Presented<CodecPresence> = ended
       ? present("offline", "event", "high", ev.lastSessionEnd?.ts ?? now, [
           ev.lastSessionEnd?.event_id ?? "",
@@ -455,7 +475,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     panels.push({
       instance_id: instanceId,
       identity: {
-        display_name: ev.identityName ?? instanceId.slice(0, 8),
+        display_name: ev.identityName ?? heartbeatName.get(instanceId) ?? instanceId.slice(0, 8),
         ...(task ? { task } : {}),
       },
       presence: evPresence,
@@ -516,10 +536,19 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     });
   }
 
-  const workingCount = panels.filter((p) => p.activity.value === "working").length;
-  const needsInput = panels.some((p) => p.activity.value === "needs-input");
+  const livePanels = panels.filter((p) => p.presence.value === "online");
+  const workingCount = livePanels.filter((p) => p.activity.value === "working").length;
+  const needsInput = livePanels.some((p) => p.activity.value === "needs-input");
   const ambience =
-    panels.length === 0 ? "unknown" : needsInput ? "alert" : workingCount >= 2 ? "busy" : "calm";
+    livePanels.length === 0
+      ? panels.length === 0
+        ? "unknown"
+        : "calm"
+      : needsInput
+        ? "alert"
+        : workingCount >= 2
+          ? "busy"
+          : "calm";
 
   const lastEvent = inputs.events.length
     ? inputs.events[inputs.events.length - 1]

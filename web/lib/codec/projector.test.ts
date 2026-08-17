@@ -86,10 +86,11 @@ describe("projectScene", () => {
     expect(a).toBe(b);
   });
 
-  test("stale heartbeat yields unknown presence; session.end yields offline", () => {
+  test("stale leftover heartbeats are omitted; session.end still yields offline", () => {
     const staleHb = hb({ age_seconds: 900 });
     const noEnd = projectScene({ snapshot: snapshot([], [staleHb]), events: [], now: NOW });
-    expect(noEnd.panels[0]?.presence.value).toBe("unknown");
+    expect(noEnd.panels).toHaveLength(0);
+    expect(noEnd.team_ambience.value).toBe("unknown");
 
     const ended = projectScene({
       snapshot: snapshot([], [staleHb]),
@@ -100,6 +101,7 @@ describe("projectScene", () => {
       now: NOW,
     });
     expect(ended.panels[0]?.presence).toMatchObject({ value: "offline", provenance: "event" });
+    expect(ended.team_ambience.value).toBe("calm");
 
     // A restart after the recorded end must not read as offline.
     const restarted = projectScene({
@@ -111,6 +113,59 @@ describe("projectScene", () => {
       now: NOW,
     });
     expect(restarted.panels[0]?.presence.value).toBe("online");
+  });
+
+  test("stale leftover heartbeats do not fill the live scene or make it busy", () => {
+    const leftovers = Array.from({ length: 20 }, (_, i) =>
+      hb({
+        instance_id: `dead-${i}`,
+        name: `Dead${i}`,
+        age_seconds: 900,
+        activity: "working",
+      }),
+    );
+    const scene = projectScene({
+      snapshot: snapshot([hb({ activity: "idle" })], leftovers),
+      events: [],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+    expect(scene.panels[0]?.identity.display_name).toBe("Sara");
+    expect(scene.panels[0]?.presence.value).toBe("online");
+    expect(scene.team_ambience.value).toBe("calm");
+  });
+
+  test("recent evidence still surfaces a stale heartbeat as online, not unknown", () => {
+    const staleWorking = hb({ age_seconds: 900, activity: "working" });
+    const scene = projectScene({
+      snapshot: snapshot([], [staleWorking]),
+      events: [
+        ev({
+          event_type: "tool.pre_use",
+          category: "edit",
+          outcome: "started",
+          ts: "2026-08-16T10:03:00.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+    expect(scene.panels[0]?.identity.display_name).toBe("Sara");
+    expect(scene.panels[0]?.presence).toMatchObject({
+      value: "online",
+      provenance: "event",
+      confidence: "medium",
+    });
+    expect(scene.panels[0]?.activity).toMatchObject({ value: "working", provenance: "event" });
+  });
+
+  test("an old session.end on a stale heartbeat does not linger in the scene", () => {
+    const scene = projectScene({
+      snapshot: snapshot([], [hb({ age_seconds: 7200 })]),
+      events: [ev({ event_type: "session.end", ts: "2026-08-16T08:00:00.000Z" })],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(0);
   });
 
   test("lifecycle prefers the stamped projection, then event evidence, then unknown", () => {
@@ -222,6 +277,39 @@ describe("projectScene", () => {
     });
     expect(endedScene.panels[0]?.presence.value).toBe("offline");
     expect(endedScene.panels[0]?.activity.value).toBe("idle");
+  });
+
+  test("identity.assumed alone is incidental and does not create a panel", () => {
+    const scene = projectScene({
+      snapshot: snapshot([]),
+      events: [
+        ev({
+          event_type: "identity.assumed",
+          identity_name: "Ghost",
+          instance_id: "inst-ghost",
+          ts: "2026-08-16T10:04:00.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(0);
+  });
+
+  test("quiet stale evidence does not linger as unknown panels", () => {
+    const scene = projectScene({
+      snapshot: snapshot([]),
+      events: [
+        ev({ event_type: "identity.assumed", identity_name: "Quentin", ts: "2026-08-16T09:50:00.000Z" }),
+        ev({
+          event_type: "tool.pre_use",
+          category: "research",
+          outcome: "started",
+          ts: "2026-08-16T09:50:00.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(0);
   });
 
   test("a heartbeat panel is never duplicated by evidence", () => {

@@ -173,7 +173,8 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   });
 
   const degraded = status === "reconnecting" || status === "polling";
-  const current = scene.panels.filter((p) => p.presence.value !== "offline");
+  const current = scene.panels.filter((p) => p.presence.value === "online");
+  const stale = scene.panels.filter((p) => p.presence.value === "unknown");
   const ended = scene.panels.filter((p) => p.presence.value === "offline");
   const parentNameFor = (panel: CodecPanelScene) =>
     panel.parent_instance_id
@@ -195,23 +196,46 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         </Badge>
       </div>
 
-      {scene.panels.length === 0 ? (
+      {current.length === 0 && stale.length === 0 && ended.length === 0 ? (
         <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
           No active agents. Panels appear when a session starts.
         </p>
       ) : (
         <div ref={gridRef} className="relative">
           <RelationshipLines scene={scene} gridRef={gridRef} />
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
-            {current.map((panel) => (
-              <CodecPanel
-                key={panel.instance_id}
-                panel={panel}
-                parentName={parentNameFor(panel)}
-                glowing={Boolean(glowing[panel.instance_id])}
-              />
-            ))}
-          </div>
+          {current.length === 0 ? (
+            <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+              No live agents. Panels appear when a session is online.
+            </p>
+          ) : (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
+              {current.map((panel) => (
+                <CodecPanel
+                  key={panel.instance_id}
+                  panel={panel}
+                  parentName={parentNameFor(panel)}
+                  glowing={Boolean(glowing[panel.instance_id])}
+                />
+              ))}
+            </div>
+          )}
+          {stale.length > 0 && (
+            <>
+              <p className="mt-6 mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Stale presence
+              </p>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
+                {stale.map((panel) => (
+                  <CodecPanel
+                    key={panel.instance_id}
+                    panel={panel}
+                    parentName={parentNameFor(panel)}
+                    glowing={false}
+                  />
+                ))}
+              </div>
+            </>
+          )}
           {ended.length > 0 && (
             <>
               <p className="mt-6 mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
