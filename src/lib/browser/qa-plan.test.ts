@@ -61,6 +61,15 @@ describe("classifySignatures", () => {
     expect(res.stylesheets_changed).toEqual(["site.css"]);
   });
 
+  test("opaque visual digest changes are structural and unavailable evidence widens", () => {
+    const anchor = { selector: "#graphic", path: "body>section:0" };
+    const base = sig([node("body>section:0>svg:0", { visual: "a-10", anchor })]);
+    const changed = sig([node("body>section:0>svg:0", { visual: "b-10", anchor })]);
+    const unavailable = sig([node("body>section:0>canvas:0", { visual: "unavailable", anchor })]);
+    expect(classifySignatures(base, changed).change_class).toBe("local-visual");
+    expect(classifySignatures(unavailable, unavailable).change_class).toBe("unknown");
+  });
+
   test("identical signatures are text-data-only and flagged identical", () => {
     const nodes = [node("body>p:0", { text: "t-1" })];
     const res = classifySignatures(sig(nodes), sig(nodes));
@@ -179,12 +188,38 @@ describe("buildQaManifest", () => {
     const m = buildQaManifest(local, {
       baselineSource: "qa-snapshot:t",
       states: ["modal-open"],
+      outcomeAssertions: ["exists [role=dialog]", "text #status => Saved"],
     });
     expect(m.change_class).toBe("interaction-state");
     expect(m.contexts).toEqual([
       { viewport: "desktop", theme: "light", state: "default" },
       { viewport: "desktop", theme: "light", state: "modal-open" },
     ]);
+    expect(m.checks.interaction).toEqual(["exists [role=dialog]", "text #status => Saved"]);
+  });
+
+  test("a missing explicit selector marks the manifest incomplete", () => {
+    const m = buildQaManifest(local, {
+      baselineSource: "qa-snapshot:t",
+      explicitScopes: [{ selector: "#missing", reason: "explicit input", matches: 0 }],
+    });
+    expect(m.incomplete?.reason).toContain("#missing");
+    expect(m.contexts).toEqual([]);
+    expect(m.predicted.model_calls_ceiling).toBe(0);
+  });
+
+  test("an explicit component boundary scopes a stylesheet-only change", () => {
+    const stylesheetOnly = classifySignatures(
+      sig([node("body>main:0")], [{ key: "card.css", kind: "external", digest: "a-1" }]),
+      sig([node("body>main:0")], [{ key: "card.css", kind: "external", digest: "b-1" }]),
+    );
+    const m = buildQaManifest(stylesheetOnly, {
+      baselineSource: "qa-snapshot:t",
+      explicitScopes: [{ selector: "#card", reason: "component stylesheet owner", matches: 1 }],
+    });
+    expect(m.change_class).toBe("local-visual");
+    expect(m.scopes.map((scope) => scope.selector)).toEqual(["#card"]);
+    expect(m.checks.visual).toBe("scoped");
   });
 
   test("unknown widens to the full four-context matrix by default", () => {

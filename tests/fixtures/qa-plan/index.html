@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QA planner fixture</title>
+    <script>
+      const variant = new URLSearchParams(location.search).get("variant") || "baseline";
+      const externalSheet = variant === "external-css" ? "theme-b.css" : "theme-a.css";
+      const inlineRule = variant === "inline-css" ? "padding: 19px" : "padding: 7px";
+      document.write(`<link rel="stylesheet" href="${externalSheet}">`);
+      document.write(`<style>.fixture-card { ${inlineRule}; }</style>`);
+    </script>
+  </head>
+  <body>
+    <main id="fixture">
+      <section data-qa-scope="copy"><p id="prose">Original prose</p></section>
+      <section data-qa-scope="number"><span id="number">42</span></section>
+      <section data-qa-scope="date"><time id="date">2026-08-17</time></section>
+      <section data-qa-scope="table">
+        <table><tbody><tr><td id="table-value">118</td></tr></tbody></table>
+      </section>
+      <section data-qa-scope="component">
+        <div id="component" class="fixture-card" style="margin: 1px" data-layout="stacked">
+          <span>Component body</span>
+        </div>
+      </section>
+      <section data-qa-scope="media">
+        <img id="media" alt="fixture" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+      </section>
+      <section data-qa-scope="svg">
+        <svg id="vector" viewBox="0 0 20 20"><rect width="20" height="20" fill="#111"></rect></svg>
+      </section>
+      <section data-qa-scope="canvas"><canvas id="chart" width="20" height="20"></canvas></section>
+      <section data-qa-scope="interaction"><button id="toggle" aria-expanded="false">Open</button></section>
+    </main>
+    <script>
+      const byId = (id) => document.getElementById(id);
+      if (variant === "prose") byId("prose").textContent = "Edited prose";
+      if (variant === "number") byId("number").textContent = "43";
+      if (variant === "date") byId("date").textContent = "2026-08-18";
+      if (variant === "table-value") byId("table-value").textContent = "119";
+      if (variant === "class") byId("component").className = "fixture-card selected";
+      if (variant === "style") byId("component").style.margin = "9px";
+      if (variant === "layout-attribute") byId("component").setAttribute("data-layout", "grid");
+      if (variant === "component-markup") byId("component").append(document.createElement("em"));
+      if (variant === "media") {
+        byId("media").src = "data:image/gif;base64,R0lGODlhAQABAIAAAAD/AP///ywAAAAAAQABAAACAUwAOw==";
+      }
+      if (variant === "svg") byId("vector").querySelector("rect").setAttribute("fill", "#f00");
+      if (variant === "interaction") byId("toggle").setAttribute("aria-expanded", "true");
+      const context = byId("chart").getContext("2d");
+      context.fillStyle = variant === "canvas" ? "#f00" : "#111";
+      context.fillRect(0, 0, 20, 20);
+    </script>
+  </body>
+</html>

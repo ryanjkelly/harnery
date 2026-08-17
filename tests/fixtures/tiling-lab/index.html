@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiling Lab — deterministic fixture</title>
+<style>
+  /* Deterministic on purpose: system fonts, no animations, no external assets. */
+  * { margin: 0; padding: 0; box-sizing: border-box; animation: none !important; transition: none !important; }
+  body { font-family: Georgia, 'Times New Roman', serif; color: #1c2430; background: #faf8f4; line-height: 1.55; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header.hero { background: #14324f; color: #f4efe6; padding: 72px 0 64px; }
+  header.hero h1 { font-size: 44px; margin-bottom: 14px; }
+  header.hero p { font-size: 19px; max-width: 640px; }
+  section { padding: 48px 0; }
+  h2 { font-size: 30px; margin-bottom: 18px; border-bottom: 3px solid #b3552e; padding-bottom: 6px; }
+  p { margin-bottom: 14px; font-size: 17px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
+  .card { background: #fff; border: 1px solid #d8d2c6; border-radius: 10px; padding: 18px; }
+  .card h3 { font-size: 18px; margin-bottom: 8px; color: #14324f; }
+  .card p { font-size: 15px; margin: 0; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 15px; }
+  th, td { border: 1px solid #cfc8ba; padding: 9px 12px; text-align: left; }
+  th { background: #14324f; color: #f4efe6; }
+  tr:nth-child(even) td { background: #f2eee6; }
+  figure.chart { background: #fff; border: 1px solid #d8d2c6; border-radius: 10px; padding: 20px; }
+  figcaption { font-size: 14px; color: #6b6357; margin-top: 10px; }
+  .callout { background: #fdf3d9; border-left: 5px solid #b3552e; padding: 18px 20px; margin: 20px 0; }
+  footer { background: #14324f; color: #cdd8e4; padding: 40px 0; font-size: 14px; }
+  .imggrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .imggrid svg { width: 100%; height: auto; border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<header class="hero" id="hero">
+  <div class="wrap">
+    <h1>Blood Sugar Field Notes</h1>
+    <p>A deterministic fixture page for tiling experiments: hero, prose, cards, a long table, a tall chart, an image grid, and a footer, in one tall document.</p>
+  </div>
+</header>
+
+<section id="intro">
+  <div class="wrap">
+    <h2>1. Why banding cuts matter</h2>
+    <p>This section is ordinary prose. A band boundary landing in the middle of a paragraph forces the vision model to judge a half-sentence, and a boundary landing mid-heading is worse: the model must decide whether a decapitated heading is a defect or an artifact of the crop itself.</p>
+    <p>Every element on this page has a stable position once rendered, no animation runs, and all assets are inline, so two renders of this file should be near-identical. That property is what the digest-stability half of the experiment measures.</p>
+    <p>The prose block continues for a few paragraphs so that at least one fixed 1400-pixel cut lands inside it. Padding paragraphs follow: the quick brown fox jumps over the lazy dog, again and again, each line adding vertical extent to the section so the geometry is realistic rather than toy-sized.</p>
+    <p>Cinnamon, chromium, and berberine walk into a systematic review. The punchline depends on the confidence interval. Readers aged seventy-six prefer the punchline in eighteen-point type with generous line height, which is why this fixture uses larger body text than a typical engineering blog.</p>
+  </div>
+</section>
+
+<section id="cards">
+  <div class="wrap">
+    <h2>2. Card grid</h2>
+    <div class="cards">
+      <div class="card"><h3>Fasting glucose</h3><p>Baseline 141 mg/dL, week eight 118 mg/dL. The delta is the number the reader remembers.</p></div>
+      <div class="card"><h3>A1C</h3><p>Baseline 7.9%, week twelve 7.1%. Hero metric of the page, and of most testimonials.</p></div>
+      <div class="card"><h3>Post-meal spike</h3><p>Peak excursion narrowed from 210 to 164 mg/dL after the protocol change.</p></div>
+      <div class="card"><h3>Morning routine</h3><p>Two capsules before breakfast, water first, walk after. Compliance beats optimization.</p></div>
+      <div class="card"><h3>Sleep</h3><p>Seven hours median. The overnight dawn-effect rise shrank once dinner moved earlier.</p></div>
+      <div class="card"><h3>Support tickets</h3><p>Most common question: can it be taken with metformin. The answer requires the doctor.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="ledger">
+  <div class="wrap">
+    <h2>3. Long ledger table</h2>
+    <p>Sixty data rows follow. A fixed-height band is guaranteed to cut through this table more than once, which is precisely the case where row-level seam artifacts confuse a reviewer.</p>
+    <table id="ledger-table">
+      <thead>
+        <tr><th>Week</th><th>Fasting mg/dL</th><th>Post-meal mg/dL</th><th>Weight lb</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <!-- 60 rows generated statically for determinism -->
+        <tr><td>1</td><td>141</td><td>210</td><td>212</td><td>baseline established</td></tr>
+        <tr><td>2</td><td>139</td><td>206</td><td>211</td><td>walk added</td></tr>
+        <tr><td>3</td><td>138</td><td>204</td><td>211</td><td>dinner earlier</td></tr>
+        <tr><td>4</td><td>136</td><td>199</td><td>210</td><td>steady</td></tr>
+        <tr><td>5</td><td>134</td><td>196</td><td>209</td><td>steady</td></tr>
+        <tr><td>6</td><td>133</td><td>192</td><td>209</td><td>hydration focus</td></tr>
+        <tr><td>7</td><td>131</td><td>189</td><td>208</td><td>steady</td></tr>
+        <tr><td>8</td><td>118</td><td>184</td><td>207</td><td>first big drop</td></tr>
+        <tr><td>9</td><td>121</td><td>182</td><td>207</td><td>holiday week</td></tr>
+        <tr><td>10</td><td>119</td><td>178</td><td>206</td><td>steady</td></tr>
+        <tr><td>11</td><td>117</td><td>174</td><td>205</td><td>steady</td></tr>
+        <tr><td>12</td><td>116</td><td>171</td><td>204</td><td>A1C retest 7.1</td></tr>
+        <tr><td>13</td><td>116</td><td>169</td><td>204</td><td>steady</td></tr>
+        <tr><td>14</td><td>115</td><td>168</td><td>203</td><td>steady</td></tr>
+        <tr><td>15</td><td>114</td><td>166</td><td>203</td><td>steady</td></tr>
+        <tr><td>16</td><td>113</td><td>165</td><td>202</td><td>plateau begins</td></tr>
+        <tr><td>17</td><td>113</td><td>165</td><td>202</td><td>plateau</td></tr>
+        <tr><td>18</td><td>112</td><td>164</td><td>202</td><td>plateau</td></tr>
+        <tr><td>19</td><td>112</td><td>164</td><td>201</td><td>plateau</td></tr>
+        <tr><td>20</td><td>111</td><td>163</td><td>201</td><td>plateau</td></tr>
+        <tr><td>21</td><td>111</td><td>163</td><td>201</td><td>protein bump</td></tr>
+        <tr><td>22</td><td>110</td><td>162</td><td>200</td><td>steady</td></tr>
+        <tr><td>23</td><td>110</td><td>161</td><td>200</td><td>steady</td></tr>
+        <tr><td>24</td><td>109</td><td>160</td><td>199</td><td>six-month mark</td></tr>
+        <tr><td>25</td><td>109</td><td>160</td><td>199</td><td>steady</td></tr>
+        <tr><td>26</td><td>108</td><td>159</td><td>198</td><td>steady</td></tr>
+        <tr><td>27</td><td>108</td><td>159</td><td>198</td><td>steady</td></tr>
+        <tr><td>28</td><td>108</td><td>158</td><td>198</td><td>steady</td></tr>
+        <tr><td>29</td><td>107</td><td>158</td><td>197</td><td>steady</td></tr>
+        <tr><td>30</td><td>107</td><td>157</td><td>197</td><td>steady</td></tr>
+        <tr><td>31</td><td>107</td><td>157</td><td>197</td><td>steady</td></tr>
+        <tr><td>32</td><td>106</td><td>156</td><td>196</td><td>steady</td></tr>
+        <tr><td>33</td><td>106</td><td>156</td><td>196</td><td>steady</td></tr>
+        <tr><td>34</td><td>106</td><td>155</td><td>196</td><td>steady</td></tr>
+        <tr><td>35</td><td>105</td><td>155</td><td>195</td><td>steady</td></tr>
+        <tr><td>36</td><td>105</td><td>154</td><td>195</td><td>steady</td></tr>
+        <tr><td>37</td><td>105</td><td>154</td><td>195</td><td>steady</td></tr>
+        <tr><td>38</td><td>105</td><td>154</td><td>194</td><td>steady</td></tr>
+        <tr><td>39</td><td>104</td><td>153</td><td>194</td><td>steady</td></tr>
+        <tr><td>40</td><td>104</td><td>153</td><td>194</td><td>steady</td></tr>
+        <tr><td>41</td><td>104</td><td>152</td><td>193</td><td>steady</td></tr>
+        <tr><td>42</td><td>104</td><td>152</td><td>193</td><td>steady</td></tr>
+        <tr><td>43</td><td>103</td><td>152</td><td>193</td><td>steady</td></tr>
+        <tr><td>44</td><td>103</td><td>151</td><td>192</td><td>steady</td></tr>
+        <tr><td>45</td><td>103</td><td>151</td><td>192</td><td>steady</td></tr>
+        <tr><td>46</td><td>103</td><td>151</td><td>192</td><td>steady</td></tr>
+        <tr><td>47</td><td>102</td><td>150</td><td>192</td><td>steady</td></tr>
+        <tr><td>48</td><td>102</td><td>150</td><td>191</td><td>annual labs</td></tr>
+        <tr><td>49</td><td>102</td><td>150</td><td>191</td><td>steady</td></tr>
+        <tr><td>50</td><td>102</td><td>149</td><td>191</td><td>steady</td></tr>
+        <tr><td>51</td><td>101</td><td>149</td><td>191</td><td>steady</td></tr>
+        <tr><td>52</td><td>101</td><td>149</td><td>190</td><td>one-year mark</td></tr>
+        <tr><td>53</td><td>101</td><td>148</td><td>190</td><td>steady</td></tr>
+        <tr><td>54</td><td>101</td><td>148</td><td>190</td><td>steady</td></tr>
+        <tr><td>55</td><td>100</td><td>148</td><td>190</td><td>steady</td></tr>
+        <tr><td>56</td><td>100</td><td>147</td><td>189</td><td>steady</td></tr>
+        <tr><td>57</td><td>100</td><td>147</td><td>189</td><td>steady</td></tr>
+        <tr><td>58</td><td>99</td><td>147</td><td>189</td><td>steady</td></tr>
+        <tr><td>59</td><td>99</td><td>146</td><td>189</td><td>steady</td></tr>
+        <tr><td>60</td><td>99</td><td>146</td><td>188</td><td>steady</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="chart">
+  <div class="wrap">
+    <h2>4. Tall chart (taller than one band)</h2>
+    <figure class="chart" id="tall-chart">
+      <!-- 1800px-tall inline SVG: taller than the 1400px default band, so NO clean cut exists through this region -->
+      <svg viewBox="0 0 900 1800" width="100%" height="1800" role="img" aria-label="Tall synthetic chart">
+        <rect x="0" y="0" width="900" height="1800" fill="#ffffff"/>
+        <g stroke="#d8d2c6" stroke-width="1">
+          <line x1="60" y1="100" x2="60" y2="1700"/><line x1="60" y1="1700" x2="860" y2="1700"/>
+          <line x1="60" y1="300" x2="860" y2="300"/><line x1="60" y1="500" x2="860" y2="500"/>
+          <line x1="60" y1="700" x2="860" y2="700"/><line x1="60" y1="900" x2="860" y2="900"/>
+          <line x1="60" y1="1100" x2="860" y2="1100"/><line x1="60" y1="1300" x2="860" y2="1300"/>
+          <line x1="60" y1="1500" x2="860" y2="1500"/>
+        </g>
+        <polyline fill="none" stroke="#b3552e" stroke-width="5"
+          points="60,1650 160,1520 260,1430 360,1300 460,1180 560,980 660,760 760,470 860,180"/>
+        <g fill="#14324f" font-family="Georgia" font-size="26">
+          <text x="70" y="90">Cumulative improvement, weeks 1–52</text>
+          <text x="70" y="310">checkpoint: week 8</text>
+          <text x="70" y="710">checkpoint: week 24</text>
+          <text x="70" y="1310">checkpoint: week 44</text>
+          <text x="70" y="1690">baseline</text>
+        </g>
+        <g fill="#b3552e">
+          <circle cx="360" cy="1300" r="10"/><circle cx="660" cy="760" r="10"/><circle cx="860" cy="180" r="10"/>
+        </g>
+      </svg>
+      <figcaption>A single 1800-pixel-tall vector chart: the worst case for any cut-snapping algorithm, because no horizontal line through it is free of content.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="claims">
+  <div class="wrap">
+    <h2>5. Callouts and short prose</h2>
+    <div class="callout" id="callout-1">
+      <p><strong>Compliance note.</strong> Statements on this fixture are synthetic test data, not health claims. The layout mimics the real thing; the numbers are invented.</p>
+    </div>
+    <p>Short section, deliberately: it creates several natural gaps in a row, giving the snapping algorithm easy targets right after the hardest region on the page.</p>
+    <div class="callout" id="callout-2">
+      <p><strong>Design note.</strong> Two callouts separated by one paragraph produce three clean gaps within roughly four hundred vertical pixels.</p>
+    </div>
+  </div>
+</section>
+
+<section id="gallery">
+  <div class="wrap">
+    <h2>6. Image grid</h2>
+    <div class="imggrid">
+      <svg viewBox="0 0 300 200"><rect width="300" height="200" fill="#14324f"/><circle cx="150" cy="100" r="60" fill="#b3552e"/></svg>
+      <svg viewBox="0 0 300 200"><rect width="300" height="200" fill="#b3552e"/><rect x="75" y="50" width="150" height="100" fill="#f4efe6"/></svg>
+      <svg viewBox="0 0 300 200"><rect width="300" height="200" fill="#6b8f71"/><polygon points="150,30 270,170 30,170" fill="#f4efe6"/></svg>
+      <svg viewBox="0 0 300 200"><rect width="300" height="200" fill="#8f6b71"/><circle cx="100" cy="100" r="40" fill="#f4efe6"/><circle cx="200" cy="100" r="40" fill="#14324f"/></svg>
+      <svg viewBox="0 0 300 200"><rect width="300" height="200" fill="#716b8f"/><rect x="40" y="40" width="80" height="120" fill="#f4efe6"/><rect x="180" y="40" width="80" height="120" fill="#b3552e"/></svg>
+      <svg viewBox="0 0 300 200"><rect width="300" height="200" fill="#8f846b"/><polygon points="30,170 150,30 270,170" fill="#14324f"/></svg>
+    </div>
+  </div>
+</section>
+
+<section id="outro">
+  <div class="wrap">
+    <h2>7. Closing prose</h2>
+    <p>The final section restores ordinary paragraph flow so that the last band is partially filled, exercising the short-remainder path in the band math.</p>
+    <p>End of fixture.</p>
+  </div>
+</section>
+
+<footer id="footer">
+  <div class="wrap">
+    <p>Tiling Lab fixture — deterministic by construction. No external assets, no animation, no timestamps.</p>
+  </div>
+</footer>
+
+</body>
+</html>

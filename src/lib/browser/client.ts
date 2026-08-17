@@ -699,6 +699,7 @@ export class Browser {
       tag: string;
       attrs: string;
       text?: string;
+      visual?: string;
       anchor?: { selector: string; path: string };
     }>;
     stylesheets: Array<{ key: string; kind: "external" | "inline"; digest: string }>;
@@ -745,6 +746,7 @@ export class Browser {
         tag: string;
         attrs: string;
         text?: string;
+        visual?: string;
         anchor?: { selector: string; path: string };
       }> = [];
       let truncated = false;
@@ -766,9 +768,17 @@ export class Browser {
           .join("\x1f");
         const isLeaf = LEAF.has(el.tagName.toUpperCase());
         let text: string | undefined;
+        let visual: string | undefined;
         if (isLeaf) {
-          const inner = el.innerHTML;
-          if (inner) text = fnv(inner);
+          if (el instanceof HTMLCanvasElement) {
+            try {
+              visual = fnv(el.toDataURL("image/png"));
+            } catch {
+              visual = "unavailable";
+            }
+          } else {
+            visual = fnv(el.innerHTML);
+          }
         } else {
           let direct = "";
           for (const child of Array.from(el.childNodes)) {
@@ -782,6 +792,7 @@ export class Browser {
           tag,
           attrs,
           ...(text !== undefined ? { text } : {}),
+          ...(visual !== undefined ? { visual } : {}),
           ...(anchor ? { anchor } : {}),
         });
         if (isLeaf) return;

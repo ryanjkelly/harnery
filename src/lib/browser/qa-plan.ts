@@ -45,6 +45,11 @@ export interface QaNodeSignature {
   /** Digest of the element's direct text-node content (whitespace-normalized),
    * absent when the element has no direct text. */
   text?: string;
+  /** Digest of opaque rendered content whose pixels can change without a DOM
+   * structure or attribute change (for example SVG descendants or a canvas
+   * bitmap). `unavailable` widens to unknown because text-only cannot be
+   * proven without this evidence. */
+  visual?: string;
   /** Nearest strict-ancestor stable anchor (unique `#id` or
    * `[data-qa-scope="…"]`), with the anchor element's own path so nested
    * anchors can be deduped to the outermost root. Absent for nodes with no
@@ -184,13 +189,29 @@ export function classifySignatures(
 
   const baseNodes = new Map(baseline.nodes.map((n) => [n.path, n]));
   const curNodes = new Map(current.nodes.map((n) => [n.path, n]));
+  const unavailableVisual = [...baseline.nodes, ...current.nodes].find(
+    (node) => node.visual === UNAVAILABLE,
+  );
+  if (unavailableVisual) {
+    return {
+      ...none,
+      change_class: "unknown",
+      reasons: [
+        `visual digest unavailable at ${unavailableVisual.path} — text-only cannot be proven`,
+      ],
+    };
+  }
   const textChanged: string[] = [];
   const structuralChanged = new Map<string, QaNodeSignature>();
   for (const [path, node] of curNodes) {
     const prior = baseNodes.get(path);
     if (!prior) {
       structuralChanged.set(path, node); // added
-    } else if (prior.tag !== node.tag || prior.attrs !== node.attrs) {
+    } else if (
+      prior.tag !== node.tag ||
+      prior.attrs !== node.attrs ||
+      (prior.visual ?? "") !== (node.visual ?? "")
+    ) {
       structuralChanged.set(path, node);
     } else if ((prior.text ?? "") !== (node.text ?? "")) {
       textChanged.push(path);
@@ -320,6 +341,8 @@ export interface QaManifest {
   contexts: QaContext[];
   checks: {
     deterministic: string[];
+    /** Assertions that prove named interaction states behaved correctly. */
+    interaction: string[];
     visual: "none" | "scoped" | "full-page";
   };
   concurrency: { headless: number; metered: number };
@@ -351,6 +374,8 @@ export interface ManifestOptions {
   concurrency?: { headless: number; metered: number };
   reuse?: { mode: "none" | "exact-digest" | "band-diff"; cache: boolean };
   deterministicChecks?: string[];
+  /** Value/behavior assertions paired with explicit interaction states. */
+  outcomeAssertions?: string[];
   /** When false (default), an `unknown` classification widens to full
    * large-structural coverage. When true, the manifest instead marks itself
    * incomplete with zero contexts — the caller wants a hard stop. */
@@ -382,6 +407,17 @@ export function buildQaManifest(
     changeClass = "local-visual";
     reasons.push("explicit scope selectors supplied — overriding unknown classification");
   }
+  if (
+    opts.explicitScopes?.length &&
+    changeClass === "large-structural" &&
+    classification.stylesheets_changed.length > 0 &&
+    classification.structural_changed_paths.length === 0
+  ) {
+    changeClass = "local-visual";
+    reasons.push(
+      "explicit scope selectors supplied for a stylesheet-only change — host proved the component boundary",
+    );
+  }
   if (states.length > 0 && (changeClass === "text-data-only" || changeClass === "local-visual")) {
     changeClass = "interaction-state";
     reasons.push(`explicit interaction states requested: ${states.join(", ")}`);
@@ -394,6 +430,17 @@ export function buildQaManifest(
     } else {
       reasons.push("unknown class widened to large-structural coverage");
     }
+  }
+  if (
+    (changeClass === "local-visual" || changeClass === "interaction-state") &&
+    (scopes.length === 0 || scopes.some((scope) => scope.matches < 1))
+  ) {
+    const missing = scopes.find((scope) => scope.matches < 1)?.selector;
+    incomplete = {
+      reason: missing
+        ? `scope selector matched no elements: ${missing}`
+        : `${changeClass} requires at least one stable scope selector`,
+    };
   }
 
   const matrix: QaContext[] = viewports.flatMap((viewport) =>
@@ -426,6 +473,7 @@ export function buildQaManifest(
       visual = "full-page";
       break;
   }
+  if (incomplete) contexts = [];
 
   const tilesPerContext =
     visual === "none" ? 0 : visual === "scoped" ? Math.max(1, scopes.length) : fullPageTiles;
@@ -442,6 +490,7 @@ export function buildQaManifest(
     contexts,
     checks: {
       deterministic: opts.deterministicChecks ?? DEFAULT_DETERMINISTIC,
+      interaction: opts.outcomeAssertions ?? [],
       visual,
     },
     concurrency: opts.concurrency ?? { headless: 4, metered: 2 },

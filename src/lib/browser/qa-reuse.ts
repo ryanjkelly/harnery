@@ -204,6 +204,9 @@ export function planCritiqueReuse(args: {
 }): CritiqueReusePlan {
   const threshold = args.mismatchThreshold ?? DEFAULT_REUSE_MISMATCH_RATIO;
   const { baselineCritique, tiles } = args;
+  if (baselineCritique.outcome !== "pass") {
+    return wholeRunMiss(tiles, threshold, "baseline critique did not pass");
+  }
   if (baselineCritique.contract_version !== QA_CRITIQUE_CONTRACT_VERSION) {
     return wholeRunMiss(
       tiles,
@@ -234,6 +237,28 @@ export function planCritiqueReuse(args: {
   for (const tile of tiles) {
     const top = tile.scrollY;
     const bottom = tile.scrollY + tile.height;
+    const left = tile.x ?? 0;
+    const right = left + tile.width;
+    const coverage = baselineCritique.tiles
+      .filter((prior) => prior.x <= left && prior.x + prior.width >= right)
+      .map((prior) => ({ top: prior.scrollY, bottom: prior.scrollY + prior.height }))
+      .sort((a, b) => a.top - b.top);
+    let coveredTo = top;
+    for (const region of coverage) {
+      if (region.bottom <= coveredTo || region.top > coveredTo) continue;
+      coveredTo = Math.max(coveredTo, region.bottom);
+      if (coveredTo >= bottom) break;
+    }
+    if (coveredTo < bottom) {
+      decisions.push({
+        index: tile.index,
+        label: tile.label,
+        reuse: false,
+        reason: "baseline critique did not cover this entire region",
+      });
+      review.push(tile);
+      continue;
+    }
     const overlapsFinding = dirtyRegions.some((r) => r.top < bottom && r.bottom > top);
     if (overlapsFinding) {
       decisions.push({

@@ -19,7 +19,9 @@ const browserFiles = new Set([
   "tests/e2e/browse-content-checks.test.ts",
   "tests/e2e/browse-critique.test.ts",
   "tests/e2e/browse-layout-lint.test.ts",
+  "tests/e2e/browse-qa-plan.test.ts",
   "tests/e2e/browse-session.test.ts",
+  "tests/e2e/browse-tiling-lab.test.ts",
 ]);
 
 // These files either own a long-lived fixture process or repeatedly resize and

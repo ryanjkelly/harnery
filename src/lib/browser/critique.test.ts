@@ -42,6 +42,36 @@ describe("runCritique concurrency", () => {
     expect(res.findings.map((f) => f.tile)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
+  test("result artifacts are identical across opposite completion orders", async () => {
+    const run = async (reverse: boolean) => {
+      const provider: CritiqueProvider = async ({ tile }) => {
+        const order = reverse ? tile.index + 1 : TILES.length - tile.index;
+        await new Promise((resolve) => setTimeout(resolve, order * 3));
+        return [
+          { tile: tile.index, severity: "low", category: "fixture", description: tile.label },
+        ];
+      };
+      provider.concurrency = TILES.length;
+      return await runCritique({ url: "u", rubric: "r", tiles: TILES, provider });
+    };
+    expect(await run(false)).toEqual(await run(true));
+  });
+
+  test("a metered cap of two is honored by the real worker pool", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const provider: CritiqueProvider = async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight--;
+      return [];
+    };
+    provider.concurrency = 2;
+    await runCritique({ url: "u", rubric: "r", tiles: TILES, provider });
+    expect(peak).toBe(2);
+  });
+
   test("one failing tile becomes a high finding without sinking the run", async () => {
     const provider: CritiqueProvider = async ({ tile }) => {
       if (tile.index === 2) throw new Error("boom");

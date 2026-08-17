@@ -68,9 +68,21 @@ describe("qaTileCacheKey", () => {
     expect(qaTileCacheKey(parts)).toMatch(/^qa1-[0-9a-f]{64}$/);
   });
   test("any field change is a different key", () => {
-    expect(qaTileCacheKey({ ...parts, model: "m2" })).not.toBe(qaTileCacheKey(parts));
-    expect(qaTileCacheKey({ ...parts, theme: "dark" })).not.toBe(qaTileCacheKey(parts));
-    expect(qaTileCacheKey({ ...parts, tilePngSha256: "bb" })).not.toBe(qaTileCacheKey(parts));
+    const variants = [
+      { provider: "p2" },
+      { model: "m2" },
+      { viewport: "mobile" },
+      { deviceScaleFactor: 2 },
+      { theme: "dark" },
+      { state: "open" },
+      { tileLabel: "#chart" },
+      { browserVersion: "chromium-2" },
+      { rubricDigest: "r2" },
+      { tilePngSha256: "bb" },
+    ];
+    for (const variant of variants) {
+      expect(qaTileCacheKey({ ...parts, ...variant })).not.toBe(qaTileCacheKey(parts));
+    }
   });
 });
 
@@ -135,8 +147,8 @@ describe("planCritiqueReuse", () => {
     const plan = planCritiqueReuse({
       baselineScreenshot: baseline,
       baselineCritique: persisted({
-        outcome: "fail",
-        findings: [{ tile: 0, severity: "high", category: "x", description: "d" }],
+        outcome: "pass",
+        findings: [{ tile: 0, severity: "low", category: "x", description: "d" }],
       }),
       currentScreenshot: png(40, 100),
       tiles,
@@ -145,6 +157,55 @@ describe("planCritiqueReuse", () => {
     expect(plan.decisions[0].reuse).toBe(false);
     expect(plan.decisions[0].reason).toContain("findings");
     expect(plan.tiles_reused).toBe(1); // tile 1 still reuses
+  });
+
+  test("a failed baseline without findings is a whole-run miss", () => {
+    const plan = planCritiqueReuse({
+      baselineScreenshot: baseline,
+      baselineCritique: persisted({ outcome: "fail" }),
+      currentScreenshot: png(40, 100),
+      tiles,
+      rubric: "rubric",
+    });
+    expect(plan.tiles_reused).toBe(0);
+    expect(plan.invalidation).toContain("did not pass");
+  });
+
+  test("partial baseline tile coverage never reuses the uncovered region", () => {
+    const plan = planCritiqueReuse({
+      baselineScreenshot: baseline,
+      baselineCritique: persisted({ tiles: persisted().tiles.slice(0, 1) }),
+      currentScreenshot: png(40, 100),
+      tiles,
+      rubric: "rubric",
+    });
+    expect(plan.decisions[0].reuse).toBe(true);
+    expect(plan.decisions[1].reuse).toBe(false);
+    expect(plan.decisions[1].reason).toContain("did not cover");
+  });
+
+  test("changing one column does not invalidate an unrelated component", () => {
+    const baselineColumns = png(40, 50);
+    const current = png(40, 50, (x) => (x < 20 ? 0 : 255));
+    const componentTiles = [
+      { ...tile(0, 0, 50), width: 20 },
+      { ...tile(1, 0, 50), x: 20, width: 20 },
+    ];
+    const critique = persisted({
+      tiles: [
+        { index: 0, label: "left", x: 0, scrollY: 0, width: 20, height: 50 },
+        { index: 1, label: "right", x: 20, scrollY: 0, width: 20, height: 50 },
+      ],
+    });
+    const plan = planCritiqueReuse({
+      baselineScreenshot: baselineColumns,
+      baselineCritique: critique,
+      currentScreenshot: current,
+      tiles: componentTiles,
+      rubric: "rubric",
+    });
+    expect(plan.review.map((candidate) => candidate.index)).toEqual([0]);
+    expect(plan.decisions[1].reuse).toBe(true);
   });
 
   test("a changed rubric is a whole-run miss", () => {
@@ -193,5 +254,19 @@ describe("planCritiqueReuse", () => {
     });
     expect(plan.decisions[1].reuse).toBe(false);
     expect(plan.decisions[1].reason).toContain("not comparable");
+  });
+
+  test("reuse metadata contains decisions but not rubric text or image bytes", () => {
+    const secretRubric = "review customer token SECRET-123";
+    const plan = planCritiqueReuse({
+      baselineScreenshot: baseline,
+      baselineCritique: persisted({ rubric_digest: rubricDigest(secretRubric) }),
+      currentScreenshot: baseline,
+      tiles,
+      rubric: secretRubric,
+    });
+    const serialized = JSON.stringify(plan);
+    expect(serialized).not.toContain("SECRET-123");
+    expect(serialized).not.toContain(baseline.toString("base64").slice(0, 24));
   });
 });

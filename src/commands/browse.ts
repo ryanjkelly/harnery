@@ -2124,6 +2124,7 @@ async function runQaPlanning(
       baselineSource: baseline.source,
       ...(explicitScopes.length > 0 ? { explicitScopes } : {}),
       ...(opts.qaStates?.length ? { states: opts.qaStates } : {}),
+      ...(opts.assert?.length ? { outcomeAssertions: opts.assert } : {}),
       estimatedFullPageTiles,
     });
   }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { QaContext, QaSignature } from "./qa-plan.ts";
@@ -80,6 +80,24 @@ describe("save/load", () => {
     const saved = saveQaSnapshot("t", CTX, { signature: sig() }, { root });
     writeFileSync(resolve(saved.path, "signature.json"), "{not json");
     expect(loadQaSnapshot("t", CTX, { root })).toBeNull();
+  });
+
+  test("a corrupt critique degrades to a reuse miss without losing the baseline", () => {
+    const root = tmpRoot();
+    const saved = saveQaSnapshot("t", CTX, { signature: sig() }, { root });
+    writeFileSync(resolve(saved.path, "critique.json"), "{not json");
+    const loaded = loadQaSnapshot("t", CTX, { root });
+    expect(loaded?.signature).toEqual(sig());
+    expect(loaded?.critique).toBeUndefined();
+  });
+
+  test("an interrupted staging directory is ignored by readers and listings", () => {
+    const root = tmpRoot();
+    saveQaSnapshot("t", CTX, { signature: sig("complete") }, { root });
+    mkdirSync(resolve(root, "interrupted.tmp-999"), { recursive: true });
+    writeFileSync(resolve(root, "interrupted.tmp-999", "signature.json"), "{");
+    expect(loadQaSnapshot("t", CTX, { root })?.signature.capturedAt).toBe("complete");
+    expect(listQaSnapshotTargets({ root })).not.toContain("interrupted.tmp-999");
   });
 
   test("missing snapshot is null and listing shows saved targets", () => {
