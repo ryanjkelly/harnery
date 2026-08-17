@@ -214,3 +214,25 @@ region whose config entry is gone.
 
 `spliceRegion` stays internal. It gets exported if a second, genuinely
 independent consumer needs it, not before.
+
+## Addendum: cross-adapter skills and explicit session end (2026-08-17)
+
+The v1 limitation above is retired. Cursor and Codex both discover project
+skills under `.agents/skills/`, while Claude Code uses `.claude/skills/`.
+`harn init` now writes the same generated skill set to the selected adapter's
+native root, and `init --check` plus `deinit` use that same path. This keeps
+drift and ownership behavior consistent instead of leaving Cursor and Codex
+with an instructions-block summary of procedures they could not load on demand.
+
+The installed set is now:
+
+- `harn-decide`: decision docket capture, precedent, claim, and resolution;
+- `harn-council`: guarded steward and council-member workflows;
+- `harn-end`: authoritative V2 session finalization after work is complete.
+
+The literal `harn-` namespace remains mandatory. It identifies package-owned
+skills, avoids collisions with a host's own generic names, and does not change
+when an embedding CLI uses a different binary name. Harnery does not install
+unprefixed aliases. This is a clean pre-1.0 cutover: a host-specific unowned
+skill such as `end` remains the host's file to remove or rename, while every
+Harnery-owned generated skill stays on the existing marker-based lifecycle.

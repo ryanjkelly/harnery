@@ -25,7 +25,7 @@ writer to emit at most one `session.ended` with `authority: "approved"`.
 
 The approved reason identifies the source:
 
-- `approved_explicit_end` for `harn agents end` and the `/end` skill;
+- `approved_explicit_end` for `harn agents end` and the `harn-end` skill;
 - `approved_verified_archive` for a durable adapter archive observation after
   its cancellation grace period; and
 - `policy_*` for idle timeout, parent or run completion, delegated-agent
@@ -101,7 +101,7 @@ from vanished.
 terminal races and make deduplication a reader concern. One leased finalizer
 keeps exactly-once authority at the write boundary.
 
-**Disable the open-turn guard for `/end`.** The command itself runs inside a
+**Disable the open-turn guard for `harn-end`.** The command itself runs inside a
 tool span and turn, but bypassing the guard would let the terminal row precede
 real completion. A durable deferred request preserves the ordering invariant.
 

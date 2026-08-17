@@ -10,4 +10,4 @@ recovery paths without deleting heartbeat projections or inventing native
 telemetry. Explicit end requests made from inside a live adapter turn are now
 durably deferred until that exact turn and its existing tool spans close; new
 work cancels the request. `agents status --end-turn --end-session` provides one
-safe final command for the `/end` workflow.
+safe final command for the `harn-end` workflow.

@@ -109,7 +109,7 @@ function adapterCandidates(root: string, adapter: Adapter): Candidate[] {
     addFile(join(root, ".cursor", "hooks.json"), "runtime_config");
   } else {
     addFile(join(root, "AGENTS.md"), "always_loaded");
-    addTree(join(root, ".harnery", "skills"), "just_in_time");
+    addTree(join(root, ".agents", "skills"), "just_in_time");
     addFile(join(root, ".codex", "hooks.json"), "runtime_config");
   }
 

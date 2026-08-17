@@ -273,7 +273,7 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Shipped harnery skills this repo suppresses (e.g. because it maintains richer host-specific versions)."
+          "description": "Shipped Harnery skills this repo suppresses. Installed skill IDs are harn-decide, harn-council, and harn-end."
         }
       }
     },

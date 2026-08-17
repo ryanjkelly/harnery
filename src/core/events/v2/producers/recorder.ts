@@ -321,7 +321,7 @@ export function recordHookSignalV2(input: RecordHookSignalV2Input): RecordHookSi
 /**
  * End one exact live generation under the same private-state lease used by its
  * native hook producer. This is the only approved-authority terminal writer:
- * archive reconciliation, explicit `/end`, and policy cascades all converge
+ * archive reconciliation, explicit `harn-end`, and policy cascades all converge
  * here so they cannot race each other or append activity after termination.
  */
 export function recordApprovedSessionEndV2(

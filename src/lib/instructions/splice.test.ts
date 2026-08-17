@@ -119,15 +119,14 @@ describe("checkRegion", () => {
 describe("owned skill files", () => {
   const built = buildOwnedSkill({
     name: "harn-decide",
-    description: "desc",
-    argumentHint: "[x]",
+    description: "desc: yaml-safe",
     binName: "acme",
     body: "skill body line 1\nline 2",
   });
 
   test("carries frontmatter, ownership marker, and body", () => {
     expect(built.startsWith("---\nname: harn-decide\n")).toBe(true);
-    expect(built).toContain('argument-hint: "[x]"');
+    expect(built).toContain('description: "desc: yaml-safe"');
     expect(built).toContain("harnery:generated harn-decide v=");
     expect(built).toContain("skill body line 1");
   });

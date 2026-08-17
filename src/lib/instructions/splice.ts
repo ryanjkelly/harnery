@@ -150,15 +150,13 @@ export function isOwnedFile(content: string): boolean {
 export function buildOwnedSkill(opts: {
   name: string;
   description: string;
-  argumentHint?: string;
   binName: string;
   body: string;
 }): string {
   const fm = [
     "---",
     `name: ${opts.name}`,
-    `description: ${opts.description}`,
-    ...(opts.argumentHint ? [`argument-hint: ${JSON.stringify(opts.argumentHint)}`] : []),
+    `description: ${JSON.stringify(opts.description)}`,
     "---",
   ].join("\n");
   const body = opts.body.trim();
