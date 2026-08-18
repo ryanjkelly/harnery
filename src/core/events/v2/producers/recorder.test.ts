@@ -195,6 +195,51 @@ describe("event ledger V2 persistent hook recorder", () => {
     });
   });
 
+  test("omits a concurrently reordered event clock without losing raw span timing", () => {
+    const root = candidateRoot();
+    const nativeSession = "reordered-clock-session";
+    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV2(
+      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession })),
+    );
+    recordHookSignalV2({
+      ...baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "captured-first",
+          tool_name: "Read",
+        }),
+      ),
+      monotonic_ns: "200",
+    });
+    recordHookSignalV2({
+      ...baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          tool_use_id: "captured-earlier-but-committed-later",
+          tool_name: "Grep",
+        }),
+      ),
+      monotonic_ns: "100",
+    });
+
+    const ledger = readActiveLedgerV2(root);
+    const tools = ledger.events
+      .map(({ event }) => event)
+      .filter((event) => event.event_type === "tool.requested");
+    expect(ledger.complete).toBeTrue();
+    expect(tools.map((event) => event.time.monotonic_ns)).toEqual(["200", undefined]);
+    expect(
+      readHookProducerStateV2(root, "claude-code", nativeSession)?.spans.map(
+        (span) => span.started_monotonic_ns,
+      ),
+    ).toEqual(["200", "100"]);
+  });
+
   test("replays the exact pending event after a producer crash", () => {
     const root = candidateRoot();
     const input = baseInput(root, "session-start", parsed({ session_id: "retry-session" }));

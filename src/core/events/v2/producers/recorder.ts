@@ -122,6 +122,7 @@ export interface HookProducerStateV2 {
   current_turn_id?: `tid_${string}`;
   tool_call_count: number;
   last_event_id?: `evt_${string}`;
+  last_monotonic_ns?: string;
   started_event_id?: `evt_${string}`;
   terminal: boolean;
   spans: SpanStateV2[];
@@ -678,7 +679,7 @@ function processHookSignalLocked(
           turn_id: state.current_turn_id,
           span_id: span.span_id,
           caused_by: state.last_event_id ? [state.last_event_id] : [],
-          monotonic_ns: input.monotonic_ns,
+          monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
           clock_id: state.clock_id,
         });
         if (!derivedRequest) return unpairableTool(input, sessionHash, "no_open_span");
@@ -741,7 +742,7 @@ function processHookSignalLocked(
       turn_id: state.current_turn_id,
       span_id: span?.span_id,
       caused_by: state.last_event_id ? [state.last_event_id] : [],
-      monotonic_ns: input.monotonic_ns,
+      monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
       clock_id: state.clock_id,
       duration_ms: durationMilliseconds(span?.started_monotonic_ns, input.monotonic_ns),
       tool_call_count: state.tool_call_count,
@@ -875,7 +876,7 @@ function buildDerivedToolCompleted(
       },
     },
     observed_at: observedAt,
-    monotonic_ns: process.hrtime.bigint().toString(),
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
     payload: {
       tool: { namespace: input.adapter, name: span.tool_name ?? "unknown_tool" },
@@ -929,7 +930,7 @@ function buildMidFlightSessionStart(
     capability_profile: state.capability_profile,
     fingerprintContext,
     caused_by: state.last_event_id ? [state.last_event_id] : [],
-    monotonic_ns: input.monotonic_ns,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
   });
   if (!event) throw new Error("mid-flight session start could not be normalized");
@@ -1350,6 +1351,7 @@ function applyCommittedEvent(state: HookProducerStateV2, event: EventV2): void {
   // ride the state's own producer chain advance it. Finalizer-authored events
   // (fresh boot, sequence 1) must not create gaps in the hook chain.
   if (event.producer.boot_id === state.boot_id) state.next_sequence += 1;
+  if (event.time.monotonic_ns) state.last_monotonic_ns = event.time.monotonic_ns;
   state.last_event_id = event.event_id as `evt_${string}`;
   if (event.event_type === "session.started") {
     state.started_event_id = event.event_id as `evt_${string}`;
@@ -1509,7 +1511,7 @@ function closeResolvedWaits(
           subject_instance_id: state.instance_id,
         },
       },
-      monotonic_ns: input.monotonic_ns,
+      monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
       clock_id: state.clock_id,
       payload: {
         wait_id: wait.wait_id,
@@ -1643,6 +1645,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     "generation_id",
     "instance_id",
     "last_event_id",
+    "last_monotonic_ns",
     "next_sequence",
     "pending",
     "privacy_epoch_id",
@@ -1723,6 +1726,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     state.turn_ordinal < 0 ||
     (state.current_turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(state.current_turn_id)) ||
     (state.last_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id)) ||
+    (state.last_monotonic_ns !== undefined && !/^\d+$/.test(state.last_monotonic_ns)) ||
     (state.started_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.started_event_id)) ||
     (state.pending?.source_id !== undefined &&
       !/^hid_[a-f0-9]{64}$/.test(state.pending.source_id)) ||
@@ -1751,6 +1755,21 @@ function recordTurnHarnessTiming(state: HookProducerStateV2, input: RecordHookSi
       duration >= state.turn_harness.slowest_hook_ms ? hook : state.turn_harness.slowest_hook,
     slowest_hook_ms: Math.max(duration, state.turn_harness.slowest_hook_ms),
   };
+}
+
+/**
+ * Concurrent hook processes can acquire the session lease in a different
+ * order from their clock capture. Preserve raw readings in span state for
+ * pairing, but omit an out-of-order reading from the producer event chain so
+ * a valid global clock is never asserted falsely.
+ */
+function orderedEventMonotonic(
+  state: HookProducerStateV2,
+  candidate: string | undefined,
+): string | undefined {
+  if (!candidate || !/^\d+$/.test(candidate)) return undefined;
+  if (!state.last_monotonic_ns) return candidate;
+  return BigInt(candidate) < BigInt(state.last_monotonic_ns) ? undefined : candidate;
 }
 
 function emptyTurnHarnessTiming(): TurnHarnessTimingV2 {
