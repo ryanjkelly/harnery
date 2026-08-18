@@ -63,6 +63,13 @@ describe("event ledger V3 contract", () => {
       expect.arrayContaining(["usage", "inference", "harness", "span"]),
     );
   });
+
+  test("makes delegation starts explicit child spans", () => {
+    const links = eventBranch("agent.started").properties.links as {
+      required?: string[];
+    };
+    expect(links.required).toEqual(expect.arrayContaining(["span_id", "parent_span_id"]));
+  });
 });
 
 function eventBranch(eventType: string): TObject {

@@ -85,7 +85,7 @@ function v2Payload(eventType: string): TObject {
 
 function eventV3(
   priorEventType: string,
-  options: { eventType?: string; payload?: TSchema } = {},
+  options: { eventType?: string; payload?: TSchema; links?: TSchema } = {},
 ): TObject {
   const prior = v2Branch(priorEventType);
   const eventType = options.eventType ?? priorEventType;
@@ -93,6 +93,7 @@ function eventV3(
     ...prior.properties,
     contract: ContractV3Schema,
     event_type: Type.Literal(eventType),
+    links: options.links ?? prior.properties.links,
     payload: options.payload ?? prior.properties.payload,
   });
 }
@@ -130,6 +131,19 @@ export const CommandCompletedV3Schema = eventV3("command.completed", {
 
 export const AgentCompletedV3Schema = eventV3("agent.completed", {
   payload: terminalPayloadV3("agent.completed"),
+});
+
+const AgentStartedLinksV3Schema = (() => {
+  const prior = v2Branch("agent.started").properties.links as TObject;
+  return StrictObject({
+    ...prior.properties,
+    span_id: SpanId,
+    parent_span_id: SpanId,
+  });
+})();
+
+export const AgentStartedV3Schema = eventV3("agent.started", {
+  links: AgentStartedLinksV3Schema,
 });
 
 export const WaitStartedV3Schema = eventV3("interaction.wait_started", {
@@ -176,12 +190,15 @@ const unchangedV3Schemas = v2Branches
     ({ properties }) =>
       !replacedV2Types.has((properties.event_type as unknown as { const: string }).const),
   )
-  .map(({ properties }) =>
-    StrictObject({
-      ...properties,
-      contract: ContractV3Schema,
-    }),
-  );
+  .map(({ properties }) => {
+    const eventType = (properties.event_type as unknown as { const: string }).const;
+    return eventType === "agent.started"
+      ? AgentStartedV3Schema
+      : StrictObject({
+          ...properties,
+          contract: ContractV3Schema,
+        });
+  });
 
 export const EventV3Schema = Type.Union(
   [

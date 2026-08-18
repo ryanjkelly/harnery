@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { type TProperties, Type } from "@sinclair/typebox";
+import { type TObject, type TProperties, type TSchema, Type } from "@sinclair/typebox";
 import { validateAdditiveSchemaAdvanceV3 } from "./advance.ts";
+import { EventV3Schema } from "./contract.ts";
 
 const strict = (properties: TProperties) =>
   Type.Object(properties, { additionalProperties: false });
@@ -52,4 +53,47 @@ describe("event ledger V3 additive schema advances", () => {
       issues: [],
     });
   });
+
+  test("accepts an optional field added inside the complete V3 event union", () => {
+    const next = structuredClone(EventV3Schema) as TSchema;
+    const payload = eventBranch(next, "health.capability_drift").properties.payload as TObject;
+    payload.properties.fixture_note = Type.String();
+
+    expect(validateAdditiveSchemaAdvanceV3(EventV3Schema, next)).toEqual({
+      eligible: true,
+      strict: true,
+      issues: [],
+    });
+  });
+
+  test("accepts a new complete event branch and rejects branch removal or rename", () => {
+    const added = structuredClone(EventV3Schema) as TSchema;
+    const addedBranches = (added as unknown as { anyOf: TObject[] }).anyOf;
+    const newBranch = structuredClone(eventBranch(added, "health.capability_drift"));
+    newBranch.properties.event_type = Type.Literal("health.fixture_signal");
+    addedBranches.push(newBranch);
+    expect(validateAdditiveSchemaAdvanceV3(EventV3Schema, added).eligible).toBe(true);
+
+    const removed = structuredClone(EventV3Schema) as TSchema;
+    const removedBranches = (removed as unknown as { anyOf: TObject[] }).anyOf;
+    removedBranches.splice(
+      removedBranches.findIndex(
+        ({ properties }) => properties.event_type.const === "health.capability_drift",
+      ),
+      1,
+    );
+    expect(validateAdditiveSchemaAdvanceV3(EventV3Schema, removed).eligible).toBe(false);
+
+    const renamed = structuredClone(EventV3Schema) as TSchema;
+    eventBranch(renamed, "health.capability_drift").properties.event_type =
+      Type.Literal("health.renamed");
+    expect(validateAdditiveSchemaAdvanceV3(EventV3Schema, renamed).eligible).toBe(false);
+  });
 });
+
+function eventBranch(schema: TSchema, eventType: string): TObject {
+  const branches = (schema as unknown as { anyOf: TObject[] }).anyOf;
+  const branch = branches.find(({ properties }) => properties.event_type.const === eventType);
+  if (!branch) throw new Error(`missing V3 event branch: ${eventType}`);
+  return branch;
+}

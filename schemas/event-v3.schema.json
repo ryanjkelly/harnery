@@ -10835,7 +10835,9 @@
           "additionalProperties": false,
           "type": "object",
           "required": [
-            "caused_by"
+            "caused_by",
+            "span_id",
+            "parent_span_id"
           ],
           "properties": {
             "caused_by": {
