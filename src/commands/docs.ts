@@ -166,7 +166,7 @@ export function registerDocsCommand(
     .command("index")
     .description("Regenerate index READMEs for docs/audits/ and docs/issues/ directories")
     .option("--dry-run", "Show what would change, don't write files")
-    .option("--repo <name>", "Limit to one submodule or '.' for parent")
+    .option("--repo <name>", "Limit to one package (in-tree or submodule) or '.' for parent")
     .action(async (opts: { dryRun?: boolean; repo?: string }) => {
       try {
         ensureContext(context);
