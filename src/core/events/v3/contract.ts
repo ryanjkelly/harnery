@@ -1,6 +1,8 @@
 import { type Static, type TObject, type TProperties, type TSchema, Type } from "@sinclair/typebox";
 import {
   EVENT_V2_CORE_EVENT_TYPES,
+  type EventOfTypeV2,
+  type EventTypeV2,
   EventV2Schema,
   ObservationV2Schema,
   OutcomeV2Schema,
@@ -227,5 +229,29 @@ export const EVENT_V3_CORE_EVENT_TYPES = [
 
 export type EventV3 = Static<typeof EventV3Schema>;
 export type EventTypeV3 = (typeof EVENT_V3_CORE_EVENT_TYPES)[number];
+type ContractV3 = Static<typeof ContractV3Schema>;
+type WithContractV3<T> = T extends object ? Omit<T, "contract"> & { contract: ContractV3 } : never;
+export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
+  ? Static<typeof SessionEndedV3Schema>
+  : T extends "turn.completed"
+    ? Static<typeof TurnCompletedV3Schema>
+    : T extends "tool.completed"
+      ? Static<typeof ToolCompletedV3Schema>
+      : T extends "command.completed"
+        ? Static<typeof CommandCompletedV3Schema>
+        : T extends "agent.started"
+          ? Static<typeof AgentStartedV3Schema>
+          : T extends "agent.completed"
+            ? Static<typeof AgentCompletedV3Schema>
+            : T extends "wait.started"
+              ? Static<typeof WaitStartedV3Schema>
+              : T extends "wait.ended"
+                ? Static<typeof WaitEndedV3Schema>
+                : T extends "health.capability_drift"
+                  ? Static<typeof HealthCapabilityDriftV3Schema>
+                  : T extends EventTypeV2
+                    ? WithContractV3<EventOfTypeV2<T>>
+                    : never;
+export type EventPayloadV3<T extends EventTypeV3> = EventOfTypeV3<T>["payload"];
 export type SpanSummaryV3 = Static<typeof SpanSummaryV3Schema>;
 export type WaitKindV3 = Static<typeof WaitKindV3Schema>;

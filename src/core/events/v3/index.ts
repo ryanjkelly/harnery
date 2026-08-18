@@ -2,6 +2,7 @@ export {
   type SchemaAdvanceEligibilityV3,
   validateAdditiveSchemaAdvanceV3,
 } from "./advance.ts";
+export { type BuildEventV3Input, buildEventV3 } from "./builder.ts";
 export {
   ADAPTER_CAPABILITY_PROFILES_V3,
   type AdapterCapabilityProfileV3,
@@ -16,6 +17,8 @@ export {
   EVENT_V3_CONTRACT_NAME,
   EVENT_V3_CORE_EVENT_TYPES,
   EVENT_V3_SCHEMA_ID,
+  type EventOfTypeV3,
+  type EventPayloadV3,
   type EventTypeV3,
   type EventV3,
   EventV3Schema,
@@ -43,6 +46,16 @@ export {
   type TurnEconomicsV3,
 } from "./economics.ts";
 export { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+export {
+  activationIdV3,
+  attestationIdV3,
+  clockIdV3,
+  delegationIdV3,
+  eventIdV3,
+  generationIdV3,
+  genesisIdV3,
+  spanIdV3,
+} from "./ids.ts";
 export {
   EVENT_V3_LATENCY_PROJECTION_VERSION,
   type LatencyMetricV3,
