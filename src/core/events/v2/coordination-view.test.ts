@@ -8,6 +8,7 @@ import {
 } from "./coordination-view.ts";
 import { FinalizationScopeV2Error, projectFinalizationScopeV2 } from "./finalization-view.ts";
 import { attestationIdV2, eventIdV2, generationIdV2 } from "./ids.ts";
+import { reduceSafetyProjectionV2 } from "./projection.ts";
 import type { ReadLedgerV2Result } from "./reader.ts";
 
 describe("event ledger V2 coordination view", () => {
@@ -192,6 +193,55 @@ describe("event ledger V2 coordination view", () => {
       "event_v2_finalization_scope:authority_unsafe",
     );
   });
+
+  test("keeps a live sibling current after a superseded twin ends", () => {
+    const survivor = createFixture();
+    survivor.append("session.started", startedPayload(survivor));
+
+    const twinGenerationId = generationIdV2();
+    const twinStartedId = eventIdV2();
+    const twinScope = {
+      ...survivor.scope,
+      session_id: `sid_${"c".repeat(64)}` as const,
+      generation_id: twinGenerationId,
+    };
+    survivor.append(
+      "session.started",
+      startedPayload(survivor, twinGenerationId, twinStartedId),
+      {},
+      {
+        scope: twinScope,
+        event_id: twinStartedId,
+      },
+    );
+    survivor.append(
+      "session.ended",
+      {
+        outcome: "interrupted" as const,
+        authority: "approved" as const,
+        reason: "policy_superseded",
+        completeness: { state: "not_applicable" as const },
+      },
+      {},
+      { scope: twinScope },
+    );
+
+    const read = survivor.read();
+    const projection = reduceSafetyProjectionV2(read);
+    expect(projection.authority_safe).toBe(true);
+    expect(projection.current_generation_by_instance[survivor.scope.instance_id]).toBe(
+      survivor.scope.generation_id,
+    );
+    expect(projection.generations[twinGenerationId]?.phase).toBe("terminal");
+    expect(projection.generations[survivor.scope.generation_id]?.phase).toBe("live");
+
+    const view = projectCoordinationViewV2(read);
+    expect(view.instances[survivor.scope.instance_id]?.generation_id).toBe(
+      survivor.scope.generation_id,
+    );
+    expect(view.instances[survivor.scope.instance_id]?.authority_eligible).toBe(true);
+    expect(view.terminal_generations[twinGenerationId]?.phase).toBe("terminal");
+  });
 });
 
 function createFixture() {
@@ -214,10 +264,18 @@ function createFixture() {
       eventType: T,
       payload: Extract<EventV2, { event_type: T }>["payload"],
       extraLinks: Record<string, string> = {},
+      options: {
+        scope?: typeof scope;
+        event_id?: `evt_${string}`;
+      } = {},
     ): Extract<EventV2, { event_type: T }> {
       sequence += 1;
       const event = buildEventV2(eventType, {
-        ...(eventType === "session.started" ? { event_id: startedEventId } : {}),
+        ...(eventType === "session.started"
+          ? { event_id: options.event_id ?? startedEventId }
+          : options.event_id
+            ? { event_id: options.event_id }
+            : {}),
         producer: {
           producer_id: "prd_projection",
           boot_id: "boot_fixture",
@@ -226,7 +284,7 @@ function createFixture() {
           build_id: "build_fixture",
           platform: "linux",
         },
-        scope,
+        scope: options.scope ?? scope,
         attestation_id: attestationId,
         links: { caused_by: [], ...extraLinks },
         provenance: {
@@ -259,11 +317,15 @@ function createFixture() {
   };
 }
 
-function startedPayload(fixture: ReturnType<typeof createFixture>) {
+function startedPayload(
+  fixture: ReturnType<typeof createFixture>,
+  generationId = fixture.scope.generation_id,
+  declaredByEventId = fixture.startedEventId,
+) {
   return {
     runtime_attestation: {
       attestation_id: fixture.attestationId,
-      generation_id: fixture.scope.generation_id,
+      generation_id: generationId,
       adapter: {
         state: "observed" as const,
         value: { id: "codex", version: "5.6" },
@@ -283,7 +345,7 @@ function startedPayload(fixture: ReturnType<typeof createFixture>) {
         confidence: "exact" as const,
       },
       capability_profile: `cap_${"c".repeat(64)}` as const,
-      declared_by_event_id: fixture.startedEventId,
+      declared_by_event_id: declaredByEventId,
     },
     resume: { state: "not_applicable" as const },
   };

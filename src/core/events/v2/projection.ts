@@ -275,6 +275,7 @@ function applyEvent(projection: SafetyProjectionV2, positioned: PositionedEventV
         reason: event.payload.reason,
       };
       state.waits = {};
+      retargetCurrentGeneration(projection, state.instance_id, generationId);
       return;
     case "session.resumed":
       state.provisional_termination = undefined;
@@ -573,6 +574,37 @@ function touch(state: GenerationSafetyStateV2, positioned: PositionedEventV2): v
   state.last_observed_at = positioned.event.time.observed_at;
   state.last_segment_ordinal = positioned.position.segment_ordinal;
   state.last_byte_offset = positioned.position.byte_offset;
+}
+
+/**
+ * A superseded twin (same instance, later generation, then session.ended)
+ * must not leave `current_generation_by_instance` pointing at the terminal
+ * row. The surviving live sibling stays the instance's current generation so
+ * whoami/set-task can still see it.
+ */
+function retargetCurrentGeneration(
+  projection: SafetyProjectionV2,
+  instanceId: string,
+  endedGenerationId: string,
+): void {
+  if (projection.current_generation_by_instance[instanceId] !== endedGenerationId) return;
+  const survivor = Object.values(projection.generations)
+    .filter(
+      (generation) =>
+        generation.instance_id === instanceId &&
+        generation.phase === "live" &&
+        generation.generation_id !== endedGenerationId,
+    )
+    .sort(
+      (left, right) =>
+        right.last_observed_at.localeCompare(left.last_observed_at) ||
+        right.generation_id.localeCompare(left.generation_id),
+    )[0];
+  if (survivor) {
+    projection.current_generation_by_instance[instanceId] = survivor.generation_id;
+    return;
+  }
+  delete projection.current_generation_by_instance[instanceId];
 }
 
 function addDiagnostic(
