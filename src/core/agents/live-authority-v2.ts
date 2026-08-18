@@ -21,7 +21,7 @@ import {
   type Heartbeat,
   readHeartbeat,
   releaseClaim,
-  setV2TaskState,
+  setTask,
   stampSessionStateEvent,
 } from "./state/heartbeat-writer.ts";
 import {
@@ -64,7 +64,7 @@ export function recordLiveTaskChangeV2(
     v2_task_state: cleared ? ("cleared" as const) : ("set" as const),
   };
   if (cleared && authorityStateDigest(before) === authorityStateDigest(desired)) {
-    if (!setV2TaskState(input.coordRoot, input.subject ?? input.owner, "cleared")) {
+    if (!setTask(input.coordRoot, input.subject ?? input.owner, input.task)) {
       throw new LiveCoordinationAuthorityV2Error("task_materialization_failed");
     }
     return { state: "unchanged" };
@@ -80,9 +80,10 @@ export function recordLiveTaskChangeV2(
     before,
     desired,
     () => {
-      if (
-        !setV2TaskState(input.coordRoot, input.subject ?? input.owner, cleared ? "cleared" : "set")
-      ) {
+      // The canonical event records only the privacy-safe set/cleared state.
+      // Task prose and its operator-facing suggested name live exclusively in
+      // this generation-bound disposable cache; they never enter the ledger.
+      if (!setTask(input.coordRoot, input.subject ?? input.owner, input.task)) {
         throw new LiveCoordinationAuthorityV2Error("task_materialization_failed");
       }
     },

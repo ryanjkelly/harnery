@@ -216,21 +216,6 @@ export function setTask(coordRoot: string, instanceId: string, task: string): He
   });
 }
 
-/** Update only the privacy-safe V2 task-state cache. Raw task prose belongs
- * only in the transient producer input used to compute the ledger HMAC. */
-export function setV2TaskState(
-  coordRoot: string,
-  instanceId: string,
-  state: "set" | "cleared",
-): Heartbeat | null {
-  return mutate(coordRoot, instanceId, (hb) => ({
-    ...hb,
-    task: undefined,
-    task_updated_at: nowIsoSeconds(),
-    v2_task_state: state,
-  }));
-}
-
 /**
  * Build the copy-pasteable session name from the coord identity + the agent's
  * description parts. Pure (no coord-state reads) so it's unit-testable; collapses

@@ -76,13 +76,15 @@ describe("live V2 coordination cutover", () => {
     expect(existsSync(join(root, ".harnery/events.ndjson"))).toBe(false);
     expect(readHeartbeat(root, "operator")).toMatchObject({
       schema_version: 2,
+      task: "Ship V2",
       task_state: "blocked",
       files_touched: ["src/live.ts"],
       v2_instance_id: "inst_operator",
       v2_task_state: "set",
+      suggested_session_name: "Agent unknown - Ship V2",
     });
-    expect(readHeartbeat(root, "operator")?.task).toBeUndefined();
     expect(readHeartbeat(root, "operator")?.task_state_reason).toBeUndefined();
+    expect(JSON.stringify(coordinationEvents)).not.toContain("Ship V2");
     expect(readCoordinationViewV2(root)).toMatchObject({
       source_complete: true,
       authority_safe: true,
@@ -137,9 +139,41 @@ describe("live V2 coordination cutover", () => {
     ).toBe("recorded");
     expect(readHeartbeat(root, "operator")).toMatchObject({
       files_touched: ["fresh-v2.ts"],
+      task: "fresh V2 task",
       v2_task_state: "set",
+      suggested_session_name: "Agent unknown - fresh V2 task",
     });
-    expect(JSON.stringify(readHeartbeat(root, "operator"))).not.toContain("fresh V2 task");
+    expect(JSON.stringify(readActiveLedgerV2(root).events)).not.toContain("fresh V2 task");
+  });
+
+  test("names a V2 session once while later task changes and clears remain disposable", () => {
+    const root = startedRoot();
+
+    expect(recordLiveTaskChangeV2(liveInput(root, { task: "First focus" })).state).toBe("recorded");
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      task: "First focus",
+      v2_task_state: "set",
+      suggested_session_name: "Agent unknown - First focus",
+    });
+
+    expect(recordLiveTaskChangeV2(liveInput(root, { task: "Second focus" })).state).toBe(
+      "recorded",
+    );
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      task: "Second focus",
+      v2_task_state: "set",
+      suggested_session_name: "Agent unknown - First focus",
+    });
+
+    expect(recordLiveTaskChangeV2(liveInput(root, { task: "" })).state).toBe("recorded");
+    expect(readHeartbeat(root, "operator")).toMatchObject({
+      v2_task_state: "cleared",
+      suggested_session_name: "Agent unknown - First focus",
+    });
+    expect(readHeartbeat(root, "operator")?.task).toBeUndefined();
+    const ledger = JSON.stringify(readActiveLedgerV2(root).events);
+    expect(ledger).not.toContain("First focus");
+    expect(ledger).not.toContain("Second focus");
   });
 
   test("bootstraps Codex authority from runtime attestation when no cache exists", () => {
