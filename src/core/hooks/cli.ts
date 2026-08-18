@@ -1505,6 +1505,7 @@ async function emitSessionStartSystemMessage(
   recoveryBriefing = "",
 ): Promise<boolean> {
   const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
+  const workflowChild = coordEnv("WORKFLOW_CHILD") === "1";
   let additionalContext = "";
   if (existsSync(agentCoordBin)) {
     // Sync-project so the heartbeat exists for downstream readers (peer table,
@@ -1533,32 +1534,37 @@ async function emitSessionStartSystemMessage(
       { encoding: "utf8", timeout: 2000 },
     );
 
-    // Render the systemMessage via agent-coord.
-    const agentName = (emittedData.name as string | undefined) ?? "";
-    const args = ["session-context", "--instance", instanceId, "--session", sessionId];
-    if (agentName) args.push("--name", agentName);
-    // The "You are agent-X." prefix in session-context renders unqualified by
-    // default (claude-code-style). For cursor/codex the bash dispatchers add
-    // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
-    if (adapter !== "claude-code") {
-      args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
+    // Workflow children retain lifecycle/event capture but do not receive
+    // operator-facing peer, council, or init-remediation context. Injecting
+    // that context can make a bounded child follow housekeeping instructions
+    // instead of its assigned prompt.
+    if (!workflowChild) {
+      const agentName = (emittedData.name as string | undefined) ?? "";
+      const args = ["session-context", "--instance", instanceId, "--session", sessionId];
+      if (agentName) args.push("--name", agentName);
+      // The "You are agent-X." prefix in session-context renders unqualified by
+      // default (claude-code-style). For cursor/codex the bash dispatchers add
+      // a "(Cursor)" / "(Codex)" suffix; pass it through as --platform-label.
+      if (adapter !== "claude-code") {
+        args.push("--platform-label", platform === "cursor" ? "Cursor" : "Codex");
+      }
+      const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
+      if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
     }
-    const result = spawnSync(agentCoordBin, args, { encoding: "utf8", timeout: 3000 });
-    if (result.status === 0 && result.stdout) additionalContext = result.stdout.trim();
   }
 
   // Effect (claude-code): merge the journal recovery cue into the session-start
   // context. Was a standalone additionalContext emission from the previous
   // journal-on-start adapter; now that agent-hook is the single SessionStart
   // entry, it folds in here.
-  if (adapter === "claude-code") {
+  if (adapter === "claude-code" && !workflowChild) {
     const cue = journalRecoveryCue(coordRoot);
     if (cue) additionalContext = [additionalContext, cue].filter(Boolean).join("\n\n");
   }
-  if (recoveryBriefing) {
+  if (recoveryBriefing && !workflowChild) {
     additionalContext = [additionalContext, recoveryBriefing].filter(Boolean).join("\n\n");
   }
-  if (adapter === "codex" && isWslUncPath(emittedData.cwd)) {
+  if (adapter === "codex" && !workflowChild && isWslUncPath(emittedData.cwd)) {
     const fileLinkContext = renderCodexWslFileLinkContext(coordRoot, emittedData.cwd);
     if (fileLinkContext) {
       additionalContext = [additionalContext, fileLinkContext].filter(Boolean).join("\n\n");

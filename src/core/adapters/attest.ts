@@ -1,9 +1,11 @@
 /**
  * The opt-in live probe that produces an attestation (ADR 0038).
  *
- * One bounded turn per adapter, through the same `spawn` the workflow engine
+ * One bounded probe per adapter, through the same `spawn` the workflow engine
  * uses, so what gets attested is the path production takes rather than a
- * parallel test rig.
+ * parallel test rig. The probe permits a small tool-iteration budget because
+ * repository instructions can require workflow children to register before
+ * replying; a one-iteration ceiling made a healthy Claude CLI look unreachable.
  */
 
 import type { SpawnResult } from "../workflow/types.ts";
@@ -24,6 +26,9 @@ import type { AdapterId, CapabilitySupport } from "./types.ts";
 export const ATTESTATION_PROMPT = "Reply with the single word: ok";
 
 export const DEFAULT_ATTESTATION_TIMEOUT_MS = 120_000;
+// Claude may consume three iterations on repository-required set-task,
+// identity recovery, and end-turn status before it can return the probe word.
+export const ATTESTATION_MAX_TURNS = 4;
 
 /** Vendor failures arrive as whole console transcripts, banner and prompt echo
  * included. Reports are bounded evidence, so the reason is collapsed to one
@@ -123,7 +128,7 @@ export async function runAdapterAttestation(
         : await adapter.spawn({
             prompt: ATTESTATION_PROMPT,
             timeoutMs,
-            maxTurns: 1,
+            maxTurns: ATTESTATION_MAX_TURNS,
             cwd,
             subscriptionOnly,
           });

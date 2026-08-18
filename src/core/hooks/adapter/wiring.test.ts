@@ -8,10 +8,11 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { ADAPTER_SPECS, type AdapterId, CLAUDE_CODE_EVENTS } from "./events.ts";
 import {
   diffWiring,
+  harneryPackageRoot,
   loadAdapterWiring,
   type SettingsFile,
   summarizeAdapterWiring,
@@ -21,13 +22,13 @@ const CLAUDE = ADAPTER_SPECS["claude-code"];
 const HOOK_BASE = "/repo/harnery/bin/agent-hook";
 
 /** Build a Claude Code settings object wiring exactly the given subcommands. */
-function settingsWiring(subcommands: string[]): SettingsFile {
+function settingsWiring(subcommands: string[], hookBase = HOOK_BASE): SettingsFile {
   const hooks: Record<string, { hooks: { type: string; command: string }[] }[]> = {};
   for (const sub of subcommands) {
     const event = CLAUDE_CODE_EVENTS.find((e) => e.subcommand === sub);
     if (!event) throw new Error(`no spec event for ${sub}`);
     hooks[event.settingsKey] = [
-      { hooks: [{ type: "command", command: `bash ${HOOK_BASE} ${sub} --adapter claude-code` }] },
+      { hooks: [{ type: "command", command: `bash ${hookBase} ${sub} --adapter claude-code` }] },
     ];
   }
   return { hooks };
@@ -114,12 +115,43 @@ describe("diffWiring", () => {
             ],
           },
         ],
-        SessionEnd: [{ hooks: [{ type: "command", command: "echo unsupported" }] }],
+        LegacyEvent: [{ hooks: [{ type: "command", command: "echo unsupported" }] }],
       },
     };
     const diff = diffWiring(settings, codex);
     expect(diff.invalidTopLevelKeys).toEqual(["_comment"]);
-    expect(diff.invalidEventKeys).toEqual(["SessionEnd"]);
+    expect(diff.invalidEventKeys).toEqual(["LegacyEvent"]);
+  });
+
+  test("reports duplicate, misplaced, and stale Harnery commands separately", () => {
+    const canonical = `bash ${HOOK_BASE} stop --adapter claude-code`;
+    const settings: SettingsFile = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: "command", command: canonical }] },
+          { hooks: [{ type: "command", command: "bash old/agent-hook stop --adapter cursor" }] },
+        ],
+        SessionStart: [
+          { hooks: [{ type: "command", command: `bash ${HOOK_BASE} stop --adapter claude-code` }] },
+        ],
+      },
+    };
+    const diff = diffWiring(settings, CLAUDE, {
+      agentHookPath: HOOK_BASE,
+      adapter: "claude-code",
+    });
+    expect(diff.duplicates.map((event) => event.settingsKey)).toEqual(["Stop"]);
+    expect(diff.misplaced.map((event) => event.settingsKey)).toEqual(["Stop"]);
+    expect(diff.stale.map((event) => event.settingsKey)).toEqual(["Stop"]);
+  });
+
+  test("recognizes a minimal command ending at the subcommand token", () => {
+    const settings: SettingsFile = {
+      hooks: { Stop: [{ hooks: [{ type: "command", command: `bash ${HOOK_BASE} stop` }] }] },
+    };
+    expect(diffWiring(settings, CLAUDE).present.map((event) => event.settingsKey)).toContain(
+      "Stop",
+    );
   });
 });
 
@@ -150,7 +182,17 @@ describe("loadAdapterWiring (fs-backed)", () => {
   test("opted-in + fully current → no drift", () => {
     const root = setup();
     try {
-      writeClaudeSettings(root, settingsWiring(CLAUDE_CODE_EVENTS.map((e) => e.subcommand)));
+      const packageRoot = harneryPackageRoot();
+      if (!packageRoot) throw new Error("harnery package root unavailable");
+      const hook = relative(root, join(packageRoot, "bin", "agent-hook"));
+      const anchored = `"\${CLAUDE_PROJECT_DIR:-.}"/${hook}`;
+      writeClaudeSettings(
+        root,
+        settingsWiring(
+          CLAUDE_CODE_EVENTS.map((e) => e.subcommand),
+          anchored,
+        ),
+      );
       expect(loadAdapterWiring(root)).toHaveLength(0);
     } finally {
       teardown();

@@ -61,7 +61,7 @@ Prints the latest structured capsule. Capsule files live under
 `.harnery/context/<session-hash>/capsules/`, are written atomically with mode
 `0600`, and are capped at 32 KiB.
 
-Claude Code currently checkpoints on `PreCompact` and recovers on compact
-`SessionStart`. Codex checkpoints on `PreCompact`, observes `PostCompact`, and
-injects recovery at the next prompt boundary. Cursor compaction hooks remain
-disabled until a native lifecycle is verified.
+Claude Code checkpoints on `PreCompact` and recovers on compact `SessionStart`.
+Codex checkpoints on `PreCompact`, observes `PostCompact`, and injects recovery
+at the next prompt boundary. Cursor checkpoints on its native `preCompact`
+event; Cursor does not currently expose a matching post-compaction event.

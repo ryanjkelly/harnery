@@ -59,7 +59,7 @@ harn init --dry-run  # preview every change without writing
 
 ## Idempotent + non-destructive
 
-Safe to re-run. `init` merges into an existing settings file: it preserves every hook you already have, skips any agent-hook entry that's already wired (rewriting its command in place when a Harnery upgrade changed the canonical form), and removes Harnery-owned entries retired from that adapter's native lifecycle. If the settings file exists but isn't valid JSON, `init` refuses rather than overwrite.
+Safe to re-run. `init` merges into an existing settings file. It preserves non-Harnery hooks, rewrites stale Harnery commands, moves entries filed under the wrong event, collapses duplicates, and removes entries retired from the adapter's native lifecycle. Mixed Claude Code and Codex groups keep their unrelated command handlers. If the settings file isn't valid JSON, `init` refuses to overwrite it.
 
 ```text
 harn init
@@ -68,20 +68,20 @@ harn init
   · all 10 claude-code hooks already wired in .claude/settings.json
 ```
 
-## Re-run after a Harnery upgrade that changes hooks
+## Re-run after a Harnery upgrade
 
-Updating the package is enough for code fixes: your wired hooks call the `agent-hook` binary, so they pick up new code with no re-`init`. The exception is a release that **adds, renames, or retires a hook event, or changes the wired command form**: re-run `harn init` to migrate the Harnery-owned entries. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade)'s `adapter hooks` check flags this, and a one-line nudge appears at your next session start naming the drift.
+Run `harn init` after updating Harnery. The existing commands pick up new code immediately, but V3 admits only the producer build and adapter capability profiles approved in the active epoch. Init archives that epoch intact and activates a compatible one when either approval changes. It also migrates Harnery-owned entries when a release adds, renames, or retires a hook event or changes the command form. [`harn doctor`](/cli/doctor/#keeping-hooks-current-after-an-upgrade) and `harn init --check` report the drift.
 
-The same is true of the instructions block and skills: they're committed by you, and the source of truth is the installed Harnery version's templates, so a package upgrade shows up as drift until you re-run `init`.
+The same is true of the instructions block and skills: they're committed by you, and the source of truth is the installed Harnery version's templates, so a package upgrade shows up as drift until you re-run `init`. V3 binds the Harnery producer build and adapter capability digests into each immutable epoch. When those change, `init` archives the old epoch intact and activates a compatible one.
 
 ## Drift check (`--check`)
 
-`--check` is read-only: it reports whether the instructions block and skills match what the installed version would render, and writes nothing. It's the exit-code contract you wire into a pre-commit hook or CI:
+`--check` is read-only. It validates adapter hook presence, command freshness, duplicates, misplaced or retired entries, the instructions block, installed skills, managed Git-hook regions, and the active V3 runtime profile. It's the exit-code contract you wire into a pre-commit hook or CI:
 
 | Exit | Meaning |
 |---|---|
-| `0` | Fresh: block and skills are current |
-| `2` | Drift: a block or skill is stale, missing, or hand-edited |
+| `0` | Fresh: every init-managed surface is current |
+| `2` | Drift: a hook or managed artifact is missing, stale, duplicated, misplaced, or incompatible |
 | `1` | Error: a file couldn't be read |
 
 ```text
@@ -101,9 +101,9 @@ All three adapters are fully auto-wired. Pass `--adapter`:
 
 | `--adapter` | Settings file | Notes |
 |---|---|---|
-| `claude-code` (default) | `.claude/settings.json` | 10 events; nested `{ hooks: [{ type, command }] }` entries |
+| `claude-code` (default) | `.claude/settings.json` | 13 events; nested `{ hooks: [{ type, command }] }` entries |
 | `cursor` | `.cursor/hooks.json` | 10 events; flat `{ command }` entries + `"version": 1` |
-| `codex` | `.codex/hooks.json` | 9 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
+| `codex` | `.codex/hooks.json` | 11 native events; nested `{ hooks: [{ type, command }] }` entries; strict `description` + `hooks` top-level schema |
 
 Each writes only its own file, so you can wire several adapters in one project by running `init` once per adapter. The canonical file path + event→subcommand map + entry shape for every adapter lives in [`src/core/hooks/adapter/events.ts`](https://github.com/ryanjkelly/harnery/blob/main/src/core/hooks/adapter/events.ts) (`ADAPTER_SPECS`).
 
@@ -111,7 +111,7 @@ Each writes only its own file, so you can wire several adapters in one project b
 
 Writing `.codex/hooks.json` does not authorize its commands. Codex stores
 approval separately for each hook path and command hash, so a project can be
-trusted while all nine Harnery hooks remain unable to run.
+trusted while all 11 Harnery hooks remain unable to run.
 
 After `harn init --adapter codex`, review the commands before starting work:
 

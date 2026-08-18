@@ -94,7 +94,7 @@ export function registerAdapterCommand(program: Command, emit: EmitContext): voi
   command
     .command("attest [adapters...]")
     .description(
-      "Record what the installed vendor CLIs actually do. Runs one real model turn each; needs --yes.",
+      "Record what the installed vendor CLIs actually do. Runs one bounded model probe each; needs --yes.",
     )
     .option("--yes", "Confirm that this spends real vendor tokens")
     .option(
@@ -112,7 +112,7 @@ export function registerAdapterCommand(program: Command, emit: EmitContext): voi
         emit.error({
           code: "adapter_attest_unconfirmed",
           message:
-            "adapter attest runs one real model turn per adapter and spends vendor tokens. Re-run with --yes.",
+            "adapter attest runs one bounded model probe per adapter and spends vendor tokens. Re-run with --yes.",
         });
         emit.setExitCode(1);
         return;

@@ -3,8 +3,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripJsonComments } from "../core/config.ts";
+import { initializeEventLedgerV3, sha256V3 } from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS } from "../core/hooks/adapter/events.ts";
-import { codexHookReviewAction, stampBinName, stampWorkflowDefaults, wireHooks } from "./init.ts";
+import {
+  codexHookReviewAction,
+  eventLedgerV3RuntimeIssues,
+  stampBinName,
+  stampWorkflowDefaults,
+  wireHooks,
+} from "./init.ts";
 
 const HOOK = "harnery/bin/agent-hook";
 // Claude Code exports CLAUDE_PROJECT_DIR to hook processes; init anchors the
@@ -91,7 +98,7 @@ describe("wireHooks: Claude Code", () => {
 });
 
 describe("wireHooks: Cursor", () => {
-  test("uses the flat entry shape, sets version, wires beforeShellExecution, omits StopFailure", () => {
+  test("uses the flat entry shape, sets version, and omits duplicate shell + StopFailure hooks", () => {
     const settings: Record<string, unknown> = {};
     const { wired, already } = wireHooks(settings as never, CURSOR, HOOK, "cursor");
     expect(wired).toBe(CURSOR.events.length);
@@ -100,9 +107,8 @@ describe("wireHooks: Cursor", () => {
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     // Flat `{ command }`, no inner `hooks` array.
     expect(hooks.stop[0]).toEqual({ command: `bash ${HOOK} stop --adapter cursor` });
-    expect(hooks.beforeShellExecution[0]).toEqual({
-      command: `bash ${HOOK} before-shell-execution --adapter cursor`,
-    });
+    expect(hooks.preCompact[0]).toEqual({ command: `bash ${HOOK} pre-compact --adapter cursor` });
+    expect(hooks.beforeShellExecution).toBeUndefined();
     expect(hooks.StopFailure).toBeUndefined(); // Cursor has no StopFailure event
   });
 
@@ -114,6 +120,23 @@ describe("wireHooks: Cursor", () => {
     expect(second.already).toBe(CURSOR.events.length);
     const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
     expect(hooks.stop.length).toBe(1); // not duplicated
+  });
+
+  test("removes the superseded shell-specific hook", () => {
+    const settings = {
+      version: 1,
+      hooks: {
+        beforeShellExecution: [
+          { command: `bash ${HOOK} before-shell-execution --adapter cursor` },
+          { command: "bash scripts/hooks/host-shell-check" },
+        ],
+      },
+    };
+    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    expect(result.removed).toBe(1);
+    expect(settings.hooks.beforeShellExecution).toEqual([
+      { command: "bash scripts/hooks/host-shell-check" },
+    ]);
   });
 });
 
@@ -140,7 +163,7 @@ describe("wireHooks: Codex", () => {
     });
   });
 
-  test("removes legacy Codex events while preserving unrelated handlers", () => {
+  test("keeps current SessionEnd and removes legacy Codex events", () => {
     const settings = {
       description: "coord hooks",
       hooks: {
@@ -154,10 +177,107 @@ describe("wireHooks: Codex", () => {
       },
     };
     const { removed } = wireHooks(settings as never, CODEX, HOOK, "codex");
-    expect(removed).toBe(2);
-    expect(settings.hooks.SessionEnd).toHaveLength(1);
-    expect(settings.hooks.SessionEnd[0]!.hooks[0]!.command).toBe("echo keep-me");
+    expect(removed).toBe(1);
+    expect(settings.hooks.SessionEnd).toHaveLength(2);
+    expect(settings.hooks.SessionEnd[0]!.hooks[0]!.command).toContain(
+      "session-end --adapter codex",
+    );
+    expect(settings.hooks.SessionEnd[1]!.hooks[0]!.command).toBe("echo keep-me");
     expect((settings.hooks as Record<string, unknown>).StopFailure).toBeUndefined();
+  });
+
+  test("wires the current SessionEnd lifecycle event", () => {
+    const settings: Record<string, unknown> = {};
+    wireHooks(settings as never, CODEX, HOOK, "codex");
+    const hooks = (settings as { hooks: Record<string, unknown[]> }).hooks;
+    expect(hooks.SessionEnd).toHaveLength(1);
+  });
+});
+
+describe("wireHooks: migration cleanup", () => {
+  test("deduplicates repeated Harnery commands while keeping host handlers in a mixed group", () => {
+    const command = `bash ${CLAUDE_HOOK} session-start --adapter claude-code`;
+    const settings = {
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              { type: "command", command },
+              { type: "command", command: "bash scripts/hooks/host-start" },
+              { type: "command", command },
+            ],
+          },
+          { hooks: [{ type: "command", command }] },
+        ],
+      },
+    };
+    const result = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    expect(result.removed).toBe(2);
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionStart[0]!.hooks.map((hook) => hook.command)).toEqual([
+      command,
+      "bash scripts/hooks/host-start",
+    ]);
+  });
+
+  test("moves a Harnery subcommand off the wrong event and preserves that event's host handler", () => {
+    const settings = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              { type: "command", command: `bash ${HOOK} pre-compact --adapter claude-code` },
+              { type: "command", command: "echo host-stop" },
+            ],
+          },
+        ],
+      },
+    };
+    const result = wireHooks(settings as never, CLAUDE, HOOK, "claude-code");
+    expect(result.removed).toBe(1);
+    expect(settings.hooks.Stop[0]!.hooks[0]!.command).toBe("echo host-stop");
+    expect((settings.hooks as Record<string, unknown[]>).PreCompact).toHaveLength(1);
+  });
+
+  test("preserves Cursor metadata on the surviving canonical entry", () => {
+    const settings = {
+      version: 1,
+      hooks: {
+        stop: [
+          { command: `bash ${HOOK} stop --adapter cursor`, loop_limit: 2 },
+          { command: `bash ${HOOK} stop --adapter cursor` },
+        ],
+      },
+    };
+    const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
+    expect(result.removed).toBe(1);
+    expect(settings.hooks.stop).toEqual([
+      { command: `bash ${HOOK} stop --adapter cursor`, loop_limit: 2 },
+    ]);
+  });
+});
+
+describe("event ledger V3 init compatibility", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("requires an epoch refresh when the live producer build changes", () => {
+    const root = mkdtempSync(join(tmpdir(), "harnery-init-v3-runtime-"));
+    dirs.push(root);
+    const initialized = initializeEventLedgerV3({
+      coordRoot: root,
+      harneryBuild: "fixture",
+      hostBuild: "fixture",
+      configDigest: sha256V3("config"),
+      approvalRecordId: "test-init-runtime",
+      now: () => new Date("2026-08-18T12:00:00.000Z"),
+    });
+    expect(eventLedgerV3RuntimeIssues(initialized.control, "fixture")).toEqual([]);
+    expect(eventLedgerV3RuntimeIssues(initialized.control, "next-build")).toContain(
+      "producer build",
+    );
   });
 });
 

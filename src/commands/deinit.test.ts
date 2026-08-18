@@ -38,6 +38,27 @@ describe("unwireHooks", () => {
     expect(settings.hooks?.Notification[0]).toBeDefined();
   });
 
+  test("removes only Harnery's handler from a mixed Claude hook group", () => {
+    const settings: SettingsFile = {
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              { type: "command", command: `bash ${HOOK} session-start --adapter claude-code` },
+              { type: "command", command: "bash scripts/hooks/host-start" },
+            ],
+          },
+        ],
+      },
+    };
+    const { removed, remaining } = unwireHooks(settings);
+    expect(removed).toBe(1);
+    expect(remaining).toBe(1);
+    expect(settings.hooks?.SessionStart).toEqual([
+      { hooks: [{ type: "command", command: "bash scripts/hooks/host-start" }] },
+    ]);
+  });
+
   test("drops a key whose only entries were harnery's", () => {
     const settings: SettingsFile = {
       hooks: {

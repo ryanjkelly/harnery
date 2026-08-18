@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ADAPTER_SPECS } from "./events.ts";
 import { normalizeEventName, parsePayload } from "./parse.ts";
 
 describe("parsePayload session ids", () => {
@@ -61,5 +62,18 @@ describe("Codex PermissionRequest contract fixture", () => {
       event_type: "wait.started",
       intra_turn: true,
     });
+  });
+});
+
+describe("installed adapter events", () => {
+  test("every hook installed by harn init has a canonical V3 event", () => {
+    for (const [adapter, spec] of Object.entries(ADAPTER_SPECS)) {
+      for (const event of spec.events) {
+        expect(
+          normalizeEventName(event.subcommand),
+          `${adapter}:${event.settingsKey}`,
+        ).not.toBeNull();
+      }
+    }
   });
 });

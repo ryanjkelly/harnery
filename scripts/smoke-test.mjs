@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,12 @@ try {
   // 1. Build dist/
   log("building dist/ ...");
   execFileSync("npm", ["run", "build"], { cwd: repoRoot, stdio: "inherit" });
+  for (const legacy of ["v1", "v2"]) {
+    if (existsSync(join(repoRoot, "dist", "core", "events", legacy))) {
+      fail(`build retained deleted Event Ledger ${legacy.toUpperCase()} artifacts`);
+    }
+  }
+  log("dist/ is V3-only");
 
   // 2. Pack the tarball npm would publish
   log("packing tarball ...");

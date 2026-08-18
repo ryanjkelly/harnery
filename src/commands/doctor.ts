@@ -472,6 +472,19 @@ function checkAdapterHooks(installedAdapters: AdapterId[] = []): Check {
       bits.push(`${d.missing.length} missing (${d.missing.map((m) => m.subcommand).join(", ")})`);
     }
     if (d.orphans.length > 0) bits.push(`${d.orphans.length} orphaned (${d.orphans.join(", ")})`);
+    if (d.duplicates.length > 0) {
+      bits.push(
+        `${d.duplicates.length} duplicated (${d.duplicates.map((e) => e.settingsKey).join(", ")})`,
+      );
+    }
+    if (d.misplaced.length > 0) {
+      bits.push(
+        `${d.misplaced.length} misplaced (${d.misplaced.map((e) => e.subcommand).join(", ")})`,
+      );
+    }
+    if (d.stale.length > 0) {
+      bits.push(`${d.stale.length} stale (${d.stale.map((e) => e.settingsKey).join(", ")})`);
+    }
     if (d.invalidTopLevelKeys.length > 0) {
       bits.push(`invalid fields (${d.invalidTopLevelKeys.join(", ")})`);
     }

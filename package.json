@@ -190,9 +190,9 @@
   },
   "packageManager": "bun@1.3.3",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/rewrite-dts-extensions.mjs",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run build",
+    "prepublishOnly": "npm run build",
     "typecheck": "bun x tsc --noEmit",
     "lint": "bun x @biomejs/biome check src",
     "check:portability": "bun run scripts/check-portability.ts",

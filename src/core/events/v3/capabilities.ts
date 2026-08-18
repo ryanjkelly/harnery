@@ -62,7 +62,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
   },
   codex: {
     ...SHARED_SIGNAL_SUPPORT,
-    session_end: "unsupported",
+    session_end: "native",
     turn_id: "native",
     permission: "native",
     post_compaction: "native",
