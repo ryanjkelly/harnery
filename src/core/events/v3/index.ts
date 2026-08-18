@@ -13,6 +13,12 @@ export {
   type CapabilitySupportV3,
 } from "./capabilities.ts";
 export {
+  type CapabilityDeliveryV3,
+  type CapabilityDriftPayloadV3,
+  capabilityDriftPayloadsV3,
+  measurableDeliveriesV3,
+} from "./capability-drift.ts";
+export {
   EVENT_V3_CONTRACT_MAJOR,
   EVENT_V3_CONTRACT_NAME,
   EVENT_V3_CORE_EVENT_TYPES,
