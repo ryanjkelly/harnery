@@ -1,10 +1,9 @@
 /** Privacy-safe V2 command projection consumed by the `/live` viewer. */
-import fs from "node:fs";
 import path from "node:path";
 import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
 import type { EventV2 } from "../../src/core/events/v2/contract";
 import { readEventV2ControlState } from "../../src/core/events/v2/control";
-import { readActiveLedgerV2, readLedgerV2 } from "../../src/core/events/v2/reader";
+import { readLedgerV2 } from "../../src/core/events/v2/reader";
 import { harneryDir } from "./coord-reader";
 
 export interface SessionEvent {
@@ -135,8 +134,7 @@ function readV2CommandEvents(): SessionEvent[] {
   const root = path.dirname(harneryDir());
   const control = readEventV2ControlState(root);
   if (control.state !== "candidate" && control.state !== "active") return [];
-  const catalog = path.join(root, ".harnery", "ledgers", "v2", "catalog.json");
-  const ledger = fs.existsSync(catalog) ? readLedgerV2(root) : readActiveLedgerV2(root);
+  const ledger = readLedgerV2(root);
   if (!ledger.complete) return [];
   return ledger.events
     .map(({ event }) => projectSessionEventV2(event))

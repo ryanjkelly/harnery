@@ -23,7 +23,7 @@ import {
 import { type LiveDisplayRowV2, listLiveDisplayV2 } from "../../src/core/events/v2/live-feed";
 import { liveInstanceIdV2 } from "../../src/core/events/v2/live-routing";
 import { listHookProducerStateRecordsV2 } from "../../src/core/events/v2/producers/recorder";
-import { readActiveLedgerV2, readLedgerV2 } from "../../src/core/events/v2/reader";
+import { readLedgerV2 } from "../../src/core/events/v2/reader";
 import { eventV2Paths } from "../../src/core/events/v2/writer";
 import {
   buildContributionMatrix,
@@ -334,8 +334,7 @@ function readAgentLedgerRecordsV2(): Map<string, AgentLedgerRecordV2> {
   const control = readEventV2ControlState(root);
   if (control.state !== "candidate" && control.state !== "active") return new Map();
   try {
-    const catalogPath = path.join(root, ".harnery", "ledgers", "v2", "catalog.json");
-    const read = existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root);
+    const read = readLedgerV2(root);
     if (!read.complete) return new Map();
     const view = projectCoordinationViewV2(read);
     const pending = new Set<string>(
@@ -640,7 +639,7 @@ export function readEvents(
   const control = readEventV2ControlState(root);
   if (control.state === "candidate" || control.state === "active") {
     const catalogPath = path.join(root, ".harnery", "ledgers", "v2", "catalog.json");
-    const ledger = existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root);
+    const ledger = readLedgerV2(root);
     const liveDisplay = new Map(listLiveDisplayV2(root).map((row) => [row.event_id, row]));
     const rows: EventRow[] = [];
     if (ledger.complete) {

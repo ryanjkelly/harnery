@@ -83,7 +83,7 @@ import {
   listHookProducerStateRecordsV2,
   readHookProducerStateV2,
 } from "../core/events/v2/producers/recorder.ts";
-import { readActiveLedgerV2, readLedgerV2 } from "../core/events/v2/reader.ts";
+import { readLedgerV2 } from "../core/events/v2/reader.ts";
 import { EVENT_V2_LEDGER_RELATIVE_ROOT } from "../core/events/v2/writer.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
@@ -2715,8 +2715,7 @@ export function readAgentDiagnosticEventsInWindow(
 ): AgentDiagnosticEventRead {
   const control = readEventV2ControlState(root);
   if (control.state === "candidate" || control.state === "active") {
-    const catalogPath = resolve(root, ".harnery", "ledgers", "v2", "catalog.json");
-    const ledger = existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root);
+    const ledger = readLedgerV2(root);
     if (!ledger.complete) {
       return {
         source: "v2",
@@ -3594,10 +3593,7 @@ function runTrace(
   let state = foldSessionState(events, { instance_id: resolvedId });
   if (diagnosticRead.source === "v2" && diagnosticRead.authoritative) {
     try {
-      const catalogPath = resolve(root, ".harnery", "ledgers", "v2", "catalog.json");
-      const view = projectCoordinationViewV2(
-        existsSync(catalogPath) ? readLedgerV2(root) : readActiveLedgerV2(root),
-      );
+      const view = projectCoordinationViewV2(readLedgerV2(root));
       const generation =
         view.instances[resolvedId] ??
         Object.values(view.terminal_generations).find(
