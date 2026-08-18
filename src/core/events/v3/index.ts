@@ -27,6 +27,9 @@ export {
   RecoveryV3Schema,
   type SpanSummaryV3,
   SpanSummaryV3Schema,
+  type TurnHarnessV3,
+  type TurnInferenceV3,
+  type TurnUsageV3,
   type WaitKindV3,
   WaitKindV3Schema,
 } from "./contract.ts";
@@ -91,6 +94,16 @@ export {
   openSpanStateV3,
   type SpanClockV3,
 } from "./span-state.ts";
+export {
+  type ContextMeasurementV3,
+  emptyHarnessTimingV3,
+  extractTurnTelemetryV3,
+  type HarnessTimingAccumulatorV3,
+  harnessObservationV3,
+  recordHarnessTimingV3,
+  type TelemetryObservationV3,
+  type TurnTelemetryV3,
+} from "./turn-telemetry.ts";
 export {
   assertEventV3,
   type EventV3ValidationResult,

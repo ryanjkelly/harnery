@@ -1,0 +1,184 @@
+import type { Adapter } from "../../adapter.ts";
+import { adapterSignalSupportV3 } from "./capabilities.ts";
+import type { TurnHarnessV3, TurnInferenceV3, TurnUsageV3 } from "./contract.ts";
+
+export type TelemetryObservationV3<T> =
+  | { state: "observed"; value: T; attestation: "native" | "derived"; confidence: "exact" | "high" }
+  | { state: "unsupported"; capability: string }
+  | { state: "expected_but_missing"; capability: string; reason: string };
+
+export interface ContextMeasurementV3 {
+  used_tokens: number;
+  limit_tokens: number;
+  remaining_tokens?: number;
+  measured_at: string;
+  method: string;
+}
+
+export interface TurnTelemetryV3 {
+  usage: TelemetryObservationV3<TurnUsageV3>;
+  inference: TelemetryObservationV3<TurnInferenceV3>;
+  context: ContextMeasurementV3 | null;
+}
+
+export interface HarnessTimingAccumulatorV3 {
+  hook_time_ms: number;
+  hook_count: number;
+  slowest_hook?: string;
+  slowest_hook_ms: number;
+}
+
+/** Extract only telemetry explicitly reported by a hook/status payload. */
+export function extractTurnTelemetryV3(
+  adapter: Adapter,
+  payload: Record<string, unknown>,
+  observedAt = new Date().toISOString(),
+): TurnTelemetryV3 {
+  const context = record(payload.context_window);
+  const usage =
+    record(payload.usage) ??
+    record(payload.token_usage) ??
+    record(context?.current_usage) ??
+    undefined;
+  const input = number(usage?.input_tokens);
+  const output = number(usage?.output_tokens);
+  const cacheRead = number(usage?.cache_read_tokens) ?? number(usage?.cache_read_input_tokens);
+  const cacheWrite =
+    number(usage?.cache_write_tokens) ?? number(usage?.cache_creation_input_tokens);
+  const usageObservation =
+    input !== undefined && output !== undefined
+      ? ({
+          state: "observed",
+          value: {
+            input_tokens: input,
+            output_tokens: output,
+            ...(cacheRead !== undefined ? { cache_read_tokens: cacheRead } : {}),
+            ...(cacheWrite !== undefined ? { cache_write_tokens: cacheWrite } : {}),
+            method: `${adapter.replaceAll("-", "_")}_hook`,
+          },
+          attestation: "native",
+          confidence: "exact",
+        } as const)
+      : missing(adapter, "model_usage");
+
+  const inferenceMs =
+    number(payload.api_time_ms) ??
+    number(payload.inference_time_ms) ??
+    number(record(payload.timing)?.api_time_ms) ??
+    number(usage?.api_time_ms);
+  const requestCount =
+    number(payload.request_count) ?? number(record(payload.timing)?.request_count) ?? 1;
+  const inferenceObservation =
+    inferenceMs !== undefined
+      ? ({
+          state: "observed",
+          value: { api_time_ms: inferenceMs, request_count: requestCount },
+          attestation: "native",
+          confidence: "exact",
+        } as const)
+      : missing(adapter, "inference_timing");
+
+  const usedTokens =
+    number(context?.used_tokens) ??
+    number(context?.input_tokens) ??
+    number(payload.used_tokens) ??
+    (usage
+      ? sumDefined([
+          number(usage.input_tokens),
+          number(usage.cache_read_input_tokens),
+          number(usage.cache_creation_input_tokens),
+        ])
+      : undefined);
+  const limitTokens =
+    number(context?.context_window_size) ??
+    number(context?.window_tokens) ??
+    number(payload.context_window_size) ??
+    (typeof payload.context_window === "number" ? number(payload.context_window) : undefined);
+  const contextMeasurement =
+    usedTokens !== undefined && limitTokens !== undefined && limitTokens > 0
+      ? {
+          used_tokens: usedTokens,
+          limit_tokens: limitTokens,
+          remaining_tokens: Math.max(0, limitTokens - usedTokens),
+          measured_at: observedAt,
+          method: `${adapter.replaceAll("-", "_")}_hook`,
+        }
+      : null;
+
+  return { usage: usageObservation, inference: inferenceObservation, context: contextMeasurement };
+}
+
+export function emptyHarnessTimingV3(): HarnessTimingAccumulatorV3 {
+  return { hook_time_ms: 0, hook_count: 0, slowest_hook_ms: 0 };
+}
+
+export function recordHarnessTimingV3(
+  accumulator: HarnessTimingAccumulatorV3,
+  hook: string,
+  durationMs: number,
+): HarnessTimingAccumulatorV3 {
+  const duration = safeInteger(durationMs);
+  if (duration === undefined) return accumulator;
+  const name = safeToken(hook, "unknown_hook");
+  return {
+    hook_time_ms: accumulator.hook_time_ms + duration,
+    hook_count: accumulator.hook_count + 1,
+    slowest_hook: duration >= accumulator.slowest_hook_ms ? name : accumulator.slowest_hook,
+    slowest_hook_ms: Math.max(duration, accumulator.slowest_hook_ms),
+  };
+}
+
+export function harnessObservationV3(
+  accumulator: HarnessTimingAccumulatorV3,
+): TelemetryObservationV3<TurnHarnessV3> {
+  return accumulator.hook_count > 0
+    ? {
+        state: "observed",
+        value: {
+          hook_time_ms: accumulator.hook_time_ms,
+          hook_count: accumulator.hook_count,
+          ...(accumulator.slowest_hook ? { slowest_hook: accumulator.slowest_hook } : {}),
+        },
+        attestation: "derived",
+        confidence: "high",
+      }
+    : {
+        state: "expected_but_missing",
+        capability: "harness_timing",
+        reason: "no_hook_timing_samples",
+      };
+}
+
+function missing(adapter: Adapter, signal: "model_usage" | "inference_timing") {
+  return adapterSignalSupportV3(adapter, signal) === "unsupported"
+    ? ({ state: "unsupported", capability: signal } as const)
+    : ({ state: "expected_but_missing", capability: signal, reason: "not_reported" } as const);
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function number(value: unknown): number | undefined {
+  return typeof value === "number" ? safeInteger(value) : undefined;
+}
+
+function safeInteger(value: number): number | undefined {
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+}
+
+function sumDefined(values: Array<number | undefined>): number | undefined {
+  return values.some((value) => value !== undefined)
+    ? values.reduce<number>((total, value) => total + (value ?? 0), 0)
+    : undefined;
+}
+
+function safeToken(value: string, fallback: string): string {
+  const normalized = value
+    .normalize("NFC")
+    .replace(/[^a-zA-Z0-9._:/+-]/g, "_")
+    .slice(0, 128);
+  return /^[a-zA-Z0-9]/.test(normalized) ? normalized : fallback;
+}

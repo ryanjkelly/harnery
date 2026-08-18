@@ -254,4 +254,7 @@ export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
                     : never;
 export type EventPayloadV3<T extends EventTypeV3> = EventOfTypeV3<T>["payload"];
 export type SpanSummaryV3 = Static<typeof SpanSummaryV3Schema>;
+export type TurnUsageV3 = Static<typeof TurnUsageV3Schema>;
+export type TurnInferenceV3 = Static<typeof TurnInferenceV3Schema>;
+export type TurnHarnessV3 = Static<typeof TurnHarnessV3Schema>;
 export type WaitKindV3 = Static<typeof WaitKindV3Schema>;
