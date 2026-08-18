@@ -534,12 +534,13 @@ async function main(): Promise<number> {
   const adapter = detectAdapter(process.argv.slice(2));
   const raw = await readStdin();
 
-  // A Cursor runtime executes the Claude Code project hooks too on hosts wired
-  // for both adapters. That stray `--adapter claude-code` dispatch must not
-  // record (twin generation) or play Claude-Code-only sounds, so it bails here,
-  // before every effect. Cursor's own `--adapter cursor` dispatch of the same
-  // event carries the session.
-  if (shouldSkipHookAdapter(adapter)) {
+  // Cursor executes the Claude Code project hooks too on hosts wired for both
+  // adapters, piping them its own payload (identifiable by the top-level
+  // cursor_version envelope field). That stray `--adapter claude-code`
+  // dispatch must not record (twin generation) or play Claude-Code-only
+  // sounds, so it bails here, before every effect. Cursor's own
+  // `--adapter cursor` dispatch of the same payload carries the session.
+  if (shouldSkipHookAdapter(adapter, raw)) {
     if (coordEnv("AGENT_COORD_OFF") !== "1") {
       const coordRoot = findCoordRoot(process.cwd());
       if (coordRoot) {
@@ -552,7 +553,7 @@ async function main(): Promise<number> {
           cwd: process.cwd(),
           pid: process.pid,
           ppid: process.ppid,
-          skipped: "cursor-runtime-claude-adapter",
+          skipped: "cursor-payload-claude-adapter",
         });
       }
     }

@@ -147,19 +147,24 @@ describe("agent-hook V2 hard cut", () => {
     ).toHaveLength(1);
   });
 
-  test("a claude-code dispatch under a Cursor runtime records nothing", () => {
+  test("a claude-code dispatch carrying a Cursor payload records nothing", () => {
     const root = candidateRoot();
+    // Cursor's dual dispatch pipes its own payload (top-level cursor_version
+    // envelope) into the Claude Code hook file. That twin must not record.
     const result = run(
       AGENT_HOOK,
       ["session-start", "--adapter", "claude-code"],
       {
+        conversation_id: "cursor-twin-owner",
         session_id: "cursor-twin-owner",
-        cwd: root,
-        source: "startup",
-        hook_event_name: "SessionStart",
+        generation_id: "cursor-twin-owner",
+        hook_event_name: "sessionStart",
+        model: "cursor-grok-4.5-high",
+        cursor_version: "2026.08.11-e8db854",
+        workspace_roots: [root],
+        transcript_path: null,
       },
       root,
-      { CURSOR_AGENT: "1" },
     );
     expect(result.status).toBe(0);
     const ledger = readActiveLedgerV2(root);
@@ -228,9 +233,6 @@ function run(
   for (const key of [
     "HARNERY_AGENT_COORD_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
-    // CURSOR_AGENT: a Cursor worker running this suite exports it, and
-    // unstripped it would make agent-hook skip every claude-code fixture.
-    "CURSOR_AGENT",
     "CURSOR_SESSION_ID",
     "CURSOR_CONVERSATION_ID",
     "CODEX_SESSION_ID",

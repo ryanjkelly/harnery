@@ -26,23 +26,28 @@ function validate(v: string | undefined): Adapter | null {
 }
 
 /**
- * True when the current process was spawned by a Cursor agent runtime, which
- * exports CURSOR_AGENT=1 into every hook process it launches.
- */
-export function isCursorRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CURSOR_AGENT === "1";
-}
-
-/**
  * On a host wired for multiple adapters, Cursor also executes the Claude Code
- * project hooks, so a `--adapter claude-code` invocation can arrive from a
- * Cursor runtime. Recording it would mint a twin generation for the same
- * instance (plus a stream of missing_session_start diagnostics on the
- * claude-code producer), so the hook CLI skips that dispatch entirely.
+ * project hooks, piping them the same payload as its own hooks. Recording that
+ * stray `--adapter claude-code` dispatch mints a twin generation for the same
+ * instance (plus a stream of missing_session_start diagnostics), so the hook
+ * CLI skips it entirely.
+ *
+ * Detection reads the payload, not the environment: every hook payload Cursor
+ * emits carries a top-level `cursor_version` string (its dispatch envelope),
+ * and no Claude Code payload does. Environment sniffing cannot make this call
+ * in either direction — Cursor's own hook processes do not carry CURSOR_AGENT
+ * (only its agent tool shells do), and a genuine Claude Code session nested
+ * under a Cursor agent shell inherits Cursor-flavored variables it must not
+ * be skipped for. The check is the top-level key only: a Claude Code payload
+ * whose tool_input merely mentions the string must not match.
  */
-export function shouldSkipHookAdapter(
-  adapter: Adapter | null,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return adapter === "claude-code" && isCursorRuntime(env);
+export function shouldSkipHookAdapter(adapter: Adapter | null, rawPayload: string): boolean {
+  if (adapter !== "claude-code") return false;
+  if (!rawPayload || rawPayload.trim().length === 0) return false;
+  try {
+    const json = JSON.parse(rawPayload) as Record<string, unknown>;
+    return typeof json.cursor_version === "string" && json.cursor_version.length > 0;
+  } catch {
+    return false;
+  }
 }
