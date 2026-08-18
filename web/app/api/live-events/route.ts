@@ -66,7 +66,7 @@ export async function GET(request: Request): Promise<Response> {
         () => send("heartbeat", { ts: new Date().toISOString() }),
         HEARTBEAT_INTERVAL_MS,
       );
-      send("ready", { pid: process.pid, agent: agent ?? null, ledger: "v2" });
+      send("ready", { pid: process.pid, agent: agent ?? null, ledger: "v3" });
       request.signal.addEventListener("abort", cleanup);
     },
   });

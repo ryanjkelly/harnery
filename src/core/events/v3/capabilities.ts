@@ -1,11 +1,29 @@
 import type { Adapter } from "../../adapter.ts";
-import { ADAPTER_CAPABILITY_PROFILES_V2 } from "../v2/capabilities.ts";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 
 export type CapabilitySupportV3 = "native" | "derived" | "conditional" | "unsupported";
 
+export type BaseAdapterSignalV3 =
+  | "session_start"
+  | "session_end"
+  | "prompt"
+  | "turn_id"
+  | "turn_completion"
+  | "tool_request"
+  | "tool_result"
+  | "tool_failure"
+  | "tool_call_id"
+  | "tool_duration"
+  | "permission"
+  | "subagent"
+  | "shell"
+  | "pre_compaction"
+  | "post_compaction"
+  | "context_usage"
+  | "model_identity";
+
 export type AdapterSignalV3 =
-  | keyof (typeof ADAPTER_CAPABILITY_PROFILES_V2)["claude-code"]["signals"]
+  | BaseAdapterSignalV3
   | "model_usage"
   | "inference_timing"
   | "harness_timing"
@@ -18,6 +36,46 @@ export interface AdapterCapabilityProfileV3 {
   signals: Record<AdapterSignalV3, CapabilitySupportV3>;
 }
 
+const SHARED_SIGNAL_SUPPORT = {
+  session_start: "native",
+  prompt: "native",
+  turn_completion: "native",
+  tool_request: "native",
+  tool_result: "native",
+  tool_failure: "native",
+  tool_call_id: "native",
+  tool_duration: "derived",
+  subagent: "native",
+  shell: "native",
+  pre_compaction: "native",
+  context_usage: "native",
+  model_identity: "conditional",
+} as const;
+
+const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, CapabilitySupportV3>> = {
+  "claude-code": {
+    ...SHARED_SIGNAL_SUPPORT,
+    session_end: "native",
+    turn_id: "conditional",
+    permission: "native",
+    post_compaction: "native",
+  },
+  codex: {
+    ...SHARED_SIGNAL_SUPPORT,
+    session_end: "unsupported",
+    turn_id: "native",
+    permission: "native",
+    post_compaction: "native",
+  },
+  cursor: {
+    ...SHARED_SIGNAL_SUPPORT,
+    session_end: "native",
+    turn_id: "unsupported",
+    permission: "conditional",
+    post_compaction: "unsupported",
+  },
+};
+
 function profile(
   adapter: Adapter,
   economics: Pick<Record<AdapterSignalV3, CapabilitySupportV3>, "model_usage" | "inference_timing">,
@@ -27,7 +85,7 @@ function profile(
     format_version: 1,
     adapter,
     signals: {
-      ...ADAPTER_CAPABILITY_PROFILES_V2[adapter].signals,
+      ...BASE_SIGNAL_SUPPORT[adapter],
       ...economics,
       harness_timing: "derived",
       capability_drift: "derived",

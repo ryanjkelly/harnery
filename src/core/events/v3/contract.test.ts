@@ -10,12 +10,10 @@ import {
 } from "./contract.ts";
 
 describe("event ledger V3 contract", () => {
-  test("is an inactive major-three schema with hard-renamed wait events", () => {
+  test("is an active major-three schema with native wait events", () => {
     expect(EVENT_V3_CONTRACT_MAJOR).toBe(3);
     expect(EVENT_V3_CORE_EVENT_TYPES).toContain("wait.started");
     expect(EVENT_V3_CORE_EVENT_TYPES).toContain("wait.ended");
-    expect(EVENT_V3_CORE_EVENT_TYPES).not.toContain("interaction.wait_started");
-    expect(EVENT_V3_CORE_EVENT_TYPES).not.toContain("interaction.wait_ended");
     expect(EVENT_V3_CORE_EVENT_TYPES).toContain("health.capability_drift");
   });
 

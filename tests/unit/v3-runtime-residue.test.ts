@@ -61,19 +61,26 @@ describe("V3-only runtime vocabulary", () => {
     expect(source).not.toContain("export interface Heartbeat");
   });
 
-  test("production consumers cannot import sealed V2 runtime modules", () => {
+  test("retired event ledger generations are absent", () => {
     const root = join(import.meta.dir, "../..");
-    const findings = productionFiles(root)
-      .filter((file) => {
-        const rel = relative(root, file).replaceAll("\\", "/");
-        return !rel.startsWith("src/core/events/v2/") && !rel.startsWith("src/core/events/v3/");
-      })
-      .flatMap((file) => {
-        const source = readFileSync(file, "utf8");
-        return source.includes("events/v2") || source.includes("live-session-v2")
-          ? [relative(root, file).replaceAll("\\", "/")]
-          : [];
-      });
+    for (const path of [
+      "src/core/events/v1",
+      "src/core/events/v2",
+      "schemas/event-v1.schema.json",
+      "schemas/event-v2.schema.json",
+      "scripts/generate-event-v1-contract.ts",
+      "scripts/generate-event-v2-contract.ts",
+      "tests/fixtures/event-v1-writer-child.ts",
+      "tests/fixtures/event-v2-writer-child.ts",
+    ]) {
+      expect(existsSync(join(root, path))).toBeFalse();
+    }
+    const findings = productionFiles(root).flatMap((file) => {
+      const source = readFileSync(file, "utf8");
+      return /events\/v[12]|live-session-v[12]/.test(source)
+        ? [relative(root, file).replaceAll("\\", "/")]
+        : [];
+    });
     expect(findings).toEqual([]);
   });
 

@@ -204,16 +204,7 @@ function validateKeyStore(value: unknown): FingerprintKeyStoreV3 {
   if (keys.join("\0") !== "active_epoch_id\0epochs\0format\0format_version") {
     throw new Error("fingerprint key store has unsupported fields");
   }
-  // V3 deliberately keeps V2's physical privacy architecture. An existing
-  // V2 store is therefore valid input: the epoch IDs and key bytes remain
-  // stable across cutover, while any later V3 rotation publishes the V3
-  // envelope. This read-only compatibility avoids rewriting the live V2
-  // store before activation has durably sealed that epoch.
-  if (
-    (record.format !== "harnery-v3-fingerprint-keys" &&
-      record.format !== "harnery-v2-fingerprint-keys") ||
-    record.format_version !== 1
-  ) {
+  if (record.format !== "harnery-v3-fingerprint-keys" || record.format_version !== 1) {
     throw new Error("fingerprint key store format is unsupported");
   }
   if (

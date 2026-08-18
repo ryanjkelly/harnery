@@ -8,7 +8,7 @@ import { renderPromptContext } from "./prompt-context.ts";
 let root: string;
 
 beforeEach(() => {
-  root = join(tmpdir(), `harnery-prompt-v2-${process.pid}-${crypto.randomUUID()}`);
+  root = join(tmpdir(), `harnery-prompt-v3-${process.pid}-${crypto.randomUUID()}`);
   initializeV3Fixture(root);
   writeFileSync(
     join(root, ".harnery", "config.jsonc"),

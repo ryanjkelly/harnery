@@ -1,10 +1,5 @@
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { EventV2 } from "../../v2/contract.ts";
-import {
-  type HookProducerContextV2,
-  type HookSignalV2,
-  normalizeHookEventV2,
-} from "../../v2/producers/hook.ts";
+import type { EventV3Base } from "../base-contract.ts";
 import type { EventOfTypeV3, EventTypeV3, SpanSummaryV3 } from "../contract.ts";
 import { EVENT_V3_CONTRACT_MAJOR, EVENT_V3_CONTRACT_NAME } from "../contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
@@ -16,8 +11,13 @@ import {
   type TurnTelemetryV3,
 } from "../turn-telemetry.ts";
 import { assertEventV3 } from "../validate.ts";
+import {
+  type HookProducerContextV3Base,
+  type HookSignalV3Base,
+  normalizeHookEventV3Base,
+} from "./hook-base.ts";
 
-export interface HookProducerContextV3 extends HookProducerContextV2 {
+export interface HookProducerContextV3 extends HookProducerContextV3Base {
   /** Required for terminal events; captured when the corresponding span opens. */
   terminal_span?: SpanSummaryV3;
   /** Required by V3 delegation starts so the child span is anchored in its parent tree. */
@@ -28,40 +28,39 @@ export interface HookProducerContextV3 extends HookProducerContextV2 {
   turn_telemetry?: TurnTelemetryV3;
 }
 
-export type HookSignalV3 = HookSignalV2;
+export type HookSignalV3 = HookSignalV3Base;
 
 const TERMINAL_EVENT_TYPES = new Set([
   "session.ended",
   "turn.completed",
   "tool.completed",
   "agent.completed",
-  "interaction.wait_ended",
+  "wait.ended",
 ]);
 
 export type HookEventV3 = EventOfTypeV3<EventTypeV3>;
 
 /**
- * Normalize one hook payload to the inactive V3 contract.
+ * Normalize one hook payload to the V3 contract.
  *
- * The V2 normalizer remains the privacy and scope authority. This adapter only
- * applies V3's contract identity, span-terminal evidence, economics, and hard
- * event renames. Returning null for an incomplete terminal prevents a producer
+ * The V3 base normalizer owns privacy and scope. This adapter adds contract
+ * identity, self-contained terminal spans, and economics. Returning null for an incomplete terminal prevents a producer
  * from writing a structurally valid-looking event without its load-bearing
  * self-contained span.
  */
 export function normalizeHookEventV3(
-  signal: HookSignalV2,
+  signal: HookSignalV3Base,
   payload: ParsedPayload,
   context: HookProducerContextV3,
 ): HookEventV3 | null {
-  const base = normalizeHookEventV2(signal, payload, context);
+  const base = normalizeHookEventV3Base(signal, payload, context);
   if (!base) return null;
   return upgradeHookEventV3(base, payload, context);
 }
 
 /** Upgrade recorder-synthesized hook events, including resolving wait terminals. */
 export function upgradeHookEventV3(
-  base: EventV2,
+  base: EventV3Base,
   source: ParsedPayload,
   context: HookProducerContextV3,
 ): HookEventV3 | null {
@@ -77,12 +76,7 @@ export function upgradeHookEventV3(
       major: EVENT_V3_CONTRACT_MAJOR,
       schema_digest: EVENT_V3_SCHEMA_DIGEST,
     },
-    event_type:
-      base.event_type === "interaction.wait_started"
-        ? "wait.started"
-        : base.event_type === "interaction.wait_ended"
-          ? "wait.ended"
-          : base.event_type,
+    event_type: base.event_type,
     links: {
       ...(base.links as Record<string, unknown>),
       ...(context.span_id ? { span_id: context.span_id } : {}),

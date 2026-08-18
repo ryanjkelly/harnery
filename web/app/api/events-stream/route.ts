@@ -105,7 +105,7 @@ function streamV3Events(
         () => send("heartbeat", { ts: new Date().toISOString() }),
         HEARTBEAT_INTERVAL_MS,
       );
-      send("ready", { pid: process.pid, ledger: "v2" });
+      send("ready", { pid: process.pid, ledger: "v3" });
       request.signal.addEventListener("abort", cleanup);
     },
   });

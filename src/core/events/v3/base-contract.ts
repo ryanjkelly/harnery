@@ -1,8 +1,8 @@
 import { type Static, type TProperties, type TSchema, Type } from "@sinclair/typebox";
 
-export const EVENT_V2_CONTRACT_NAME = "harnery.event" as const;
-export const EVENT_V2_CONTRACT_MAJOR = 2 as const;
-export const EVENT_V2_SCHEMA_ID = "https://harnery.com/schemas/event-v2.schema.json";
+export const EVENT_V3_BASE_CONTRACT_NAME = "harnery.event" as const;
+export const EVENT_V3_BASE_CONTRACT_MAJOR = 3 as const;
+export const EVENT_V3_BASE_SCHEMA_ID = "https://harnery.com/schemas/event-v3-base.schema.json";
 
 const StrictObject = <T extends TProperties>(properties: T) =>
   Type.Object(properties, { additionalProperties: false });
@@ -23,7 +23,7 @@ const ClockId = Type.String({ pattern: `^clk_${uuidV7Pattern}$` });
 const SpanId = Type.String({ pattern: `^span_${uuidV7Pattern}$` });
 const OpaqueNativeId = Type.String({ pattern: "^(sid|tid|hid)_[a-f0-9]{64}$" });
 
-export const OutcomeV2Schema = Type.Union([
+export const OutcomeV3BaseSchema = Type.Union([
   Type.Literal("succeeded"),
   Type.Literal("failed"),
   Type.Literal("cancelled"),
@@ -33,7 +33,7 @@ export const OutcomeV2Schema = Type.Union([
   Type.Literal("unknown"),
 ]);
 
-export const RecoveryReasonV2Schema = Type.Union([
+export const RecoveryReasonV3BaseSchema = Type.Union([
   Type.Literal("request_not_observed"),
   Type.Literal("completion_not_observed_before_turn_end"),
   Type.Literal("completion_not_observed_before_next_turn"),
@@ -48,12 +48,12 @@ export const RecoveryReasonV2Schema = Type.Union([
  * `requested_event_id` links a derived terminal to the span's original
  * request event when producer state still holds it.
  */
-export const RecoveryV2Schema = StrictObject({
-  reason: RecoveryReasonV2Schema,
+export const RecoveryV3BaseSchema = StrictObject({
+  reason: RecoveryReasonV3BaseSchema,
   requested_event_id: Type.Optional(EventId),
 });
 
-export const FingerprintV2Schema = StrictObject({
+export const FingerprintV3BaseSchema = StrictObject({
   algorithm: Type.Literal("hmac-sha256"),
   canonicalizer: Type.Literal("harnery-jcs-nfc-v1"),
   key_epoch: Type.String({ pattern: "^pep_[a-zA-Z0-9._-]{1,128}$" }),
@@ -61,16 +61,16 @@ export const FingerprintV2Schema = StrictObject({
   digest: Sha256,
 });
 
-export const ContentDescriptorV2Schema = StrictObject({
+export const ContentDescriptorV3BaseSchema = StrictObject({
   storage: Type.Union([Type.Literal("omitted"), Type.Literal("artifact_reference")]),
   media_type: Type.String({ pattern: "^[a-z0-9.+-]+/[a-z0-9.+-]+$", maxLength: 127 }),
   bytes: Type.Integer({ minimum: 0 }),
   lines: Type.Optional(Type.Integer({ minimum: 0 })),
   artifact_id: Type.Optional(Type.String({ pattern: "^art_[a-zA-Z0-9._-]{1,128}$" })),
-  fingerprint: Type.Optional(FingerprintV2Schema),
+  fingerprint: Type.Optional(FingerprintV3BaseSchema),
 });
 
-export function ObservationV2Schema<T extends TSchema>(value: T) {
+export function ObservationV3BaseSchema<T extends TSchema>(value: T) {
   return Type.Union([
     StrictObject({
       state: Type.Literal("observed"),
@@ -99,19 +99,23 @@ export function ObservationV2Schema<T extends TSchema>(value: T) {
   ]);
 }
 
-export const RuntimeAttestationV2Schema = StrictObject({
+export const RuntimeAttestationV3BaseSchema = StrictObject({
   attestation_id: AttestationId,
   generation_id: GenerationId,
-  adapter: ObservationV2Schema(StrictObject({ id: SafeToken, version: Type.Optional(SafeToken) })),
-  harness: ObservationV2Schema(StrictObject({ id: SafeToken, version: Type.Optional(SafeToken) })),
-  model: ObservationV2Schema(StrictObject({ provider: SafeToken, id: SafeToken })),
+  adapter: ObservationV3BaseSchema(
+    StrictObject({ id: SafeToken, version: Type.Optional(SafeToken) }),
+  ),
+  harness: ObservationV3BaseSchema(
+    StrictObject({ id: SafeToken, version: Type.Optional(SafeToken) }),
+  ),
+  model: ObservationV3BaseSchema(StrictObject({ provider: SafeToken, id: SafeToken })),
   capability_profile: Type.String({ pattern: "^cap_[a-f0-9]{64}$" }),
   declared_by_event_id: EventId,
 });
 
 const ContractSchema = StrictObject({
-  name: Type.Literal(EVENT_V2_CONTRACT_NAME),
-  major: Type.Literal(EVENT_V2_CONTRACT_MAJOR),
+  name: Type.Literal(EVENT_V3_BASE_CONTRACT_NAME),
+  major: Type.Literal(EVENT_V3_BASE_CONTRACT_MAJOR),
   schema_digest: Sha256,
 });
 
@@ -248,7 +252,7 @@ const eventSchema = <TType extends string, TPayload extends TSchema>(
     payload,
   });
 
-export const LedgerGenesisV2Schema = eventSchema(
+export const LedgerGenesisV3BaseSchema = eventSchema(
   "ledger.genesis",
   StrictObject({
     genesis_id: Type.String({ pattern: "^gex_[0-9a-f-]{36}$" }),
@@ -262,23 +266,23 @@ export const LedgerGenesisV2Schema = eventSchema(
   "root",
 );
 
-export const SessionStartedV2Schema = eventSchema(
+export const SessionStartedV3BaseSchema = eventSchema(
   "session.started",
   StrictObject({
-    runtime_attestation: RuntimeAttestationV2Schema,
-    resume: ObservationV2Schema(
+    runtime_attestation: RuntimeAttestationV3BaseSchema,
+    resume: ObservationV3BaseSchema(
       StrictObject({ prior_generation_id: GenerationId, continuity: Type.Literal("native") }),
     ),
   }),
 );
 
-export const SessionEndedV2Schema = eventSchema(
+export const SessionEndedV3BaseSchema = eventSchema(
   "session.ended",
   StrictObject({
-    outcome: OutcomeV2Schema,
+    outcome: OutcomeV3BaseSchema,
     authority: Type.Union([Type.Literal("native"), Type.Literal("approved")]),
     reason: ReasonCode,
-    completeness: ObservationV2Schema(
+    completeness: ObservationV3BaseSchema(
       StrictObject({
         expected: Type.Array(SafeToken, { uniqueItems: true }),
         observed: Type.Array(SafeToken, { uniqueItems: true }),
@@ -288,10 +292,10 @@ export const SessionEndedV2Schema = eventSchema(
   }),
 );
 
-export const TurnStartedV2Schema = eventSchema(
+export const TurnStartedV3BaseSchema = eventSchema(
   "turn.started",
   StrictObject({
-    input: ContentDescriptorV2Schema,
+    input: ContentDescriptorV3BaseSchema,
     intent_kind: Type.Union([
       Type.Literal("build"),
       Type.Literal("change"),
@@ -305,18 +309,18 @@ export const TurnStartedV2Schema = eventSchema(
   "turn",
 );
 
-export const TurnCompletedV2Schema = eventSchema(
+export const TurnCompletedV3BaseSchema = eventSchema(
   "turn.completed",
   StrictObject({
-    outcome: OutcomeV2Schema,
-    duration_ms: ObservationV2Schema(Type.Integer({ minimum: 0 })),
-    tool_call_count: ObservationV2Schema(Type.Integer({ minimum: 0 })),
-    response: ObservationV2Schema(ContentDescriptorV2Schema),
+    outcome: OutcomeV3BaseSchema,
+    duration_ms: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
+    tool_call_count: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
+    response: ObservationV3BaseSchema(ContentDescriptorV3BaseSchema),
   }),
   "turn",
 );
 
-export const TargetDescriptorV2Schema = StrictObject({
+export const TargetDescriptorV3BaseSchema = StrictObject({
   kind: Type.Union([
     Type.Literal("workspace_path"),
     Type.Literal("external_path"),
@@ -336,32 +340,32 @@ export const TargetDescriptorV2Schema = StrictObject({
     Type.Literal("unknown"),
   ]),
   display: Type.Optional(Type.String({ maxLength: 240 })),
-  fingerprint: FingerprintV2Schema,
+  fingerprint: FingerprintV3BaseSchema,
   extractor_version: SafeToken,
 });
 
-export const ToolRequestedV2Schema = eventSchema(
+export const ToolRequestedV3BaseSchema = eventSchema(
   "tool.requested",
   StrictObject({
     tool: StrictObject({ namespace: SafeToken, name: SafeToken }),
-    input: ContentDescriptorV2Schema,
-    exact_input: FingerprintV2Schema,
-    targets: Type.Array(TargetDescriptorV2Schema, { maxItems: 64 }),
-    recovery: Type.Optional(RecoveryV2Schema),
+    input: ContentDescriptorV3BaseSchema,
+    exact_input: FingerprintV3BaseSchema,
+    targets: Type.Array(TargetDescriptorV3BaseSchema, { maxItems: 64 }),
+    recovery: Type.Optional(RecoveryV3BaseSchema),
   }),
   "turn",
   ToolLinksSchema,
 );
 
-export const ToolCompletedV2Schema = eventSchema(
+export const ToolCompletedV3BaseSchema = eventSchema(
   "tool.completed",
   StrictObject({
     tool: StrictObject({ namespace: SafeToken, name: SafeToken }),
-    outcome: OutcomeV2Schema,
-    duration_ms: ObservationV2Schema(Type.Integer({ minimum: 0 })),
-    result: ContentDescriptorV2Schema,
+    outcome: OutcomeV3BaseSchema,
+    duration_ms: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
+    result: ContentDescriptorV3BaseSchema,
     error: Type.Optional(StrictObject({ class: SafeToken, code: Type.Optional(SafeToken) })),
-    recovery: Type.Optional(RecoveryV2Schema),
+    recovery: Type.Optional(RecoveryV3BaseSchema),
   }),
   "turn",
   ToolLinksSchema,
@@ -386,7 +390,7 @@ const ArtifactReferenceSchema = StrictObject({
   media_type: Type.String({ pattern: "^[a-z0-9.+-]+/[a-z0-9.+-]+$", maxLength: 127 }),
   bytes: Type.Integer({ minimum: 0 }),
   retention_class: SafeToken,
-  integrity: Type.Optional(FingerprintV2Schema),
+  integrity: Type.Optional(FingerprintV3BaseSchema),
   workspace_path: Type.Optional(
     Type.String({ pattern: "^(?!.*(?:^|/)\\.\\.(?:/|$))[^/\\\\][^\\\\]{0,239}$" }),
   ),
@@ -398,11 +402,11 @@ const StateTransitionSchema = StrictObject({
   prior_state: Type.Optional(SafeToken),
   new_state: SafeToken,
   reason: ReasonCode,
-  reason_fingerprint: Type.Optional(FingerprintV2Schema),
+  reason_fingerprint: Type.Optional(FingerprintV3BaseSchema),
   authority: AuthorityReferenceSchema,
 });
 
-export const LedgerActivatedV2Schema = eventSchema(
+export const LedgerActivatedV3BaseSchema = eventSchema(
   "ledger.activated",
   StrictObject({
     activation_id: Type.String({ pattern: "^act_[0-9a-f-]{36}$" }),
@@ -415,7 +419,7 @@ export const LedgerActivatedV2Schema = eventSchema(
   "root",
 );
 
-export const LedgerSchemaAdvancedV2Schema = eventSchema(
+export const LedgerSchemaAdvancedV3BaseSchema = eventSchema(
   "ledger.schema_advanced",
   StrictObject({
     prior_schema_digest: Sha256,
@@ -433,7 +437,7 @@ export const LedgerSchemaAdvancedV2Schema = eventSchema(
   "root",
 );
 
-export const LedgerComparabilityAdvancedV2Schema = eventSchema(
+export const LedgerComparabilityAdvancedV3BaseSchema = eventSchema(
   "ledger.comparability_advanced",
   StrictObject({
     prior_group_id: SafeToken,
@@ -447,16 +451,16 @@ export const LedgerComparabilityAdvancedV2Schema = eventSchema(
   "root",
 );
 
-export const SessionAttestationChangedV2Schema = eventSchema(
+export const SessionAttestationChangedV3BaseSchema = eventSchema(
   "session.attestation_changed",
   StrictObject({
     prior_attestation_id: AttestationId,
-    runtime_attestation: RuntimeAttestationV2Schema,
+    runtime_attestation: RuntimeAttestationV3BaseSchema,
     reason: ReasonCode,
   }),
 );
 
-export const SessionResumedV2Schema = eventSchema(
+export const SessionResumedV3BaseSchema = eventSchema(
   "session.resumed",
   StrictObject({
     prior_generation_id: GenerationId,
@@ -465,7 +469,7 @@ export const SessionResumedV2Schema = eventSchema(
   }),
 );
 
-export const SessionTerminationObservedV2Schema = eventSchema(
+export const SessionTerminationObservedV3BaseSchema = eventSchema(
   "session.termination_observed",
   StrictObject({
     observation: Type.Union([
@@ -481,101 +485,101 @@ export const SessionTerminationObservedV2Schema = eventSchema(
   }),
 );
 
-export const RunStartedV2Schema = eventSchema(
+export const RunStartedV3BaseSchema = eventSchema(
   "run.started",
   StrictObject({ run_kind: SafeToken, policy_digest: Type.Optional(Sha256) }),
 );
 
-export const RunCompletedV2Schema = eventSchema(
+export const RunCompletedV3BaseSchema = eventSchema(
   "run.completed",
   StrictObject({
-    outcome: OutcomeV2Schema,
+    outcome: OutcomeV3BaseSchema,
     duration_ms: Type.Integer({ minimum: 0 }),
     evidence_reference: Type.Optional(SafeToken),
   }),
 );
 
-export const CommandStartedV2Schema = eventSchema(
+export const CommandStartedV3BaseSchema = eventSchema(
   "command.started",
   StrictObject({
     executable: SafeToken,
     executable_class: SafeToken,
-    exact_command: FingerprintV2Schema,
+    exact_command: FingerprintV3BaseSchema,
     intent_kind: SafeToken,
     intent_length: Type.Integer({ minimum: 0 }),
-    intent_fingerprint: Type.Optional(FingerprintV2Schema),
+    intent_fingerprint: Type.Optional(FingerprintV3BaseSchema),
     sensitive_argument_count: Type.Integer({ minimum: 0 }),
   }),
   "turn",
   ToolLinksSchema,
 );
 
-export const CommandOutputObservedV2Schema = eventSchema(
+export const CommandOutputObservedV3BaseSchema = eventSchema(
   "command.output_observed",
   StrictObject({
     stream: Type.Union([Type.Literal("stdout"), Type.Literal("stderr"), Type.Literal("combined")]),
     bytes: Type.Integer({ minimum: 0 }),
     lines: Type.Optional(Type.Integer({ minimum: 0 })),
-    content_fingerprint: Type.Optional(FingerprintV2Schema),
+    content_fingerprint: Type.Optional(FingerprintV3BaseSchema),
   }),
   "turn",
   ToolLinksSchema,
 );
 
-export const CommandCompletedV2Schema = eventSchema(
+export const CommandCompletedV3BaseSchema = eventSchema(
   "command.completed",
   StrictObject({
-    outcome: OutcomeV2Schema,
+    outcome: OutcomeV3BaseSchema,
     exit_code: Type.Optional(Type.Integer()),
     signal: Type.Optional(SafeToken),
     duration_ms: Type.Integer({ minimum: 0 }),
     error_class: Type.Optional(SafeToken),
-    recovery: Type.Optional(RecoveryV2Schema),
+    recovery: Type.Optional(RecoveryV3BaseSchema),
   }),
   "turn",
   ToolLinksSchema,
 );
 
-export const ContextObservedV2Schema = eventSchema(
+export const ContextObservedV3BaseSchema = eventSchema(
   "context.observed",
-  StrictObject({ measurement: ObservationV2Schema(MeasurementSchema) }),
+  StrictObject({ measurement: ObservationV3BaseSchema(MeasurementSchema) }),
 );
 
-export const ContextCompactionStartedV2Schema = eventSchema(
+export const ContextCompactionStartedV3BaseSchema = eventSchema(
   "context.compaction_started",
-  StrictObject({ before: ObservationV2Schema(MeasurementSchema), method: SafeToken }),
+  StrictObject({ before: ObservationV3BaseSchema(MeasurementSchema), method: SafeToken }),
 );
 
-export const ContextCompactionCompletedV2Schema = eventSchema(
+export const ContextCompactionCompletedV3BaseSchema = eventSchema(
   "context.compaction_completed",
   StrictObject({
-    outcome: OutcomeV2Schema,
-    before: ObservationV2Schema(MeasurementSchema),
-    after: ObservationV2Schema(MeasurementSchema),
+    outcome: OutcomeV3BaseSchema,
+    before: ObservationV3BaseSchema(MeasurementSchema),
+    after: ObservationV3BaseSchema(MeasurementSchema),
   }),
 );
 
-export const ContextCheckpointedV2Schema = eventSchema(
+export const ContextCheckpointedV3BaseSchema = eventSchema(
   "context.checkpointed",
   StrictObject({ checkpoint_id: SafeToken, artifact: ArtifactReferenceSchema }),
 );
 
-export const ContextRecoveryInjectedV2Schema = eventSchema(
+export const ContextRecoveryInjectedV3BaseSchema = eventSchema(
   "context.recovery_injected",
-  StrictObject({ checkpoint_id: SafeToken, outcome: OutcomeV2Schema, artifact_id: SafeToken }),
+  StrictObject({ checkpoint_id: SafeToken, outcome: OutcomeV3BaseSchema, artifact_id: SafeToken }),
 );
 
-export const AgentDelegatedV2Schema = eventSchema(
+export const AgentDelegatedV3BaseSchema = eventSchema(
   "agent.delegated",
   StrictObject({
     delegation_id: Type.String({ pattern: `^del_${uuidV7Pattern}$` }),
     child_generation_id: GenerationId,
     role: SafeToken,
-    ownership_fingerprint: FingerprintV2Schema,
+    ownership_fingerprint: FingerprintV3BaseSchema,
   }),
 );
 
-export const AgentStartedV2Schema = eventSchema(
+export const AgentStartedV3BaseSchema = eventSchema(
   "agent.started",
   StrictObject({
     delegation_id: Type.String({ pattern: `^del_${uuidV7Pattern}$` }),
@@ -584,17 +588,17 @@ export const AgentStartedV2Schema = eventSchema(
   }),
 );
 
-export const AgentCompletedV2Schema = eventSchema(
+export const AgentCompletedV3BaseSchema = eventSchema(
   "agent.completed",
   StrictObject({
     delegation_id: Type.String({ pattern: `^del_${uuidV7Pattern}$` }),
     child_generation_id: GenerationId,
-    outcome: OutcomeV2Schema,
+    outcome: OutcomeV3BaseSchema,
   }),
 );
 
-export const InteractionWaitStartedV2Schema = eventSchema(
-  "interaction.wait_started",
+export const WaitStartedV3BaseSchema = eventSchema(
+  "wait.started",
   StrictObject({
     wait_id: SafeToken,
     kind: Type.Union([
@@ -610,16 +614,16 @@ export const InteractionWaitStartedV2Schema = eventSchema(
   }),
 );
 
-export const InteractionWaitEndedV2Schema = eventSchema(
-  "interaction.wait_ended",
+export const WaitEndedV3BaseSchema = eventSchema(
+  "wait.ended",
   StrictObject({
     wait_id: SafeToken,
-    outcome: OutcomeV2Schema,
+    outcome: OutcomeV3BaseSchema,
     resolution_reference: Type.Optional(SafeToken),
   }),
 );
 
-export const ArtifactObservedV2Schema = eventSchema(
+export const ArtifactObservedV3BaseSchema = eventSchema(
   "artifact.observed",
   StrictObject({
     artifact: ArtifactReferenceSchema,
@@ -632,7 +636,7 @@ export const ArtifactObservedV2Schema = eventSchema(
   }),
 );
 
-export const ProgressObservedV2Schema = eventSchema(
+export const ProgressObservedV3BaseSchema = eventSchema(
   "progress.observed",
   StrictObject({
     kind: Type.Union([
@@ -649,12 +653,15 @@ export const ProgressObservedV2Schema = eventSchema(
   }),
 );
 
-export const CoordTaskChangedV2Schema = eventSchema("coord.task_changed", StateTransitionSchema);
-export const CoordLifecycleChangedV2Schema = eventSchema(
+export const CoordTaskChangedV3BaseSchema = eventSchema(
+  "coord.task_changed",
+  StateTransitionSchema,
+);
+export const CoordLifecycleChangedV3BaseSchema = eventSchema(
   "coord.lifecycle_changed",
   StateTransitionSchema,
 );
-export const CoordStatusObservedV2Schema = eventSchema(
+export const CoordStatusObservedV3BaseSchema = eventSchema(
   "coord.status_observed",
   StrictObject({
     observer_instance_id: InstanceId,
@@ -662,7 +669,7 @@ export const CoordStatusObservedV2Schema = eventSchema(
     status: SafeToken,
   }),
 );
-export const CoordClaimChangedV2Schema = eventSchema(
+export const CoordClaimChangedV3BaseSchema = eventSchema(
   "coord.claim_changed",
   StrictObject({
     actor_instance_id: InstanceId,
@@ -672,26 +679,26 @@ export const CoordClaimChangedV2Schema = eventSchema(
       Type.Literal("released"),
       Type.Literal("denied"),
     ]),
-    target: TargetDescriptorV2Schema,
+    target: TargetDescriptorV3BaseSchema,
     access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
     authority: AuthorityReferenceSchema,
   }),
 );
-export const CoordPresenceChangedV2Schema = eventSchema(
+export const CoordPresenceChangedV3BaseSchema = eventSchema(
   "coord.presence_changed",
   StateTransitionSchema,
 );
-export const CoordMessageObservedV2Schema = eventSchema(
+export const CoordMessageObservedV3BaseSchema = eventSchema(
   "coord.message_observed",
   StrictObject({
     message_id: SafeToken,
     direction: Type.Union([Type.Literal("sent"), Type.Literal("received")]),
     peer_instance_id: InstanceId,
     body_length: Type.Integer({ minimum: 0 }),
-    body_fingerprint: FingerprintV2Schema,
+    body_fingerprint: FingerprintV3BaseSchema,
   }),
 );
-export const CoordIdentityAttestedV2Schema = eventSchema(
+export const CoordIdentityAttestedV3BaseSchema = eventSchema(
   "coord.identity_attested",
   StrictObject({
     actor_instance_id: InstanceId,
@@ -702,7 +709,7 @@ export const CoordIdentityAttestedV2Schema = eventSchema(
   }),
 );
 
-export const CouncilStateChangedV2Schema = eventSchema(
+export const CouncilStateChangedV3BaseSchema = eventSchema(
   "council.state_changed",
   StrictObject({
     council_id: SafeToken,
@@ -711,7 +718,7 @@ export const CouncilStateChangedV2Schema = eventSchema(
     record_digest: Sha256,
   }),
 );
-export const DecisionStateChangedV2Schema = eventSchema(
+export const DecisionStateChangedV3BaseSchema = eventSchema(
   "decision.state_changed",
   StrictObject({
     decision_id: SafeToken,
@@ -721,7 +728,7 @@ export const DecisionStateChangedV2Schema = eventSchema(
     authority: AuthorityReferenceSchema,
   }),
 );
-export const LifecycleRecoveredV2Schema = eventSchema(
+export const LifecycleRecoveredV3BaseSchema = eventSchema(
   "lifecycle.recovered",
   StrictObject({
     subject_instance_id: InstanceId,
@@ -730,7 +737,7 @@ export const LifecycleRecoveredV2Schema = eventSchema(
     new_digest: Sha256,
   }),
 );
-export const LifecycleSweepObservedV2Schema = eventSchema(
+export const LifecycleSweepObservedV3BaseSchema = eventSchema(
   "lifecycle.sweep_observed",
   StrictObject({
     subject_instance_id: InstanceId,
@@ -739,7 +746,7 @@ export const LifecycleSweepObservedV2Schema = eventSchema(
     age_ms: Type.Integer({ minimum: 0 }),
   }),
 );
-export const HealthObservedV2Schema = eventSchema(
+export const HealthObservedV3BaseSchema = eventSchema(
   "health.observed",
   StrictObject({
     subsystem: SafeToken,
@@ -756,55 +763,55 @@ export const HealthObservedV2Schema = eventSchema(
   }),
 );
 
-export const EventV2Schema = Type.Union(
+export const EventV3BaseSchema = Type.Union(
   [
-    LedgerGenesisV2Schema,
-    LedgerActivatedV2Schema,
-    LedgerSchemaAdvancedV2Schema,
-    LedgerComparabilityAdvancedV2Schema,
-    SessionStartedV2Schema,
-    SessionAttestationChangedV2Schema,
-    SessionResumedV2Schema,
-    SessionEndedV2Schema,
-    SessionTerminationObservedV2Schema,
-    RunStartedV2Schema,
-    RunCompletedV2Schema,
-    TurnStartedV2Schema,
-    TurnCompletedV2Schema,
-    ToolRequestedV2Schema,
-    ToolCompletedV2Schema,
-    CommandStartedV2Schema,
-    CommandOutputObservedV2Schema,
-    CommandCompletedV2Schema,
-    ContextObservedV2Schema,
-    ContextCompactionStartedV2Schema,
-    ContextCompactionCompletedV2Schema,
-    ContextCheckpointedV2Schema,
-    ContextRecoveryInjectedV2Schema,
-    AgentDelegatedV2Schema,
-    AgentStartedV2Schema,
-    AgentCompletedV2Schema,
-    InteractionWaitStartedV2Schema,
-    InteractionWaitEndedV2Schema,
-    ArtifactObservedV2Schema,
-    ProgressObservedV2Schema,
-    CoordTaskChangedV2Schema,
-    CoordLifecycleChangedV2Schema,
-    CoordStatusObservedV2Schema,
-    CoordClaimChangedV2Schema,
-    CoordPresenceChangedV2Schema,
-    CoordMessageObservedV2Schema,
-    CoordIdentityAttestedV2Schema,
-    CouncilStateChangedV2Schema,
-    DecisionStateChangedV2Schema,
-    LifecycleRecoveredV2Schema,
-    LifecycleSweepObservedV2Schema,
-    HealthObservedV2Schema,
+    LedgerGenesisV3BaseSchema,
+    LedgerActivatedV3BaseSchema,
+    LedgerSchemaAdvancedV3BaseSchema,
+    LedgerComparabilityAdvancedV3BaseSchema,
+    SessionStartedV3BaseSchema,
+    SessionAttestationChangedV3BaseSchema,
+    SessionResumedV3BaseSchema,
+    SessionEndedV3BaseSchema,
+    SessionTerminationObservedV3BaseSchema,
+    RunStartedV3BaseSchema,
+    RunCompletedV3BaseSchema,
+    TurnStartedV3BaseSchema,
+    TurnCompletedV3BaseSchema,
+    ToolRequestedV3BaseSchema,
+    ToolCompletedV3BaseSchema,
+    CommandStartedV3BaseSchema,
+    CommandOutputObservedV3BaseSchema,
+    CommandCompletedV3BaseSchema,
+    ContextObservedV3BaseSchema,
+    ContextCompactionStartedV3BaseSchema,
+    ContextCompactionCompletedV3BaseSchema,
+    ContextCheckpointedV3BaseSchema,
+    ContextRecoveryInjectedV3BaseSchema,
+    AgentDelegatedV3BaseSchema,
+    AgentStartedV3BaseSchema,
+    AgentCompletedV3BaseSchema,
+    WaitStartedV3BaseSchema,
+    WaitEndedV3BaseSchema,
+    ArtifactObservedV3BaseSchema,
+    ProgressObservedV3BaseSchema,
+    CoordTaskChangedV3BaseSchema,
+    CoordLifecycleChangedV3BaseSchema,
+    CoordStatusObservedV3BaseSchema,
+    CoordClaimChangedV3BaseSchema,
+    CoordPresenceChangedV3BaseSchema,
+    CoordMessageObservedV3BaseSchema,
+    CoordIdentityAttestedV3BaseSchema,
+    CouncilStateChangedV3BaseSchema,
+    DecisionStateChangedV3BaseSchema,
+    LifecycleRecoveredV3BaseSchema,
+    LifecycleSweepObservedV3BaseSchema,
+    HealthObservedV3BaseSchema,
   ],
-  { $id: EVENT_V2_SCHEMA_ID },
+  { $id: EVENT_V3_BASE_SCHEMA_ID },
 );
 
-export const EVENT_V2_CORE_EVENT_TYPES = [
+export const EVENT_V3_BASE_CORE_EVENT_TYPES = [
   "ledger.genesis",
   "ledger.activated",
   "ledger.schema_advanced",
@@ -831,8 +838,8 @@ export const EVENT_V2_CORE_EVENT_TYPES = [
   "agent.delegated",
   "agent.started",
   "agent.completed",
-  "interaction.wait_started",
-  "interaction.wait_ended",
+  "wait.started",
+  "wait.ended",
   "artifact.observed",
   "progress.observed",
   "coord.task_changed",
@@ -849,12 +856,12 @@ export const EVENT_V2_CORE_EVENT_TYPES = [
   "health.observed",
 ] as const;
 
-export type EventV2 = Static<typeof EventV2Schema>;
-export type EventTypeV2 = EventV2["event_type"];
-export type EventOfTypeV2<T extends EventTypeV2> = Extract<EventV2, { event_type: T }>;
-export type EventPayloadV2<T extends EventTypeV2> = EventOfTypeV2<T>["payload"];
-export type RuntimeAttestationV2 = Static<typeof RuntimeAttestationV2Schema>;
-export type RecoveryV2 = Static<typeof RecoveryV2Schema>;
-export type RecoveryReasonV2 = Static<typeof RecoveryReasonV2Schema>;
-export type ContentDescriptorV2 = Static<typeof ContentDescriptorV2Schema>;
-export type TargetDescriptorV2 = Static<typeof TargetDescriptorV2Schema>;
+export type EventV3Base = Static<typeof EventV3BaseSchema>;
+export type EventTypeV3Base = EventV3Base["event_type"];
+export type EventOfTypeV3Base<T extends EventTypeV3Base> = Extract<EventV3Base, { event_type: T }>;
+export type EventPayloadV3Base<T extends EventTypeV3Base> = EventOfTypeV3Base<T>["payload"];
+export type RuntimeAttestationV3Base = Static<typeof RuntimeAttestationV3BaseSchema>;
+export type RecoveryV3Base = Static<typeof RecoveryV3BaseSchema>;
+export type RecoveryReasonV3Base = Static<typeof RecoveryReasonV3BaseSchema>;
+export type ContentDescriptorV3Base = Static<typeof ContentDescriptorV3BaseSchema>;
+export type TargetDescriptorV3Base = Static<typeof TargetDescriptorV3BaseSchema>;

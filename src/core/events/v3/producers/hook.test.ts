@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { EventV2 } from "../../v2/contract.ts";
-import { normalizeHookEventV2 } from "../../v2/producers/hook.ts";
+import type { EventV3Base } from "../base-contract.ts";
 import type { SpanSummaryV3 } from "../contract.ts";
 import { attestationIdV3, generationIdV3, spanIdV3 } from "../ids.ts";
 import { emptyHarnessTimingV3, recordHarnessTimingV3 } from "../turn-telemetry.ts";
 import { type HookProducerContextV3, normalizeHookEventV3, upgradeHookEventV3 } from "./hook.ts";
+import { normalizeHookEventV3Base } from "./hook-base.ts";
 
 describe("event ledger V3 hook producer", () => {
-  test("preserves V2 privacy normalization under the V3 contract", () => {
+  test("uses V3-owned privacy normalization under the V3 contract", () => {
     const event = normalizeHookEventV3(
       "session-start",
       parsed({ session_id: "native-session-secret", model: "claude-sonnet-4-5" }),
@@ -71,7 +71,7 @@ describe("event ledger V3 hook producer", () => {
     });
   });
 
-  test("hard-renames permission waits and anchors delegation starts", () => {
+  test("emits native permission waits and anchors delegation starts", () => {
     const wait = normalizeHookEventV3(
       "permission-request",
       parsed({ session_id: "native-session", tool_use_id: "native-tool-call" }),
@@ -99,21 +99,21 @@ describe("event ledger V3 hook producer", () => {
 
   test("upgrades a recorder-synthesized resolving wait terminal", () => {
     const context = producerContext();
-    const started = normalizeHookEventV2(
+    const started = normalizeHookEventV3Base(
       "permission-request",
       parsed({ session_id: "native-session", tool_use_id: "native-tool-call" }),
       context,
     );
-    if (started?.event_type !== "interaction.wait_started") throw new Error("wait start missing");
+    if (started?.event_type !== "wait.started") throw new Error("wait start missing");
     const terminal = {
       ...started,
-      event_type: "interaction.wait_ended",
+      event_type: "wait.ended",
       payload: {
         wait_id: started.payload.wait_id,
         outcome: "succeeded",
         resolution_reference: "post-tool-use",
       },
-    } as EventV2;
+    } as EventV3Base;
     const span = terminalSpan(spanIdV3());
 
     expect(

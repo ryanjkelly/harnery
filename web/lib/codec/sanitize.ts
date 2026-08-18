@@ -72,7 +72,7 @@ export function categorizeTool(toolName: string | undefined): CodecActionCategor
 /**
  * Reduce one raw canonical row to bounded evidence, or null to drop it.
  * The input is `unknown` on purpose: this function is the trust boundary and
- * validates every field it lifts. V1 rows fail closed.
+ * validates every field it lifts. non-V3 rows fail closed.
  */
 export function sanitizeEvent(raw: unknown): CodecSourceEvidence | null {
   return sanitizeEventV3(raw);

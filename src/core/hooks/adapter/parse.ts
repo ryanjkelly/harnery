@@ -178,7 +178,7 @@ export function normalizeEventName(
     case "before-shell-execution":
       return { event_type: "tool.requested", intra_turn: true };
     case "permission-request":
-      return { event_type: "interaction.wait_started", intra_turn: true };
+      return { event_type: "wait.started", intra_turn: true };
     case "post-tool-use":
     case "post-tool-use-failure":
       return { event_type: "tool.completed", intra_turn: true };
@@ -199,7 +199,7 @@ export type NormalizedEventType =
   | "agent.started"
   | "agent.completed"
   | "tool.requested"
-  | "interaction.wait_started"
+  | "wait.started"
   | "tool.completed"
   | "context.compaction_started"
   | "context.compaction_completed";

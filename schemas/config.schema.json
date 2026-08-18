@@ -68,7 +68,7 @@
         "finalization": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Grace periods for converging independent lifecycle observations on the canonical V2 session finalizer.",
+          "description": "Grace periods for converging independent lifecycle observations on the canonical V3 session finalizer.",
           "properties": {
             "archive_grace_seconds": {
               "type": "integer",

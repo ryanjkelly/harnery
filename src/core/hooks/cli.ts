@@ -451,7 +451,7 @@ function buildEventData(
       };
     }
 
-    case "interaction.wait_started": {
+    case "wait.started": {
       const description = extractToolDescription(p?.tool_input);
       const reason = description ? clampString(description, 500).value : undefined;
       return {

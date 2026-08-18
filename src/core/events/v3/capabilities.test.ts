@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { adapterCapabilityProfileDigestV2 } from "../v2/capabilities.ts";
 import {
   ADAPTER_CAPABILITY_PROFILES_V3,
   adapterCapabilityProfileDigestV3,
@@ -28,12 +27,11 @@ describe("event ledger V3 adapter capabilities", () => {
     expect(adapterSignalSupportV3("cursor", "inference_timing")).toBe("unsupported");
   });
 
-  test("produces stable V3-specific capability digests", () => {
+  test("produces stable V3 capability digests", () => {
     for (const adapter of ["claude-code", "codex", "cursor"] as const) {
       const first = adapterCapabilityProfileDigestV3(adapter);
       expect(first).toMatch(/^cap_[a-f0-9]{64}$/);
       expect(adapterCapabilityProfileDigestV3(adapter)).toBe(first);
-      expect(first).not.toBe(adapterCapabilityProfileDigestV2(adapter));
     }
   });
 });

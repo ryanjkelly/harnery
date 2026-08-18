@@ -1,13 +1,13 @@
 import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import { buildEventV2 } from "../builder.ts";
-import { type FingerprintContextV2, fingerprintV2, normalizeNativeIdV2 } from "../canonical.ts";
-import { adapterSignalSupportV2 } from "../capabilities.ts";
-import type { EventV2, RuntimeAttestationV2 } from "../contract.ts";
-import { eventIdV2 } from "../ids.ts";
-import { exactToolInputFingerprintV2, extractTargetsV2 } from "../targets.ts";
+import { buildEventV3Base } from "../base-builder.ts";
+import type { EventV3Base, RuntimeAttestationV3Base } from "../base-contract.ts";
+import { type FingerprintContextV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
+import { adapterSignalSupportV3 } from "../capabilities.ts";
+import { eventIdV3 } from "../ids.ts";
+import { exactToolInputFingerprintV3, extractTargetsV3 } from "../targets.ts";
 
-export type HookSignalV2 =
+export type HookSignalV3Base =
   | "session-start"
   | "session-end"
   | "user-prompt-submit"
@@ -22,7 +22,7 @@ export type HookSignalV2 =
   | "pre-compact"
   | "post-compact";
 
-export interface HookProducerContextV2 {
+export interface HookProducerContextV3Base {
   coordRoot: string;
   adapter: Adapter;
   adapterVersion?: string;
@@ -41,7 +41,7 @@ export interface HookProducerContextV2 {
   platform: "linux" | "windows" | "macos" | "unknown";
   bridge?: "codex-wsl";
   capability_profile: `cap_${string}`;
-  fingerprintContext: FingerprintContextV2;
+  fingerprintContext: FingerprintContextV3;
   turn_native_id?: string;
   turn_id?: `tid_${string}`;
   span_id?: `span_${string}`;
@@ -59,17 +59,17 @@ export interface HookProducerContextV2 {
   agent_role?: string;
 }
 
-/** Normalize one already-parsed hook payload directly into V2 without retaining its raw fields. */
-export function normalizeHookEventV2(
-  signal: HookSignalV2,
+/** Normalize one already-parsed hook payload directly into V3Base without retaining its raw fields. */
+export function normalizeHookEventV3Base(
+  signal: HookSignalV3Base,
   payload: ParsedPayload,
-  context: HookProducerContextV2,
-): EventV2 | null {
-  const eventId = context.event_id ?? eventIdV2();
+  context: HookProducerContextV3Base,
+): EventV3Base | null {
+  const eventId = context.event_id ?? eventIdV3();
   const sessionNative =
     payload.session_id ?? payload.conversation_id ?? payload.agent_id ?? context.instance_id;
   const sessionId = asSessionId(
-    normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.session`, sessionNative),
+    normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.session`, sessionNative),
   );
   const turnNative =
     payload.turn_id ?? context.turn_native_id ?? `${sessionNative}:${context.sequence}`;
@@ -78,11 +78,11 @@ export function normalizeHookEventV2(
   // (ADR 0078 turn attribution).
   const turnId = payload.turn_id
     ? asTurnId(
-        normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, payload.turn_id),
+        normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, payload.turn_id),
       )
     : (context.turn_id ??
       asTurnId(
-        normalizeNativeIdV2(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
+        normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
       ));
   const generationScope = {
     root_id: context.root_id,
@@ -110,7 +110,7 @@ export function normalizeHookEventV2(
     ...(payload.tool_use_id
       ? {
           source_record_id: asSourceId(
-            normalizeNativeIdV2(
+            normalizeNativeIdV3(
               context.fingerprintContext,
               `${context.adapter}.source-record`,
               payload.tool_use_id,
@@ -138,7 +138,7 @@ export function normalizeHookEventV2(
 
   switch (signal) {
     case "session-start": {
-      const runtimeAttestation: RuntimeAttestationV2 = {
+      const runtimeAttestation: RuntimeAttestationV3Base = {
         attestation_id: context.attestation_id,
         generation_id: context.generation_id,
         adapter: observedIdentity(context.adapter, context.adapterVersion),
@@ -154,7 +154,7 @@ export function normalizeHookEventV2(
         capability_profile: context.capability_profile,
         declared_by_event_id: eventId,
       };
-      return buildEventV2("session.started", {
+      return buildEventV3Base("session.started", {
         ...common,
         scope: generationScope,
         links: { caused_by: causedBy },
@@ -165,10 +165,10 @@ export function normalizeHookEventV2(
               ? { state: "unknown", reason: "prior_generation_not_bound" }
               : { state: "not_applicable" },
         },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "session-end":
-      return buildEventV2("session.ended", {
+      return buildEventV3Base("session.ended", {
         ...common,
         scope: generationScope,
         links: { caused_by: causedBy },
@@ -188,10 +188,10 @@ export function normalizeHookEventV2(
                 : "native_exit_outcome_unknown",
           completeness: { state: "unknown", reason: "terminal_signal_coverage_unmeasured" },
         },
-      }) as EventV2;
+      }) as EventV3Base;
     case "user-prompt-submit": {
       const prompt = payload.prompt ?? "";
-      return buildEventV2("turn.started", {
+      return buildEventV3Base("turn.started", {
         ...common,
         scope: turnScope,
         links: { caused_by: causedBy },
@@ -200,15 +200,15 @@ export function normalizeHookEventV2(
             storage: "omitted",
             media_type: "text/plain",
             bytes: Buffer.byteLength(prompt, "utf8"),
-            fingerprint: fingerprintV2(context.fingerprintContext, "user-prompt", prompt),
+            fingerprint: fingerprintV3(context.fingerprintContext, "user-prompt", prompt),
           },
           intent_kind: "unknown",
         },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "stop":
     case "stop-failure":
-      return buildEventV2("turn.completed", {
+      return buildEventV3Base("turn.completed", {
         ...common,
         scope: turnScope,
         links: { caused_by: causedBy },
@@ -238,11 +238,11 @@ export function normalizeHookEventV2(
                   confidence: "exact",
                 },
         },
-      }) as EventV2;
+      }) as EventV3Base;
     case "pre-tool-use": {
       if (!payload.tool_name || !context.span_id) return null;
       const toolInput = payload.tool_input ?? null;
-      return buildEventV2("tool.requested", {
+      return buildEventV3Base("tool.requested", {
         ...common,
         scope: turnScope,
         links: { caused_by: causedBy, span_id: context.span_id },
@@ -253,13 +253,13 @@ export function normalizeHookEventV2(
             media_type: "application/json",
             bytes: byteLengthOfUnknown(toolInput),
           },
-          exact_input: exactToolInputFingerprintV2(
+          exact_input: exactToolInputFingerprintV3(
             context.fingerprintContext,
             context.adapter,
             payload.tool_name,
             toolInput,
           ),
-          targets: extractTargetsV2({
+          targets: extractTargetsV3({
             coordRoot: context.coordRoot,
             toolNamespace: context.adapter,
             toolName: payload.tool_name,
@@ -267,12 +267,12 @@ export function normalizeHookEventV2(
             fingerprintContext: context.fingerprintContext,
           }),
         },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "post-tool-use":
     case "post-tool-use-failure": {
       if (!payload.tool_name || !context.span_id) return null;
-      return buildEventV2("tool.completed", {
+      return buildEventV3Base("tool.completed", {
         ...common,
         scope: turnScope,
         links: { caused_by: causedBy, span_id: context.span_id },
@@ -294,25 +294,25 @@ export function normalizeHookEventV2(
             ? { error: { class: "adapter_tool_failure" } }
             : {}),
         },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "permission-request": {
       const waitNative = payload.tool_use_id ?? `${sessionNative}:${context.sequence}`;
-      const waitId = normalizeNativeIdV2(
+      const waitId = normalizeNativeIdV3(
         context.fingerprintContext,
         `${context.adapter}.wait`,
         waitNative,
       );
-      return buildEventV2("interaction.wait_started", {
+      return buildEventV3Base("wait.started", {
         ...common,
         scope: turnScope,
         links: { caused_by: causedBy },
         payload: { wait_id: waitId, kind: "permission" },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "sub-agent-start": {
       if (!context.delegation_id || !context.child_generation_id) return null;
-      return buildEventV2("agent.started", {
+      return buildEventV3Base("agent.started", {
         ...common,
         scope: generationScope,
         links: {
@@ -325,11 +325,11 @@ export function normalizeHookEventV2(
           child_generation_id: context.child_generation_id,
           role: safeToken(context.agent_role ?? "agent", "agent"),
         },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "sub-agent-stop": {
       if (!context.delegation_id || !context.child_generation_id) return null;
-      return buildEventV2("agent.completed", {
+      return buildEventV3Base("agent.completed", {
         ...common,
         scope: generationScope,
         links: {
@@ -349,10 +349,10 @@ export function normalizeHookEventV2(
                   ? "failed"
                   : "unknown",
         },
-      }) as EventV2;
+      }) as EventV3Base;
     }
     case "pre-compact":
-      return buildEventV2("context.compaction_started", {
+      return buildEventV3Base("context.compaction_started", {
         ...common,
         scope: generationScope,
         links: { caused_by: causedBy },
@@ -364,9 +364,9 @@ export function normalizeHookEventV2(
           ),
           method: `${context.adapter.replaceAll("-", "_")}_hook`,
         },
-      }) as EventV2;
+      }) as EventV3Base;
     case "post-compact":
-      return buildEventV2("context.compaction_completed", {
+      return buildEventV3Base("context.compaction_completed", {
         ...common,
         scope: generationScope,
         links: { caused_by: causedBy },
@@ -383,7 +383,7 @@ export function normalizeHookEventV2(
             "post_compaction",
           ),
         },
-      }) as EventV2;
+      }) as EventV3Base;
   }
 }
 
@@ -407,10 +407,10 @@ function inputContextMeasurement(payload: ParsedPayload, phase: "before" | "afte
 
 function contextMeasurement(
   measurement: { used?: number; limit?: number },
-  context: HookProducerContextV2,
+  context: HookProducerContextV3Base,
   capability: "pre_compaction" | "post_compaction",
 ) {
-  if (adapterSignalSupportV2(context.adapter, capability) === "unsupported") {
+  if (adapterSignalSupportV3(context.adapter, capability) === "unsupported") {
     return { state: "unsupported", capability } as const;
   }
   if (measurement.used === undefined || measurement.limit === undefined || measurement.limit < 1) {

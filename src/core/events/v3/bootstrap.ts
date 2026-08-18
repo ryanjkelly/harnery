@@ -7,7 +7,6 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -43,7 +42,6 @@ export interface InitializeEventLedgerV3Result {
   state: "active";
   initialized: boolean;
   archived_epoch?: string;
-  sealed_v2?: string;
   control: Extract<EventV3ControlState, { state: "active" }>;
 }
 
@@ -151,57 +149,12 @@ export function initializeEventLedgerV3(
   if (active.state !== "active") {
     throw new Error(`event_v3_activation_failed:${active.state}`);
   }
-  const sealedV2 = sealLegacyV2Ledger(root, active, createdAt);
   return {
     state: "active",
     initialized: true,
     ...(archivedEpoch ? { archived_epoch: archivedEpoch } : {}),
-    ...(sealedV2 ? { sealed_v2: sealedV2 } : {}),
     control: active,
   };
-}
-
-/**
- * Publish a durable supersession receipt and make every V2 ledger inode
- * read-only. V2 remains available to explicit audit readers, but any stale
- * writer fails at the filesystem boundary after V3 activation.
- */
-function sealLegacyV2Ledger(
-  root: string,
-  active: Extract<EventV3ControlState, { state: "active" }>,
-  sealedAt: string,
-): string | undefined {
-  const legacyRoot = join(root, ".harnery", "ledgers", "v2");
-  if (!existsSync(legacyRoot)) return undefined;
-  const receiptPath = join(legacyRoot, "SEALED.json");
-  if (!existsSync(receiptPath)) {
-    publishControlFile(receiptPath, {
-      format: "harnery-event-ledger-v2-seal",
-      format_version: 1,
-      policy: "audit-read-only",
-      sealed_at: sealedAt,
-      superseded_by: {
-        major: 3,
-        genesis_id: active.genesis.event.payload.genesis_id,
-        activation_id: active.activation.event.payload.activation_id,
-      },
-    });
-  }
-  makeTreeReadOnly(legacyRoot);
-  return receiptPath;
-}
-
-function makeTreeReadOnly(directory: string): void {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      makeTreeReadOnly(path);
-      chmodSync(path, 0o500);
-    } else {
-      chmodSync(path, 0o400);
-    }
-  }
-  chmodSync(directory, 0o500);
 }
 
 function archiveCurrentEpoch(root: string, createdAt: string): string | undefined {

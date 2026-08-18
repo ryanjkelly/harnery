@@ -9,7 +9,7 @@ import { evaluateClaim } from "./claim-conflict.ts";
 let root: string;
 
 beforeEach(() => {
-  root = join(tmpdir(), `harnery-claim-v2-${process.pid}-${crypto.randomUUID()}`);
+  root = join(tmpdir(), `harnery-claim-v3-${process.pid}-${crypto.randomUUID()}`);
   initializeV3Fixture(root);
 });
 

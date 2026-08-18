@@ -8,7 +8,7 @@ import { evaluateCommit } from "./commit-conflict.ts";
 let root: string;
 
 beforeEach(() => {
-  root = join(tmpdir(), `harnery-commit-v2-${process.pid}-${crypto.randomUUID()}`);
+  root = join(tmpdir(), `harnery-commit-v3-${process.pid}-${crypto.randomUUID()}`);
   initializeV3Fixture(root);
 });
 

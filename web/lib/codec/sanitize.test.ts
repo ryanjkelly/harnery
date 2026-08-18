@@ -26,7 +26,7 @@ const SECRET_PROMPT = "SENTINEL_PROMPT_BODY";
 const SECRET_INPUT = "SENTINEL_TOOL_INPUT";
 
 describe("sanitizeEvent", () => {
-  test("drops V1 canonical rows, unknown types, and unsupported schema versions", () => {
+  test("rejects non-V3 rows, unknown types, and unsupported schema versions", () => {
     expect(
       sanitizeEvent({
         ...BASE,

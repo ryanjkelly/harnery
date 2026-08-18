@@ -1,14 +1,14 @@
 import { type Static, type TObject, type TProperties, type TSchema, Type } from "@sinclair/typebox";
 import {
-  EVENT_V2_CORE_EVENT_TYPES,
-  type EventOfTypeV2,
-  type EventTypeV2,
-  type EventV2,
-  EventV2Schema,
-  ObservationV2Schema,
-  OutcomeV2Schema,
-  RecoveryV2Schema,
-} from "../v2/contract.ts";
+  EVENT_V3_BASE_CORE_EVENT_TYPES,
+  type EventOfTypeV3Base,
+  type EventTypeV3Base,
+  type EventV3Base,
+  EventV3BaseSchema,
+  ObservationV3BaseSchema,
+  OutcomeV3BaseSchema,
+  RecoveryV3BaseSchema,
+} from "./base-contract.ts";
 
 export const EVENT_V3_CONTRACT_NAME = "harnery.event" as const;
 export const EVENT_V3_CONTRACT_MAJOR = 3 as const;
@@ -25,9 +25,9 @@ const uuidV7Pattern = "[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const EventId = Type.String({ pattern: `^evt_${uuidV7Pattern}$` });
 const SpanId = Type.String({ pattern: `^span_${uuidV7Pattern}$` });
 
-export const ObservationV3Schema = ObservationV2Schema;
-export const OutcomeV3Schema = OutcomeV2Schema;
-export const RecoveryV3Schema = RecoveryV2Schema;
+export const ObservationV3Schema = ObservationV3BaseSchema;
+export const OutcomeV3Schema = OutcomeV3BaseSchema;
+export const RecoveryV3Schema = RecoveryV3BaseSchema;
 
 const ContractV3Schema = StrictObject({
   name: Type.Literal(EVENT_V3_CONTRACT_NAME),
@@ -72,25 +72,25 @@ export const WaitKindV3Schema = Type.Union([
   Type.Literal("unknown"),
 ]);
 
-const v2Branches = (EventV2Schema as unknown as { anyOf: TObject[] }).anyOf;
+const baseBranches = (EventV3BaseSchema as unknown as { anyOf: TObject[] }).anyOf;
 
-function v2Branch(eventType: string): TObject {
-  const branch = v2Branches.find(
+function baseBranch(eventType: string): TObject {
+  const branch = baseBranches.find(
     ({ properties }) => (properties.event_type as { const?: string }).const === eventType,
   );
-  if (!branch) throw new Error(`V2 event schema missing: ${eventType}`);
+  if (!branch) throw new Error(`V3Base event schema missing: ${eventType}`);
   return branch;
 }
 
-function v2Payload(eventType: string): TObject {
-  return v2Branch(eventType).properties.payload as TObject;
+function basePayload(eventType: string): TObject {
+  return baseBranch(eventType).properties.payload as TObject;
 }
 
 function eventV3(
   priorEventType: string,
   options: { eventType?: string; payload?: TSchema; links?: TSchema } = {},
 ): TObject {
-  const prior = v2Branch(priorEventType);
+  const prior = baseBranch(priorEventType);
   const eventType = options.eventType ?? priorEventType;
   return StrictObject({
     ...prior.properties,
@@ -102,7 +102,7 @@ function eventV3(
 }
 
 function terminalPayloadV3(eventType: string, additions: TProperties = {}): TObject {
-  const prior = v2Payload(eventType);
+  const prior = basePayload(eventType);
   return StrictObject({
     ...prior.properties,
     ...additions,
@@ -137,7 +137,7 @@ export const AgentCompletedV3Schema = eventV3("agent.completed", {
 });
 
 const AgentStartedLinksV3Schema = (() => {
-  const prior = v2Branch("agent.started").properties.links as TObject;
+  const prior = baseBranch("agent.started").properties.links as TObject;
   return StrictObject({
     ...prior.properties,
     span_id: SpanId,
@@ -149,7 +149,7 @@ export const AgentStartedV3Schema = eventV3("agent.started", {
   links: AgentStartedLinksV3Schema,
 });
 
-export const WaitStartedV3Schema = eventV3("interaction.wait_started", {
+export const WaitStartedV3Schema = eventV3("wait.started", {
   eventType: "wait.started",
   payload: StrictObject({
     wait_id: SafeToken,
@@ -159,9 +159,9 @@ export const WaitStartedV3Schema = eventV3("interaction.wait_started", {
   }),
 });
 
-export const WaitEndedV3Schema = eventV3("interaction.wait_ended", {
+export const WaitEndedV3Schema = eventV3("wait.ended", {
   eventType: "wait.ended",
-  payload: terminalPayloadV3("interaction.wait_ended"),
+  payload: terminalPayloadV3("wait.ended"),
 });
 
 export const HealthCapabilityDriftV3Schema = eventV3("health.observed", {
@@ -179,19 +179,19 @@ export const HealthCapabilityDriftV3Schema = eventV3("health.observed", {
   }),
 });
 
-const replacedV2Types = new Set([
+const replacedBaseTypes = new Set([
   "session.ended",
   "turn.completed",
   "tool.completed",
   "command.completed",
   "agent.completed",
-  "interaction.wait_started",
-  "interaction.wait_ended",
+  "wait.started",
+  "wait.ended",
 ]);
-const unchangedV3Schemas = v2Branches
+const unchangedV3Schemas = baseBranches
   .filter(
     ({ properties }) =>
-      !replacedV2Types.has((properties.event_type as unknown as { const: string }).const),
+      !replacedBaseTypes.has((properties.event_type as unknown as { const: string }).const),
   )
   .map(({ properties }) => {
     const eventType = (properties.event_type as unknown as { const: string }).const;
@@ -219,9 +219,8 @@ export const EventV3Schema = Type.Union(
 );
 
 export const EVENT_V3_CORE_EVENT_TYPES = [
-  ...EVENT_V2_CORE_EVENT_TYPES.filter(
-    (eventType) =>
-      eventType !== "interaction.wait_started" && eventType !== "interaction.wait_ended",
+  ...EVENT_V3_BASE_CORE_EVENT_TYPES.filter(
+    (eventType) => eventType !== "wait.started" && eventType !== "wait.ended",
   ),
   "wait.started",
   "wait.ended",
@@ -231,11 +230,10 @@ export const EVENT_V3_CORE_EVENT_TYPES = [
 export type EventTypeV3 = (typeof EVENT_V3_CORE_EVENT_TYPES)[number];
 type ContractV3 = Static<typeof ContractV3Schema>;
 type WithContractV3<T> = T extends object ? Omit<T, "contract"> & { contract: ContractV3 } : never;
-type ReplaceEventV3<
-  T extends EventTypeV2,
-  U extends EventTypeV3,
-  P,
-> = Omit<WithContractV3<EventOfTypeV2<T>>, "event_type" | "payload"> & {
+type ReplaceEventV3<T extends EventTypeV3Base, U extends EventTypeV3, P> = Omit<
+  WithContractV3<EventOfTypeV3Base<T>>,
+  "event_type" | "payload"
+> & {
   event_type: U;
   payload: P;
 };
@@ -243,12 +241,12 @@ type SpanSummaryValueV3 = Static<typeof SpanSummaryV3Schema>;
 type SessionEndedEventV3 = ReplaceEventV3<
   "session.ended",
   "session.ended",
-  EventOfTypeV2<"session.ended">["payload"] & { span: SpanSummaryValueV3 }
+  EventOfTypeV3Base<"session.ended">["payload"] & { span: SpanSummaryValueV3 }
 >;
 type TurnCompletedEventV3 = ReplaceEventV3<
   "turn.completed",
   "turn.completed",
-  EventOfTypeV2<"turn.completed">["payload"] & {
+  EventOfTypeV3Base<"turn.completed">["payload"] & {
     span: SpanSummaryValueV3;
     usage: Static<ReturnType<typeof ObservationV3Schema<typeof TurnUsageV3Schema>>>;
     inference: Static<ReturnType<typeof ObservationV3Schema<typeof TurnInferenceV3Schema>>>;
@@ -258,7 +256,7 @@ type TurnCompletedEventV3 = ReplaceEventV3<
 type ToolCompletedEventV3 = ReplaceEventV3<
   "tool.completed",
   "tool.completed",
-  Omit<EventOfTypeV2<"tool.completed">["payload"], "duration_ms"> & {
+  Omit<EventOfTypeV3Base<"tool.completed">["payload"], "duration_ms"> & {
     duration_ms: SpanSummaryValueV3["duration_ms"];
     span: SpanSummaryValueV3;
   }
@@ -266,16 +264,13 @@ type ToolCompletedEventV3 = ReplaceEventV3<
 type CommandCompletedEventV3 = ReplaceEventV3<
   "command.completed",
   "command.completed",
-  Omit<EventOfTypeV2<"command.completed">["payload"], "duration_ms"> & {
+  Omit<EventOfTypeV3Base<"command.completed">["payload"], "duration_ms"> & {
     duration_ms: SpanSummaryValueV3["duration_ms"];
     span: SpanSummaryValueV3;
   }
 >;
-type AgentStartedEventV3 = Omit<
-  WithContractV3<EventOfTypeV2<"agent.started">>,
-  "links"
-> & {
-  links: EventOfTypeV2<"agent.started">["links"] & {
+type AgentStartedEventV3 = Omit<WithContractV3<EventOfTypeV3Base<"agent.started">>, "links"> & {
+  links: EventOfTypeV3Base<"agent.started">["links"] & {
     span_id: `span_${string}`;
     parent_span_id: `span_${string}`;
   };
@@ -283,10 +278,10 @@ type AgentStartedEventV3 = Omit<
 type AgentCompletedEventV3 = ReplaceEventV3<
   "agent.completed",
   "agent.completed",
-  EventOfTypeV2<"agent.completed">["payload"] & { span: SpanSummaryValueV3 }
+  EventOfTypeV3Base<"agent.completed">["payload"] & { span: SpanSummaryValueV3 }
 >;
 type WaitStartedEventV3 = ReplaceEventV3<
-  "interaction.wait_started",
+  "wait.started",
   "wait.started",
   {
     wait_id: string;
@@ -296,9 +291,9 @@ type WaitStartedEventV3 = ReplaceEventV3<
   }
 >;
 type WaitEndedEventV3 = ReplaceEventV3<
-  "interaction.wait_ended",
   "wait.ended",
-  EventOfTypeV2<"interaction.wait_ended">["payload"] & { span: SpanSummaryValueV3 }
+  "wait.ended",
+  EventOfTypeV3Base<"wait.ended">["payload"] & { span: SpanSummaryValueV3 }
 >;
 type HealthCapabilityDriftEventV3 = ReplaceEventV3<
   "health.observed",
@@ -329,24 +324,26 @@ export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
                 ? WaitEndedEventV3
                 : T extends "health.capability_drift"
                   ? HealthCapabilityDriftEventV3
-                  : T extends EventTypeV2
-                    ? WithContractV3<EventOfTypeV2<T>>
+                  : T extends EventTypeV3Base
+                    ? WithContractV3<EventOfTypeV3Base<T>>
                     : never;
 /**
  * TypeBox cannot preserve the discriminated union through the generated
  * schema-branch spread above. Rebuild the static union from the authoritative
  * event-type map so producer and projection code retains event narrowing.
  */
-type ReplacedEventTypeV2 =
+type ReplacedEventTypeV3Base =
   | "session.ended"
   | "turn.completed"
   | "tool.completed"
   | "command.completed"
   | "agent.started"
   | "agent.completed"
-  | "interaction.wait_started"
-  | "interaction.wait_ended";
-type UnchangedEventV3 = WithContractV3<Exclude<EventV2, { event_type: ReplacedEventTypeV2 }>>;
+  | "wait.started"
+  | "wait.ended";
+type UnchangedEventV3 = WithContractV3<
+  Exclude<EventV3Base, { event_type: ReplacedEventTypeV3Base }>
+>;
 export type EventV3 =
   | UnchangedEventV3
   | SessionEndedEventV3

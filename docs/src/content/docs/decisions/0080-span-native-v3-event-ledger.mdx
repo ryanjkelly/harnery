@@ -141,12 +141,22 @@ require producer state. A reader cannot recover data that was never recorded.
 V3 activated on 2026-08-18 under activation
 `act_01a015e3-0b89-70b8-ad4f-aea6a6d1f00f`. Hook, command, coordination,
 guard, web, Codec, and projection traffic now uses the V3 writer and validating
-reader. The V2 on-disk epoch is sealed read-only and remains available only for
-audit replay.
+reader.
 
-V3 owns its frame canonicalization and schema digest. The package exports only
-`harnery/core/events/v3`; the sealed V2 implementation, schema generator, and
-tests remain internal so old evidence stays verifiable without exposing a
-second writer API.
+The predecessor runtime was active for about 42 hours, including roughly 10
+hours in its final universal form. It had no released compatibility obligation
+and no reviewed run-quality corpus. Keeping its 52-file implementation for
+audit replay added a permanent second contract without preserving evidence that
+Git history could not recover.
 
-This ADR supersedes ADR 0079's contract-major and schema-evolution rules. ADR 0079 remains the historical record of the V2 runtime and its activation.
+V3 now builds without importing a predecessor namespace. Its contract
+branches, hook privacy normalizer, UUIDv7 IDs, capability profiles, fingerprint
+operations, generated schema, and fixtures all live under `core/events/v3`. The
+repository contains no Event Ledger V1 or V2 source, schemas, generators,
+fixtures, or tests. V3 bootstrap no longer seals or reads
+a predecessor ledger, and its private key store accepts only the V3 envelope.
+Existing predecessor bytes on disk are ignored.
+
+Git history and ADR 0079 are the historical record of the short-lived V2
+runtime. This ADR supersedes ADR 0079's contract-major and schema-evolution
+rules.
