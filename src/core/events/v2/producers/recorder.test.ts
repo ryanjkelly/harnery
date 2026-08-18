@@ -141,6 +141,60 @@ describe("event ledger V2 persistent hook recorder", () => {
     expect(`${durable}${JSON.stringify(state)}`).not.toContain(nativeSession);
   });
 
+  test("accumulates bounded hook CLI time inside the active turn", () => {
+    const root = candidateRoot();
+    const nativeSession = "hook-timing-session";
+    recordHookSignalV2({
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
+      hook_name: "SessionStart",
+      hook_duration_ms: 40,
+    });
+    recordHookSignalV2({
+      ...baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-timing" }),
+      ),
+      hook_name: "UserPromptSubmit",
+      hook_duration_ms: 12.8,
+    });
+    recordHookSignalV2({
+      ...baseInput(
+        root,
+        "pre-tool-use",
+        parsed({
+          session_id: nativeSession,
+          turn_id: "turn-timing",
+          tool_use_id: "timed-tool",
+          tool_name: "Bash",
+        }),
+      ),
+      hook_name: "PreToolUse",
+      hook_duration_ms: 30.4,
+    });
+    recordHookSignalV2({
+      ...baseInput(
+        root,
+        "post-tool-use",
+        parsed({
+          session_id: nativeSession,
+          turn_id: "turn-timing",
+          tool_use_id: "timed-tool",
+          tool_name: "Bash",
+        }),
+      ),
+      hook_name: "Post Tool Use",
+      hook_duration_ms: 5.9,
+    });
+
+    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.turn_harness).toEqual({
+      hook_time_ms: 47,
+      hook_count: 3,
+      slowest_hook: "PreToolUse",
+      slowest_hook_ms: 30,
+    });
+  });
+
   test("replays the exact pending event after a producer crash", () => {
     const root = candidateRoot();
     const input = baseInput(root, "session-start", parsed({ session_id: "retry-session" }));

@@ -89,6 +89,8 @@ export interface HookIntakeRecordV2 {
   adapterVersion?: string;
   harnessVersion?: string;
   monotonic_ns?: string;
+  hook_name?: string;
+  hook_duration_ms?: number;
 }
 
 export interface HookIntakeGroupV2 {
@@ -232,7 +234,11 @@ function readIntakeRecord(path: string): HookIntakeRecordV2 | undefined {
     !/^build_[a-zA-Z0-9._-]{1,127}$/.test(record.build_id) ||
     !["linux", "windows", "macos", "unknown"].includes(record.platform) ||
     (record.bridge !== undefined && record.bridge !== "codex-wsl") ||
-    (record.monotonic_ns !== undefined && !/^\d+$/.test(record.monotonic_ns))
+    (record.monotonic_ns !== undefined && !/^\d+$/.test(record.monotonic_ns)) ||
+    (record.hook_name !== undefined &&
+      !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(record.hook_name)) ||
+    (record.hook_duration_ms !== undefined &&
+      (!Number.isSafeInteger(record.hook_duration_ms) || record.hook_duration_ms < 0))
   ) {
     return undefined;
   }

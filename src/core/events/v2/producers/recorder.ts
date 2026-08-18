@@ -87,6 +87,13 @@ interface OpenWaitV2 {
   started_monotonic_ns?: string;
 }
 
+interface TurnHarnessTimingV2 {
+  hook_time_ms: number;
+  hook_count: number;
+  slowest_hook?: string;
+  slowest_hook_ms: number;
+}
+
 interface PendingEventV2 {
   source_id?: `hid_${string}`;
   event: EventV2;
@@ -121,6 +128,7 @@ export interface HookProducerStateV2 {
   delegations: DelegationStateV2[];
   closed_spans: ClosedSpanV2[];
   waits: OpenWaitV2[];
+  turn_harness: TurnHarnessTimingV2;
   turn_ordinal: number;
   pending?: PendingEventV2;
 }
@@ -142,6 +150,8 @@ export interface RecordHookSignalV2Input {
   adapterVersion?: string;
   harnessVersion?: string;
   monotonic_ns?: string;
+  hook_name?: string;
+  hook_duration_ms?: number;
   writerOptions?: WriteEventV2Options;
 }
 
@@ -314,6 +324,10 @@ function intakeRecord(input: RecordHookSignalV2Input): HookIntakeRecordV2 {
     ...(input.adapterVersion ? { adapterVersion: input.adapterVersion } : {}),
     ...(input.harnessVersion ? { harnessVersion: input.harnessVersion } : {}),
     ...(input.monotonic_ns ? { monotonic_ns: input.monotonic_ns } : {}),
+    ...(input.hook_name ? { hook_name: safeRole(input.hook_name) } : {}),
+    ...(input.hook_duration_ms !== undefined
+      ? { hook_duration_ms: Math.max(0, Math.floor(input.hook_duration_ms)) }
+      : {}),
   };
 }
 
@@ -335,6 +349,8 @@ function inputForIntakeRecord(
     ...(record.adapterVersion ? { adapterVersion: record.adapterVersion } : {}),
     ...(record.harnessVersion ? { harnessVersion: record.harnessVersion } : {}),
     ...(record.monotonic_ns ? { monotonic_ns: record.monotonic_ns } : {}),
+    ...(record.hook_name ? { hook_name: record.hook_name } : {}),
+    ...(record.hook_duration_ms !== undefined ? { hook_duration_ms: record.hook_duration_ms } : {}),
   };
 }
 
@@ -555,6 +571,8 @@ function processHookSignalLocked(
           input.payload.turn_id,
         ).replace(/^hid_/, "tid_") as `tid_${string}`)
       : undefined;
+
+    recordTurnHarnessTiming(state, input);
 
     closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
     if (input.signal === "permission-request") {
@@ -1322,6 +1340,7 @@ function newProducerState(
     delegations: [],
     closed_spans: [],
     waits: [],
+    turn_harness: emptyTurnHarnessTiming(),
     turn_ordinal: 0,
   };
 }
@@ -1385,6 +1404,7 @@ function applyCommittedEvent(state: HookProducerStateV2, event: EventV2): void {
   if (event.event_type === "turn.completed") {
     state.current_turn_id = undefined;
     state.tool_call_count = 0;
+    state.turn_harness = emptyTurnHarnessTiming();
   }
   if (event.event_type === "session.ended") state.terminal = true;
 }
@@ -1608,6 +1628,7 @@ function readProducerState(path: string): HookProducerStateV2 {
   // Additive format-2 state: existing files predate wait tracking but remain
   // valid and acquire an empty set on their next read.
   state.waits ??= [];
+  state.turn_harness ??= emptyTurnHarnessTiming();
   const allowedKeys = new Set([
     "adapter",
     "attestation_id",
@@ -1630,6 +1651,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     "started_event_id",
     "terminal",
     "tool_call_count",
+    "turn_harness",
     "turn_ordinal",
     "waits",
   ]);
@@ -1650,6 +1672,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     state.next_sequence < 1 ||
     !Number.isSafeInteger(state.tool_call_count) ||
     state.tool_call_count < 0 ||
+    !validTurnHarnessTiming(state.turn_harness) ||
     typeof state.terminal !== "boolean" ||
     !Array.isArray(state.spans) ||
     !Array.isArray(state.delegations) ||
@@ -1708,6 +1731,43 @@ function readProducerState(path: string): HookProducerStateV2 {
     throw new Error("V2 producer state is invalid");
   }
   return state;
+}
+
+function recordTurnHarnessTiming(state: HookProducerStateV2, input: RecordHookSignalV2Input): void {
+  if (input.signal === "user-prompt-submit") state.turn_harness = emptyTurnHarnessTiming();
+  if (
+    input.hook_duration_ms === undefined ||
+    (!state.current_turn_id && input.signal !== "user-prompt-submit")
+  ) {
+    return;
+  }
+  const duration = Math.max(0, Math.floor(input.hook_duration_ms));
+  if (!Number.isSafeInteger(duration)) return;
+  const hook = safeRole(input.hook_name ?? input.signal);
+  state.turn_harness = {
+    hook_time_ms: state.turn_harness.hook_time_ms + duration,
+    hook_count: state.turn_harness.hook_count + 1,
+    slowest_hook:
+      duration >= state.turn_harness.slowest_hook_ms ? hook : state.turn_harness.slowest_hook,
+    slowest_hook_ms: Math.max(duration, state.turn_harness.slowest_hook_ms),
+  };
+}
+
+function emptyTurnHarnessTiming(): TurnHarnessTimingV2 {
+  return { hook_time_ms: 0, hook_count: 0, slowest_hook_ms: 0 };
+}
+
+function validTurnHarnessTiming(value: TurnHarnessTimingV2): boolean {
+  return (
+    Number.isSafeInteger(value.hook_time_ms) &&
+    value.hook_time_ms >= 0 &&
+    Number.isSafeInteger(value.hook_count) &&
+    value.hook_count >= 0 &&
+    Number.isSafeInteger(value.slowest_hook_ms) &&
+    value.slowest_hook_ms >= 0 &&
+    (value.slowest_hook === undefined ||
+      /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(value.slowest_hook))
+  );
 }
 
 function pidIsAlive(pid: number): boolean {

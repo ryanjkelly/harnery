@@ -95,6 +95,11 @@ describe("agent-hook V2 hard cut", () => {
     expect(ledger.diagnostics).toEqual([]);
     expect(ledger.events.some(({ event }) => event.event_type === "session.started")).toBeTrue();
     expect(ledger.events.some(({ event }) => event.event_type === "session.ended")).toBeTrue();
+    const completedTool = ledger.events
+      .map(({ event }) => event)
+      .find((event) => event.event_type === "tool.completed" && event.payload.tool.name === "Bash");
+    if (completedTool?.event_type !== "tool.completed") throw new Error("tool terminal missing");
+    expect(completedTool.payload.duration_ms.state).toBe("observed");
     expect(ledger.events.length).toBeGreaterThan(2);
   });
 

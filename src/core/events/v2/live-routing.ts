@@ -83,6 +83,8 @@ export function recordLiveHookSignalV2(input: {
   workflow_agent_id?: string;
   bridge?: "codex-wsl";
   monotonic_ns?: string;
+  hook_name?: string;
+  hook_duration_ms?: number;
 }): RecordHookSignalV2Result | { state: "ignored" } {
   const signal = hookSignalV2(input.eventName);
   if (!signal) return { state: "ignored" };
@@ -101,6 +103,8 @@ export function recordLiveHookSignalV2(input: {
     platform: livePlatformV2(),
     ...(input.bridge ? { bridge: input.bridge } : {}),
     monotonic_ns: input.monotonic_ns,
+    hook_name: input.hook_name,
+    hook_duration_ms: input.hook_duration_ms,
   });
 }
 

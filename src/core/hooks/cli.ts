@@ -49,6 +49,7 @@ import {
   recordLiveHookSignalV2,
   resolveLiveEventLedgerRouteV2,
 } from "../events/v2/live-routing.ts";
+import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { fetchPresence } from "../presence/index.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
 import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
@@ -530,6 +531,8 @@ function numberField(value: unknown): number | undefined {
 }
 
 async function main(): Promise<number> {
+  const hookStartedAt = performance.now();
+  const hookClock = captureSpanClockV3();
   const { eventName, extra } = parseArgv(process.argv.slice(2));
   const adapter = detectAdapter(process.argv.slice(2));
   const raw = await readStdin();
@@ -669,6 +672,9 @@ async function main(): Promise<number> {
         }
       : {}),
     ...(adapter === "codex" && isWslUncPath(payload?.cwd) ? { bridge: "codex-wsl" as const } : {}),
+    hook_name: eventName,
+    hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
+    monotonic_ns: hookClock.monotonic_ns,
   });
   const v2EventId =
     v2Result && "event" in v2Result
