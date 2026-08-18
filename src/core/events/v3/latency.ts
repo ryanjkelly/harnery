@@ -6,6 +6,13 @@ export type LatencyMetricV3 =
   | { state: "observed"; value_ms: number }
   | { state: "unknown"; known_ms: number; reasons: string[] };
 
+export interface ToolLatencyV3 {
+  namespace: string;
+  name: string;
+  count: number;
+  duration_ms: LatencyMetricV3;
+}
+
 export interface TurnLatencyV3 {
   generation_id: string;
   turn_id: string;
@@ -23,6 +30,7 @@ export interface TurnLatencyV3 {
   over_attributed_ms: number;
   context_percent: number | null;
   span_counts: { tool: number; command: number; wait: number };
+  tool_breakdown: ToolLatencyV3[];
 }
 
 export type LatencyProjectionDiagnosticCodeV3 =
@@ -133,6 +141,20 @@ function projectTurn(
     diagnostics.push({ code: "over_attributed", event_id: terminal.event_id });
 
   const scope = terminal.scope;
+  const toolBreakdown = [...groupByTool(toolEvents).entries()]
+    .map(([key, groupedEvents]) => {
+      const [namespace, name] = key.split("\0");
+      return {
+        namespace: namespace ?? "",
+        name: name ?? "",
+        count: groupedEvents.length,
+        duration_ms: metricFromIntervals(intervalSet(groupedEvents, wallInterval, diagnostics)),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.namespace.localeCompare(right.namespace) || left.name.localeCompare(right.name),
+    );
   return {
     generation_id: scope.generation_id ?? "",
     turn_id: scope.turn_id ?? "",
@@ -154,7 +176,20 @@ function projectTurn(
       command: commandEvents.length,
       wait: waitEvents.length,
     },
+    tool_breakdown: toolBreakdown,
   };
+}
+
+function groupByTool(events: EventShape[]): Map<string, EventShape[]> {
+  const groups = new Map<string, EventShape[]>();
+  for (const event of events) {
+    const tool = record(event.payload.tool);
+    const key = `${string(tool.namespace)}\0${string(tool.name)}`;
+    const group = groups.get(key) ?? [];
+    group.push(event);
+    groups.set(key, group);
+  }
+  return groups;
 }
 
 function intervalSet(

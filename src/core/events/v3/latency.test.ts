@@ -19,6 +19,8 @@ describe("event ledger V3 latency projection", () => {
     const toolOne = terminal("tool.completed", 2, "2026-08-18T14:00:00.000Z", 600);
     const command = terminal("command.completed", 3, "2026-08-18T14:00:00.100Z", 200);
     const toolTwo = terminal("tool.completed", 4, "2026-08-18T14:00:00.400Z", 400);
+    fixtureObject(toolOne.payload).tool = { namespace: "functions", name: "exec" };
+    fixtureObject(toolTwo.payload).tool = { namespace: "functions", name: "exec" };
     const wait = terminal("wait.ended", 5, "2026-08-18T14:00:00.800Z", 100);
     const context = eventV3Fixture("context.observed", 6);
     fixtureObject(context.payload).measurement = observed({
@@ -45,6 +47,14 @@ describe("event ledger V3 latency projection", () => {
       over_attributed_ms: 0,
       context_percent: 50,
       span_counts: { tool: 2, command: 1, wait: 1 },
+      tool_breakdown: [
+        {
+          namespace: "functions",
+          name: "exec",
+          count: 2,
+          duration_ms: { state: "observed", value_ms: 800 },
+        },
+      ],
     });
   });
 

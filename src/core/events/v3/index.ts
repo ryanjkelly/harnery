@@ -27,6 +27,21 @@ export {
   type WaitKindV3,
   WaitKindV3Schema,
 } from "./contract.ts";
+export {
+  type CostMetricV3,
+  type DelegationRollupDiagnosticCodeV3,
+  type DelegationRollupV3,
+  type EconomicsProjectionOptionsV3,
+  type EconomicsProjectionV3,
+  EVENT_V3_ECONOMICS_PROJECTION_VERSION,
+  type GenerationEconomicsV3,
+  type ModelPricingV3,
+  projectDelegationRollupV3,
+  projectEconomicsV3,
+  type TokenTotalsMetricV3,
+  type TokenTotalsV3,
+  type TurnEconomicsV3,
+} from "./economics.ts";
 export { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 export {
   EVENT_V3_LATENCY_PROJECTION_VERSION,
@@ -35,6 +50,7 @@ export {
   type LatencyProjectionDiagnosticV3,
   type LatencyProjectionV3,
   projectLatencyV3,
+  type ToolLatencyV3,
   type TurnLatencyV3,
 } from "./latency.ts";
 export {

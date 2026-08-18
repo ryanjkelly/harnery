@@ -39,6 +39,7 @@ import { registerDoctorCommand } from "./commands/doctor.ts";
 import { registerEditBatchCommand } from "./commands/edit-batch.ts";
 import { registerEmlCommand } from "./commands/eml.ts";
 import { registerEnvCommand } from "./commands/env.ts";
+import { registerEventsCommand } from "./commands/events.ts";
 import { registerFetchCommand } from "./commands/fetch.ts";
 import { registerFileHistoryCommand } from "./commands/file-history.ts";
 import { registerGovernorCommand } from "./commands/governor.ts";
@@ -289,6 +290,7 @@ export function createHarneryProgram(opts: HarneryContextOpts = {}): Command {
   registerCheckpointCommand(program, emit, opts.context);
   registerJournalCommand(program, emit);
   registerLedgerV2Command(program, emit, opts.context);
+  registerEventsCommand(program, emit, opts.context);
   registerArtifactsCommand(program, emit, opts.context);
   registerDecisionCommand(program, emit);
   registerDevtoolsCommand(program, emit);
