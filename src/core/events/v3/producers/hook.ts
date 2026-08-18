@@ -1,4 +1,5 @@
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import type { EventV2 } from "../../v2/contract.ts";
 import {
   type HookProducerContextV2,
   type HookSignalV2,
@@ -32,6 +33,7 @@ const TERMINAL_EVENT_TYPES = new Set([
   "turn.completed",
   "tool.completed",
   "agent.completed",
+  "interaction.wait_ended",
 ]);
 
 export type HookEventV3 = EventOfTypeV3<EventTypeV3>;
@@ -52,6 +54,15 @@ export function normalizeHookEventV3(
 ): HookEventV3 | null {
   const base = normalizeHookEventV2(signal, payload, context);
   if (!base) return null;
+  return upgradeHookEventV3(base, payload, context);
+}
+
+/** Upgrade recorder-synthesized hook events, including resolving wait terminals. */
+export function upgradeHookEventV3(
+  base: EventV2,
+  source: ParsedPayload,
+  context: HookProducerContextV3,
+): HookEventV3 | null {
   if (TERMINAL_EVENT_TYPES.has(base.event_type) && !context.terminal_span) return null;
   if (base.event_type === "agent.started" && (!context.span_id || !context.parent_span_id)) {
     return null;
@@ -64,7 +75,12 @@ export function normalizeHookEventV3(
       major: EVENT_V3_CONTRACT_MAJOR,
       schema_digest: EVENT_V3_SCHEMA_DIGEST,
     },
-    event_type: base.event_type === "interaction.wait_started" ? "wait.started" : base.event_type,
+    event_type:
+      base.event_type === "interaction.wait_started"
+        ? "wait.started"
+        : base.event_type === "interaction.wait_ended"
+          ? "wait.ended"
+          : base.event_type,
     links:
       base.event_type === "agent.started"
         ? {
@@ -73,7 +89,7 @@ export function normalizeHookEventV3(
             parent_span_id: context.parent_span_id as `span_${string}`,
           }
         : base.links,
-    payload: terminalPayload(base.event_type, base.payload, payload, context),
+    payload: terminalPayload(base.event_type, base.payload, source, context),
   };
   assertEventV3(event);
   return event as HookEventV3;

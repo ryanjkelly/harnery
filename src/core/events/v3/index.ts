@@ -79,6 +79,7 @@ export {
   type HookEventV3,
   type HookProducerContextV3,
   normalizeHookEventV3,
+  upgradeHookEventV3,
 } from "./producers/hook.ts";
 export {
   type LedgerCursorV3,
