@@ -217,6 +217,16 @@ function applyEvent(projection: SafetyProjectionV3, positioned: PositionedEventV
         event_id: event.event_id,
       };
       return;
+    case "health.capability_drift":
+      // Emitted after session.ended on purpose (payload.generation_ended).
+      // Must not take the generation-scoped event_after_terminal path, which
+      // fail-closes the whole ledger and blocks every agent from editing files.
+      projection.health[`capability:${event.payload.signal}`] = {
+        severity: "warning",
+        condition: event.payload.signal,
+        event_id: event.event_id,
+      };
+      return;
     case "session.termination_observed":
       applyProvisionalTermination(projection, event);
       return;
