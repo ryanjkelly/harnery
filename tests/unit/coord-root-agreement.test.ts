@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCoordRoot } from "../../src/core/agents/coord-client.ts";
+import { initializeV2Fixture, seedV2Session } from "../helpers/event-v2.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -32,29 +33,14 @@ function makeFixture(): Fixture {
   for (const root of [outer, nested]) {
     mkdirSync(join(root, ".harnery", "active"), { recursive: true });
     mkdirSync(join(root, ".harnery", "pid-map"), { recursive: true });
+    initializeV2Fixture(root);
   }
   return { outer, nested, session: "sess-coord-agree-1" };
 }
 
-/** Register a live session in one root, the way the hook's session.start does. */
+/** Register a live session through the canonical V2 hook producer. */
 function seedSession(root: string, session: string): void {
-  writeFileSync(
-    join(root, ".harnery", "active", `${session}.json`),
-    JSON.stringify({
-      instance_id: session,
-      session_id: session,
-      agent_id: session,
-      kind: "session",
-      platform: "claude-code",
-      started_at: new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
-      files_touched: [],
-    }),
-  );
-}
-
-function iso(secondsFromNow: number): string {
-  return new Date(Date.now() + secondsFromNow * 1000).toISOString();
+  seedV2Session(root, session, { sessionId: session, adapter: "claude-code" });
 }
 
 describe("resolveCoordRoot: one root for the hook and the CLI", () => {
@@ -62,6 +48,7 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
     override: process.env.HARNERY_COORD_ROOT_OVERRIDE,
     projectDir: process.env.CLAUDE_PROJECT_DIR,
     session: process.env.HARNERY_AGENT_COORD_SESSION_ID,
+    platform: process.env.HARNERY_AGENT_COORD_PLATFORM,
   };
 
   afterEach(() => {
@@ -69,6 +56,7 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
       ["HARNERY_COORD_ROOT_OVERRIDE", saved.override],
       ["CLAUDE_PROJECT_DIR", saved.projectDir],
       ["HARNERY_AGENT_COORD_SESSION_ID", saved.session],
+      ["HARNERY_AGENT_COORD_PLATFORM", saved.platform],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -79,6 +67,7 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
     const { nested, session } = makeFixture();
     seedSession(nested, session);
     process.env.HARNERY_AGENT_COORD_SESSION_ID = session;
+    process.env.HARNERY_AGENT_COORD_PLATFORM = "claude-code";
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
 
@@ -94,6 +83,7 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
     const { outer, nested, session } = makeFixture();
     seedSession(outer, session);
     process.env.HARNERY_AGENT_COORD_SESSION_ID = session;
+    process.env.HARNERY_AGENT_COORD_PLATFORM = "claude-code";
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
 
@@ -103,13 +93,14 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
   test("no root knows the session → nearest enclosing .harnery/", () => {
     const { nested, session } = makeFixture();
     process.env.HARNERY_AGENT_COORD_SESSION_ID = session; // registered nowhere
+    process.env.HARNERY_AGENT_COORD_PLATFORM = "claude-code";
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
 
     expect(resolveCoordRoot(nested)).toBe(nested);
   });
 
-  test("a stale heartbeat does not claim the session", () => {
+  test("a stale cache row does not claim the session", () => {
     const { outer, nested, session } = makeFixture();
     seedSession(outer, session);
     writeFileSync(
@@ -117,10 +108,11 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
       JSON.stringify({
         instance_id: session,
         session_id: session,
-        last_heartbeat: iso(-60 * 60),
+        last_heartbeat: "2000-01-01T00:00:00.000Z",
       }),
     );
     process.env.HARNERY_AGENT_COORD_SESSION_ID = session;
+    process.env.HARNERY_AGENT_COORD_PLATFORM = "claude-code";
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
 
@@ -131,6 +123,7 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
     const { outer, nested, session } = makeFixture();
     seedSession(nested, session);
     process.env.HARNERY_AGENT_COORD_SESSION_ID = session;
+    process.env.HARNERY_AGENT_COORD_PLATFORM = "claude-code";
 
     process.env.CLAUDE_PROJECT_DIR = outer;
     expect(resolveCoordRoot(nested)).toBe(outer);

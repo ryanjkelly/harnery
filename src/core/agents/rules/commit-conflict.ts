@@ -21,10 +21,11 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
 import { resolveOwner } from "../../hooks/resolve/owner.ts";
+import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 import { instanceHasLivePid } from "../state/pidmap.ts";
 
 interface PeerHeartbeat {
@@ -361,19 +362,7 @@ function isPathCleanInHead(coordRoot: string, relPath: string): boolean {
 }
 
 function readActivePeers(coordRoot: string): PeerHeartbeat[] {
-  const dir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(dir)) return [];
-  const out: PeerHeartbeat[] = [];
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as PeerHeartbeat;
-      if (hb.instance_id) out.push(hb);
-    } catch {
-      /* skip */
-    }
-  }
-  return out;
+  return readLiveCoordinationRows(coordRoot);
 }
 
 function shortName(peer: PeerHeartbeat): string {

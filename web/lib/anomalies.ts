@@ -5,10 +5,10 @@
  * Runs server-side on the dashboard. Heuristics, not absolutes; the goal is
  * to nudge the operator to look, not to take action automatically. Mirrors
  * the upstream app's lib/agents-coord/anomalies.ts, adapted for harnery's event
- * shape (event_type + data:Record).
+ * shape (canonical event_type + privacy-safe payload).
  *
  * Heuristics today:
- *  - **stop_loop**: same `command_start` cmd repeated N+ times in a row in
+ *  - **stop_loop**: same `command.started` fingerprint repeated N+ times in a row in
  *    the last 5 minutes for one agent. Catches the stop-hook write-flush race.
  *  - **task_stale**: `task_updated_at` older than 30min while heartbeats are
  *    still arriving fresh: agent declaring a task at session start and
@@ -17,7 +17,7 @@
  *    window: usually means the agent is fighting one persistent error.
  */
 
-import { readAgents, readEvents, type Heartbeat } from "./coord-reader";
+import { type Heartbeat, readAgents, readEvents } from "./coord-reader";
 
 export type AnomalySeverity = "info" | "warning";
 
@@ -68,15 +68,18 @@ export function detectAnomalies(opts: AnomalyOptions = {}): Anomaly[] {
     const hb = all.find((h) => h.name === agent);
     const agent_id = hb?.instance_id;
 
-    // ── Heuristic 1: repeated identical command_start in a row
+    // ── Heuristic 1: repeated identical command.started fingerprints in a row
     const recentStarts = evs
-      .filter((e) => e.event_type === "command_start")
+      .filter((e) => e.event_type === "command.started")
       .slice(-12)
       .reverse(); // readEvents returns newest-first; flip so oldest-first
     if (recentStarts.length >= 4) {
-      const cmds = recentStarts.map((e) =>
-        String((e.data?.cmd ?? "") as string).trim(),
-      );
+      const cmds = recentStarts.map((e) => {
+        const fingerprint = e.data.exact_command;
+        return typeof fingerprint === "object" && fingerprint !== null
+          ? String((fingerprint as { digest?: unknown }).digest ?? "")
+          : "";
+      });
       const last = cmds[cmds.length - 1] ?? "";
       let streak = 0;
       for (let i = cmds.length - 1; i >= 0; i--) {
@@ -91,16 +94,18 @@ export function detectAnomalies(opts: AnomalyOptions = {}): Anomaly[] {
           agent_id,
           kind: "stop_loop",
           message: `${agent} ran the same command ${streak} times in a row`,
-          detail: last.slice(0, 200),
+          detail: `exact command fingerprint ${last.slice(0, 24)}…`,
         });
       }
     }
 
     // ── Heuristic 2: ≥3 non-zero exits in the window
     const failedEnds = evs.filter((e) => {
-      if (e.event_type !== "command_end") return false;
-      const exit = e.data?.exit;
-      return typeof exit === "number" && exit !== 0;
+      if (e.event_type !== "command.completed") return false;
+      return (
+        e.data.outcome === "failed" ||
+        (typeof e.data.exit_code === "number" && e.data.exit_code !== 0)
+      );
     });
     if (failedEnds.length >= 3) {
       out.push({

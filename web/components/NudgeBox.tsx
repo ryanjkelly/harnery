@@ -13,13 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
  * the existing /api/actions/ping route which goes through harnery's
  * appendEntry into .harnery/journal/<owner>.md.
  */
-export function NudgeBox({
-  instanceId,
-  agentName,
-}: {
-  instanceId: string;
-  agentName: string;
-}) {
+export function NudgeBox({ instanceId, agentName }: { instanceId: string; agentName: string }) {
   const { binName } = useHostInfo();
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
@@ -82,9 +76,8 @@ export function NudgeBox({
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          Appends a <code>handoff</code> entry to {agentName}&apos;s journal.
-          Visible to the agent on next <code>{`${binName} journal read`}</code> or
-          SessionStart recovery cue.
+          Appends a <code>handoff</code> entry to {agentName}&apos;s journal. Visible to the agent
+          on next <code>{`${binName} journal read`}</code> or SessionStart recovery cue.
         </p>
 
         <div className="flex flex-wrap gap-2">
@@ -125,14 +118,10 @@ export function NudgeBox({
         </div>
 
         {status.kind === "ok" && (
-          <p className="text-xs text-emerald-600 dark:text-emerald-400">
-            ✓ nudge sent.
-          </p>
+          <p className="text-xs text-emerald-600 dark:text-emerald-400">✓ nudge sent.</p>
         )}
         {status.kind === "error" && (
-          <p className="text-xs text-rose-600 dark:text-rose-400 font-mono">
-            ✗ {status.reason}
-          </p>
+          <p className="text-xs text-rose-600 dark:text-rose-400 font-mono">✗ {status.reason}</p>
         )}
       </CardContent>
     </Card>

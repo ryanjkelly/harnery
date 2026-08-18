@@ -22,6 +22,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { artifactDefaultRetentionDays } from "../config.ts";
 
 export const ARTIFACTS_DIR = join(".harnery", "artifacts");
@@ -437,12 +438,10 @@ function ownerLiveness(
   now: Date,
   freshnessSeconds: number,
 ): "live" | "stale" | "unknown" {
-  const path = join(repoRoot, ".harnery", "active", `${instanceId}.json`);
-  if (!existsSync(path)) return "stale";
   try {
-    const hb = JSON.parse(readFileSync(path, "utf8")) as { last_heartbeat?: unknown };
-    if (typeof hb.last_heartbeat !== "string") return "unknown";
-    const ts = Date.parse(hb.last_heartbeat);
+    const row = readLiveCoordinationRow(repoRoot, instanceId);
+    if (!row) return "stale";
+    const ts = Date.parse(row.last_heartbeat);
     if (!Number.isFinite(ts)) return "unknown";
     return now.getTime() - ts <= freshnessSeconds * 1000 ? "live" : "stale";
   } catch {

@@ -10,7 +10,7 @@ describe("event ledger V2 session-tee producer", () => {
     const context = commandContext();
     const secret = "API_TOKEN=super-secret-value";
     const started = normalizeCommandEventV2(
-      "command-start",
+      "command.started",
       {
         native_command_id: "run-123",
         executable: "toolkit",
@@ -23,7 +23,7 @@ describe("event ledger V2 session-tee producer", () => {
       context,
     )!;
     const output = normalizeCommandEventV2(
-      "command-output",
+      "command.output_observed",
       {
         native_command_id: "run-123",
         stream: "stdout",
@@ -37,7 +37,7 @@ describe("event ledger V2 session-tee producer", () => {
       },
     )!;
     const completed = normalizeCommandEventV2(
-      "command-completed",
+      "command.completed",
       {
         native_command_id: "run-123",
         exit_code: 0,
@@ -71,12 +71,12 @@ describe("event ledger V2 session-tee producer", () => {
   test("uses stable source correlation while separating command and output domains", () => {
     const context = commandContext();
     const started = normalizeCommandEventV2(
-      "command-start",
+      "command.started",
       { native_command_id: "same", argv: ["toolkit", "status"] },
       context,
     )!;
     const output = normalizeCommandEventV2(
-      "command-output",
+      "command.output_observed",
       { native_command_id: "same", output: ["toolkit", "status"] },
       { ...context, sequence: 2 },
     )!;

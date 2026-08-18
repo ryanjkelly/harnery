@@ -22,7 +22,7 @@ interface PageProps {
 /**
  * /live: structured command projection of the canonical V2 ledger.
  * command stream: the host CLI `command.*` + `narration` AND bare shell commands
- * (Bash `tool.pre_use` / `tool.post_use`, with their `# intent:` narration).
+ * (canonical `tool.requested` / `tool.completed`, with their intent metadata).
  * Non-command tool calls (Read/Edit/Write/…) and state/session events belong to
  * `/events`.
  *
@@ -40,7 +40,7 @@ export default async function LivePage({ searchParams }: PageProps) {
   const { binName } = hostInfo();
   const snap = readAgents();
   const all = [...snap.active, ...snap.stale];
-  // Durable instance_id → identity from session.start (main agents) +
+  // Durable instance_id → identity from canonical V2 session events.
   // subagent.start (subagents). Persists past session end, so a finished
   // agent's rows keep its name instead of reverting to a raw instance_id.
   // One scan, shared with the summary builders below.
@@ -55,7 +55,7 @@ export default async function LivePage({ searchParams }: PageProps) {
     if (!instanceToName[iid]) instanceToName[iid] = id.name;
   }
   const agentNames = Array.from(new Set(all.map((h) => h.name))).sort();
-  // Hover cards, lowest-priority first: ended main agents (session.start) and
+  // Hover cards, lowest-priority first: ended main agents and
   // subagents (subagent.start) from the durable log, then live/recent main
   // agents, which override the rest on any name collision.
   const summaries = {

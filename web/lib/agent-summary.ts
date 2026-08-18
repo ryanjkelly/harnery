@@ -1,6 +1,6 @@
 /**
  * Per-agent summary: identity registry entry + current activity state
- * (live heartbeat OR most-recent journal archive). Server-side helper;
+ * (live V2 generation or most-recent journal archive). Server-side helper;
  * fed to `<AgentChipProvider>` so AgentChip popovers render with persona
  * metadata baked in (no client-side FS reads).
  */
@@ -8,7 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { coordRoot, type Heartbeat, type InstanceIdentity } from "./coord-reader";
+import { coordRoot, type Heartbeat, type InstanceIdentity, readAgents } from "./coord-reader";
 import { type AgentIdentity, lookupByName } from "./identities";
 
 export interface AgentSummary {
@@ -30,10 +30,7 @@ export interface AgentSummary {
   activity?: Heartbeat["activity"];
   task_state?: Heartbeat["task_state"];
   task_state_reason?: string | null;
-  last_tool?: string | null;
-  last_tool_target?: string | null;
   files_touched?: string[];
-  turn_summary?: string | null;
   /** For subagents (kind === "subagent"): the parent agent's display name,
    * resolved from the dispatching session. null when the parent has exited. */
   parent?: string | null;
@@ -56,10 +53,7 @@ interface ActivityState {
   activity?: Heartbeat["activity"];
   task_state?: Heartbeat["task_state"];
   task_state_reason?: string | null;
-  last_tool?: string | null;
-  last_tool_target?: string | null;
   files_touched?: string[];
-  turn_summary?: string | null;
 }
 
 function readActiveIndex(): {
@@ -67,71 +61,43 @@ function readActiveIndex(): {
   idToName: Map<string, string>;
 } {
   const out = new Map<string, ActivityState>();
-  // EVERY heartbeat's instance_id → display name (no per-name dedupe): the
+  // Every live V2 generation's instance_id → display name (no per-name dedupe): the
   // lookup table for resolving a subagent's session_id to its parent's name.
   const idToName = new Map<string, string>();
-  const dir = path.join(coordRoot(), ".harnery", "active");
-  if (!existsSync(dir)) return { byName: out, idToName };
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(path.join(dir, f), "utf-8")) as {
-        instance_id?: string;
-        name?: string;
-        last_heartbeat?: string;
-        started_at?: string;
-        session_id?: string;
-        kind?: string | null;
-        platform?: string | null;
-        model?: string | null;
-        task?: string | null;
-        activity?: Heartbeat["activity"];
-        task_state?: Heartbeat["task_state"];
-        task_state_reason?: string | null;
-        last_tool?: string | null;
-        last_tool_target?: string | null;
-        files_touched?: string[];
-        turn_summary?: string | null;
-      };
-      if (!hb.name) continue;
-      if (hb.instance_id) idToName.set(hb.instance_id, hb.name);
-      const bare = (
-        hb.name.startsWith("agent-") ? hb.name.slice("agent-".length) : hb.name
-      ).toLowerCase();
-      const last_seen = hb.last_heartbeat ?? new Date().toISOString();
-      const prior = out.get(bare);
-      if (!prior || prior.last_seen < last_seen) {
-        out.set(bare, {
-          state: "active",
-          last_seen,
-          instance_id: hb.instance_id,
-          session_id: hb.session_id,
-          kind: hb.kind ?? null,
-          platform: hb.platform ?? null,
-          model: hb.model ?? null,
-          started_at: hb.started_at,
-          task: hb.task ?? null,
-          activity: hb.activity ?? "unknown",
-          task_state: hb.task_state ?? "active",
-          task_state_reason: hb.task_state_reason ?? null,
-          last_tool: hb.last_tool ?? null,
-          last_tool_target: hb.last_tool_target ?? null,
-          files_touched: hb.files_touched ?? [],
-          turn_summary: hb.turn_summary ?? null,
-        });
-      }
-    } catch {
-      /* skip unreadable */
+  for (const hb of readAgents().active) {
+    if (!hb.name) continue;
+    idToName.set(hb.instance_id, hb.name);
+    const bare = (
+      hb.name.startsWith("agent-") ? hb.name.slice("agent-".length) : hb.name
+    ).toLowerCase();
+    const last_seen = hb.last_heartbeat;
+    const prior = out.get(bare);
+    if (!prior || prior.last_seen < last_seen) {
+      out.set(bare, {
+        state: "active",
+        last_seen,
+        instance_id: hb.instance_id,
+        session_id: hb.session_id,
+        kind: hb.kind ?? null,
+        platform: hb.platform ?? null,
+        model: hb.model ?? null,
+        started_at: hb.started_at,
+        task: hb.task ?? null,
+        activity: hb.activity ?? "unknown",
+        task_state: hb.task_state ?? "active",
+        task_state_reason: hb.task_state_reason ?? null,
+        files_touched: hb.files_touched ?? [],
+      });
     }
   }
   return { byName: out, idToName };
 }
 
 /**
- * Resolve a live subagent heartbeat's parent linkage. A subagent's heartbeat
+ * Resolve a live subagent generation's parent linkage. A subagent projection
  * carries `session_id` = the dispatching parent's instance_id (the subagent
  * runs inside the parent's session), so the parent's display name is one map
- * lookup away, with no event-log read required. Pure function so it's
+ * lookup away. Pure function so it's
  * unit-testable without a coordRoot.
  *
  * Returns null for non-subagents (caller spreads nothing; main-agent entries
@@ -159,8 +125,7 @@ export function resolveSubagentLinkage(
   const sid = activity.session_id;
   // Guard the self-referential case (session_id === instance_id is the
   // main-agent shape; on a subagent it means a malformed heartbeat).
-  const parentRaw =
-    sid && sid !== activity.instance_id ? (idToName.get(sid) ?? null) : null;
+  const parentRaw = sid && sid !== activity.instance_id ? (idToName.get(sid) ?? null) : null;
   const parent = parentRaw
     ? parentRaw.startsWith("agent-")
       ? parentRaw.slice("agent-".length)
@@ -193,7 +158,7 @@ function readJournalIndex(): Map<string, ActivityState> {
         out.set(bare, { state: "stale", last_seen: iso });
       }
     } catch {
-      /* skip */
+      /* skip unreadable archive */
     }
   }
   return out;
@@ -202,12 +167,12 @@ function readJournalIndex(): Map<string, ActivityState> {
 /** Durable per-name session metadata that outlives the heartbeat. */
 export interface SessionMeta {
   platform: string | null;
-  /** The model the agent last used (from its newest session's turn.stops). */
+  /** The model the agent last used (from its newest canonical V2 turn evidence). */
   model: string | null;
 }
 
 /**
- * name → {platform, model} fallback from durable `session.start` identities
+ * name → {platform, model} fallback from durable `session.started` identities
  * (newest session wins per bare name, as a unit, never mixing fields across
  * sessions). Heartbeats carry both while live, but they die with the heartbeat;
  * journal-archive stale entries have neither, so "which adapter/model was
@@ -263,7 +228,7 @@ export function buildAgentSummaryMap(
     // text), so the sentinel carries no information; its only effect was to
     // CLOBBER a richer lower-priority card in a layered merge. The /images feed
     // spreads this map LAST (highest priority) over `buildObservedAgentSummaries`;
-    // an agent that's in the feed but has no live heartbeat / recent journal /
+    // an agent that's in the feed but has no live V2 generation / recent journal /
     // identity (e.g. un-healed agent-Zoe, journal since pruned) would otherwise
     // lose its synthesized observed card to this sentinel. Skipping lets the
     // observed/ended/subagent layers survive while still letting real
@@ -298,10 +263,7 @@ export function buildAgentSummaryMap(
       activity: activity?.activity ?? "unknown",
       task_state: activity?.task_state ?? "active",
       task_state_reason: activity?.task_state_reason ?? null,
-      last_tool: activity?.last_tool,
-      last_tool_target: activity?.last_tool_target,
       files_touched: activity?.files_touched,
-      turn_summary: activity?.turn_summary,
       ...(linkage ?? {}),
     };
   }
@@ -309,25 +271,14 @@ export function buildAgentSummaryMap(
 }
 
 /**
- * active main agents: instance_id → display name, for subagent-parent
+ * Active main V2 generations: instance_id → display name, for subagent-parent
  * resolution. A subagent runs under its dispatcher's session id, so matching a
- * subagent's `session_id` to a live heartbeat's `instance_id` names its parent.
+ * subagent's `session_id` to a live generation's `instance_id` names its parent.
  */
 function activeInstanceNames(): Map<string, string> {
   const idToName = new Map<string, string>();
-  const activeDir = path.join(coordRoot(), ".harnery", "active");
-  if (!existsSync(activeDir)) return idToName;
-  for (const f of readdirSync(activeDir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(path.join(activeDir, f), "utf-8")) as {
-        instance_id?: string;
-        name?: string;
-      };
-      if (hb.instance_id && hb.name) idToName.set(hb.instance_id, hb.name);
-    } catch {
-      /* skip */
-    }
+  for (const row of readAgents().active) {
+    if (row.name) idToName.set(row.instance_id, row.name);
   }
   return idToName;
 }
@@ -369,7 +320,7 @@ export function buildSubagentSummaries(
 
 /**
  * Build AgentSummary entries for main agents whose session has ended, from the
- * durable `session.start` records (`kind === "session"`) in the shared
+ * durable `session.started` records in the shared V2 ledger
  * `identities` map. Keyed by bare name so AgentChip resolves them like live
  * agents; most-recent session wins per name.
  *
@@ -422,8 +373,8 @@ export function buildEndedAgentSummaries(
 
 /**
  * Last-resort hover-card summaries for agents that appear in some feed but have
- * neither a live heartbeat nor a `session.start`/`subagent.start` identity in
- * the log, e.g. an agent whose hooks dropped a beat so its `session.start`
+ * neither a live generation nor a `session.started` identity in
+ * the ledger, e.g. an agent whose adapter omitted its start signal
  * never landed and its heartbeat has since been pruned. We still KNOW the agent
  * exists (it left the rows we're rendering), so synthesize a minimal "stale"
  * card from whatever the row carries: a resolved display name, the most-recent
@@ -477,33 +428,20 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Union of currently-active heartbeats + recently-archived journals,
+ * Union of active V2 generations + recently-archived journals,
  * deduped by name. Used by the steward picker.
  */
 export function listKnownAgents(): KnownAgent[] {
   const root = coordRoot();
-  const activeDir = path.join(root, ".harnery", "active");
   const archiveDir = path.join(root, ".harnery", "journal", "archived");
   const byName = new Map<string, KnownAgent>();
 
-  if (existsSync(activeDir)) {
-    for (const f of readdirSync(activeDir)) {
-      if (!f.endsWith(".json")) continue;
-      try {
-        const hb = JSON.parse(readFileSync(path.join(activeDir, f), "utf-8")) as {
-          name?: string;
-          last_heartbeat?: string;
-        };
-        if (!hb.name) continue;
-        const name = hb.name.startsWith("agent-") ? hb.name : `agent-${hb.name}`;
-        const last_seen = hb.last_heartbeat ?? new Date().toISOString();
-        const existing = byName.get(name);
-        if (!existing || existing.state !== "active") {
-          byName.set(name, { name, state: "active", last_seen });
-        }
-      } catch {
-        /* skip */
-      }
+  for (const row of readAgents().active) {
+    if (!row.name) continue;
+    const name = row.name.startsWith("agent-") ? row.name : `agent-${row.name}`;
+    const existing = byName.get(name);
+    if (!existing || existing.state !== "active") {
+      byName.set(name, { name, state: "active", last_seen: row.last_heartbeat });
     }
   }
 

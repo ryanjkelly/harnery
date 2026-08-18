@@ -117,9 +117,11 @@ describe("assumeIdentity", () => {
     expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(false);
   });
 
-  test("ignores a stale namesake under the configured freshness contract", () => {
+  test("ignores a forged stale cache timestamp and follows V2 liveness", () => {
     seedHeartbeat(root, "session-old", "Beatrice", Date.now() - 20 * 60_000);
-    expect(assumeIdentity(root, "session-new", "Beatrice").name).toBe("Beatrice");
+    const result = assumeIdentity(root, "session-new", "Beatrice");
+    expect(result.name).toBe("Beatrice");
+    expect(result.reclaimed_instance_id).toBe("session-old");
   });
 });
 

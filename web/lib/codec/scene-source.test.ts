@@ -86,7 +86,7 @@ describe("Codec V2 ledger tail", () => {
 
     const rows = await readSanitizedTails([v2Path]);
     expect(rows.map((row) => row.event_id)).toEqual([eventId]);
-    expect(rows.map((row) => row.event_type)).toEqual(["session.start"]);
+    expect(rows.map((row) => row.event_type)).toEqual(["session.started"]);
   });
 });
 
@@ -96,9 +96,9 @@ describe("Codec live-display overlay", () => {
     const generationId = generationIdV2();
     const events: CodecSourceEvidence[] = [
       {
-        schema_version: 1,
+        schema_version: 2,
         event_id: eventId,
-        event_type: "command.start",
+        event_type: "command.started",
         ts: "2026-08-16T10:00:00.000Z",
         instance_id: "inst-1",
         generation_id: generationId,
@@ -204,9 +204,9 @@ describe("Codec live-display overlay", () => {
   test("ignores overlays that do not match an evidence event id", () => {
     const events: CodecSourceEvidence[] = [
       {
-        schema_version: 1,
+        schema_version: 2,
         event_id: eventIdV2(),
-        event_type: "command.start",
+        event_type: "command.started",
         ts: "2026-08-16T10:00:00.000Z",
         instance_id: "inst-1",
       },

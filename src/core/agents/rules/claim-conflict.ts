@@ -8,7 +8,7 @@
  *      the peer's name in the reason.
  *   2. Ordering: if we already hold a claim on path A and want path
  *      B, B must sort > A lexicographically. Otherwise emit
- *      claim.conflict (ordering_violation) and block.
+ *      claim.authority_conflict (ordering_violation) and block.
  *
  * Reads the authority-safe V2 coordination projection. Disposable heartbeat
  * caches are materialization targets, never the source of claim authority.
@@ -89,7 +89,7 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
       return {
         allow: false,
         exit_code: 2,
-        rule: "claim.conflict",
+        rule: "claim.authority_conflict",
         reason: `File ${req.path} is currently being edited by agent-${conflict.name ?? conflict.instance_id.slice(0, 8)}. Wait for them to finish or pick a different file. Set HARNERY_AGENT_COORD_OFF=1 to bypass (not recommended).`,
       };
     }

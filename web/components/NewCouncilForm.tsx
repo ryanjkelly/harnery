@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { AlertCircle, ChevronRight } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useMemo, useState, useTransition } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,9 +101,7 @@ export function NewCouncilForm({
         // Guard: if the API ever omits council_id, land on the list page
         // rather than a broken /councils/undefined URL.
         router.push(
-          data.council_id
-            ? `/councils/${encodeURIComponent(data.council_id)}`
-            : "/councils",
+          data.council_id ? `/councils/${encodeURIComponent(data.council_id)}` : "/councils",
         );
       } catch (err) {
         setError((err as Error).message);
@@ -147,15 +145,13 @@ export function NewCouncilForm({
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Pick which agents will contribute, then choose one steward. Stale
-            agents (last heartbeat &gt; 5 min) are selectable; they&apos;ll see
-            the invitation on their next SessionStart.
+            Pick which agents will contribute, then choose one steward. Stale sessions (no V2
+            activity for &gt; 5 min) are selectable; they&apos;ll see the invitation on their next
+            SessionStart.
           </p>
           {agents.length === 0 ? (
             <p className="text-sm text-muted-foreground italic">
-              No agents registered. Start at least one agent session so a
-              heartbeat appears in{" "}
-              <code className="font-mono text-[11px]">.harnery/active/</code>.
+              No live V2 agent generations are registered.
             </p>
           ) : (
             <ul className="divide-y divide-border rounded border border-border overflow-hidden">
@@ -165,11 +161,7 @@ export function NewCouncilForm({
                 return (
                   <li
                     key={a.instance_id}
-                    className={
-                      isMember
-                        ? "bg-muted/30"
-                        : "hover:bg-muted/20 transition-colors"
-                    }
+                    className={isMember ? "bg-muted/30" : "hover:bg-muted/20 transition-colors"}
                   >
                     <label className="flex items-center gap-3 px-3 py-2.5 cursor-pointer min-h-11 sm:min-h-0">
                       <input
@@ -179,16 +171,12 @@ export function NewCouncilForm({
                         className="size-4 shrink-0 cursor-pointer"
                       />
                       <span className="flex-1 flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-sm">
-                          agent-{a.name}
-                        </span>
+                        <span className="font-mono text-sm">agent-{a.name}</span>
                         <Badge variant={a.active ? "default" : "outline"}>
                           {a.active ? "active" : "stale"}
                         </Badge>
                         {a.platform && (
-                          <span className="text-[10px] text-muted-foreground">
-                            {a.platform}
-                          </span>
+                          <span className="text-[10px] text-muted-foreground">{a.platform}</span>
                         )}
                         {a.task && (
                           <Tooltip content={a.task}>
@@ -252,10 +240,8 @@ export function NewCouncilForm({
               className="size-4 cursor-pointer"
             />
             <span>
-              Auto-advance: fire{" "}
-              <code className="font-mono text-[11px]">council advance</code>{" "}
-              automatically once all members contribute. Default off preserves
-              operator agency.
+              Auto-advance: fire <code className="font-mono text-[11px]">council advance</code>{" "}
+              automatically once all members contribute. Default off preserves operator agency.
             </span>
           </label>
         </CardContent>

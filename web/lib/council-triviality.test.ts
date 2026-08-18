@@ -1,18 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  countConsecutiveAllTrivialRoundsFromTags,
-  lastStatusMarker,
-} from "./council-triviality";
+import { countConsecutiveAllTrivialRoundsFromTags, lastStatusMarker } from "./council-triviality";
 
 describe("lastStatusMarker", () => {
   test("plain trailing tags", () => {
-    expect(lastStatusMarker("Ratified.\n\n<trivial> GO, close")).toBe(
-      "trivial",
-    );
-    expect(lastStatusMarker("Reworked §2.1.\n\n<substantive>")).toBe(
-      "substantive",
-    );
+    expect(lastStatusMarker("Ratified.\n\n<trivial> GO, close")).toBe("trivial");
+    expect(lastStatusMarker("Reworked §2.1.\n\n<substantive>")).toBe("substantive");
   });
 
   test("backticked tags match (substring, not markdown-aware)", () => {
@@ -29,8 +22,7 @@ describe("lastStatusMarker", () => {
       "`<substantive>`: folded round-2 corrections into binding plan text.";
     expect(lastStatusMarker(foldRecord)).toBe("substantive");
 
-    const prompt =
-      "End with `<substantive>` if a defect surfaces.\n\n<trivial> GO";
+    const prompt = "End with `<substantive>` if a defect surfaces.\n\n<trivial> GO";
     expect(lastStatusMarker(prompt)).toBe("trivial");
   });
 

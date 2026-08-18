@@ -71,15 +71,10 @@ function renderNode(
     return <span className={COLORS.bool}>{String(value)}</span>;
   }
   if (typeof value === "number") {
-    return (
-      <span className={COLORS.number}>
-        {Number.isFinite(value) ? String(value) : "null"}
-      </span>
-    );
+    return <span className={COLORS.number}>{Number.isFinite(value) ? String(value) : "null"}</span>;
   }
   if (typeof value === "string") {
-    const decoded =
-      decodeDepth < MAX_DECODE_DEPTH ? decodeJsonContainer(value) : undefined;
+    const decoded = decodeDepth < MAX_DECODE_DEPTH ? decodeJsonContainer(value) : undefined;
     if (decoded !== undefined) {
       // The string is itself a JSON-encoded object/array (e.g. a `line` holding
       // a stringified error, or a stringified tool payload). Render the decoded
@@ -104,9 +99,7 @@ function renderNode(
           <Fragment key={idx}>
             {indent}
             {renderNode(item, depth + 1, indentSize, decodeDepth)}
-            {idx < value.length - 1 && (
-              <span className={COLORS.punct}>,</span>
-            )}
+            {idx < value.length - 1 && <span className={COLORS.punct}>,</span>}
             {"\n"}
           </Fragment>
         ))}
@@ -133,9 +126,7 @@ function renderNode(
             <span className={COLORS.key}>{JSON.stringify(key)}</span>
             <span className={COLORS.punct}>: </span>
             {renderNode(obj[key], depth + 1, indentSize, decodeDepth)}
-            {idx < keys.length - 1 && (
-              <span className={COLORS.punct}>,</span>
-            )}
+            {idx < keys.length - 1 && <span className={COLORS.punct}>,</span>}
             {"\n"}
           </Fragment>
         ))}
@@ -154,9 +145,7 @@ function renderNode(
  * containers. Scalar JSON (`"5"`, `"true"`, a quoted string) is left as the
  * literal string it reads as, since "expanding" it would only confuse.
  */
-function decodeJsonContainer(
-  s: string,
-): Record<string, unknown> | unknown[] | undefined {
+function decodeJsonContainer(s: string): Record<string, unknown> | unknown[] | undefined {
   const t = s.trim();
   if (t.length < 2) return undefined;
   const first = t[0];

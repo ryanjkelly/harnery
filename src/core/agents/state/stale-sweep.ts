@@ -2,7 +2,7 @@
  * Stale-sweep: prune dead heartbeats + orphaned pid-map + .last-peer-hash
  * files.
  *
- * Fires at session.start to clean up crashed-peer detritus before the new
+ * Runs after session.started to clean up crashed-peer detritus before the new
  * session's UX layer reads peer state.
  *
  * Freshness threshold defaults to 600s; configurable via the
@@ -73,7 +73,7 @@ export function staleSweep(coordRoot: string): {
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshness;
 
-  // 1. Prune stale heartbeats from the canonical `.harnery/active/` dir.
+  // 1. Prune stale rows from the disposable V2 coordination cache.
   //
   // Two deletion regimes, deliberately asymmetric:
   //   • Valid JSON with an OLD last_heartbeat → the legitimate dead/idle-agent

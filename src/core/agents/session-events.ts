@@ -21,7 +21,10 @@ import { readHookProducerStateByInstanceV2 } from "../events/v2/producers/record
 import { resolveEmitRoot } from "./canonical-emit.ts";
 
 /** Event types accepted by `writeSessionEvent`. */
-export type SessionEventType = "command_start" | "output" | "command_end" | "narration";
+export type SessionEventType =
+  | "command.started"
+  | "command.output_observed"
+  | "command.completed";
 
 /**
  * Resolved path of the ndjson sidecar file. Lives inside `.harnery/` so a
@@ -64,27 +67,18 @@ export function readLastIntent(instanceId?: string): string | null {
   }
 }
 
-const CANONICAL_TYPE: Record<SessionEventType, string> = {
-  command_start: "command.start",
-  output: "command.output",
-  command_end: "command.end",
-  narration: "narration",
-};
-
 const outputSequence = new Map<string, number>();
 
 /** Emit a command/narration event to the canonical stream. Swallows every
  * error and skips when identity can't be resolved: telemetry must never break
  * or slow down a command. */
-function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unknown>): void {
-  const eventType = CANONICAL_TYPE[type];
-  if (!eventType) return;
+function recordCommandObservation(type: SessionEventType, fields: Record<string, unknown>): void {
   const instanceId = typeof fields.instance_id === "string" ? fields.instance_id : undefined;
   if (!instanceId) return;
   try {
     const coordRoot = coordinationRootPath();
     const route = resolveLiveEventLedgerRouteV2(coordRoot);
-    if (route.state === "blocked" || type === "narration") return;
+    if (route.state === "blocked") return;
     const liveInstanceId = liveInstanceIdV2(instanceId);
     const hook = readHookProducerStateByInstanceV2(coordRoot, liveInstanceId);
     if (!hook) {
@@ -141,17 +135,17 @@ function emitCanonicalCommand(type: SessionEventType, fields: Record<string, unk
 }
 
 function commandSignalAndObservation(
-  type: Exclude<SessionEventType, "narration">,
+  type: SessionEventType,
   fields: Record<string, unknown>,
 ): { signal: CommandSignalV2; observation: CommandObservationV2 } | undefined {
   const commandId = typeof fields.cmd_id === "string" ? fields.cmd_id : undefined;
   if (!commandId) return undefined;
-  if (type === "command_start") {
+  if (type === "command.started") {
     outputSequence.set(commandId, 0);
     const command = typeof fields.cmd === "string" ? fields.cmd : "";
     const executable = command.trim().split(/\s+/, 1)[0] || "unknown";
     return {
-      signal: "command-start",
+      signal: "command.started",
       observation: {
         native_command_id: commandId,
         executable,
@@ -165,14 +159,14 @@ function commandSignalAndObservation(
       },
     };
   }
-  if (type === "output") {
+  if (type === "command.output_observed") {
     const sequence = (outputSequence.get(commandId) ?? 0) + 1;
     outputSequence.set(commandId, sequence);
     const line = typeof fields.line === "string" ? fields.line : "";
     const stream =
       fields.stream === "stdout" || fields.stream === "stderr" ? fields.stream : "combined";
     return {
-      signal: "command-output",
+      signal: "command.output_observed",
       observation: {
         native_command_id: commandId,
         native_observation_id: `${commandId}:output:${sequence}`,
@@ -187,7 +181,7 @@ function commandSignalAndObservation(
   const exitCode =
     typeof fields.exit === "number" && Number.isSafeInteger(fields.exit) ? fields.exit : undefined;
   return {
-    signal: "command-completed",
+    signal: "command.completed",
     observation: {
       native_command_id: commandId,
       ...(exitCode === undefined ? {} : { exit_code: exitCode }),
@@ -209,7 +203,7 @@ export function writeSessionEvent(
   type: SessionEventType,
   fields: Record<string, unknown> = {},
 ): void {
-  emitCanonicalCommand(type, fields);
+  recordCommandObservation(type, fields);
 }
 
 /** Trim long values to keep individual events small. */

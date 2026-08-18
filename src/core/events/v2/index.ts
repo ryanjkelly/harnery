@@ -1,4 +1,7 @@
 export {
+  type LiveCoordinationObservationV2,
+} from "./live-observation.ts";
+export {
   type AuthorityMutationV2,
   type AuthorityReceiptV2,
   type AuthorityReconcilerV2,

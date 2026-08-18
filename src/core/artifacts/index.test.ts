@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initializeV2Fixture, seedV2Session } from "../../../tests/helpers/event-v2.ts";
 import {
   ARTIFACT_MANIFEST,
   artifactsRoot,
@@ -68,7 +69,7 @@ describe("managed artifacts", () => {
     ).toThrow("retention days must be between 1 and 3650");
   });
 
-  test("keeps an expired artifact while its owner heartbeat is fresh", () => {
+  test("keeps an expired artifact while its owner has a live V2 generation", () => {
     const repo = root();
     createArtifact(repo, {
       slug: "capture",
@@ -78,11 +79,8 @@ describe("managed artifacts", () => {
       id: "artifact_abcdefgh",
       actor: { instance_id: "agent_abcdefgh" },
     });
-    mkdirSync(join(repo, ".harnery", "active"), { recursive: true });
-    writeFileSync(
-      join(repo, ".harnery", "active", "agent_abcdefgh.json"),
-      JSON.stringify({ last_heartbeat: "2026-07-26T11:59:30.000Z" }),
-    );
+    initializeV2Fixture(repo);
+    seedV2Session(repo, "agent_abcdefgh");
     expect(inventoryArtifacts(repo, { now })[0]?.classification).toBe("managed-active");
   });
 
@@ -96,11 +94,8 @@ describe("managed artifacts", () => {
       id: "artifact_release1",
       actor: { instance_id: "agent_release1" },
     });
-    mkdirSync(join(repo, ".harnery", "active"), { recursive: true });
-    writeFileSync(
-      join(repo, ".harnery", "active", "agent_release1.json"),
-      JSON.stringify({ last_heartbeat: now.toISOString() }),
-    );
+    initializeV2Fixture(repo);
+    seedV2Session(repo, "agent_release1");
     releaseArtifact(repo, created.manifest.artifact_id, { now });
     expect(inventoryArtifacts(repo, { now })[0]?.classification).toBe("managed-expired");
   });

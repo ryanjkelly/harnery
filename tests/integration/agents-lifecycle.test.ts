@@ -3,7 +3,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { recordLiveTaskChangeV2 } from "../../src/core/agents/live-authority-v2.ts";
+import {
+  recordLiveClaimChangeV2,
+  recordLiveTaskChangeV2,
+} from "../../src/core/agents/live-authority-v2.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
 import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
 import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
@@ -116,7 +119,7 @@ describe("harn agents lifecycle on the V2 ledger", () => {
       "--session-id",
       OWNER,
     ]);
-    expect(result.status).toBe(0);
+    expect(result).toMatchObject({ status: 0 });
     expect(outputObject(result)).toMatchObject({
       task_state: "blocked",
       prior_state: "active",
@@ -163,8 +166,15 @@ describe("harn agents lifecycle on the V2 ledger", () => {
   test("done refuses dirty owned work, then succeeds after Git finalization", () => {
     const root = makeSandbox();
     writeFileSync(path.join(root, "owned.txt"), "dirty\n");
-    const cachePath = path.join(root, ".harnery", "active", `${OWNER}.json`);
-    writeFileSync(cachePath, JSON.stringify({ ...heartbeat(root), files_touched: ["owned.txt"] }));
+    recordLiveClaimChangeV2({
+      coordRoot: root,
+      owner: OWNER,
+      nativeSessionId: OWNER,
+      adapter: "codex",
+      operation: "acquired",
+      path: "owned.txt",
+      access: "write",
+    });
     const refused = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
     expect(refused.status).not.toBe(0);
     expect(outputObject(refused).error).toMatchObject({ code: "git_not_finalized" });

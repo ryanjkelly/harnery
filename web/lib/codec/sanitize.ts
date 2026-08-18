@@ -9,9 +9,8 @@
  * discarded in place (never persisted or forwarded).
  *
  * Unknown event types and unsupported schema versions return null (fail
- * closed): the projector renders `unknown` rather than guessing. V1 ledger
- * rows are dropped: Codec reads the V2 ledger only and maps into the existing
- * safe DTO names so the projector stays stable.
+ * closed): the projector renders `unknown` rather than guessing. Retired ledger
+ * rows are dropped, and accepted rows keep their canonical V2 event names.
  */
 
 import type { EventV2 } from "../../../src/core/events/v2/contract";
@@ -87,7 +86,7 @@ function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
   if (!("session_id" in event.scope) || !("generation_id" in event.scope)) return null;
   const links = event.links as { parent_generation_id?: string };
   const base: CodecSourceEvidence = {
-    schema_version: 1,
+    schema_version: 2,
     event_id: event.event_id,
     event_type: event.event_type,
     ts: event.time.observed_at,
@@ -105,62 +104,48 @@ function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
   switch (event.event_type) {
     case "session.started":
     case "session.resumed":
-      base.event_type = "session.start";
       return base;
     case "session.ended":
-      base.event_type = "session.end";
       return base;
     case "session.termination_observed":
       if (event.payload.observation === "stale") return null;
-      base.event_type = "session.end";
       return base;
     case "agent.delegated":
     case "agent.started":
-      base.event_type = "subagent.start";
       base.child_generation_id = event.payload.child_generation_id;
       return base;
     case "agent.completed":
-      base.event_type = "subagent.stop";
       base.child_generation_id = event.payload.child_generation_id;
       return base;
     case "turn.started":
-      base.event_type = "user_prompt.submit";
       return base;
     case "turn.completed":
-      base.event_type = "turn.stop";
       return base;
     case "tool.requested": {
-      base.event_type = "tool.pre_use";
       base.tool_name = event.payload.tool.name;
       base.category = categorizeTool(event.payload.tool.name);
       base.outcome = "started";
       return base;
     }
     case "tool.completed": {
-      base.event_type = "tool.post_use";
       base.tool_name = event.payload.tool.name;
       base.category = categorizeTool(event.payload.tool.name);
       base.outcome = codecOutcome(event.payload.outcome);
       return base;
     }
     case "command.started":
-      base.event_type = "command.start";
       base.category = "diagnostic";
       base.outcome = "started";
       return base;
     case "command.completed":
-      base.event_type = "command.end";
       base.category = "diagnostic";
       base.outcome = codecOutcome(event.payload.outcome);
       return base;
     case "interaction.wait_started":
-      base.event_type = "interaction.input_requested";
       return base;
     case "interaction.wait_ended":
-      base.event_type = "interaction.wait_ended";
       return base;
     case "progress.observed":
-      base.event_type = "progress.observed";
       base.category = PROGRESS_CATEGORIES[event.payload.kind] ?? "other";
       base.outcome = "ok";
       return base;
@@ -171,7 +156,6 @@ function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
     case "context.compaction_completed":
       return liftMeasurement(base, event.payload.after);
     case "coord.task_changed":
-      base.event_type = "state.task_set";
       base.task_cleared = event.payload.new_state === "cleared";
       return base;
     case "coord.lifecycle_changed":
@@ -182,12 +166,13 @@ function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
       ) {
         return null;
       }
-      base.event_type = "state.task_state";
       base.task_state = event.payload.new_state;
       return base;
     case "coord.identity_attested":
-      base.event_type = "identity.assumed";
       base.identity_name = clampLabel(event.payload.identity_id);
+      return base;
+    case "coord.message_observed":
+      base.ping_to = event.payload.peer_instance_id;
       return base;
     case "lifecycle.recovered":
       base.recovered = true;
@@ -226,7 +211,6 @@ function liftMeasurement(
   if (measurement.state !== "observed" || !measurement.value) return null;
   const limit = measurement.value.limit_tokens;
   if (!Number.isFinite(limit) || limit <= 0) return null;
-  base.event_type = "context.sampled";
   base.used_percent = Math.min(100, (measurement.value.used_tokens / limit) * 100);
   base.context_confidence = evidenceConfidence(
     measurement.attestation ?? "",

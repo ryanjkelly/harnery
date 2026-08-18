@@ -6,9 +6,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
+import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import type { AgentActivity, TaskState } from "../agents/state/session-state.ts";
 
 /** Mirror of the local heartbeat freshness window (commands/agents.ts). */
@@ -28,9 +27,7 @@ export interface PresenceAgent {
   activity: AgentActivity;
   task_state: TaskState;
   task_state_reason?: string;
-  turn_summary?: string;
   files_touched?: string[];
-  last_tool?: string;
   started_at?: string;
   last_heartbeat?: string;
 }
@@ -51,7 +48,7 @@ export interface BuiltBlob {
 }
 
 /**
- * Build this machine's presence blob from `.harnery/active/` heartbeats.
+ * Build this machine's presence blob from the authority-safe V2 projection.
  * Includes live sessions + subagents; excludes kind=transient stubs (they are
  * fold-artifacts of the local claim model, not sessions) and anything past the
  * freshness window.
@@ -59,41 +56,26 @@ export interface BuiltBlob {
 export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): BuiltBlob {
   const machine = resolveMachineLabel();
   const agents: PresenceAgent[] = [];
-  const activeDir = join(coordRoot, ".harnery", "active");
   const cutoffMs = now.getTime() - FRESHNESS_SECS * 1000;
 
-  if (existsSync(activeDir)) {
-    for (const f of readdirSync(activeDir)) {
-      if (!f.endsWith(".json")) continue;
-      let hb: Record<string, unknown>;
-      try {
-        hb = JSON.parse(readFileSync(join(activeDir, f), "utf8")) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      if (typeof hb.instance_id !== "string") continue;
-      if ((hb.kind as string | undefined) === "transient") continue;
-      const ts = Date.parse((hb.last_heartbeat as string | undefined) ?? "");
-      if (!Number.isFinite(ts) || ts < cutoffMs) continue;
-      agents.push({
-        instance_id: hb.instance_id,
-        name: strOr(hb.name),
-        kind: strOr(hb.kind),
-        session_id: strOr(hb.session_id),
-        platform: strOr(hb.platform),
-        task: strOr(hb.task),
-        activity: activityOrUnknown(hb.activity),
-        task_state: taskStateOrActive(hb.task_state),
-        task_state_reason: clamp(strOr(hb.task_state_reason), 160),
-        turn_summary: clamp(strOr(hb.turn_summary), 160),
-        files_touched: Array.isArray(hb.files_touched)
-          ? (hb.files_touched as string[]).slice(0, MAX_FILES_PER_AGENT)
-          : undefined,
-        last_tool: strOr(hb.last_tool),
-        started_at: strOr(hb.started_at),
-        last_heartbeat: strOr(hb.last_heartbeat),
-      });
-    }
+  for (const row of readLiveCoordinationRows(coordRoot)) {
+    if (row.kind === "transient") continue;
+    const ts = Date.parse(row.last_heartbeat);
+    if (!Number.isFinite(ts) || ts < cutoffMs) continue;
+    agents.push({
+      instance_id: row.instance_id,
+      name: strOr(row.name),
+      kind: strOr(row.kind),
+      session_id: strOr(row.session_id),
+      platform: strOr(row.platform),
+      task: strOr(row.task),
+      activity: activityOrUnknown(row.activity),
+      task_state: taskStateOrActive(row.task_state),
+      task_state_reason: clamp(strOr(row.task_state_reason), 160),
+      files_touched: row.files_touched.slice(0, MAX_FILES_PER_AGENT),
+      started_at: strOr(row.started_at),
+      last_heartbeat: row.last_heartbeat,
+    });
   }
 
   agents.sort((a, b) => a.instance_id.localeCompare(b.instance_id));
@@ -107,8 +89,8 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
   };
 
   // Basis: the fields whose change should trigger a re-publish. Timestamps
-  // and last_tool are excluded (pure churn); task/turn_summary/files are the
-  // signal peers actually read.
+  // Observation timestamps are excluded as pure churn; task/lifecycle/files
+  // are the signals peers actually read.
   const basis = capped.map((a) => ({
     i: a.instance_id,
     n: a.name ?? null,
@@ -117,7 +99,6 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
     a: a.activity,
     l: a.task_state,
     r: a.task_state_reason ?? null,
-    s: a.turn_summary ?? null,
     f: [...(a.files_touched ?? [])].sort(),
   }));
   const basisHash = createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 16);

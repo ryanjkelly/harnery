@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { createGovernor } from "harnery/core/governor";
 import { createWorkItem } from "harnery/core/work";
 import {
+  governorDashboardDecision,
+  governorPlanDashboardStatus,
   readGovernorBackgroundService,
   readGovernorGoal,
   readGovernors,
-  governorDashboardDecision,
-  governorPlanDashboardStatus,
 } from "./governor-reader";
 
 const roots: string[] = [];

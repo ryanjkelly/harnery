@@ -19,6 +19,7 @@ export interface CoordinationGenerationViewV2 {
   root_id: string;
   run_id?: string;
   workflow_id?: string;
+  workflow_agent_id?: string;
   identity_id?: string;
   runtime_attestation: RuntimeAttestationV2;
   parent_generation_id?: string;
@@ -125,6 +126,7 @@ export function projectCoordinationViewV2(read: ReadLedgerV2Result): Coordinatio
       root_id: started.scope.root_id,
       run_id: started.scope.run_id,
       workflow_id: started.scope.workflow_id,
+      workflow_agent_id: started.scope.workflow_agent_id,
       identity_id: safety.identities[state.instance_id],
       runtime_attestation: started.payload.runtime_attestation,
       parent_generation_id: (started.links as { parent_generation_id?: string })

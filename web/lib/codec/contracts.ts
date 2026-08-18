@@ -1,5 +1,5 @@
 /**
- * Codec visual-director contracts (schema_version 1).
+ * Codec visual-director contracts (schema_version 2).
  *
  * The Codec view is a read-only presentation layer over the canonical event
  * stream and existing read models. These types are the whole boundary: only
@@ -12,6 +12,8 @@
  * removing or retyping a field bumps `schema_version` and fails closed to
  * `unknown` on unsupported source versions.
  */
+
+import type { EventTypeV2 } from "../../../src/core/events/v2/contract";
 
 export type Confidence = "high" | "medium" | "low";
 export type Provenance = "event" | "projection" | "inferred" | "unknown";
@@ -75,9 +77,9 @@ export interface CodecRecentAction {
  * this type. Field allowlist lives in sanitize.ts.
  */
 export interface CodecSourceEvidence {
-  schema_version: 1;
+  schema_version: 2;
   event_id: string;
-  event_type: string;
+  event_type: EventTypeV2;
   ts: string;
   instance_id: string;
   session_id?: string;
@@ -100,18 +102,18 @@ export interface CodecSourceEvidence {
   outcome?: CodecActionOutcome;
   /** Bounded declared intent (clamped), never a prompt or command body. */
   intent?: string;
-  /** Bounded task label from state.task_set. */
+  /** Bounded task label from the ephemeral live-display overlay, when available. */
   task?: string;
-  /** true when state.task_set cleared the task. */
+  /** True when coord.task_changed cleared the task. */
   task_cleared?: boolean;
-  /** Lifecycle from state.task_state. */
+  /** Lifecycle from coord.lifecycle_changed. */
   task_state?: "active" | "blocked" | "done";
   /** Context capacity from context.sampled. */
   used_percent?: number;
   context_confidence?: "exact" | "reported" | "estimated";
   /** Durable display name from identity.assumed. */
   identity_name?: string;
-  /** Ping recipient from state.ping (delivery record); body never crosses. */
+  /** Message recipient from coord.message_observed; body never crosses. */
   ping_to?: string;
 }
 
@@ -162,7 +164,7 @@ export interface CodecTransient {
 }
 
 export interface CodecScene {
-  schema_version: 1;
+  schema_version: 2;
   source_event_id?: string;
   freshness: Presented<CodecFreshness>;
   panels: CodecPanelScene[];
@@ -175,4 +177,4 @@ export interface CodecScene {
 /** Neutral character pack used until Phase 4 delivers a real roster. */
 export const FALLBACK_PACK = { pack_id: "fallback-neutral", pack_version: "0" } as const;
 
-export const CODEC_SCHEMA_VERSION = 1 as const;
+export const CODEC_SCHEMA_VERSION = 2 as const;

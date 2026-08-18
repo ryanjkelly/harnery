@@ -223,7 +223,7 @@ export function normalizeCoordinationAuthorityV2<S extends CoordinationAuthority
               value: input.target,
               access: input.access,
               fingerprintContext: context.fingerprintContext,
-              extractorVersion: "agent-coord-claim-v1",
+              extractorVersion: "agent-coord-claim-v2",
             })
           : {
               kind: "resource" as const,
@@ -234,7 +234,7 @@ export function normalizeCoordinationAuthorityV2<S extends CoordinationAuthority
                 input.target,
                 "root",
               ),
-              extractor_version: "agent-coord-claim-v1",
+              extractor_version: "agent-coord-claim-v2",
             };
       return {
         event: buildEventV2("coord.claim_changed", {
@@ -249,7 +249,8 @@ export function normalizeCoordinationAuthorityV2<S extends CoordinationAuthority
           },
         }) as EventV2,
         mutation: {
-          kind: input.operation === "acquired" ? "claim.acquire" : "claim.release",
+          kind: "claim.transition",
+          operation: input.operation,
           target_fingerprint: target.fingerprint.digest as `sha256:${string}`,
           access: input.access,
         },

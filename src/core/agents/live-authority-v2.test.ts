@@ -29,6 +29,7 @@ import {
   recordLiveResumeObservationV2,
   recordLiveSweepObservationV2,
 } from "./live-lifecycle-v2.ts";
+import { recordLiveCoordinationObservationV2 } from "./live-observation-v2.ts";
 import { renderPromptContext } from "./render/prompt-context.ts";
 import { renderSessionContext } from "./render/session-context.ts";
 import { readHeartbeat } from "./state/heartbeat-writer.ts";
@@ -44,6 +45,64 @@ afterEach(() => {
 });
 
 describe("live V2 coordination", () => {
+  test("records status, presence, message, council, and decision observations without raw bodies", () => {
+    const root = startedRoot();
+    const record = { id: "record-1", secret_text: "never persist this record body" };
+
+    const observations = [
+      {
+        event_type: "coord.status_observed" as const,
+        status: "end_turn_checked",
+      },
+      {
+        event_type: "coord.presence_changed" as const,
+        prior_state: "office",
+        new_state: "mobile",
+        reason: "presence_cli",
+      },
+      {
+        event_type: "coord.message_observed" as const,
+        direction: "sent" as const,
+        body: "message body must be fingerprinted only",
+        subject: "peer",
+      },
+      {
+        event_type: "council.state_changed" as const,
+        council_id: "council-1",
+        prior_state: "active",
+        new_state: "closed",
+        record,
+      },
+      {
+        event_type: "decision.state_changed" as const,
+        decision_id: "decision-1",
+        prior_state: "filed",
+        new_state: "resolved",
+        record,
+      },
+    ];
+
+    for (const observation of observations) {
+      expect(recordLiveCoordinationObservationV2(liveInput(root, { observation })).state).toBe(
+        "recorded",
+      );
+      expect(
+        readCoordinationViewV2(root).diagnostics,
+        `${observation.event_type} must preserve authority-safe projection`,
+      ).toEqual([]);
+    }
+
+    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    expect(events.slice(-5).map((event) => event.event_type)).toEqual(
+      observations.map((observation) => observation.event_type),
+    );
+    const serialized = JSON.stringify(events.slice(-5));
+    expect(serialized).not.toContain("message body must be fingerprinted only");
+    expect(serialized).not.toContain("never persist this record body");
+    expect(serialized).toContain('"body_length":39');
+    expect(serialized).toContain('"record_digest":"sha256:');
+  });
+
   test("records task, claim, and lifecycle authority canonically", () => {
     const root = startedRoot();
 

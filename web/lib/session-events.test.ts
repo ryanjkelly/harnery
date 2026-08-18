@@ -12,7 +12,7 @@ describe("V2 live command projection", () => {
     const context = commandContext();
     const secret = "API_TOKEN=never-render-this";
     const started = normalizeCommandEventV2(
-      "command-start",
+      "command.started",
       {
         native_command_id: "cmd-1",
         executable: "acme",
@@ -25,7 +25,7 @@ describe("V2 live command projection", () => {
       context,
     )!;
     const completed = normalizeCommandEventV2(
-      "command-completed",
+      "command.completed",
       { native_command_id: "cmd-1", exit_code: 0, duration_ms: 42 },
       {
         ...context,
@@ -35,13 +35,13 @@ describe("V2 live command projection", () => {
     )!;
 
     expect(projectSessionEventV2(started)).toMatchObject({
-      type: "command_start",
+      type: "command.started",
       cmd: "acme",
       intent: "deploy",
       cmd_id: context.span_id,
     });
     expect(projectSessionEventV2(completed)).toMatchObject({
-      type: "command_end",
+      type: "command.completed",
       exit: 0,
       duration_ms: 42,
       cmd_id: context.span_id,

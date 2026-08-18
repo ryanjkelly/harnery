@@ -26,7 +26,7 @@ export default function HomePage() {
     instanceToName[hb.instance_id] = hb.name;
   }
   // Fill in agents whose session has ended (heartbeat gone) from the durable
-  // session.start / subagent.start log; otherwise the timeline silently drops
+  // canonical V2 session ledger; otherwise the timeline silently drops
   // their events: ActivityTimeline skips any instance_id it can't name.
   for (const [iid, id] of Object.entries(identities)) {
     if (!instanceToName[iid]) instanceToName[iid] = id.name;

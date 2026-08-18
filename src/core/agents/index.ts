@@ -1,15 +1,14 @@
 /**
  * agent-coord library public exports.
  *
- * `coord-client`: coordination helpers
- * (Heartbeat reader, owner-resolver via ppid-walk, monorepo-root finder).
- * Imported by every TS caller that needs to read coord state.
+ * `coord-client`: V2 producer identity resolution, ppid-map attribution, and
+ * coordination-root discovery.
  *
- * `canonical-emit`: fire-and-forget client for the canonical event stream;
- * spawns `bin/agent-coord emit-event` and never blocks the caller.
+ * `canonical-emit`: canonical V2 observation helpers.
  */
 
 export * from "./canonical-emit.js";
 export * from "./coord-client.js";
+export * from "./live-observation-v2.js";
 export * from "./session-events.js";
 export * from "./state/session-state.js";

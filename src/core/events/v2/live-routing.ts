@@ -80,6 +80,7 @@ export function recordLiveHookSignalV2(input: {
   instanceId: string;
   run_id?: `run_${string}`;
   workflow_id?: `wf_${string}`;
+  workflow_agent_id?: string;
   bridge?: "codex-wsl";
   monotonic_ns?: string;
 }): RecordHookSignalV2Result | { state: "ignored" } {
@@ -94,6 +95,7 @@ export function recordLiveHookSignalV2(input: {
     instance_id: liveInstanceIdV2(input.instanceId),
     run_id: input.run_id,
     workflow_id: input.workflow_id,
+    workflow_agent_id: input.workflow_agent_id,
     producer_id: LIVE_HOOK_V2_PRODUCER_ID,
     build_id: input.route.build_id,
     platform: livePlatformV2(),

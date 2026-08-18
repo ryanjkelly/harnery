@@ -22,11 +22,11 @@ import path from "node:path";
 import { harneryDir } from "@/lib/coord-reader";
 
 import {
-  FALLBACK_PACK,
   type CodecActivity,
   type CodecLifecycle,
   type CodecPanelScene,
   type Confidence,
+  FALLBACK_PACK,
   type Presented,
 } from "./contracts";
 

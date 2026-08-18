@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 /**
  * Scan a CC-style JSONL transcript for the `┌─ agent-` status-box prefix in
- * the most-recent assistant turn. Used by `turn.stop` events to populate
+ * the most-recent assistant turn. Used by `turn.completed` events to populate
  * `status_box_present`.
  *
  * Cheap by default: caps the read at 256KB tailed from the file, since the
@@ -23,7 +23,7 @@ export function scanStatusBoxPresent(transcriptPath: string | undefined): boolea
 
 /**
  * Scan a CC-style JSONL transcript for a needle in ASSISTANT message text
- * blocks only. Used by `turn.stop` to detect the suggested session name in the
+ * blocks only. Used by `turn.completed` to detect the suggested session name in the
  * reply.
  *
  * The row filter is load-bearing: the transcript tail also carries the needle
@@ -75,7 +75,7 @@ export function scanAssistantTextIncludes(
  * Resolve the agent's model from a CC-style JSONL transcript by reading the
  * most-recent assistant message's `message.model`. Claude Code's SessionStart
  * payload omits `model` (Codex + Cursor supply it directly), so this is the
- * fallback that lets `session.start` / `turn.stop` populate the heartbeat's
+ * fallback that lets `session.started` / `turn.completed` populate the cache's
  * model field once the transcript has at least one assistant turn.
  *
  * Tail-reads the same 256KB window as the status-box scan and walks lines from

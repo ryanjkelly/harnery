@@ -154,57 +154,52 @@ function pickBool(o: Record<string, unknown>, k: string): boolean | undefined {
  * the canonical event_types. Phase 2's CLI passes the kebab event
  * name; this returns the canonical event_type or null when the event has no
  * canonical equivalent (e.g. Cursor's before-shell-execution duplicates
- * pre-tool-use semantically, so we route both to `tool.pre_use`).
+ * pre-tool-use semantically, so we route both to `tool.requested`).
  */
 export function normalizeEventName(
   eventName: string,
 ): { event_type: NormalizedEventType; intra_turn: boolean } | null {
   switch (eventName) {
     case "session-start":
-      return { event_type: "session.start", intra_turn: false };
+      return { event_type: "session.started", intra_turn: false };
     case "session-end":
-      return { event_type: "session.end", intra_turn: false };
+      return { event_type: "session.ended", intra_turn: false };
     case "user-prompt-submit":
-      return { event_type: "user_prompt.submit", intra_turn: false };
+      return { event_type: "turn.started", intra_turn: false };
     case "stop":
-      return { event_type: "turn.stop", intra_turn: false };
+      return { event_type: "turn.completed", intra_turn: false };
     case "stop-failure":
-      // Phase 2: a failed stop is still a turn boundary; emit turn.stop and
-      // attach the failure signal in `data`. Phase 5 may introduce a
-      // dedicated `turn.stop_failure` event if the projector needs to branch.
-      return { event_type: "turn.stop", intra_turn: false };
+      return { event_type: "turn.completed", intra_turn: false };
     case "sub-agent-start":
-      return { event_type: "subagent.start", intra_turn: false };
+      return { event_type: "agent.started", intra_turn: false };
     case "sub-agent-stop":
-      return { event_type: "subagent.stop", intra_turn: false };
+      return { event_type: "agent.completed", intra_turn: false };
     case "pre-tool-use":
     case "before-shell-execution":
-      return { event_type: "tool.pre_use", intra_turn: true };
+      return { event_type: "tool.requested", intra_turn: true };
     case "permission-request":
-      return { event_type: "interaction.input_requested", intra_turn: true };
+      return { event_type: "interaction.wait_started", intra_turn: true };
     case "post-tool-use":
-      return { event_type: "tool.post_use", intra_turn: true };
     case "post-tool-use-failure":
-      return { event_type: "tool.post_use_failure", intra_turn: true };
+      return { event_type: "tool.completed", intra_turn: true };
     case "pre-compact":
-      return { event_type: "context.compaction.started", intra_turn: false };
+      return { event_type: "context.compaction_started", intra_turn: false };
     case "post-compact":
-      return { event_type: "context.compaction.completed", intra_turn: false };
+      return { event_type: "context.compaction_completed", intra_turn: false };
     default:
       return null;
   }
 }
 
 export type NormalizedEventType =
-  | "session.start"
-  | "session.end"
-  | "user_prompt.submit"
-  | "turn.stop"
-  | "subagent.start"
-  | "subagent.stop"
-  | "tool.pre_use"
-  | "interaction.input_requested"
-  | "tool.post_use"
-  | "tool.post_use_failure"
-  | "context.compaction.started"
-  | "context.compaction.completed";
+  | "session.started"
+  | "session.ended"
+  | "turn.started"
+  | "turn.completed"
+  | "agent.started"
+  | "agent.completed"
+  | "tool.requested"
+  | "interaction.wait_started"
+  | "tool.completed"
+  | "context.compaction_started"
+  | "context.compaction_completed";

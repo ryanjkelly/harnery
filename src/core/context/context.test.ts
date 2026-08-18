@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { recordLiveClaimChangeV2, recordLiveTaskChangeV2 } from "../agents/live-authority-v2.ts";
+import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-view.ts";
+import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
+import { sha256V2 } from "../events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../events/v2/live-routing.ts";
 import {
   type ContinuityCapsule,
   checkpointContext,
@@ -18,8 +26,45 @@ const roots: string[] = [];
 function root(): string {
   const value = mkdtempSync(join(tmpdir(), "harnery-context-"));
   roots.push(value);
-  mkdirSync(join(value, ".harnery", "active"), { recursive: true });
+  mkdirSync(value, { recursive: true });
+  initializeEventLedgerV2({
+    coordRoot: value,
+    harneryBuild: "context-test",
+    hostBuild: "host-test",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "context-test",
+  });
   return value;
+}
+
+function seedLiveWork(root: string): void {
+  const route = resolveLiveEventLedgerRouteV2(root);
+  if (route.state !== "v2") throw new Error("expected V2 route");
+  recordLiveHookSignalV2({
+    coordRoot: root,
+    route,
+    eventName: "session-start",
+    payload: { session_id: "session-a", model: "claude-fable-5", raw: {} },
+    adapter: "claude-code",
+    instanceId: "owner-a",
+  });
+  ensureLiveCoordinationHeartbeat(root, "owner-a", "session-a", "claude-code", "claude-fable-5");
+  recordLiveTaskChangeV2({
+    coordRoot: root,
+    owner: "owner-a",
+    nativeSessionId: "session-a",
+    adapter: "claude-code",
+    task: "finish the continuity slice",
+  });
+  recordLiveClaimChangeV2({
+    coordRoot: root,
+    owner: "owner-a",
+    nativeSessionId: "session-a",
+    adapter: "claude-code",
+    operation: "acquired",
+    path: "src/core/context/index.ts",
+    access: "write",
+  });
 }
 
 afterEach(() => {
@@ -81,18 +126,7 @@ describe("context telemetry", () => {
 describe("continuity checkpoints", () => {
   test("captures heartbeat state and reuses duplicate PreCompact checkpoints", () => {
     const coordRoot = root();
-    writeFileSync(
-      join(coordRoot, ".harnery", "active", "owner-a.json"),
-      JSON.stringify({
-        instance_id: "owner-a",
-        model: "claude-fable-5",
-        task: "finish the continuity slice",
-        turn_summary: "core store is implemented",
-        files_touched: ["src/core/context/index.ts"],
-        last_tool: "Edit",
-        last_tool_target: "src/core/context/index.ts",
-      }),
-    );
+    seedLiveWork(coordRoot);
 
     const first = checkpointContext(coordRoot, {
       sessionId: "session-a",

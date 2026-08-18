@@ -20,7 +20,7 @@ import path from "node:path";
 
 import { harneryDir } from "@/lib/coord-reader";
 
-import { FALLBACK_PACK, type CodecExpression } from "./contracts";
+import { type CodecExpression, FALLBACK_PACK } from "./contracts";
 
 export const REQUIRED_EXPRESSIONS: readonly CodecExpression[] = [
   "neutral",
@@ -239,7 +239,13 @@ export function resolvePackAsset(
   const filePath = path.join(dir, file);
   const ext = path.extname(file).toLowerCase();
   const contentType =
-    ext === ".webp" ? "image/webp" : ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : null;
+    ext === ".webp"
+      ? "image/webp"
+      : ext === ".png"
+        ? "image/png"
+        : ext === ".jpg" || ext === ".jpeg"
+          ? "image/jpeg"
+          : null;
   if (!contentType) return null;
   return { filePath, contentType };
 }

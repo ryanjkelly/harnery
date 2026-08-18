@@ -1,8 +1,7 @@
+import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
-import { beforeEach, describe, expect, test } from "bun:test";
 
 import { readRemotePanels } from "./remote-source";
 
@@ -46,7 +45,11 @@ describe("readRemotePanels", () => {
     if (!p) throw new Error("panel missing");
     expect(p.machine).toBe("rk-machine");
     expect(p.identity.display_name).toBe("Quentin");
-    expect(p.presence).toMatchObject({ value: "online", provenance: "projection", confidence: "medium" });
+    expect(p.presence).toMatchObject({
+      value: "online",
+      provenance: "projection",
+      confidence: "medium",
+    });
     expect(p.activity.value).toBe("working");
     expect(p.lifecycle).toMatchObject({ value: "active", confidence: "medium" });
     expect(p.expression.value).toBe("neutral");
@@ -83,7 +86,12 @@ describe("readRemotePanels", () => {
 
   test("unknown blob versions and malformed files fail closed; empty cache is empty", () => {
     expect(readRemotePanels(NOW, root)).toEqual([]);
-    writeBlob("v2", { v: 2, machine: "v2", published_at: "2026-08-16T11:59:40.000Z", agents: [agent()] });
+    writeBlob("v2", {
+      v: 2,
+      machine: "v2",
+      published_at: "2026-08-16T11:59:40.000Z",
+      agents: [agent()],
+    });
     const dir = path.join(root, "presence", "remote");
     writeFileSync(path.join(dir, "junk.json"), "{not json");
     expect(readRemotePanels(NOW, root)).toEqual([]);

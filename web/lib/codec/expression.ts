@@ -27,12 +27,12 @@ export interface ExpressiveAction {
 }
 
 export interface ExpressiveInputs {
-  /** Authoritative activity from the heartbeat projection. */
+  /** Authoritative activity from the V2 coordination projection. */
   activity: CodecActivity;
-  /** Last user_prompt.submit, if any. */
-  lastPrompt?: { ts: string; event_id: string };
-  /** Last turn.stop, if any. */
-  lastTurnStop?: { ts: string; event_id: string };
+  /** Last turn.started, if any. */
+  lastTurnStarted?: { ts: string; event_id: string };
+  /** Last turn.completed, if any. */
+  lastTurnCompleted?: { ts: string; event_id: string };
   /** Recent actions, ascending by source order (bounded upstream). */
   actions: readonly ExpressiveAction[];
   /** Currently open subagents (starts minus stops, floored at 0). */
@@ -81,13 +81,13 @@ export function deriveExpressiveChannels(
   now: string,
 ): ExpressiveChannels {
   const nowMs = ms(now);
-  const promptTs = ms(inputs.lastPrompt?.ts);
-  const stopTs = ms(inputs.lastTurnStop?.ts);
+  const promptTs = ms(inputs.lastTurnStarted?.ts);
+  const stopTs = ms(inputs.lastTurnCompleted?.ts);
   const lastActionEvidenceTs = inputs.actions.length
     ? ms(inputs.actions[inputs.actions.length - 1]?.ts)
     : Number.NaN;
   // A turn is open on either signal: a prompt newer than the last stop, or —
-  // for adapters that emit no user_prompt.submit rows at all (observed on
+  // for adapters that emit no turn.started rows at all (observed on
   // this stream) — action evidence newer than the last stop. Silence after a
   // stop is a closed turn; no signal at all is no turn.
   const promptOpens = Number.isFinite(promptTs) && (!Number.isFinite(stopTs) || promptTs > stopTs);
@@ -274,7 +274,7 @@ export function deriveExpressiveChannels(
       ((last && Number.isFinite(lastTs) && age(lastTs) <= FOCUSED_MS) ||
         inputs.activity === "working")
     ) {
-      return from("focused", "projection", "high", inputs.lastPrompt?.ts ?? now);
+      return from("focused", "projection", "high", inputs.lastTurnStarted?.ts ?? now);
     }
 
     return from("neutral", "projection", "high", now);

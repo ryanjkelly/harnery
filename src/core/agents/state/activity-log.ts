@@ -10,24 +10,16 @@
  * remains (still used for display-name resolution).
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readLiveCoordinationRow } from "./live-coordination-view.ts";
 
 /**
- * Resolve `agent-<name>` display string. Looks up the heartbeat's `name`
+ * Resolve `agent-<name>` display string. Looks up the V2 projection's `name`
  * field; falls back to `agent-<8-char-hex>` if name is empty (mirrors bash
  * coord_owner_short). Returns `agent-unknown` when instanceId is null.
  */
 export function resolveShortName(coordRoot: string, instanceId: string | null): string {
   if (!instanceId) return "agent-unknown";
-  const path = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-  if (existsSync(path)) {
-    try {
-      const hb = JSON.parse(readFileSync(path, "utf8")) as { name?: string };
-      if (hb.name && hb.name.length > 0) return `agent-${hb.name}`;
-    } catch {
-      /* fall through to short-id */
-    }
-  }
+  const row = readLiveCoordinationRow(coordRoot, instanceId);
+  if (row?.name) return `agent-${row.name}`;
   return `agent-${instanceId.slice(0, 8)}`;
 }

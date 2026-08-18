@@ -35,7 +35,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
   const data = readEvents({ limit, instanceId: instanceId ?? undefined });
   const snap = readAgents();
 
-  // Durable instance_id → identity from session.start (main agents) +
+  // Durable instance_id → identity from canonical V2 session events.
   // subagent.start (Agent-tool dispatches). Unlike heartbeats, these persist in
   // the append-only log after a session ends, so a finished agent keeps its
   // name instead of reverting to a raw instance_id. One scan, shared with the
@@ -58,7 +58,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
     }
   }
   const agentNames = Array.from(namesInEvents).sort();
-  // Hover cards, lowest-priority first: ended main agents (session.start) and
+  // Hover cards, lowest-priority first: ended main agents and
   // subagents (subagent.start) from the durable log, then live/recent main
   // agents from heartbeats + journal, which override the rest on any name
   // collision so a live agent always shows its richer card.

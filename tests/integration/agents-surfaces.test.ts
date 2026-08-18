@@ -153,7 +153,7 @@ describe("harn agents state surfaces", () => {
     expect(human.stdout).toContain("activity=needs_input · lifecycle=blocked");
   });
 
-  test("incomplete disposable cache rows use evidence-safe reader defaults", () => {
+  test("an incomplete disposable cache cannot override V2 evidence", () => {
     const root = makeSandbox();
     writeFileSync(
       path.join(root, ".harnery", "active", `${OWNER}.json`),
@@ -168,8 +168,8 @@ describe("harn agents state surfaces", () => {
     );
     const listed = json(harn(root, ["agents", "list", "--json"]));
     expect((listed.rows as Array<Record<string, unknown>>)[0]).toMatchObject({
-      activity: "unknown",
-      task_state: "active",
+      activity: "needs_input",
+      task_state: "blocked",
     });
   });
 });
@@ -178,22 +178,23 @@ describe("codex-wsl bridge ping attribution", () => {
   const TARGET = "surface-target";
 
   function addTarget(root: string): string {
-    const heartbeat = path.join(root, ".harnery", "active", `${TARGET}.json`);
+    const route = resolveLiveEventLedgerRouteV2(root);
+    if (route.state !== "v2") throw new Error("expected active V2 route");
+    recordLiveHookSignalV2({
+      coordRoot: root,
+      route,
+      eventName: "session-start",
+      payload: { session_id: TARGET, raw: {} },
+      adapter: "claude-code",
+      instanceId: TARGET,
+    });
     writeFileSync(
-      heartbeat,
-      JSON.stringify({
-        schema_version: 2,
-        instance_id: TARGET,
-        session_id: TARGET,
-        kind: "session",
-        name: "Target",
-        platform: "claude-code",
-        started_at: new Date().toISOString(),
-        last_heartbeat: new Date().toISOString(),
-        files_touched: [],
-      }),
+      path.join(root, ".harnery", ".name-history"),
+      `${JSON.stringify({ instance_id: TARGET, name: "Target", kind: "session", ts: new Date().toISOString() })}\n`,
+      { flag: "a" },
     );
-    return heartbeat;
+    ensureLiveCoordinationHeartbeat(root, TARGET, TARGET, "claude-code");
+    return path.join(root, ".harnery", "active", `${TARGET}.json`);
   }
 
   test("validated bridge session delivers ping as the Codex owner", () => {
@@ -206,7 +207,7 @@ describe("codex-wsl bridge ping attribution", () => {
       CODEX_THREAD_ID: OWNER,
       HARNERY_AGENT_COORD_OWNER: "foreign-owner",
     });
-    expect(result.status).toBe(0);
+    expect(result).toMatchObject({ status: 0 });
     const delivered = JSON.parse(result.stdout) as {
       from: string;
       journal_path: string;

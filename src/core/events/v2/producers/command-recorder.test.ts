@@ -29,7 +29,7 @@ afterEach(() => {
 
 describe("event ledger V2 persistent session-tee recorder", () => {
   test("is inert until an exact gate and hook generation are both available", () => {
-    const result = recordCommandSignalV2(commandInput(temporaryRoot(), "command-start"));
+    const result = recordCommandSignalV2(commandInput(temporaryRoot(), "command.started"));
     expect(result).toEqual({ state: "gate_closed", reason: "closed" });
   });
 
@@ -37,7 +37,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
     const root = startedTurnRoot();
     const secret = "TOKEN=private-command-secret";
     const start = recordCommandSignalV2({
-      ...commandInput(root, "command-start"),
+      ...commandInput(root, "command.started"),
       observation: {
         native_command_id: "cmd-native-1",
         argv: ["toolkit", "deploy", secret],
@@ -48,7 +48,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
       },
     });
     const output = recordCommandSignalV2({
-      ...commandInput(root, "command-output"),
+      ...commandInput(root, "command.output_observed"),
       observation: {
         native_command_id: "cmd-native-1",
         native_observation_id: "cmd-native-1:output:1",
@@ -58,7 +58,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
       },
     });
     const duplicateOutput = recordCommandSignalV2({
-      ...commandInput(root, "command-output"),
+      ...commandInput(root, "command.output_observed"),
       observation: {
         native_command_id: "cmd-native-1",
         native_observation_id: "cmd-native-1:output:1",
@@ -68,7 +68,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
       },
     });
     const completed = recordCommandSignalV2({
-      ...commandInput(root, "command-completed"),
+      ...commandInput(root, "command.completed"),
       observation: { native_command_id: "cmd-native-1", exit_code: 0, duration_ms: 25 },
     });
 
@@ -102,7 +102,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
   test("writes scrubbed command intent to the live-display overlay", () => {
     const root = startedTurnRoot();
     const start = recordCommandSignalV2({
-      ...commandInput(root, "command-start"),
+      ...commandInput(root, "command.started"),
       observation: {
         native_command_id: "cmd-native-1",
         argv: ["rg", "ledger"],
@@ -124,9 +124,9 @@ describe("event ledger V2 persistent session-tee recorder", () => {
 
   test("replays the exact pending output event after a producer crash", () => {
     const root = startedTurnRoot();
-    expect(recordCommandSignalV2(commandInput(root, "command-start")).state).toBe("recorded");
+    expect(recordCommandSignalV2(commandInput(root, "command.started")).state).toBe("recorded");
     const outputInput = {
-      ...commandInput(root, "command-output"),
+      ...commandInput(root, "command.output_observed"),
       observation: {
         native_command_id: "cmd-native-1",
         native_observation_id: "output-retry-1",
@@ -156,7 +156,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
 
   test("replays a pending command start instead of mistaking its state file for a commit", () => {
     const root = startedTurnRoot();
-    const startInput = commandInput(root, "command-start");
+    const startInput = commandInput(root, "command.started");
     expect(() =>
       recordCommandSignalV2({
         ...startInput,
@@ -182,7 +182,7 @@ describe("event ledger V2 persistent session-tee recorder", () => {
     const root = startedTurnRoot();
     expect(
       recordCommandSignalV2({
-        ...commandInput(root, "command-start"),
+        ...commandInput(root, "command.started"),
         monotonic_ns: "999999999999",
       }).state,
     ).toBe("recorded");

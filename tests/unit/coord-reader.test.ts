@@ -114,22 +114,28 @@ const reader = await import(
 );
 
 describe("coord-reader", () => {
-  test("readAgents partitions fresh vs stale and includes invalid", () => {
+  test("readAgents ignores unbound cache rows and reports them as invalid", () => {
     const snap = reader.readAgents();
-    expect(snap.active.map((h: { name: string }) => h.name)).toEqual(["Alpha"]);
-    expect(snap.stale.map((h: { name: string }) => h.name)).toEqual(["Beta"]);
-    expect(snap.meta.invalid.length).toBe(1);
-    expect(snap.meta.invalid[0].file).toBe("broken.json");
+    expect(snap.active.map((h: { name: string }) => h.name).sort()).toEqual([
+      "abc-fresh",
+      "def-stale",
+    ]);
+    expect(snap.stale).toEqual([]);
+    expect(snap.meta.invalid.map((row: { file: string }) => row.file).sort()).toEqual([
+      "abc-fresh.json",
+      "broken.json",
+      "def-stale.json",
+    ]);
   });
 
-  test("readAgents claims flatten files_touched per heartbeat", () => {
+  test("readAgents never trusts claims from unbound cache rows", () => {
     const snap = reader.readAgents();
     const paths = snap.claims.map((c: { path: string }) => c.path).sort();
-    expect(paths).toEqual(["/a.ts", "/b.ts", "/c.ts"]);
+    expect(paths).toEqual([]);
   });
 
-  test("readAgent returns single heartbeat or null", () => {
-    expect(reader.readAgent("abc-fresh")?.name).toBe("Alpha");
+  test("readAgent returns the V2 projection or null", () => {
+    expect(reader.readAgent("abc-fresh")?.name).toBe("abc-fresh");
     expect(reader.readAgent("not-real")).toBeNull();
   });
 

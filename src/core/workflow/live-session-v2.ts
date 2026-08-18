@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import type { Adapter } from "../adapter.ts";
 import { recordLiveTaskChangeV2 } from "../agents/live-authority-v2.ts";
+import { endSessionExplicitV2 } from "../agents/session-finalizer-v2.ts";
 import {
+  clearCoordinationCache,
   type Heartbeat,
-  killHeartbeat,
   setIdentityCache,
 } from "../agents/state/heartbeat-writer.ts";
 import {
@@ -15,6 +15,7 @@ import {
   recordLiveHookSignalV2,
   resolveLiveEventLedgerRouteV2,
 } from "../events/v2/live-routing.ts";
+import { stableScopeId } from "./scope-id.ts";
 
 export interface WorkflowChildSessionV2Input {
   coordRoot: string;
@@ -40,6 +41,7 @@ export function startWorkflowChildSessionV2(input: WorkflowChildSessionV2Input):
     instanceId: input.instanceId,
     run_id: stableScopeId("run", input.runId),
     workflow_id: stableScopeId("wf", input.runId),
+    workflow_agent_id: input.agentId,
     payload: {
       session_id: sessionId,
       model: input.model,
@@ -86,26 +88,24 @@ export function startWorkflowChildSessionV2(input: WorkflowChildSessionV2Input):
 export function endWorkflowChildSessionV2(
   input: WorkflowChildSessionV2Input & { cleanExit: boolean },
 ): void {
-  const adapter = workflowAdapter(input.adapter);
-  const route = requireV2Route(input.coordRoot);
-  const result = recordLiveHookSignalV2({
-    coordRoot: input.coordRoot,
-    route,
-    eventName: "session-end",
-    adapter,
-    instanceId: input.instanceId,
-    run_id: stableScopeId("run", input.runId),
-    workflow_id: stableScopeId("wf", input.runId),
-    payload: {
-      session_id: input.sessionId ?? input.instanceId,
-      clean_exit: input.cleanExit,
-      raw: {},
-    },
-  });
-  if (result.state !== "recorded") {
-    throw new Error(`workflow_child_v2_end_failed:${result.state}`);
+  requireV2Route(input.coordRoot);
+  const row = readLiveCoordinationRow(input.coordRoot, input.instanceId);
+  if (!row?.v2_instance_id || !row.v2_generation_id) {
+    throw new Error("workflow_child_v2_generation_missing");
   }
-  killHeartbeat(input.coordRoot, input.instanceId);
+  const result = endSessionExplicitV2({
+    coordRoot: input.coordRoot,
+    instance_id: row.v2_instance_id,
+    generation_id: row.v2_generation_id,
+    coordination_finalized: true,
+    outcome: input.cleanExit ? "succeeded" : "failed",
+  });
+  if (result.state !== "recorded" && result.state !== "already_ended") {
+    throw new Error(
+      `workflow_child_v2_end_failed:${result.state}${"reason" in result ? `:${result.reason}` : ""}`,
+    );
+  }
+  clearCoordinationCache(input.coordRoot, input.instanceId);
 }
 
 function requireV2Route(coordRoot: string) {
@@ -123,6 +123,4 @@ function workflowAdapter(adapter: string | undefined): Adapter {
   return "claude-code";
 }
 
-function stableScopeId<P extends "run" | "wf">(prefix: P, value: string): `${P}_${string}` {
-  return `${prefix}_${createHash("sha256").update(value.normalize("NFC")).digest("hex")}`;
-}
+export { stableScopeId } from "./scope-id.ts";

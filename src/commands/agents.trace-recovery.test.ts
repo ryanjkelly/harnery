@@ -9,7 +9,7 @@ describe("agents trace recovery visibility", () => {
         {
           event_type: "tool.completed",
           ts: "2026-08-17T20:00:00.000Z",
-          data: {
+          payload: {
             outcome: "unknown",
             recovery: { reason: "completion_not_observed_before_turn_end" },
           },
@@ -17,14 +17,14 @@ describe("agents trace recovery visibility", () => {
         false,
       ),
     ).toMatchObject({
-      detail: "outcome=unknown · RECOVERY reason=completion_not_observed_before_turn_end",
+      detail: "tool · outcome=unknown · RECOVERY reason=completion_not_observed_before_turn_end",
     });
     expect(
       traceLine(
         {
           event_type: "command.completed",
           ts: "2026-08-17T20:00:01.000Z",
-          data: {
+          payload: {
             outcome: "unknown",
             recovery: { reason: "command_completion_not_observed" },
           },

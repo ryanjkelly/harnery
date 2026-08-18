@@ -43,9 +43,9 @@ let seq = 0;
 function ev(overrides: Partial<CodecSourceEvidence>): CodecSourceEvidence {
   seq += 1;
   return {
-    schema_version: 1,
+    schema_version: 2,
     event_id: `01J${String(seq).padStart(23, "0")}`,
-    event_type: "state.heartbeat",
+    event_type: "coord.status_observed",
     ts: "2026-08-16T10:04:00.000Z",
     instance_id: "inst-1",
     ...overrides,
@@ -65,7 +65,7 @@ describe("projectScene", () => {
       events: [],
       now: NOW,
     });
-    expect(scene.schema_version).toBe(1);
+    expect(scene.schema_version).toBe(2);
     expect(scene.panels).toHaveLength(1);
     const panel = scene.panels[0];
     expect(panel).toBeDefined();
@@ -88,7 +88,7 @@ describe("projectScene", () => {
   test("determinism: same inputs produce the same scene", () => {
     const inputs = {
       snapshot: snapshot([hb({})]),
-      events: [ev({ event_type: "context.sampled", used_percent: 40 })],
+      events: [ev({ event_type: "context.observed", used_percent: 40 })],
       now: NOW,
     };
     const a = JSON.stringify(projectScene(inputs));
@@ -97,7 +97,7 @@ describe("projectScene", () => {
     expect(a).toBe(b);
   });
 
-  test("stale leftover heartbeats are omitted; session.end still yields offline", () => {
+  test("stale leftover heartbeats are omitted; session.ended still yields offline", () => {
     const staleHb = hb({ age_seconds: 900 });
     const noEnd = projectScene({ snapshot: snapshot([], [staleHb]), events: [], now: NOW });
     expect(noEnd.panels).toHaveLength(0);
@@ -106,8 +106,8 @@ describe("projectScene", () => {
     const ended = projectScene({
       snapshot: snapshot([], [staleHb]),
       events: [
-        ev({ event_type: "session.start", ts: "2026-08-16T09:00:00.000Z" }),
-        ev({ event_type: "session.end", ts: "2026-08-16T10:00:00.000Z" }),
+        ev({ event_type: "session.started", ts: "2026-08-16T09:00:00.000Z" }),
+        ev({ event_type: "session.ended", ts: "2026-08-16T10:00:00.000Z" }),
       ],
       now: NOW,
     });
@@ -118,8 +118,8 @@ describe("projectScene", () => {
     const restarted = projectScene({
       snapshot: snapshot([hb({})]),
       events: [
-        ev({ event_type: "session.end", ts: "2026-08-16T10:00:00.000Z" }),
-        ev({ event_type: "session.start", ts: "2026-08-16T10:02:00.000Z" }),
+        ev({ event_type: "session.ended", ts: "2026-08-16T10:00:00.000Z" }),
+        ev({ event_type: "session.started", ts: "2026-08-16T10:02:00.000Z" }),
       ],
       now: NOW,
     });
@@ -152,7 +152,7 @@ describe("projectScene", () => {
       snapshot: snapshot([], [staleWorking]),
       events: [
         ev({
-          event_type: "tool.pre_use",
+          event_type: "tool.requested",
           category: "edit",
           outcome: "started",
           ts: "2026-08-16T10:03:00.000Z",
@@ -170,10 +170,10 @@ describe("projectScene", () => {
     expect(scene.panels[0]?.activity).toMatchObject({ value: "working", provenance: "event" });
   });
 
-  test("an old session.end on a stale heartbeat does not linger in the scene", () => {
+  test("an old session.ended on a stale heartbeat does not linger in the scene", () => {
     const scene = projectScene({
       snapshot: snapshot([], [hb({ age_seconds: 7200 })]),
-      events: [ev({ event_type: "session.end", ts: "2026-08-16T08:00:00.000Z" })],
+      events: [ev({ event_type: "session.ended", ts: "2026-08-16T08:00:00.000Z" })],
       now: NOW,
     });
     expect(scene.panels).toHaveLength(0);
@@ -194,7 +194,7 @@ describe("projectScene", () => {
 
     const fromEvent = projectScene({
       snapshot: snapshot([hb({})]),
-      events: [ev({ event_type: "state.task_state", task_state: "done" })],
+      events: [ev({ event_type: "coord.lifecycle_changed", task_state: "done" })],
       now: NOW,
     });
     expect(fromEvent.panels[0]?.lifecycle).toMatchObject({ value: "done", provenance: "event" });
@@ -204,7 +204,7 @@ describe("projectScene", () => {
     const band = (usedPercent: number) =>
       projectScene({
         snapshot: snapshot([hb({})]),
-        events: [ev({ event_type: "context.sampled", used_percent: usedPercent })],
+        events: [ev({ event_type: "context.observed", used_percent: usedPercent })],
         now: NOW,
       }).panels[0]?.context_band.value;
 
@@ -228,24 +228,24 @@ describe("projectScene", () => {
       projectScene({ snapshot: snapshot([hb({})]), events, now: NOW }).panels[0]?.progress_rhythm
         .value;
 
-    expect(rhythm([ev({ event_type: "user_prompt.submit", ts: "2026-08-16T10:04:30.000Z" })])).toBe(
+    expect(rhythm([ev({ event_type: "turn.started", ts: "2026-08-16T10:04:30.000Z" })])).toBe(
       "just-started",
     );
     expect(
       rhythm([
         ev({
-          event_type: "tool.post_use",
+          event_type: "tool.completed",
           ts: "2026-08-16T10:04:40.000Z",
           category: "edit",
           outcome: "ok",
         }),
       ]),
     ).toBe("in-motion");
-    expect(rhythm([ev({ event_type: "turn.stop", ts: "2026-08-16T10:04:55.000Z" })])).toBe(
+    expect(rhythm([ev({ event_type: "turn.completed", ts: "2026-08-16T10:04:55.000Z" })])).toBe(
       "wrapping-up",
     );
     // An old turn stop is not "wrapping-up" and silence is not progress.
-    expect(rhythm([ev({ event_type: "turn.stop", ts: "2026-08-16T09:00:00.000Z" })])).toBe(
+    expect(rhythm([ev({ event_type: "turn.completed", ts: "2026-08-16T09:00:00.000Z" })])).toBe(
       "unknown",
     );
   });
@@ -255,31 +255,31 @@ describe("projectScene", () => {
       snapshot: snapshot([hb({})]),
       events: [
         ev({
-          event_type: "tool.post_use",
+          event_type: "tool.completed",
           category: "research",
           outcome: "ok",
           ts: "2026-08-16T10:01:00.000Z",
         }),
         ev({
-          event_type: "tool.post_use",
+          event_type: "tool.completed",
           category: "edit",
           outcome: "ok",
           ts: "2026-08-16T10:02:00.000Z",
         }),
         ev({
-          event_type: "command.end",
+          event_type: "command.completed",
           category: "diagnostic",
           outcome: "error",
           ts: "2026-08-16T10:03:00.000Z",
         }),
         ev({
-          event_type: "tool.post_use",
+          event_type: "tool.completed",
           category: "test",
           outcome: "ok",
           ts: "2026-08-16T10:04:00.000Z",
         }),
         ev({
-          event_type: "tool.pre_use",
+          event_type: "tool.requested",
           category: "build",
           outcome: "started",
           ts: "2026-08-16T10:04:30.000Z",
@@ -295,32 +295,36 @@ describe("projectScene", () => {
   test("evidence-backed panel survives a swept heartbeat; noise and stale evidence do not", () => {
     const events = [
       ev({
-        event_type: "identity.assumed",
+        event_type: "coord.identity_attested",
         identity_name: "Quentin",
         ts: "2026-08-16T09:00:00.000Z",
       }),
-      ev({ event_type: "state.task_set", task: "Review fixes", ts: "2026-08-16T09:30:00.000Z" }),
       ev({
-        event_type: "tool.pre_use",
+        event_type: "coord.task_changed",
+        task: "Review fixes",
+        ts: "2026-08-16T09:30:00.000Z",
+      }),
+      ev({
+        event_type: "tool.requested",
         category: "research",
         outcome: "started",
         ts: "2026-08-16T10:03:00.000Z",
       }),
       // a different instance with only incidental evidence: no panel
       ev({
-        event_type: "state.heartbeat",
+        event_type: "coord.status_observed",
         instance_id: "inst-noise",
         ts: "2026-08-16T10:03:00.000Z",
       }),
       // a third instance whose evidence is far outside the window: no panel
       ev({
-        event_type: "tool.pre_use",
+        event_type: "tool.requested",
         instance_id: "inst-old",
         category: "edit",
         ts: "2026-08-16T05:00:00.000Z",
       }),
       ev({
-        event_type: "identity.assumed",
+        event_type: "coord.identity_attested",
         instance_id: "inst-old",
         identity_name: "Old",
         ts: "2026-08-16T05:00:00.000Z",
@@ -339,23 +343,23 @@ describe("projectScene", () => {
     expect(q.activity).toMatchObject({ value: "working", provenance: "event" });
     expect(q.identity.task?.value).toBe("Review fixes");
 
-    // With a session.end as the newest lifecycle signal, the panel reads
+    // With a session.ended as the newest lifecycle signal, the panel reads
     // offline instead of online.
     const endedScene = projectScene({
       snapshot: snapshot([]),
-      events: [...events, ev({ event_type: "session.end", ts: "2026-08-16T10:04:00.000Z" })],
+      events: [...events, ev({ event_type: "session.ended", ts: "2026-08-16T10:04:00.000Z" })],
       now: NOW,
     });
     expect(endedScene.panels[0]?.presence.value).toBe("offline");
     expect(endedScene.panels[0]?.activity.value).toBe("idle");
   });
 
-  test("identity.assumed alone is incidental and does not create a panel", () => {
+  test("coord.identity_attested alone is incidental and does not create a panel", () => {
     const scene = projectScene({
       snapshot: snapshot([]),
       events: [
         ev({
-          event_type: "identity.assumed",
+          event_type: "coord.identity_attested",
           identity_name: "Ghost",
           instance_id: "inst-ghost",
           ts: "2026-08-16T10:04:00.000Z",
@@ -371,12 +375,12 @@ describe("projectScene", () => {
       snapshot: snapshot([]),
       events: [
         ev({
-          event_type: "identity.assumed",
+          event_type: "coord.identity_attested",
           identity_name: "Quentin",
           ts: "2026-08-16T09:50:00.000Z",
         }),
         ev({
-          event_type: "tool.pre_use",
+          event_type: "tool.requested",
           category: "research",
           outcome: "started",
           ts: "2026-08-16T09:50:00.000Z",
@@ -391,7 +395,7 @@ describe("projectScene", () => {
     const scene = projectScene({
       snapshot: snapshot([hb({})]),
       events: [
-        ev({ event_type: "tool.pre_use", category: "research", ts: "2026-08-16T10:03:00.000Z" }),
+        ev({ event_type: "tool.requested", category: "research", ts: "2026-08-16T10:03:00.000Z" }),
       ],
       now: NOW,
     });
@@ -404,11 +408,23 @@ describe("projectScene", () => {
       snapshot: panels,
       events: [
         // fresh ping between two panels: renders
-        ev({ event_type: "state.ping", ping_to: "inst-2", ts: "2026-08-16T10:04:57.000Z" }),
+        ev({
+          event_type: "coord.message_observed",
+          ping_to: "inst-2",
+          ts: "2026-08-16T10:04:57.000Z",
+        }),
         // expired ping: suppressed
-        ev({ event_type: "state.ping", ping_to: "inst-2", ts: "2026-08-16T10:00:00.000Z" }),
+        ev({
+          event_type: "coord.message_observed",
+          ping_to: "inst-2",
+          ts: "2026-08-16T10:00:00.000Z",
+        }),
         // ping to an un-paneled instance: suppressed, never guessed
-        ev({ event_type: "state.ping", ping_to: "inst-ghost", ts: "2026-08-16T10:04:58.000Z" }),
+        ev({
+          event_type: "coord.message_observed",
+          ping_to: "inst-ghost",
+          ts: "2026-08-16T10:04:58.000Z",
+        }),
       ],
       now: NOW,
     });
@@ -452,13 +468,13 @@ describe("projectScene", () => {
       events: [
         ev({
           instance_id: "inst-child",
-          event_type: "session.start",
+          event_type: "session.started",
           generation_id: childGen,
           parent_generation_id: parentGen,
         }),
         ev({
           instance_id: "inst-parent",
-          event_type: "subagent.start",
+          event_type: "agent.started",
           generation_id: parentGen,
           child_generation_id: childGen,
         }),

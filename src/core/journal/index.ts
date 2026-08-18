@@ -13,10 +13,13 @@ import { resolveMachineLabel } from "../../lib/machine.ts";
 import {
   assertSafeInstanceId,
   monorepoRoot,
-  readHeartbeat,
   resolveContainedFile,
   resolveOwner,
 } from "../agents/index.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../agents/state/live-coordination-view.ts";
 
 /**
  * Agent journal: per-agent markdown journal at `.harnery/journal/<instance_id>.md`.
@@ -313,7 +316,8 @@ export function appendEntry(
   category: JournalCategory,
   body: string,
 ): JournalDoc {
-  const hb = readHeartbeat(instanceId);
+  const root = monorepoRoot();
+  const hb = root ? readLiveCoordinationRow(root, instanceId) : null;
   const path = journalPath(instanceId);
   let doc: JournalDoc;
   if (existsSync(path)) {
@@ -412,14 +416,15 @@ export function pruneArchives(days = ARCHIVE_RETENTION_DAYS): number {
   return deleted;
 }
 
-/** Sweep `.harnery/journal/<owner>.md` files whose corresponding heartbeat is gone. */
+/** Sweep journals whose corresponding authoritative V2 generation is gone. */
 export function sweepOrphanJournals(): string[] {
   const dir = journalDir();
+  const root = monorepoRoot();
   const archived: string[] = [];
   for (const f of readdirSync(dir)) {
     if (!f.endsWith(".md")) continue;
     const instanceId = f.replace(/\.md$/, "");
-    const hb = readHeartbeat(instanceId);
+    const hb = root ? readLiveCoordinationRow(root, instanceId) : null;
     if (!hb) {
       const dest = archiveJournal(instanceId);
       if (dest) archived.push(dest);
@@ -463,25 +468,13 @@ export function loadJournal(instanceId: string): JournalDoc | null {
   return parseJournal(path, readFileSync(path, "utf8"));
 }
 
-/** Resolve an agent name → instance_id by walking active heartbeats (case-insensitive). */
+/** Resolve an agent name through the authority-safe V2 coordination projection. */
 export function resolveOwnerByName(name: string): string | null {
   const root = monorepoRoot();
   if (!root) return null;
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) return null;
-  for (const f of readdirSync(activeDir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(resolve(activeDir, f), "utf8")) as {
-        instance_id?: string;
-        name?: string;
-      };
-      if ((hb.name ?? "").toLowerCase() === name.toLowerCase()) {
-        return hb.instance_id ?? null;
-      }
-    } catch {
-      // skip
-    }
-  }
-  return null;
+  return (
+    readLiveCoordinationRows(root).find(
+      (row) => (row.name ?? "").toLowerCase() === name.toLowerCase(),
+    )?.instance_id ?? null
+  );
 }

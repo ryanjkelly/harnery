@@ -50,6 +50,7 @@ import {
   resolveLiveEventLedgerRouteV2,
 } from "../events/v2/live-routing.ts";
 import { fetchPresence } from "../presence/index.ts";
+import { stableScopeId } from "../workflow/scope-id.ts";
 import { detectAdapter } from "./adapter/detect.ts";
 import {
   extractBashCommand,
@@ -169,7 +170,7 @@ function logError(coordRoot: string | null, err: unknown, context: Record<string
 /**
  * Spawn `agent-coord assign-name <owner> <kind>` to mint or recover the
  * hurricane-style name for this owner. Returns null on any failure so
- * session.start emission never breaks the adapter flow.
+ * session.started emission never breaks the adapter flow.
  *
  * Lives at agent-hooks side (not agent-coord) to keep emitter/consumer
  * separation: we spawn rather than import.
@@ -206,7 +207,7 @@ function assignNameViaAgentCoord(
 
 /**
  * Direct (in-process) pidmap write, avoiding the spawn overhead of going via
- * the agent-coord CLI for every session.start / subagent.start. Pid-map rows
+ * the agent-coord CLI for every session.started signal. Pid-map rows
  * are essential for `harn agents whoami` ppid resolution.
  *
  * This used to inline its own copy of the write to keep this module's
@@ -248,6 +249,7 @@ interface BuildContext {
   raw: string;
   adapter: Adapter;
   instanceId: string;
+  eventName: string;
 }
 
 function buildEventData(
@@ -256,7 +258,7 @@ function buildEventData(
 ): Record<string, unknown> {
   const p = ctx.payload;
   switch (eventType) {
-    case "session.start": {
+    case "session.started": {
       const adapterPlatform =
         ctx.adapter === "claude-code"
           ? "claude-code"
@@ -264,11 +266,11 @@ function buildEventData(
             ? "cursor"
             : "codex";
       // Recorded fork lineage is NOT detected here. On claude-code a fork
-      // never fires its own session.start — SessionStart fires under the
+      // never fires its own session.started — SessionStart fires under the
       // PARENT's session id (source=resume) before the fork id is minted
       // (verified 2026-08-05) — so detection at this point can only mislabel
       // the resumed parent. The fork's new instance is caught by the
-      // tool.pre_use heal path instead. The forkedFrom plumbing below stays
+      // tool.requested heal path instead. The forkedFrom plumbing below stays
       // for adapters that DO report a parent at session start.
       const forkedFrom: string | undefined = undefined;
       // Assign (or recover) name + kind via agent-coord. Idempotent: resume
@@ -295,7 +297,7 @@ function buildEventData(
         cwd: p?.cwd ?? process.cwd(),
         // Claude Code's SessionStart payload omits `model` (Codex + Cursor
         // supply it). Fall back to the transcript, populated on `resume`, and
-        // backfilled later by `turn.stop` for a fresh `startup` session.
+        // backfilled later by `turn.completed` for a fresh startup session.
         model: p?.model ?? scanTranscriptModel(p?.transcript_path),
         pid: adapterPid,
         source: p?.source,
@@ -332,26 +334,26 @@ function buildEventData(
       };
     }
 
-    case "session.end":
+    case "session.ended":
       return {
         ended_at: new Date().toISOString(),
         clean_exit: p?.clean_exit ?? true,
       };
 
-    case "user_prompt.submit": {
+    case "turn.started": {
       const prompt = p?.prompt ?? "";
       const { value, truncated } = clampString(prompt, 4000);
       return { prompt_text: value, ...(truncated ? { truncated: true } : {}) };
     }
 
-    case "turn.stop": {
+    case "turn.completed": {
       const lastAssistantMessage = (p?.raw.last_assistant_message as string | undefined) ?? "";
       const fileLinkTelemetry =
         ctx.adapter === "codex"
           ? codexWslFileLinkTelemetry(ctx.coordRoot, p?.cwd, lastAssistantMessage)
           : null;
       return {
-        // Backfill the model for adapters that omit it at session.start
+        // Backfill the model for adapters that omit it at session.started
         // (Claude Code). The transcript is populated with assistant turns by
         // Stop-hook time, so this resolves even for fresh `startup` sessions.
         model: p?.model ?? scanTranscriptModel(p?.transcript_path),
@@ -365,7 +367,7 @@ function buildEventData(
         // Box present if the transcript scan finds it OR the final assistant
         // message carries the `┌─ agent-` prefix. The latter covers codex's
         // text-only stop (box in last_assistant_message, no transcript), which
-        // the verdict now sees because agent-hook emits this turn.stop itself
+        // the verdict now sees because agent-hook emits this turn.completed itself
         // (the previous path passed those via the no-history fail-open).
         status_box_present:
           scanStatusBoxPresent(p?.transcript_path) || lastAssistantMessage.includes("┌─ agent-"),
@@ -393,7 +395,7 @@ function buildEventData(
       };
     }
 
-    case "subagent.start": {
+    case "agent.started": {
       const subagentCallId =
         (p?.raw.subagent_id as string | undefined) ?? (p?.raw.agent_id as string | undefined);
       // Subagents inherit parent's name via the resolve-name session_id path
@@ -414,14 +416,14 @@ function buildEventData(
       };
     }
 
-    case "subagent.stop": {
+    case "agent.completed": {
       const status = p?.exit_status;
       const normalized: "ok" | "error" | "interrupted" =
         status === "error" || status === "interrupted" ? status : "ok";
       return { exit_status: normalized, reason: p?.reason };
     }
 
-    case "tool.pre_use": {
+    case "tool.requested": {
       const toolName = p?.tool_name ?? "unknown";
       const command = extractBashCommand(toolName, p?.tool_input);
       const description = extractToolDescription(p?.tool_input);
@@ -445,7 +447,7 @@ function buildEventData(
       };
     }
 
-    case "interaction.input_requested": {
+    case "interaction.wait_started": {
       const description = extractToolDescription(p?.tool_input);
       const reason = description ? clampString(description, 500).value : undefined;
       return {
@@ -455,32 +457,28 @@ function buildEventData(
       };
     }
 
-    case "tool.post_use": {
+    case "tool.completed": {
       const toolName = p?.tool_name ?? "unknown";
       const summary = summarizeOutput(p?.tool_response);
-      return {
-        tool_name: toolName,
-        output_summary: summary.summary,
-        exit_status: "ok" as const,
-        duration_ms: 0, // Phase 3 pairs pre/post via tool_use_id
-        tool_use_id: p?.tool_use_id,
-        ...(summary.truncated ? { truncated: true } : {}),
-      };
+      return ctx.eventName === "post-tool-use-failure"
+        ? {
+            tool_name: toolName,
+            error: summary.summary,
+            duration_ms: 0,
+            tool_use_id: p?.tool_use_id,
+            ...(summary.truncated ? { truncated: true } : {}),
+          }
+        : {
+            tool_name: toolName,
+            output_summary: summary.summary,
+            exit_status: "ok" as const,
+            duration_ms: 0,
+            tool_use_id: p?.tool_use_id,
+            ...(summary.truncated ? { truncated: true } : {}),
+          };
     }
 
-    case "tool.post_use_failure": {
-      const toolName = p?.tool_name ?? "unknown";
-      const summary = summarizeOutput(p?.tool_response);
-      return {
-        tool_name: toolName,
-        error: summary.summary,
-        duration_ms: 0,
-        tool_use_id: p?.tool_use_id,
-        ...(summary.truncated ? { truncated: true } : {}),
-      };
-    }
-
-    case "context.compaction.started": {
+    case "context.compaction_started": {
       const metadata = objectRecord(p?.raw.compact_metadata);
       return {
         trigger: stringField(p?.raw.trigger) ?? stringField(metadata?.trigger),
@@ -491,7 +489,7 @@ function buildEventData(
       };
     }
 
-    case "context.compaction.completed": {
+    case "context.compaction_completed": {
       const metadata = objectRecord(p?.raw.compact_metadata);
       return {
         trigger: stringField(p?.raw.trigger) ?? stringField(metadata?.trigger),
@@ -614,6 +612,7 @@ async function main(): Promise<number> {
     raw,
     adapter,
     instanceId: owner.instance_id,
+    eventName,
   });
 
   if (ledgerRoute.state === "blocked") {
@@ -634,6 +633,15 @@ async function main(): Promise<number> {
     payload,
     adapter,
     instanceId: owner.instance_id,
+    ...(coordEnv("WORKFLOW_CHILD") === "1" && coordEnv("WORKFLOW_RUN_ID")
+      ? {
+          run_id: stableScopeId("run", coordEnv("WORKFLOW_RUN_ID")!),
+          workflow_id: stableScopeId("wf", coordEnv("WORKFLOW_RUN_ID")!),
+          ...(coordEnv("WORKFLOW_AGENT_ID")
+            ? { workflow_agent_id: coordEnv("WORKFLOW_AGENT_ID") }
+            : {}),
+        }
+      : {}),
     ...(adapter === "codex" && isWslUncPath(payload?.cwd) ? { bridge: "codex-wsl" as const } : {}),
   });
   const v2EventId =
@@ -644,7 +652,7 @@ async function main(): Promise<number> {
         : undefined;
 
   if (
-    norm.event_type === "tool.pre_use" &&
+    norm.event_type === "tool.requested" &&
     v2Result &&
     v2Result.state === "recorded" &&
     "generation_id" in v2Result.event.scope
@@ -693,7 +701,7 @@ async function main(): Promise<number> {
   // A native pre-compaction signal is the safest available point to capture
   // external work state. The operation is idempotent until recovery, so a
   // adapter retry cannot create a storm of near-identical capsules.
-  if (norm.event_type === "context.compaction.started") {
+  if (norm.event_type === "context.compaction_started") {
     try {
       const checkpoint = checkpointContext(coordRoot, {
         sessionId,
@@ -709,7 +717,7 @@ async function main(): Promise<number> {
     }
   }
 
-  if (norm.event_type === "context.compaction.completed") {
+  if (norm.event_type === "context.compaction_completed") {
     try {
       markContextCompactionCompleted(coordRoot, {
         sessionId,
@@ -725,7 +733,7 @@ async function main(): Promise<number> {
   // systemMessage JSON (peer table + wiring check + council invites).
   // Adapter-agnostic since v0.5.0; replaces the previous bash UX layer
   // and the equivalent per-adapter bash session_start handlers.
-  if (norm.event_type === "session.start") {
+  if (norm.event_type === "session.started") {
     // Effect (claude-code): prune stale journal archives + sweep orphans.
     // The recovery-cue is merged into the
     // session-start additionalContext inside emitSessionStartSystemMessage.
@@ -772,7 +780,7 @@ async function main(): Promise<number> {
 
   // Phase 8: SessionEnd cleanup: delete heartbeat + pid-map rows. Adapter-
   // agnostic since v0.5.0.
-  if (norm.event_type === "session.end") {
+  if (norm.event_type === "session.ended") {
     try {
       cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
     } catch (err) {
@@ -789,7 +797,7 @@ async function main(): Promise<number> {
   // Phase 8: SubagentStart: sync-project to create the subagent heartbeat,
   // log the lifecycle event, and emit a context message announcing the
   // subagent (claude-code + cursor; codex doesn't fan out subagents today).
-  if (norm.event_type === "subagent.start") {
+  if (norm.event_type === "agent.started") {
     try {
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
       if (existsSync(agentCoordBin)) {
@@ -816,7 +824,7 @@ async function main(): Promise<number> {
   }
 
   // Phase 8: SubagentStop: delete subagent heartbeat + log.
-  if (norm.event_type === "subagent.stop") {
+  if (norm.event_type === "agent.completed") {
     try {
       cleanupSessionEnd(coordRoot, owner.instance_id, (data.reason as string) ?? "unknown");
       const agentCoordBin = coordBinPath("agent-coord", coordRoot) ?? "";
@@ -839,7 +847,7 @@ async function main(): Promise<number> {
 
   // Phase 8: UserPromptSubmit: render dedup'd peer table + council pending
   // and emit the adapter-shaped systemMessage JSON. Adapter-agnostic since v0.5.0.
-  if (norm.event_type === "user_prompt.submit") {
+  if (norm.event_type === "turn.started") {
     // Effects (claude-code): reset per-turn sound rate-limit counters + run
     // presence detection on the prompt.
     if (adapter === "claude-code") {
@@ -887,19 +895,19 @@ async function main(): Promise<number> {
     }
   }
 
-  // turn.stop: telemetry + turn-summary effects, then the stop verdict. The
+  // turn.completed: telemetry, then the stop verdict. The
   // verdict + codex-replay previously lived in the per-adapter shell adapters;
   // agent-hook owns them now. Runs on the normal "stop" event only;
   // "stop-failure" (API error) gets no gate, matching the previous
   // stop vs stop-failure split.
-  if (norm.event_type === "turn.stop" && eventName === "stop") {
+  if (norm.event_type === "turn.completed" && eventName === "stop") {
     // Claude Code session telemetry sync remains an independent side effect.
     if (adapter === "claude-code") {
       runSessionSyncExtension(coordRoot, false);
     }
 
     // Stop verdict (status-box + set-task gate). Direct in-process call: the
-    // rule lives in harnery. agent-hook already emitted this turn.stop (with
+    // rule lives in harnery. agent-hook already emitted this turn.completed (with
     // status_box_present) above, so the evidence is in the stream.
     const verdict = evaluateStopHook(coordRoot, {
       rule: "stop-hook",
@@ -943,10 +951,10 @@ async function main(): Promise<number> {
   // side-by-side in the previous pre-tool-use adapter. The Phase 4-6 refactor
   // preserved the heartbeat half but dropped the pid-map half; the pid-map
   // call was restored here afterward.
-  if (norm.event_type === "tool.pre_use") {
+  if (norm.event_type === "tool.requested") {
     try {
       // Recorded fork lineage, heal-path flavor. A forked CC conversation
-      // never fires its own session.start (SessionStart fires under the
+      // never fires its own session.started (SessionStart fires under the
       // PARENT's session id with source=resume, before the fork id is
       // minted; verified 2026-08-05), so the fork's new instance first
       // materializes right here. Gate detection on "no heartbeat yet" so the
@@ -995,13 +1003,13 @@ async function main(): Promise<number> {
     if (!guardAllowed) return 0;
   }
 
-  if (norm.event_type === "tool.post_use") {
+  if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
     // V2 tool observations update the generation projection directly.
   }
 
   // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
   // never landed; the claim is stale). Adapter-agnostic.
-  if (norm.event_type === "tool.post_use_failure") {
+  if (norm.event_type === "tool.completed" && eventName === "post-tool-use-failure") {
     try {
       releaseClaimOnFailure(coordRoot, owner.instance_id, data, payload?.raw);
     } catch (err) {
@@ -1162,7 +1170,7 @@ function parseApplyPatchPaths(data: Record<string, unknown>): string[] {
 /**
  * Walk up the ppid chain on Linux/WSL looking for the adapter anchor PID,
  * the PID of the claude / cursor / codex binary. Finds the agent PID. Used by
- * `tool.pre_use`'s pid-map self-heal so a re-parented adapter binary (the
+ * `tool.requested` pid-map self-heal so a re-parented adapter binary (the
  * VS Code 2.1.x sibling-claude spawn case) gets its pid-map row rewritten on
  * the next tool call rather than going invisible until SessionStart fires
  * again, which it may never do.
@@ -1229,7 +1237,7 @@ function findAdapterAnchorPid(adapter?: Adapter): number | undefined {
 }
 
 /**
- * Pid-map self-heal for `tool.pre_use`.
+ * Pid-map self-heal for `tool.requested`.
  *
  * The pid argument prefers the payload's `pid` (CC populates it on
  * SessionStart and may also send it on PreToolUse), then
@@ -1396,7 +1404,7 @@ function emitSubagentStartContext(
   adapter: Adapter,
 ): void {
   // Look up the subagent's assigned name (just-written by agent-coord assignName
-  // in session.start data) + the parent's short id for the "you are a subagent
+  // in session.started data) + the parent's short id for the "you are a subagent
   // of X" framing.
   const subagentName = (data.name as string | undefined) ?? "";
   if (!subagentName) return;

@@ -35,7 +35,8 @@ export type AuthorityMutationV2 =
       reason_code?: string;
     }
   | {
-      kind: "claim.acquire" | "claim.release";
+      kind: "claim.transition";
+      operation: "acquired" | "released";
       target_fingerprint: `sha256:${string}`;
       access: "read" | "write";
     }
@@ -328,10 +329,11 @@ function validateMutation(value: unknown): AuthorityMutationV2 {
     ) {
       throw new Error("authority lifecycle mutation is invalid");
     }
-  } else if (mutation.kind === "claim.acquire" || mutation.kind === "claim.release") {
+  } else if (mutation.kind === "claim.transition") {
     if (
-      Object.keys(mutation).sort().join("\0") !== "access\0kind\0target_fingerprint" ||
+      Object.keys(mutation).sort().join("\0") !== "access\0kind\0operation\0target_fingerprint" ||
       !["read", "write"].includes(String(mutation.access)) ||
+      !["acquired", "released"].includes(String(mutation.operation)) ||
       typeof mutation.target_fingerprint !== "string" ||
       !SHA256_PATTERN.test(mutation.target_fingerprint)
     ) {
@@ -424,8 +426,8 @@ function validateTransactionBinding(transaction: AuthorityTransactionV2, event: 
     }
     return;
   }
-  if (mutation.kind === "claim.acquire" || mutation.kind === "claim.release") {
-    const operation = mutation.kind === "claim.acquire" ? "acquired" : "released";
+  if (mutation.kind === "claim.transition") {
+    const operation = mutation.operation;
     if (
       event.event_type !== "coord.claim_changed" ||
       event.payload.actor_instance_id !== transaction.actor_instance_id ||

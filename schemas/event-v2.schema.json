@@ -196,6 +196,10 @@
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
             }
           }
         },
@@ -591,6 +595,10 @@
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
             }
           }
         },
@@ -980,6 +988,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             }
           }
@@ -1382,6 +1394,10 @@
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
             }
           }
         },
@@ -1779,6 +1795,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -2847,6 +2867,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -3758,6 +3782,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -4158,6 +4186,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -4772,6 +4804,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -5192,6 +5228,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -5578,6 +5618,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -6000,6 +6044,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -6495,6 +6543,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -7440,6 +7492,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -8133,6 +8189,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -8859,6 +8919,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -9348,6 +9412,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -9794,6 +9862,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -10264,6 +10336,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -10822,6 +10898,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -11385,6 +11465,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -12157,6 +12241,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -12621,6 +12709,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -13041,6 +13133,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -13479,6 +13575,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -13871,6 +13971,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -14295,6 +14399,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -14716,6 +14824,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -15135,6 +15247,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -15617,6 +15733,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -16043,6 +16163,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -16504,6 +16628,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -16963,6 +17091,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -17355,6 +17487,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -17917,6 +18053,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -18376,6 +18516,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -18552,6 +18696,7 @@
           "required": [
             "message_id",
             "direction",
+            "peer_instance_id",
             "body_length",
             "body_fingerprint"
           ],
@@ -18571,6 +18716,10 @@
                   "type": "string"
                 }
               ]
+            },
+            "peer_instance_id": {
+              "pattern": "^inst_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
             },
             "body_length": {
               "minimum": 0,
@@ -18818,6 +18967,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -19234,6 +19387,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -19630,6 +19787,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -20045,6 +20206,10 @@
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
               "type": "string"
             },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
+              "type": "string"
+            },
             "session_id": {
               "pattern": "^(sid|tid|hid)_[a-f0-9]{64}$",
               "type": "string"
@@ -20441,6 +20606,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {
@@ -20840,6 +21009,10 @@
             },
             "workflow_id": {
               "pattern": "^wf_[a-zA-Z0-9._-]{1,128}$",
+              "type": "string"
+            },
+            "workflow_agent_id": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
               "type": "string"
             },
             "session_id": {

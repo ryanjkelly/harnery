@@ -33,14 +33,12 @@ export const dynamic = "force-dynamic";
 export default async function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const decoded = decodeURIComponent(id);
-  // Live heartbeat wins. When it's gone (session ended / file pruned) fall back
-  // to a read-only view reconstructed from the durable event log, so the hover
-  // card's "Open" button never dead-ends at a 404 for a stale agent. Call
-  // notFound only when neither a heartbeat nor a durable identity exists.
+  // The live V2 generation wins. Once it ends, fall back to the durable V2
+  // terminal record so the hover card never dead-ends at a 404.
   const live = readAgent(decoded);
   const hb = live ?? readEndedAgent(decoded);
   if (!hb) notFound();
-  const hasHeartbeat = hb.coord_source !== "ledger" && !!live;
+  const hasLiveGeneration = !!live;
   const isTerminal = hb.ledger_state === "terminal" || !live;
 
   const journal = readJournal(decoded);
@@ -78,7 +76,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>Heartbeat</CardTitle>
+              <CardTitle>V2 generation</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-[8rem_1fr] gap-y-1 text-xs">
@@ -88,19 +86,12 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
                 <span className="font-mono break-all">{hb.session_id ?? NO_DATA}</span>
                 <span className="text-muted-foreground">started</span>
                 <span>{hb.started_at ? <FormattedDateTime iso={hb.started_at} /> : NO_DATA}</span>
-                <span className="text-muted-foreground">last heartbeat</span>
+                <span className="text-muted-foreground">last observed</span>
                 <span>
                   <FormattedDateTime iso={hb.last_heartbeat} />
                 </span>
                 <span className="text-muted-foreground">model</span>
                 <span className="font-mono">{hb.model || NO_DATA}</span>
-                <span className="text-muted-foreground">last tool</span>
-                <span className="font-mono">
-                  {hb.last_tool ?? NO_DATA}
-                  {hb.last_tool_target && (
-                    <span className="text-muted-foreground"> · {hb.last_tool_target}</span>
-                  )}
-                </span>
                 <span className="text-muted-foreground">task</span>
                 <span>{hb.task ?? <span className="text-muted-foreground italic">none</span>}</span>
                 <span className="text-muted-foreground">activity</span>
@@ -129,14 +120,8 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
                     <span>{hb.open_span_count}</span>
                   </>
                 )}
-                {hb.turn_summary && (
-                  <>
-                    <span className="text-muted-foreground">turn summary</span>
-                    <span className="text-muted-foreground">{hb.turn_summary}</span>
-                  </>
-                )}
               </div>
-              {hasHeartbeat && !isTerminal && (
+              {hasLiveGeneration && !isTerminal && (
                 <div className="mt-4 flex gap-2">
                   <EndSessionButton instanceId={hb.instance_id} name={hb.name} />
                 </div>
@@ -169,16 +154,15 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
           </Card>
         </div>
 
-        {hasHeartbeat && !isTerminal ? (
+        {hasLiveGeneration && !isTerminal ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
             <NudgeBox instanceId={hb.instance_id} agentName={`agent-${hb.name}`} />
             <HealActions instanceId={hb.instance_id} agentName={`agent-${hb.name}`} />
           </div>
         ) : (
           <div className="mb-4 rounded-md border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
-            This view is read-only because no live heartbeat is available. Ledger lifecycle and
-            recent activity remain visible; task, model, and operator actions return automatically
-            if the agent resumes.
+            This view is read-only because no live V2 generation is available. Durable lifecycle and
+            recent activity remain visible.
           </div>
         )}
 
@@ -189,7 +173,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
             journal={journal}
             rawBody={journalBody}
             archiveCount={archives.length}
-            readOnly={!hasHeartbeat || isTerminal}
+            readOnly={!hasLiveGeneration || isTerminal}
           />
         </div>
 

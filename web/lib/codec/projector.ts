@@ -55,14 +55,14 @@ const MESSAGE_TRANSIENT_TTL_MS = 8_000;
 const lastBandByInstance = new Map<string, { band: CodecContextBand; remaining: number }>();
 
 interface InstanceEvidence {
-  lastSessionStart?: CodecSourceEvidence;
-  lastSessionEnd?: CodecSourceEvidence;
-  lastPromptOrStart?: CodecSourceEvidence;
-  lastPrompt?: CodecSourceEvidence;
-  lastTurnStop?: CodecSourceEvidence;
+  lastSessionStarted?: CodecSourceEvidence;
+  lastSessionEnded?: CodecSourceEvidence;
+  lastTurnOrSessionStarted?: CodecSourceEvidence;
+  lastTurnStarted?: CodecSourceEvidence;
+  lastTurnCompleted?: CodecSourceEvidence;
   lastAction?: CodecSourceEvidence;
-  lastTaskSet?: CodecSourceEvidence;
-  lastTaskState?: CodecSourceEvidence;
+  lastTaskChanged?: CodecSourceEvidence;
+  lastLifecycleChanged?: CodecSourceEvidence;
   lastContext?: CodecSourceEvidence;
   identityName?: string;
   /** Envelope parent_session_id from the newest event carrying one. */
@@ -87,11 +87,10 @@ interface InstanceEvidence {
 const ACTIONS_FULL_CAP = 24;
 
 const ACTION_TYPES = new Set([
-  "tool.pre_use",
-  "tool.post_use",
-  "tool.post_use_failure",
-  "command.start",
-  "command.end",
+  "tool.requested",
+  "tool.completed",
+  "command.started",
+  "command.completed",
   "progress.observed",
 ]);
 
@@ -117,28 +116,29 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     if (ev.child_generation_id) slot.childGenerationId = ev.child_generation_id;
     if (ev.recovered) slot.recovered = true;
     slot.lastEventTs = ev.ts;
-    // Mirror of applySessionStateEvent's evidence table (session-state.ts):
-    // starts/stops → idle, prompts/tools → working, input requests →
-    // needs-input, command starts count only inside an open working state.
+    // V2 activity evidence: session boundaries are idle, turns and tools are
+    // working, waits need input, and commands preserve an already-open turn.
     const setActivity = (value: CodecActivity) => {
       slot.activityEvidence = { value, ts: ev.ts, event_id: ev.event_id };
     };
     switch (ev.event_type) {
-      case "session.start":
-      case "subagent.start":
+      case "session.started":
+      case "session.resumed":
+      case "agent.delegated":
+      case "agent.started":
         setActivity("idle");
         break;
-      case "user_prompt.submit":
-      case "tool.pre_use":
+      case "turn.started":
+      case "tool.requested":
         setActivity("working");
         break;
-      case "interaction.input_requested":
+      case "interaction.wait_started":
         setActivity("needs-input");
         break;
       case "interaction.wait_ended":
         setActivity("working");
         break;
-      case "command.start":
+      case "command.started":
         if (
           slot.activityEvidence?.value === "working" ||
           slot.activityEvidence?.value === "needs-input"
@@ -146,49 +146,53 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
           setActivity("working");
         }
         break;
-      case "turn.stop":
-      case "session.end":
-      case "subagent.stop":
+      case "turn.completed":
+      case "session.ended":
+      case "agent.completed":
         setActivity("idle");
         break;
       default:
         break;
     }
     switch (ev.event_type) {
-      case "session.start":
-        slot.lastSessionStart = ev;
-        slot.lastPromptOrStart = ev;
+      case "session.started":
+      case "session.resumed":
+        slot.lastSessionStarted = ev;
+        slot.lastTurnOrSessionStarted = ev;
         break;
-      case "subagent.start":
-        // A subagent event lands on the parent instance: it seeds the rhythm
-        // (plan: just-started follows subagent.start) and opens coordination
+      case "agent.delegated":
+      case "agent.started":
+        // A child-agent event lands on the parent instance: it seeds rhythm
+        // and opens coordination
         // evidence, but it is NOT the parent's session lifecycle.
-        slot.lastPromptOrStart = ev;
+        slot.lastTurnOrSessionStarted = ev;
         slot.openSubagents += 1;
         break;
-      case "session.end":
-        slot.lastSessionEnd = ev;
+      case "session.ended":
+        slot.lastSessionEnded = ev;
         break;
-      case "subagent.stop":
+      case "agent.completed":
         slot.openSubagents = Math.max(0, slot.openSubagents - 1);
         break;
-      case "user_prompt.submit":
-        slot.lastPromptOrStart = ev;
-        slot.lastPrompt = ev;
+      case "turn.started":
+        slot.lastTurnOrSessionStarted = ev;
+        slot.lastTurnStarted = ev;
         break;
-      case "turn.stop":
-        slot.lastTurnStop = ev;
+      case "turn.completed":
+        slot.lastTurnCompleted = ev;
         break;
-      case "state.task_set":
-        slot.lastTaskSet = ev;
+      case "coord.task_changed":
+        slot.lastTaskChanged = ev;
         break;
-      case "state.task_state":
-        if (ev.task_state) slot.lastTaskState = ev;
+      case "coord.lifecycle_changed":
+        if (ev.task_state) slot.lastLifecycleChanged = ev;
         break;
-      case "context.sampled":
+      case "context.observed":
+      case "context.compaction_started":
+      case "context.compaction_completed":
         if (ev.used_percent !== undefined) slot.lastContext = ev;
         break;
-      case "identity.assumed":
+      case "coord.identity_attested":
         if (ev.identity_name) slot.identityName = ev.identity_name;
         break;
       default:
@@ -205,9 +209,9 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         ...(ev.live_overlay ? { live_overlay: true } : {}),
       });
       if (slot.actionsFull.length > ACTIONS_FULL_CAP) slot.actionsFull.shift();
-      // `tool.pre_use` opens an action and its post event closes it; the trail
+      // `tool.requested` opens an action and its completion closes it; the trail
       // wants completed-or-started glyphs, newest first, capped at three.
-      if (ev.event_type !== "tool.pre_use" && ev.event_type !== "command.start") {
+      if (ev.event_type !== "tool.requested" && ev.event_type !== "command.started") {
         slot.recentActions.unshift({
           category: ev.category ?? "other",
           outcome: ev.outcome ?? "unknown",
@@ -246,19 +250,21 @@ function presence(
   now: string,
 ): Presented<CodecPresence> {
   // A fresh heartbeat is live evidence and outranks any recorded end: an
-  // adapter that restarts without a new session.start row must not render a
+  // adapter that restarts without a new session.started row must not render a
   // living agent offline. Terminal ledger state is the exception: the
   // generation has already ended even if a leftover file is still "fresh."
   if (hb.ledger_state === "terminal") {
     return present("offline", "projection", "high", hb.last_heartbeat);
   }
   if (isActive) return present("online", "projection", "high", hb.last_heartbeat);
-  const endTs = ms(ev?.lastSessionEnd?.ts);
-  const startTs = ms(ev?.lastSessionStart?.ts);
+  const endTs = ms(ev?.lastSessionEnded?.ts);
+  const startTs = ms(ev?.lastSessionStarted?.ts);
   const endedAfterLastStart =
     Number.isFinite(endTs) && (!Number.isFinite(startTs) || endTs > startTs);
-  if (ev?.lastSessionEnd && endedAfterLastStart) {
-    return present("offline", "event", "high", ev.lastSessionEnd.ts, [ev.lastSessionEnd.event_id]);
+  if (ev?.lastSessionEnded && endedAfterLastStart) {
+    return present("offline", "event", "high", ev.lastSessionEnded.ts, [
+      ev.lastSessionEnded.event_id,
+    ]);
   }
   // A stale heartbeat is absence of evidence, not evidence of absence.
   return present("unknown", "projection", "low", hb.last_heartbeat ?? now);
@@ -286,10 +292,14 @@ function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<C
   if (hb.task_state_updated_at) {
     return present(hb.task_state, "projection", "high", hb.task_state_updated_at);
   }
-  if (ev?.lastTaskState?.task_state) {
-    return present(ev.lastTaskState.task_state, "event", "high", ev.lastTaskState.ts, [
-      ev.lastTaskState.event_id,
-    ]);
+  if (ev?.lastLifecycleChanged?.task_state) {
+    return present(
+      ev.lastLifecycleChanged.task_state,
+      "event",
+      "high",
+      ev.lastLifecycleChanged.ts,
+      [ev.lastLifecycleChanged.event_id],
+    );
   }
   return present("unknown", "unknown", "low", hb.last_heartbeat);
 }
@@ -298,9 +308,9 @@ function taskLabel(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<s
   if (hb.task && hb.task.trim()) {
     return present(hb.task.trim(), "projection", "high", hb.task_updated_at ?? hb.last_heartbeat);
   }
-  if (ev?.lastTaskSet?.task && !ev.lastTaskSet.task_cleared) {
-    return present(ev.lastTaskSet.task, "event", "high", ev.lastTaskSet.ts, [
-      ev.lastTaskSet.event_id,
+  if (ev?.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared) {
+    return present(ev.lastTaskChanged.task, "event", "high", ev.lastTaskChanged.ts, [
+      ev.lastTaskChanged.event_id,
     ]);
   }
   return undefined;
@@ -332,28 +342,30 @@ function progressRhythm(
   hbTs: string,
 ): Presented<CodecProgressRhythm> {
   if (!ev) return present("unknown", "unknown", "low", hbTs);
-  const stopTs = ms(ev.lastTurnStop?.ts);
+  const stopTs = ms(ev.lastTurnCompleted?.ts);
   const actionTs = ms(ev.lastAction?.ts);
-  const startTs = ms(ev.lastPromptOrStart?.ts);
+  const startTs = ms(ev.lastTurnOrSessionStarted?.ts);
 
   // wrapping-up: a just-observed turn stop with nothing newer.
   if (
-    ev.lastTurnStop &&
+    ev.lastTurnCompleted &&
     Number.isFinite(stopTs) &&
     nowMs - stopTs <= WRAPPING_UP_WINDOW_MS &&
     (!Number.isFinite(actionTs) || actionTs <= stopTs)
   ) {
-    return present("wrapping-up", "event", "high", ev.lastTurnStop.ts, [ev.lastTurnStop.event_id]);
+    return present("wrapping-up", "event", "high", ev.lastTurnCompleted.ts, [
+      ev.lastTurnCompleted.event_id,
+    ]);
   }
   // just-started: a fresh session/prompt with no action evidence yet.
   if (
-    ev.lastPromptOrStart &&
+    ev.lastTurnOrSessionStarted &&
     Number.isFinite(startTs) &&
     nowMs - startTs <= JUST_STARTED_WINDOW_MS &&
     (!Number.isFinite(actionTs) || actionTs < startTs)
   ) {
-    return present("just-started", "event", "high", ev.lastPromptOrStart.ts, [
-      ev.lastPromptOrStart.event_id,
+    return present("just-started", "event", "high", ev.lastTurnOrSessionStarted.ts, [
+      ev.lastTurnOrSessionStarted.event_id,
     ]);
   }
   // in-motion: current action evidence.
@@ -372,9 +384,9 @@ export interface ProjectSceneInputs {
 }
 
 function staleHeartbeatIsRecentlyEnded(ev: InstanceEvidence | undefined, nowMs: number): boolean {
-  const endTs = ms(ev?.lastSessionEnd?.ts);
-  const startTs = ms(ev?.lastSessionStart?.ts);
-  if (!ev?.lastSessionEnd || !Number.isFinite(endTs)) return false;
+  const endTs = ms(ev?.lastSessionEnded?.ts);
+  const startTs = ms(ev?.lastSessionStarted?.ts);
+  if (!ev?.lastSessionEnded || !Number.isFinite(endTs)) return false;
   if (Number.isFinite(startTs) && endTs <= startTs) return false;
   return nowMs - endTs <= EVIDENCE_PANEL_WINDOW_MS;
 }
@@ -417,7 +429,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
 
   const panels: CodecPanelScene[] = [];
   // Live heartbeats always render. Stale heartbeat files are leftovers unless
-  // a recent session.end puts them in Recently ended — otherwise they drowned
+  // a recent session.ended puts them in Recently ended — otherwise they drowned
   // the live grid (dozens of unknown/idle tiles with no task). Recent work
   // without a fresh heartbeat still surfaces through the evidence-backed
   // path below, so a mid-work agent cannot vanish.
@@ -444,11 +456,18 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const channels = deriveExpressiveChannels(
       {
         activity: panelActivity.value,
-        ...(ev?.lastPrompt
-          ? { lastPrompt: { ts: ev.lastPrompt.ts, event_id: ev.lastPrompt.event_id } }
+        ...(ev?.lastTurnStarted
+          ? {
+              lastTurnStarted: { ts: ev.lastTurnStarted.ts, event_id: ev.lastTurnStarted.event_id },
+            }
           : {}),
-        ...(ev?.lastTurnStop
-          ? { lastTurnStop: { ts: ev.lastTurnStop.ts, event_id: ev.lastTurnStop.event_id } }
+        ...(ev?.lastTurnCompleted
+          ? {
+              lastTurnCompleted: {
+                ts: ev.lastTurnCompleted.ts,
+                event_id: ev.lastTurnCompleted.event_id,
+              },
+            }
           : {}),
         actions: ev?.actionsFull ?? [],
         openSubagents: ev?.openSubagents ?? 0,
@@ -485,16 +504,16 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     if (paneled.has(instanceId)) continue;
     const lastTs = ms(ev.lastEventTs);
     if (!Number.isFinite(lastTs) || nowMs - lastTs > EVIDENCE_PANEL_WINDOW_MS) continue;
-    const hasWork = Boolean(ev.lastTaskSet || ev.lastPrompt || ev.actionsFull.length > 0);
-    const endTs = ms(ev.lastSessionEnd?.ts);
-    const ended = ev.lastSessionEnd !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
+    const hasWork = Boolean(ev.lastTaskChanged || ev.lastTurnStarted || ev.actionsFull.length > 0);
+    const endTs = ms(ev.lastSessionEnded?.ts);
+    const ended = ev.lastSessionEnded !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
     if (!hasWork && !ended) continue;
     // Quiet leftovers are not live Codec tiles. Non-ended evidence older than
     // the online window used to render as presence=unknown and refill the grid.
     if (!ended && nowMs - lastTs > EVIDENCE_ONLINE_WINDOW_MS) continue;
     const evPresence: Presented<CodecPresence> = ended
-      ? present("offline", "event", "high", ev.lastSessionEnd?.ts ?? now, [
-          ev.lastSessionEnd?.event_id ?? "",
+      ? present("offline", "event", "high", ev.lastSessionEnded?.ts ?? now, [
+          ev.lastSessionEnded?.event_id ?? "",
         ])
       : nowMs - lastTs <= EVIDENCE_ONLINE_WINDOW_MS
         ? present("online", "event", "medium", ev.lastEventTs ?? now)
@@ -507,11 +526,21 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const channels = deriveExpressiveChannels(
       {
         activity: evActivity.value,
-        ...(ev.lastPrompt
-          ? { lastPrompt: { ts: ev.lastPrompt.ts, event_id: ev.lastPrompt.event_id } }
+        ...(ev.lastTurnStarted
+          ? {
+              lastTurnStarted: {
+                ts: ev.lastTurnStarted.ts,
+                event_id: ev.lastTurnStarted.event_id,
+              },
+            }
           : {}),
-        ...(ev.lastTurnStop
-          ? { lastTurnStop: { ts: ev.lastTurnStop.ts, event_id: ev.lastTurnStop.event_id } }
+        ...(ev.lastTurnCompleted
+          ? {
+              lastTurnCompleted: {
+                ts: ev.lastTurnCompleted.ts,
+                event_id: ev.lastTurnCompleted.event_id,
+              },
+            }
           : {}),
         actions: ev.actionsFull,
         openSubagents: ev.openSubagents,
@@ -519,10 +548,14 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       now,
     );
     const task =
-      ev.lastTaskSet?.task && !ev.lastTaskSet.task_cleared
-        ? present(ev.lastTaskSet.task, "event" as const, "high" as const, ev.lastTaskSet.ts, [
-            ev.lastTaskSet.event_id,
-          ])
+      ev.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared
+        ? present(
+            ev.lastTaskChanged.task,
+            "event" as const,
+            "high" as const,
+            ev.lastTaskChanged.ts,
+            [ev.lastTaskChanged.event_id],
+          )
         : undefined;
     const fallbackTs = ev.lastEventTs ?? now;
     const evidencePanel: CodecPanelScene = {
@@ -533,9 +566,9 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       },
       presence: evPresence,
       activity: evActivity,
-      lifecycle: ev.lastTaskState?.task_state
-        ? present(ev.lastTaskState.task_state, "event", "high", ev.lastTaskState.ts, [
-            ev.lastTaskState.event_id,
+      lifecycle: ev.lastLifecycleChanged?.task_state
+        ? present(ev.lastLifecycleChanged.task_state, "event", "high", ev.lastLifecycleChanged.ts, [
+            ev.lastLifecycleChanged.event_id,
           ])
         : present("unknown", "unknown", "low", fallbackTs),
       expression: channels.expression,
@@ -554,7 +587,8 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
 
   // Parentage: join V2 generation ids first. A child's parent_generation_id
   // or a parent's child_generation_id maps onto another rendered panel's
-  // instance. Legacy parent_session_id remains a fallback for DTO fixtures.
+  // instance. parent_session_id remains a bounded adapter hint when no
+  // generation link exists.
   // A parent outside the scene is omitted, never guessed.
   const panelIds = new Set(panels.map((p) => p.instance_id));
   for (const panel of panels) {
@@ -567,14 +601,14 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     }
   }
 
-  // Message transients: state.ping is a complete delivery record (sender in
-  // the envelope, recipient in data). A cue renders only while unexpired and
+  // Message transients: coord.message_observed identifies sender and recipient
+  // without retaining message content. A cue renders only while unexpired and
   // only when both endpoints are rendered panels — a particle to nowhere is
   // suppressed, never guessed.
   const transients: CodecScene["transients"] = [];
   const paneledIds = new Set(panels.map((p) => p.instance_id));
   for (const ev of inputs.events) {
-    if (ev.event_type !== "state.ping" || !ev.ping_to) continue;
+    if (ev.event_type !== "coord.message_observed" || !ev.ping_to) continue;
     const occurredMs = ms(ev.ts);
     if (!Number.isFinite(occurredMs)) continue;
     const expiresMs = occurredMs + MESSAGE_TRANSIENT_TTL_MS;

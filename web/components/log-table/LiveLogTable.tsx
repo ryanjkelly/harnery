@@ -3,8 +3,8 @@
 import { useMemo } from "react";
 
 import { useHostInfo } from "@/components/HostInfoProvider";
-import { LogTable } from "@/components/log-table/LogTable";
 import { makeSessionEventRenderer } from "@/components/log-table/event-renderers";
+import { LogTable } from "@/components/log-table/LogTable";
 import type { SessionEvent } from "@/lib/session-events";
 
 interface Props {
@@ -25,16 +25,9 @@ interface Props {
  * keeps the two code paths (initial load + appended-event) walking through
  * the same parse + rendering pipeline.
  */
-export function LiveLogTable({
-  agentNames,
-  initialAgent,
-  instanceToName,
-}: Props) {
+export function LiveLogTable({ agentNames, initialAgent, instanceToName }: Props) {
   const { binName } = useHostInfo();
-  const renderer = useMemo(
-    () => makeSessionEventRenderer(instanceToName),
-    [instanceToName],
-  );
+  const renderer = useMemo(() => makeSessionEventRenderer(instanceToName), [instanceToName]);
   return (
     <LogTable<SessionEvent>
       initialRows={[]}

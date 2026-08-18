@@ -4,6 +4,10 @@ import { basename, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import { writeWorkflowRunManifest } from "harnery/core/workflow";
 import {
+  endWorkflowChildSessionV2,
+  startWorkflowChildSessionV2,
+} from "../../src/core/workflow/live-session-v2";
+import {
   readWorkflowChildSessions,
   readWorkflowRun,
   readWorkflowRuns,
@@ -95,11 +99,14 @@ describe("workflow proof reader", () => {
     utimesSync(join(runDir, "transcript.jsonl"), hourAgo, hourAgo);
     expect(readWorkflowRun(root, "wf-reader")?.status).toBe("stale");
 
-    writeHeartbeat("child-live", { workflow_run_id: "wf-reader", session_id: "s-live" });
+    writeWorkflowGeneration(root, "child-live", {
+      workflow_run_id: "wf-reader",
+      session_id: "s-live",
+    });
     expect(readWorkflowRun(root, "wf-reader")?.status).toBe("running");
 
     // An ended child stops vouching for the run.
-    writeHeartbeat("child-live", {
+    writeWorkflowGeneration(root, "child-live", {
       workflow_run_id: "wf-reader",
       session_id: "s-live",
       ended_at: "2026-07-21T12:30:00.000Z",
@@ -131,7 +138,7 @@ describe("workflow proof reader", () => {
     });
   });
 
-  test("unions live child heartbeats with transcripted sessions and lets the transcript name the agent", () => {
+  test("unions live child generations with transcripted sessions and lets the transcript name the agent", () => {
     writeFileSync(
       join(runDir, "transcript.jsonl"),
       `${JSON.stringify({ ts: "2026-07-21T12:00:00.000Z", event: "run.start", name: "reader" })}\n` +
@@ -141,10 +148,14 @@ describe("workflow proof reader", () => {
       "utf8",
     );
     // A live child with no agent stamp, an unrelated run's child, and a live
-    // heartbeat for the session the transcript already closed.
-    writeHeartbeat("live", { workflow_run_id: "wf-reader", session_id: "s-live" });
-    writeHeartbeat("other", { workflow_run_id: "wf-other", session_id: "s-other" });
-    writeHeartbeat("ended-but-warm", { workflow_run_id: "wf-reader", session_id: "s-ended" });
+    // V2 generation for the session the transcript already closed.
+    writeWorkflowGeneration(root, "live", { workflow_run_id: "wf-reader", session_id: "s-live" });
+    writeWorkflowGeneration(root, "other", { workflow_run_id: "wf-other", session_id: "s-other" });
+    writeWorkflowGeneration(root, "ended-but-warm", {
+      workflow_run_id: "wf-reader",
+      session_id: "s-ended",
+      workflow_agent_id: "a1",
+    });
 
     const children = readWorkflowChildSessions(root, "wf-reader").sort((a, b) =>
       a.sessionId.localeCompare(b.sessionId),
@@ -152,7 +163,7 @@ describe("workflow proof reader", () => {
     expect(children).toEqual([
       // Transcript names the agent; the heartbeat still says it is running.
       { sessionId: "s-ended", agentId: "a1", live: true },
-      { sessionId: "s-live", agentId: undefined, live: true },
+      { sessionId: "s-live", agentId: "live", live: true },
     ]);
   });
 
@@ -255,33 +266,28 @@ describe("run coord-root resolution", () => {
       writeManifestWithCwd(sibling);
       expect(readWorkflowRuns(root)[0]?.status).toBe("stale");
 
-      writeFileSync(
-        join(sibling, ".harnery", "active", "child.json"),
-        JSON.stringify({ workflow_run_id: "wf-reader", session_id: "s-remote" }),
-        "utf8",
-      );
+      writeWorkflowGeneration(sibling, "child", {
+        workflow_run_id: "wf-reader",
+        session_id: "s-remote",
+      });
       expect(readWorkflowRuns(root)[0]?.status).toBe("running");
     } finally {
       rmSync(sibling, { recursive: true, force: true });
     }
   });
 
-  test("reads child heartbeats from the run's own root", () => {
+  test("reads child V2 generations from the run's own root", () => {
     const sibling = join(root, "..", `${basename(root)}-hb`);
     mkdirSync(join(sibling, ".harnery", "active"), { recursive: true });
     try {
-      writeFileSync(
-        join(sibling, ".harnery", "active", "child.json"),
-        JSON.stringify({
-          workflow_run_id: "wf-reader",
-          workflow_agent_id: "a1",
-          session_id: "s-remote",
-        }),
-        "utf8",
-      );
+      writeWorkflowGeneration(sibling, "child", {
+        workflow_run_id: "wf-reader",
+        workflow_agent_id: "a1",
+        session_id: "s-remote",
+      });
       // Local scan sees nothing; pointed at the run's root it sees the child.
       expect(readWorkflowChildSessions(root, "wf-reader")).toEqual([]);
-      expect(readWorkflowChildSessions(root, "wf-reader", { heartbeatRoot: sibling })).toEqual([
+      expect(readWorkflowChildSessions(root, "wf-reader", { coordinationRoot: sibling })).toEqual([
         { sessionId: "s-remote", agentId: "a1", live: true },
       ]);
     } finally {
@@ -295,15 +301,27 @@ function writeManifestWithCwd(cwd: string): void {
   writeFileSync(join(runDir, "run.json"), JSON.stringify({ execution: { cwd } }), "utf8");
 }
 
-/** One `.harnery/active/` heartbeat file, the shape the reader's child-session
- * scan consumes. */
-function writeHeartbeat(
+/** One canonical V2 workflow-child generation. */
+function writeWorkflowGeneration(
+  coordRoot: string,
   name: string,
-  hb: { workflow_run_id: string; session_id: string; workflow_agent_id?: string; ended_at?: string },
+  hb: {
+    workflow_run_id: string;
+    session_id: string;
+    workflow_agent_id?: string;
+    ended_at?: string;
+  },
 ): void {
-  const dir = join(root, ".harnery", "active");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${name}.json`), JSON.stringify(hb), "utf8");
+  const input = {
+    coordRoot,
+    instanceId: name,
+    runId: hb.workflow_run_id,
+    agentId: hb.workflow_agent_id ?? name,
+    sessionId: hb.session_id,
+    adapter: "codex",
+  };
+  startWorkflowChildSessionV2(input);
+  if (hb.ended_at) endWorkflowChildSessionV2({ ...input, cleanExit: true });
 }
 
 function writeSharedManifest(): void {

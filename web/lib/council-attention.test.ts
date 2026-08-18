@@ -119,9 +119,7 @@ describe("councilWrapupAttentionRequest", () => {
       handoffDone: true,
     });
     expect(req?.key).toBe("att:council:c-887c:wrapup:archive");
-    expect(req?.key).not.toBe(
-      councilWrapupAttentionRequest(wrapBase)?.key,
-    );
+    expect(req?.key).not.toBe(councilWrapupAttentionRequest(wrapBase)?.key);
   });
 
   test("not closed (active or archived) → null", () => {

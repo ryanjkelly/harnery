@@ -30,6 +30,7 @@ import {
   listPidmap,
   resolveOwner as resolveHookOwner,
 } from "../../src/core/hooks/resolve/owner.ts";
+import { initializeV2Fixture, seedV2Session } from "../helpers/event-v2.ts";
 
 // Mirror of the source's SESSION_ID_ENV_VARS (kept unexported there); used here
 // only to save/restore env across tests.
@@ -222,7 +223,7 @@ describe("pid-map row format + resolveOwner", () => {
   });
 });
 
-describe("resolveSingleActiveOwner (ppid-walk fallback for the sole live agent)", () => {
+describe("resolveSingleActiveOwner (sole live V2 producer)", () => {
   let root: string;
   let activeDir: string;
 
@@ -230,64 +231,47 @@ describe("resolveSingleActiveOwner (ppid-walk fallback for the sole live agent)"
     root = mkdtempSync(path.join(os.tmpdir(), "harn-singleton-"));
     activeDir = path.join(root, ".harnery", "active");
     mkdirSync(activeDir, { recursive: true });
+    initializeV2Fixture(root);
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
-
-  function writeHeartbeat(id: string, agoMs: number): void {
-    writeFileSync(
-      path.join(activeDir, `${id}.json`),
-      JSON.stringify({ instance_id: id, last_heartbeat: isoAgo(agoMs) }),
-    );
-  }
-
-  test("missing active/ dir → null", () => {
+  test("a missing disposable cache does not hide the sole live V2 producer", () => {
+    seedV2Session(root, "only-one", { sessionId: "session-one" });
     rmSync(activeDir, { recursive: true, force: true });
-    expect(resolveSingleActiveOwner(root)).toBeNull();
+    expect(resolveSingleActiveOwner(root)).toBe("only-one");
   });
 
   test("zero live agents → null", () => {
     expect(resolveSingleActiveOwner(root)).toBeNull();
   });
 
-  test("exactly one live agent → its instance_id", () => {
-    writeHeartbeat("only-one", 30_000);
+  test("exactly one live V2 producer resolves its native instance id", () => {
+    seedV2Session(root, "only-one", { sessionId: "session-one" });
     expect(resolveSingleActiveOwner(root)).toBe("only-one");
   });
 
-  test("two live agents → null (ambiguous, require --session-id)", () => {
-    writeHeartbeat("agent-a", 10_000);
-    writeHeartbeat("agent-b", 20_000);
+  test("two live V2 producers are ambiguous", () => {
+    seedV2Session(root, "agent-a", { sessionId: "session-a" });
+    seedV2Session(root, "agent-b", { sessionId: "session-b" });
     expect(resolveSingleActiveOwner(root)).toBeNull();
   });
 
-  test("one live + one stale → resolves the live one (stale ignored)", () => {
-    writeHeartbeat("fresh", 30_000);
-    writeHeartbeat("stale", 11 * 60 * 1000); // older than the 600s window
-    expect(resolveSingleActiveOwner(root)).toBe("fresh");
-  });
-
-  test("malformed heartbeat files are skipped", () => {
+  test("poisoned V1-shaped cache files cannot create or hide owners", () => {
     writeFileSync(path.join(activeDir, "broken.json"), "{ not valid json");
-    writeFileSync(path.join(activeDir, "no-ts.json"), JSON.stringify({ instance_id: "x" }));
-    writeHeartbeat("good", 30_000);
-    expect(resolveSingleActiveOwner(root)).toBe("good");
-  });
-
-  test("non-.json entries ignored", () => {
-    writeFileSync(path.join(activeDir, "notes.txt"), "ignore me");
-    writeHeartbeat("good", 30_000);
+    writeFileSync(
+      path.join(activeDir, "ghost.json"),
+      JSON.stringify({ instance_id: "ghost", session_id: "ghost-session" }),
+    );
+    seedV2Session(root, "good", { sessionId: "session-good" });
     expect(resolveSingleActiveOwner(root)).toBe("good");
   });
 });
 
-describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)", () => {
+describe("resolveOwnerBySessionEnv (adapter session id → live V2 producer)", () => {
   let root: string;
-  let activeDir: string;
   const SAVED = SESSION_ID_ENV_KEYS.map((k) => [k, process.env[k]] as const);
   const savedCursorAgent = process.env.CURSOR_AGENT;
   const savedPlatform = process.env.HARNERY_AGENT_COORD_PLATFORM;
@@ -296,8 +280,7 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-session-env-"));
-    activeDir = path.join(root, ".harnery", "active");
-    mkdirSync(activeDir, { recursive: true });
+    initializeV2Fixture(root);
     for (const k of SESSION_ID_ENV_KEYS) delete process.env[k];
     delete process.env.HARNERY_AGENT_COORD_BRIDGE;
     delete process.env.HARNERY_AGENT_COORD_PLATFORM;
@@ -319,146 +302,67 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     else process.env.HARNERY_AGENT_COORD_BRIDGE = savedBridge;
   });
 
-  const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
-
-  function writeHeartbeat(id: string, sessionId: string, agoMs: number, name?: string): void {
-    writeFileSync(
-      path.join(activeDir, `${id}.json`),
-      JSON.stringify({
-        instance_id: id,
-        session_id: sessionId,
-        last_heartbeat: isoAgo(agoMs),
-        ...(name ? { name } : {}),
-      }),
-    );
-  }
-
   test("no session-id env var → null", () => {
-    writeHeartbeat("agent-a", "sess-a", 30_000);
+    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
     expect(resolveOwnerBySessionEnv(root)).toBeNull();
   });
 
-  test("CLAUDE_CODE_SESSION_ID matches a live heartbeat → its instance_id", () => {
-    writeHeartbeat("agent-a", "sess-a", 30_000);
-    writeHeartbeat("agent-b", "sess-b", 30_000);
+  test("CLAUDE_CODE_SESSION_ID matches a live V2 producer", () => {
+    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV2Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-b";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-b");
   });
 
-  test("disambiguates among multiple live agents (the singleton fallback can't)", () => {
-    writeHeartbeat("agent-a", "sess-a", 10_000);
-    writeHeartbeat("agent-b", "sess-b", 20_000);
-    writeHeartbeat("agent-c", "sess-c", 30_000);
+  test("session identity disambiguates multiple live V2 producers", () => {
+    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV2Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
+    seedV2Session(root, "agent-c", { sessionId: "sess-c", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-c";
-    expect(resolveSingleActiveOwner(root)).toBeNull(); // 3 live → ambiguous
+    expect(resolveSingleActiveOwner(root)).toBeNull();
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-c");
   });
 
-  test("session id with no matching heartbeat → null", () => {
-    writeHeartbeat("agent-a", "sess-a", 30_000);
+  test("session id with no matching V2 producer → null", () => {
+    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-nope";
     expect(resolveOwnerBySessionEnv(root)).toBeNull();
   });
 
-  test("stale heartbeat for the matching session → null", () => {
-    writeHeartbeat("agent-a", "sess-a", 11 * 60 * 1000); // older than 600s
-    process.env.CLAUDE_CODE_SESSION_ID = "sess-a";
-    expect(resolveOwnerBySessionEnv(root)).toBeNull();
-  });
-
   test("HARNERY_AGENT_COORD_SESSION_ID override wins over adapter vars", () => {
-    writeHeartbeat("agent-a", "sess-a", 30_000);
-    writeHeartbeat("agent-b", "sess-b", 30_000);
+    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV2Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-a";
     process.env.HARNERY_AGENT_COORD_SESSION_ID = "sess-b";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-b");
   });
 
-  test("Cursor + Codex session-id env vars also resolve", () => {
-    writeHeartbeat("agent-cur", "sess-cur", 30_000);
+  test("Cursor and Codex session-id env vars resolve their adapter producers", () => {
+    seedV2Session(root, "agent-cur", { sessionId: "sess-cur", adapter: "cursor" });
     process.env.CURSOR_SESSION_ID = "sess-cur";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
     delete process.env.CURSOR_SESSION_ID;
 
-    writeHeartbeat("agent-cdx", "sess-cdx", 30_000);
+    seedV2Session(root, "agent-cdx", { sessionId: "sess-cdx", adapter: "codex" });
     process.env.CODEX_SESSION_ID = "sess-cdx";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx");
     delete process.env.CODEX_SESSION_ID;
 
-    writeHeartbeat("agent-cdx-thread", "thread-cdx", 30_000);
+    seedV2Session(root, "agent-cdx-thread", { sessionId: "thread-cdx", adapter: "codex" });
     process.env.CODEX_THREAD_ID = "thread-cdx";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx-thread");
   });
 
-  test("subagent heartbeats sharing the parent session id never outrank the session", () => {
-    // In-process subagents inherit the adapter session-id env var, so their
-    // heartbeats carry the parent's session_id. The session-kind heartbeat must
-    // win even when a subagent is named and heartbeated more recently.
-    writeFileSync(
-      path.join(activeDir, "parent.json"),
-      JSON.stringify({
-        instance_id: "parent",
-        session_id: "sess-shared",
-        kind: "session",
-        name: "Drake",
-        last_heartbeat: isoAgo(120_000),
-      }),
-    );
-    writeFileSync(
-      path.join(activeDir, "sub.json"),
-      JSON.stringify({
-        instance_id: "sub",
-        session_id: "sess-shared",
-        kind: "subagent",
-        name: "Foster",
-        last_heartbeat: isoAgo(1_000),
-      }),
-    );
-    writeFileSync(
-      path.join(activeDir, "wf-child.json"),
-      JSON.stringify({
-        instance_id: "wf-child",
-        session_id: "sess-shared",
-        workflow_run_id: "wf_abc123",
-        name: "Child",
-        last_heartbeat: isoAgo(2_000),
-      }),
-    );
-    process.env.CLAUDE_CODE_SESSION_ID = "sess-shared";
-    expect(resolveOwnerBySessionEnv(root)).toBe("parent");
-  });
-
   test("Cursor conversation id env resolves and strips the Glass bc- prefix", () => {
-    writeHeartbeat("agent-cur", "sess-cur", 30_000);
+    seedV2Session(root, "agent-cur", { sessionId: "sess-cur", adapter: "cursor" });
     process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
   });
 
-  test("Cursor Glass dual heartbeats always prefer the bare session id", () => {
+  test("Cursor Glass prefers the canonical bare conversation id", () => {
     process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
-
-    writeHeartbeat("ghost-first", "bc-sess-cur", 1_000);
-    writeHeartbeat("named-bare", "sess-cur", 30_000, "Irene");
+    seedV2Session(root, "named-bare", { sessionId: "sess-cur", adapter: "cursor" });
     expect(resolveOwnerBySessionEnv(root)).toBe("named-bare");
-
-    rmSync(activeDir, { recursive: true, force: true });
-    mkdirSync(activeDir, { recursive: true });
-    writeHeartbeat("named-bare", "sess-cur", 30_000, "Irene");
-    writeHeartbeat("ghost-second", "bc-sess-cur", 1_000);
-    expect(resolveOwnerBySessionEnv(root)).toBe("named-bare");
-  });
-
-  test("same-session matches prefer named, then newest, independent of readdir order", () => {
-    process.env.CURSOR_SESSION_ID = "sess-cur";
-    writeHeartbeat("unnamed-newest", "sess-cur", 1_000);
-    writeHeartbeat("named-older", "sess-cur", 20_000, "Irene");
-    expect(resolveOwnerBySessionEnv(root)).toBe("named-older");
-
-    rmSync(activeDir, { recursive: true, force: true });
-    mkdirSync(activeDir, { recursive: true });
-    writeHeartbeat("older", "sess-cur", 20_000);
-    writeHeartbeat("newer", "sess-cur", 1_000);
-    expect(resolveOwnerBySessionEnv(root)).toBe("newer");
   });
 
   test("Claude Code session env wins over a recycled pid-map row", () => {
@@ -466,8 +370,14 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
     // and the agent that wrote the row is long gone. The walk cannot tell,
     // and the pruner cannot help, since the pid is alive. The env var can.
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
-    writeHeartbeat("agent-current", "sess-current", 30_000);
-    writeHeartbeat("agent-recycled", "sess-recycled", 30_000);
+    seedV2Session(root, "agent-current", {
+      sessionId: "sess-current",
+      adapter: "claude-code",
+    });
+    seedV2Session(root, "agent-recycled", {
+      sessionId: "sess-recycled",
+      adapter: "claude-code",
+    });
     writePidmapRow(root, process.pid, "agent-recycled", "claude-code");
 
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
@@ -496,8 +406,8 @@ describe("resolveOwnerBySessionEnv (adapter session-id env → live heartbeat)",
 
   test("Cursor session env wins over a shared cursor pid-map row", () => {
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
-    writeHeartbeat("agent-current", "sess-current", 30_000);
-    writeHeartbeat("agent-shared-row", "sess-shared", 30_000);
+    seedV2Session(root, "agent-current", { sessionId: "sess-current", adapter: "cursor" });
+    seedV2Session(root, "agent-shared-row", { sessionId: "sess-shared", adapter: "cursor" });
     writePidmapRow(root, process.pid, "agent-shared-row", "cursor");
 
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;

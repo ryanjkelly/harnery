@@ -23,7 +23,7 @@ export async function GET(request: Request): Promise<Response> {
     try {
       return new Set(
         readWorkflowChildSessions(localRoot, runFilter, {
-          heartbeatRoot: runRoot?.root,
+          coordinationRoot: runRoot?.root,
         }).map((child) => child.sessionId),
       );
     } catch {

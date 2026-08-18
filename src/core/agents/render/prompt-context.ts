@@ -59,8 +59,6 @@ interface HeartbeatRow {
   session_id?: string;
   started_at?: string;
   last_heartbeat?: string;
-  last_tool?: string;
-  last_tool_target?: string;
   files_touched?: string[];
   platform?: string;
   task?: string;
@@ -70,7 +68,6 @@ interface HeartbeatRow {
   task_updated_at?: string | null;
   suggested_session_name?: string;
   session_name_seen_for?: string;
-  turn_summary?: string | null;
   workflow_run_id?: string;
 }
 
@@ -541,12 +538,10 @@ function formatRow(r: HeartbeatRow & { display_files: string[] }, nowSec: number
   const startedSec = parseIsoSec(r.started_at) ?? parseIsoSec(r.last_heartbeat);
   const ageFrom = startedSec === null ? "age unknown" : fmtAge(nowSec - startedSec);
   const filesPart = fmtFiles(r.display_files);
-  const lastActivity = fmtLastActivity(r, nowSec);
-  const turnSummary = r.turn_summary ? `\n    last turn: ${r.turn_summary.slice(0, 80)}` : "";
   // Prefer a short instance_id over a bare "unknown" so an incomplete row is
   // still identifiable.
   const label = r.name ?? (r.instance_id ? r.instance_id.slice(0, 8) : "unknown");
-  return `  - agent-${label}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart}${lastActivity})${turnSummary}`;
+  return `  - agent-${label}${taskPart}   (${statePart}, ${ageFrom}, ${filesPart})`;
 }
 
 function formatState(r: HeartbeatRow): string {
@@ -561,15 +556,6 @@ function fmtFiles(files: string[]): string {
   if (files.length === 0) return "nothing yet";
   if (files.length <= 3) return `holds: ${files.join(", ")}`;
   return `holds: ${files.slice(0, 3).join(", ")}, +${files.length - 3} more`;
-}
-
-function fmtLastActivity(r: HeartbeatRow, nowSec: number): string {
-  if (!r.last_tool) return "";
-  const lastTs = parseIsoSec(r.last_heartbeat) ?? parseIsoSec(r.started_at);
-  const tail = r.last_tool_target ? ` ${r.last_tool_target.slice(0, 60)}` : "";
-  // No valid timestamp → render the tool without an absurd age.
-  if (lastTs === null) return `, last: ${r.last_tool}${tail}`;
-  return `, last: ${r.last_tool}${tail} ${fmtAge(nowSec - lastTs)}`;
 }
 
 /** Epoch-seconds for an ISO string, or null when missing/unparseable (so callers

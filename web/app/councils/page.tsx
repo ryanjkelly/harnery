@@ -1,15 +1,11 @@
-import Link from "next/link";
 import { Plus } from "lucide-react";
+import Link from "next/link";
 
 import { AgentChipProvider } from "@/components/AgentChip";
 import { CouncilCard } from "@/components/CouncilCard";
 import { NavBar } from "@/components/NavBar";
 import { buildAgentSummaryMap } from "@/lib/agent-summary";
-import {
-  coordRoot,
-  readCouncils,
-  type CouncilSummary,
-} from "@/lib/coord-reader";
+import { type CouncilSummary, coordRoot, readCouncils } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -43,22 +39,13 @@ export default function CouncilsPage() {
           <div className="flex items-center gap-4 flex-wrap">
             <div className="text-xs text-muted-foreground flex gap-3">
               <span>
-                <strong className="text-foreground">
-                  {snap.active.length}
-                </strong>{" "}
-                active
+                <strong className="text-foreground">{snap.active.length}</strong> active
               </span>
               <span>
-                <strong className="text-foreground">
-                  {snap.closed.length}
-                </strong>{" "}
-                closed
+                <strong className="text-foreground">{snap.closed.length}</strong> closed
               </span>
               <span>
-                <strong className="text-foreground">
-                  {snap.archived.length}
-                </strong>{" "}
-                archived
+                <strong className="text-foreground">{snap.archived.length}</strong> archived
               </span>
             </div>
             <Link
@@ -71,19 +58,12 @@ export default function CouncilsPage() {
           </div>
         </header>
 
-        <Section
-          title="Active"
-          councils={snap.active}
-          archived={false}
-          emptyHint
-        />
+        <Section title="Active" councils={snap.active} archived={false} emptyHint />
         <Section title="Closed" councils={snap.closed} archived={false} />
         <Section title="Archived" councils={snap.archived} archived={true} />
 
         {snap.meta.count === 0 && (
-          <p className="text-sm text-muted-foreground italic">
-            No councils yet.
-          </p>
+          <p className="text-sm text-muted-foreground italic">No councils yet.</p>
         )}
       </main>
     </AgentChipProvider>
@@ -110,16 +90,12 @@ function Section({
         </h2>
         <p className="text-sm text-muted-foreground italic">
           No active councils. Convene one via{" "}
-          <Link
-            href="/councils/new"
-            className="underline hover:text-foreground"
-          >
+          <Link href="/councils/new" className="underline hover:text-foreground">
             New council
           </Link>{" "}
           (web member-picker) or{" "}
           <code className="font-mono text-xs">
-            harn agents council create &quot;...&quot; --member A --member B
-            --member C
+            harn agents council create &quot;...&quot; --member A --member B --member C
           </code>
           .
         </p>
@@ -131,9 +107,7 @@ function Section({
       <h2 className="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wider">
         {title}
       </h2>
-      <div
-        className={`grid grid-cols-1 lg:grid-cols-2 gap-3 ${archived ? "opacity-90" : ""}`}
-      >
+      <div className={`grid grid-cols-1 lg:grid-cols-2 gap-3 ${archived ? "opacity-90" : ""}`}>
         {councils.map((c) => (
           <CouncilCard key={c.council_id} council={c} archived={archived} />
         ))}

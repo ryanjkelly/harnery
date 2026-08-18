@@ -98,12 +98,7 @@ export async function setSteward(
   // agent-coord signature: council-set-steward <councilId> <steward> <stewardId>
   // Empty strings clear the field; the helper distinguishes them from the
   // positional defaults internally.
-  return runHelper([
-    "council-set-steward",
-    id,
-    steward ?? "",
-    stewardId ?? "",
-  ]);
+  return runHelper(["council-set-steward", id, steward ?? "", stewardId ?? ""]);
 }
 
 export interface CreateCouncilOpts {

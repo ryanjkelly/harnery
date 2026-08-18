@@ -105,8 +105,7 @@ export function loadAcked(store: Storage | null = defaultStore()): AckedMap {
   try {
     const raw = store.getItem(ACK_STORAGE_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : {};
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
-      return {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: AckedMap = {};
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof v === "number") out[k] = v;
@@ -144,10 +143,7 @@ export function markAcked(
 // ---------------------------------------------------------------------------
 // Title flash
 
-export function startTitleFlash(
-  label: string,
-  intervalMs = 1_400,
-): () => void {
+export function startTitleFlash(label: string, intervalMs = 1_400): () => void {
   if (typeof document === "undefined") return () => {};
   const original = document.title;
   let on = true;
@@ -261,10 +257,7 @@ export function ensureAudioUnlocked(): void {
 
 export function isAudioMuted(): boolean {
   try {
-    return (
-      typeof localStorage !== "undefined" &&
-      localStorage.getItem(MUTE_STORAGE_KEY) === "1"
-    );
+    return typeof localStorage !== "undefined" && localStorage.getItem(MUTE_STORAGE_KEY) === "1";
   } catch {
     return false;
   }
@@ -332,10 +325,7 @@ export function startChime(
  * skip the out-of-band channels (title/favicon/chime); the in-page edge/ring
  * still render and auto-ack on their next interaction.
  */
-export function isEngaged(
-  lastInteractionTs: number,
-  now: number = Date.now(),
-): boolean {
+export function isEngaged(lastInteractionTs: number, now: number = Date.now()): boolean {
   if (typeof document === "undefined") return false;
   return (
     document.visibilityState === "visible" &&

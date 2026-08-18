@@ -1,12 +1,12 @@
-import { NavBar } from "@/components/NavBar";
 import { ImageGallery } from "@/components/images/ImageGallery";
+import { NavBar } from "@/components/NavBar";
 import {
   buildAgentSummaryMap,
   buildEndedAgentSummaries,
   buildObservedAgentSummaries,
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
-import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
+import { coordRoot, readInstanceIdentities } from "@/lib/coord-reader";
 import { readImageCaptures } from "@/lib/images";
 
 export const dynamic = "force-dynamic";
@@ -14,26 +14,14 @@ export const revalidate = 0;
 export const metadata = { title: "Images · Harnery" };
 
 /**
- * /images: the agent image feed. Every image an agent viewed (Read) or
- * produced (a Bash command wrote it) is content-addressed into
- * `.harnery/images/` and recorded as an `image.captured` event. This page
- * renders the initial snapshot (grouped by content hash, newest first)
- * and the client subscribes to `/api/events-stream?type=image.captured` for
- * live appends, reusing the existing SSE infra rather than a bespoke stream.
+ * /images: the V2 image-artifact surface. V2 currently retains metadata but
+ * not the raw blob key needed for thumbnails, so the page fails closed with a
+ * clear availability reason instead of consulting the retired V1 event feed.
  */
 export default async function ImagesPage() {
   const { images, meta } = readImageCaptures({ limit: 300 });
 
-  // instance_id → display name for resolving names on live-appended events
-  // (SSE rows carry instance_id, not a name). Mirrors /events: live heartbeats
-  // win, the durable start-event log fills agents that have since ended.
-  const snap = readAgents();
   const identities = readInstanceIdentities();
-  const instanceToName: Record<string, string> = {};
-  for (const hb of [...snap.active, ...snap.stale]) instanceToName[hb.instance_id] = hb.name;
-  for (const [iid, id] of Object.entries(identities)) {
-    if (!instanceToName[iid]) instanceToName[iid] = id.name;
-  }
 
   // Agent hover-card summaries. Layered low→high priority:
   //   1. observed-from-feed fallback: guarantees a card for every agent in the
@@ -69,7 +57,7 @@ export default async function ImagesPage() {
           </div>
         </header>
 
-        <ImageGallery initial={images} instanceToName={instanceToName} summaries={summaries} />
+        <ImageGallery initial={images} summaries={summaries} unavailableReason={meta.reason} />
       </main>
     </div>
   );

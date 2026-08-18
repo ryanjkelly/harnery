@@ -68,6 +68,10 @@ describe("workflow child V2 lifecycle", () => {
       .events.map(({ event }) => event)
       .filter((event) => event.scope.instance_id === liveInstanceIdV2("workflow-run-a2"));
     expect(events.map((event) => event.event_type)).toEqual(["session.started", "session.ended"]);
-    expect(events[1]?.payload).toMatchObject({ outcome: "succeeded", authority: "native" });
+    expect(events[1]?.payload).toMatchObject({
+      outcome: "succeeded",
+      authority: "approved",
+      reason: "approved_explicit_end",
+    });
   });
 });

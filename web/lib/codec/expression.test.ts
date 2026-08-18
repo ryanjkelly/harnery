@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { deriveExpressiveChannels, type ExpressiveAction, type ExpressiveInputs } from "./expression";
+import {
+  deriveExpressiveChannels,
+  type ExpressiveAction,
+  type ExpressiveInputs,
+} from "./expression";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -23,7 +27,7 @@ function action(overrides: Partial<ExpressiveAction>): ExpressiveAction {
 function inputs(overrides: Partial<ExpressiveInputs>): ExpressiveInputs {
   return {
     activity: "working",
-    lastPrompt: { ts: at(300), event_id: "prompt-1" },
+    lastTurnStarted: { ts: at(300), event_id: "prompt-1" },
     actions: [],
     openSubagents: 0,
     ...overrides,
@@ -115,10 +119,7 @@ describe("deriveExpressiveChannels", () => {
     );
     expect(investigate.expression.value).toBe("investigating");
 
-    const glance = deriveExpressiveChannels(
-      inputs({ actions: [action({ ts: at(10) })] }),
-      NOW,
-    );
+    const glance = deriveExpressiveChannels(inputs({ actions: [action({ ts: at(10) })] }), NOW);
     expect(glance.expression.value).toBe("curious");
   });
 
@@ -131,22 +132,19 @@ describe("deriveExpressiveChannels", () => {
   });
 
   test("deliberating: research then a short quiet interval, inferred and low", () => {
-    const c = deriveExpressiveChannels(
-      inputs({ actions: [action({ ts: at(35) })] }),
-      NOW,
-    );
+    const c = deriveExpressiveChannels(inputs({ actions: [action({ ts: at(35) })] }), NOW);
     expect(c.expression.value).toBe("deliberating");
     expect(c.expression.provenance).toBe("inferred");
     expect(c.expression.confidence).toBe("low");
   });
 
   test("no open turn means turn-scoped rules cannot fire", () => {
-    // Prompt and action both predate the last turn.stop: the turn is closed.
+    // Prompt and action both predate the last turn.completed: the turn is closed.
     const c = deriveExpressiveChannels(
       inputs({
         activity: "idle",
-        lastPrompt: { ts: at(600), event_id: "prompt-1" },
-        lastTurnStop: { ts: at(500), event_id: "stop-1" },
+        lastTurnStarted: { ts: at(600), event_id: "prompt-1" },
+        lastTurnCompleted: { ts: at(500), event_id: "stop-1" },
         actions: [action({ ts: at(550), intent: "stale intent" })],
       }),
       NOW,
@@ -158,11 +156,11 @@ describe("deriveExpressiveChannels", () => {
 
   test("action evidence after the last stop opens a turn without a prompt row", () => {
     // Adapters on this stream emit no user_prompt.submit; a tool action newer
-    // than the last turn.stop is the honest turn-open signal.
+    // than the last turn.completed is the honest turn-open signal.
     const c = deriveExpressiveChannels(
       inputs({
-        lastPrompt: undefined,
-        lastTurnStop: { ts: at(500), event_id: "stop-1" },
+        lastTurnStarted: undefined,
+        lastTurnCompleted: { ts: at(500), event_id: "stop-1" },
         actions: [action({ category: "other", ts: at(5) })],
       }),
       NOW,
@@ -191,7 +189,7 @@ describe("deriveExpressiveChannels", () => {
 
   test("neutral is the fallback with no evidence", () => {
     const c = deriveExpressiveChannels(
-      inputs({ activity: "idle", lastPrompt: undefined }),
+      inputs({ activity: "idle", lastTurnStarted: undefined }),
       NOW,
     );
     expect(c.expression.value).toBe("neutral");

@@ -27,10 +27,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
-import { harneryDir } from "../lib/coord-reader";
 import type { CodecEvidence, DirectorSuggestion } from "../lib/codec/validator";
 import { validateSuggestion } from "../lib/codec/validator";
+import { harneryDir } from "../lib/coord-reader";
 
 const EXPRESSIONS =
   "neutral, focused, curious, deliberating, investigating, building, coordinating, waiting, recovering, celebrating, alert";

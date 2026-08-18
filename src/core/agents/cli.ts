@@ -193,15 +193,6 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       );
       return 0;
     }
-    case "set-turn-summary": {
-      const summary = args.join(" ");
-      const hb = writer.setTurnSummary(root, owner, summary);
-      if (!hb) return 1;
-      process.stdout.write(
-        `${JSON.stringify({ instance_id: owner, turn_summary: hb.turn_summary })}\n`,
-      );
-      return 0;
-    }
     case "release-claim": {
       const path = args[0];
       if (!path) {
@@ -234,57 +225,6 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       );
       return 0;
     }
-    case "kill-heartbeat": {
-      // Read held claims BEFORE the unlink so they can be released durably —
-      // killing only the file leaves the claims resurrectable from the
-      // permanent Edit/Write events on the next full replay (observed: a
-      // 6-day-dead agent's claims returning after its heartbeat was killed).
-      //
-      // Also emit health.heartbeat_swept so the stream records a terminal
-      // marker. Without it, a later drain that replays [session.start …
-      // tools … claim.release] treats the owner as still in-flight and
-      // re-creates the file (kill→resurrect loop observed 2026-08-03: 21
-      // killed zombies back within a minute via claim.release seeding +
-      // historical replay).
-      const before = writer.readHeartbeat(root, owner);
-      let ok = false;
-      try {
-        const { liveCoordinationWriteModeV2, recordLiveClaimChangeV2 } = await import(
-          "./live-authority-v2.ts"
-        );
-        liveCoordinationWriteModeV2(root);
-        if (before) {
-          for (const held of before.files_touched ?? []) {
-            recordLiveClaimChangeV2({
-              coordRoot: root,
-              owner,
-              nativeSessionId: before.session_id ?? owner,
-              adapter: adapterFromPlatform(before.platform),
-              operation: "released",
-              path: held,
-              access: "write",
-            });
-          }
-          const { recordLiveSweepObservationV2 } = await import("./live-lifecycle-v2.ts");
-          recordLiveSweepObservationV2({
-            coordRoot: root,
-            owner,
-            nativeSessionId: before.session_id ?? owner,
-            adapter: adapterFromPlatform(before.platform),
-            observation: "killed",
-            ageMs: heartbeatAgeMs(before.last_heartbeat),
-          });
-          ok = writer.killHeartbeat(root, owner);
-        }
-      } catch (error) {
-        process.stderr.write(
-          `agent-coord kill-heartbeat: V2 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
-        );
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify({ instance_id: owner, removed: ok })}\n`);
-      return ok ? 0 : 1;
-    }
     case "heal-pidmap": {
       const pidArg = args[0];
       const pid = pidArg ? Number(pidArg) : process.ppid;
@@ -305,9 +245,9 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       process.stdout.write(`${JSON.stringify({ instance_id: owner, pid })}\n`);
       return 0;
     }
-    case "heal-heartbeat": {
+    case "repair-coordination-cache": {
       // adapter arrives as a `--adapter=<h>` flag (not positional) so the live
-      // tool.pre_use heal and the manual `harn agents heal` path (which pass
+      // tool.requested repair and the manual `harn agents heal` path (which pass
       // different positional counts) can both supply it without arg-order
       // fragility. Positionals (sessionId, model) stay as-is once flags are
       // filtered out.
@@ -343,56 +283,17 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         );
       } catch (error) {
         process.stderr.write(
-          `agent-coord heal-heartbeat: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
+          `agent-coord repair-coordination-cache: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
         );
         return 1;
       }
       process.stdout.write(`${JSON.stringify({ instance_id: owner, recreated: !!hb })}\n`);
       return hb ? 0 : 1;
     }
-    case "stamp-tool-activity": {
-      const toolName = args[0] ?? "";
-      const target = args.slice(1).join(" ");
-      try {
-        const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
-        liveCoordinationWriteModeV2(root);
-        const prior = writer.readHeartbeat(root, owner);
-        const { ensureLiveCoordinationHeartbeat } = await import(
-          "./state/live-coordination-view.ts"
-        );
-        ensureLiveCoordinationHeartbeat(
-          root,
-          owner,
-          prior?.schema_version === 2 ? prior.session_id : owner,
-          adapterFromPlatform(prior?.schema_version === 2 ? prior.platform : undefined),
-          prior?.schema_version === 2 ? prior.model : undefined,
-        );
-      } catch (error) {
-        process.stderr.write(
-          `agent-coord stamp-tool-activity: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
-        );
-        return 1;
-      }
-      const hb = writer.stampToolActivity(root, owner, toolName, target);
-      if (!hb) return 1;
-      process.stdout.write(
-        `${JSON.stringify({
-          instance_id: owner,
-          last_tool: hb.last_tool,
-          last_tool_target: hb.last_tool_target,
-        })}\n`,
-      );
-      return 0;
-    }
     default:
       process.stderr.write(`agent-coord: unknown state action ${action}\n`);
       return 2;
   }
-}
-
-function heartbeatAgeMs(lastHeartbeat: string | undefined): number {
-  const timestamp = lastHeartbeat ? Date.parse(lastHeartbeat) : Number.NaN;
-  return Number.isFinite(timestamp) ? Math.max(0, Date.now() - timestamp) : 0;
 }
 
 async function handleJournalAction(root: string, action: string, rest: string[]): Promise<number> {
@@ -767,11 +668,11 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   const instanceId = args.owner;
   const sessionId = args.session;
   const adapter = args.adapter as "claude-code" | "cursor" | "codex" | undefined;
-  const dataJson = args["data-json"] ?? "{}";
+  const dataJson = args["data-stdin"] === "true" ? await readStdin() : "";
 
-  if (!eventType || !instanceId || !sessionId || !adapter) {
+  if (!eventType || !instanceId || !sessionId || !adapter || !dataJson) {
     process.stderr.write(
-      "agent-coord emit-event --type <T> --owner <id> --session <id> --adapter <h> [--data-json '<json>']\n",
+      "agent-coord emit-event --type <V2_TYPE> --owner <id> --session <id> --adapter <h> --data-stdin\n",
     );
     return 2;
   }
@@ -782,12 +683,12 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       data = parsed as Record<string, unknown>;
     } else {
-      process.stderr.write("agent-coord emit-event: --data-json must encode an object\n");
+      process.stderr.write("agent-coord emit-event: stdin must encode an object\n");
       return 2;
     }
   } catch (err) {
     process.stderr.write(
-      `agent-coord emit-event: invalid --data-json (${err instanceof Error ? err.message : String(err)})\n`,
+      `agent-coord emit-event: invalid stdin JSON (${err instanceof Error ? err.message : String(err)})\n`,
     );
     return 2;
   }
@@ -800,8 +701,12 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     );
     return 1;
   }
-  if (eventType === "state.task_state") {
-    const state = data.state;
+  if (data.event_type !== eventType) {
+    process.stderr.write("agent-coord emit-event: envelope type does not match stdin event_type\n");
+    return 2;
+  }
+  if (eventType === "coord.lifecycle_changed") {
+    const state = data.new_state;
     if (state !== "active" && state !== "blocked" && state !== "done") {
       process.stderr.write("agent-coord emit-event: invalid V2 lifecycle state\n");
       return 2;
@@ -827,6 +732,33 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     } catch (error) {
       process.stderr.write(
         `agent-coord emit-event: V2 lifecycle authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+      );
+      return 1;
+    }
+  }
+  if (
+    eventType === "coord.status_observed" ||
+    eventType === "coord.presence_changed" ||
+    eventType === "coord.message_observed" ||
+    eventType === "council.state_changed" ||
+    eventType === "decision.state_changed"
+  ) {
+    const { recordLiveCoordinationObservationV2 } = await import("./live-observation-v2.ts");
+    try {
+      const routed = recordLiveCoordinationObservationV2({
+        coordRoot: root,
+        owner: instanceId,
+        nativeSessionId: sessionId,
+        adapter,
+        observation: data as never,
+      });
+      process.stdout.write(
+        `${JSON.stringify({ schema_version: 2, event_type: routed.event.event_type, event_id: routed.event.event_id })}\n`,
+      );
+      return 0;
+    } catch (error) {
+      process.stderr.write(
+        `agent-coord emit-event: V2 observation refused (${error instanceof Error ? error.message : String(error)})\n`,
       );
       return 1;
     }
@@ -960,12 +892,9 @@ async function main(): Promise<number> {
 
   if (
     subcommand === "set-task" ||
-    subcommand === "set-turn-summary" ||
     subcommand === "release-claim" ||
-    subcommand === "kill-heartbeat" ||
     subcommand === "heal-pidmap" ||
-    subcommand === "heal-heartbeat" ||
-    subcommand === "stamp-tool-activity"
+    subcommand === "repair-coordination-cache"
   ) {
     return handleStateAction(root, subcommand, rest);
   }

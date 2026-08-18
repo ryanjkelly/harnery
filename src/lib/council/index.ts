@@ -19,6 +19,7 @@ import {
 import { basename, resolve } from "node:path";
 
 import { monorepoRoot } from "../../core/agents/index.ts";
+import { readLiveCoordinationRows } from "../../core/agents/state/live-coordination-view.ts";
 import { resolveBinName } from "../../core/config.ts";
 import { ensureIdentity, lookupById as lookupIdentityById } from "../identities/index.js";
 
@@ -241,7 +242,7 @@ export function setCouncilSteward(councilId: string, steward: string | null): Co
 export interface KnownAgent {
   /** `agent-<Name>` canonical handle. */
   name: string;
-  /** `active` = currently has a heartbeat in `.harnery/active/`. `stale` =
+  /** `active` = currently has an authority-eligible V2 generation. `stale` =
    * recently ended (journal archived within the lookback window). */
   state: "active" | "stale";
   /** ISO timestamp of the most-recent signal. */
@@ -253,35 +254,22 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Active heartbeats + recently-archived journals, deduped by name.
+ * Active V2 generations + recently-archived journals, deduped by name.
  * Used by `agents council set-steward` to refuse arbitrary names;
  * pass `--allow-unknown` to bypass when bootstrapping a new agent.
  */
 export function listKnownAgents(): KnownAgent[] {
   const root = monorepoRoot();
   if (!root) return [];
-  const activeDir = resolve(root, ".harnery", "active");
   const archiveDir = resolve(root, ".harnery", "journal", "archived");
   const byName = new Map<string, KnownAgent>();
 
-  if (existsSync(activeDir)) {
-    for (const f of readdirSync(activeDir)) {
-      if (!f.endsWith(".json")) continue;
-      try {
-        const hb = JSON.parse(readFileSync(resolve(activeDir, f), "utf8")) as {
-          name?: string;
-          last_heartbeat?: string;
-        };
-        if (!hb.name) continue;
-        const name = hb.name.startsWith("agent-") ? hb.name : `agent-${hb.name}`;
-        const last_seen = hb.last_heartbeat ?? new Date().toISOString();
-        const existing = byName.get(name);
-        if (existing?.state !== "active") {
-          byName.set(name, { name, state: "active", last_seen });
-        }
-      } catch {
-        /* skip unreadable */
-      }
+  for (const row of readLiveCoordinationRows(root)) {
+    if (!row.name) continue;
+    const name = row.name.startsWith("agent-") ? row.name : `agent-${row.name}`;
+    const existing = byName.get(name);
+    if (existing?.state !== "active") {
+      byName.set(name, { name, state: "active", last_seen: row.last_heartbeat });
     }
   }
 

@@ -30,7 +30,7 @@ describe("sanitizeEvent", () => {
     expect(
       sanitizeEvent({
         ...BASE,
-        event_type: "tool.pre_use",
+        event_type: "tool.requested",
         data: { tool_name: "Read", intent: "read the schema" },
       }),
     ).toBeNull();
@@ -38,7 +38,7 @@ describe("sanitizeEvent", () => {
       sanitizeEvent({ ...BASE, event_type: "council.contribution", data: { body_summary: "x" } }),
     ).toBeNull();
     expect(
-      sanitizeEvent({ ...BASE, schema_version: 2, event_type: "turn.stop", data: {} }),
+      sanitizeEvent({ ...BASE, schema_version: 2, event_type: "turn.completed", data: {} }),
     ).toBeNull();
     expect(sanitizeEvent(null)).toBeNull();
     expect(sanitizeEvent("row")).toBeNull();
@@ -51,7 +51,7 @@ describe("sanitizeEvent", () => {
 
   test("validates and maps V2 lifecycle, tool, command, and context evidence", () => {
     const started = sanitizeEvent(v2Event("session.started", startedPayload()));
-    expect(started).toMatchObject({ event_type: "session.start", instance_id: "inst_fixture" });
+    expect(started).toMatchObject({ event_type: "session.started", instance_id: "inst_fixture" });
 
     const requested = sanitizeEvent(
       v2Event(
@@ -66,7 +66,7 @@ describe("sanitizeEvent", () => {
       ),
     );
     expect(requested).toMatchObject({
-      event_type: "tool.pre_use",
+      event_type: "tool.requested",
       tool_name: "Read",
       category: "research",
       outcome: "started",
@@ -86,7 +86,7 @@ describe("sanitizeEvent", () => {
       ),
     );
     expect(completed).toMatchObject({
-      event_type: "tool.post_use",
+      event_type: "tool.completed",
       category: "edit",
       outcome: "error",
     });
@@ -101,7 +101,10 @@ describe("sanitizeEvent", () => {
         authority: { transaction_id: "txn_11111111-1111-4111-8111-111111111111" },
       }),
     );
-    expect(lifecycle).toMatchObject({ event_type: "state.task_state", task_state: "blocked" });
+    expect(lifecycle).toMatchObject({
+      event_type: "coord.lifecycle_changed",
+      task_state: "blocked",
+    });
     expect(JSON.stringify(lifecycle)).not.toContain(SECRET_PROMPT);
 
     const context = sanitizeEvent(
@@ -120,7 +123,7 @@ describe("sanitizeEvent", () => {
       }),
     );
     expect(context).toMatchObject({
-      event_type: "context.sampled",
+      event_type: "context.observed",
       used_percent: 75,
       context_confidence: "exact",
     });
@@ -142,7 +145,7 @@ describe("sanitizeEvent", () => {
       ),
     );
     expect(command).toMatchObject({
-      event_type: "command.start",
+      event_type: "command.started",
       category: "diagnostic",
       outcome: "started",
     });
@@ -156,7 +159,7 @@ describe("sanitizeEvent", () => {
     const wait = sanitizeEvent(
       v2Event("interaction.wait_started", { wait_id: "wait_perm", kind: "permission" }),
     );
-    expect(wait).toMatchObject({ event_type: "interaction.input_requested" });
+    expect(wait).toMatchObject({ event_type: "interaction.wait_started" });
 
     const waitEnded = sanitizeEvent(
       v2Event("interaction.wait_ended", { wait_id: "wait_perm", outcome: "succeeded" }),
@@ -184,7 +187,7 @@ describe("sanitizeEvent", () => {
       }),
     );
     expect(childStart).toMatchObject({
-      event_type: "session.start",
+      event_type: "session.started",
       instance_id: "inst_child",
       generation_id: childGen,
       parent_generation_id: parentGen,
@@ -199,7 +202,7 @@ describe("sanitizeEvent", () => {
       }),
     );
     expect(delegated).toMatchObject({
-      event_type: "subagent.start",
+      event_type: "agent.started",
       child_generation_id: childGen,
     });
 
@@ -236,7 +239,7 @@ describe("sanitizeEvent", () => {
       }),
     );
     expect(killed).toMatchObject({
-      event_type: "session.end",
+      event_type: "session.termination_observed",
       instance_id: "inst_subject",
     });
   });

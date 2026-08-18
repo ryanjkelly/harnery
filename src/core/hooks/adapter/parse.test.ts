@@ -41,7 +41,7 @@ describe("parsePayload session ids", () => {
 });
 
 describe("Codex PermissionRequest contract fixture", () => {
-  test("normalizes verified adapter evidence to interaction.input_requested", () => {
+  test("normalizes verified adapter evidence to interaction.wait_started", () => {
     const raw = readFileSync(
       join(import.meta.dir, "../../../../tests/fixtures/adapters/codex/permission-request.json"),
       "utf8",
@@ -58,7 +58,7 @@ describe("Codex PermissionRequest contract fixture", () => {
       },
     });
     expect(normalizeEventName("permission-request")).toEqual({
-      event_type: "interaction.input_requested",
+      event_type: "interaction.wait_started",
       intra_turn: true,
     });
   });

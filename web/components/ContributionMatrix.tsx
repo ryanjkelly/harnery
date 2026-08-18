@@ -1,21 +1,13 @@
-import type {
-  ContributionMatrix,
-  ChangelogEntry,
-  ContributionType,
-} from "@/lib/changelog-parser";
-
 import { AgentChip } from "@/components/AgentChip";
+import { FinancialTable, FinancialTableRow } from "@/components/data-viz/financial-table";
+import { FormattedDateTime } from "@/components/FormattedDateTime";
+import { RelativeTimeAgo } from "@/components/RelativeTimeAgo";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip } from "@/components/ui/tooltip";
-import {
-  FinancialTable,
-  FinancialTableRow,
-} from "@/components/data-viz/financial-table";
-import { FormattedDateTime } from "@/components/FormattedDateTime";
-import { NO_DATA } from "@/lib/format/no-data";
-import { RelativeTimeAgo } from "@/components/RelativeTimeAgo";
+import type { ChangelogEntry, ContributionMatrix, ContributionType } from "@/lib/changelog-parser";
 import { isoFromChangelogTs } from "@/lib/format/datetime";
+import { NO_DATA } from "@/lib/format/no-data";
 
 /**
  * Rounds × members contribution-type matrix. Each row = one round, each
@@ -57,19 +49,11 @@ export function ContributionMatrixCard({
           <FinancialTable className="text-xs">
             <thead>
               <tr className="text-xs text-muted-foreground border-b border-border/60">
-                <th className="text-left font-medium pb-1.5 pr-3 w-[6ch]">
-                  Round
-                </th>
+                <th className="text-left font-medium pb-1.5 pr-3 w-[6ch]">Round</th>
                 {matrix.mapping.map((m) => (
-                  <th
-                    key={m.member}
-                    className="text-left font-medium pb-1.5 px-2"
-                  >
+                  <th key={m.member} className="text-left font-medium pb-1.5 px-2">
                     <div>
-                      <AgentChip
-                        name={m.member}
-                        className="font-mono text-foreground"
-                      />
+                      <AgentChip name={m.member} className="font-mono text-foreground" />
                     </div>
                     <div className="text-[10px] font-normal text-muted-foreground/80">
                       {m.model}
@@ -85,19 +69,13 @@ export function ContributionMatrixCard({
             </thead>
             <tbody>
               {matrix.rounds.map((row) => {
-                const cellByMember = new Map(
-                  row.cells.map((c) => [c.member, c]),
-                );
+                const cellByMember = new Map(row.cells.map((c) => [c.member, c]));
                 const tally = tallyRow(row.cells.flatMap((c) => c.entries));
                 const isCurrent = row.round === currentRound;
                 return (
                   <FinancialTableRow
                     key={row.round}
-                    className={
-                      isCurrent
-                        ? "bg-primary/7! hover:bg-primary/12!"
-                        : undefined
-                    }
+                    className={isCurrent ? "bg-primary/7! hover:bg-primary/12!" : undefined}
                   >
                     <td className="py-1.5 pr-3 font-mono tabular-nums text-foreground/80">
                       {row.round}
@@ -167,10 +145,7 @@ function TypeChip({ entry }: { entry: ChangelogEntry }) {
             <span>·</span>
             <span>round {entry.round}</span>
             <span>·</span>
-            <FormattedDateTime
-              iso={isoFromChangelogTs(entry.ts)}
-              className="font-mono"
-            />
+            <FormattedDateTime iso={isoFromChangelogTs(entry.ts)} className="font-mono" />
             <RelativeTimeAgo
               iso={isoFromChangelogTs(entry.ts)}
               className="before:content-['·_'] before:mr-1"

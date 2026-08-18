@@ -9,7 +9,8 @@
  * half-written intermediate. Concurrent writers serialize via the rename
  * (last write wins).
  *
- * Owner identity invariant: every action operates on `.harnery/active/<instance_id>.json`
+ * Cache identity invariant: every action operates on the generation-bound row at
+ * `.harnery/active/<instance_id>.json`; the canonical V2 ledger remains authoritative.
  * (the file IS the heartbeat). No mutations happen elsewhere.
  */
 
@@ -23,12 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import {
-  type AgentActivity,
-  applySessionStateEvent,
-  type SessionStateEvidenceEvent,
-  type TaskState,
-} from "./session-state.ts";
+import type { AgentActivity, TaskState } from "./session-state.ts";
 
 export interface Heartbeat {
   schema_version?: number;
@@ -37,6 +33,8 @@ export interface Heartbeat {
   kind?: string;
   agent_id?: string;
   session_id: string;
+  /** Native adapter session ID retained only in a generation-bound local projection. */
+  native_session_id?: string;
   subagent_call_id?: string;
   model?: string;
   platform?: string;
@@ -55,7 +53,7 @@ export interface Heartbeat {
    * presence is the "this session has been named" signal the prompt-context
    * nudge and the Stop-hook naming rule key on. */
   suggested_session_name?: string;
-  /** Stamped by turn.stop once the suggested name is seen in assistant reply
+  /** Stamped by turn.completed once the suggested name is seen in assistant reply
    * text, ending the per-turn transcript scan. */
   session_name_seen_at?: string;
   /** WHICH name that sighting was for. The scan is skipped only while this
@@ -63,14 +61,10 @@ export interface Heartbeat {
    * again rather than being suppressed by the earlier sighting. */
   session_name_seen_for?: string;
   last_status_at?: string;
-  turn_summary?: string | null;
-  turn_summary_updated_at?: string | null;
-  last_tool?: string;
-  last_tool_target?: string;
-  last_tool_at?: string;
   current_turn_id?: string;
   parent_instance_id?: string;
   workflow_run_id?: string;
+  workflow_agent_id?: string;
   /** Disposable-cache bindings that prove a row belongs to the current V2 generation. */
   v2_instance_id?: `inst_${string}`;
   v2_generation_id?: `gen_${string}`;
@@ -102,32 +96,6 @@ export function readHeartbeat(coordRoot: string, instanceId: string): Heartbeat 
   } catch {
     return null;
   }
-}
-
-/** Apply one evidence event to the live state fields without draining the
- * global event stream. This keeps permission prompts current while avoiding
- * unrelated projector side effects before a tool authorization verdict. */
-export function stampSessionStateEvent(
-  coordRoot: string,
-  instanceId: string,
-  event: Omit<SessionStateEvidenceEvent, "data"> & { data: unknown },
-): Heartbeat | null {
-  return mutate(coordRoot, instanceId, (heartbeat) => {
-    const data =
-      typeof event.data === "object" && event.data !== null && !Array.isArray(event.data)
-        ? (event.data as Record<string, unknown>)
-        : {};
-    const state = applySessionStateEvent(heartbeat, { ...event, data });
-    return {
-      ...heartbeat,
-      activity: state.activity,
-      activity_updated_at: state.activity_updated_at,
-      activity_source: state.activity_source,
-      task_state: state.task_state,
-      task_state_updated_at: state.task_state_updated_at,
-      task_state_reason: state.task_state_reason,
-    };
-  });
 }
 
 /** Persist operator-facing lifecycle prose in the generation-bound cache only. */
@@ -242,18 +210,6 @@ export function stampSessionNameSeen(
   }));
 }
 
-export function setTurnSummary(
-  coordRoot: string,
-  instanceId: string,
-  summary: string,
-): Heartbeat | null {
-  return mutate(coordRoot, instanceId, (hb) => ({
-    ...hb,
-    turn_summary: summary,
-    turn_summary_updated_at: nowIsoSeconds(),
-  }));
-}
-
 export function releaseClaim(
   coordRoot: string,
   instanceId: string,
@@ -300,7 +256,7 @@ export interface GroupUnclaimHit {
  * subagents inherit it) and removes the path from each one's files_touched.
  * Idempotent: heartbeats that don't hold the path are untouched. Returns the
  * heartbeats that actually dropped the path so the caller can emit the
- * durable `claim.release` events — a file-only prune is silently reverted by
+ * durable `coord.claim_changed` release events; a file-only prune is silently reverted by
  * the next projector replay.
  *
  * Tool payloads and release calls can supply either absolute-under-coordRoot or
@@ -346,7 +302,7 @@ export function findGroupClaims(
   return hits;
 }
 
-export function killHeartbeat(coordRoot: string, instanceId: string): boolean {
+export function clearCoordinationCache(coordRoot: string, instanceId: string): boolean {
   const path = heartbeatPath(coordRoot, instanceId);
   if (!existsSync(path)) return false;
   try {
@@ -374,22 +330,4 @@ export function healPidmap(coordRoot: string, instanceId: string, pid: number): 
   }
   if (existingOwner === instanceId) return;
   atomicWrite(pmPath, `${instanceId}\t${platform}`);
-}
-
-/**
- * Stamp the heartbeat with the most-recent tool name + target. Written from
- * the post-tool-use hook.
- */
-export function stampToolActivity(
-  coordRoot: string,
-  instanceId: string,
-  toolName: string,
-  target: string,
-): Heartbeat | null {
-  return mutate(coordRoot, instanceId, (hb) => ({
-    ...hb,
-    last_tool: toolName,
-    last_tool_target: target,
-    last_tool_at: nowIsoSeconds(),
-  }));
 }

@@ -30,6 +30,7 @@ export interface HookProducerContextV2 {
   root_id: `root_${string}`;
   run_id?: `run_${string}`;
   workflow_id?: `wf_${string}`;
+  workflow_agent_id?: string;
   instance_id: `inst_${string}`;
   generation_id: `gen_${string}`;
   attestation_id: `att_${string}`;
@@ -90,6 +91,7 @@ export function normalizeHookEventV2(
     generation_id: context.generation_id,
     ...(context.run_id ? { run_id: context.run_id } : {}),
     ...(context.workflow_id ? { workflow_id: context.workflow_id } : {}),
+    ...(context.workflow_agent_id ? { workflow_agent_id: context.workflow_agent_id } : {}),
   };
   const turnScope = { ...generationScope, turn_id: turnId };
   const producer = {

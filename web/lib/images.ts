@@ -34,20 +34,7 @@ export function imagesDir(): string {
   return path.join(harneryDir(), "images");
 }
 
-/** The `data` payload of an `image.captured` event (see schema.ts ImageCaptured). */
-export interface ImageCaptureData {
-  hash: string;
-  ext: string;
-  bytes: number;
-  role: "viewed" | "produced";
-  source_path: string;
-  tool_name: string;
-  tool_use_id?: string;
-  intent?: string;
-  command_head?: string;
-}
-
-/** One touch of an image: a single `image.captured` event, name-resolved. */
+/** One privacy-safe image-artifact observation, name-resolved. */
 export interface ImageTouch {
   instance_id: string;
   agent: string; // display name (`agent-<Name>` or raw id fallback)
@@ -87,8 +74,8 @@ export interface ImageCapturesResponse {
 }
 
 /**
- * Read + group `image.captured` events into distinct-image cards, newest first.
- * `limit` caps the number of distinct images returned (not raw events).
+ * Return the V2 image-artifact projection. Raw blobs are deliberately absent
+ * until artifact observations carry a privacy-safe blob reference.
  */
 export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesResponse {
   void opts;

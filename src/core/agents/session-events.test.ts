@@ -25,7 +25,7 @@ describe("session event live ledger routing", () => {
     const root = temporaryRoot();
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
 
-    writeSessionEvent("command_start", {
+    writeSessionEvent("command.started", {
       instance_id: "agent-uninitialized",
       cmd_id: "cmd-uninitialized",
       cmd: "acme agents status",
@@ -64,19 +64,19 @@ describe("session event live ledger routing", () => {
     ).toBe("recorded");
 
     const secret = "do-not-retain-this-output";
-    writeSessionEvent("command_start", {
+    writeSessionEvent("command.started", {
       instance_id: instanceId,
       cmd_id: "cmd-v2",
       cmd: "acme agents status --json",
       intent: "inspect agents",
     });
-    writeSessionEvent("output", {
+    writeSessionEvent("command.output_observed", {
       instance_id: instanceId,
       cmd_id: "cmd-v2",
       stream: "stdout",
       line: secret,
     });
-    writeSessionEvent("command_end", {
+    writeSessionEvent("command.completed", {
       instance_id: instanceId,
       cmd_id: "cmd-v2",
       exit: 0,
@@ -114,7 +114,7 @@ describe("session event live ledger routing", () => {
       }).state,
     ).toBe("recorded");
 
-    writeSessionEvent("command_start", {
+    writeSessionEvent("command.started", {
       instance_id: instanceId,
       cmd_id: "cmd-no-turn",
       cmd: "acme agents status",

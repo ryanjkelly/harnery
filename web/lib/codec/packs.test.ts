@@ -1,13 +1,12 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { beforeEach, describe, expect, test } from "bun:test";
-
 import {
-  REQUIRED_EXPRESSIONS,
   allocateCharacters,
   listPacks,
+  REQUIRED_EXPRESSIONS,
   resolvePackAsset,
   validatePackDir,
 } from "./packs";
@@ -71,9 +70,7 @@ describe("allocateCharacters", () => {
     // while the historical binding for i-1 is retained, not rewritten.
     const after = allocateCharacters(["i-2", "i-3"], LATER, root);
     expect(after.get("i-3")?.pack_id).toBe(first.get("i-1")?.pack_id);
-    const registry = JSON.parse(
-      readFileSync(path.join(root, "codec", "registry.json"), "utf8"),
-    );
+    const registry = JSON.parse(readFileSync(path.join(root, "codec", "registry.json"), "utf8"));
     const i1 = registry.bindings.filter((b: { instance_id: string }) => b.instance_id === "i-1");
     expect(i1).toHaveLength(1);
     expect(i1[0].released_at).toBe(LATER);

@@ -4,11 +4,8 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
-  lstatSync,
   mkdirSync,
   openSync,
-  readdirSync,
-  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -38,57 +35,30 @@ import { EVENT_V2_LEDGER_RELATIVE_ROOT, writeEventV2 } from "../events/v2/writer
 import { fsyncParentDirectory } from "../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import { readCodexArchiveObservationsV2 } from "./codex-archive-v2.ts";
+import {
+  listSessionFinalizationRequestsV2,
+  SESSION_FINALIZATION_REQUEST_FORMAT_V2,
+  SESSION_FINALIZATION_REQUEST_VERSION_V2,
+  type SessionFinalizationRequestV2,
+  type SessionFinalizationTriggerV2,
+  sessionFinalizationRequestDirectoryV2,
+  sessionFinalizationRequestPathV2,
+} from "./session-finalization-state-v2.ts";
 
-const REQUEST_FORMAT = "harnery-v2-session-finalization-request" as const;
-const REQUEST_VERSION = 1 as const;
+export {
+  listSessionFinalizationRequestsV2,
+  type SessionFinalizationRequestV2,
+  type SessionFinalizationTriggerV2,
+} from "./session-finalization-state-v2.ts";
+
 /** A pending explicit end older than this is cancelled (never terminalized) so a wedged request cannot outlive its usefulness; re-requesting is cheap. */
 const EXPLICIT_END_PENDING_EXPIRY_MS = 24 * 60 * 60 * 1000;
-
-export type SessionFinalizationTriggerV2 =
-  | "explicit_end"
-  | "verified_archive"
-  | "idle_timeout"
-  | "parent_terminal"
-  | "stale_sweep"
-  | "agent_completed"
-  | "run_completed"
-  | "superseded"
-  | "host_disappeared";
 
 export interface SessionArchiveObservationV2 {
   adapter: Adapter;
   native_session_id: string;
   archived: boolean;
   observed_at: string;
-}
-
-export interface SessionFinalizationRequestV2 {
-  format: typeof REQUEST_FORMAT;
-  format_version: typeof REQUEST_VERSION;
-  request_id: `sfr_${string}`;
-  instance_id: `inst_${string}`;
-  generation_id: `gen_${string}`;
-  trigger: SessionFinalizationTriggerV2;
-  reason: ApprovedSessionEndReasonV2;
-  outcome:
-    | "succeeded"
-    | "failed"
-    | "cancelled"
-    | "timed_out"
-    | "denied"
-    | "interrupted"
-    | "unknown";
-  observed_at: string;
-  not_before: string;
-  last_event_id: `evt_${string}`;
-  observation_event_id?: `evt_${string}`;
-  requested_turn_id?: `tid_${string}`;
-  allowed_open_span_ids?: `span_${string}`[];
-  coordination_finalized: boolean;
-  status: "pending" | "cancelled" | "completed";
-  cancelled_at?: string;
-  completed_at?: string;
-  terminal_event_id?: `evt_${string}`;
 }
 
 export interface ReconcileSessionFinalizationOptionsV2 {
@@ -205,7 +175,7 @@ export function requestSessionEndExplicitV2(
     if (!record.state.current_turn_id && record.state.spans.length === 0) {
       return endSessionExplicitV2(input);
     }
-    const existing = listRequests(input.coordRoot).find(
+    const existing = listSessionFinalizationRequestsV2(input.coordRoot).find(
       (request) =>
         request.status === "pending" &&
         request.generation_id === record.state.generation_id &&
@@ -243,7 +213,7 @@ export function requestSessionEndExplicitV2(
 }
 
 export function hasPendingExplicitSessionEndV2(coordRoot: string): boolean {
-  return listRequests(coordRoot).some(
+  return listSessionFinalizationRequestsV2(coordRoot).some(
     (request) => request.status === "pending" && request.trigger === "explicit_end",
   );
 }
@@ -397,7 +367,7 @@ export function reconcileSessionFinalizationV2(
       policy.cascadeGraceSeconds,
     );
 
-    for (const request of listRequests(coordRoot).filter(
+    for (const request of listSessionFinalizationRequestsV2(coordRoot).filter(
       (candidate) => candidate.status === "pending",
     )) {
       const record = records.find(
@@ -690,7 +660,7 @@ function ensureRequest(
   input: RequestInput,
 ): SessionFinalizationRequestV2 | null {
   if (
-    listRequests(coordRoot).some(
+    listSessionFinalizationRequestsV2(coordRoot).some(
       (request) =>
         request.status === "pending" &&
         request.generation_id === record.state.generation_id &&
@@ -700,8 +670,8 @@ function ensureRequest(
     return null;
   if (!record.state.last_event_id) return null;
   const request: SessionFinalizationRequestV2 = {
-    format: REQUEST_FORMAT,
-    format_version: REQUEST_VERSION,
+    format: SESSION_FINALIZATION_REQUEST_FORMAT_V2,
+    format_version: SESSION_FINALIZATION_REQUEST_VERSION_V2,
     request_id: `sfr_${randomUUID()}`,
     instance_id: record.state.instance_id,
     generation_id: record.state.generation_id,
@@ -885,7 +855,7 @@ function cancelPendingRequests(
   at: string,
 ): number {
   let cancelled = 0;
-  for (const request of listRequests(coordRoot)) {
+  for (const request of listSessionFinalizationRequestsV2(coordRoot)) {
     if (
       request.status === "pending" &&
       request.generation_id === generationId &&
@@ -915,60 +885,15 @@ function completeRequest(
   });
 }
 
-function requestDirectory(coordRoot: string): string {
-  return join(resolve(coordRoot), EVENT_V2_LEDGER_RELATIVE_ROOT, "finalization", "requests");
-}
-
-function requestPath(coordRoot: string, requestId: string): string {
-  return join(requestDirectory(coordRoot), `${requestId}.json`);
-}
-
-export function listSessionFinalizationRequestsV2(
-  coordRoot: string,
-): SessionFinalizationRequestV2[] {
-  return listRequests(coordRoot);
-}
-
-function listRequests(coordRoot: string): SessionFinalizationRequestV2[] {
-  const directory = requestDirectory(coordRoot);
-  if (!existsSync(directory)) return [];
-  const metadata = lstatSync(directory);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new Error("V2 session finalization request directory is unsafe");
-  }
-  return readdirSync(directory)
-    .filter((name) => /^sfr_[0-9a-f-]+\.json$/.test(name))
-    .map((name) => readRequest(join(directory, name)))
-    .sort((left, right) => left.observed_at.localeCompare(right.observed_at));
-}
-
-function readRequest(path: string): SessionFinalizationRequestV2 {
-  const metadata = lstatSync(path);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
-    throw new Error("V2 session finalization request is unsafe");
-  }
-  const request = JSON.parse(readFileSync(path, "utf8")) as SessionFinalizationRequestV2;
-  if (
-    request.format !== REQUEST_FORMAT ||
-    request.format_version !== REQUEST_VERSION ||
-    !/^sfr_[0-9a-f-]+$/.test(request.request_id) ||
-    !/^inst_[a-zA-Z0-9._-]+$/.test(request.instance_id) ||
-    !/^gen_[0-9a-f-]+$/.test(request.generation_id) ||
-    !["pending", "cancelled", "completed"].includes(request.status)
-  )
-    throw new Error("V2 session finalization request is invalid");
-  return request;
-}
-
 function writeRequest(
   coordRoot: string,
   request: SessionFinalizationRequestV2,
   create = false,
 ): void {
-  const directory = requestDirectory(coordRoot);
+  const directory = sessionFinalizationRequestDirectoryV2(coordRoot);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
-  const path = requestPath(coordRoot, request.request_id);
+  const path = sessionFinalizationRequestPathV2(coordRoot, request.request_id);
   if (create && existsSync(path)) throw new Error("V2 finalization request already exists");
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;

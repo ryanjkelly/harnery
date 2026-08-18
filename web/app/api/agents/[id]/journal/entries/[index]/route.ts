@@ -1,9 +1,9 @@
 import {
   deleteJournalEntry,
   editJournalEntry,
-  safeOwnerId,
   JOURNAL_CATEGORIES,
   type JournalCategory,
+  safeOwnerId,
 } from "@/lib/coord-writer";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +21,7 @@ interface RouteContext {
  * matches that wall-clock string (because another writer raced in), the
  * server returns 409 and refuses to mutate.
  */
-export async function PATCH(
-  request: Request,
-  context: RouteContext,
-): Promise<Response> {
+export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
   const { id, index } = await context.params;
   const instanceId = decodeURIComponent(id);
   if (!safeOwnerId(instanceId)) {
@@ -49,9 +46,7 @@ export async function PATCH(
   const category = String(payload.category ?? "");
   const body = typeof payload.body === "string" ? payload.body : "";
   const expectedTs =
-    typeof payload.expected_ts_display === "string"
-      ? payload.expected_ts_display
-      : "";
+    typeof payload.expected_ts_display === "string" ? payload.expected_ts_display : "";
 
   if (!JOURNAL_CATEGORIES.includes(category as JournalCategory)) {
     return Response.json(
@@ -62,10 +57,7 @@ export async function PATCH(
     );
   }
   if (!expectedTs) {
-    return Response.json(
-      { error: "expected_ts_display is required" },
-      { status: 400 },
-    );
+    return Response.json({ error: "expected_ts_display is required" }, { status: 400 });
   }
   if (!body.trim()) {
     return Response.json({ error: "body is empty" }, { status: 400 });
@@ -78,17 +70,10 @@ export async function PATCH(
     );
   }
 
-  const result = editJournalEntry(
-    instanceId,
-    idx,
-    expectedTs,
-    category as JournalCategory,
-    body,
-  );
+  const result = editJournalEntry(instanceId, idx, expectedTs, category as JournalCategory, body);
   if (!result.ok) {
     const conflict =
-      result.error?.includes("no longer matches") ||
-      result.error?.includes("out of range");
+      result.error?.includes("no longer matches") || result.error?.includes("out of range");
     return Response.json(
       { error: result.error ?? "edit failed" },
       { status: conflict ? 409 : 500 },
@@ -112,10 +97,7 @@ export async function PATCH(
  * Same race-protection contract as PATCH. The prior file is archived
  * (audit trail) before the rewrite.
  */
-export async function DELETE(
-  request: Request,
-  context: RouteContext,
-): Promise<Response> {
+export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
   const { id, index } = await context.params;
   const instanceId = decodeURIComponent(id);
   if (!safeOwnerId(instanceId)) {
@@ -129,17 +111,13 @@ export async function DELETE(
   const url = new URL(request.url);
   const expectedTs = url.searchParams.get("expected_ts_display") ?? "";
   if (!expectedTs) {
-    return Response.json(
-      { error: "expected_ts_display query param is required" },
-      { status: 400 },
-    );
+    return Response.json({ error: "expected_ts_display query param is required" }, { status: 400 });
   }
 
   const result = deleteJournalEntry(instanceId, idx, expectedTs);
   if (!result.ok) {
     const conflict =
-      result.error?.includes("no longer matches") ||
-      result.error?.includes("out of range");
+      result.error?.includes("no longer matches") || result.error?.includes("out of range");
     return Response.json(
       { error: result.error ?? "delete failed" },
       { status: conflict ? 409 : 500 },

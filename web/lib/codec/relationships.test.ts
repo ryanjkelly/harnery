@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { CodecPanelScene } from "./contracts";
-import { deriveRelationships, type DependencySourceItem } from "./relationships";
+import { type DependencySourceItem, deriveRelationships } from "./relationships";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -23,10 +23,20 @@ function panel(id: string, parent?: string): CodecPanelScene {
     presence: { value: "online", provenance: "projection", confidence: "high", observed_at: NOW },
     activity: { value: "working", provenance: "projection", confidence: "high", observed_at: NOW },
     lifecycle: { value: "active", provenance: "projection", confidence: "high", observed_at: NOW },
-    expression: { value: "neutral", provenance: "projection", confidence: "high", observed_at: NOW },
+    expression: {
+      value: "neutral",
+      provenance: "projection",
+      confidence: "high",
+      observed_at: NOW,
+    },
     attention: { value: "none", provenance: "projection", confidence: "high", observed_at: NOW },
     context_band: { value: "unknown", provenance: "unknown", confidence: "low", observed_at: NOW },
-    progress_rhythm: { value: "unknown", provenance: "unknown", confidence: "low", observed_at: NOW },
+    progress_rhythm: {
+      value: "unknown",
+      provenance: "unknown",
+      confidence: "low",
+      observed_at: NOW,
+    },
     recent_actions: [],
     character: { pack_id: "fallback-neutral", pack_version: "0" },
     updated_at: NOW,
@@ -53,7 +63,12 @@ describe("deriveRelationships", () => {
 
   test("a dependency draws only when both items map to rendered panels", () => {
     const items = [
-      item({ id: "w-a", dependencies: ["w-b"], unresolved_dependencies: ["w-b"], latest_run_id: "run-a" }),
+      item({
+        id: "w-a",
+        dependencies: ["w-b"],
+        unresolved_dependencies: ["w-b"],
+        latest_run_id: "run-a",
+      }),
       item({ id: "w-b", latest_run_id: "run-b" }),
     ];
     const sessions: Record<string, string[]> = { "run-a": ["s-a"], "run-b": ["s-b"] };
@@ -81,10 +96,8 @@ describe("deriveRelationships", () => {
       item({ id: "w-a", dependencies: ["w-b"], latest_run_id: "run-a" }),
       item({ id: "w-b", state: "blocked", latest_run_id: "run-b" }),
     ];
-    const edges = deriveRelationships(
-      [panel("s-a"), panel("s-b")],
-      items,
-      (run) => (run === "run-a" ? ["s-a"] : ["s-b"]),
+    const edges = deriveRelationships([panel("s-a"), panel("s-b")], items, (run) =>
+      run === "run-a" ? ["s-a"] : ["s-b"],
     );
     expect(edges[0]?.status).toBe("blocked");
 

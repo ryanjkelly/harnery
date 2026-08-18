@@ -148,40 +148,6 @@ export function runSessionSyncExtension(repoRoot: string, force: boolean): void 
   }
 }
 
-/**
- * Fire the turn-summary extension (Haiku auto-summary of the turn → heartbeat
- * `turn_summary`). Detached + unref'd; it makes an Anthropic API call and must
- * never block the Stop hook. Claude-Code-only. The
- * script self-guards on ANTHROPIC_API_KEY / curl / jq / matching session.
- */
-export function runTurnSummary(
-  repoRoot: string,
-  owner: string,
-  sessionId: string,
-  transcriptPath: string | undefined,
-): void {
-  try {
-    if (!transcriptPath || !existsSync(transcriptPath)) return;
-    const script = join(
-      repoRoot,
-      "scripts",
-      "hooks",
-      "harness",
-      "claude-code",
-      "extensions",
-      "turn-summary.sh",
-    );
-    if (!existsSync(script)) return;
-    const child = spawn("bash", [script, owner, sessionId, transcriptPath], {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  } catch {
-    // best-effort
-  }
-}
-
 /** Reset per-turn sound rate-limit counters at the start of a new turn. */
 export function resetSoundCounters(sessionId: string): void {
   try {

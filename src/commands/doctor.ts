@@ -434,7 +434,7 @@ function checkHarneryDir(): Check {
     name: ".harnery/",
     severity: "warn",
     detail: "no .harnery/ found above cwd",
-    hint: "create one with `mkdir -p .harnery/active` from your monorepo root",
+    hint: "initialize the project with `harn init` from the repository root",
   };
 }
 

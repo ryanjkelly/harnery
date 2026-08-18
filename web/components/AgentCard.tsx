@@ -48,21 +48,10 @@ export function AgentCard({ hb, stale }: { hb: Heartbeat; stale: boolean }) {
       </CardHeader>
       <CardContent className="relative z-10 pointer-events-none text-xs text-muted-foreground space-y-1">
         <Row label="last seen" value={ageLabel(hb.age_seconds)} />
-        {hb.last_tool && (
-          <Row
-            label="last tool"
-            value={
-              hb.last_tool_target
-                ? `${hb.last_tool} → ${truncate(hb.last_tool_target, 40)}`
-                : hb.last_tool
-            }
-          />
-        )}
         {hb.task && <Row label="task" value={truncate(hb.task, 80)} />}
         {hb.task_state === "blocked" && hb.task_state_reason && (
           <Row label="blocked" value={truncate(hb.task_state_reason, 80)} />
         )}
-        {hb.turn_summary && <Row label="last turn" value={truncate(hb.turn_summary, 80)} />}
         {hb.model && <Row label="model" value={truncate(hb.model, 40)} />}
       </CardContent>
     </Card>

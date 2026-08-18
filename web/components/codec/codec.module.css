@@ -26,14 +26,13 @@
 }
 /* Offline/unknown presence: heavier static, like a dropped call. */
 .portraitStatic::after {
-  background:
-    repeating-linear-gradient(
-      180deg,
-      rgba(200, 220, 215, 0.1) 0px,
-      rgba(200, 220, 215, 0.1) 1px,
-      transparent 1px,
-      transparent 2px
-    );
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(200, 220, 215, 0.1) 0px,
+    rgba(200, 220, 215, 0.1) 1px,
+    transparent 1px,
+    transparent 2px
+  );
 }
 
 /* Gentle idle "breathing" on actively working portraits only. */

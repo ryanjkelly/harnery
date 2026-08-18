@@ -86,7 +86,6 @@ describe("V2 web coordination reader", () => {
     expect(events.meta.path).toContain("ledgers/v2/active.ndjson");
     const agents = readAgents();
     expect(agents.active).toHaveLength(1);
-    expect(agents.active[0]?.coord_source).toBe("ledger");
     expect(agents.active[0]?.platform).toBe("codex");
   });
 });

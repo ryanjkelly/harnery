@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { isSafeInstanceId, resolveContainedFile } from "harnery/core/agents";
+import { isSafeInstanceId } from "harnery/core/agents";
 import {
   appendEntry,
   archiveJournal,
@@ -20,7 +20,7 @@ import {
   parseJournal,
   serializeJournal,
 } from "harnery/core/journal";
-import { activeDir, coordRoot } from "./coord-reader";
+import { coordRoot } from "./coord-reader";
 
 export { JOURNAL_CATEGORIES, type JournalCategory };
 
@@ -70,13 +70,8 @@ export function safeOwnerId(owner: string): boolean {
 }
 
 /** Force a coord-layer recovery action on an agent. Shells to harnery/bin/agent-coord. */
-export async function healAgent(
-  owner: string,
-  kind: "pidmap" | "heartbeat" | "kill",
-): Promise<HelperResult> {
-  const action =
-    kind === "pidmap" ? "heal-pidmap" : kind === "heartbeat" ? "heal-heartbeat" : "kill-heartbeat";
-  return runHelper([action, owner]);
+export async function healAgent(owner: string, _kind: "cache"): Promise<HelperResult> {
+  return runHelper(["repair-coordination-cache", owner]);
 }
 
 /**
@@ -253,28 +248,6 @@ function ensureCoordRootEnv(): void {
   }
 }
 
-export interface HeartbeatFile {
-  instance_id: string;
-  name?: string;
-  files_touched?: string[];
-  [key: string]: unknown;
-}
-
-function heartbeatPath(instanceId: string): string {
-  if (!safeOwnerId(instanceId)) throw new Error("invalid instance_id");
-  return resolveContainedFile(activeDir(), `${instanceId}.json`);
-}
-
-function readHeartbeatFile(instanceId: string): HeartbeatFile | null {
-  const p = heartbeatPath(instanceId);
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf-8")) as HeartbeatFile;
-  } catch {
-    return null;
-  }
-}
-
 export interface ReleaseClaimResult {
   ok: boolean;
   instance_id: string;
@@ -284,7 +257,10 @@ export interface ReleaseClaimResult {
   error?: string;
 }
 
-export function releaseClaim(instanceId: string, target: string): ReleaseClaimResult {
+export async function releaseClaim(
+  instanceId: string,
+  target: string,
+): Promise<ReleaseClaimResult> {
   if (!safeOwnerId(instanceId)) {
     return {
       ok: false,
@@ -295,27 +271,39 @@ export function releaseClaim(instanceId: string, target: string): ReleaseClaimRe
       error: "invalid instance_id",
     };
   }
-  const hb = readHeartbeatFile(instanceId);
-  if (!hb) {
+  const result = await runHelper(["release-claim", instanceId, target]);
+  if (!result.ok) {
     return {
       ok: false,
       instance_id: instanceId,
       path: target,
       removed: false,
       remaining: 0,
-      error: "heartbeat not found",
+      error: result.stderr.trim() || `claim release exited ${result.exit_code}`,
     };
   }
-  const before = (hb.files_touched ?? []).length;
-  const filtered = (hb.files_touched ?? []).filter((p) => p !== target);
-  hb.files_touched = filtered;
-  writeFileSync(heartbeatPath(instanceId), `${JSON.stringify(hb, null, 2)}\n`, "utf-8");
+  let filesTouched: string[] = [];
+  try {
+    const payload = JSON.parse(result.stdout.trim()) as { files_touched?: unknown };
+    filesTouched = Array.isArray(payload.files_touched)
+      ? payload.files_touched.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch (error) {
+    return {
+      ok: false,
+      instance_id: instanceId,
+      path: target,
+      removed: false,
+      remaining: 0,
+      error: `invalid claim-release response: ${(error as Error).message}`,
+    };
+  }
   return {
     ok: true,
     instance_id: instanceId,
     path: target,
-    removed: filtered.length < before,
-    remaining: filtered.length,
+    removed: !filesTouched.includes(target),
+    remaining: filesTouched.length,
   };
 }
 

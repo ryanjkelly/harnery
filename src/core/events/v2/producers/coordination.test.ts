@@ -44,7 +44,10 @@ describe("event ledger V2 coordination producer", () => {
       context("txn_22222222-2222-4222-8222-222222222222"),
     );
     expect(validateEventV2(claim.event).ok).toBe(true);
-    expect(claim.mutation.kind).toBe("claim.acquire");
+    expect(claim.mutation).toMatchObject({
+      kind: "claim.transition",
+      operation: "acquired",
+    });
     if (claim.event.event_type !== "coord.claim_changed") throw new Error("unexpected event type");
     expect(claim.event.payload.target).toMatchObject({
       kind: "workspace_path",

@@ -1,7 +1,7 @@
 /**
- * Session-name presence for `turn.stop`.
+ * Session-name presence for `turn.completed`.
  *
- * While the heartbeat carries a `suggested_session_name`, report whether the
+ * While the current V2 coordination row carries a `suggested_session_name`, report whether the
  * naming ritual is satisfied: either this turn's reply shows the name, or an
  * earlier reply already did. Scanning covers assistant text blocks only (the
  * raw transcript tail also carries the name inside the set-task tool_result,
@@ -11,8 +11,8 @@
  * Two properties the stop-hook naming rule depends on:
  *
  * 1. Once a name is satisfied, every later stop keeps reporting `true` rather
- *    than omitting the field. The rule wants an in-window `turn.stop` carrying
- *    `session_name_present: true`; omitting it after the heartbeat stamp meant
+ *    than omitting the field. The rule wants an in-window `turn.completed` carrying
+ *    `session_name_present: true`; omitting it after the coordination stamp meant
  *    nothing could ever re-emit the flag, so every subsequent reply blocked --
  *    including the replies reproducing the exact name the rule asked for.
  * 2. The result names WHICH suggested name it covered, so a projector rebuild
@@ -23,7 +23,8 @@
  * Never throws: coordination telemetry must not take down a hook.
  */
 
-import { readHeartbeat, stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
+import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
+import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 
 export interface SessionNamePresence {
   session_name_present?: boolean;
@@ -37,10 +38,10 @@ export function sessionNamePresence(
   scanAssistantText: (name: string) => boolean,
 ): SessionNamePresence {
   try {
-    const hb = readHeartbeat(coordRoot, instanceId);
-    const name = hb?.suggested_session_name;
+    const row = readLiveCoordinationRow(coordRoot, instanceId);
+    const name = row?.suggested_session_name;
     if (!name) return {};
-    if (hb?.session_name_seen_for === name) {
+    if (row?.session_name_seen_for === name) {
       return { session_name_present: true, session_name_present_for: name };
     }
     const present = scanAssistantText(name) || lastAssistantMessage.includes(name);

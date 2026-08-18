@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { DatabaseZap } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Activity, Heart, Skull } from "lucide-react";
+import { useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,96 +14,60 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type HealKind = "pidmap" | "heartbeat" | "kill";
+type HealKind = "cache";
 
 const KIND_META: Record<
   HealKind,
   {
     label: string;
     helper: string;
-    icon: typeof Activity;
+    icon: typeof DatabaseZap;
     variant: "outline" | "destructive";
     title: string;
     description: string;
     confirmLabel: string;
   }
 > = {
-  pidmap: {
-    label: "PIDMAP heal",
-    helper: "Rebuild .pidmap from active heartbeats. Safe to run any time.",
-    icon: Activity,
+  cache: {
+    label: "Rebuild V2 cache",
+    helper: "Rebuild the disposable coordination cache from the authoritative V2 generation.",
+    icon: DatabaseZap,
     variant: "outline",
-    title: "Run PIDMAP_HEAL?",
+    title: "Rebuild this agent's V2 cache?",
     description:
-      "Walks .harnery/active/*.json and rewrites .harnery/.pidmap so each session id points to the correct instance. Safe to run any time; does not affect heartbeats or claims. Cheap.",
-    confirmLabel: "Heal pidmap",
-  },
-  heartbeat: {
-    label: "Heartbeat heal",
-    helper:
-      "Recreate heartbeat if missing. Corrective: use only when you know the agent is actually alive.",
-    icon: Heart,
-    variant: "outline",
-    title: "Run HEARTBEAT_HEAL?",
-    description:
-      "If the heartbeat file is missing (agent was killed, prematurely cleaned up, etc.), recreates it from the session_id + resolved name. No-op when the file already exists; this is recovery, not a timestamp refresh. To bump last_heartbeat on a live agent, use the agent's own next hook (or its `journal add`) instead.",
-    confirmLabel: "Heal heartbeat",
-  },
-  kill: {
-    label: "Kill heartbeat",
-    helper:
-      "Delete the heartbeat file; agent disappears from the active list.",
-    icon: Skull,
-    variant: "destructive",
-    title: "Kill this agent's heartbeat?",
-    description:
-      "Deletes the heartbeat file: the agent disappears from the active list and the coord layer treats it as dead. The agent's process is not signalled; it'll re-register on its next hook call. Use when an agent stopped cleanly but didn't clear its file, OR when you want to revoke all of its claims at once.",
-    confirmLabel: "Kill heartbeat",
+      "Recreates the generation-bound local cache from the authority-safe V2 ledger. This cannot create, revive, or terminate a session; it only repairs disposable derived state.",
+    confirmLabel: "Rebuild cache",
   },
 };
 
 /**
- * Operator card surfaced on the agent detail page. Three actions (pidmap
- * heal, heartbeat heal, kill), each shelling to harnery/bin/agent-coord
+ * Operator card surfaced on the agent detail page. The repair action shells
+ * to harnery/bin/agent-coord and leave lifecycle authority in the V2 ledger.
  * via /api/agents/[id]/heal. Mirrors the upstream app's HealActions byte-for-byte;
  * tooltip prop drives the custom <Tooltip> popover (no native browser
  * tooltips on the buttons).
  */
-export function HealActions({
-  instanceId,
-  agentName,
-}: {
-  instanceId: string;
-  agentName: string;
-}) {
+export function HealActions({ instanceId, agentName }: { instanceId: string; agentName: string }) {
   const router = useRouter();
   const [activeKind, setActiveKind] = useState<HealKind | null>(null);
   const [pending, startTransition] = useTransition();
-  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
-    null,
-  );
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
   function handleConfirm(kind: HealKind) {
     setFeedback(null);
     startTransition(async () => {
       try {
-        const res = await fetch(
-          `/api/agents/${encodeURIComponent(instanceId)}/heal`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ kind }),
-          },
-        );
+        const res = await fetch(`/api/agents/${encodeURIComponent(instanceId)}/heal`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind }),
+        });
         const data = (await res.json()) as
           | { ok: true; action: string }
           | { error: string; stderr?: string };
 
         if (!res.ok || !("ok" in data)) {
-          const msg =
-            "error" in data
-              ? data.error
-              : `heal failed (HTTP ${res.status})`;
+          const msg = "error" in data ? data.error : `heal failed (HTTP ${res.status})`;
           setFeedback({
             ok: false,
             msg: `${KIND_META[kind].label} failed: ${msg}`,
@@ -151,17 +115,11 @@ export function HealActions({
           })}
         </div>
         <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
-          PIDMAP heal is cheap and safe. Heartbeat heal is corrective (use only
-          when you know the agent is actually alive). Kill removes the heartbeat
-          file entirely; the agent will re-register on its next hook.
+          This repairs disposable derived state only. Use End session for an authoritative lifecycle
+          change.
         </p>
         {feedback && (
-          <p
-            className={
-              "text-xs mt-2 " +
-              (feedback.ok ? "text-emerald-400" : "text-red-400")
-            }
-          >
+          <p className={"text-xs mt-2 " + (feedback.ok ? "text-emerald-400" : "text-red-400")}>
             {feedback.msg}
           </p>
         )}
@@ -180,21 +138,13 @@ export function HealActions({
               <DialogDescription>
                 <span className="block mb-2">
                   Target:{" "}
-                  <span className="font-mono font-semibold text-foreground">
-                    {agentName}
-                  </span>
+                  <span className="font-mono font-semibold text-foreground">{agentName}</span>
                 </span>
-                <span className="block">
-                  {KIND_META[activeKind].description}
-                </span>
+                <span className="block">{KIND_META[activeKind].description}</span>
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setActiveKind(null)}
-                disabled={pending}
-              >
+              <Button variant="outline" onClick={() => setActiveKind(null)} disabled={pending}>
                 Cancel
               </Button>
               <Button

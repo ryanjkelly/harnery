@@ -11,7 +11,7 @@
 
 import { existsSync, type FSWatcher, statSync, watch } from "node:fs";
 import path from "node:path";
-import { activeDir, councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
+import { councilsDir, eventsPath, journalDir } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +46,6 @@ export function GET(): Response {
       };
 
       for (const [label, dir] of [
-        ["active", activeDir()],
         ["councils", councilsDir()],
         ["journal", journalDir()],
       ] as const) {
@@ -93,9 +92,8 @@ export function GET(): Response {
       // reports create/rename/delete for a dir watch, not the IN_MODIFY of a
       // child append), so the directory watch catches
       // rotation but misses every append. That means a `subagent.start` (or any
-      // event) append goes unnoticed here until the next `.harnery/active/`
-      // heartbeat write happens to churn that watched dir, minutes away when
-      // agents are idle. Concretely: a freshly-spawned subagent's parent linkage
+      // event) append otherwise goes unnoticed here until another watched
+      // coordination document changes. Concretely: a freshly-spawned subagent's parent linkage
       // ("of agent-X") is computed in the page render from `readInstanceIdentities`
       // (the event log), so it only resolves on a refresh, and the refresh was
       // never firing on the append. Poll the size and fire a refresh when it

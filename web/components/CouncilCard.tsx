@@ -19,13 +19,7 @@ import type { CouncilSummary } from "@/lib/coord-reader";
  * the header, so per-row Copy buttons and tooltip interactions don't collide
  * with a click target. Archived rows get a Delete button + confirm dialog inline.
  */
-export function CouncilCard({
-  council,
-  archived,
-}: {
-  council: CouncilSummary;
-  archived: boolean;
-}) {
+export function CouncilCard({ council, archived }: { council: CouncilSummary; archived: boolean }) {
   const detailHref = `/councils/${encodeURIComponent(council.council_id)}${
     archived ? "?archived=1" : ""
   }`;

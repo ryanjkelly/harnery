@@ -72,6 +72,30 @@ describe("event ledger V2 semantic validation", () => {
     );
   });
 
+  test("accepts a decision audit transition bound to its durable docket record", () => {
+    const event = buildEventV2("decision.state_changed", {
+      producer,
+      scope,
+      attestation_id: attestationId,
+      links: { caused_by: [] },
+      provenance,
+      payload: {
+        decision_id: "decision-1",
+        new_state: "filed",
+        record_digest: `sha256:${"a".repeat(64)}`,
+        authority: { record_id: "decision-1" },
+      },
+    });
+
+    expect(validateEventV2(event).issues).toEqual([]);
+    expect(
+      validateEventV2({
+        ...event,
+        payload: { ...event.payload, authority: {} },
+      }).issues,
+    ).toContain("/payload/authority:durable_reference_required");
+  });
+
   test("rejects parent traversal in durable artifact paths", () => {
     const event = buildEventV2("artifact.observed", {
       producer,

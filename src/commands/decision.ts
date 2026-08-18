@@ -1,13 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
-import {
-  emitCanonical,
-  monorepoRoot,
-  normalizeAdapter,
-  readHeartbeat,
-  resolveOwner,
-} from "../core/agents/index.ts";
+import { emitEventV2, monorepoRoot, normalizeAdapter, resolveOwner } from "../core/agents/index.ts";
+import { readLiveCoordinationRow } from "../core/agents/state/live-coordination-view.ts";
 import { resolveBinName } from "../core/config.ts";
 import {
   archiveDecision,
@@ -79,7 +74,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         brief = readFileSync(opts.brief, "utf8");
       }
       const owner = resolveOwner();
-      const hb = owner ? readHeartbeat(owner) : null;
+      const hb = owner ? readLiveCoordinationRow(coordRoot, owner) : null;
       const r = fileDecision(coordRoot, {
         question: question.join(" "),
         tier,
@@ -91,11 +86,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         filedById: owner ?? undefined,
       });
       if (!r.ok) return fail("file_failed", r.reason);
-      emitDecisionEvent("decision.filed", {
-        decision_id: r.manifest!.decision_id,
-        tier,
-        stakes,
-      });
+      emitDecisionEvent("filed", r.manifest!);
       emit.data(r.manifest);
     });
 
@@ -214,7 +205,8 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
     .action((id: string, opts: ResolveOpts) => {
       const coordRoot = coordRootOrExit();
       const owner = resolveOwner();
-      const resolvedBy = opts.resolvedBy ?? (owner ? readHeartbeat(owner)?.name : undefined);
+      const resolvedBy =
+        opts.resolvedBy ?? (owner ? readLiveCoordinationRow(coordRoot, owner)?.name : undefined);
       if (!resolvedBy) {
         return fail("no_resolver", "pass --resolved-by (no agent session to infer it from)");
       }
@@ -228,12 +220,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         resolved_by: resolvedBy,
       });
       if (!r.ok) return fail("resolve_failed", r.reason);
-      emitDecisionEvent("decision.resolved", {
-        decision_id: id,
-        tier: r.manifest!.tier,
-        stakes: r.manifest!.stakes,
-        confidence: opts.confidence ?? null,
-      });
+      emitDecisionEvent("resolved", r.manifest!);
       emit.data(r.manifest);
     });
 
@@ -259,11 +246,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
         note: opts.note,
       });
       if (!r.ok) return fail("review_failed", r.reason);
-      emitDecisionEvent("decision.reviewed", {
-        decision_id: id,
-        verdict: opts.verdict,
-        tier: r.manifest!.tier,
-      });
+      emitDecisionEvent("reviewed", r.manifest!);
       emit.data(r.manifest);
     });
 
@@ -300,11 +283,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
       const coordRoot = coordRootOrExit();
       const r = archiveDecision(coordRoot, id, opts.graduatedTo);
       if (!r.ok) return fail("archive_failed", r.reason);
-      emitDecisionEvent("decision.archived", {
-        decision_id: id,
-        tier: r.manifest!.tier,
-        graduated_to: opts.graduatedTo ?? null,
-      });
+      emitDecisionEvent("archived", r.manifest!);
       emit.data(r.manifest);
     });
 
@@ -320,7 +299,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
       const coordRoot = coordRootOrExit();
       const r = reopenDecision(coordRoot, id);
       if (!r.ok) return fail("reopen_failed", r.reason);
-      emitDecisionEvent("decision.reopened", { decision_id: id, tier: r.manifest!.tier });
+      emitDecisionEvent("reviewed", r.manifest!, "archived");
       emit.data(r.manifest);
     });
 
@@ -333,10 +312,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
       const coordRoot = coordRootOrExit();
       const r = supersedeDecision(coordRoot, id, opts.by);
       if (!r.ok) return fail("supersede_failed", r.reason);
-      emitDecisionEvent("decision.superseded", {
-        decision_id: id,
-        superseded_by: opts.by ?? null,
-      });
+      emitDecisionEvent("superseded", r.manifest!);
       emit.data(r.manifest);
     });
 
@@ -349,10 +325,7 @@ export function registerDecisionCommand(program: Command, emitParam: EmitContext
       const coordRoot = coordRootOrExit();
       const r = wontfixDecision(coordRoot, id, opts.reason);
       if (!r.ok) return fail("wontfix_failed", r.reason);
-      emitDecisionEvent("decision.wontfix", {
-        decision_id: id,
-        reason: opts.reason ?? null,
-      });
+      emitDecisionEvent("wontfix", r.manifest!);
       emit.data(r.manifest);
     });
 }
@@ -458,15 +431,25 @@ function summarize(m: DecisionManifest): Record<string, unknown> {
  * session to attribute it to (operator-side filing). Powers the docket metrics
  * without new telemetry plumbing.
  */
-function emitDecisionEvent(type: string, data: Record<string, unknown>): void {
+function emitDecisionEvent(
+  newState: string,
+  manifest: DecisionManifest,
+  priorState?: string,
+): void {
   const owner = resolveOwner();
   if (!owner) return;
-  const hb = readHeartbeat(owner);
-  emitCanonical({
-    type,
+  const root = monorepoRoot();
+  const hb = root ? readLiveCoordinationRow(root, owner) : null;
+  emitEventV2({
     owner,
     session: hb?.session_id ?? owner,
     adapter: normalizeAdapter(hb?.platform),
-    data,
+    observation: {
+      event_type: "decision.state_changed",
+      decision_id: manifest.decision_id,
+      ...(priorState ? { prior_state: priorState } : {}),
+      new_state: newState,
+      record: manifest,
+    },
   });
 }

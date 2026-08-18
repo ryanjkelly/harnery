@@ -15,26 +15,20 @@
  * so a missed interval is never replayed.
  */
 
+import { CircleDashed, Hammer, Network, Pencil, Search, TestTube, Wrench } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { Badge } from "@/components/ui/badge";
-import type {
-  CodecPanelScene,
-  CodecRecentAction,
-  CodecScene,
-} from "@/lib/codec/contracts";
 import { cn } from "@/lib/cn";
-import { useLiveSignal } from "@/lib/useLiveSignal";
 import {
-  CircleDashed,
-  Hammer,
-  Network,
-  Pencil,
-  Search,
-  TestTube,
-  Wrench,
-} from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+  CODEC_SCHEMA_VERSION,
+  type CodecPanelScene,
+  type CodecRecentAction,
+  type CodecScene,
+} from "@/lib/codec/contracts";
+import { useLiveSignal } from "@/lib/useLiveSignal";
 import styles from "./codec.module.css";
+
 /* eslint-disable @next/next/no-img-element -- pack portraits are local
  * runtime assets served by our own route; next/image optimization would
  * re-encode already-sized webp files for no benefit. */
@@ -61,9 +55,7 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   const [announcement, setAnnouncement] = useState("");
   const gridRef = useRef<HTMLDivElement | null>(null);
   // The server-rendered scene counts as a snapshot: its cues never animate.
-  const seenCues = useRef<Set<string>>(
-    new Set(initialScene.transients.map((t) => t.cue_id)),
-  );
+  const seenCues = useRef<Set<string>>(new Set(initialScene.transients.map((t) => t.cue_id)));
   const glowTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const animatePing = useCallback((fromId: string, toId: string, next: CodecScene) => {
@@ -135,8 +127,7 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
 
   const parseScene = (ev: MessageEvent): CodecScene | null => {
     try {
-      const next = JSON.parse(ev.data as string) as CodecScene;
-      return next.schema_version === 1 ? next : null; // fail closed on unknown versions
+      return parseCodecScene(JSON.parse(ev.data as string));
     } catch {
       return null;
     }
@@ -145,9 +136,10 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   const refetch = useCallback(() => {
     void fetch("/api/codec-scene")
       .then((res) => (res.ok ? res.json() : null))
-      .then((next: CodecScene | null) => {
+      .then((next: unknown) => {
         // Polling recovery is snapshot semantics: no replay of missed cues.
-        if (next && next.schema_version === 1) ingestScene(next, false);
+        const scene = parseCodecScene(next);
+        if (scene) ingestScene(scene, false);
       })
       .catch(() => {
         // polling failure; the status chip already says we're degraded
@@ -257,6 +249,12 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
       )}
     </div>
   );
+}
+
+function parseCodecScene(value: unknown): CodecScene | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as { schema_version?: unknown };
+  return candidate.schema_version === CODEC_SCHEMA_VERSION ? (value as CodecScene) : null;
 }
 
 /** Relationship line colors: violet = shared coordination (delegation), and
@@ -447,7 +445,7 @@ function CodecPanel({
           </Badge>
         )}
         {unknownPresence && (
-          <Badge variant="outline" title="Presence unknown: no fresh heartbeat or event evidence">
+          <Badge variant="outline" title="Presence unknown: no fresh V2 observation">
             presence unknown
           </Badge>
         )}
@@ -461,20 +459,19 @@ function CodecPanel({
             panel.ledger_state?.value === "recovery-required" &&
             panel.expression.value === "recovering"
           ) && (
-          <Badge
-            variant="outline"
-            title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
-            className={cn(
-              panel.expression.provenance === "inferred" &&
-                "border-dashed text-muted-foreground",
-            )}
-          >
-            {panel.expression.value}
-            {panel.expression.provenance === "inferred" && (
-              <span className="ml-1 opacity-70">· inferred</span>
-            )}
-          </Badge>
-        )}
+            <Badge
+              variant="outline"
+              title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}
+              className={cn(
+                panel.expression.provenance === "inferred" && "border-dashed text-muted-foreground",
+              )}
+            >
+              {panel.expression.value}
+              {panel.expression.provenance === "inferred" && (
+                <span className="ml-1 opacity-70">· inferred</span>
+              )}
+            </Badge>
+          )}
         {panel.attention.value !== "none" && (
           <Badge
             variant={panel.attention.value === "error" ? "destructive" : "secondary"}
@@ -489,10 +486,7 @@ function CodecPanel({
           </Badge>
         )}
         {panel.machine && (
-          <Badge
-            variant="secondary"
-            title={`Running on ${panel.machine} (via the presence relay)`}
-          >
+          <Badge variant="secondary" title={`Running on ${panel.machine} (via the presence relay)`}>
             @ {panel.machine}
           </Badge>
         )}
@@ -533,10 +527,7 @@ function Portrait({ panel }: { panel: CodecPanelScene }) {
   const online = panel.presence.value === "online";
 
   return (
-    <span
-      className={cn(styles.portraitFrame, !online && styles.portraitStatic)}
-      aria-hidden
-    >
+    <span className={cn(styles.portraitFrame, !online && styles.portraitStatic)} aria-hidden>
       {usePack ? (
         <img
           src={`/api/codec-pack/${panel.character.pack_id}/${panel.expression.value}?v=${panel.character.pack_version}`}

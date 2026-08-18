@@ -13,9 +13,8 @@
  */
 
 import fs from "node:fs";
-
-import { buildScene, eventsFilePaths } from "@/lib/codec/scene-source";
 import type { CodecScene } from "@/lib/codec/contracts";
+import { buildScene, eventsFilePaths } from "@/lib/codec/scene-source";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

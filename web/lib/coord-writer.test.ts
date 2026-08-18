@@ -5,7 +5,7 @@ describe("web coordination writer instance IDs", () => {
   test("rejects path traversal at every mutation boundary", async () => {
     const attack = "../../outside";
     expect(safeOwnerId(attack)).toBe(false);
-    expect(releaseClaim(attack, "src/index.ts")).toMatchObject({
+    expect(await releaseClaim(attack, "src/index.ts")).toMatchObject({
       ok: false,
       error: "invalid instance_id",
     });

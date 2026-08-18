@@ -1,6 +1,7 @@
 /** Privacy-safe V2 command projection consumed by the `/live` viewer. */
 import fs from "node:fs";
 import path from "node:path";
+import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
 import type { EventV2 } from "../../src/core/events/v2/contract";
 import { readEventV2ControlState } from "../../src/core/events/v2/control";
 import { readActiveLedgerV2, readLedgerV2 } from "../../src/core/events/v2/reader";
@@ -9,16 +10,11 @@ import { harneryDir } from "./coord-reader";
 export interface SessionEvent {
   ts: string;
   type:
-    | "command_start"
-    | "output"
-    | "command_end"
-    | "end_of_turn"
-    | "hook_event"
-    | "set_task"
-    | "file_claim"
-    | "file_release"
-    | "peer_change"
-    | "narration";
+    | "command.started"
+    | "command.output_observed"
+    | "command.completed"
+    | "tool.requested"
+    | "tool.completed";
   agent_name: string;
   agent_id?: string;
   instance_id?: string;
@@ -42,18 +38,9 @@ function resolveAgentName(instanceId: string | undefined): string {
   if (!nameCache || now - nameCache.at > NAME_TTL_MS) {
     const map = new Map<string, string>();
     try {
-      const activeDir = path.join(harneryDir(), "active");
-      for (const file of fs.readdirSync(activeDir)) {
-        if (!file.endsWith(".json")) continue;
-        try {
-          const row = JSON.parse(fs.readFileSync(path.join(activeDir, file), "utf8")) as {
-            instance_id?: string;
-            name?: string;
-          };
-          if (row.instance_id && row.name) map.set(row.instance_id, row.name);
-        } catch {
-          // One disposable cache row must not hide the ledger.
-        }
+      const root = path.dirname(harneryDir());
+      for (const row of readLiveCoordinationRows(root)) {
+        if (row.instance_id && row.name) map.set(row.instance_id, row.name);
       }
     } catch {
       // Names are optional presentation metadata.
@@ -74,7 +61,7 @@ export function projectSessionEventV2(event: EventV2): SessionEvent | null {
     case "command.started":
       return {
         ...base,
-        type: "command_start",
+        type: "command.started",
         cmd_id: eventSpanId(event),
         cmd: event.payload.executable,
         intent: event.payload.intent_kind,
@@ -82,7 +69,7 @@ export function projectSessionEventV2(event: EventV2): SessionEvent | null {
     case "command.output_observed":
       return {
         ...base,
-        type: "output",
+        type: "command.output_observed",
         cmd_id: eventSpanId(event),
         stream: event.payload.stream === "combined" ? "stdout" : event.payload.stream,
         line: `[${event.payload.stream}: ${event.payload.bytes} bytes recorded structurally]`,
@@ -90,7 +77,7 @@ export function projectSessionEventV2(event: EventV2): SessionEvent | null {
     case "command.completed":
       return {
         ...base,
-        type: "command_end",
+        type: "command.completed",
         cmd_id: eventSpanId(event),
         exit:
           event.payload.exit_code ??
@@ -105,14 +92,14 @@ export function projectSessionEventV2(event: EventV2): SessionEvent | null {
     case "tool.requested":
       return {
         ...base,
-        type: "command_start",
+        type: "tool.requested",
         cmd_id: eventSpanId(event),
         cmd: `${event.payload.tool.namespace}.${event.payload.tool.name}`,
       };
     case "tool.completed":
       return {
         ...base,
-        type: "command_end",
+        type: "tool.completed",
         cmd_id: eventSpanId(event),
         exit:
           event.payload.outcome === "succeeded"

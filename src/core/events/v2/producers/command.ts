@@ -3,7 +3,10 @@ import { type FingerprintContextV2, fingerprintV2, normalizeNativeIdV2 } from ".
 import type { EventV2 } from "../contract.ts";
 import { eventIdV2 } from "../ids.ts";
 
-export type CommandSignalV2 = "command-start" | "command-output" | "command-completed";
+export type CommandSignalV2 =
+  | "command.started"
+  | "command.output_observed"
+  | "command.completed";
 
 export interface CommandProducerContextV2 {
   root_id: `root_${string}`;
@@ -102,7 +105,7 @@ export function normalizeCommandEventV2(
   };
 
   switch (signal) {
-    case "command-start": {
+    case "command.started": {
       const argv = [...(observation.argv ?? [])];
       const intent = observation.intent?.normalize("NFC") ?? "";
       return buildEventV2("command.started", {
@@ -120,7 +123,7 @@ export function normalizeCommandEventV2(
         },
       }) as EventV2;
     }
-    case "command-output": {
+    case "command.output_observed": {
       const bytes =
         observation.output_bytes ??
         (observation.output === undefined ? 0 : byteLengthOfUnknown(observation.output));
@@ -137,14 +140,14 @@ export function normalizeCommandEventV2(
             : {
                 content_fingerprint: fingerprintV2(
                   context.fingerprintContext,
-                  "command-output",
+                  "command.output_observed",
                   observation.output,
                 ),
               }),
         },
       }) as EventV2;
     }
-    case "command-completed": {
+    case "command.completed": {
       const outcome = observation.outcome ?? outcomeFromExit(observation.exit_code);
       return buildEventV2("command.completed", {
         ...common,

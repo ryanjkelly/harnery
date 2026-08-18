@@ -1,10 +1,9 @@
+import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { beforeEach, describe, expect, test } from "bun:test";
-
-import type { CodecPanelScene, CodecScene } from "./contracts";
+import { CODEC_SCHEMA_VERSION, type CodecPanelScene, type CodecScene } from "./contracts";
 import { applySuggestions } from "./suggestions";
 
 const NOW = "2026-08-16T12:00:00.000Z";
@@ -19,10 +18,20 @@ function panel(overrides: Partial<CodecPanelScene> = {}): CodecPanelScene {
     presence: { value: "online", provenance: "projection", confidence: "high", observed_at: NOW },
     activity: { value: "working", provenance: "projection", confidence: "high", observed_at: NOW },
     lifecycle: { value: "active", provenance: "projection", confidence: "high", observed_at: NOW },
-    expression: { value: "neutral", provenance: "projection", confidence: "high", observed_at: NOW },
+    expression: {
+      value: "neutral",
+      provenance: "projection",
+      confidence: "high",
+      observed_at: NOW,
+    },
     attention: { value: "none", provenance: "projection", confidence: "high", observed_at: NOW },
     context_band: { value: "unknown", provenance: "unknown", confidence: "low", observed_at: NOW },
-    progress_rhythm: { value: "unknown", provenance: "unknown", confidence: "low", observed_at: NOW },
+    progress_rhythm: {
+      value: "unknown",
+      provenance: "unknown",
+      confidence: "low",
+      observed_at: NOW,
+    },
     recent_actions: [{ category: "edit", outcome: "ok", event_id: "ev-1", observed_at: NOW }],
     character: { pack_id: "fallback-neutral", pack_version: "0" },
     updated_at: NOW,
@@ -32,12 +41,17 @@ function panel(overrides: Partial<CodecPanelScene> = {}): CodecPanelScene {
 
 function scene(panels: CodecPanelScene[]): CodecScene {
   return {
-    schema_version: 1,
+    schema_version: CODEC_SCHEMA_VERSION,
     freshness: { value: "live", provenance: "projection", confidence: "high", observed_at: NOW },
     panels,
     relationships: [],
     transients: [],
-    team_ambience: { value: "calm", provenance: "projection", confidence: "high", observed_at: NOW },
+    team_ambience: {
+      value: "calm",
+      provenance: "projection",
+      confidence: "high",
+      observed_at: NOW,
+    },
     generated_at: NOW,
   };
 }
@@ -45,7 +59,10 @@ function scene(panels: CodecPanelScene[]): CodecScene {
 function writeSuggestions(suggestions: unknown[]): void {
   const dir = path.join(root, "codec");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "suggestions.json"), JSON.stringify({ schema_version: 1, suggestions }));
+  writeFileSync(
+    path.join(dir, "suggestions.json"),
+    JSON.stringify({ schema_version: 1, suggestions }),
+  );
 }
 
 const GOOD = {

@@ -1,15 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { NavBar } from "@/components/NavBar";
 import { GovernorStateBadge } from "@/components/GovernorStateBadge";
+import { NavBar } from "@/components/NavBar";
 import { Badge } from "@/components/ui/badge";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
 import { coordRoot } from "@/lib/coord-reader";
 import {
-  readGovernorBackgroundService,
-  readGovernorGoal,
   governorDashboardDecision,
   governorPlanDashboardStatus,
+  readGovernorBackgroundService,
+  readGovernorGoal,
 } from "@/lib/governor-reader";
 
 export const dynamic = "force-dynamic";

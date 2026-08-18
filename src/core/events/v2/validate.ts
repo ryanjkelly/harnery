@@ -93,11 +93,17 @@ function validateSemantics(event: EventV2): string[] {
   if (
     (event.event_type === "coord.task_changed" ||
       event.event_type === "coord.lifecycle_changed" ||
-      event.event_type === "coord.identity_attested" ||
-      event.event_type === "decision.state_changed") &&
+      event.event_type === "coord.identity_attested") &&
     !event.payload.authority.transaction_id
   ) {
     issues.push("/payload/authority/transaction_id:required_for_authority_transition");
+  }
+  if (
+    event.event_type === "decision.state_changed" &&
+    !event.payload.authority.transaction_id &&
+    !event.payload.authority.record_id
+  ) {
+    issues.push("/payload/authority:durable_reference_required");
   }
   if (
     event.event_type === "coord.claim_changed" &&

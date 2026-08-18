@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
+import { readLiveCoordinationRow } from "../../agents/state/live-coordination-view.ts";
 import { checkPidToken } from "../../agents/state/proc-start.ts";
 
 /**
@@ -14,8 +15,7 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
  *      events; session_id is the parent-shape default.
  *   2. `HARNERY_AGENT_COORD_OWNER` outside bridge mode. Bridge-marked children
  *      ignore this unvalidated override.
- *   3. Adapter session environment matched to a live heartbeat.
- *   4. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
+ *   3. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
  *      chain (up to 20 hops).
  *
  * Bridge-marked children fail closed after tier 3. A connector crosses a
@@ -132,17 +132,9 @@ export function readShellMarker(coordRoot: string, pid: number): string | null {
   }
 }
 
-/** Read the heartbeat-recorded `agent_id` for an owner if it exists. */
+/** Read the V2-projected `agent_id` for an owner if it exists. */
 export function readAgentIdForOwner(coordRoot: string, instanceId: string): string | null {
-  const path = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-  if (!existsSync(path)) return null;
-  try {
-    const body = readFileSync(path, "utf8");
-    const data = JSON.parse(body) as { agent_id?: string };
-    return data.agent_id ?? null;
-  } catch {
-    return null;
-  }
+  return readLiveCoordinationRow(coordRoot, instanceId)?.agent_id ?? null;
 }
 
 /** Diagnostic: list of pid-map entries (for debugging). */

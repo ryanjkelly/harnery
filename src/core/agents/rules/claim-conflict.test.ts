@@ -33,7 +33,7 @@ describe("evaluateClaim on canonical V2 authority", () => {
     seedV2Session(root, "self", { name: "Maya" });
     seedV2Session(root, "peer", { name: "Adelaide", claims: ["docs/shared.md"] });
     const result = verdict("docs/shared.md");
-    expect(result).toMatchObject({ allow: false, rule: "claim.conflict" });
+    expect(result).toMatchObject({ allow: false, rule: "claim.authority_conflict" });
     expect(result.reason).toContain("agent-Adelaide");
   });
 

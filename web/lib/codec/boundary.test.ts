@@ -9,10 +9,9 @@
  * requirement, enforced.
  */
 
+import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-
-import { describe, expect, test } from "bun:test";
 
 const WEB_ROOT = path.resolve(import.meta.dir, "../..");
 
@@ -45,7 +44,8 @@ const FORBIDDEN_SPECIFIERS = [
   "worker_threads",
 ];
 
-const IMPORT_RE = /(?:import|export)\s[^"']*?from\s*["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g;
+const IMPORT_RE =
+  /(?:import|export)\s[^"']*?from\s*["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g;
 
 function resolveLocal(spec: string, fromFile: string): string | null {
   let base: string;

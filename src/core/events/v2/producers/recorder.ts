@@ -125,6 +125,7 @@ export interface RecordHookSignalV2Input {
   instance_id: `inst_${string}`;
   run_id?: `run_${string}`;
   workflow_id?: `wf_${string}`;
+  workflow_agent_id?: string;
   producer_id: `prd_${string}`;
   build_id: `build_${string}`;
   platform: "linux" | "windows" | "macos" | "unknown";
@@ -627,6 +628,7 @@ function processHookSignalLocked(
           root_id: rootId,
           run_id: input.run_id,
           workflow_id: input.workflow_id,
+          workflow_agent_id: input.workflow_agent_id,
           instance_id: input.instance_id,
           generation_id: state.generation_id,
           attestation_id: state.attestation_id,
@@ -685,6 +687,7 @@ function processHookSignalLocked(
       root_id: rootId,
       run_id: input.run_id,
       workflow_id: input.workflow_id,
+      workflow_agent_id: input.workflow_agent_id,
       // Native subagent tool hooks can carry the parent's session id while
       // resolving to a child process instance. The session-keyed producer
       // state remains the generation authority; route those signals through
@@ -878,6 +881,7 @@ function buildMidFlightSessionStart(
     root_id: rootId,
     run_id: input.run_id,
     workflow_id: input.workflow_id,
+    workflow_agent_id: input.workflow_agent_id,
     instance_id: input.instance_id,
     generation_id: state.generation_id,
     attestation_id: state.attestation_id,

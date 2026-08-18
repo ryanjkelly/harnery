@@ -106,7 +106,8 @@ describe("event ledger V2 authority outbox", () => {
       actor_instance_id: "inst_operator",
       subject_instance_id: "inst_worker",
       mutation: {
-        kind: "claim.acquire",
+        kind: "claim.transition",
+        operation: "acquired",
         target_fingerprint: targetFingerprint,
         access: "write",
       },

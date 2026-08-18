@@ -1,16 +1,14 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import type { ClaimRow } from "@/lib/coord-reader";
 import { NO_DATA } from "@/lib/format/no-data";
 
 export function ClaimsTable({ claims }: { claims: ClaimRow[] }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<{ key: string; msg: string; ok: boolean } | null>(
-    null,
-  );
+  const [feedback, setFeedback] = useState<{ key: string; msg: string; ok: boolean } | null>(null);
 
   if (claims.length === 0) {
     return <p className="text-muted text-sm italic">No file claims.</p>;

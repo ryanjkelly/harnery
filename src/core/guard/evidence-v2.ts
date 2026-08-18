@@ -87,8 +87,8 @@ export function normalizeRunQualityPairingV2(
     {
       tool_requested: EventV2[];
       tool_completed: EventV2[];
-      command_started: EventV2[];
-      command_completed: EventV2[];
+      started_commands: EventV2[];
+      completed_commands: EventV2[];
     }
   >();
   for (const event of events) {
@@ -105,13 +105,13 @@ export function normalizeRunQualityPairingV2(
     const span = spans.get(spanId) ?? {
       tool_requested: [],
       tool_completed: [],
-      command_started: [],
-      command_completed: [],
+      started_commands: [],
+      completed_commands: [],
     };
     if (event.event_type === "tool.requested") span.tool_requested.push(event);
     else if (event.event_type === "tool.completed") span.tool_completed.push(event);
-    else if (event.event_type === "command.started") span.command_started.push(event);
-    else span.command_completed.push(event);
+    else if (event.event_type === "command.started") span.started_commands.push(event);
+    else span.completed_commands.push(event);
     spans.set(spanId, span);
   }
 
@@ -126,11 +126,11 @@ export function normalizeRunQualityPairingV2(
       );
     }
     if (
-      (span.command_started.length > 0 || span.command_completed.length > 0) &&
-      (span.command_started.length !== 1 || span.command_completed.length !== 1)
+      (span.started_commands.length > 0 || span.completed_commands.length > 0) &&
+      (span.started_commands.length !== 1 || span.completed_commands.length !== 1)
     ) {
       markers.push(
-        pairingMarker("command_pairing_incomplete", span.command_started, span.command_completed),
+        pairingMarker("command_pairing_incomplete", span.started_commands, span.completed_commands),
       );
     }
   }

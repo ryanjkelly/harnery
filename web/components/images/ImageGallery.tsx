@@ -7,18 +7,13 @@ import { AgentChip, AgentChipProvider } from "@/components/AgentChip";
 import { FormattedDateTime } from "@/components/FormattedDateTime";
 import { FilePath } from "@/components/file-viewer/FilePath";
 import type { AgentSummary } from "@/lib/agent-summary";
-import type { EventRow } from "@/lib/coord-reader";
-import type { ImageCapture, ImageCaptureData } from "@/lib/images";
-import { type LiveStatus, useLiveSignal } from "@/lib/useLiveSignal";
+import type { ImageCapture } from "@/lib/images";
 
 interface Props {
   initial: ImageCapture[];
-  /** instance_id → display name, for resolving live-appended events. */
-  instanceToName: Record<string, string>;
-  /** Server-built hover-card summaries (bare-name keyed). The gallery owns the
-   * provider so it can synthesize fallback cards for agents that first appear
-   * via the live stream. */
+  /** Server-built hover-card summaries (bare-name keyed). */
   summaries: Record<string, AgentSummary>;
+  unavailableReason?: string;
 }
 
 type RoleFilter = "all" | "viewed" | "produced";
@@ -41,16 +36,11 @@ const WINDOW_LABEL: Record<WindowFilter, string> = {
 };
 
 /**
- * /images client shell: a live, filterable thumbnail grid of every image
- * agents have viewed or produced. Seeds from the server snapshot, folds in live
- * `image.captured` events from `/api/events-stream?type=image.captured`, groups
- * by content hash (one card per distinct image, with a touch timeline). Filter
- * by fuzzy intent/path search, agent, role, and time window; arrow-key navigate
- * the lightbox; download with the real filename or pop the raw image out.
+ * /images client shell for the privacy-safe V2 artifact projection. Until V2
+ * exposes content-addressed blob references, it renders the server's explicit
+ * unavailable state and never falls back to V1 image events.
  */
-export function ImageGallery({ initial, instanceToName, summaries: initialSummaries }: Props) {
-  const mapRef = useRef<Map<string, ImageCapture>>(new Map(initial.map((img) => [img.hash, img])));
-  const [images, setImages] = useState<ImageCapture[]>(initial);
+export function ImageGallery({ initial: images, summaries, unavailableReason }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   // Lightbox size preference, persisted so it sticks across opens + reloads.
   const [maximized, setMaximized] = useState(false);
@@ -73,145 +63,11 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
     });
   }, []);
 
-  // Hover-card summaries: seeded from the server, then extended client-side for
-  // any agent that first shows up via the live stream (synthesized stale card
-  // so a live-appended name never renders as plain text). flush() re-publishes.
-  const summariesRef = useRef<Record<string, AgentSummary>>({ ...initialSummaries });
-  const [summaries, setSummaries] = useState<Record<string, AgentSummary>>(summariesRef.current);
-
   // Filters
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState("all");
   const [role, setRole] = useState<RoleFilter>("all");
   const [win, setWin] = useState<WindowFilter>("all");
-
-  const flush = useCallback(() => {
-    const arr = [...mapRef.current.values()];
-    arr.sort((a, b) => (a.latest_ts < b.latest_ts ? 1 : -1));
-    setImages(arr);
-    setSummaries({ ...summariesRef.current });
-  }, []);
-
-  const foldEvent = useCallback(
-    (row: EventRow): boolean => {
-      if (row.event_type !== "image.captured") return false;
-      const d = row.data as ImageCaptureData | undefined;
-      if (!d?.hash) return false;
-      const ts = row.ts ?? "";
-      const instanceId = row.instance_id ?? "";
-      const name = instanceToName[instanceId];
-      const agentName = name
-        ? name.startsWith("agent-")
-          ? name
-          : `agent-${name}`
-        : `agent-${instanceId.slice(0, 8)}`;
-      const touch = {
-        instance_id: instanceId,
-        agent: agentName,
-        role: d.role,
-        ts,
-        source_path: d.source_path,
-        tool_name: d.tool_name,
-        intent: d.intent,
-        command_head: d.command_head,
-      };
-      // Synthesize a fallback hover card for an agent we haven't seen a summary
-      // for yet (first appearance via the live stream). Server-provided cards
-      // already cover agents present at load; this keeps live arrivals from
-      // rendering as plain text.
-      const bare = agentName.replace(/^agent-/, "").toLowerCase();
-      if (bare && !summariesRef.current[bare]) {
-        summariesRef.current[bare] = {
-          name: agentName.replace(/^agent-/, ""),
-          agent_id: "",
-          state: "stale",
-          last_seen: ts || null,
-          created_at: "",
-          aliases: [],
-          instance_id: instanceId || undefined,
-          platform: row.adapter ?? null,
-        };
-      }
-      const existing = mapRef.current.get(d.hash);
-      if (existing) {
-        if (existing.touches.some((t) => t.instance_id === instanceId && t.ts === ts)) {
-          return false; // idempotent: already have this touch
-        }
-        existing.touches.unshift(touch);
-        existing.touches.sort((a, b) => (a.ts < b.ts ? 1 : -1));
-        existing.touch_count++;
-        if (ts > existing.latest_ts) existing.latest_ts = ts;
-        if (ts < existing.first_ts) existing.first_ts = ts;
-        if (!existing.agents.includes(agentName)) existing.agents.push(agentName);
-        if (!existing.roles.includes(d.role)) existing.roles.push(d.role);
-      } else {
-        mapRef.current.set(d.hash, {
-          hash: d.hash,
-          ext: d.ext,
-          bytes: d.bytes,
-          latest_ts: ts,
-          first_ts: ts,
-          touch_count: 1,
-          agents: [agentName],
-          roles: [d.role],
-          touches: [touch],
-          blob_exists: true,
-        });
-      }
-      return true;
-    },
-    [instanceToName],
-  );
-
-  // Live updates via the shared signal: fold image.captured events while SSE
-  // flows, fall back to change-detection polling (refetch the snapshot) when it
-  // doesn't (e.g. through harn tunnel; see useLiveSignal). The hook owns the
-  // connection lifecycle, watchdogs, reconnect, and visibility handling.
-  const events = useMemo(
-    () => ({
-      ready: () => {},
-      heartbeat: () => {},
-      snapshot: (msg: MessageEvent) => {
-        try {
-          const data = JSON.parse(msg.data) as { events: EventRow[] };
-          let changed = false;
-          for (const ev of data.events) changed = foldEvent(ev) || changed;
-          if (changed) flush();
-        } catch {
-          /* ignore */
-        }
-      },
-      event: (msg: MessageEvent) => {
-        try {
-          const ev = JSON.parse(msg.data) as EventRow;
-          if (foldEvent(ev)) flush();
-        } catch {
-          /* ignore */
-        }
-      },
-    }),
-    [foldEvent, flush],
-  );
-  const refetchSnapshot = useCallback(async () => {
-    try {
-      const res = await fetch("/api/events?type=image.captured&limit=300", {
-        cache: "no-store",
-      });
-      if (!res.ok) return;
-      const data = (await res.json()) as { rows: EventRow[] };
-      let changed = false;
-      for (const ev of data.rows) changed = foldEvent(ev) || changed;
-      if (changed) flush();
-    } catch {
-      /* ignore */
-    }
-  }, [foldEvent, flush]);
-  const status = useLiveSignal({
-    streamUrl: "/api/events-stream?type=image.captured",
-    events,
-    onFallbackChange: refetchSnapshot,
-    fetchOnFallbackStart: initial.length === 0,
-  });
 
   // Distinct agents for the dropdown.
   const allAgents = useMemo(() => {
@@ -273,15 +129,13 @@ export function ImageGallery({ initial, instanceToName, summaries: initialSummar
         total={images.length}
         filtersActive={filtersActive}
         onClear={clearFilters}
-        status={status}
+        unavailableReason={unavailableReason}
       />
 
-      <div className="flex-1 min-h-0 overflow-auto">
-        {images.length === 0 ? (
+        <div className="flex-1 min-h-0 overflow-auto">
+          {images.length === 0 ? (
           <EmptyState>
-            No images captured yet. Read an image file, or run something that produces one (e.g.{" "}
-            <code className="font-mono">harn browse &lt;url&gt;</code> or{" "}
-            <code className="font-mono">harn image generate …</code>) and it&apos;ll appear here live.
+            {unavailableReason ?? "No V2 image artifacts have been observed."}
           </EmptyState>
         ) : filtered.length === 0 ? (
           <EmptyState>
@@ -340,7 +194,7 @@ function FilterBar(props: {
   total: number;
   filtersActive: boolean;
   onClear: () => void;
-  status: LiveStatus;
+  unavailableReason?: string;
 }) {
   const selectCls =
     "rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40";
@@ -400,39 +254,15 @@ function FilterBar(props: {
             ? `${props.total} image${props.total === 1 ? "" : "s"}`
             : `${props.shown} of ${props.total}`}
         </span>
-        {(() => {
-          const s = props.status;
-          const cls =
-            s === "live"
-              ? "text-emerald-400"
-              : s === "polling"
-                ? "text-sky-400"
-                : s === "reconnecting"
-                  ? "text-amber-500/80"
-                  : "text-muted-foreground";
-          const dot =
-            s === "live"
-              ? "bg-emerald-400"
-              : s === "polling"
-                ? "bg-sky-400"
-                : s === "reconnecting"
-                  ? "bg-amber-500/80"
-                  : "bg-muted-foreground";
-          const title =
-            s === "live"
-              ? "live stream connected"
-              : s === "polling"
-                ? "live stream unavailable through this connection; polling for changes"
-                : s === "reconnecting"
-                  ? "reconnecting…"
-                  : "connecting…";
-          return (
-            <span className={`inline-flex items-center gap-1 ${cls}`} title={title}>
-              <span className={`size-1.5 rounded-full ${dot}`} />
-              {s}
-            </span>
-          );
-        })()}
+        {props.unavailableReason && (
+          <span
+            className="inline-flex items-center gap-1 text-amber-500/80"
+            title={props.unavailableReason}
+          >
+            <span className="size-1.5 rounded-full bg-amber-500/80" />
+            metadata only
+          </span>
+        )}
       </div>
     </div>
   );

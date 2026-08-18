@@ -16,7 +16,12 @@ function panel(): CodecPanelScene {
     presence: { value: "online", provenance: "projection", confidence: "high", observed_at: NOW },
     activity: { value: "working", provenance: "projection", confidence: "high", observed_at: NOW },
     lifecycle: { value: "active", provenance: "projection", confidence: "high", observed_at: NOW },
-    expression: { value: "focused", provenance: "projection", confidence: "high", observed_at: NOW },
+    expression: {
+      value: "focused",
+      provenance: "projection",
+      confidence: "high",
+      observed_at: NOW,
+    },
     attention: { value: "none", provenance: "projection", confidence: "high", observed_at: NOW },
     context_band: {
       value: "ample",
@@ -25,7 +30,12 @@ function panel(): CodecPanelScene {
       observed_at: NOW,
       evidence_event_ids: ["ev-ctx"],
     },
-    progress_rhythm: { value: "in-motion", provenance: "event", confidence: "high", observed_at: NOW },
+    progress_rhythm: {
+      value: "in-motion",
+      provenance: "event",
+      confidence: "high",
+      observed_at: NOW,
+    },
     recent_actions: [
       { category: "edit", outcome: "ok", event_id: "ev-1", observed_at: NOW },
       { category: "research", outcome: "ok", event_id: "ev-2", observed_at: NOW },
@@ -38,9 +48,9 @@ function panel(): CodecPanelScene {
 function sourceEvents(): CodecSourceEvidence[] {
   return [
     {
-      schema_version: 1,
+      schema_version: 2,
       event_id: "ev-3",
-      event_type: "tool.pre_use",
+      event_type: "tool.requested",
       ts: NOW,
       instance_id: "inst-1",
       intent: "wire the validator",
@@ -139,8 +149,6 @@ describe("validateSuggestion", () => {
     expect(validateSuggestion({ ...base, expression: "smug" }, evidence, NOW).ok).toBe(false);
     expect(validateSuggestion({ ...base, schema_version: 2 }, evidence, NOW).ok).toBe(false);
     expect(validateSuggestion({ ...base, instance_id: "inst-2" }, evidence, NOW).ok).toBe(false);
-    expect(
-      validateSuggestion({ ...base, expression: undefined }, evidence, NOW).ok,
-    ).toBe(false);
+    expect(validateSuggestion({ ...base, expression: undefined }, evidence, NOW).ok).toBe(false);
   });
 });

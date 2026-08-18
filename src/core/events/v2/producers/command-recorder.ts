@@ -91,7 +91,7 @@ export interface RecordCommandSignalV2Input {
 export type RecordCommandSignalV2Result =
   | { state: "gate_closed"; reason: string }
   | { state: "generation_unavailable"; reason: string }
-  | { state: "missing_command_start" }
+  | { state: "command_span_unstarted" }
   | { state: "missing_observation_id" }
   | { state: "already_recorded"; event_id: string }
   | { state: "recorded"; event: EventV2; durability: WriteEventV2Result; recovered: boolean };
@@ -149,7 +149,7 @@ export function recordCommandSignalV2(
       const already = state.observations.find((observation) => observation.source_id === sourceId);
       if (already) return { state: "already_recorded", event_id: already.event_id };
     }
-    if (input.signal === "command-start") {
+    if (input.signal === "command.started") {
       if (state) {
         return {
           state: "already_recorded",
@@ -158,9 +158,9 @@ export function recordCommandSignalV2(
       }
       state = newCommandState(input, hook, epochId);
     } else if (!state) {
-      return { state: "missing_command_start" };
+      return { state: "command_span_unstarted" };
     }
-    if (state.terminal) return { state: "missing_command_start" };
+    if (state.terminal) return { state: "command_span_unstarted" };
 
     const fingerprintContext = fingerprintContextV2(
       input.coordRoot,
@@ -188,7 +188,7 @@ export function recordCommandSignalV2(
       fingerprintContext,
       attribution_method: "session_env",
     });
-    if (!event) return { state: "missing_command_start" };
+    if (!event) return { state: "command_span_unstarted" };
 
     state.pending = { source_id: sourceId, event };
     publishCommandState(path, state);
@@ -377,7 +377,7 @@ function observationSourceId(
   context: ReturnType<typeof fingerprintContextV2>,
 ): `hid_${string}` | undefined {
   const nativeObservation =
-    input.signal === "command-output"
+    input.signal === "command.output_observed"
       ? input.observation.native_observation_id
       : `${input.signal}:${input.observation.native_command_id}`;
   return nativeObservation

@@ -205,6 +205,7 @@ function projectHeartbeatV2(
     instance_id:
       nativeInstanceId ?? cache?.instance_id ?? displayInstanceId(generation.instance_id),
     session_id: parent?.session_id ?? generation.session_id,
+    native_session_id: cache?.session_id,
     name: cache?.name,
     kind:
       cache?.kind ??
@@ -231,6 +232,7 @@ function projectHeartbeatV2(
     session_name_seen_at: cache?.session_name_seen_at,
     session_name_seen_for: cache?.session_name_seen_for,
     workflow_run_id: generation.run_id,
+    workflow_agent_id: generation.workflow_agent_id,
     parent_instance_id: parent ? displayInstanceId(parent.instance_id) : undefined,
     v2_instance_id: generation.instance_id as `inst_${string}`,
     v2_generation_id: generation.generation_id as `gen_${string}`,

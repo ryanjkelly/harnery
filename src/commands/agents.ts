@@ -4,7 +4,7 @@
  *   harn agents whoami            current agent's name + instance_id + claims
  *   harn agents list              all active agents (default: fold transients)
  *   harn agents list --all        include raw kind=transient rows
- *   harn agents list --stale      include heartbeats older than the freshness window
+ *   harn agents list --stale      include generations older than the freshness window
  *   harn agents list --json       JSON output (alias for --format json)
  *   harn agents status            end-of-turn status box (name + age + files + peers)
  *   harn agents heal-events       PIDMAP_HEAL telemetry (pid-map self-heal frequency)
@@ -36,11 +36,9 @@ import {
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
 import {
-  emitCanonical,
-  type Heartbeat,
+  emitEventV2,
   monorepoRoot,
   normalizeAdapter,
-  readHeartbeat,
   resolveOwner,
   resolveOwnerBySessionEnv,
   resolveOwnerWithSource,
@@ -56,8 +54,13 @@ import {
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
+  type Heartbeat,
+  readHeartbeat as readHeartbeatCache,
 } from "../core/agents/state/heartbeat-writer.ts";
-import { readLiveCoordinationRows } from "../core/agents/state/live-coordination-view.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../core/agents/state/live-coordination-view.ts";
 import {
   type AgentActivity,
   foldSessionState,
@@ -68,6 +71,7 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
 } from "../core/config.ts";
+import type { EventTypeV2 } from "../core/events/v2/contract.ts";
 import { readEventV2ControlState } from "../core/events/v2/control.ts";
 import { projectCoordinationViewV2 } from "../core/events/v2/coordination-view.ts";
 import { liveInstanceIdV2 } from "../core/events/v2/live-routing.ts";
@@ -85,6 +89,13 @@ import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.t
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
+
+type LiveCoordinationRow = ReturnType<typeof readLiveCoordinationRows>[number];
+
+function readCurrentCoordinationRow(instanceId: string): LiveCoordinationRow | null {
+  const root = monorepoRoot();
+  return root ? readLiveCoordinationRow(root, instanceId) : null;
+}
 
 /** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
  * under V8's ~512MB max string length so a `readFileSync` of the whole file can
@@ -213,8 +224,6 @@ interface Row {
   started_at: string;
   last_heartbeat: string;
   files_touched: string[];
-  last_tool?: string | null;
-  last_tool_target?: string | null;
   task?: string | null;
   activity: AgentActivity;
   activity_updated_at?: string | null;
@@ -222,8 +231,6 @@ interface Row {
   task_state: TaskState;
   task_state_updated_at?: string | null;
   task_state_reason?: string | null;
-  turn_summary?: string | null;
-  turn_summary_updated_at?: string | null;
   platform?: string | null;
   /** Set on relation=remote rows: the machine label the row arrived from
    * via the cross-machine presence transport (ADR 0016). */
@@ -236,6 +243,14 @@ function activityOf(hb: Pick<Heartbeat, "activity">): AgentActivity {
 
 function taskStateOf(hb: Pick<Heartbeat, "task_state">): TaskState {
   return hb.task_state ?? "active";
+}
+
+/** Producer joins use the private native session ID; `session_id` is the canonical V2 fingerprint. */
+function nativeSessionIdentity(
+  row: Pick<Heartbeat, "native_session_id" | "session_id"> | null | undefined,
+  fallback: string,
+): string {
+  return row?.native_session_id ?? row?.session_id ?? fallback;
 }
 
 function lifecycleLabel(hb: Pick<Heartbeat, "task_state" | "task_state_reason">): string {
@@ -271,7 +286,7 @@ export function registerAgentsCommand(
     .command("list")
     .description("List all active agents (folds kind=transient by default)")
     .option("--all", "Include raw kind=transient rows (no fold)")
-    .option("--stale", "Include heartbeats older than the freshness window")
+    .option("--stale", "Include generations older than the freshness window")
     .option("--json", "JSON output (alias for --format json)")
     .action((opts: { all?: boolean; stale?: boolean; json?: boolean }) => {
       runList(opts);
@@ -291,7 +306,7 @@ export function registerAgentsCommand(
     )
     .option(
       "--session-id <id>",
-      "Lookup heartbeat by session_id directly, bypassing the ppid walk. " +
+      "Lookup the V2 generation by session_id directly, bypassing the ppid walk. " +
         "Use this when calling from a hook (the hook's process tree may not lead back to Claude Code's session pid). " +
         "The Stop hook payload includes session_id; pass it through.",
     )
@@ -312,7 +327,7 @@ export function registerAgentsCommand(
     .option("--json", "JSON output instead of the bare name")
     .option(
       "--session-id <id>",
-      "Lookup heartbeat by session_id directly, bypassing the ppid walk.",
+      "Lookup the V2 generation by session_id directly, bypassing the ppid walk.",
     )
     .action((description: string[], opts: { json?: boolean; sessionId?: string }) => {
       runSuggestName(description, opts);
@@ -321,7 +336,7 @@ export function registerAgentsCommand(
   cmd
     .command("watch")
     .description(
-      "Stream peer state changes in real time (file watcher on .harnery/active/). " +
+      "Stream peer state changes from the authoritative V2 coordination projection. " +
         "Prints one line per delta: started / ended / activity / file claim / task change.",
     )
     .option("--poll-ms <n>", "Debounce window after a change event", "200")
@@ -344,14 +359,14 @@ export function registerAgentsCommand(
     .command("trace <name>")
     .description(
       "Reconstruct one agent's coordination lifecycle from the active canonical event ledger: " +
-        "session.start → prompts → turns → tools → heals/sweeps → claims → end, " +
+        "session.started → prompts → turns → tools → observations → session.ended, " +
         "in chronological order. The answer to 'what happened to this agent / why did " +
         "it vanish?' without hand-grepping the stream. Accepts a name (agent-Foo or Foo) " +
         "or an instance_id.",
     )
     .option("--since <window>", "Only events newer than Nh|Nd (default: all)")
     .option("--limit <n>", "Show at most N most-recent events. Default: 200.", "200")
-    .option("--all-tools", "Include tool.post_use + command.* (default: hidden as noise)")
+    .option("--all-tools", "Include tool.completed + command.* (default: hidden as noise)")
     .option("--json", "JSON envelope output")
     .action(
       (
@@ -553,23 +568,19 @@ export function registerAgentsCommand(
     .command("heal")
     .description(
       "Force a coord-layer recovery action on a specific agent. " +
-        "Kinds: pidmap (force PIDMAP_HEAL), heartbeat (force HEARTBEAT_HEAL), " +
-        "kill (rm the heartbeat file). Runs through the same heartbeat flock " +
-        "the live hooks use, so it governs the operation safely.",
+        "Kinds: pidmap (repair process attribution) and cache (rebuild the " +
+        "disposable V2 coordination cache from the authoritative ledger).",
     )
     .requiredOption("--owner <id>", "Target agent's instance_id")
-    .requiredOption("--kind <kind>", "pidmap | heartbeat | kill")
+    .requiredOption("--kind <kind>", "pidmap | cache")
     .option(
       "--session-id <id>",
-      "(--kind heartbeat) session_id to stamp on the heartbeat. " +
-        "Default: inherit from existing heartbeat if one exists. " +
-        "Required when no heartbeat exists yet (a heartbeat without " +
-        "session_id fails schema validation and pollutes the audit trail).",
+      "(--kind cache) native session id used to join the authoritative V2 generation.",
     )
     .option(
       "--adapter <id>",
-      "(--kind heartbeat) adapter to stamp when recreating a heartbeat: " +
-        "claude-code | cursor | codex. Default: claude-code.",
+      "(--kind cache) adapter used to validate the authoritative V2 generation: " +
+        "claude-code | cursor | codex.",
     )
     .option(
       "--pid <pid>",
@@ -1214,11 +1225,11 @@ function runWhoami(opts: { json?: boolean }): void {
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readLiveCoordinationRow(root, myOwner);
   if (!hb) {
     emit.error({
-      code: "no_heartbeat",
-      message: noHeartbeatMessage(myOwner),
+      code: "no_live_generation",
+      message: noLiveGenerationMessage(myOwner),
     });
     process.exit(1);
   }
@@ -1230,11 +1241,9 @@ function runWhoami(opts: { json?: boolean }): void {
     session_id: hb.session_id,
     kind: normalizeKind(hb.kind),
     relation: "self",
-    started_at: hb.started_at,
+    started_at: hb.started_at ?? hb.last_heartbeat,
     last_heartbeat: hb.last_heartbeat,
     files_touched: hb.files_touched ?? [],
-    last_tool: hb.last_tool ?? null,
-    last_tool_target: hb.last_tool_target ?? null,
     task: hb.task ?? null,
     activity: activityOf(hb),
     activity_updated_at: hb.activity_updated_at ?? null,
@@ -1242,8 +1251,6 @@ function runWhoami(opts: { json?: boolean }): void {
     task_state: taskStateOf(hb),
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
-    turn_summary: hb.turn_summary ?? null,
-    turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
     platform: hb.platform ?? "claude-code",
   };
 
@@ -1267,38 +1274,19 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
     process.exit(1);
   }
 
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) {
-    emit.data({ rows: [], note: SUBAGENT_NOTE });
-    return;
-  }
-
   // Resolve self for relation column; best-effort, missing → "unknown" on every row.
   const myOwner = resolveOwner();
-  const myHb = myOwner ? readHeartbeat(myOwner) : null;
+  const myHb = myOwner ? readLiveCoordinationRow(root, myOwner) : null;
   const mySession = myHb?.session_id ?? null;
 
-  // Read every heartbeat.
-  const heartbeats: Heartbeat[] = [];
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = readFileSync(resolve(activeDir, file), "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.instance_id === "string") {
-        heartbeats.push(parsed as Heartbeat);
-      }
-    } catch {
-      // skip malformed
-    }
-  }
+  const generations = readLiveCoordinationRows(root);
 
   // Apply staleness filter unless --stale.
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
   const live = opts.stale
-    ? heartbeats
-    : heartbeats.filter((h) => {
+    ? generations
+    : generations.filter((h) => {
         const ts = Date.parse(h.last_heartbeat);
         return Number.isFinite(ts) && ts / 1000 >= cutoff;
       });
@@ -1334,11 +1322,9 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         session_id: h.session_id,
         kind: "transient",
         relation: relationOf(h, myOwner ?? "", mySession),
-        started_at: h.started_at,
+        started_at: h.started_at ?? h.last_heartbeat,
         last_heartbeat: h.last_heartbeat,
         files_touched: [...(h.files_touched ?? [])].sort(),
-        last_tool: h.last_tool ?? null,
-        last_tool_target: h.last_tool_target ?? null,
         task: h.task ?? null,
         activity: activityOf(h),
         activity_updated_at: h.activity_updated_at ?? null,
@@ -1346,8 +1332,6 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         task_state: taskStateOf(h),
         task_state_updated_at: h.task_state_updated_at ?? null,
         task_state_reason: h.task_state_reason ?? null,
-        turn_summary: h.turn_summary ?? null,
-        turn_summary_updated_at: h.turn_summary_updated_at ?? null,
         platform: h.platform ?? "claude-code",
       });
       continue;
@@ -1365,11 +1349,9 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       session_id: h.session_id,
       kind: normalizeKind(h.kind),
       relation: relationOf(h, myOwner ?? "", mySession),
-      started_at: h.started_at,
+      started_at: h.started_at ?? h.last_heartbeat,
       last_heartbeat: h.last_heartbeat,
       files_touched: files,
-      last_tool: h.last_tool ?? null,
-      last_tool_target: h.last_tool_target ?? null,
       task: h.task ?? null,
       activity: activityOf(h),
       activity_updated_at: h.activity_updated_at ?? null,
@@ -1377,15 +1359,12 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       task_state: taskStateOf(h),
       task_state_updated_at: h.task_state_updated_at ?? null,
       task_state_reason: h.task_state_reason ?? null,
-      turn_summary: h.turn_summary ?? null,
-      turn_summary_updated_at: h.turn_summary_updated_at ?? null,
       platform: h.platform ?? "claude-code",
     });
   }
 
-  // Guard missing started_at: a heartbeat seeded from a stray event can lack it
-  // (legacy zombies), and an unguarded .localeCompare throws, which is exactly
-  // what made `harn agents list --all --stale` crash.
+  // Guard missing started_at so a partial observational projection cannot make
+  // `harn agents list --all --stale` throw while sorting.
   rows.sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? ""));
 
   // Cross-machine presence (ADR 0016): append sessions on OTHER machines from
@@ -1402,8 +1381,6 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         started_at: a.started_at ?? "",
         last_heartbeat: a.last_heartbeat ?? "",
         files_touched: [...(a.files_touched ?? [])].sort(),
-        last_tool: a.last_tool ?? null,
-        last_tool_target: null,
         task: a.task ?? null,
         activity: a.activity ?? "unknown",
         activity_updated_at: null,
@@ -1411,8 +1388,6 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         task_state: a.task_state ?? "active",
         task_state_updated_at: null,
         task_state_reason: a.task_state_reason ?? null,
-        turn_summary: a.turn_summary ?? null,
-        turn_summary_updated_at: null,
         platform: a.platform ?? "claude-code",
         machine: rm.machine,
       });
@@ -1427,7 +1402,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
 }
 
 function relationOf(
-  peer: Heartbeat,
+  peer: Pick<LiveCoordinationRow, "instance_id" | "session_id">,
   myOwner: string,
   mySession: string | null,
 ): "self" | "group" | "blocks" | "unknown" {
@@ -1443,22 +1418,18 @@ function normalizeKind(kind: string | undefined | null): string {
 }
 
 /**
- * The `no_heartbeat` diagnostic, quoting the owner id in FULL.
+ * The `no_live_generation` diagnostic, quoting the owner id in full.
  *
- * This id is actionable: the reader's next move is `agents heal --kind
- * heartbeat --owner <id>`, and heartbeats are keyed by the whole
- * `instance_id` (`.harnery/active/<instance_id>.json`). An abbreviated id
- * here reads as complete, so it gets copy-pasted into `--owner` and mints a
- * heartbeat at a filename no reader resolves — an orphan that leaves the
- * session looking unhealable. Abbreviate ids for display elsewhere, never in
- * a message whose whole purpose is to hand the reader an id to pass back.
+ * This id is actionable: the reader may pass it to cache repair or explicit
+ * finalization. Abbreviate ids for display elsewhere, never in a diagnostic
+ * whose purpose is to hand the caller a canonical identity.
  */
-function noHeartbeatMessage(owner: string): string {
-  return `resolved owner=${owner} but no heartbeat exists at .harnery/active/${owner}.json`;
+function noLiveGenerationMessage(owner: string): string {
+  return `resolved owner=${owner} but no authority-safe live V2 generation exists for it`;
 }
 
 /**
- * The instance_id of a live heartbeat that `prefix` strictly prefixes, or null.
+ * The instance_id of a live V2 generation that `prefix` strictly prefixes, or null.
  *
  * Used to recognize an abbreviated id handed back by a reader when the caller
  * supplied no canonical id of their own. Ambiguity is treated as "no answer":
@@ -1466,12 +1437,9 @@ function noHeartbeatMessage(owner: string): string {
  * and refusing with the wrong id in the message would be worse than the orphan.
  */
 function liveIdWithPrefix(root: string, prefix: string): string | null {
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) return null;
   const matches = new Set<string>();
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    const id = file.slice(0, -".json".length);
+  for (const row of readLiveCoordinationRows(root)) {
+    const id = row.instance_id;
     if (id !== prefix && id.startsWith(prefix)) matches.add(id);
   }
   return matches.size === 1 ? (matches.values().next().value as string) : null;
@@ -1486,82 +1454,60 @@ async function runWatch(pollMs: number): Promise<void> {
     });
     process.exit(1);
   }
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) {
-    emit.error({ code: "no_active_dir", message: ".harnery/active/ missing" });
-    process.exit(1);
-  }
-
-  const fs = await import("node:fs");
-  const cache = new Map<string, Heartbeat>();
+  const cache = new Map<string, LiveCoordinationRow>();
 
   // Seed cache + print an initial roster line per live peer.
-  const initial = listActiveHeartbeats(activeDir);
-  process.stderr.write(`watching ${activeDir} (Ctrl-C to exit)\n`); // lint-ok-emission: banner goes to stderr, stdout is the live stream
+  const initial = listLiveGenerations(root);
+  process.stderr.write("watching authoritative V2 coordination state (Ctrl-C to exit)\n"); // lint-ok-emission: banner goes to stderr, stdout is the live stream
   for (const h of initial) {
     cache.set(h.instance_id, h);
     emitWatchLine(
-      `agent-${h.name ?? "?"} present (${formatAge(secondsSince(h.started_at))} old${h.task ? `, task: "${h.task}"` : ""})`,
+      `agent-${h.name ?? "?"} present (${formatAge(secondsSince(h.started_at ?? h.last_heartbeat))} old${h.task ? `, task: "${h.task}"` : ""})`,
     );
   }
 
-  let scheduled: NodeJS.Timeout | null = null;
   const rescan = () => {
-    if (scheduled) return;
-    scheduled = setTimeout(() => {
-      scheduled = null;
-      const current = new Map<string, Heartbeat>();
-      for (const h of listActiveHeartbeats(activeDir)) current.set(h.instance_id, h);
+    const current = new Map<string, LiveCoordinationRow>();
+    for (const h of listLiveGenerations(root)) current.set(h.instance_id, h);
 
-      // Removed agents.
-      for (const [id, old] of cache) {
-        if (!current.has(id)) {
-          emitWatchLine(`agent-${old.name ?? "?"} ended`);
-          cache.delete(id);
-        }
+    // Removed agents.
+    for (const [id, old] of cache) {
+      if (!current.has(id)) {
+        emitWatchLine(`agent-${old.name ?? "?"} ended`);
+        cache.delete(id);
       }
-      // Added or changed agents.
-      for (const [id, h] of current) {
-        const prev = cache.get(id);
-        if (!prev) {
-          emitWatchLine(
-            `agent-${h.name ?? "?"} started (${formatAge(secondsSince(h.started_at))} old${h.task ? `, task: "${h.task}"` : ""})`,
-          );
-          cache.set(id, h);
-          continue;
-        }
-        // Diff fields we care about.
-        if ((prev.task ?? "") !== (h.task ?? "")) {
-          emitWatchLine(`agent-${h.name ?? "?"} task: ${h.task ? `"${h.task}"` : "(cleared)"}`);
-        }
-        if (
-          (prev.last_tool ?? "") !== (h.last_tool ?? "") ||
-          (prev.last_tool_target ?? "") !== (h.last_tool_target ?? "")
-        ) {
-          if (h.last_tool) {
-            const target = h.last_tool_target ? ` ${truncate(h.last_tool_target, 80)}` : "";
-            emitWatchLine(`agent-${h.name ?? "?"} ${h.last_tool}${target}`);
-          }
-        }
-        // File additions/removals.
-        const prevFiles = new Set(prev.files_touched ?? []);
-        const currFiles = new Set(h.files_touched ?? []);
-        for (const f of currFiles) {
-          if (!prevFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} +claim ${f}`);
-        }
-        for (const f of prevFiles) {
-          if (!currFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} -release ${f}`);
-        }
+    }
+    // Added or changed agents.
+    for (const [id, h] of current) {
+      const prev = cache.get(id);
+      if (!prev) {
+        emitWatchLine(
+          `agent-${h.name ?? "?"} started (${formatAge(secondsSince(h.started_at ?? h.last_heartbeat))} old${h.task ? `, task: "${h.task}"` : ""})`,
+        );
         cache.set(id, h);
+        continue;
       }
-    }, pollMs);
+      // Diff fields we care about.
+      if ((prev.task ?? "") !== (h.task ?? "")) {
+        emitWatchLine(`agent-${h.name ?? "?"} task: ${h.task ? `"${h.task}"` : "(cleared)"}`);
+      }
+      // File additions/removals.
+      const prevFiles = new Set(prev.files_touched ?? []);
+      const currFiles = new Set(h.files_touched ?? []);
+      for (const f of currFiles) {
+        if (!prevFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} +claim ${f}`);
+      }
+      for (const f of prevFiles) {
+        if (!currFiles.has(f)) emitWatchLine(`agent-${h.name ?? "?"} -release ${f}`);
+      }
+      cache.set(id, h);
+    }
   };
 
-  const watcher = fs.watch(activeDir, { persistent: true }, () => rescan());
-
   await new Promise<void>((resolveP) => {
+    const timer = setInterval(rescan, Math.max(100, pollMs));
     const stop = () => {
-      watcher.close();
+      clearInterval(timer);
       resolveP();
     };
     process.on("SIGINT", stop);
@@ -1569,23 +1515,13 @@ async function runWatch(pollMs: number): Promise<void> {
   });
 }
 
-function listActiveHeartbeats(activeDir: string): Heartbeat[] {
-  const out: Heartbeat[] = [];
+function listLiveGenerations(root: string): LiveCoordinationRow[] {
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = readFileSync(resolve(activeDir, file), "utf8");
-      const parsed = JSON.parse(raw) as Heartbeat;
-      if (!parsed || typeof parsed.instance_id !== "string") continue;
-      const ts = Date.parse(parsed.last_heartbeat);
-      if (Number.isFinite(ts) && ts / 1000 >= cutoff) out.push(parsed);
-    } catch {
-      // skip
-    }
-  }
-  return out;
+  return readLiveCoordinationRows(root).filter((row) => {
+    const ts = Date.parse(row.last_heartbeat);
+    return Number.isFinite(ts) && ts / 1000 >= cutoff;
+  });
 }
 
 function secondsSince(iso: string): number {
@@ -1607,29 +1543,14 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     });
     process.exit(1);
   }
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) {
-    emit.error({ code: "no_active_dir", message: ".harnery/active/ missing" });
-    process.exit(1);
-  }
-
-  // Read all heartbeats; match by name (case-insensitive). Apply freshness filter.
-  const matches: Heartbeat[] = [];
+  // Match authority-safe V2 generations by resolved display name.
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
-  for (const file of readdirSync(activeDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = readFileSync(resolve(activeDir, file), "utf8");
-      const parsed = JSON.parse(raw) as Heartbeat;
-      if (!parsed || typeof parsed.instance_id !== "string") continue;
-      if ((parsed.name ?? "").toLowerCase() !== name.toLowerCase()) continue;
-      const ts = Date.parse(parsed.last_heartbeat);
-      if (Number.isFinite(ts) && ts / 1000 >= cutoff) matches.push(parsed);
-    } catch {
-      // skip malformed
-    }
-  }
+  const matches = readLiveCoordinationRows(root).filter((row) => {
+    if ((row.name ?? "").toLowerCase() !== name.toLowerCase()) return false;
+    const ts = Date.parse(row.last_heartbeat);
+    return Number.isFinite(ts) && ts / 1000 >= cutoff;
+  });
 
   if (matches.length === 0) {
     emit.error({
@@ -1661,7 +1582,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
   const report = null as PeerReport | null;
   const bqError = null as string | null;
 
-  const startedAtMs = Date.parse(hb.started_at);
+  const startedAtMs = Date.parse(hb.started_at ?? hb.last_heartbeat);
   const ageSecs = Number.isFinite(startedAtMs)
     ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
     : 0;
@@ -1684,12 +1605,8 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     task_state: taskStateOf(hb),
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
-    turn_summary: hb.turn_summary ?? null,
-    turn_summary_updated_at: hb.turn_summary_updated_at ?? null,
     title: report?.title ?? null,
     files_held: hb.files_touched ?? [],
-    last_tool: hb.last_tool ?? null,
-    last_tool_target: hb.last_tool_target ?? null,
     recent_prompts: report?.recent_prompts ?? [],
     recent_tools: report?.recent_tools ?? [],
     tool_counts: report?.tool_counts ?? [],
@@ -1719,10 +1636,6 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
   lines.push(
     `  lifecycle:      ${data.task_state}${data.task_state === "blocked" && data.task_state_reason ? `: ${data.task_state_reason}` : ""}`,
   );
-  if (data.last_tool) {
-    const target = data.last_tool_target ? ` ${truncate(data.last_tool_target, 80)}` : "";
-    lines.push(`  last activity:  ${data.last_tool}${target}`);
-  }
   if (data.files_held.length > 0) {
     lines.push(`  holds ${data.files_held.length} file(s):`);
     for (const f of data.files_held.slice(0, 10)) lines.push(`    ${f}`);
@@ -1900,7 +1813,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // naming window, and subagent/workflow kinds are never named — see
   // heartbeat-writer.setTask. This call is the naming call exactly when the
   // stamp appears across the mutation.
-  const priorHb = readHeartbeat(myOwner);
+  const priorHb = readCurrentCoordinationRow(myOwner);
   const normalizedTask = task.length > 0 ? task : undefined;
   const lifecycleWarning =
     priorHb && (priorHb.task_state ?? "active") !== "active" && priorHb.task !== normalizedTask
@@ -1921,7 +1834,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
 
   // The naming call: the mutation just stamped `suggested_session_name` for
   // the first time. `first_of_session: true` means exactly "this call produced
@@ -1932,19 +1845,6 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
       ? hb.suggested_session_name
       : null;
   const firstOfSession = suggestedName !== null;
-
-  emitCanonical({
-    type: "state.task_set",
-    owner: myOwner,
-    session: hb?.session_id ?? myOwner,
-    adapter: normalizeAdapter(hb?.platform),
-    data: {
-      task,
-      cleared: !task || task.length === 0,
-      first_of_session: firstOfSession,
-      suggested_session_name: suggestedName,
-    },
-  });
 
   emit.data({
     instance_id: myOwner,
@@ -1996,9 +1896,9 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     return;
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
   if (!hb) {
-    emit.error({ code: "no_heartbeat", message: noHeartbeatMessage(myOwner) });
+    emit.error({ code: "no_live_generation", message: noLiveGenerationMessage(myOwner) });
     process.exitCode = 1;
     return;
   }
@@ -2045,7 +1945,11 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
 
   let finalization: GitFinalizationResult | null = null;
   if (state === "done") {
-    const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
+    const history = readSessionWriteClaims(
+      root,
+      hb.instance_id,
+      nativeSessionIdentity(hb, myOwner),
+    );
     const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
     finalization = checkGitFinalization(root, touchedPaths, {
       claimHistoryComplete: history.complete,
@@ -2065,17 +1969,14 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
 
   const suggestedName = buildLifecycleSuggestedName(hb.name ?? "unknown", hb.task, state);
   const nameReminted = suggestedName !== null && suggestedName !== hb.suggested_session_name;
-  const emitted = emitCanonical({
-    type: "state.task_state",
+  const emitted = emitEventV2({
     owner: myOwner,
-    session: hb.session_id ?? myOwner,
+    session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
-    data: {
-      state,
-      reason: reason ?? null,
-      prior_state: priorState,
-      name_reminted: nameReminted,
-      git_finalization_checked: finalization !== null,
+    observation: {
+      event_type: "coord.lifecycle_changed",
+      new_state: state,
+      ...(reason ? { reason } : {}),
       ...(nameReminted ? { suggested_session_name: suggestedName } : {}),
     },
   });
@@ -2131,7 +2032,7 @@ function runSuggestName(
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
   const agentName = hb?.name || "unknown";
   // Description resolution: an explicit arg wins; with no arg, fall back to the
   // agent's current declared task, so a bare `suggest-name` reprints the running
@@ -2205,11 +2106,11 @@ function runStatus(opts: {
     process.exit(1);
   }
 
-  const hb = readHeartbeat(myOwner);
+  const hb = readCurrentCoordinationRow(myOwner);
   if (!hb) {
     emit.error({
-      code: "no_heartbeat",
-      message: noHeartbeatMessage(myOwner),
+      code: "no_live_generation",
+      message: noLiveGenerationMessage(myOwner),
     });
     process.exit(1);
   }
@@ -2224,7 +2125,11 @@ function runStatus(opts: {
 
   let finalization: GitFinalizationResult | null = null;
   if (opts.endTurn) {
-    const history = readSessionWriteClaims(root, hb.instance_id, hb.session_id ?? myOwner);
+    const history = readSessionWriteClaims(
+      root,
+      hb.instance_id,
+      nativeSessionIdentity(hb, myOwner),
+    );
     const touchedPaths = [...new Set([...(hb.files_touched ?? []), ...history.paths])];
     finalization = checkGitFinalization(root, touchedPaths, {
       claimHistoryComplete: history.complete,
@@ -2239,16 +2144,13 @@ function runStatus(opts: {
     }
   }
 
-  emitCanonical({
-    type: "state.status_checked",
+  emitEventV2({
     owner: myOwner,
-    session: hb.session_id ?? myOwner,
+    session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
-    data: {
-      format: opts.json ? "json" : "box",
-      git_finalization_checked: opts.endTurn === true,
-      agent_count: 0, // computed below, not yet available here; Phase 5 verdict reads owner-scope only
-      included_self: true,
+    observation: {
+      event_type: "coord.status_observed",
+      status: opts.endTurn ? "end_turn_checked" : opts.json ? "json_checked" : "box_checked",
     },
   });
 
@@ -2290,7 +2192,7 @@ function runStatus(opts: {
     }
   }
 
-  const startedAtMs = Date.parse(hb.started_at);
+  const startedAtMs = Date.parse(hb.started_at ?? hb.last_heartbeat);
   const ageSecs = Number.isFinite(startedAtMs)
     ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
     : 0;
@@ -2315,7 +2217,7 @@ function runStatus(opts: {
   const remoteMachines = readRemoteMachines(root);
   const peersStr = formatPeers(livePeers, 4, peersStale, remoteMachines);
 
-  const ctxUsage = readContextUsage(hb.session_id, hb.platform);
+  const ctxUsage = readContextUsage(hb.native_session_id ?? hb.session_id, hb.platform);
   let ctxStr: string;
   if (!ctxUsage) {
     ctxStr = "unavailable";
@@ -2398,10 +2300,7 @@ function runStatus(opts: {
     ["peers", peersStr],
     ["time", timeStr],
   ];
-  // task + turn_summary get full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH.
-  if (hb.turn_summary && hb.turn_summary.length > 0) {
-    rows.splice(1, 0, ["last turn", hb.turn_summary]);
-  }
+  // Task gets full text; formatBox word-wraps to MAX_BOX_CONTENT_WIDTH.
   if (hb.task && hb.task.length > 0) {
     rows.splice(1, 0, ["task", hb.task]);
   }
@@ -2524,32 +2423,10 @@ export function collectStatusPeerHealth(
   nowMs = Date.now(),
 ): { livePeers: StatusPeerHeartbeat[]; stale: number } {
   let rows: StatusPeerHeartbeat[] = [];
-  let useHeartbeatCache = true;
   try {
-    const control = readEventV2ControlState(root);
-    if (control.state === "candidate" || control.state === "active") {
-      useHeartbeatCache = false;
-      rows = readLiveCoordinationRows(root);
-    }
+    rows = readLiveCoordinationRows(root);
   } catch {
-    // V2 authority failures must not resurrect disposable legacy cache rows.
-    useHeartbeatCache = false;
-  }
-  if (useHeartbeatCache) {
-    const activeDir = resolve(root, ".harnery", "active");
-    if (existsSync(activeDir)) {
-      for (const file of readdirSync(activeDir)) {
-        if (!file.endsWith(".json")) continue;
-        try {
-          const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
-          if (parsed && typeof parsed.instance_id === "string") {
-            rows.push(parsed as StatusPeerHeartbeat);
-          }
-        } catch {
-          // Malformed cache rows remain invisible to status.
-        }
-      }
-    }
+    // V2 authority failures must not resurrect disposable cache rows.
   }
 
   const cutoffMs = nowMs - freshnessCutoffSecs() * 1000;
@@ -2813,13 +2690,13 @@ interface HealEvent {
   platform: string;
 }
 
-/** Version-neutral diagnostic event shape projected from the active canonical ledger. */
+/** Bounded diagnostic event shape projected from the canonical V2 ledger. */
 export interface CanonicalEvent {
-  event_type: string;
+  event_type: EventTypeV2;
   ts: string;
   instance_id?: string;
   adapter?: string;
-  data?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
 }
 
 export interface AgentDiagnosticEventRead {
@@ -2858,7 +2735,7 @@ export function readAgentDiagnosticEventsInWindow(
         event_type: event.event_type,
         ts: event.time.recorded_at,
         instance_id: event.scope.instance_id,
-        data: event.payload as Record<string, unknown>,
+        payload: event.payload as Record<string, unknown>,
       });
     }
     return {
@@ -2884,19 +2761,21 @@ function adapterToPlatform(adapter: string | undefined): string {
   if (adapter === "claude-code") return "claude-code";
   if (adapter === "cursor") return "cursor";
   if (adapter === "codex") return "codex";
-  return "claude-code";
+  return "unknown";
 }
 
 /** Project a canonical health.* event into the HealEvent shape the aggregators
  * already consume. Returns null for non-heal events. instance_id → display name
  * via `nameById` (full-UUID keyed). */
 function canonicalToHealEvent(ev: CanonicalEvent, nameById: Map<string, string>): HealEvent | null {
-  if (ev.event_type !== "health.pidmap_heal" && ev.event_type !== "health.heartbeat_heal") {
+  if (ev.event_type !== "health.observed") {
     return null;
   }
-  const kind = ev.event_type === "health.pidmap_heal" ? "pidmap" : "heartbeat";
-  const data = ev.data ?? {};
-  const reason: "missing" | "stale" = data.reason === "stale" ? "stale" : "missing";
+  const data = ev.payload ?? {};
+  const subsystem = typeof data.subsystem === "string" ? data.subsystem : "";
+  if (subsystem !== "pidmap" && subsystem !== "heartbeat") return null;
+  const kind = subsystem;
+  const reason: "missing" | "stale" = data.condition === "stale" ? "stale" : "missing";
   const instanceId = ev.instance_id ?? "";
   const name = nameById.get(instanceId);
   const agent = name ? `agent-${name}` : `agent-${instanceId.slice(0, 8) || "unknown"}`;
@@ -3520,8 +3399,12 @@ export function traceInstanceIdsForEventSource(
 
 /** Map a canonical event to a concise trace line, or null to drop it. */
 export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | null {
-  const d = (ev.data ?? {}) as Record<string, unknown>;
+  const d = (ev.payload ?? {}) as Record<string, unknown>;
   const s = (k: string): string => (typeof d[k] === "string" ? (d[k] as string) : "");
+  const object = (value: unknown): Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   const clip = (v: string, n = 70): string => (v.length <= n ? v : `${v.slice(0, n - 1)}…`);
   const recovery =
     typeof d.recovery === "object" && d.recovery !== null
@@ -3531,29 +3414,26 @@ export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | n
   const recoveryDetail = recoveryReason ? ` · RECOVERY reason=${recoveryReason}` : "";
   let detail = "";
   switch (ev.event_type) {
-    case "session.start":
-      detail = `${s("source") || "startup"}${s("model") ? ` · model=${s("model")}` : ""}${s("name") ? ` · ${s("name")}` : ""}`;
-      break;
     case "session.started":
       detail = "generation started";
       break;
+    case "session.resumed":
+      detail = "generation resumed";
+      break;
     case "session.ended":
-      detail = `outcome=${s("outcome") || "unknown"}`;
+      detail = `outcome=${s("outcome") || "unknown"}${s("reason") ? ` · reason=${s("reason")}` : ""}`;
       break;
-    case "session.end":
-      detail = `clean_exit=${d.clean_exit ?? "?"}`;
+    case "session.termination_observed":
+      detail = `provisional ${s("observation") || "termination"}${s("reason") ? ` · reason=${s("reason")}` : ""}`;
       break;
-    case "subagent.start":
-      detail = `${s("agent_type") || "subagent"}${s("name") ? ` · ${s("name")}` : ""}`;
+    case "agent.delegated":
+      detail = `delegated child=${s("child_generation_id") || "unknown"}`;
       break;
-    case "subagent.stop":
-      detail = `clean_exit=${d.clean_exit ?? "?"}`;
+    case "agent.started":
+      detail = `child started=${s("child_generation_id") || "unknown"}`;
       break;
-    case "user_prompt.submit":
-      detail = clip(s("prompt_text") || s("prompt"));
-      break;
-    case "turn.stop":
-      detail = `status_box=${d.status_box_present ?? "?"}${s("turn_summary") ? ` · ${clip(s("turn_summary"), 50)}` : ""}`;
+    case "agent.completed":
+      detail = `child completed=${s("child_generation_id") || "unknown"} · outcome=${s("outcome") || "unknown"}`;
       break;
     case "turn.started":
       detail = `intent=${s("intent_kind") || "unknown"}`;
@@ -3561,28 +3441,42 @@ export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | n
     case "turn.completed":
       detail = `outcome=${s("outcome") || "unknown"}`;
       break;
-    case "tool.pre_use":
-      detail = `${s("tool_name")}${s("tool_target") || s("intent") ? ` · ${clip(s("tool_target") || s("intent"), 60)}` : ""}`;
+    case "tool.requested": {
+      const tool = object(d.tool);
+      detail = `${typeof tool.name === "string" ? tool.name : "tool"} requested (content omitted)${recoveryDetail}`;
       break;
-    case "tool.requested":
-      detail = `tool requested (content omitted)${recoveryDetail}`;
+    }
+    case "tool.completed": {
+      const tool = object(d.tool);
+      detail = `${typeof tool.name === "string" ? tool.name : "tool"} · outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
       break;
-    case "tool.completed":
-      detail = `outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
+    }
+    case "command.started":
+      if (!allTools) return null;
+      detail = "command started (content omitted)";
       break;
     case "command.completed":
       if (!allTools && !recoveryReason) return null;
       detail = `outcome=${s("outcome") || "unknown"}${recoveryDetail}`;
       break;
-    case "state.task_set":
-      detail = d.cleared ? "(cleared)" : clip(s("task"));
-      break;
-    case "state.task_state":
-      detail = `${s("prior_state") || "active"} → ${s("state") || "active"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
-      break;
     case "coord.task_changed":
     case "coord.lifecycle_changed":
+    case "coord.presence_changed":
       detail = `${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}${s("reason") ? ` · ${clip(s("reason"), 55)}` : ""}`;
+      break;
+    case "coord.status_observed":
+      detail = s("status") || "status observed";
+      break;
+    case "coord.claim_changed": {
+      const target = object(d.target);
+      detail = `${s("operation") || "changed"}${typeof target.display === "string" ? ` · ${clip(target.display)}` : ""}`;
+      break;
+    }
+    case "coord.message_observed":
+      detail = `${s("direction") || "observed"} · peer=${s("peer_instance_id") || "unknown"}`;
+      break;
+    case "coord.identity_attested":
+      detail = `${s("identity_id") || "identity"} · method=${s("method") || "unknown"}`;
       break;
     case "interaction.wait_started":
       detail = s("kind") || "wait started";
@@ -3590,47 +3484,30 @@ export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | n
     case "interaction.wait_ended":
       detail = `outcome=${s("outcome") || "unknown"}`;
       break;
-    case "artifact.observed":
-      detail = `operation=${s("operation") || "observed"}`;
+    case "artifact.observed": {
+      const artifact = object(d.artifact);
+      detail = `operation=${s("operation") || "observed"}${typeof artifact.kind === "string" ? ` · kind=${artifact.kind}` : ""}`;
       break;
+    }
     case "progress.observed":
       detail = s("kind") || "progress";
       break;
     case "health.observed":
       detail = `${s("subsystem") || "unknown"} · ${s("severity") || "unknown"} · ${s("condition") || "unknown"}`;
       break;
-    case "interaction.input_requested":
-      detail = s("request_kind") || s("tool_name") || "operator input requested";
+    case "council.state_changed":
+      detail = `${s("council_id") || "council"} · ${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}`;
       break;
-    case "state.status_checked":
-      detail = "status box rendered";
+    case "decision.state_changed":
+      detail = `${s("decision_id") || "decision"} · ${s("prior_state") || "unknown"} → ${s("new_state") || "unknown"}`;
       break;
-    case "identity.assumed":
-      detail = `${s("previous_name") || "unknown"} → ${s("name") || "unknown"}${s("agent_id") ? ` · persona=${s("agent_id").slice(0, 8)}…` : ""}`;
+    case "lifecycle.recovered":
+      detail = `recovered=${s("recovery_kind") || "unknown"}`;
       break;
-    case "claim.acquire":
-    case "claim.release":
-    case "claim.conflict":
-      detail = clip(s("path"));
-      break;
-    case "health.heartbeat_heal":
-    case "health.pidmap_heal":
-      detail = `reason=${s("reason")}`;
-      break;
-    case "health.heartbeat_swept":
-      detail = `reason=${s("reason")}${d.age_secs !== undefined ? ` · age=${d.age_secs}s` : ""}`;
+    case "lifecycle.sweep_observed":
+      detail = `${s("observation") || "sweep"}${typeof d.age_ms === "number" ? ` · age=${Math.round(d.age_ms / 1000)}s` : ""}`;
       break;
     default:
-      // Noise unless --all-tools: per-line command.* + tool.post_use.
-      if (!allTools) return null;
-      if (
-        ev.event_type === "tool.post_use" ||
-        ev.event_type === "tool.post_use_failure" ||
-        ev.event_type.startsWith("command.")
-      ) {
-        detail = s("tool_name") || "";
-        break;
-      }
       return null;
   }
   return { ts: ev.ts, event_type: ev.event_type, detail };
@@ -3911,7 +3788,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const councilsDir = resolve(root, ".harnery/councils");
 
   // Coordination telemetry reads from the canonical V2 ledger.
-  // Heals come from health.*; council window-activity from council.*. The
+  // Heals come from health.observed; council activity from council.state_changed.
   const heal: HealEvent[] = [];
   let councilAdvanced = 0;
   let councilClosed = 0;
@@ -3927,19 +3804,17 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       heal.push(healEv);
       continue;
     }
+    if (ev.event_type === "council.state_changed") {
+      const state = String(ev.payload?.new_state ?? "");
+      if (state === "round_open") councilAdvanced++;
+      if (state === "closed") councilClosed++;
+      if (state === "archived") councilArchived++;
+      continue;
+    }
     switch (ev.event_type) {
-      case "council.round_open":
-        councilAdvanced++;
-        break;
-      case "council.close":
-        councilClosed++;
-        break;
-      case "council.archive":
-        councilArchived++;
-        break;
-      case "health.heartbeat_swept": {
+      case "lifecycle.sweep_observed": {
         sweptTotal++;
-        const reason = String((ev.data as { reason?: unknown })?.reason ?? "unknown");
+        const reason = String(ev.payload?.observation ?? "unknown");
         sweptByReason[reason] = (sweptByReason[reason] ?? 0) + 1;
         break;
       }
@@ -4670,7 +4545,7 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
     });
     process.exit(1);
   }
-  const myHb = readHeartbeat(myOwner);
+  const myHb = readCurrentCoordinationRow(myOwner);
   const fromName = myHb?.name ?? "anonymous";
   const body = `from agent-${fromName}: ${message.trim()}`;
   const doc = appendEntry(peerOwner, "handoff", body);
@@ -4678,15 +4553,15 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
   // Canonical delivery record: sender is the envelope owner, recipient rides
   // in data, so read-only observers can render the communication without
   // joining journal files.
-  emitCanonical({
-    type: "state.ping",
+  emitEventV2({
     owner: myOwner,
-    session: myHb?.session_id ?? myOwner,
+    session: nativeSessionIdentity(myHb, myOwner),
     adapter: normalizeAdapter(myHb?.platform),
-    data: {
-      peer_instance_id: peerOwner,
-      peer_name: name,
-      body_summary: truncate(message.trim(), 200),
+    observation: {
+      event_type: "coord.message_observed",
+      direction: "sent",
+      subject: peerOwner,
+      body: message.trim(),
     },
   });
 
@@ -4747,7 +4622,7 @@ async function runWait(
 
   let lastProgressMs = 0;
   while (true) {
-    const hb = readHeartbeat(peerOwner);
+    const hb = readCurrentCoordinationRow(peerOwner);
     const now = Date.now();
     const elapsedMs = now - startMs;
 
@@ -4787,9 +4662,8 @@ async function runWait(
     const progressGapMs = Math.max(pollMs, 30_000);
     if (!opts.quiet && now - lastProgressMs >= progressGapMs) {
       lastProgressMs = now;
-      const lastTool = hb.last_tool ? `, last=${hb.last_tool}` : "";
       const elapsedStr = formatAge(Math.floor(elapsedMs / 1000));
-      const progress = `  [${elapsedStr}] ${stillBlocking.length} file(s) blocking${lastTool}\n`;
+      const progress = `  [${elapsedStr}] ${stillBlocking.length} file(s) blocking\n`;
       process.stderr.write(progress); // lint-ok-emission: per-poll progress heartbeat to stderr
     }
 
@@ -4842,10 +4716,10 @@ function runHeal(opts: {
     emit.error({ code: "missing_owner", message: "--owner is required" });
     process.exit(1);
   }
-  if (kind !== "pidmap" && kind !== "heartbeat" && kind !== "kill") {
+  if (kind !== "pidmap" && kind !== "cache") {
     emit.error({
       code: "bad_kind",
-      message: "--kind must be one of: pidmap, heartbeat, kill",
+      message: "--kind must be one of: pidmap, cache",
     });
     process.exit(1);
   }
@@ -4871,10 +4745,9 @@ function runHeal(opts: {
     process.exit(1);
   }
 
-  const action =
-    kind === "pidmap" ? "heal-pidmap" : kind === "heartbeat" ? "heal-heartbeat" : "kill-heartbeat";
+  const action = kind === "pidmap" ? "heal-pidmap" : "repair-coordination-cache";
 
-  // Refuse to mint a heartbeat at a TRUNCATED owner id.
+  // Refuse to materialize a V2 cache at a truncated owner id.
   //
   // Heartbeats are keyed by the whole instance_id, so healing at an
   // abbreviated id writes `.harnery/active/<prefix>.json` while every reader
@@ -4894,19 +4767,18 @@ function runHeal(opts: {
   // whose instance_id this id is a prefix of settles it just as well, and is
   // present in precisely the case that matters (the session the reader was
   // trying to heal is registered, just not under the abbreviated name).
-  if (kind === "heartbeat" && !readHeartbeat(owner)) {
+  if (kind === "cache" && !readHeartbeatCache(root, owner)) {
     const canonical =
       opts.sessionId && opts.sessionId.trim() !== owner && opts.sessionId.trim().startsWith(owner)
         ? opts.sessionId.trim()
         : liveIdWithPrefix(root, owner);
     if (canonical) {
-      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live heartbeat";
+      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live V2 generation";
       emit.error({
         code: "truncated_owner",
         message:
-          `--owner ${owner} is a prefix of ${canonical} (${source}), and no heartbeat exists ` +
-          `at .harnery/active/${owner}.json. Healing here would create a heartbeat no reader ` +
-          `resolves. Re-run with --owner ${canonical}.`,
+          `--owner ${owner} is a prefix of ${canonical} (${source}). Cache repair requires ` +
+          `the canonical instance id; re-run with --owner ${canonical}.`,
       });
       process.exit(1);
     }
@@ -4914,15 +4786,13 @@ function runHeal(opts: {
 
   // Build positional args. agent-coord's arg layout:
   //   heal-pidmap <instance_id> [<pid>]
-  //   heal-heartbeat <instance_id> [<session_id>]
-  //   kill-heartbeat <instance_id>
+  //   repair-coordination-cache <instance_id> [<session_id>]
   const helperArgs: string[] = [action, owner];
   if (kind === "pidmap" && opts.pid) helperArgs.push(opts.pid);
-  if (kind === "heartbeat" && opts.sessionId) helperArgs.push(opts.sessionId);
-  if (kind === "heartbeat" && opts.adapter) helperArgs.push(`--adapter=${opts.adapter}`);
+  if (kind === "cache" && opts.sessionId) helperArgs.push(opts.sessionId);
+  if (kind === "cache" && opts.adapter) helperArgs.push(`--adapter=${opts.adapter}`);
 
-  // heal-pidmap / heal-heartbeat / kill-heartbeat are handled by the
-  // bundled agent-coord binary.
+  // Both recovery actions are handled by the bundled agent-coord binary.
   const helper = agentCoordOrExit(root);
   const proc = spawnSync(helper, helperArgs, {
     encoding: "utf8",
@@ -4937,27 +4807,22 @@ function runHeal(opts: {
     process.exit(1);
   }
 
-  // Re-read the heartbeat to surface post-action state (or null if killed).
+  // Read the derived cache to surface post-action state.
   let after: Heartbeat | null = null;
   try {
-    after = readHeartbeat(owner);
+    after = readHeartbeatCache(root, owner);
   } catch {
     after = null;
   }
 
-  // Outcome semantics differ per kind. kill-heartbeat targets the heartbeat
-  // file directly; heal-heartbeat upserts it; heal-pidmap touches a pid-map
-  // row whose existence is independent of the heartbeat. Reporting on
-  // "heartbeat present after" for the pidmap path was misleading: it's
-  // unrelated to whether the heal succeeded.
   const outcome =
     kind === "pidmap"
       ? proc.status === 0
         ? "ok"
         : "failed"
       : after
-        ? "heartbeat_present"
-        : "heartbeat_absent";
+        ? "cache_present"
+        : "cache_absent";
 
   emit.data({
     rows: [
@@ -4980,36 +4845,40 @@ function runHeal(opts: {
     if (kind === "pidmap") {
       emit.text(`agent-coord ${action} ok\n`);
     } else {
-      emit.text(`agent-coord ${action} ok: heartbeat ${after ? "present" : "absent"} after\n`);
+      emit.text(`agent-coord ${action} ok: cache ${after ? "present" : "absent"} after\n`);
     }
   }
 
-  // Canonical health.* emission is owned by the writer (heartbeat-writer.ts
-  // healPidmap/healHeartbeat), so it fires inside the agent-coord subprocess
+  // Canonical health.* emission is owned by the cache writer, so it fires
+  // inside the agent-coord subprocess
   // above on actual writes only: write-only telemetry, no double-emit, no
   // event when an already-correct heal no-ops. (Previously emitted here
   // unconditionally on every `harn agents heal`, which over-counted no-op heals.)
 }
 
 /**
- * Shared emitter for council.* events. Looks up the running agent's
- * heartbeat so each event carries a real instance_id / session_id; falls
- * through silently if no session (CI / direct invocation).
+ * Emit one V2 council audit transition keyed to the exact durable manifest.
+ * Falls through silently when no live session can attest the observation.
  */
 function emitCouncilStateEvent(
-  type: string,
   manifest: CouncilManifest,
-  extraData: Record<string, unknown>,
+  newState: string,
+  priorState?: string,
 ): void {
   const myOwner = resolveOwner();
   if (!myOwner) return;
-  const hb = readHeartbeat(myOwner);
-  emitCanonical({
-    type,
+  const hb = readCurrentCoordinationRow(myOwner);
+  emitEventV2({
     owner: myOwner,
-    session: hb?.session_id ?? myOwner,
+    session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb?.platform),
-    data: { council_id: manifest.council_id, ...extraData },
+    observation: {
+      event_type: "council.state_changed",
+      council_id: manifest.council_id,
+      ...(priorState ? { prior_state: priorState } : {}),
+      new_state: newState,
+      record: manifest,
+    },
   });
 }
 
@@ -5066,7 +4935,7 @@ function runCouncilCreate(
   if (opts.createdBy?.trim()) {
     createdBy = normalizeAgentName(opts.createdBy);
   } else if (myOwner) {
-    const myHb = readHeartbeat(myOwner);
+    const myHb = readCurrentCoordinationRow(myOwner);
     if (myHb?.name) {
       createdBy = normalizeAgentName(myHb.name);
     }
@@ -5127,17 +4996,16 @@ function runCouncilCreate(
   writeManifest(manifest);
 
   if (myOwner) {
-    const myHbForEmit = readHeartbeat(myOwner);
-    emitCanonical({
-      type: "council.open",
+    const myHbForEmit = readCurrentCoordinationRow(myOwner);
+    emitEventV2({
       owner: myOwner,
-      session: myHbForEmit?.session_id ?? myOwner,
+      session: nativeSessionIdentity(myHbForEmit, myOwner),
       adapter: normalizeAdapter(myHbForEmit?.platform),
-      data: {
-        council_id: councilId,
-        topic: trimmedObjective,
-        members,
-        target_doc: manifest.target_doc ?? undefined,
+      observation: {
+        event_type: "council.state_changed",
+        council_id: manifest.council_id,
+        new_state: "active",
+        record: manifest,
       },
     });
   }
@@ -5150,7 +5018,7 @@ function runCouncilCreate(
   const skippedMembers: string[] = [];
   for (const memberName of members) {
     const bareName = memberName.replace(/^agent-/, "");
-    if (myOwner && readHeartbeat(myOwner)?.name === bareName) {
+    if (myOwner && readCurrentCoordinationRow(myOwner)?.name === bareName) {
       // Convener is themselves a member; skip the self-ping
       continue;
     }
@@ -5215,7 +5083,7 @@ function runCouncilList(opts: { status?: string; mine?: boolean; json?: boolean 
   if (opts.mine) {
     const myOwner = resolveOwner();
     if (myOwner) {
-      const myHb = readHeartbeat(myOwner);
+      const myHb = readCurrentCoordinationRow(myOwner);
       if (myHb?.name) myName = normalizeAgentName(myHb.name);
     }
     if (!myName) {
@@ -5392,7 +5260,7 @@ function runCouncilClose(id: string, opts: { json?: boolean }): void {
     closed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
   writeManifest(next);
-  emitCouncilStateEvent("council.close", next, { closed_at: next.closed_at! });
+  emitCouncilStateEvent(next, "closed", manifest.status);
 
   // Build the transcript: every round's contributions in order.
   const transcript = buildTranscript(next);
@@ -5437,7 +5305,7 @@ function runCouncilArchive(id: string, opts: { json?: boolean }): void {
   // updated status. moveToArchive then physically relocates the artifacts.
   writeManifest(next);
   moveToArchive(next.council_id);
-  emitCouncilStateEvent("council.archive", next, {});
+  emitCouncilStateEvent(next, "archived", manifest.status);
 
   emit.data({
     rows: [
@@ -5496,7 +5364,7 @@ function runCouncilUnarchive(id: string, opts: { json?: boolean }): void {
   // (allows re-running for testing).
   moveFromArchive(next.council_id);
   writeManifest(next);
-  emitCouncilStateEvent("council.unarchive", next, { restored_status: restoredStatus });
+  emitCouncilStateEvent(next, restoredStatus, "archived");
 
   emit.data({
     rows: [
@@ -5558,7 +5426,7 @@ function runCouncilDelete(id: string, opts: { yes?: boolean; json?: boolean }): 
 
   const removed = deleteArchivedCouncil(manifest.council_id);
   if (removed) {
-    emitCouncilStateEvent("council.delete", manifest, {});
+    emitCouncilStateEvent(manifest, "deleted", "archived");
   }
 
   emit.data({
@@ -5748,7 +5616,7 @@ function runCouncilContribute(
     try {
       const myOwner = resolveOwner();
       if (myOwner) {
-        const myHb = readHeartbeat(myOwner);
+        const myHb = readCurrentCoordinationRow(myOwner);
         if (myHb?.name) actualName = normalizeAgentName(myHb.name);
       }
     } catch {
@@ -5764,7 +5632,7 @@ function runCouncilContribute(
       });
       process.exit(1);
     }
-    const myHb = readHeartbeat(myOwner);
+    const myHb = readCurrentCoordinationRow(myOwner);
     if (!myHb?.name) {
       emit.error({
         code: "no_self_name",
@@ -5817,11 +5685,7 @@ function runCouncilContribute(
   }
 
   const path = writeContribution(manifest.council_id, manifest.current_round, myName, body);
-  emitCouncilStateEvent("council.contribution", manifest, {
-    round_no: manifest.current_round,
-    member: myName,
-    body_summary: body.length > 1000 ? `${body.slice(0, 997)}...` : body,
-  });
+  emitCouncilStateEvent(manifest, "contribution_recorded", manifest.round_status);
 
   // Update manifest: if all members have now contributed, flip round_status.
   const contributorsNow = contributorsInRound(manifest.council_id, manifest.current_round);
@@ -5831,14 +5695,10 @@ function runCouncilContribute(
   if (allIn) {
     nextManifest = { ...manifest, round_status: "collected" };
     writeManifest(nextManifest);
-    emitCouncilStateEvent("council.round_close", nextManifest, {
-      round_no: nextManifest.current_round,
-    });
+    emitCouncilStateEvent(nextManifest, "round_closed", manifest.round_status);
     if (manifest.auto_advance) {
       nextManifest = advanceCouncil(nextManifest, /*force=*/ false);
-      emitCouncilStateEvent("council.round_open", nextManifest, {
-        round_no: nextManifest.current_round,
-      });
+      emitCouncilStateEvent(nextManifest, "round_open", "round_closed");
       autoAdvanced = true;
     }
   }
@@ -5929,7 +5789,7 @@ function runCouncilPrompt(
     try {
       const myOwner = resolveOwner();
       if (myOwner) {
-        const myHb = readHeartbeat(myOwner);
+        const myHb = readCurrentCoordinationRow(myOwner);
         if (myHb?.name) actualName = normalizeAgentName(myHb.name);
       }
     } catch {
@@ -5945,7 +5805,7 @@ function runCouncilPrompt(
       });
       process.exit(1);
     }
-    const myHb = readHeartbeat(myOwner);
+    const myHb = readCurrentCoordinationRow(myOwner);
     if (!myHb?.name) {
       emit.error({
         code: "no_self_name",
@@ -6110,12 +5970,8 @@ function runCouncilAdvance(id: string, opts: { force?: boolean; json?: boolean }
   }
 
   const next = advanceCouncil(manifest, !!opts.force);
-  emitCouncilStateEvent("council.round_close", manifest, {
-    round_no: manifest.current_round,
-  });
-  emitCouncilStateEvent("council.round_open", next, {
-    round_no: next.current_round,
-  });
+  emitCouncilStateEvent(manifest, "round_closed", manifest.round_status);
+  emitCouncilStateEvent(next, "round_open", "round_closed");
 
   emit.data({
     rows: [
@@ -6161,7 +6017,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
   // (Convener already knows; we skip pinging them if they convened it from
   // their own session.)
   const myOwner = resolveOwner();
-  const myName = myOwner ? normalizeAgentName(readHeartbeat(myOwner)?.name ?? "") : "";
+  const myName = myOwner ? normalizeAgentName(readCurrentCoordinationRow(myOwner)?.name ?? "") : "";
   for (const memberName of next.members) {
     if (memberName === myName) continue;
     const bareName = memberName.replace(/^agent-/, "");
@@ -6185,7 +6041,7 @@ function advanceCouncil(manifest: CouncilManifest, force: boolean): CouncilManif
 // Hard cap on box width. Values longer than the per-row budget word-wrap to
 // continuation lines (blank key column, value resumes indented). Picked to
 // stay readable in narrow terminals + chat clients while giving long
-// turn_summary / task values room to breathe.
+// Task values need room to breathe.
 const MAX_BOX_CONTENT_WIDTH = 100;
 
 function formatBox(title: string, rows: Array<[string, string]>): string {

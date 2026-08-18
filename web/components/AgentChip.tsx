@@ -1,28 +1,15 @@
 "use client";
 
-import { AgentStateBadges } from "@/components/AgentStateBadges";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Tooltip } from "@/components/ui/tooltip";
-import type { AgentSummary } from "@/lib/agent-summary";
-import { adapterLabel } from "@/lib/adapter";
 import {
   Activity,
   Check,
+  CircleStop,
   Copy,
   Cpu,
   ExternalLink,
   FileWarning,
   HeartCrack,
   History,
-  Skull,
-  Wrench,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
@@ -36,6 +23,18 @@ import {
   useTransition,
 } from "react";
 import { createPortal } from "react-dom";
+import { AgentStateBadges } from "@/components/AgentStateBadges";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tooltip } from "@/components/ui/tooltip";
+import { adapterLabel } from "@/lib/adapter";
+import type { AgentSummary } from "@/lib/agent-summary";
 
 /**
  * Per-page name → AgentSummary map. Server components compute the map via
@@ -98,13 +97,13 @@ export function AgentChip({
     null,
   );
 
-  // Kill-dialog state lives at the AgentChip level, NOT inside the hover
+  // End-session dialog state lives at the AgentChip level, NOT inside the hover
   // popup body, so the modal survives the hover popup auto-closing on
   // pointer-leave. Hosting it here keeps the Dialog mounted independently of
   // the AgentActions panel.
-  const [killOpen, setKillOpen] = useState(false);
-  const [killPending, startKillTransition] = useTransition();
-  const [killError, setKillError] = useState<string | null>(null);
+  const [endOpen, setEndOpen] = useState(false);
+  const [endPending, startEndTransition] = useTransition();
+  const [endError, setEndError] = useState<string | null>(null);
 
   const cancelTimers = useCallback(() => {
     if (openTimer.current) {
@@ -176,26 +175,26 @@ export function AgentChip({
     return <span className={labelCls}>{display}</span>;
   }
 
-  const confirmKill = () => {
+  const confirmEnd = () => {
     const instanceId = summary.instance_id;
     if (!instanceId) return;
-    setKillError(null);
-    startKillTransition(async () => {
+    setEndError(null);
+    startEndTransition(async () => {
       try {
-        const res = await fetch(`/api/agents/${encodeURIComponent(instanceId)}/heal`, {
+        const res = await fetch("/api/actions/end-session", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "kill" }),
+          body: JSON.stringify({ instance_id: instanceId }),
         });
         const data = (await res.json()) as { ok: true; action: string } | { error: string };
         if (!res.ok || !("ok" in data)) {
-          setKillError("error" in data ? data.error : `HTTP ${res.status}`);
+          setEndError("error" in data ? data.error : `HTTP ${res.status}`);
           return;
         }
-        setKillOpen(false);
+        setEndOpen(false);
         router.refresh();
       } catch (err) {
-        setKillError(err instanceof Error ? err.message : String(err));
+        setEndError(err instanceof Error ? err.message : String(err));
       }
     });
   };
@@ -242,42 +241,41 @@ export function AgentChip({
           >
             <AgentCardBody
               summary={summary}
-              onRequestKill={() => {
-                setKillError(null);
-                setKillOpen(true);
+              onRequestEnd={() => {
+                setEndError(null);
+                setEndOpen(true);
               }}
             />
           </div>,
           document.body,
         )}
       <Dialog
-        open={killOpen}
+        open={endOpen}
         onOpenChange={(next) => {
-          if (!killPending) setKillOpen(next);
+          if (!endPending) setEndOpen(next);
         }}
       >
         <DialogHeader>
-          <DialogTitle>Kill this agent&apos;s heartbeat?</DialogTitle>
+          <DialogTitle>End this agent&apos;s session?</DialogTitle>
           <DialogDescription>
             <span className="block mb-2">
               Target:{" "}
               <span className="font-mono font-semibold text-foreground">agent-{summary.name}</span>
             </span>
             <span className="block">
-              Deletes the heartbeat file. The agent disappears from the active list and the coord
-              layer treats it as dead. The agent&apos;s process is not signalled; it&apos;ll
-              re-register on its next hook call. Use when an agent stopped cleanly but didn&apos;t
-              clear its file, OR when you want to revoke all of its claims at once.
+              Records or queues a canonical V2 session-ended event after open turns and tool spans
+              close. It does not kill the agent process or manufacture a terminal event from cache
+              state.
             </span>
           </DialogDescription>
         </DialogHeader>
-        {killError && <p className="mt-3 text-xs text-red-400 font-mono">✗ {killError}</p>}
+        {endError && <p className="mt-3 text-xs text-red-400 font-mono">✗ {endError}</p>}
         <DialogFooter>
-          <Button variant="outline" onClick={() => setKillOpen(false)} disabled={killPending}>
+          <Button variant="outline" onClick={() => setEndOpen(false)} disabled={endPending}>
             Cancel
           </Button>
-          <Button variant="destructive" onClick={confirmKill} disabled={killPending}>
-            {killPending ? "Killing…" : "Kill heartbeat"}
+          <Button variant="destructive" onClick={confirmEnd} disabled={endPending}>
+            {endPending ? "Ending…" : "End session"}
           </Button>
         </DialogFooter>
       </Dialog>
@@ -287,10 +285,10 @@ export function AgentChip({
 
 function AgentCardBody({
   summary,
-  onRequestKill,
+  onRequestEnd,
 }: {
   summary: AgentSummary;
-  onRequestKill: () => void;
+  onRequestEnd: () => void;
 }) {
   const isActive = summary.state === "active";
   return (
@@ -400,22 +398,8 @@ function AgentCardBody({
         </div>
       )}
 
-      {isActive && (summary.last_tool || (summary.files_touched?.length ?? 0) > 0) && (
+      {isActive && (summary.files_touched?.length ?? 0) > 0 && (
         <div className="border-t border-border/60 pt-2 space-y-1 text-muted-foreground">
-          {summary.last_tool && (
-            <div className="flex items-center gap-1.5">
-              <Wrench className="size-3 shrink-0" />
-              <span>
-                last tool: <span className="font-mono">{summary.last_tool}</span>
-                {summary.last_tool_target ? (
-                  <span className="text-muted-foreground/70">
-                    {" "}
-                    ({truncate(summary.last_tool_target, 60)})
-                  </span>
-                ) : null}
-              </span>
-            </div>
-          )}
           {summary.files_touched && summary.files_touched.length > 0 && (
             <div className="flex items-start gap-1.5">
               <FileWarning className="size-3 shrink-0 mt-0.5 text-amber-400" />
@@ -451,7 +435,7 @@ function AgentCardBody({
       )}
 
       <div className="border-t border-border/60 pt-2">
-        <AgentActions summary={summary} onRequestKill={onRequestKill} />
+        <AgentActions summary={summary} onRequestEnd={onRequestEnd} />
       </div>
     </div>
   );
@@ -469,13 +453,7 @@ function IdRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CopyMicroButton({
-  value,
-  label,
-}: {
-  value: string;
-  label: string;
-}) {
+function CopyMicroButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -500,28 +478,25 @@ function CopyMicroButton({
 
 function AgentActions({
   summary,
-  onRequestKill,
+  onRequestEnd,
 }: {
   summary: AgentSummary;
-  onRequestKill: () => void;
+  onRequestEnd: () => void;
 }) {
   const router = useRouter();
   const isActive = summary.state === "active";
   const hasOwner = !!summary.instance_id;
-  // Mutations (heal / pidmap / kill) need a live instance; a stale/ended card
+  // Cache repair and session finalization need a live V2 generation.
   // carries an instance_id only so its page is reachable, not so its (gone)
-  // heartbeat can be acted on. Gate the live-only actions on liveness, matching
-  // the standalone page which hides heal/nudge/kill entirely for ended agents.
+  // generation can be acted on. Gate the live-only actions on liveness, matching
+  // The standalone page likewise hides live-only actions for ended agents.
   const canMutate = hasOwner && isActive;
-  // The /agents/[id] page resolves by instance_id: live heartbeats via
-  // readAgent, and ended sessions via readEndedAgent (read-only reconstruction
-  // from the durable log). So link by instance_id for ANY card that carries one
-  // (live, observed, AND ended); the page renders a read-only view rather than
-  // 404ing when the heartbeat is gone.
+  // The /agents/[id] page resolves live and ended generations from V2. Link by
+  // instance_id for any card that carries one.
   const agentPagePath = summary.instance_id
     ? `/agents/${encodeURIComponent(summary.instance_id)}`
     : "";
-  const [busy, setBusy] = React.useState<"heal" | "pidmap" | null>(null);
+  const [busy, setBusy] = React.useState<"heal" | null>(null);
   const [feedback, setFeedback] = React.useState<{
     ok: boolean;
     msg: string;
@@ -531,9 +506,9 @@ function AgentActions({
   const destructiveBtnCls =
     "inline-flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-destructive hover:bg-destructive/15 disabled:opacity-40 disabled:cursor-not-allowed";
 
-  async function fireHeal(kind: "heartbeat" | "pidmap") {
+  async function fireHeal(kind: "cache") {
     if (!summary.instance_id) return;
-    setBusy(kind === "heartbeat" ? "heal" : kind);
+    setBusy("heal");
     setFeedback(null);
     try {
       const res = await fetch(`/api/agents/${encodeURIComponent(summary.instance_id)}/heal`, {
@@ -580,14 +555,14 @@ function AgentActions({
         <Tooltip
           content={
             canMutate
-              ? "Recreate the heartbeat file if it's missing (corrective; use only when the agent is actually alive)."
-              : "The agent's session has ended. Heal requires a live session."
+              ? "Rebuild the disposable coordination cache from the authoritative V2 generation."
+              : "The agent's session has ended. Cache repair requires a live generation."
           }
         >
           <button
             type="button"
             disabled={!canMutate || busy !== null}
-            onClick={() => fireHeal("heartbeat")}
+            onClick={() => fireHeal("cache")}
             className={btnCls}
           >
             <HeartCrack className="size-3" />
@@ -597,35 +572,18 @@ function AgentActions({
         <Tooltip
           content={
             canMutate
-              ? "Rebuild .pidmap from active heartbeats. Safe to run any time; does not affect heartbeats or claims."
-              : "The agent's session has ended. Pidmap heal requires a live session."
-          }
-        >
-          <button
-            type="button"
-            disabled={!canMutate || busy !== null}
-            onClick={() => fireHeal("pidmap")}
-            className={btnCls}
-          >
-            <Wrench className="size-3" />
-            {busy === "pidmap" ? "Healing…" : "Pidmap"}
-          </button>
-        </Tooltip>
-        <Tooltip
-          content={
-            canMutate
-              ? "Delete this agent's heartbeat file; disappears from the active list."
+              ? "Request an authoritative V2 session end."
               : "Only available for active sessions with a live instance."
           }
         >
           <button
             type="button"
             disabled={!canMutate || busy !== null}
-            onClick={onRequestKill}
+            onClick={onRequestEnd}
             className={destructiveBtnCls}
           >
-            <Skull className="size-3" />
-            Kill
+            <CircleStop className="size-3" />
+            End
           </button>
         </Tooltip>
       </div>

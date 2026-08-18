@@ -150,6 +150,7 @@ const RootScopeSchema = StrictObject({
   instance_id: InstanceId,
   run_id: Type.Optional(Type.String({ pattern: "^run_[a-zA-Z0-9._-]{1,128}$" })),
   workflow_id: Type.Optional(Type.String({ pattern: "^wf_[a-zA-Z0-9._-]{1,128}$" })),
+  workflow_agent_id: Type.Optional(SafeToken),
 });
 
 const GenerationScopeSchema = StrictObject({
@@ -157,6 +158,7 @@ const GenerationScopeSchema = StrictObject({
   instance_id: InstanceId,
   run_id: Type.Optional(Type.String({ pattern: "^run_[a-zA-Z0-9._-]{1,128}$" })),
   workflow_id: Type.Optional(Type.String({ pattern: "^wf_[a-zA-Z0-9._-]{1,128}$" })),
+  workflow_agent_id: Type.Optional(SafeToken),
   session_id: OpaqueNativeId,
   generation_id: GenerationId,
   turn_id: Type.Optional(OpaqueNativeId),
@@ -167,6 +169,7 @@ const TurnScopeSchema = StrictObject({
   instance_id: InstanceId,
   run_id: Type.Optional(Type.String({ pattern: "^run_[a-zA-Z0-9._-]{1,128}$" })),
   workflow_id: Type.Optional(Type.String({ pattern: "^wf_[a-zA-Z0-9._-]{1,128}$" })),
+  workflow_agent_id: Type.Optional(SafeToken),
   session_id: OpaqueNativeId,
   generation_id: GenerationId,
   turn_id: OpaqueNativeId,
@@ -683,6 +686,7 @@ export const CoordMessageObservedV2Schema = eventSchema(
   StrictObject({
     message_id: SafeToken,
     direction: Type.Union([Type.Literal("sent"), Type.Literal("received")]),
+    peer_instance_id: InstanceId,
     body_length: Type.Integer({ minimum: 0 }),
     body_fingerprint: FingerprintV2Schema,
   }),

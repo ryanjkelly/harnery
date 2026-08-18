@@ -5,11 +5,13 @@ import {
   inspectWorkflowWorkspace,
   type WorkflowWorkspaceInspection,
 } from "harnery/core/workflow/workspaces/inspect";
+import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
+import { stableScopeId } from "../../src/core/workflow/scope-id";
 
 /**
  * Transcript-driven reader for workflow runs (`.harnery/workflows/<run-id>/
  * transcript.jsonl`). The transcript is the source of truth for run structure —
- * heartbeats only add live color — so this reader needs nothing but fs.
+ * the V2 coordination projection only adds live color.
  */
 
 export interface WorkflowAgentRow {
@@ -93,33 +95,32 @@ export interface WorkflowChildSession {
   live: boolean;
 }
 
-interface ChildHeartbeat {
+interface WorkflowChildGeneration {
   workflow_run_id?: string;
   workflow_agent_id?: string;
   session_id?: string;
+  native_session_id?: string;
   ended_at?: string;
 }
 
 /**
- * Workflow-child heartbeats in `.harnery/active/`, indexed by run id.
+ * Workflow-child V2 generations indexed by canonical run id.
  *
  * Read once per page render and shared across runs: the directory holds one
  * file per *active agent in the repo*, so re-scanning it inside a per-run loop
  * turned one cheap directory read into a quadratic one.
  */
-export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHeartbeat[]> {
-  const dir = join(root, ".harnery", "active");
-  const byRun = new Map<string, ChildHeartbeat[]>();
-  if (!existsSync(dir)) return byRun;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(join(dir, f), "utf8")) as ChildHeartbeat;
-      if (!hb.workflow_run_id || !hb.session_id) continue;
-      byRun.set(hb.workflow_run_id, [...(byRun.get(hb.workflow_run_id) ?? []), hb]);
-    } catch {
-      /* skip */
-    }
+export function readWorkflowChildGenerations(root: string): Map<string, WorkflowChildGeneration[]> {
+  const byRun = new Map<string, WorkflowChildGeneration[]>();
+  for (const row of readLiveCoordinationRows(root)) {
+    if (!row.workflow_run_id || !row.session_id) continue;
+    const generation: WorkflowChildGeneration = {
+      workflow_run_id: row.workflow_run_id,
+      workflow_agent_id: row.workflow_agent_id ?? row.agent_id,
+      session_id: row.session_id,
+      native_session_id: row.native_session_id,
+    };
+    byRun.set(row.workflow_run_id, [...(byRun.get(row.workflow_run_id) ?? []), generation]);
   }
   return byRun;
 }
@@ -128,37 +129,37 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
  * Every child adapter session of a run, live and finished.
  *
  * Both sources are needed, and together they leave no gap: a live child appears
- * only in `.harnery/active/` (the transcript does not learn its session id until
+ * only in the V2 coordination projection (the transcript does not learn its session id until
  * `agent.end`, because the adapter mints the id and only reports it in the
  * result envelope), and a finished child appears only in the transcript (its
  * heartbeat is deleted on session end).
  *
  * This is the join key for run-scoped activity: child sessions write ordinary
- * `tool.pre_use` / `tool.post_use` events to the run's coord root, so filtering
+ * canonical tool events to the run's coord root, so filtering
  * the V2 ledger to these generation bindings yields what the run actually did.
  */
 export function readWorkflowChildSessions(
   root: string,
   runId: string,
-  /** Root holding the children's heartbeats, when the run executed in another
-   * checkout. The transcript stays in `root`; only `.harnery/active/` moves. */
-  opts: { heartbeatRoot?: string } = {},
+  /** Root holding the children's V2 ledger, when the run executed in another checkout. */
+  opts: { coordinationRoot?: string } = {},
 ): WorkflowChildSession[] {
   const byId = new Map<string, WorkflowChildSession>();
-  const heartbeats = readWorkflowChildHeartbeats(opts.heartbeatRoot ?? root);
-  for (const hb of heartbeats.get(runId) ?? []) {
-    if (!hb.session_id) continue;
-    byId.set(hb.session_id, {
-      sessionId: hb.session_id,
+  const generations = readWorkflowChildGenerations(opts.coordinationRoot ?? root);
+  for (const hb of generations.get(stableScopeId("run", runId)) ?? []) {
+    const sessionId = hb.native_session_id ?? hb.session_id;
+    if (!sessionId) continue;
+    byId.set(sessionId, {
+      sessionId,
       agentId: hb.workflow_agent_id,
       live: !hb.ended_at,
     });
   }
-  const run = readWorkflowRun(root, runId, heartbeats);
+  const run = readWorkflowRun(root, runId, generations);
   for (const agent of run?.agents ?? []) {
     if (!agent.sessionId) continue;
     const existing = byId.get(agent.sessionId);
-    // The transcript is authoritative for which agent ran a session; the heartbeat
+    // The transcript is authoritative for which agent ran a session; the V2 generation
     // is authoritative for whether it is still running.
     byId.set(agent.sessionId, {
       sessionId: agent.sessionId,
@@ -177,16 +178,16 @@ export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
   // so a run driven from a sibling checkout is judged against its own children
   // rather than being called stale for the absence of local ones. Roots are
   // scanned once each: a repo has a handful of them across many runs.
-  const heartbeatsByRoot = new Map<string, Map<string, ChildHeartbeat[]>>();
-  const heartbeatsFor = (r: string): Map<string, ChildHeartbeat[]> => {
-    const cached = heartbeatsByRoot.get(r);
+  const generationsByRoot = new Map<string, Map<string, WorkflowChildGeneration[]>>();
+  const generationsFor = (r: string): Map<string, WorkflowChildGeneration[]> => {
+    const cached = generationsByRoot.get(r);
     if (cached) return cached;
-    const fresh = readWorkflowChildHeartbeats(r);
-    heartbeatsByRoot.set(r, fresh);
+    const fresh = readWorkflowChildGenerations(r);
+    generationsByRoot.set(r, fresh);
     return fresh;
   };
   for (const runId of readdirSync(dir)) {
-    const run = readWorkflowRun(root, runId, heartbeatsFor(resolveRunCoordRoot(root, runId).root));
+    const run = readWorkflowRun(root, runId, generationsFor(resolveRunCoordRoot(root, runId).root));
     if (run) runs.push(run);
   }
   // Newest first (run ids embed an ISO timestamp, but sort on startedAt to be safe).
@@ -197,9 +198,8 @@ export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
 export function readWorkflowRun(
   root: string,
   runId: string,
-  /** Pre-read heartbeat index, so a list page scans `.harnery/active/` once
-   * instead of once per run. Read on demand when omitted. */
-  heartbeats?: Map<string, ChildHeartbeat[]>,
+  /** Pre-read V2 generation index so a list page scans the ledger once per root. */
+  generations?: Map<string, WorkflowChildGeneration[]>,
 ): WorkflowRunSummary | null {
   const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");
   if (!existsSync(transcriptPath)) return null;
@@ -310,8 +310,10 @@ export function readWorkflowRun(
   // a healthy run as STALE, because an agent that works for longer than
   // STALE_MS writes nothing between `agent.start` and `agent.end`. The quiet
   // is the work, not a dead orchestrator.
-  const hbIndex = heartbeats ?? readWorkflowChildHeartbeats(root);
-  const hasLiveChild = (hbIndex.get(runId) ?? []).some((hb) => !hb.ended_at);
+  const generationIndex = generations ?? readWorkflowChildGenerations(root);
+  const hasLiveChild = (generationIndex.get(stableScopeId("run", runId)) ?? []).some(
+    (generation) => !generation.ended_at,
+  );
 
   const status: WorkflowRunSummary["status"] = endedAt
     ? runOk

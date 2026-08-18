@@ -1,11 +1,10 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { monorepoRoot, resolveOwner } from "../../core/agents/index.ts";
 import {
-  type Heartbeat,
-  monorepoRoot,
-  readHeartbeat,
-  resolveOwner,
-} from "../../core/agents/index.ts";
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../../core/agents/state/live-coordination-view.ts";
 import { exec } from "../exec.ts";
 import { NO_DATA } from "../format.ts";
 
@@ -78,8 +77,6 @@ export interface SelfSection {
   instance_id: string;
   session_age_secs: number;
   task: string | null;
-  last_tool: string | null;
-  last_tool_target: string | null;
   files_held: string[];
 }
 
@@ -113,7 +110,6 @@ export interface PeersSection {
     instance_id_short: string;
     age_min: number;
     files: number;
-    last_tool: string | null;
     task: string | null;
   }[];
 }
@@ -155,19 +151,14 @@ export async function buildContext(opts: ContextOptions = {}): Promise<ContextRe
 function buildSelf(): SelfSection {
   const owner = resolveOwner();
   if (!owner) throw new Error("not in an agent session (no pid-map entry)");
-  const hb = readHeartbeat(owner);
-  // Full id, never abbreviated: this message exists to hand the reader an id to
-  // pass back (to `agents heal --owner`, say), and an 8-char prefix is not that
-  // id. Healing the truncated form writes `.harnery/active/<prefix>.json`, a
-  // heartbeat no reader ever resolves — so the session still looks unhealable
-  // and now has a junk file shadowing it. Same rule as `noHeartbeatMessage` in
-  // the agents command.
+  const root = monorepoRoot();
+  const hb = root ? readLiveCoordinationRow(root, owner) : null;
+  // Full id, never abbreviated: command surfaces pass this identity back to
+  // the authority-safe V2 coordination projection.
   if (!hb) {
-    throw new Error(
-      `pid-map resolved owner=${owner} but no heartbeat exists at .harnery/active/${owner}.json`,
-    );
+    throw new Error(`pid-map resolved owner=${owner} but no live V2 generation exists for it`);
   }
-  const startedMs = Date.parse(hb.started_at);
+  const startedMs = Date.parse(hb.started_at ?? "");
   const ageSecs = Number.isFinite(startedMs)
     ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
     : 0;
@@ -176,8 +167,6 @@ function buildSelf(): SelfSection {
     instance_id: hb.instance_id,
     session_age_secs: ageSecs,
     task: hb.task ?? null,
-    last_tool: hb.last_tool ?? null,
-    last_tool_target: hb.last_tool_target ?? null,
     files_held: hb.files_touched ?? [],
   };
 }
@@ -296,32 +285,19 @@ async function statusFor(name: string, cwd: string): Promise<SubmoduleStatus> {
 function buildPeers(): PeersSection {
   const root = monorepoRoot();
   if (!root) throw new Error("coord_root() returned null");
-  const activeDir = resolve(root, ".harnery", "active");
-  if (!existsSync(activeDir)) return { rows: [] };
   const myOwner = resolveOwner();
-  // No freshness filter; matches the SessionStart/UserPromptSubmit snapshot.
-  // Stale entries get swept by the SessionStart janitor on the next session start.
   const rows: PeersSection["rows"] = [];
-  for (const f of readdirSync(activeDir)) {
-    if (!f.endsWith(".json")) continue;
-    try {
-      const hb = JSON.parse(readFileSync(resolve(activeDir, f), "utf8")) as Heartbeat;
-      if (!hb || typeof hb.instance_id !== "string") continue;
-      if (hb.instance_id === myOwner) continue;
-      if ((hb.kind ?? "") === "transient") continue;
-      const startedMs = Date.parse(hb.started_at);
-      const ageMin = Number.isFinite(startedMs) ? Math.floor((Date.now() - startedMs) / 60000) : 0;
-      rows.push({
-        name: hb.name ?? "unknown",
-        instance_id_short: hb.instance_id.slice(0, 8),
-        age_min: ageMin,
-        files: hb.files_touched?.length ?? 0,
-        last_tool: hb.last_tool ?? null,
-        task: hb.task ?? null,
-      });
-    } catch {
-      // skip
-    }
+  for (const row of readLiveCoordinationRows(root)) {
+    if (row.instance_id === myOwner || row.kind === "transient") continue;
+    const startedMs = Date.parse(row.started_at ?? row.last_heartbeat);
+    const ageMin = Number.isFinite(startedMs) ? Math.floor((Date.now() - startedMs) / 60000) : 0;
+    rows.push({
+      name: row.name ?? "unknown",
+      instance_id_short: row.instance_id.slice(0, 8),
+      age_min: ageMin,
+      files: row.files_touched.length,
+      task: row.task ?? null,
+    });
   }
   // Sort: file-holders first (more activity), then by recency (younger age first).
   rows.sort((a, b) => b.files - a.files || a.age_min - b.age_min);

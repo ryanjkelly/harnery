@@ -3,7 +3,7 @@
  * worth warning about.
  *
  * A child registers its heartbeat a beat after the orchestrator starts it, not
- * at the same instant. Measured on an instrumented run: `session.start` at
+ * at the same instant. Measured on an instrumented run: `session.started` at
  * +0.5s, the heartbeat file first readable at roughly +16s, so a child that
  * lives under that never appears live at all. Warning immediately reported a
  * normal startup in the vocabulary of a dead orchestrator, which is what sent

@@ -24,7 +24,7 @@ import { harneryDir } from "@/lib/coord-reader";
 
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { codecDir } from "./packs";
-import { buildCodecEvidence, validateSuggestion, type DirectorSuggestion } from "./validator";
+import { buildCodecEvidence, type DirectorSuggestion, validateSuggestion } from "./validator";
 
 export function suggestionsPath(root = harneryDir()): string {
   return path.join(codecDir(root), "suggestions.json");
