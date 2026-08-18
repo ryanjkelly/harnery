@@ -6,7 +6,7 @@
  * paths and are init'd on first `harn backup init`. Subcommands:
  *
  *   init      restic init the repo (one-time)
- *   snapshot  restic backup of the durable, privacy-safe V2 state
+ *   snapshot  restic backup of the durable, privacy-safe V3 state
  *   list      restic snapshots
  *   restore   restic restore <id>
  *   prune     restic forget --keep-daily 7 --keep-weekly 4 --prune
@@ -134,7 +134,7 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
   backup
     .command("snapshot")
     .description(
-      "Take a restic snapshot of the durable, privacy-safe V2 ledger and coordination state.",
+      "Take a restic snapshot of the durable, privacy-safe V3 ledger and coordination state.",
     )
     .option("--tag <tag>", "Restic tag (repeatable)", collect, [] as string[])
     .option("--repo <path>", "Repository path")
@@ -185,7 +185,7 @@ export function registerBackupCommand(program: Command, emit: EmitContext): void
         if (safeTargets.length === 0) {
           emit.error({
             code: "backup_empty",
-            message: "No durable V2 state is available to back up",
+            message: "No durable V3 state is available to back up",
           });
           emit.setExitCode(1);
           return;

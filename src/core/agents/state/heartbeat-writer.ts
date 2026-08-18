@@ -10,7 +10,7 @@
  * (last write wins).
  *
  * Cache identity invariant: every action operates on the generation-bound row at
- * `.harnery/active/<instance_id>.json`; the canonical V2 ledger remains authoritative.
+ * `.harnery/active/<instance_id>.json`; the canonical V3 ledger remains authoritative.
  * (the file IS the heartbeat). No mutations happen elsewhere.
  */
 
@@ -150,7 +150,7 @@ export function setTask(coordRoot: string, instanceId: string, task: string): He
   });
 }
 
-/** Update the disposable identity cache after a canonical V2 attestation. */
+/** Update the disposable identity cache after a canonical V3 attestation. */
 export function setIdentityCache(
   coordRoot: string,
   instanceId: string,
@@ -228,7 +228,7 @@ export function releaseClaim(
   }));
 }
 
-/** Materialize one V2 write-claim authority transition into the heartbeat cache. */
+/** Materialize one V3 write-claim authority transition into the heartbeat cache. */
 export function acquireClaim(
   coordRoot: string,
   instanceId: string,

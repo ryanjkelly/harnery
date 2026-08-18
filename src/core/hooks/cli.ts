@@ -8,7 +8,7 @@
  *   4. Resolve instance_id (env → payload → pid-map walk).
  *   5. Map event-name → canonical event_type.
  *   6. Build event data from payload + resolvers (intent, transcript scan).
- *   7. Record the normalized observation in the canonical V2 ledger.
+ *   7. Record the normalized observation in the canonical V3 ledger.
  *   8. (Still also writes a debug breadcrumb to .harnery/debug/ for visibility.)
  *
  * Phase 2 ship criterion: confirms parser correctness across thousands of
@@ -825,7 +825,7 @@ async function main(): Promise<number> {
     } catch (err) {
       logError(coordRoot, err, { phase: "session-start-systemMessage" });
     }
-    // Pull advisory cross-machine presence. V2 never publishes from the
+    // Pull advisory cross-machine presence. V3 never publishes from the
     // disposable heartbeat cache.
     try {
       fetchPresence(coordRoot);
@@ -1060,7 +1060,7 @@ async function main(): Promise<number> {
   }
 
   if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
-    // V2 tool observations update the generation projection directly.
+    // V3 tool observations update the generation projection directly.
   }
 
   // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
@@ -1359,7 +1359,7 @@ function releaseClaimOnFailure(
       : filePath;
   }
 
-  // In V2 the release is an authority event, not a heartbeat mutation. Avoid
+  // In V3 the release is an authority event, not a heartbeat mutation. Avoid
   // creating a disposable cache for a failure that never acquired a claim,
   // but release the exact path when the validated projection says it is held.
   const row = readLiveCoordinationRow(coordRoot, instanceId);

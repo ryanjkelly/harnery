@@ -3,7 +3,7 @@ title: "0080: Span-native V3 event ledger"
 description: "ADR: keep V2's durable ledger physics while making terminal events self-contained, unifying span attribution, and allowing additive schema advances in place."
 ---
 
-**Status:** accepted for inactive implementation (2026-08-18) · **Scope:** product tier (`core/events/v3`, adapters, readers, projections)
+**Status:** accepted and active (2026-08-18) · **Scope:** product tier (`core/events/v3`, adapters, readers, projections)
 
 ## Context
 
@@ -138,12 +138,15 @@ require producer state. A reader cannot recover data that was never recorded.
 
 ## Result
 
-The inactive V3 contract lives in `core/events/v3`. Its generated schema is
-checked in with a pinned digest, terminal span summaries, turn economics,
-hard-renamed waits, capability profiles, and a strict-superset validator. No
-live writer or reader routes to V3 until the candidate canary and activation
-conditions pass.
+V3 activated on 2026-08-18 under activation
+`act_01a015e3-0b89-70b8-ad4f-aea6a6d1f00f`. Hook, command, coordination,
+guard, web, Codec, and projection traffic now uses the V3 writer and validating
+reader. The V2 on-disk epoch is sealed read-only and remains available only for
+audit replay.
 
-This ADR supersedes ADR 0079's contract-major and schema-evolution rules when
-V3 activates. ADR 0079 continues to govern the live V2-only runtime until that
-boundary.
+V3 owns its frame canonicalization and schema digest. The package exports only
+`harnery/core/events/v3`; the sealed V2 implementation, schema generator, and
+tests remain internal so old evidence stays verifiable without exposing a
+second writer API.
+
+This ADR supersedes ADR 0079's contract-major and schema-evolution rules. ADR 0079 remains the historical record of the V2 runtime and its activation.

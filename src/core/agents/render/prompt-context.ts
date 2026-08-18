@@ -3,7 +3,7 @@
  * council-pending hash-dedup, the cross-adapter first-session naming nudge,
  * the Cursor/Codex set-task staleness nudge, and the Codex status-footer
  * reminder.
- * agent-hook's user_prompt.submit post-emit handler calls this
+ * agent-hook's turn.started post-emit handler calls this
  * and forwards the result as the adapter-shaped additionalContext payload.
  *
  * Four subsections combined into one additionalContext payload:
@@ -289,7 +289,7 @@ function computePeerTableIfChanged(
   if (selfHb?.session_id) mySessionId = selfHb.session_id;
   if (!mySessionId) return "";
 
-  // Collect peers from the selected ledger route. Under V2 this is the
+  // Collect peers from the selected ledger route. Under V3 this is the
   // canonical projection, never the legacy active directory.
   const peers: HeartbeatRow[] = rows.filter(
     (heartbeat) => heartbeat.instance_id && heartbeat.instance_id !== selfInstanceId,

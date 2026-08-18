@@ -4,7 +4,7 @@
  *
  * Scope: a deliberately small set of file types: durable identities,
  * archived journals, council manifests. The high-churn machine-local
- * state (ledgers/v2/, .pid-map/, active/, .last-intent.*) stays put.
+ * state (ledgers/, .pid-map/, active/, .last-intent.*) stays put.
  *
  * Subcommands:
  *   init:    interactive: `rclone config` walks through Google OAuth, then

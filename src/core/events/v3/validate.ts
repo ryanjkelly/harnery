@@ -1,5 +1,5 @@
 import { Value } from "@sinclair/typebox/value";
-import { canonicalJsonV2 } from "../v2/canonical.ts";
+import { canonicalJsonV3 } from "./canonical.ts";
 import { type EventV3, EventV3Schema } from "./contract.ts";
 
 export interface EventV3ValidationResult {
@@ -194,7 +194,7 @@ function validateSpanSemantics(event: EventShape): string[] {
     issues.push("/payload/span/open_event_id:must_be_causal_parent");
   }
   const duration = observationFrom(event.payload.duration_ms);
-  if (duration && canonicalJsonV2(duration) !== canonicalJsonV2(span.duration_ms)) {
+  if (duration && canonicalJsonV3(duration) !== canonicalJsonV3(span.duration_ms)) {
     issues.push("/payload/duration_ms:must_match_span_duration");
   }
   const openedAt = Date.parse(span.opened_at);

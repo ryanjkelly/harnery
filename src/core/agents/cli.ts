@@ -127,7 +127,7 @@ async function handleProject(root: string, rest: string[]): Promise<number> {
   const { resolveLiveEventLedgerRouteV3 } = await import("../events/v3/live-routing.ts");
   const route = resolveLiveEventLedgerRouteV3(root);
   if (route.state === "blocked") {
-    process.stderr.write(`agent-coord project: V2 route is unsafe (${route.reason})\n`);
+    process.stderr.write(`agent-coord project: V3 route is unsafe (${route.reason})\n`);
     return 1;
   }
   const { readCoordinationViewV3 } = await import("../events/v3/coordination-view.ts");
@@ -176,7 +176,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         hb = writer.readHeartbeat(root, owner);
       } catch (error) {
         process.stderr.write(
-          `agent-coord set-task: V2 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+          `agent-coord set-task: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
         );
         return 1;
       }
@@ -215,7 +215,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         hb = writer.readHeartbeat(root, owner);
       } catch (error) {
         process.stderr.write(
-          `agent-coord release-claim: V2 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+          `agent-coord release-claim: V3 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
         );
         return 1;
       }
@@ -238,7 +238,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         writer.healPidmap(root, owner, pid);
       } catch (error) {
         process.stderr.write(
-          `agent-coord heal-pidmap: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
+          `agent-coord heal-pidmap: V3 route refused (${error instanceof Error ? error.message : String(error)})\n`,
         );
         return 1;
       }
@@ -283,7 +283,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         );
       } catch (error) {
         process.stderr.write(
-          `agent-coord repair-coordination-cache: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
+          `agent-coord repair-coordination-cache: V3 route refused (${error instanceof Error ? error.message : String(error)})\n`,
         );
         return 1;
       }
@@ -672,7 +672,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
 
   if (!eventType || !instanceId || !sessionId || !adapter || !dataJson) {
     process.stderr.write(
-      "agent-coord emit-event --type <V2_TYPE> --owner <id> --session <id> --adapter <h> --data-stdin\n",
+      "agent-coord emit-event --type <V3_TYPE> --owner <id> --session <id> --adapter <h> --data-stdin\n",
     );
     return 2;
   }
@@ -697,7 +697,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   const ledgerRoute = resolveLiveEventLedgerRouteV3(root);
   if (ledgerRoute.state === "blocked") {
     process.stderr.write(
-      `agent-coord emit-event: V2 ledger route is unsafe (${ledgerRoute.reason})\n`,
+      `agent-coord emit-event: V3 ledger route is unsafe (${ledgerRoute.reason})\n`,
     );
     return 1;
   }
@@ -708,7 +708,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
   if (eventType === "coord.lifecycle_changed") {
     const state = data.new_state;
     if (state !== "active" && state !== "blocked" && state !== "done") {
-      process.stderr.write("agent-coord emit-event: invalid V2 lifecycle state\n");
+      process.stderr.write("agent-coord emit-event: invalid V3 lifecycle state\n");
       return 2;
     }
     const { recordLiveLifecycleChangeV3 } = await import("./live-authority-v3.ts");
@@ -731,7 +731,7 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
       return 0;
     } catch (error) {
       process.stderr.write(
-        `agent-coord emit-event: V2 lifecycle authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+        `agent-coord emit-event: V3 lifecycle authority refused (${error instanceof Error ? error.message : String(error)})\n`,
       );
       return 1;
     }
@@ -758,12 +758,12 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
       return 0;
     } catch (error) {
       process.stderr.write(
-        `agent-coord emit-event: V2 observation refused (${error instanceof Error ? error.message : String(error)})\n`,
+        `agent-coord emit-event: V3 observation refused (${error instanceof Error ? error.message : String(error)})\n`,
       );
       return 1;
     }
   }
-  process.stderr.write(`agent-coord emit-event: unsupported V2 event type ${eventType}\n`);
+  process.stderr.write(`agent-coord emit-event: unsupported V3 event type ${eventType}\n`);
   return 2;
 }
 

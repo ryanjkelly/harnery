@@ -97,11 +97,6 @@
       "types": "./dist/core/guard/index.d.ts",
       "import": "./dist/core/guard/index.js"
     },
-    "./core/events/v2": {
-      "bun": "./src/core/events/v2/index.ts",
-      "types": "./dist/core/events/v2/index.d.ts",
-      "import": "./dist/core/events/v2/index.js"
-    },
     "./core/events/v3": {
       "bun": "./src/core/events/v3/index.ts",
       "types": "./dist/core/events/v3/index.d.ts",

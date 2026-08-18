@@ -15,12 +15,12 @@ The coord layer was extracted from years of running multiple Claude Code / Curso
 
 Three primitives on disk, plus hook scripts wired into Claude Code, Cursor, Codex, and git:
 
-- **`.harnery/ledgers/v2/`**: canonical append-only ledger, validating catalog, and immutable control pair
+- **`.harnery/ledgers/v3/`**: canonical append-only ledger, validating catalog, and immutable control pair
 - **`.harnery/active/<id>.json`**: disposable generation-bound caches projected from the ledger
 - **`.harnery/journal/`**: operator and peer messages that remain separate from event authority
 
 The hooks fire **before** an edit lands (claim time) and **before** a commit lands
-(commit time), block conflicts, and record structured V2 events. The
+(commit time), block conflicts, and record structured V3 events. The
 [web UI](/concepts/web-ui/) reads the same validated projection.
 
 The agent sees **nothing** when nothing's going wrong. Single-agent runs are indistinguishable from no coord layer at all.

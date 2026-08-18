@@ -18,6 +18,8 @@ describe("event V3 canonical reader boundary", () => {
     write(root, "src/core/events/v3/control.ts", 'const root = ".harnery/ledgers/v3";');
     write(root, "src/core/events/v3/authority-outbox.ts", "eventV3Paths(root);");
     write(root, "src/core/events/v3/writer.ts", "eventV3Paths(root);");
+    write(root, "web/lib/coord-reader.ts", "eventV3Paths(root);");
+    write(root, "web/lib/codec/scene-source.ts", "eventV3Paths(root);");
     expect(scanEventV3ReaderBoundary(root)).toEqual([]);
   });
 
@@ -28,9 +30,11 @@ describe("event V3 canonical reader boundary", () => {
       "src/commands/events.ts",
       'const path = ".harnery/ledgers/v3";\nconst paths = eventV3Paths(root);',
     );
+    write(root, "web/lib/direct-reader.ts", "eventV3Paths(root);");
     expect(scanEventV3ReaderBoundary(root)).toEqual([
       { file: "src/commands/events.ts", line: 1, token: ".harnery/ledgers/v3" },
       { file: "src/commands/events.ts", line: 2, token: "eventV3Paths(" },
+      { file: "web/lib/direct-reader.ts", line: 1, token: "eventV3Paths(" },
     ]);
   });
 });

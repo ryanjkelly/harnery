@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { canonicalJsonV2 } from "../v2/canonical.ts";
+import { canonicalJsonV3 } from "./canonical.ts";
 
 export interface EventV3SegmentManifest {
   format: "harnery-event-v3-segment";
@@ -59,7 +59,7 @@ function validateCanonicalMetadata<T>(
     throw new Error(`${label} is missing or malformed`);
   }
   const value = validate(parsed);
-  if (text !== `${canonicalJsonV2(value)}\n`) throw new Error(`${label} is not canonical`);
+  if (text !== `${canonicalJsonV3(value)}\n`) throw new Error(`${label} is not canonical`);
   return value;
 }
 

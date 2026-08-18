@@ -15,7 +15,7 @@ import {
   eventV3Fixture,
   fixtureObject,
 } from "../../../../tests/helpers/event-v3.ts";
-import { canonicalJsonV2, sha256V2 } from "../v2/canonical.ts";
+import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import type { EventV3Catalog, EventV3SegmentManifest } from "./catalog.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT, readLedgerV3, readLedgerV3Since } from "./reader.ts";
@@ -36,7 +36,7 @@ describe("event ledger V3 filesystem discovery", () => {
     expect(read.diagnostics).toEqual([]);
     expect(read.complete).toBe(true);
     expect(read.events[0]?.position).toEqual({ segment_ordinal: 1, byte_offset: 0 });
-    expect(read.bytes).toBe(Buffer.byteLength(`${canonicalJsonV2(genesis)}\n`, "utf8"));
+    expect(read.bytes).toBe(Buffer.byteLength(`${canonicalJsonV3(genesis)}\n`, "utf8"));
   });
 
   test("preserves a pre-rotation cursor after the active file becomes segment one", () => {
@@ -95,7 +95,7 @@ describe("event ledger V3 filesystem discovery", () => {
     const tamperedPaths = ledgerPaths(tamperedRoot);
     writeFileSync(
       join(tamperedPaths.segments, "000000000001.ndjson"),
-      `${canonicalJsonV2(genesis)}\n{}\n`,
+      `${canonicalJsonV3(genesis)}\n{}\n`,
       "utf8",
     );
     expect(readLedgerV3(tamperedRoot).diagnostics.map(({ code }) => code)).toContain(
@@ -118,7 +118,7 @@ describe("event ledger V3 filesystem discovery", () => {
     const genesis = eventV3Fixture("ledger.genesis", 1);
     const paths = ledgerPaths(root);
     mkdirSync(paths.root, { recursive: true });
-    writeFileSync(paths.active, `${canonicalJsonV2(genesis)}\n{"partial"`, "utf8");
+    writeFileSync(paths.active, `${canonicalJsonV3(genesis)}\n{"partial"`, "utf8");
 
     const read = readLedgerV3(root);
     expect(read.events).toHaveLength(1);
@@ -167,13 +167,13 @@ function writeCatalogedLedger(
     segment_file: segmentFile,
     bytes: segmentBytes.length,
     row_count: sealedEvents.length,
-    segment_digest: sha256V2(segmentBytes),
+    segment_digest: sha256V3(segmentBytes),
     schema_digests: [EVENT_V3_SCHEMA_DIGEST],
     first_event_id: sealedEvents[0]?.event_id as string,
     last_event_id: sealedEvents.at(-1)?.event_id as string,
     sealed_at: "2026-08-18T14:00:00.000Z",
   };
-  const manifestText = `${canonicalJsonV2(manifest)}\n`;
+  const manifestText = `${canonicalJsonV3(manifest)}\n`;
   writeFileSync(join(paths.segments, manifestFile), manifestText, "utf8");
   writeFileSync(paths.active, rows(activeEvents), "utf8");
   const activeStat = statSync(paths.active);
@@ -187,7 +187,7 @@ function writeCatalogedLedger(
         segment_file: segmentFile,
         manifest_file: manifestFile,
         segment_digest: manifest.segment_digest,
-        manifest_digest: sha256V2(manifestText),
+        manifest_digest: sha256V3(manifestText),
         bytes: segmentBytes.length,
         row_count: sealedEvents.length,
       },
@@ -199,9 +199,9 @@ function writeCatalogedLedger(
       birthtime_ns: String(activeBigintStat.birthtimeNs),
     },
   };
-  writeFileSync(paths.catalog, `${canonicalJsonV2(catalog)}\n`, "utf8");
+  writeFileSync(paths.catalog, `${canonicalJsonV3(catalog)}\n`, "utf8");
 }
 
 function rows(events: EventV3Fixture[]): string {
-  return events.map((event) => `${canonicalJsonV2(event)}\n`).join("");
+  return events.map((event) => `${canonicalJsonV3(event)}\n`).join("");
 }

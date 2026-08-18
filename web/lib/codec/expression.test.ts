@@ -155,7 +155,7 @@ describe("deriveExpressiveChannels", () => {
   });
 
   test("action evidence after the last stop opens a turn without a prompt row", () => {
-    // Adapters on this stream emit no user_prompt.submit; a tool action newer
+    // Adapters on this stream emit no turn.started; a tool action newer
     // than the last turn.completed is the honest turn-open signal.
     const c = deriveExpressiveChannels(
       inputs({

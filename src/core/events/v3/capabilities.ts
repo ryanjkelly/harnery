@@ -1,6 +1,6 @@
 import type { Adapter } from "../../adapter.ts";
-import { canonicalJsonV2, sha256V2 } from "../v2/canonical.ts";
 import { ADAPTER_CAPABILITY_PROFILES_V2 } from "../v2/capabilities.ts";
+import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 
 export type CapabilitySupportV3 = "native" | "derived" | "conditional" | "unsupported";
 
@@ -55,7 +55,7 @@ export function adapterCapabilityProfileV3(adapter: Adapter): AdapterCapabilityP
 }
 
 export function adapterCapabilityProfileDigestV3(adapter: Adapter): `cap_${string}` {
-  return `cap_${sha256V2(canonicalJsonV2(adapterCapabilityProfileV3(adapter))).slice(7)}`;
+  return `cap_${sha256V3(canonicalJsonV3(adapterCapabilityProfileV3(adapter))).slice(7)}`;
 }
 
 export function adapterSignalSupportV3(

@@ -77,7 +77,7 @@ skipped unless `--include-archived`.
 ## Archiving completed sessions
 
 `tidy` joins each desktop entry's `cliSessionId` to Harnery's canonical event
-ledger. An entry qualifies only when its latest `state.task_state` event is
+ledger. An entry qualifies only when its latest `coord.lifecycle_changed` event is
 `done`. The command reports active, blocked, and unmatched entries, plus counts
 for each skip reason. Already archived entries appear in the counts instead of
 filling the output with old rows. A title that merely starts with `[DONE]` does

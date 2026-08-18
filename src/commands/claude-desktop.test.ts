@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createHarneryProgram } from "../commander.ts";
 
 describe("claude-desktop command", () => {
-  test("registers the V2-compatible desktop commands", () => {
+  test("registers the V3-compatible desktop commands", () => {
     const desktop = createHarneryProgram().commands.find(
       (command) => command.name() === "claude-desktop",
     );

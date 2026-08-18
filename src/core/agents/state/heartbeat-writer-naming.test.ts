@@ -110,7 +110,7 @@ describe("stampSessionNameSeen", () => {
 
   // The sighting has to record WHICH name it was for. Keyed on the timestamp
   // alone, a re-minted suggested name inherits the earlier sighting, the
-  // turn.stop scan stays off forever, `session_name_present` is never emitted
+  // turn.completed scan stays off forever, `session_name_present` is never emitted
   // again, and the Stop-hook naming rule blocks every reply from then on --
   // including the reply that reproduced the name it asked for.
   test("records which name the sighting was for, and re-records on a new name", () => {

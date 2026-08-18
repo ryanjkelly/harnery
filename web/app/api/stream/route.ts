@@ -91,7 +91,7 @@ export function GET(): Response {
       // NOT fire on a plain append to an existing file on Linux/WSL (inotify
       // reports create/rename/delete for a dir watch, not the IN_MODIFY of a
       // child append), so the directory watch catches
-      // rotation but misses every append. That means a `subagent.start` (or any
+      // rotation but misses every append. That means an `agent.started` (or any
       // event) append otherwise goes unnoticed here until another watched
       // coordination document changes. Concretely: a freshly-spawned subagent's parent linkage
       // ("of agent-X") is computed in the page render from `readInstanceIdentities`

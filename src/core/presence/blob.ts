@@ -48,7 +48,7 @@ export interface BuiltBlob {
 }
 
 /**
- * Build this machine's presence blob from the authority-safe V2 projection.
+ * Build this machine's presence blob from the authority-safe V3 projection.
  * Includes live sessions + subagents; excludes kind=transient stubs (they are
  * fold-artifacts of the local claim model, not sessions) and anything past the
  * freshness window.

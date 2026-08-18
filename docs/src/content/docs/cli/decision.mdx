@@ -83,7 +83,7 @@ so "confident prose with no facts" never lands as a resolution.
 ## Events
 
 `file`, `resolve`, and `review` emit canonical `decision.filed`,
-`decision.resolved`, and `decision.reviewed` events into the canonical V2 ledger
+`decision.resolved`, and `decision.reviewed` events into the canonical V3 ledger
 (carrying `decision_id`, `tier`, `stakes`/`verdict`) when run inside an agent
 session, enough to compute interrupt-rate and override-rate metrics with no
 extra telemetry plumbing. Operator-side runs (no agent session) skip the event.

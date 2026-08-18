@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type TObject, type TSchema, Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
-import { canonicalJsonV2 } from "../v2/canonical.ts";
+import { canonicalJsonV3 } from "./canonical.ts";
 import { EVENT_V3_CORE_EVENT_TYPES, EventV3Schema, ObservationV3Schema } from "./contract.ts";
 import { validateEventV3 } from "./validate.ts";
 
@@ -61,7 +61,7 @@ describe("event ledger V3 conformance fixtures", () => {
       delete payload.exit_code;
 
       expect(validateEventV3(event).issues).toEqual([]);
-      expect(canonicalJsonV2(payload.duration_ms)).toBe(canonicalJsonV2(span.duration_ms));
+      expect(canonicalJsonV3(payload.duration_ms)).toBe(canonicalJsonV3(span.duration_ms));
 
       const observed = structuredClone(event);
       const observedPayload = object(observed.payload);
@@ -210,12 +210,12 @@ function sample(schema: TSchema): unknown {
   if (node.type === "string") return sampleString(node.pattern);
   if (node.type === "integer" || node.type === "number") return node.minimum ?? 0;
   if (node.type === "boolean") return false;
-  throw new Error(`unsupported fixture schema: ${canonicalJsonV2(node)}`);
+  throw new Error(`unsupported fixture schema: ${canonicalJsonV3(node)}`);
 }
 
 function object(value: unknown): Fixture {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`expected fixture object, got ${canonicalJsonV2(value)}`);
+    throw new Error(`expected fixture object, got ${canonicalJsonV3(value)}`);
   }
   return value as Fixture;
 }

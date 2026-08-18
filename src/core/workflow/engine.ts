@@ -948,7 +948,7 @@ async function executeWorkflow(
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${adapter}] ${label}`);
 
       // Headless children do not reliably fire adapter hooks. The engine owns
-      // their canonical V2 start so every dispatched child has an auditable
+      // their canonical V3 start so every dispatched child has an auditable
       // generation before it begins work.
       startWorkflowChildSessionV3({
         coordRoot: opts.coordRoot,
@@ -1083,7 +1083,7 @@ async function executeWorkflow(
           cleanExit: agentProof.status === "succeeded",
         });
       } catch (error) {
-        log(`[${name}] V2 terminal recording failed: ${(error as Error).message}`);
+        log(`[${name}] V3 terminal recording failed: ${(error as Error).message}`);
       }
       release();
     }

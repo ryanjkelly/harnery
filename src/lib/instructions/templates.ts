@@ -356,7 +356,7 @@ native session-end callback.
   children, then try again.
 - If Git finalization fails, complete the repository's required commit and push
   workflow before retrying.
-- If the V2 ledger is unavailable or unsafe, do not fall back to deleting a
+- If the V3 ledger is unavailable or unsafe, do not fall back to deleting a
   projection or writing a synthetic ledger row. Report the failure.
 - Starting a new turn or tool after the request cancels the pending end. Run the
   workflow again when the session is actually finished.
@@ -402,7 +402,7 @@ export const SKILLS: SkillTemplate[] = [
       buildOwnedSkill({
         name: "harn-end",
         description:
-          "Safely finalize the current Harnery agent session with an authoritative V2 session-ended event. Use when the operator says /harn-end, asks to end or close the current session, or when all work is complete and the session should stop counting as live.",
+          "Safely finalize the current Harnery agent session with an authoritative V3 session-ended event. Use when the operator says /harn-end, asks to end or close the current session, or when all work is complete and the session should stop counting as live.",
         binName,
         body: endBody(binName),
       }),

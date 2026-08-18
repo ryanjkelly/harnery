@@ -13,7 +13,7 @@ import {
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
 
-export function initializeV2Fixture(root: string): void {
+export function initializeV3Fixture(root: string): void {
   initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "fixture",
@@ -23,7 +23,7 @@ export function initializeV2Fixture(root: string): void {
   });
 }
 
-export function seedV2Session(
+export function seedV3Session(
   root: string,
   id: string,
   options: {

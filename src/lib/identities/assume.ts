@@ -326,7 +326,7 @@ export function assumeIdentity(
     if (projected?.name !== identity.name || projected.agent_id !== identity.agent_id) {
       throw new IdentityAssumeError(
         "projection_failed",
-        "coord.identity_attested was emitted but the V2 projection did not converge; rerun the command",
+        "coord.identity_attested was emitted but the V3 projection did not converge; rerun the command",
       );
     }
     return {

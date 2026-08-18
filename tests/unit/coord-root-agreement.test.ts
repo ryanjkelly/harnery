@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveCoordRoot } from "../../src/core/agents/coord-client.ts";
-import { initializeV2Fixture, seedV2Session } from "../helpers/event-v2.ts";
+import { initializeV3Fixture, seedV3Session } from "../helpers/event-v3-runtime.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -33,14 +33,14 @@ function makeFixture(): Fixture {
   for (const root of [outer, nested]) {
     mkdirSync(join(root, ".harnery", "active"), { recursive: true });
     mkdirSync(join(root, ".harnery", "pid-map"), { recursive: true });
-    initializeV2Fixture(root);
+    initializeV3Fixture(root);
   }
   return { outer, nested, session: "sess-coord-agree-1" };
 }
 
-/** Register a live session through the canonical V2 hook producer. */
+/** Register a live session through the canonical V3 hook producer. */
 function seedSession(root: string, session: string): void {
-  seedV2Session(root, session, { sessionId: session, adapter: "claude-code" });
+  seedV3Session(root, session, { sessionId: session, adapter: "claude-code" });
 }
 
 describe("resolveCoordRoot: one root for the hook and the CLI", () => {

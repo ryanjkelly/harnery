@@ -9,7 +9,7 @@ import {
 } from "../../tests/helpers/event-v3.ts";
 import type { EmitContext } from "../commander.ts";
 import { createHarneryProgram } from "../commander.ts";
-import { canonicalJsonV2 } from "../core/events/v2/canonical.ts";
+import { canonicalJsonV3 } from "../core/events/v3/canonical.ts";
 
 const roots: string[] = [];
 
@@ -110,7 +110,7 @@ function fixtureLedger(options: { unknownToolDuration?: boolean } = {}): string 
   mkdirSync(ledgerRoot, { recursive: true });
   writeFileSync(
     join(ledgerRoot, "active.ndjson"),
-    [genesis, session, tool, turn].map((event) => `${canonicalJsonV2(event)}\n`).join(""),
+    [genesis, session, tool, turn].map((event) => `${canonicalJsonV3(event)}\n`).join(""),
     "utf8",
   );
   return root;

@@ -41,7 +41,7 @@ export default async function LivePage({ searchParams }: PageProps) {
   const snap = readAgents();
   const all = [...snap.active, ...snap.stale];
   // Durable instance_id → identity from canonical V3 session events.
-  // subagent.start (subagents). Persists past session end, so a finished
+  // agent.started (subagents). Persists past session end, so a finished
   // agent's rows keep its name instead of reverting to a raw instance_id.
   // One scan, shared with the summary builders below.
   const identities = readInstanceIdentities();
@@ -56,7 +56,7 @@ export default async function LivePage({ searchParams }: PageProps) {
   }
   const agentNames = Array.from(new Set(all.map((h) => h.name))).sort();
   // Hover cards, lowest-priority first: ended main agents and
-  // subagents (subagent.start) from the durable log, then live/recent main
+  // subagents (agent.started) from the durable log, then live/recent main
   // agents, which override the rest on any name collision.
   const summaries = {
     ...buildEndedAgentSummaries(identities),
@@ -83,7 +83,7 @@ export default async function LivePage({ searchParams }: PageProps) {
             </p>
           </div>
           <code className="font-mono text-xs text-muted-foreground">
-            .harnery/ledgers/v2 · command projection
+            Event Ledger V3 · command projection
           </code>
         </header>
 

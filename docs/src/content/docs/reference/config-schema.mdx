@@ -88,14 +88,14 @@ Env override per process: `HARNERY_AGENTS_REQUIRE_GIT_FINALIZATION=1|0`.
 | Field                 | Type    | Default | Description |
 | --------------------- | ------- | ------- | ----------- |
 | `freshness_seconds`   | number  | `600`   | Heartbeat age (seconds) above which the sweeper prunes an agent (10 min) |
-| `finalization`        | object  | see below | Multi-signal V2 session-finalization grace periods |
+| `finalization`        | object  | see below | Multi-signal V3 session-finalization grace periods |
 | `run_quality`         | object  | `{ "mode": "off" }` | Report-only run-quality observation (see below) |
 
 Resolution: `HARNERY_AGENT_COORD_FRESHNESS` env → this `config.jsonc` key → `600`.
 
 ### `coord.finalization`
 
-These bounds control the canonical V2 reconciler. Archive and policy signals
+These bounds control the canonical V3 reconciler. Archive and policy signals
 are provisional until their grace period expires. Any new session activity
 cancels a pending request.
 

@@ -10,7 +10,7 @@
  *      B, B must sort > A lexicographically. Otherwise emit
  *      claim.authority_conflict (ordering_violation) and block.
  *
- * Reads the authority-safe V2 coordination projection. Disposable heartbeat
+ * Reads the authority-safe V3 coordination projection. Disposable heartbeat
  * caches are materialization targets, never the source of claim authority.
  */
 
@@ -166,7 +166,7 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
 function readPeers(coordRoot: string): PeerView[] {
   return readLiveCoordinationRows(coordRoot).map((heartbeat) => {
     // Session IDs are opaque fingerprints. Parentage is valid only when the
-    // V2 projection supplies an explicit parent instance.
+    // V3 projection supplies an explicit parent instance.
     const inferredParent = heartbeat.parent_instance_id;
     return {
       instance_id: heartbeat.instance_id,
@@ -294,6 +294,6 @@ function authorityUnavailable(path: string, operation: string): VerdictResult {
     allow: false,
     exit_code: 2,
     rule: "claim.authority_unavailable",
-    reason: `Cannot safely ${operation} ${path}; V2 authority is unavailable.`,
+    reason: `Cannot safely ${operation} ${path}; V3 authority is unavailable.`,
   };
 }

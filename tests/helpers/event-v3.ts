@@ -1,5 +1,5 @@
 import type { TObject, TSchema } from "@sinclair/typebox";
-import { canonicalJsonV2 } from "../../src/core/events/v2/canonical.ts";
+import { canonicalJsonV3 } from "../../src/core/events/v3/canonical.ts";
 import { EventV3Schema } from "../../src/core/events/v3/contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../../src/core/events/v3/generated.ts";
 import type { LedgerFrameV3 } from "../../src/core/events/v3/reader.ts";
@@ -46,14 +46,14 @@ export function eventV3Frame(
   byteOffset: number,
 ): LedgerFrameV3 {
   return {
-    raw: canonicalJsonV2(event),
+    raw: canonicalJsonV3(event),
     position: { segment_ordinal: segmentOrdinal, byte_offset: byteOffset },
   };
 }
 
 export function fixtureObject(value: unknown): EventV3Fixture {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`expected fixture object, got ${canonicalJsonV2(value)}`);
+    throw new Error(`expected fixture object, got ${canonicalJsonV3(value)}`);
   }
   return value as EventV3Fixture;
 }
@@ -77,7 +77,7 @@ function sample(schema: TSchema): unknown {
   if (node.type === "string") return sampleString(node.pattern);
   if (node.type === "integer" || node.type === "number") return node.minimum ?? 0;
   if (node.type === "boolean") return false;
-  throw new Error(`unsupported fixture schema: ${canonicalJsonV2(node)}`);
+  throw new Error(`unsupported fixture schema: ${canonicalJsonV3(node)}`);
 }
 
 function sampleString(pattern?: string): string {

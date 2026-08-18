@@ -2,25 +2,25 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initializeV2Fixture, seedV2Session } from "../../../../tests/helpers/event-v2.ts";
+import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
 import { renderPromptContext } from "./prompt-context.ts";
 
 let root: string;
 
 beforeEach(() => {
   root = join(tmpdir(), `harnery-prompt-v2-${process.pid}-${crypto.randomUUID()}`);
-  initializeV2Fixture(root);
+  initializeV3Fixture(root);
   writeFileSync(
     join(root, ".harnery", "config.jsonc"),
     `{ "agents": { "requireGitFinalization": false } }`,
     "utf8",
   );
-  seedV2Session(root, "self", { name: "Maya", task: "current focus" });
+  seedV3Session(root, "self", { name: "Maya", task: "current focus" });
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-describe("renderPromptContext on the V2 coordination projection", () => {
+describe("renderPromptContext on the V3 coordination projection", () => {
   test("no peers, no councils, and a current task produce no extra context", () => {
     expect(render()).toBe("");
   });
@@ -52,8 +52,8 @@ describe("renderPromptContext on the V2 coordination projection", () => {
     expect(cursor).not.toContain("paste its output verbatim in a fenced code block");
   });
 
-  test("peer changes refresh the semantic hash from canonical V2 claims", () => {
-    seedV2Session(root, "peer", {
+  test("peer changes refresh the semantic hash from canonical V3 claims", () => {
+    seedV3Session(root, "peer", {
       name: "Adelaide",
       task: "review docs",
       claims: ["docs/x.md"],
@@ -66,7 +66,7 @@ describe("renderPromptContext on the V2 coordination projection", () => {
   });
 
   test("an empty task produces one deduplicated focus nudge", () => {
-    seedV2Session(root, "unset", { name: "Nora" });
+    seedV3Session(root, "unset", { name: "Nora" });
     const opts = {
       coordRoot: root,
       instanceId: "unset",
@@ -79,7 +79,7 @@ describe("renderPromptContext on the V2 coordination projection", () => {
   });
 
   test("the peer hash retains no rendered identities", () => {
-    seedV2Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
+    seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
     render();
     const hash = readFileSync(join(root, ".harnery", ".last-peer-hash.self"), "utf8");
     expect(hash).toMatch(/^[0-9a-f]{16}$/);

@@ -30,7 +30,7 @@ import {
   listPidmap,
   resolveOwner as resolveHookOwner,
 } from "../../src/core/hooks/resolve/owner.ts";
-import { initializeV2Fixture, seedV2Session } from "../helpers/event-v2.ts";
+import { initializeV3Fixture, seedV3Session } from "../helpers/event-v3-runtime.ts";
 
 // Mirror of the source's SESSION_ID_ENV_VARS (kept unexported there); used here
 // only to save/restore env across tests.
@@ -223,7 +223,7 @@ describe("pid-map row format + resolveOwner", () => {
   });
 });
 
-describe("resolveSingleActiveOwner (sole live V2 producer)", () => {
+describe("resolveSingleActiveOwner (sole live V3 producer)", () => {
   let root: string;
   let activeDir: string;
 
@@ -231,15 +231,15 @@ describe("resolveSingleActiveOwner (sole live V2 producer)", () => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-singleton-"));
     activeDir = path.join(root, ".harnery", "active");
     mkdirSync(activeDir, { recursive: true });
-    initializeV2Fixture(root);
+    initializeV3Fixture(root);
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("a missing disposable cache does not hide the sole live V2 producer", () => {
-    seedV2Session(root, "only-one", { sessionId: "session-one" });
+  test("a missing disposable cache does not hide the sole live V3 producer", () => {
+    seedV3Session(root, "only-one", { sessionId: "session-one" });
     rmSync(activeDir, { recursive: true, force: true });
     expect(resolveSingleActiveOwner(root)).toBe("only-one");
   });
@@ -248,14 +248,14 @@ describe("resolveSingleActiveOwner (sole live V2 producer)", () => {
     expect(resolveSingleActiveOwner(root)).toBeNull();
   });
 
-  test("exactly one live V2 producer resolves its native instance id", () => {
-    seedV2Session(root, "only-one", { sessionId: "session-one" });
+  test("exactly one live V3 producer resolves its native instance id", () => {
+    seedV3Session(root, "only-one", { sessionId: "session-one" });
     expect(resolveSingleActiveOwner(root)).toBe("only-one");
   });
 
-  test("two live V2 producers are ambiguous", () => {
-    seedV2Session(root, "agent-a", { sessionId: "session-a" });
-    seedV2Session(root, "agent-b", { sessionId: "session-b" });
+  test("two live V3 producers are ambiguous", () => {
+    seedV3Session(root, "agent-a", { sessionId: "session-a" });
+    seedV3Session(root, "agent-b", { sessionId: "session-b" });
     expect(resolveSingleActiveOwner(root)).toBeNull();
   });
 
@@ -265,12 +265,12 @@ describe("resolveSingleActiveOwner (sole live V2 producer)", () => {
       path.join(activeDir, "ghost.json"),
       JSON.stringify({ instance_id: "ghost", session_id: "ghost-session" }),
     );
-    seedV2Session(root, "good", { sessionId: "session-good" });
+    seedV3Session(root, "good", { sessionId: "session-good" });
     expect(resolveSingleActiveOwner(root)).toBe("good");
   });
 });
 
-describe("resolveOwnerBySessionEnv (adapter session id → live V2 producer)", () => {
+describe("resolveOwnerBySessionEnv (adapter session id → live V3 producer)", () => {
   let root: string;
   const SAVED = SESSION_ID_ENV_KEYS.map((k) => [k, process.env[k]] as const);
   const savedCursorAgent = process.env.CURSOR_AGENT;
@@ -280,7 +280,7 @@ describe("resolveOwnerBySessionEnv (adapter session id → live V2 producer)", (
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-session-env-"));
-    initializeV2Fixture(root);
+    initializeV3Fixture(root);
     for (const k of SESSION_ID_ENV_KEYS) delete process.env[k];
     delete process.env.HARNERY_AGENT_COORD_BRIDGE;
     delete process.env.HARNERY_AGENT_COORD_PLATFORM;
@@ -303,65 +303,65 @@ describe("resolveOwnerBySessionEnv (adapter session id → live V2 producer)", (
   });
 
   test("no session-id env var → null", () => {
-    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV3Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
     expect(resolveOwnerBySessionEnv(root)).toBeNull();
   });
 
-  test("CLAUDE_CODE_SESSION_ID matches a live V2 producer", () => {
-    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
-    seedV2Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
+  test("CLAUDE_CODE_SESSION_ID matches a live V3 producer", () => {
+    seedV3Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV3Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-b";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-b");
   });
 
-  test("session identity disambiguates multiple live V2 producers", () => {
-    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
-    seedV2Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
-    seedV2Session(root, "agent-c", { sessionId: "sess-c", adapter: "claude-code" });
+  test("session identity disambiguates multiple live V3 producers", () => {
+    seedV3Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV3Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
+    seedV3Session(root, "agent-c", { sessionId: "sess-c", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-c";
     expect(resolveSingleActiveOwner(root)).toBeNull();
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-c");
   });
 
-  test("session id with no matching V2 producer → null", () => {
-    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+  test("session id with no matching V3 producer → null", () => {
+    seedV3Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-nope";
     expect(resolveOwnerBySessionEnv(root)).toBeNull();
   });
 
   test("HARNERY_AGENT_COORD_SESSION_ID override wins over adapter vars", () => {
-    seedV2Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
-    seedV2Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
+    seedV3Session(root, "agent-a", { sessionId: "sess-a", adapter: "claude-code" });
+    seedV3Session(root, "agent-b", { sessionId: "sess-b", adapter: "claude-code" });
     process.env.CLAUDE_CODE_SESSION_ID = "sess-a";
     process.env.HARNERY_AGENT_COORD_SESSION_ID = "sess-b";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-b");
   });
 
   test("Cursor and Codex session-id env vars resolve their adapter producers", () => {
-    seedV2Session(root, "agent-cur", { sessionId: "sess-cur", adapter: "cursor" });
+    seedV3Session(root, "agent-cur", { sessionId: "sess-cur", adapter: "cursor" });
     process.env.CURSOR_SESSION_ID = "sess-cur";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
     delete process.env.CURSOR_SESSION_ID;
 
-    seedV2Session(root, "agent-cdx", { sessionId: "sess-cdx", adapter: "codex" });
+    seedV3Session(root, "agent-cdx", { sessionId: "sess-cdx", adapter: "codex" });
     process.env.CODEX_SESSION_ID = "sess-cdx";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx");
     delete process.env.CODEX_SESSION_ID;
 
-    seedV2Session(root, "agent-cdx-thread", { sessionId: "thread-cdx", adapter: "codex" });
+    seedV3Session(root, "agent-cdx-thread", { sessionId: "thread-cdx", adapter: "codex" });
     process.env.CODEX_THREAD_ID = "thread-cdx";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cdx-thread");
   });
 
   test("Cursor conversation id env resolves and strips the Glass bc- prefix", () => {
-    seedV2Session(root, "agent-cur", { sessionId: "sess-cur", adapter: "cursor" });
+    seedV3Session(root, "agent-cur", { sessionId: "sess-cur", adapter: "cursor" });
     process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
     expect(resolveOwnerBySessionEnv(root)).toBe("agent-cur");
   });
 
   test("Cursor Glass prefers the canonical bare conversation id", () => {
     process.env.CURSOR_CONVERSATION_ID = "bc-sess-cur";
-    seedV2Session(root, "named-bare", { sessionId: "sess-cur", adapter: "cursor" });
+    seedV3Session(root, "named-bare", { sessionId: "sess-cur", adapter: "cursor" });
     expect(resolveOwnerBySessionEnv(root)).toBe("named-bare");
   });
 
@@ -370,11 +370,11 @@ describe("resolveOwnerBySessionEnv (adapter session id → live V2 producer)", (
     // and the agent that wrote the row is long gone. The walk cannot tell,
     // and the pruner cannot help, since the pid is alive. The env var can.
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
-    seedV2Session(root, "agent-current", {
+    seedV3Session(root, "agent-current", {
       sessionId: "sess-current",
       adapter: "claude-code",
     });
-    seedV2Session(root, "agent-recycled", {
+    seedV3Session(root, "agent-recycled", {
       sessionId: "sess-recycled",
       adapter: "claude-code",
     });
@@ -406,8 +406,8 @@ describe("resolveOwnerBySessionEnv (adapter session id → live V2 producer)", (
 
   test("Cursor session env wins over a shared cursor pid-map row", () => {
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
-    seedV2Session(root, "agent-current", { sessionId: "sess-current", adapter: "cursor" });
-    seedV2Session(root, "agent-shared-row", { sessionId: "sess-shared", adapter: "cursor" });
+    seedV3Session(root, "agent-current", { sessionId: "sess-current", adapter: "cursor" });
+    seedV3Session(root, "agent-shared-row", { sessionId: "sess-shared", adapter: "cursor" });
     writePidmapRow(root, process.pid, "agent-shared-row", "cursor");
 
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
@@ -497,7 +497,7 @@ describe("codex-wsl bridge owner parity", () => {
       instanceId: id,
     });
     const cache = ensureLiveCoordinationHeartbeat(root, id, sessionId, "codex");
-    if (!cache) throw new Error("expected V2 cache");
+    if (!cache) throw new Error("expected V3 cache");
     writeFileSync(
       path.join(activeDir, `${id}.json`),
       JSON.stringify({

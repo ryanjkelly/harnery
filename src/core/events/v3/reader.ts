@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { canonicalJsonV2, sha256V2 } from "../v2/canonical.ts";
+import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import {
   type EventV3Catalog,
   type EventV3SegmentManifest,
@@ -233,7 +233,7 @@ export function readLedgerFramesV3(
     }
     const event = validation.event;
     const shape = event as unknown as EventShape;
-    if (canonicalJsonV2(event) !== frame.raw) {
+    if (canonicalJsonV3(event) !== frame.raw) {
       diagnostics.push(diagnostic("noncanonical_frame", frame, shape.event_id));
       continue;
     }
@@ -573,11 +573,11 @@ function discoverSealedSegment(
   const segmentBytes = readFileSync(segmentPath);
   const manifestBytes = readFileSync(manifestPath);
   discovered.bytes += segmentBytes.length;
-  if (segmentBytes.length !== entry.bytes || sha256V2(segmentBytes) !== entry.segment_digest) {
+  if (segmentBytes.length !== entry.bytes || sha256V3(segmentBytes) !== entry.segment_digest) {
     discovered.diagnostics.push(storageDiagnostic("segment_digest_mismatch", entry.ordinal));
     return;
   }
-  if (sha256V2(manifestBytes) !== entry.manifest_digest) {
+  if (sha256V3(manifestBytes) !== entry.manifest_digest) {
     discovered.diagnostics.push(storageDiagnostic("manifest_digest_mismatch", entry.ordinal));
     return;
   }

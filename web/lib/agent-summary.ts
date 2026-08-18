@@ -287,7 +287,7 @@ function activeInstanceNames(): Map<string, string> {
  * Build AgentSummary entries for subagents (Agent-tool dispatches: Explore,
  * etc.), keyed by bare name, so their names render as hover-card chips like
  * main agents. Subagents don't write heartbeats; identity + parent come from
- * the `subagent.start` records in the shared `identities` map (see
+ * the `agent.started` records in the shared `identities` map (see
  * `readInstanceIdentities`). The parent is resolved by matching the start
  * event's `session_id` to an active main agent's `instance_id`, null when that
  * parent has since exited. Most-recent start wins on a repeated name

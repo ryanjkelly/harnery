@@ -22,7 +22,7 @@ function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "cod
   return "claude-code";
 }
 
-/** Record the sweep before deleting authority state. V2 ambiguity fails closed. */
+/** Record the sweep before deleting authority state. V3 ambiguity fails closed. */
 function emitSwept(
   coordRoot: string,
   instanceId: string,
@@ -73,7 +73,7 @@ export function staleSweep(coordRoot: string): {
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshness;
 
-  // 1. Prune stale rows from the disposable V2 coordination cache.
+  // 1. Prune stale rows from the disposable V3 coordination cache.
   //
   // Two deletion regimes, deliberately asymmetric:
   //   • Valid JSON with an OLD last_heartbeat → the legitimate dead/idle-agent

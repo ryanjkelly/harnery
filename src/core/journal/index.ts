@@ -468,7 +468,7 @@ export function loadJournal(instanceId: string): JournalDoc | null {
   return parseJournal(path, readFileSync(path, "utf8"));
 }
 
-/** Resolve an agent name through the authority-safe V2 coordination projection. */
+/** Resolve an agent name through the authority-safe V3 coordination projection. */
 export function resolveOwnerByName(name: string): string | null {
   const root = monorepoRoot();
   if (!root) return null;

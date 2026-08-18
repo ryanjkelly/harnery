@@ -15,6 +15,8 @@ const ALLOWED = new Set([
   "src/core/events/v3/authority-outbox.ts",
   "src/core/events/v3/reader.ts",
   "src/core/events/v3/writer.ts",
+  "web/lib/coord-reader.ts",
+  "web/lib/codec/scene-source.ts",
 ]);
 
 const FORBIDDEN = [
@@ -25,10 +27,10 @@ const FORBIDDEN = [
 ] as const;
 
 export function scanEventV3ReaderBoundary(root: string): EventV3ReaderBoundaryViolation[] {
-  const sourceRoot = join(root, "src");
-  if (!existsSync(sourceRoot)) return [];
+  const sourceRoots = [join(root, "src"), join(root, "web")].filter(existsSync);
+  if (sourceRoots.length === 0) return [];
   const violations: EventV3ReaderBoundaryViolation[] = [];
-  for (const absolute of walk(sourceRoot)) {
+  for (const absolute of sourceRoots.flatMap(walk)) {
     const file = relative(root, absolute).split("\\").join("/");
     if (ALLOWED.has(file) || file.endsWith(".test.ts")) continue;
     const lines = readFileSync(absolute, "utf8").split("\n");
@@ -52,7 +54,7 @@ function walk(root: string): string[] {
     const path = join(root, name);
     const stat = statSync(path);
     if (stat.isDirectory()) files.push(...walk(path));
-    else if (stat.isFile() && path.endsWith(".ts")) files.push(path);
+    else if (stat.isFile() && (path.endsWith(".ts") || path.endsWith(".tsx"))) files.push(path);
   }
   return files;
 }

@@ -1,5 +1,5 @@
 import type { TSchema } from "@sinclair/typebox";
-import { canonicalJsonV2 } from "../v2/canonical.ts";
+import { canonicalJsonV3 } from "./canonical.ts";
 
 export interface SchemaAdvanceEligibilityV3 {
   eligible: boolean;
@@ -138,7 +138,7 @@ function isSuperset(
   const nextComparable = Object.fromEntries(
     Object.entries(next).filter(([key]) => !ignored.has(key)),
   );
-  if (canonicalJsonV2(priorComparable) !== canonicalJsonV2(nextComparable)) {
+  if (canonicalJsonV3(priorComparable) !== canonicalJsonV3(nextComparable)) {
     return incompatible(path, "constraint_changed", issues);
   }
   return { compatible: true, strict: false };

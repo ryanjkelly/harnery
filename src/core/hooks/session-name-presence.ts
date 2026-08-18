@@ -1,7 +1,7 @@
 /**
  * Session-name presence for `turn.completed`.
  *
- * While the current V2 coordination row carries a `suggested_session_name`, report whether the
+ * While the current V3 coordination row carries a `suggested_session_name`, report whether the
  * naming ritual is satisfied: either this turn's reply shows the name, or an
  * earlier reply already did. Scanning covers assistant text blocks only (the
  * raw transcript tail also carries the name inside the set-task tool_result,

@@ -1,10 +1,10 @@
 /**
  * agent-coord library public exports.
  *
- * `coord-client`: V2 producer identity resolution, ppid-map attribution, and
+ * `coord-client`: V3 producer identity resolution, ppid-map attribution, and
  * coordination-root discovery.
  *
- * `canonical-emit`: canonical V2 observation helpers.
+ * `canonical-emit`: canonical V3 observation helpers.
  */
 
 export * from "./canonical-emit.js";

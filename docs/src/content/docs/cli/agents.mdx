@@ -10,8 +10,8 @@ harn agents <subcommand> [options]
 ```
 
 The window into the coordination layer. Every agent sharing a checkout records a
-generation to the V2 event ledger and materializes a disposable cache at
-`.harnery/active/<instance_id>.json`. `harn agents` reads the authority-safe V2
+generation to the V3 event ledger and materializes a disposable cache at
+`.harnery/active/<instance_id>.json`. `harn agents` reads the authority-safe V3
 projection to answer the questions that keep parallel agents out
 of each other's way: who else is here, what are they holding, what is each one
 doing, and did anything go wrong.
@@ -35,7 +35,7 @@ harn agents status --end-turn   # issue the box only after owned Git work is fin
 harn agents status --end-turn --end-session # final status, then end after this turn closes
 harn agents set-task <text...>  # declare what you're working on (visible to peers)
 harn agents lifecycle <state>   # declare active, blocked, or done task lifecycle
-harn agents end                 # record an authoritative V2 end after final checks
+harn agents end                 # record an authoritative V3 end after final checks
 harn agents reconcile           # reconcile archive, idle, cascade, and host-loss signals
 harn agents reconcile --watch   # run the host supervisor loop
 harn agents identity assume <name-or-id> # continue a durable role in this session
@@ -192,7 +192,7 @@ command fail without changing lifecycle or recording an event. The gate checks
 repository hygiene; it does not certify tests, deployment, or the business
 outcome.
 
-A successful transition records one durable `state.task_state` event and
+A successful transition records one durable `coord.lifecycle_changed` event and
 projects it into the live heartbeat. Repeating the same state and reason is a
 no-op, with no duplicate event. Moving away from `blocked` clears the old
 blocker reason. Subagents, transient processes, and workflow children cannot
@@ -214,7 +214,7 @@ process cannot resolve its session anchor.
 
 ### end and reconcile
 
-`harn agents end` is a deliberate V2 session-finalization command. It refuses
+`harn agents end` is a deliberate V3 session-finalization command. It refuses
 delegated children and unfinished Git claims. If the generation is already
 idle, it appends one approved `session.ended` event immediately. If the command
 runs inside an open turn or tool span, it durably queues the end for the stop
@@ -315,13 +315,13 @@ The layer's own diagnostics.
   detection, and anomalies. Built for a daily
   glance or dashboard ingestion. `--since <window>` sets the window (default
   `24h`); `--json` for structured output.
-  When the V2 event ledger is live, an `event ledger` section adds read-only
+  When the V3 event ledger is live, an `event ledger` section adds read-only
   producer counters: open tool spans per live generation (flagging generations
   whose turn has closed while spans stayed open — the orphan signature that
   blocks a clean session end), pending finalization requests with trigger and
   age, intake-spool depth, diagnostics-spool counts by category (with a
   last-24h split), and span-count pressure against the producer-state cap. On
-  an unavailable or invalid V2 control state the section reports that failure
+  an unavailable or invalid V3 control state the section reports that failure
   explicitly instead.
 - **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
   self-heal had to correct drift. Sustained high counts point at an upstream
@@ -397,7 +397,7 @@ The gitlink check compares the commit recorded in parent `HEAD`, the parent
 index, and the child repository's `HEAD`. It does not treat unrelated modified
 or untracked files inside the child as a pointer change.
 
-Committed paths stay in scope through the session's `claim.acquire` history.
+Committed paths stay in scope through the session's `coord.claim_changed` history.
 The commit hook can release a clean active claim without letting an unpushed
 commit disappear from the final check.
 

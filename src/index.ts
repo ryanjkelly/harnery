@@ -5,7 +5,7 @@
  * Examples of intended consumption:
  *   import { createHarneryProgram } from 'harnery';     // CLI composition
  *   import { evaluateClaim } from 'harnery/core/agents'; // verdict rule directly
- *   import type { EventV3 } from 'harnery/core/events-v3'; // canonical schema types
+ *   import type { EventV3 } from 'harnery/core/events/v3'; // canonical schema types
  *
  * Heavy modules (web UI, hook scripts) are not re-exported from here; they're
  * reachable via their own subpath entries in package.json#exports.

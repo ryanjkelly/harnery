@@ -132,7 +132,7 @@ export function readShellMarker(coordRoot: string, pid: number): string | null {
   }
 }
 
-/** Read the V2-projected `agent_id` for an owner if it exists. */
+/** Read the V3-projected `agent_id` for an owner if it exists. */
 export function readAgentIdForOwner(coordRoot: string, instanceId: string): string | null {
   return readLiveCoordinationRow(coordRoot, instanceId)?.agent_id ?? null;
 }

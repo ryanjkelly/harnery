@@ -85,7 +85,7 @@ describe("session state transition table", () => {
     });
   });
 
-  test("incidental V2 evidence stays unknown while lifecycle defaults active", () => {
+  test("incidental V3 evidence stays unknown while lifecycle defaults active", () => {
     expect(foldSessionState([event("progress.observed", "2026-08-12T10:00:00Z")])).toEqual({
       activity: "unknown",
       task_state: "active",

@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonicalJsonV2 } from "../src/core/events/v2/canonical.ts";
+import { canonicalJsonV3 } from "../src/core/events/v3/canonical.ts";
 import { EVENT_V3_CORE_EVENT_TYPES, EventV3Schema } from "../src/core/events/v3/contract.ts";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const schemaPath = resolve(repositoryRoot, "schemas/event-v3.schema.json");
 const generatedPath = resolve(repositoryRoot, "src/core/events/v3/generated.ts");
 const digest = `sha256:${createHash("sha256")
-  .update(canonicalJsonV2(EventV3Schema))
+  .update(canonicalJsonV3(EventV3Schema))
   .digest("hex")}`;
 const schemaBody = `${JSON.stringify(EventV3Schema, null, 2)}\n`;
 const generatedTypes = EVENT_V3_CORE_EVENT_TYPES.map(

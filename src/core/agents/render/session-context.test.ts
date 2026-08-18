@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initializeV2Fixture, seedV2Session } from "../../../../tests/helpers/event-v2.ts";
+import { initializeV3Fixture, seedV3Session } from "../../../../tests/helpers/event-v3-runtime.ts";
 import { checkWiring, formatPendingCouncils, renderSessionContext } from "./session-context.ts";
 
 let root: string;
@@ -13,7 +13,7 @@ beforeEach(() => {
     tmpdir(),
     `agent-coord-session-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   );
-  initializeV2Fixture(root);
+  initializeV3Fixture(root);
 });
 
 afterEach(() => {
@@ -93,7 +93,7 @@ describe("renderSessionContext", () => {
   });
 
   test("with peer present → renders peer table", () => {
-    seedV2Session(root, "peer", {
+    seedV3Session(root, "peer", {
       name: "Adelaide",
       claims: ["docs/x.md"],
       lifecycle: "blocked",

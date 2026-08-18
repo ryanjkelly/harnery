@@ -1,12 +1,12 @@
 ---
-title: Operate the V2 event ledger
+title: harn ledger-v3
 description: Initialize, inspect, back up, and advance Harnery's only supported event ledger.
 sidebar:
-  order: 2
+  order: 43
 ---
 
-Harnery records every supported adapter through one canonical V2 ledger at
-`.harnery/ledgers/v2/`. Producers and consumers fail closed when its control
+Harnery records every supported adapter through one canonical V3 ledger at
+`.harnery/ledgers/v3/`. Producers and consumers fail closed when its control
 pair is missing or invalid. There is no alternate recording path.
 
 ## Initialization
@@ -15,7 +15,7 @@ pair is missing or invalid. There is no alternate recording path.
 to repair installation state explicitly, run:
 
 ```bash
-harn ledger-v2 initialize \
+harn ledger-v3 initialize \
   --root <project-root> \
   --approval-record-id <durable-approval-id>
 ```
@@ -25,13 +25,13 @@ build, configuration, capability, and privacy-key digests. It then activates
 that candidate. Repeating the command is idempotent while the active epoch is
 compatible.
 
-Use `harn init --check` in automation. It exits nonzero unless the V2 control
+Use `harn init --check` in automation. It exits nonzero unless the V3 control
 pair is active and internally consistent.
 
 ## Inspect the active epoch
 
 ```bash
-harn ledger-v2 status --root <project-root>
+harn ledger-v3 status
 ```
 
 The result identifies the control state, genesis and activation events, schema
@@ -47,14 +47,14 @@ reader validates `active.ndjson` directly.
 A contract digest or approved-build change requires a new epoch:
 
 ```bash
-harn ledger-v2 initialize \
+harn ledger-v3 initialize \
   --root <project-root> \
   --approval-record-id <durable-approval-id> \
   --force-new-epoch
 ```
 
-The complete current V2 directory moves intact to
-`.harnery/ledgers/v2-archives/`. Harnery then creates and activates a fresh
+The complete current V3 directory moves intact to
+`.harnery/ledgers/v3-archives/`. Harnery then creates and activates a fresh
 epoch. It never edits archived event bytes in place.
 
 Advance only after the new build passes producer conformance, consumer replay,
@@ -66,10 +66,10 @@ of the new epoch retroactively.
 
 `harn backup snapshot` includes `ledgers/` by default along with durable
 coordination state. Disposable caches in `active/` and process attribution in
-`pid-map/` are rebuilt from live V2 observations and are not backup authority.
+`pid-map/` are rebuilt from live V3 observations and are not backup authority.
 
 If an active control pair is damaged, producers and authority-bearing commands
-stop rather than inventing state. Restore the complete V2 epoch from a verified
+stop rather than inventing state. Restore the complete V3 epoch from a verified
 backup or initialize a new epoch with an explicit approval record. Do not copy
 individual rows or synthesize missing lifecycle events.
 
