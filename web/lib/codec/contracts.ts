@@ -13,7 +13,7 @@
  * `unknown` on unsupported source versions.
  */
 
-import type { EventTypeV2 } from "../../../src/core/events/v2/contract";
+import type { EventTypeV3 } from "../../../src/core/events/v3/contract";
 
 export type Confidence = "high" | "medium" | "low";
 export type Provenance = "event" | "projection" | "inferred" | "unknown";
@@ -79,12 +79,12 @@ export interface CodecRecentAction {
 export interface CodecSourceEvidence {
   schema_version: 2;
   event_id: string;
-  event_type: EventTypeV2;
+  event_type: EventTypeV3;
   ts: string;
   instance_id: string;
   session_id?: string;
   parent_session_id?: string;
-  /** V2 generation that produced this row; used to join parentage. */
+  /** V3 generation that produced this row; used to join parentage. */
   generation_id?: string;
   /** Child's link to the parent generation; never stuffed into parent_session_id. */
   parent_generation_id?: string;
@@ -138,7 +138,7 @@ export interface CodecPanelScene {
     live_overlay?: boolean;
   }>;
   parent_instance_id?: Presented<string>;
-  /** V2 ledger lifecycle for this generation, when the snapshot carries it. */
+  /** V3 ledger lifecycle for this generation, when the snapshot carries it. */
   ledger_state?: Presented<"live" | "ending" | "recovery-required" | "terminal">;
   character: { pack_id: string; pack_version: string };
   updated_at: string;

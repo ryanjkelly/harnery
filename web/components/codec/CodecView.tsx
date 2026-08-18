@@ -445,7 +445,7 @@ function CodecPanel({
           </Badge>
         )}
         {unknownPresence && (
-          <Badge variant="outline" title="Presence unknown: no fresh V2 observation">
+          <Badge variant="outline" title="Presence unknown: no fresh V3 observation">
             presence unknown
           </Badge>
         )}

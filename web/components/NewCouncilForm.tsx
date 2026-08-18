@@ -145,13 +145,13 @@ export function NewCouncilForm({
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Pick which agents will contribute, then choose one steward. Stale sessions (no V2
+            Pick which agents will contribute, then choose one steward. Stale sessions (no V3
             activity for &gt; 5 min) are selectable; they&apos;ll see the invitation on their next
             SessionStart.
           </p>
           {agents.length === 0 ? (
             <p className="text-sm text-muted-foreground italic">
-              No live V2 agent generations are registered.
+              No live V3 agent generations are registered.
             </p>
           ) : (
             <ul className="divide-y divide-border rounded border border-border overflow-hidden">

@@ -242,7 +242,7 @@ export function setCouncilSteward(councilId: string, steward: string | null): Co
 export interface KnownAgent {
   /** `agent-<Name>` canonical handle. */
   name: string;
-  /** `active` = currently has an authority-eligible V2 generation. `stale` =
+  /** `active` = currently has an authority-eligible V3 generation. `stale` =
    * recently ended (journal archived within the lookback window). */
   state: "active" | "stale";
   /** ISO timestamp of the most-recent signal. */
@@ -254,7 +254,7 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Active V2 generations + recently-archived journals, deduped by name.
+ * Active V3 generations + recently-archived journals, deduped by name.
  * Used by `agents council set-steward` to refuse arbitrary names;
  * pass `--allow-unknown` to bypass when bootstrapping a new agent.
  */

@@ -9,7 +9,7 @@
  *   - derives the room credentials from the repo identity (root-commit SHA +
  *     origin URL + optional committed `.harnery/presence-salt`)
  *   - holds the socket open with auto-reconnect + jittered backoff
- *   - watches the active V2 ledger and publishes the encrypted presence blob on
+ *   - watches the active V3 ledger and publishes the encrypted presence blob on
  *     change (debounced), plus a 60s keepalive so peers' staleness math works
  *   - decrypts received peer frames and writes them to
  *     `.harnery/presence/remote/<machine>.json`, where `readRemoteMachines`
@@ -36,7 +36,7 @@ import {
 import { join } from "node:path";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { presenceRelayUrl } from "../config.ts";
-import { eventV2Paths } from "../events/v2/writer.ts";
+import { eventV3ActiveWatchPath } from "../events/v3/reader.ts";
 import { buildPresenceBlob, type PresenceBlob } from "./blob.ts";
 import { originUrl, rootCommitSha, sanitizeRefComponent } from "./git.ts";
 import {
@@ -260,9 +260,9 @@ export async function runRelayDaemon(coordRoot: string): Promise<number> {
 
   connect();
 
-  // Publish on canonical V2 ledger change (debounced).
+  // Publish on canonical V3 ledger change (debounced).
   let debounce: ReturnType<typeof setTimeout> | null = null;
-  const activeLedger = eventV2Paths(coordRoot).active;
+  const activeLedger = eventV3ActiveWatchPath(coordRoot);
   try {
     watch(activeLedger, () => {
       if (debounce) clearTimeout(debounce);

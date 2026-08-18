@@ -10,7 +10,7 @@ const STALE_AGE_SECONDS = 5 * 60;
 
 /**
  * Server-rendered new-council page. Loads the current agent registry from
- * the authoritative V2 coordination projection and hands it to the client form. Submission goes
+ * the authoritative V3 coordination projection and hands it to the client form. Submission goes
  * to POST /api/councils which shells through to `harn agents council create`.
  *
  * Preselect via `?objective=<encoded>`: the /council skill's create mode

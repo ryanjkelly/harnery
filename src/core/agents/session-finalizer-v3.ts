@@ -14,59 +14,59 @@ import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import type { Adapter } from "../adapter.ts";
 import { sessionFinalizationConfig } from "../config.ts";
-import { buildEventV2 } from "../events/v2/builder.ts";
-import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
-import type { EventV2 } from "../events/v2/contract.ts";
-import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
-import { livePlatformV2, resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
-import { closeAbandonedCommandSpansV2 } from "../events/v2/producers/command-recorder.ts";
+import { buildEventV3 } from "../events/v3/builder.ts";
+import { normalizeNativeIdV3 } from "../events/v3/canonical.ts";
+import type { EventV3 } from "../events/v3/contract.ts";
+import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
+import { livePlatformV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
+import { closeAbandonedCommandSpansV3 } from "../events/v3/producers/command-recorder.ts";
 import {
-  type ApprovedSessionEndReasonV2,
-  drainHookIntakeSpoolV2,
-  type HookProducerStateRecordV2,
-  listHookProducerStateRecordsV2,
-  readHookProducerStateV2,
-  recordApprovedSessionEndV2,
-  salvageOpenSpansV2,
-} from "../events/v2/producers/recorder.ts";
-import { readActiveLedgerV2, readLedgerV2 } from "../events/v2/reader.ts";
-import { assertEventV2 } from "../events/v2/validate.ts";
-import { EVENT_V2_LEDGER_RELATIVE_ROOT, writeEventV2 } from "../events/v2/writer.ts";
+  type ApprovedSessionEndReasonV3,
+  drainHookIntakeSpoolV3,
+  type HookProducerStateRecordV3,
+  listHookProducerStateRecordsV3,
+  readHookProducerStateV3,
+  recordApprovedSessionEndV3,
+  salvageOpenSpansV3,
+} from "../events/v3/producers/recorder.ts";
+import { readLedgerV3 } from "../events/v3/reader.ts";
+import { assertEventV3 } from "../events/v3/validate.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT, writeEventV3 } from "../events/v3/writer.ts";
 import { fsyncParentDirectory } from "../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
-import { readCodexArchiveObservationsV2 } from "./codex-archive-v2.ts";
+import { readCodexArchiveObservationsV3 } from "./codex-archive-v3.ts";
 import {
-  listSessionFinalizationRequestsV2,
-  SESSION_FINALIZATION_REQUEST_FORMAT_V2,
-  SESSION_FINALIZATION_REQUEST_VERSION_V2,
-  type SessionFinalizationRequestV2,
-  type SessionFinalizationTriggerV2,
-  sessionFinalizationRequestDirectoryV2,
-  sessionFinalizationRequestPathV2,
-} from "./session-finalization-state-v2.ts";
+  listSessionFinalizationRequestsV3,
+  SESSION_FINALIZATION_REQUEST_FORMAT_V3,
+  SESSION_FINALIZATION_REQUEST_VERSION_V3,
+  type SessionFinalizationRequestV3,
+  type SessionFinalizationTriggerV3,
+  sessionFinalizationRequestDirectoryV3,
+  sessionFinalizationRequestPathV3,
+} from "./session-finalization-state-v3.ts";
 
 export {
-  listSessionFinalizationRequestsV2,
-  type SessionFinalizationRequestV2,
-  type SessionFinalizationTriggerV2,
-} from "./session-finalization-state-v2.ts";
+  listSessionFinalizationRequestsV3,
+  type SessionFinalizationRequestV3,
+  type SessionFinalizationTriggerV3,
+} from "./session-finalization-state-v3.ts";
 
 /** A pending explicit end older than this is cancelled (never terminalized) so a wedged request cannot outlive its usefulness; re-requesting is cheap. */
 const EXPLICIT_END_PENDING_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
-export interface SessionArchiveObservationV2 {
+export interface SessionArchiveObservationV3 {
   adapter: Adapter;
   native_session_id: string;
   archived: boolean;
   observed_at: string;
 }
 
-export interface ReconcileSessionFinalizationOptionsV2 {
+export interface ReconcileSessionFinalizationOptionsV3 {
   now?: Date;
-  archive_observations?: readonly SessionArchiveObservationV2[];
+  archive_observations?: readonly SessionArchiveObservationV3[];
 }
 
-export interface ReconcileSessionFinalizationResultV2 {
+export interface ReconcileSessionFinalizationResultV3 {
   observed: number;
   cancelled: number;
   finalized: number;
@@ -75,26 +75,26 @@ export interface ReconcileSessionFinalizationResultV2 {
   diagnostics: string[];
 }
 
-export interface EndSessionExplicitV2Input {
+export interface EndSessionExplicitV3Input {
   coordRoot: string;
   instance_id: `inst_${string}`;
   generation_id: `gen_${string}`;
-  outcome?: SessionFinalizationRequestV2["outcome"];
+  outcome?: SessionFinalizationRequestV3["outcome"];
   observed_at?: string;
   coordination_finalized: boolean;
 }
 
-export interface RequestSessionEndExplicitV2Input extends EndSessionExplicitV2Input {}
+export interface RequestSessionEndExplicitV3Input extends EndSessionExplicitV3Input {}
 
-export type RequestSessionEndExplicitV2Result =
-  | ReturnType<typeof endSessionExplicitV2>
+export type RequestSessionEndExplicitV3Result =
+  | ReturnType<typeof endSessionExplicitV3>
   | { state: "busy" }
   | { state: "generation_unavailable" }
   | { state: "delegated_work_open"; count: number }
-  | { state: "queued"; request: SessionFinalizationRequestV2 }
+  | { state: "queued"; request: SessionFinalizationRequestV3 }
   | {
       state: "already_requested";
-      request: SessionFinalizationRequestV2;
+      request: SessionFinalizationRequestV3;
       /** What the pending request is still waiting on, so a repeated explicit end reports its exact blocker instead of a bare refusal. */
       blocker: {
         open_span_ids: `span_${string}`[];
@@ -103,36 +103,36 @@ export type RequestSessionEndExplicitV2Result =
       };
     };
 
-export interface ObserveHostDisappearedV2Input {
+export interface ObserveHostDisappearedV3Input {
   coordRoot: string;
   instance_id: `inst_${string}`;
   generation_id: `gen_${string}`;
   observed_at?: string;
 }
 
-export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
-  const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state !== "v2") return { state: "unavailable" as const, reason: route.reason };
+export function endSessionExplicitV3(input: EndSessionExplicitV3Input) {
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state !== "v3") return { state: "unavailable" as const, reason: route.reason };
   const observedAt = input.observed_at ?? new Date().toISOString();
   try {
-    closeAbandonedCommandSpansV2({
+    closeAbandonedCommandSpansV3({
       coordRoot: input.coordRoot,
       mode: route.mode,
       generation_id: input.generation_id,
       build_id: route.build_id,
-      platform: livePlatformV2(),
+      platform: livePlatformV3(),
       observed_at: observedAt,
     });
   } catch {
     // Command spans never block a session end; the closer is best effort.
   }
-  return recordApprovedSessionEndV2({
+  return recordApprovedSessionEndV3({
     coordRoot: input.coordRoot,
     mode: route.mode,
     instance_id: input.instance_id,
     generation_id: input.generation_id,
     build_id: route.build_id,
-    platform: livePlatformV2(),
+    platform: livePlatformV3(),
     reason: "approved_explicit_end",
     outcome: input.outcome ?? "succeeded",
     observed_at: observedAt,
@@ -146,11 +146,11 @@ export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
  * guard. When invoked from inside an adapter turn, the request is committed
  * first and the stop hook reconciles it after that exact turn has closed.
  */
-export function requestSessionEndExplicitV2(
-  input: RequestSessionEndExplicitV2Input,
-): RequestSessionEndExplicitV2Result {
-  const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state !== "v2") return { state: "unavailable" as const, reason: route.reason };
+export function requestSessionEndExplicitV3(
+  input: RequestSessionEndExplicitV3Input,
+): RequestSessionEndExplicitV3Result {
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state !== "v3") return { state: "unavailable" as const, reason: route.reason };
   let lease: ReturnType<typeof acquireNoClobberLease>;
   try {
     lease = acquireFinalizationReconcileLease(input.coordRoot);
@@ -158,7 +158,7 @@ export function requestSessionEndExplicitV2(
     return { state: "busy" as const };
   }
   try {
-    const record = listHookProducerStateRecordsV2(input.coordRoot, { includeTerminal: true }).find(
+    const record = listHookProducerStateRecordsV3(input.coordRoot, { includeTerminal: true }).find(
       ({ state }) =>
         state.instance_id === input.instance_id && state.generation_id === input.generation_id,
     );
@@ -173,9 +173,9 @@ export function requestSessionEndExplicitV2(
       };
     }
     if (!record.state.current_turn_id && record.state.spans.length === 0) {
-      return endSessionExplicitV2(input);
+      return endSessionExplicitV3(input);
     }
-    const existing = listSessionFinalizationRequestsV2(input.coordRoot).find(
+    const existing = listSessionFinalizationRequestsV3(input.coordRoot).find(
       (request) =>
         request.status === "pending" &&
         request.generation_id === record.state.generation_id &&
@@ -212,16 +212,16 @@ export function requestSessionEndExplicitV2(
   }
 }
 
-export function hasPendingExplicitSessionEndV2(coordRoot: string): boolean {
-  return listSessionFinalizationRequestsV2(coordRoot).some(
+export function hasPendingExplicitSessionEndV3(coordRoot: string): boolean {
+  return listSessionFinalizationRequestsV3(coordRoot).some(
     (request) => request.status === "pending" && request.trigger === "explicit_end",
   );
 }
 
 /** Accept a host supervisor's observation without granting it terminal authority. */
-export function observeHostDisappearedV2(input: ObserveHostDisappearedV2Input) {
-  const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state !== "v2") return { state: "unavailable" as const, reason: route.reason };
+export function observeHostDisappearedV3(input: ObserveHostDisappearedV3Input) {
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state !== "v3") return { state: "unavailable" as const, reason: route.reason };
   let lease: ReturnType<typeof acquireNoClobberLease>;
   try {
     lease = acquireFinalizationReconcileLease(input.coordRoot);
@@ -229,7 +229,7 @@ export function observeHostDisappearedV2(input: ObserveHostDisappearedV2Input) {
     return { state: "busy" as const };
   }
   try {
-    const record = listHookProducerStateRecordsV2(input.coordRoot).find(
+    const record = listHookProducerStateRecordsV3(input.coordRoot).find(
       ({ state }) =>
         state.instance_id === input.instance_id && state.generation_id === input.generation_id,
     );
@@ -254,11 +254,11 @@ export function observeHostDisappearedV2(input: ObserveHostDisappearedV2Input) {
   }
 }
 
-export function reconcileSessionFinalizationV2(
+export function reconcileSessionFinalizationV3(
   coordRoot: string,
-  options: ReconcileSessionFinalizationOptionsV2 = {},
-): ReconcileSessionFinalizationResultV2 {
-  const result: ReconcileSessionFinalizationResultV2 = {
+  options: ReconcileSessionFinalizationOptionsV3 = {},
+): ReconcileSessionFinalizationResultV3 {
+  const result: ReconcileSessionFinalizationResultV3 = {
     observed: 0,
     cancelled: 0,
     finalized: 0,
@@ -266,8 +266,8 @@ export function reconcileSessionFinalizationV2(
     pending: 0,
     diagnostics: [],
   };
-  const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state !== "v2") {
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
+  if (route.state !== "v3") {
     result.diagnostics.push(route.reason);
     return result;
   }
@@ -282,29 +282,29 @@ export function reconcileSessionFinalizationV2(
     // Terminal drain: pick up intake records whose appender lost the state
     // lease and exited with no later signal to drain them.
     try {
-      drainHookIntakeSpoolV2(coordRoot);
+      drainHookIntakeSpoolV3(coordRoot);
     } catch {
       result.diagnostics.push("intake_drain_failed");
     }
     const now = options.now ?? new Date();
     const policy = sessionFinalizationConfig(coordRoot);
     const ledger =
-      route.mode === "candidate" ? readActiveLedgerV2(coordRoot) : readLedgerV2(coordRoot);
+      route.mode === "candidate" ? readLedgerV3(coordRoot, { authority: "candidate" }) : readLedgerV3(coordRoot);
     if (!ledger.complete || ledger.diagnostics.length > 0) {
       result.diagnostics.push("ledger_not_authority_safe");
       return result;
     }
-    const records = listHookProducerStateRecordsV2(coordRoot, { includeTerminal: true });
+    const records = listHookProducerStateRecordsV3(coordRoot, { includeTerminal: true });
     const live = records.filter(({ state }) => !state.terminal);
     const events = ledger.events.map(({ event }) => event);
     const lastByGeneration = lastEventsByGeneration(events);
 
     const archiveScan = options.archive_observations
       ? { observations: options.archive_observations, diagnostics: [] }
-      : readCodexArchiveObservationsV2(coordRoot, { observedAt: now.toISOString() });
+      : readCodexArchiveObservationsV3(coordRoot, { observedAt: now.toISOString() });
     result.diagnostics.push(...archiveScan.diagnostics);
     for (const observation of archiveScan.observations) {
-      const state = readHookProducerStateV2(
+      const state = readHookProducerStateV3(
         coordRoot,
         observation.adapter,
         observation.native_session_id,
@@ -367,7 +367,7 @@ export function reconcileSessionFinalizationV2(
       policy.cascadeGraceSeconds,
     );
 
-    for (const request of listSessionFinalizationRequestsV2(coordRoot).filter(
+    for (const request of listSessionFinalizationRequestsV3(coordRoot).filter(
       (candidate) => candidate.status === "pending",
     )) {
       const record = records.find(
@@ -386,7 +386,7 @@ export function reconcileSessionFinalizationV2(
           // Salvage (ADR 0078) precedes expiry: the requested turn is closed
           // and every remaining span is in the approved set, so derived
           // recovery terminals complete the end instead of cancelling it.
-          const salvaged = salvageOpenSpansV2({
+          const salvaged = salvageOpenSpansV3({
             coordRoot,
             mode: route.mode,
             instance_id: request.instance_id,
@@ -394,7 +394,7 @@ export function reconcileSessionFinalizationV2(
             allowed_span_ids: request.allowed_open_span_ids ?? [],
             requested_turn_id: request.requested_turn_id,
             build_id: route.build_id,
-            platform: livePlatformV2(),
+            platform: livePlatformV3(),
             observed_at: now.toISOString(),
           });
           if (salvaged.state === "salvaged") {
@@ -439,24 +439,24 @@ export function reconcileSessionFinalizationV2(
         continue;
       }
       try {
-        closeAbandonedCommandSpansV2({
+        closeAbandonedCommandSpansV3({
           coordRoot,
           mode: route.mode,
           generation_id: request.generation_id,
           build_id: route.build_id,
-          platform: livePlatformV2(),
+          platform: livePlatformV3(),
           observed_at: now.toISOString(),
         });
       } catch {
         result.diagnostics.push(`command_closer_failed:${request.request_id}`);
       }
-      const ended = recordApprovedSessionEndV2({
+      const ended = recordApprovedSessionEndV3({
         coordRoot,
         mode: route.mode,
         instance_id: request.instance_id,
         generation_id: request.generation_id,
         build_id: route.build_id,
-        platform: livePlatformV2(),
+        platform: livePlatformV3(),
         reason: request.reason,
         outcome: request.outcome,
         observed_at: now.toISOString(),
@@ -486,21 +486,21 @@ export function reconcileSessionFinalizationV2(
 
 function observeCascades(
   coordRoot: string,
-  route: Extract<ReturnType<typeof resolveLiveEventLedgerRouteV2>, { state: "v2" }>,
-  records: HookProducerStateRecordV2[],
-  events: EventV2[],
-  lastByGeneration: Map<string, EventV2>,
+  route: Extract<ReturnType<typeof resolveLiveEventLedgerRouteV3>, { state: "v3" }>,
+  records: HookProducerStateRecordV3[],
+  events: EventV3[],
+  lastByGeneration: Map<string, EventV3>,
   now: Date,
   graceSeconds: number,
 ): number {
   let observed = 0;
-  const liveByGeneration = new Map<`gen_${string}`, HookProducerStateRecordV2>(
+  const liveByGeneration = new Map<`gen_${string}`, HookProducerStateRecordV3>(
     records
       .filter(({ state }) => !state.terminal)
       .map((record) => [record.state.generation_id, record]),
   );
-  const starts = new Map<`gen_${string}`, Extract<EventV2, { event_type: "session.started" }>>();
-  const terminals = new Map<`gen_${string}`, Extract<EventV2, { event_type: "session.ended" }>>();
+  const starts = new Map<`gen_${string}`, Extract<EventV3, { event_type: "session.started" }>>();
+  const terminals = new Map<`gen_${string}`, Extract<EventV3, { event_type: "session.ended" }>>();
   for (const event of events) {
     const generation = "generation_id" in event.scope ? event.scope.generation_id : undefined;
     if (event.event_type === "session.started" && generation) {
@@ -607,7 +607,7 @@ function observeCascades(
     }
   }
 
-  const byInstance = new Map<string, HookProducerStateRecordV2[]>();
+  const byInstance = new Map<string, HookProducerStateRecordV3[]>();
   for (const record of records.filter(({ state }) => !state.terminal)) {
     const group = byInstance.get(record.state.instance_id) ?? [];
     group.push(record);
@@ -641,14 +641,14 @@ function observeCascades(
 }
 
 interface RequestInput {
-  trigger: SessionFinalizationTriggerV2;
-  reason: ApprovedSessionEndReasonV2;
-  outcome: SessionFinalizationRequestV2["outcome"];
+  trigger: SessionFinalizationTriggerV3;
+  reason: ApprovedSessionEndReasonV3;
+  outcome: SessionFinalizationRequestV3["outcome"];
   observedAt: string;
   notBefore: string;
   ageMs: number;
   coordinationFinalized: boolean;
-  route: Extract<ReturnType<typeof resolveLiveEventLedgerRouteV2>, { state: "v2" }>;
+  route: Extract<ReturnType<typeof resolveLiveEventLedgerRouteV3>, { state: "v3" }>;
   cause?: `evt_${string}`;
   requestedTurnId?: `tid_${string}`;
   allowedOpenSpanIds?: `span_${string}`[];
@@ -656,11 +656,11 @@ interface RequestInput {
 
 function ensureRequest(
   coordRoot: string,
-  record: HookProducerStateRecordV2,
+  record: HookProducerStateRecordV3,
   input: RequestInput,
-): SessionFinalizationRequestV2 | null {
+): SessionFinalizationRequestV3 | null {
   if (
-    listSessionFinalizationRequestsV2(coordRoot).some(
+    listSessionFinalizationRequestsV3(coordRoot).some(
       (request) =>
         request.status === "pending" &&
         request.generation_id === record.state.generation_id &&
@@ -669,9 +669,9 @@ function ensureRequest(
   )
     return null;
   if (!record.state.last_event_id) return null;
-  const request: SessionFinalizationRequestV2 = {
-    format: SESSION_FINALIZATION_REQUEST_FORMAT_V2,
-    format_version: SESSION_FINALIZATION_REQUEST_VERSION_V2,
+  const request: SessionFinalizationRequestV3 = {
+    format: SESSION_FINALIZATION_REQUEST_FORMAT_V3,
+    format_version: SESSION_FINALIZATION_REQUEST_VERSION_V3,
     request_id: `sfr_${randomUUID()}`,
     instance_id: record.state.instance_id,
     generation_id: record.state.generation_id,
@@ -688,15 +688,15 @@ function ensureRequest(
   };
   const observation = buildObservationEvent(coordRoot, record, request, input);
   request.observation_event_id = observation.event_id as `evt_${string}`;
-  writeEventV2(coordRoot, observation);
+  writeEventV3(coordRoot, observation);
   writeRequest(coordRoot, request, true);
   return request;
 }
 
 function explicitEndReadiness(
-  request: SessionFinalizationRequestV2,
-  record: HookProducerStateRecordV2,
-  events: EventV2[],
+  request: SessionFinalizationRequestV3,
+  record: HookProducerStateRecordV3,
+  events: EventV3[],
 ): "pending" | "ready" | "cancel" {
   if (record.state.delegations.length > 0) return "cancel";
   if (record.state.current_turn_id && record.state.current_turn_id !== request.requested_turn_id)
@@ -722,10 +722,10 @@ function explicitEndReadiness(
 }
 
 function laterGenerationEvents(
-  events: EventV2[],
+  events: EventV3[],
   observationIndex: number,
   generationId: `gen_${string}`,
-): EventV2[] {
+): EventV3[] {
   return events
     .slice(observationIndex + 1)
     .filter(
@@ -738,7 +738,7 @@ function laterGenerationEvents(
  * derived recovery events — including the derived requests post-only call
  * classes generate constantly — never revoke an approved end.
  */
-function isNativeNewWork(event: EventV2): boolean {
+function isNativeNewWork(event: EventV3): boolean {
   return (
     event.provenance.attestation !== "derived" &&
     [
@@ -758,9 +758,9 @@ function isNativeNewWork(event: EventV2): boolean {
  * approved set. Anything else stays pending or cancels through readiness.
  */
 function explicitEndSalvageEligible(
-  request: SessionFinalizationRequestV2,
-  record: HookProducerStateRecordV2,
-  events: EventV2[],
+  request: SessionFinalizationRequestV3,
+  record: HookProducerStateRecordV3,
+  events: EventV3[],
 ): boolean {
   if (record.state.delegations.length > 0) return false;
   if (record.state.current_turn_id) return false;
@@ -785,29 +785,29 @@ function explicitEndSalvageEligible(
 
 function buildObservationEvent(
   coordRoot: string,
-  record: HookProducerStateRecordV2,
-  request: SessionFinalizationRequestV2,
+  record: HookProducerStateRecordV3,
+  request: SessionFinalizationRequestV3,
   input: RequestInput,
-): EventV2 {
+): EventV3 {
   const route = input.route;
   const rootId = (
-    route.mode === "candidate" ? readActiveLedgerV2(coordRoot) : readLedgerV2(coordRoot)
+    route.mode === "candidate" ? readLedgerV3(coordRoot, { authority: "candidate" }) : readLedgerV3(coordRoot)
   ).events.find(({ event }) => event.event_type === "ledger.genesis")?.event.scope
     .root_id as `root_${string}`;
-  const context = fingerprintContextV2(
+  const context = fingerprintContextV3(
     coordRoot,
     rootId,
     record.state.generation_id,
     record.state.privacy_epoch_id,
   );
-  const event = buildEventV2("lifecycle.sweep_observed", {
+  const event = buildEventV3("lifecycle.sweep_observed", {
     producer: {
       producer_id: "prd_agent-finalizer",
       boot_id: `boot_${randomUUID()}`,
       sequence: 1,
       component: "agent-coord",
       build_id: route.build_id,
-      platform: livePlatformV2(),
+      platform: livePlatformV3(),
     },
     scope: {
       root_id: rootId,
@@ -823,7 +823,7 @@ function buildObservationEvent(
       source_event: `agent-coord.session-finalizer.${request.trigger}`,
       attestation: "derived",
       confidence: request.trigger === "verified_archive" ? "exact" : "medium",
-      source_record_id: normalizeNativeIdV2(
+      source_record_id: normalizeNativeIdV3(
         context,
         "agent-coord.session-finalization-request",
         request.request_id,
@@ -843,19 +843,19 @@ function buildObservationEvent(
       provisional: true,
       age_ms: Math.max(0, Math.floor(input.ageMs)),
     },
-  }) as EventV2;
-  assertEventV2(event);
+  }) as EventV3;
+  assertEventV3(event);
   return event;
 }
 
 function cancelPendingRequests(
   coordRoot: string,
   generationId: `gen_${string}`,
-  trigger: SessionFinalizationTriggerV2,
+  trigger: SessionFinalizationTriggerV3,
   at: string,
 ): number {
   let cancelled = 0;
-  for (const request of listSessionFinalizationRequestsV2(coordRoot)) {
+  for (const request of listSessionFinalizationRequestsV3(coordRoot)) {
     if (
       request.status === "pending" &&
       request.generation_id === generationId &&
@@ -868,13 +868,13 @@ function cancelPendingRequests(
   return cancelled;
 }
 
-function cancelRequest(coordRoot: string, request: SessionFinalizationRequestV2, at: string): void {
+function cancelRequest(coordRoot: string, request: SessionFinalizationRequestV3, at: string): void {
   writeRequest(coordRoot, { ...request, status: "cancelled", cancelled_at: at });
 }
 
 function completeRequest(
   coordRoot: string,
-  request: SessionFinalizationRequestV2,
+  request: SessionFinalizationRequestV3,
   eventId?: `evt_${string}`,
 ): void {
   writeRequest(coordRoot, {
@@ -887,14 +887,14 @@ function completeRequest(
 
 function writeRequest(
   coordRoot: string,
-  request: SessionFinalizationRequestV2,
+  request: SessionFinalizationRequestV3,
   create = false,
 ): void {
-  const directory = sessionFinalizationRequestDirectoryV2(coordRoot);
+  const directory = sessionFinalizationRequestDirectoryV3(coordRoot);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
-  const path = sessionFinalizationRequestPathV2(coordRoot, request.request_id);
-  if (create && existsSync(path)) throw new Error("V2 finalization request already exists");
+  const path = sessionFinalizationRequestPathV3(coordRoot, request.request_id);
+  if (create && existsSync(path)) throw new Error("V3 finalization request already exists");
   const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
@@ -912,8 +912,8 @@ function writeRequest(
   }
 }
 
-function lastEventsByGeneration(events: EventV2[]): Map<string, EventV2> {
-  const out = new Map<string, EventV2>();
+function lastEventsByGeneration(events: EventV3[]): Map<string, EventV3> {
+  const out = new Map<string, EventV3>();
   for (const event of events) {
     if ("generation_id" in event.scope) out.set(event.scope.generation_id, event);
   }
@@ -937,11 +937,11 @@ function acquireFinalizationReconcileLease(coordRoot: string) {
   return acquireNoClobberLease({
     path: join(
       resolve(coordRoot),
-      EVENT_V2_LEDGER_RELATIVE_ROOT,
+      EVENT_V3_LEDGER_RELATIVE_ROOT,
       "finalization",
       "reconcile-lease",
     ),
-    scope: "event-v2-session-finalization-reconcile",
+    scope: "event-v3-session-finalization-reconcile",
     authoritySha256: createHash("sha256").update(resolve(coordRoot)).digest("hex"),
     staleAfterMs: 30_000,
     validateStaleOwner: (owner) => owner.host === hostname() && !pidIsAlive(owner.pid),

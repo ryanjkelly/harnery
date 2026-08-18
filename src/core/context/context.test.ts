@@ -2,14 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordLiveClaimChangeV2, recordLiveTaskChangeV2 } from "../agents/live-authority-v2.ts";
+import { recordLiveClaimChangeV3, recordLiveTaskChangeV3 } from "../agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-view.ts";
-import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
-import { sha256V2 } from "../events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { sha256V3 } from "../events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
 import {
   type ContinuityCapsule,
   checkpointContext,
@@ -27,20 +27,20 @@ function root(): string {
   const value = mkdtempSync(join(tmpdir(), "harnery-context-"));
   roots.push(value);
   mkdirSync(value, { recursive: true });
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: value,
     harneryBuild: "context-test",
     hostBuild: "host-test",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "context-test",
   });
   return value;
 }
 
 function seedLiveWork(root: string): void {
-  const route = resolveLiveEventLedgerRouteV2(root);
-  if (route.state !== "v2") throw new Error("expected V2 route");
-  recordLiveHookSignalV2({
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  recordLiveHookSignalV3({
     coordRoot: root,
     route,
     eventName: "session-start",
@@ -49,14 +49,14 @@ function seedLiveWork(root: string): void {
     instanceId: "owner-a",
   });
   ensureLiveCoordinationHeartbeat(root, "owner-a", "session-a", "claude-code", "claude-fable-5");
-  recordLiveTaskChangeV2({
+  recordLiveTaskChangeV3({
     coordRoot: root,
     owner: "owner-a",
     nativeSessionId: "session-a",
     adapter: "claude-code",
     task: "finish the continuity slice",
   });
-  recordLiveClaimChangeV2({
+  recordLiveClaimChangeV3({
     coordRoot: root,
     owner: "owner-a",
     nativeSessionId: "session-a",

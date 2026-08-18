@@ -4,17 +4,17 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  recordLiveClaimChangeV2,
-  recordLiveLifecycleChangeV2,
-  recordLiveTaskChangeV2,
-} from "../agents/live-authority-v2.ts";
+  recordLiveClaimChangeV3,
+  recordLiveLifecycleChangeV3,
+  recordLiveTaskChangeV3,
+} from "../agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../agents/state/live-coordination-view.ts";
-import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
-import { sha256V2 } from "../events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { sha256V3 } from "../events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
 import { buildPresenceBlob } from "./blob.ts";
 import { PRESENCE_REF_PREFIX, parseForEachRefOutput, sanitizeRefComponent } from "./git.ts";
 import { fetchPresence, publishPresence, readRemoteMachines } from "./index.ts";
@@ -46,14 +46,14 @@ function seedHeartbeat(
   overrides: Record<string, unknown> = {},
 ): void {
   const now = new Date().toISOString();
-  const route = resolveLiveEventLedgerRouteV2(root);
-  if (route.state !== "v2") throw new Error("expected V2 route");
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected V3 route");
   writeFileSync(
     join(root, ".harnery", ".name-history"),
     `${JSON.stringify({ instance_id: instanceId, name: "Testa", kind: "session", ts: now })}\n`,
     { flag: "a" },
   );
-  recordLiveHookSignalV2({
+  recordLiveHookSignalV3({
     coordRoot: root,
     route,
     eventName: "session-start",
@@ -62,14 +62,14 @@ function seedHeartbeat(
     instanceId,
   });
   ensureLiveCoordinationHeartbeat(root, instanceId, instanceId, "claude-code");
-  recordLiveTaskChangeV2({
+  recordLiveTaskChangeV3({
     coordRoot: root,
     owner: instanceId,
     nativeSessionId: instanceId,
     adapter: "claude-code",
     task: typeof overrides.task === "string" ? overrides.task : "testing presence",
   });
-  recordLiveClaimChangeV2({
+  recordLiveClaimChangeV3({
     coordRoot: root,
     owner: instanceId,
     nativeSessionId: instanceId,
@@ -79,7 +79,7 @@ function seedHeartbeat(
     access: "write",
   });
   if (overrides.activity === "needs_input") {
-    recordLiveHookSignalV2({
+    recordLiveHookSignalV3({
       coordRoot: root,
       route,
       eventName: "permission-request",
@@ -89,7 +89,7 @@ function seedHeartbeat(
     });
   }
   if (overrides.task_state === "blocked") {
-    recordLiveLifecycleChangeV2({
+    recordLiveLifecycleChangeV3({
       coordRoot: root,
       owner: instanceId,
       nativeSessionId: instanceId,
@@ -125,11 +125,11 @@ beforeEach(() => {
   mkdirSync(join(cloneA, ".harnery"), { recursive: true });
   mkdirSync(join(cloneB, ".harnery"), { recursive: true });
   for (const root of [cloneA, cloneB]) {
-    initializeEventLedgerV2({
+    initializeEventLedgerV3({
       coordRoot: root,
       harneryBuild: "presence-test",
       hostBuild: "host-test",
-      configDigest: sha256V2("config"),
+      configDigest: sha256V3("config"),
       approvalRecordId: "presence-test",
     });
   }
@@ -156,7 +156,7 @@ describe("sanitizeRefComponent", () => {
 });
 
 describe("buildPresenceBlob", () => {
-  test("includes live V2 generations and excludes transient caches", () => {
+  test("includes live V3 generations and excludes transient caches", () => {
     process.env.HARNERY_MACHINE = "machine-a";
     seedHeartbeat(cloneA, "live-1");
     seedHeartbeat(cloneA, "transient-1", { kind: "transient" });

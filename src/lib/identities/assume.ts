@@ -17,8 +17,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { recordLiveIdentityChangeV2 } from "../../core/agents/live-authority-v2.ts";
-import { recordLiveSweepObservationV2 } from "../../core/agents/live-lifecycle-v2.ts";
+import { recordLiveIdentityChangeV3 } from "../../core/agents/live-authority-v3.ts";
+import { recordLiveSweepObservationV3 } from "../../core/agents/live-lifecycle-v3.ts";
 import type { Heartbeat } from "../../core/agents/state/heartbeat-writer.ts";
 import {
   readLiveCoordinationRow,
@@ -154,7 +154,7 @@ export function reclaimAbandonedLocalConflict(
     }
   }
   removePidmapRowsForInstance(coordRoot, conflict.instance_id);
-  recordLiveSweepObservationV2({
+  recordLiveSweepObservationV3({
     coordRoot,
     owner: conflict.instance_id,
     nativeSessionId: sessionId,
@@ -249,7 +249,7 @@ export function assumeIdentity(
     if (!hb) {
       throw new IdentityAssumeError(
         "no_live_generation",
-        `no authority-safe live V2 generation for instance '${instanceId}'`,
+        `no authority-safe live V3 generation for instance '${instanceId}'`,
       );
     }
     if (hb.kind && hb.kind !== "session") {
@@ -313,7 +313,7 @@ export function assumeIdentity(
       };
     }
 
-    const emitted = recordLiveIdentityChangeV2({
+    const emitted = recordLiveIdentityChangeV3({
       coordRoot,
       owner: instanceId,
       nativeSessionId: hb.native_session_id ?? hb.session_id,

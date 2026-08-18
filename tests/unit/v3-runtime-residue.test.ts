@@ -32,7 +32,7 @@ const retired = [
 
 const canonicalPrefixes = new Set(["session.started", "session.ended", "command.started"]);
 
-describe("V2-only runtime vocabulary", () => {
+describe("V3-only runtime vocabulary", () => {
   test("production source has no retired V1 ledger or command semantics", () => {
     const root = join(import.meta.dir, "../..");
     const findings: string[] = [];
@@ -59,6 +59,22 @@ describe("V2-only runtime vocabulary", () => {
     );
     expect(source).not.toContain("readHeartbeat");
     expect(source).not.toContain("export interface Heartbeat");
+  });
+
+  test("production consumers cannot import sealed V2 runtime modules", () => {
+    const root = join(import.meta.dir, "../..");
+    const findings = productionFiles(root)
+      .filter((file) => {
+        const rel = relative(root, file).replaceAll("\\", "/");
+        return !rel.startsWith("src/core/events/v2/") && !rel.startsWith("src/core/events/v3/");
+      })
+      .flatMap((file) => {
+        const source = readFileSync(file, "utf8");
+        return source.includes("events/v2") || source.includes("live-session-v2")
+          ? [relative(root, file).replaceAll("\\", "/")]
+          : [];
+      });
+    expect(findings).toEqual([]);
   });
 });
 

@@ -11,12 +11,12 @@ afterEach(() => {
 });
 
 function root(): string {
-  const value = mkdtempSync(join(tmpdir(), "harn-stop-v2-"));
+  const value = mkdtempSync(join(tmpdir(), "harn-stop-v3-"));
   roots.push(value);
   return value;
 }
 
-describe("evaluateStopHook on the universal V2 ledger", () => {
+describe("evaluateStopHook on the universal V3 ledger", () => {
   test("an explicit bypass remains an unconditional allow", () => {
     expect(
       evaluateStopHook(root(), {
@@ -38,7 +38,7 @@ describe("evaluateStopHook on the universal V2 ledger", () => {
     ).toMatchObject({ allow: true, rule: "stop-hook.codex_observe_only" });
   });
 
-  test("other adapters fail open explicitly when V2 cannot prove reply-visible rituals", () => {
+  test("other adapters fail open explicitly when V3 cannot prove reply-visible rituals", () => {
     const verdict = evaluateStopHook(root(), {
       rule: "stop-hook",
       instance_id: "operator",
@@ -46,8 +46,8 @@ describe("evaluateStopHook on the universal V2 ledger", () => {
     });
     expect(verdict).toMatchObject({
       allow: true,
-      rule: "stop-hook.v2_reply_evidence_unavailable",
+      rule: "stop-hook.v3_reply_evidence_unavailable",
     });
-    expect(verdict.reason).toContain("V2");
+    expect(verdict.reason).toContain("V3");
   });
 });

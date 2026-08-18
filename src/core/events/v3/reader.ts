@@ -141,6 +141,11 @@ export function eventV3Paths(coordRoot: string) {
   };
 }
 
+/** Stable file target for change notification only; reads still go through readLedgerV3. */
+export function eventV3ActiveWatchPath(coordRoot: string): string {
+  return eventV3Paths(coordRoot).active;
+}
+
 /** Read the complete V3 ledger through catalog-bound filesystem discovery. */
 export function readLedgerV3(
   coordRoot: string,

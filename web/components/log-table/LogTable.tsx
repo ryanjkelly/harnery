@@ -89,7 +89,7 @@ type RenderItem<E> = { kind: "row"; row: E } | { kind: "group"; rows: E[]; group
 /**
  * Generic full-width scrollable structured-event log.
  *
- * Shared shell between /events (canonical V2 rows) and /live (the V2 command
+ * Shared shell between /events (canonical V3 rows) and /live (the V3 command
  * projection). The two pages plug in per-event-shape
  * renderers via the `renderer` prop. Everything else is identical across both
  * surfaces: toolbar, search (plain + regex), agent filter, kind chips,

@@ -13,7 +13,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
-import { recordLiveSweepObservationV2 } from "../live-lifecycle-v2.ts";
+import { recordLiveSweepObservationV3 } from "../live-lifecycle-v3.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
 function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
@@ -32,7 +32,7 @@ function emitSwept(
   ageSecs?: number,
 ): boolean {
   try {
-    recordLiveSweepObservationV2({
+    recordLiveSweepObservationV3({
       coordRoot,
       owner: instanceId,
       nativeSessionId: sessionId,

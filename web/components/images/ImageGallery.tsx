@@ -36,7 +36,7 @@ const WINDOW_LABEL: Record<WindowFilter, string> = {
 };
 
 /**
- * /images client shell for the privacy-safe V2 artifact projection. Until V2
+ * /images client shell for the privacy-safe V3 artifact projection. Until V3
  * exposes content-addressed blob references, it renders the server's explicit
  * unavailable state and never falls back to V1 image events.
  */
@@ -135,7 +135,7 @@ export function ImageGallery({ initial: images, summaries, unavailableReason }: 
         <div className="flex-1 min-h-0 overflow-auto">
           {images.length === 0 ? (
           <EmptyState>
-            {unavailableReason ?? "No V2 image artifacts have been observed."}
+            {unavailableReason ?? "No V3 image artifacts have been observed."}
           </EmptyState>
         ) : filtered.length === 0 ? (
           <EmptyState>

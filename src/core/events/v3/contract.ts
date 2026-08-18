@@ -3,6 +3,7 @@ import {
   EVENT_V2_CORE_EVENT_TYPES,
   type EventOfTypeV2,
   type EventTypeV2,
+  type EventV2,
   EventV2Schema,
   ObservationV2Schema,
   OutcomeV2Schema,
@@ -227,34 +228,140 @@ export const EVENT_V3_CORE_EVENT_TYPES = [
   "health.capability_drift",
 ] as const;
 
-export type EventV3 = Static<typeof EventV3Schema>;
 export type EventTypeV3 = (typeof EVENT_V3_CORE_EVENT_TYPES)[number];
 type ContractV3 = Static<typeof ContractV3Schema>;
 type WithContractV3<T> = T extends object ? Omit<T, "contract"> & { contract: ContractV3 } : never;
+type ReplaceEventV3<
+  T extends EventTypeV2,
+  U extends EventTypeV3,
+  P,
+> = Omit<WithContractV3<EventOfTypeV2<T>>, "event_type" | "payload"> & {
+  event_type: U;
+  payload: P;
+};
+type SpanSummaryValueV3 = Static<typeof SpanSummaryV3Schema>;
+type SessionEndedEventV3 = ReplaceEventV3<
+  "session.ended",
+  "session.ended",
+  EventOfTypeV2<"session.ended">["payload"] & { span: SpanSummaryValueV3 }
+>;
+type TurnCompletedEventV3 = ReplaceEventV3<
+  "turn.completed",
+  "turn.completed",
+  EventOfTypeV2<"turn.completed">["payload"] & {
+    span: SpanSummaryValueV3;
+    usage: Static<ReturnType<typeof ObservationV3Schema<typeof TurnUsageV3Schema>>>;
+    inference: Static<ReturnType<typeof ObservationV3Schema<typeof TurnInferenceV3Schema>>>;
+    harness: Static<ReturnType<typeof ObservationV3Schema<typeof TurnHarnessV3Schema>>>;
+  }
+>;
+type ToolCompletedEventV3 = ReplaceEventV3<
+  "tool.completed",
+  "tool.completed",
+  Omit<EventOfTypeV2<"tool.completed">["payload"], "duration_ms"> & {
+    duration_ms: SpanSummaryValueV3["duration_ms"];
+    span: SpanSummaryValueV3;
+  }
+>;
+type CommandCompletedEventV3 = ReplaceEventV3<
+  "command.completed",
+  "command.completed",
+  Omit<EventOfTypeV2<"command.completed">["payload"], "duration_ms"> & {
+    duration_ms: SpanSummaryValueV3["duration_ms"];
+    span: SpanSummaryValueV3;
+  }
+>;
+type AgentStartedEventV3 = Omit<
+  WithContractV3<EventOfTypeV2<"agent.started">>,
+  "links"
+> & {
+  links: EventOfTypeV2<"agent.started">["links"] & {
+    span_id: `span_${string}`;
+    parent_span_id: `span_${string}`;
+  };
+};
+type AgentCompletedEventV3 = ReplaceEventV3<
+  "agent.completed",
+  "agent.completed",
+  EventOfTypeV2<"agent.completed">["payload"] & { span: SpanSummaryValueV3 }
+>;
+type WaitStartedEventV3 = ReplaceEventV3<
+  "interaction.wait_started",
+  "wait.started",
+  {
+    wait_id: string;
+    kind: Static<typeof WaitKindV3Schema>;
+    authority_reference?: string;
+    wake_at?: string;
+  }
+>;
+type WaitEndedEventV3 = ReplaceEventV3<
+  "interaction.wait_ended",
+  "wait.ended",
+  EventOfTypeV2<"interaction.wait_ended">["payload"] & { span: SpanSummaryValueV3 }
+>;
+type HealthCapabilityDriftEventV3 = ReplaceEventV3<
+  "health.observed",
+  "health.capability_drift",
+  {
+    signal: string;
+    promised: "native" | "derived" | "conditional";
+    expected_count: number;
+    observed_count: number;
+    generation_ended: boolean;
+  }
+>;
 export type EventOfTypeV3<T extends EventTypeV3> = T extends "session.ended"
-  ? Static<typeof SessionEndedV3Schema>
+  ? SessionEndedEventV3
   : T extends "turn.completed"
-    ? Static<typeof TurnCompletedV3Schema>
+    ? TurnCompletedEventV3
     : T extends "tool.completed"
-      ? Static<typeof ToolCompletedV3Schema>
+      ? ToolCompletedEventV3
       : T extends "command.completed"
-        ? Static<typeof CommandCompletedV3Schema>
+        ? CommandCompletedEventV3
         : T extends "agent.started"
-          ? Static<typeof AgentStartedV3Schema>
+          ? AgentStartedEventV3
           : T extends "agent.completed"
-            ? Static<typeof AgentCompletedV3Schema>
+            ? AgentCompletedEventV3
             : T extends "wait.started"
-              ? Static<typeof WaitStartedV3Schema>
+              ? WaitStartedEventV3
               : T extends "wait.ended"
-                ? Static<typeof WaitEndedV3Schema>
+                ? WaitEndedEventV3
                 : T extends "health.capability_drift"
-                  ? Static<typeof HealthCapabilityDriftV3Schema>
+                  ? HealthCapabilityDriftEventV3
                   : T extends EventTypeV2
                     ? WithContractV3<EventOfTypeV2<T>>
                     : never;
+/**
+ * TypeBox cannot preserve the discriminated union through the generated
+ * schema-branch spread above. Rebuild the static union from the authoritative
+ * event-type map so producer and projection code retains event narrowing.
+ */
+type ReplacedEventTypeV2 =
+  | "session.ended"
+  | "turn.completed"
+  | "tool.completed"
+  | "command.completed"
+  | "agent.started"
+  | "agent.completed"
+  | "interaction.wait_started"
+  | "interaction.wait_ended";
+type UnchangedEventV3 = WithContractV3<Exclude<EventV2, { event_type: ReplacedEventTypeV2 }>>;
+export type EventV3 =
+  | UnchangedEventV3
+  | SessionEndedEventV3
+  | TurnCompletedEventV3
+  | ToolCompletedEventV3
+  | CommandCompletedEventV3
+  | AgentStartedEventV3
+  | AgentCompletedEventV3
+  | WaitStartedEventV3
+  | WaitEndedEventV3
+  | HealthCapabilityDriftEventV3;
 export type EventPayloadV3<T extends EventTypeV3> = EventOfTypeV3<T>["payload"];
 export type SpanSummaryV3 = Static<typeof SpanSummaryV3Schema>;
 export type TurnUsageV3 = Static<typeof TurnUsageV3Schema>;
 export type TurnInferenceV3 = Static<typeof TurnInferenceV3Schema>;
 export type TurnHarnessV3 = Static<typeof TurnHarnessV3Schema>;
 export type WaitKindV3 = Static<typeof WaitKindV3Schema>;
+export type RuntimeAttestationV3 = EventPayloadV3<"session.started">["runtime_attestation"];

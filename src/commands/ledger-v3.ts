@@ -5,43 +5,43 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import {
-  initializeEventLedgerV2,
-  readEventV2ControlState,
-  sha256V2,
-} from "../core/events/v2/index.ts";
+  initializeEventLedgerV3,
+  readEventV3ControlState,
+  sha256V3,
+} from "../core/events/v3/index.ts";
 
-/** Inspect or initialize the universal V2 event ledger. */
-export function registerLedgerV2Command(
+/** Inspect or initialize the universal V3 event ledger. */
+export function registerLedgerV3Command(
   program: Command,
   emit: EmitContext,
   context?: HarneryProgramContext,
 ): void {
   const command = program
-    .command("ledger-v2")
-    .description("Inspect or initialize the universal event-ledger V2 epoch");
+    .command("ledger-v3")
+    .description("Inspect or initialize the universal event-ledger V3 epoch");
 
   command
     .command("status")
-    .description("Read the V2 control boundary without changing it")
+    .description("Read the V3 control boundary without changing it")
     .action(() => {
       try {
-        emit.data(readEventV2ControlState(coordRoot(context)));
+        emit.data(readEventV3ControlState(coordRoot(context)));
       } catch (error) {
-        emitFailure(emit, "ledger_v2_status_failed", error);
+        emitFailure(emit, "ledger_v3_status_failed", error);
       }
     });
 
   command
     .command("initialize")
-    .description("Create V2 control state, or archive and replace the current V2 epoch")
+    .description("Create V3 control state, or archive and replace the current V3 epoch")
     .option("--root <path>", "Explicit coordination root")
     .requiredOption("--approval-record-id <id>", "Durable approval record identifier")
-    .option("--force-new-epoch", "Archive the current V2 epoch and create a new one")
+    .option("--force-new-epoch", "Archive the current V3 epoch and create a new one")
     .action((options: { root?: string; approvalRecordId: string; forceNewEpoch?: boolean }) => {
       try {
         const root = resolve(options.root ?? coordRoot(context));
         emit.data(
-          initializeEventLedgerV2({
+          initializeEventLedgerV3({
             coordRoot: root,
             harneryBuild: repositoryBuild(resolve(import.meta.dir, "..", "..")),
             hostBuild: repositoryBuild(root),
@@ -51,7 +51,7 @@ export function registerLedgerV2Command(
           }),
         );
       } catch (error) {
-        emitFailure(emit, "ledger_v2_initialize_failed", error);
+        emitFailure(emit, "ledger_v3_initialize_failed", error);
       }
     });
 }
@@ -77,7 +77,7 @@ function repositoryBuild(root: string): string {
 
 function configDigest(root: string): `sha256:${string}` {
   const path = resolve(root, ".harnery", "config.jsonc");
-  return sha256V2(existsSync(path) ? readFileSync(path) : Buffer.from("{}\n"));
+  return sha256V3(existsSync(path) ? readFileSync(path) : Buffer.from("{}\n"));
 }
 
 function emitFailure(emit: EmitContext, code: string, error: unknown): never {

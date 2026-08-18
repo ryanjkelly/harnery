@@ -1,4 +1,4 @@
-/** Privacy-safe V2 command stream for the live viewer. */
+/** Privacy-safe V3 command stream for the live viewer. */
 import { readSessionEventsTail } from "@/lib/session-events";
 
 export const dynamic = "force-dynamic";

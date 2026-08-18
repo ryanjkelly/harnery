@@ -10,11 +10,11 @@
  *
  * Unknown event types and unsupported schema versions return null (fail
  * closed): the projector renders `unknown` rather than guessing. Retired ledger
- * rows are dropped, and accepted rows keep their canonical V2 event names.
+ * rows are dropped, and accepted rows keep their canonical V3 event names.
  */
 
-import type { EventV2 } from "../../../src/core/events/v2/contract";
-import { validateEventV2 } from "../../../src/core/events/v2/validate";
+import type { EventV3 } from "../../../src/core/events/v3/contract";
+import { validateEventV3 } from "../../../src/core/events/v3/validate";
 import type { CodecActionCategory, CodecSourceEvidence } from "./contracts";
 
 /** Longest intent/task string allowed across the boundary. */
@@ -75,14 +75,14 @@ export function categorizeTool(toolName: string | undefined): CodecActionCategor
  * validates every field it lifts. V1 rows fail closed.
  */
 export function sanitizeEvent(raw: unknown): CodecSourceEvidence | null {
-  return sanitizeEventV2(raw);
+  return sanitizeEventV3(raw);
 }
 
-/** Reduce a fully validated event-ledger V2 row into Codec's stable evidence shape. */
-function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
-  const validation = validateEventV2(raw);
+/** Reduce a fully validated event-ledger V3 row into Codec's stable evidence shape. */
+function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
+  const validation = validateEventV3(raw);
   if (!validation.ok) return null;
-  const event = raw as EventV2;
+  const event = raw as EventV3;
   if (!("session_id" in event.scope) || !("generation_id" in event.scope)) return null;
   const links = event.links as { parent_generation_id?: string };
   const base: CodecSourceEvidence = {
@@ -141,9 +141,9 @@ function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
       base.category = "diagnostic";
       base.outcome = codecOutcome(event.payload.outcome);
       return base;
-    case "interaction.wait_started":
+    case "wait.started":
       return base;
-    case "interaction.wait_ended":
+    case "wait.ended":
       return base;
     case "progress.observed":
       base.category = PROGRESS_CATEGORIES[event.payload.kind] ?? "other";
@@ -182,7 +182,7 @@ function sanitizeEventV2(raw: unknown): CodecSourceEvidence | null {
   }
 }
 
-function subjectInstanceId(event: EventV2): string {
+function subjectInstanceId(event: EventV3): string {
   switch (event.event_type) {
     case "coord.task_changed":
     case "coord.lifecycle_changed":

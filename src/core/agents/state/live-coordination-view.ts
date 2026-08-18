@@ -9,38 +9,38 @@ import {
 import { dirname, join } from "node:path";
 import type { Adapter } from "../../adapter.ts";
 import {
-  type CoordinationGenerationViewV2,
-  type CoordinationViewV2,
-  readCoordinationViewV2,
-  requireAuthoritySafeCoordinationViewV2,
-} from "../../events/v2/coordination-view.ts";
-import { liveInstanceIdV2, resolveLiveEventLedgerRouteV2 } from "../../events/v2/live-routing.ts";
+  type CoordinationGenerationViewV3,
+  type CoordinationViewV3,
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
+} from "../../events/v3/coordination-view.ts";
+import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../../events/v3/live-routing.ts";
 import { type Heartbeat, readHeartbeat } from "./heartbeat-writer.ts";
 import { resolveName } from "./names.ts";
 
 /**
- * Heartbeat files are disposable V2 caches. These bindings prevent a stale
+ * Heartbeat files are disposable V3 caches. These bindings prevent a stale
  * row from a prior generation from being mistaken for current authority.
  */
-export interface V2HeartbeatMaterialization extends Heartbeat {
+export interface V3HeartbeatMaterialization extends Heartbeat {
   schema_version: 2;
-  v2_instance_id: `inst_${string}`;
-  v2_generation_id: `gen_${string}`;
-  v2_projection_event_id: string;
-  v2_task_state: "set" | "cleared";
+  v3_instance_id: `inst_${string}`;
+  v3_generation_id: `gen_${string}`;
+  v3_projection_event_id: string;
+  v3_task_state: "set" | "cleared";
 }
 
 /** Read the live coordination rows through the hard-cut ledger route. */
-export function readLiveCoordinationRows(coordRoot: string): Heartbeat[] {
-  const route = resolveLiveEventLedgerRouteV2(coordRoot);
+export function readLiveCoordinationRows(coordRoot: string): V3HeartbeatMaterialization[] {
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
   if (route.state === "blocked") return [];
-  let view: CoordinationViewV2;
+  let view: CoordinationViewV3;
   try {
-    view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
+    view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
   } catch {
     return [];
   }
-  const caches = readV2Caches(coordRoot);
+  const caches = readV3Caches(coordRoot);
   const byGeneration = new Map(
     Object.values(view.instances).map((generation) => [generation.generation_id, generation]),
   );
@@ -50,20 +50,20 @@ export function readLiveCoordinationRows(coordRoot: string): Heartbeat[] {
       const parent = generation.parent_generation_id
         ? byGeneration.get(generation.parent_generation_id)
         : undefined;
-      return projectHeartbeatV2(generation, matchingCache(caches, generation), undefined, parent);
+      return projectHeartbeatV3(generation, matchingCache(caches, generation), undefined, parent);
     });
 }
 
-/** Read one current row from the authority-safe V2 projection. */
+/** Read one current row from the authority-safe V3 projection. */
 export function readLiveCoordinationRow(
   coordRoot: string,
   nativeInstanceId: string,
-): Heartbeat | null {
-  const route = resolveLiveEventLedgerRouteV2(coordRoot);
+): V3HeartbeatMaterialization | null {
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
   if (route.state === "blocked") return null;
   try {
-    const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
-    const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
+    const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+    const generation = view.instances[liveInstanceIdV3(nativeInstanceId)];
     if (!generation?.authority_eligible) return null;
     const cache = readHeartbeat(coordRoot, nativeInstanceId);
     const parent = generation.parent_generation_id
@@ -71,7 +71,7 @@ export function readLiveCoordinationRow(
           (candidate) => candidate.generation_id === generation.parent_generation_id,
         )
       : undefined;
-    return projectHeartbeatV2(
+    return projectHeartbeatV3(
       generation,
       isCurrentCache(cache, generation) ? cache : undefined,
       nativeInstanceId,
@@ -83,29 +83,29 @@ export function readLiveCoordinationRow(
 }
 
 /**
- * Resolve the adapter from the current authority-safe V2 generation. A live
- * V2 generation is stronger evidence than a missing or stale heartbeat, so
+ * Resolve the adapter from the current authority-safe V3 generation. A live
+ * V3 generation is stronger evidence than a missing or stale heartbeat, so
  * callers must never substitute another adapter when this function succeeds.
  */
-export function liveCoordinationAdapterV2(
+export function liveCoordinationAdapterV3(
   coordRoot: string,
   nativeInstanceId: string,
 ): Adapter | null {
-  const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state === "blocked") throw new Error(`event_v2_coordination_view:${route.reason}`);
-  const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
-  const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
+  if (route.state === "blocked") throw new Error(`event_v3_coordination_view:${route.reason}`);
+  const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+  const generation = view.instances[liveInstanceIdV3(nativeInstanceId)];
   if (!generation?.authority_eligible) return null;
   const adapter = observedAdapter(generation);
   if (!isAdapter(adapter)) {
-    throw new Error("event_v2_coordination_view:adapter_not_observed");
+    throw new Error("event_v3_coordination_view:adapter_not_observed");
   }
   return adapter;
 }
 
 /**
- * Ensure the current V2 generation has a mutation target. The resulting file
- * is explicitly generation-bound and disposable: V2 remains the source of
+ * Ensure the current V3 generation has a mutation target. The resulting file
+ * is explicitly generation-bound and disposable: V3 remains the source of
  * truth, while the cache gives the crash-safe authority outbox an atomic local
  * state to reconcile.
  */
@@ -116,21 +116,21 @@ export function ensureLiveCoordinationHeartbeat(
   _adapter: Adapter,
   model?: string,
 ): Heartbeat | null {
-  const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state === "blocked") throw new Error(`event_v2_coordination_view:${route.reason}`);
-  const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
-  const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
+  if (route.state === "blocked") throw new Error(`event_v3_coordination_view:${route.reason}`);
+  const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(coordRoot));
+  const generation = view.instances[liveInstanceIdV3(nativeInstanceId)];
   if (!generation?.authority_eligible) return null;
   const generationAdapter = observedAdapter(generation);
   if (!isAdapter(generationAdapter)) {
-    throw new Error("event_v2_coordination_view:adapter_not_observed");
+    throw new Error("event_v3_coordination_view:adapter_not_observed");
   }
   const current = readHeartbeat(coordRoot, nativeInstanceId);
   if (isCurrentCache(current, generation) && current.platform === generationAdapter) return current;
 
   const resolved = resolveName(coordRoot, nativeInstanceId, nativeSessionId);
-  const projected = projectHeartbeatV2(generation, undefined, nativeInstanceId);
-  const materialized: V2HeartbeatMaterialization = {
+  const projected = projectHeartbeatV3(generation, undefined, nativeInstanceId);
+  const materialized: V3HeartbeatMaterialization = {
     ...projected,
     schema_version: 2,
     instance_id: nativeInstanceId,
@@ -140,10 +140,10 @@ export function ensureLiveCoordinationHeartbeat(
     agent_id: resolved?.agent_id ?? (resolved?.kind === "subagent" ? nativeInstanceId : ""),
     model: projected.model ?? model ?? "",
     platform: generationAdapter,
-    v2_instance_id: generation.instance_id as `inst_${string}`,
-    v2_generation_id: generation.generation_id as `gen_${string}`,
-    v2_projection_event_id: generation.last_event_id,
-    v2_task_state: generation.task_state === "set" ? "set" : "cleared",
+    v3_instance_id: generation.instance_id as `inst_${string}`,
+    v3_generation_id: generation.generation_id as `gen_${string}`,
+    v3_projection_event_id: generation.last_event_id,
+    v3_task_state: generation.task_state === "set" ? "set" : "cleared",
   };
   writeHeartbeatCache(coordRoot, nativeInstanceId, materialized);
   return materialized;
@@ -164,36 +164,36 @@ function readCacheRows(coordRoot: string): Heartbeat[] {
   return rows;
 }
 
-function readV2Caches(coordRoot: string): Heartbeat[] {
+function readV3Caches(coordRoot: string): Heartbeat[] {
   return readCacheRows(coordRoot).filter(
-    (row) => row.schema_version === 2 && typeof row.v2_generation_id === "string",
+    (row) => row.schema_version === 2 && typeof row.v3_generation_id === "string",
   );
 }
 
 function matchingCache(
   caches: Heartbeat[],
-  generation: CoordinationGenerationViewV2,
+  generation: CoordinationGenerationViewV3,
 ): Heartbeat | undefined {
   return caches.find((cache) => isCurrentCache(cache, generation));
 }
 
 function isCurrentCache(
   cache: Heartbeat | null | undefined,
-  generation: CoordinationGenerationViewV2,
+  generation: CoordinationGenerationViewV3,
 ): cache is Heartbeat {
   return (
     cache?.schema_version === 2 &&
-    cache.v2_instance_id === generation.instance_id &&
-    cache.v2_generation_id === generation.generation_id
+    cache.v3_instance_id === generation.instance_id &&
+    cache.v3_generation_id === generation.generation_id
   );
 }
 
-function projectHeartbeatV2(
-  generation: CoordinationGenerationViewV2,
+function projectHeartbeatV3(
+  generation: CoordinationGenerationViewV3,
   cache: Heartbeat | undefined,
   nativeInstanceId: string | undefined,
-  parent?: CoordinationGenerationViewV2,
-): Heartbeat {
+  parent?: CoordinationGenerationViewV3,
+): V3HeartbeatMaterialization {
   const adapter = observedAdapter(generation) ?? cache?.platform ?? "unknown";
   const model = observedModel(generation) ?? cache?.model ?? "";
   const taskIsSet = generation.task_state === "set";
@@ -224,7 +224,7 @@ function projectHeartbeatV2(
     task_updated_at: taskIsSet ? cache?.task_updated_at : null,
     activity: generation.activity === "terminal" ? "idle" : generation.activity,
     activity_updated_at: generation.last_observed_at,
-    activity_source: "event-v2-coordination-view",
+    activity_source: "event-v3-coordination-view",
     task_state: lifecycle,
     task_state_updated_at: generation.last_observed_at,
     task_state_reason: lifecycle === "blocked" ? cache?.task_state_reason : undefined,
@@ -234,14 +234,14 @@ function projectHeartbeatV2(
     workflow_run_id: generation.run_id,
     workflow_agent_id: generation.workflow_agent_id,
     parent_instance_id: parent ? displayInstanceId(parent.instance_id) : undefined,
-    v2_instance_id: generation.instance_id as `inst_${string}`,
-    v2_generation_id: generation.generation_id as `gen_${string}`,
-    v2_projection_event_id: generation.last_event_id,
-    v2_task_state: taskIsSet ? "set" : "cleared",
+    v3_instance_id: generation.instance_id as `inst_${string}`,
+    v3_generation_id: generation.generation_id as `gen_${string}`,
+    v3_projection_event_id: generation.last_event_id,
+    v3_task_state: taskIsSet ? "set" : "cleared",
   };
 }
 
-function observedAdapter(generation: CoordinationGenerationViewV2): string | undefined {
+function observedAdapter(generation: CoordinationGenerationViewV3): string | undefined {
   const observation = generation.runtime_attestation.adapter;
   return observation.state === "observed" ? observation.value.id : undefined;
 }
@@ -250,7 +250,7 @@ function isAdapter(value: string | undefined): value is Adapter {
   return value === "claude-code" || value === "cursor" || value === "codex";
 }
 
-function observedModel(generation: CoordinationGenerationViewV2): string | undefined {
+function observedModel(generation: CoordinationGenerationViewV3): string | undefined {
   const observation = generation.runtime_attestation.model;
   return observation.state === "observed" ? observation.value.id : undefined;
 }

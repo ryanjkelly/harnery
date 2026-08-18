@@ -4,10 +4,10 @@
  * Per-event-shape `LogRowRenderer` configs consumed by the shared
  * `<LogTable>`. Two flavors today:
  *
- *   - `hookEventRenderer`: canonical V2 events across hooks, commands, and
+ *   - `hookEventRenderer`: canonical V3 events across hooks, commands, and
  *     coordination producers.
  *
- *   - `sessionEventRenderer`: privacy-safe V2 command projection. Rows are
+ *   - `sessionEventRenderer`: privacy-safe V3 command projection. Rows are
  *     typically smaller and optimized for live command review.
  *
  * Both renderers produce the same `LogRow` shape so the table doesn't have
@@ -16,7 +16,7 @@
 
 import { FilePath } from "@/components/file-viewer/FilePath";
 import type { EventRow } from "@/lib/coord-reader";
-import { describeEventV2 } from "@/lib/event-v2-display";
+import { describeEventV3 } from "@/lib/event-v3-display";
 import type { LogRowRenderer, LogRowVariant } from "@/lib/log-table/types";
 import type { SessionEvent } from "@/lib/session-events";
 
@@ -30,8 +30,8 @@ export function makeHookEventRenderer(
 ): LogRowRenderer<EventRow> {
   return {
     getTs: (e) => e.ts,
-    getKind: (e) => describeEventV2(e).kind,
-    getKindVariant: (e) => describeEventV2(e).variant,
+    getKind: (e) => describeEventV3(e).kind,
+    getKindVariant: (e) => describeEventV3(e).variant,
     getAgentName: (e) => (e.instance_id ? (instanceToName[e.instance_id] ?? null) : null),
     getAgentInstanceId: (e) => e.instance_id ?? null,
     renderSummary: (e) => <HookEventSummary event={e} repoRoot={repoRoot} />,
@@ -41,7 +41,7 @@ export function makeHookEventRenderer(
 }
 
 function HookEventSummary({ event, repoRoot }: { event: EventRow; repoRoot: string }) {
-  const display = describeEventV2(event);
+  const display = describeEventV3(event);
   return (
     <span className="inline-flex items-start gap-2 flex-wrap">
       {display.workspace_path && (
@@ -58,7 +58,7 @@ function HookEventSummary({ event, repoRoot }: { event: EventRow; repoRoot: stri
 
 function hookEventSearchText(e: EventRow, instanceToName: Record<string, string>): string {
   const name = e.instance_id ? (instanceToName[e.instance_id] ?? "") : "";
-  const display = describeEventV2(e);
+  const display = describeEventV3(e);
   return [
     e.event_type,
     display.kind,

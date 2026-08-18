@@ -1,7 +1,7 @@
 /**
  * Command/narration event emitter for the coordination layer.
  *
- * `writeSessionEvent` records command spans in the canonical V2 ledger.
+ * `writeSessionEvent` records command spans in the canonical V3 ledger.
  */
 
 import { randomBytes } from "node:crypto";
@@ -9,15 +9,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 // Kept dependency-light: vendored verbatim into a downstream consumer, so no coordEnv import.
 import {
-  LIVE_COMMAND_V2_PRODUCER_ID,
-  liveInstanceIdV2,
-  livePlatformV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
-import type { CommandObservationV2, CommandSignalV2 } from "../events/v2/producers/command.ts";
-import { recordCommandSignalV2 } from "../events/v2/producers/command-recorder.ts";
-import { writeProducerDiagnosticV2 } from "../events/v2/producers/intake.ts";
-import { readHookProducerStateByInstanceV2 } from "../events/v2/producers/recorder.ts";
+  LIVE_COMMAND_V3_PRODUCER_ID,
+  liveInstanceIdV3,
+  livePlatformV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
+import type { CommandObservationV3, CommandSignalV3 } from "../events/v3/producers/command.ts";
+import { recordCommandSignalV3 } from "../events/v3/producers/command-recorder.ts";
+import { writeProducerDiagnosticV3 } from "../events/v3/producers/intake.ts";
+import { readHookProducerStateByInstanceV3 } from "../events/v3/producers/recorder.ts";
 import { resolveEmitRoot } from "./canonical-emit.ts";
 
 /** Event types accepted by `writeSessionEvent`. */
@@ -77,12 +77,12 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
   if (!instanceId) return;
   try {
     const coordRoot = coordinationRootPath();
-    const route = resolveLiveEventLedgerRouteV2(coordRoot);
+    const route = resolveLiveEventLedgerRouteV3(coordRoot);
     if (route.state === "blocked") return;
-    const liveInstanceId = liveInstanceIdV2(instanceId);
-    const hook = readHookProducerStateByInstanceV2(coordRoot, liveInstanceId);
+    const liveInstanceId = liveInstanceIdV3(instanceId);
+    const hook = readHookProducerStateByInstanceV3(coordRoot, liveInstanceId);
     if (!hook) {
-      writeProducerDiagnosticV2(coordRoot, "command_emit_unjoinable", {
+      writeProducerDiagnosticV3(coordRoot, "command_emit_unjoinable", {
         type,
         instance_id: instanceId,
         reason: "hook_generation_not_found",
@@ -91,28 +91,28 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
     }
     const command = commandSignalAndObservation(type, fields);
     if (!command) return;
-    const result = recordCommandSignalV2({
+    const result = recordCommandSignalV3({
       coordRoot,
       mode: route.mode,
       signal: command.signal,
       observation: command.observation,
       adapter: hook.adapter,
       instance_id: liveInstanceId,
-      producer_id: LIVE_COMMAND_V2_PRODUCER_ID,
+      producer_id: LIVE_COMMAND_V3_PRODUCER_ID,
       build_id: route.build_id,
-      platform: livePlatformV2(),
+      platform: livePlatformV3(),
       ...(fields.bridge === "codex-wsl" ? { bridge: "codex-wsl" as const } : {}),
       monotonic_ns: process.hrtime.bigint().toString(),
     });
     if (result.state === "generation_unavailable") {
-      writeProducerDiagnosticV2(coordRoot, "command_emit_unjoinable", {
+      writeProducerDiagnosticV3(coordRoot, "command_emit_unjoinable", {
         type,
         instance_id: instanceId,
         signal: command.signal,
         reason: result.reason,
       });
     } else if (result.state !== "recorded" && result.state !== "already_recorded") {
-      writeProducerDiagnosticV2(coordRoot, "command_emit_rejected", {
+      writeProducerDiagnosticV3(coordRoot, "command_emit_rejected", {
         type,
         instance_id: instanceId,
         signal: command.signal,
@@ -123,7 +123,7 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
     // Telemetry must never break the command, but the loss is preserved.
     try {
       const coordRoot = coordinationRootPath();
-      writeProducerDiagnosticV2(coordRoot, "command_emit_failed", {
+      writeProducerDiagnosticV3(coordRoot, "command_emit_failed", {
         type,
         instance_id: instanceId,
         error: String(error),
@@ -137,7 +137,7 @@ function recordCommandObservation(type: SessionEventType, fields: Record<string,
 function commandSignalAndObservation(
   type: SessionEventType,
   fields: Record<string, unknown>,
-): { signal: CommandSignalV2; observation: CommandObservationV2 } | undefined {
+): { signal: CommandSignalV3; observation: CommandObservationV3 } | undefined {
   const commandId = typeof fields.cmd_id === "string" ? fields.cmd_id : undefined;
   if (!commandId) return undefined;
   if (type === "command.started") {
@@ -196,7 +196,7 @@ function commandSignalAndObservation(
 }
 
 /**
- * Record a command event in V2. Best-effort, never throws into the caller;
+ * Record a command event in V3. Best-effort, never throws into the caller;
  * telemetry must not break or slow a command.
  */
 export function writeSessionEvent(

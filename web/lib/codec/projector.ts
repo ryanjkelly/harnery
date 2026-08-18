@@ -67,7 +67,7 @@ interface InstanceEvidence {
   identityName?: string;
   /** Envelope parent_session_id from the newest event carrying one. */
   parentEvidence?: { parent: string; event_id: string; ts: string };
-  /** V2 parent generation from the newest event that linked one. */
+  /** V3 parent generation from the newest event that linked one. */
   parentGeneration?: { parent: string; event_id: string; ts: string };
   generationId?: string;
   childGenerationId?: string;
@@ -116,7 +116,7 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     if (ev.child_generation_id) slot.childGenerationId = ev.child_generation_id;
     if (ev.recovered) slot.recovered = true;
     slot.lastEventTs = ev.ts;
-    // V2 activity evidence: session boundaries are idle, turns and tools are
+    // V3 activity evidence: session boundaries are idle, turns and tools are
     // working, waits need input, and commands preserve an already-open turn.
     const setActivity = (value: CodecActivity) => {
       slot.activityEvidence = { value, ts: ev.ts, event_id: ev.event_id };
@@ -132,10 +132,10 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
       case "tool.requested":
         setActivity("working");
         break;
-      case "interaction.wait_started":
+      case "wait.started":
         setActivity("needs-input");
         break;
-      case "interaction.wait_ended":
+      case "wait.ended":
         setActivity("working");
         break;
       case "command.started":
@@ -585,7 +585,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     paneled.add(instanceId);
   }
 
-  // Parentage: join V2 generation ids first. A child's parent_generation_id
+  // Parentage: join V3 generation ids first. A child's parent_generation_id
   // or a parent's child_generation_id maps onto another rendered panel's
   // instance. parent_session_id remains a bounded adapter hint when no
   // generation link exists.

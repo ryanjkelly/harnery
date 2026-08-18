@@ -1,6 +1,6 @@
 /**
- * Emit canonical V2 observations by spawning `agent-coord emit-event`. Used by
- * coordination commands whose durable state change also has a V2 audit event.
+ * Emit canonical V3 observations by spawning `agent-coord emit-event`. Used by
+ * coordination commands whose durable state change also has a V3 audit event.
  *
  * Soft-fails: never throws into the caller. A failed emit logs to stderr
  * (visible to operators in their terminal) but never breaks the CLI flow.
@@ -13,10 +13,10 @@ import { spawnSync } from "node:child_process";
 import { coordBinPath } from "./coord-bin.ts";
 import { resolveCoordRoot } from "./coord-client.ts";
 
-import type { LiveCoordinationObservationV2 } from "../events/v2/live-observation.ts";
+import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 
-export type EventV2EmitObservation =
-  | LiveCoordinationObservationV2
+export type EventV3EmitObservation =
+  | LiveCoordinationObservationV3
   | {
       event_type: "coord.lifecycle_changed";
       new_state: "active" | "blocked" | "done";
@@ -24,11 +24,11 @@ export type EventV2EmitObservation =
       suggested_session_name?: string;
     };
 
-export interface EventV2EmitInput {
+export interface EventV3EmitInput {
   owner: string;
   session: string;
   adapter: "claude-code" | "cursor" | "codex";
-  observation: EventV2EmitObservation;
+  observation: EventV3EmitObservation;
 }
 
 /**
@@ -36,13 +36,13 @@ export interface EventV2EmitInput {
  *
  * Delegates to `resolveCoordRoot()`, the single resolution the hooks and the
  * CLI's reads also use. An observation resolved any other way can disappear
- * from the live V2 generation even though the command itself succeeded.
+ * from the live V3 generation even though the command itself succeeded.
  */
 export function resolveEmitRoot(start: string = process.cwd()): string | null {
   return resolveCoordRoot(start);
 }
 
-export function emitEventV2(input: EventV2EmitInput): boolean {
+export function emitEventV3(input: EventV3EmitInput): boolean {
   const root = resolveEmitRoot();
   if (!root) return false;
   const binary = coordBinPath("agent-coord", root);
@@ -75,7 +75,7 @@ export function emitEventV2(input: EventV2EmitInput): boolean {
       const why = result.error
         ? result.error.message
         : `exit ${result.status}${detail ? `: ${detail}` : ""}`;
-      process.stderr.write(`emitEventV2: ${input.observation.event_type} emit failed (${why})\n`); // lint-ok-emission: soft-fail diagnostic promised by the module doc; silent drops cost blocked turns
+      process.stderr.write(`emitEventV3: ${input.observation.event_type} emit failed (${why})\n`); // lint-ok-emission: soft-fail diagnostic promised by the module doc; silent drops cost blocked turns
       return false;
     }
     return true;

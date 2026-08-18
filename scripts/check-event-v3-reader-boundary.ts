@@ -11,6 +11,8 @@ export interface EventV3ReaderBoundaryViolation {
 
 const ALLOWED = new Set([
   "src/core/events/v3/catalog.ts",
+  "src/core/events/v3/control.ts",
+  "src/core/events/v3/authority-outbox.ts",
   "src/core/events/v3/reader.ts",
   "src/core/events/v3/writer.ts",
 ]);

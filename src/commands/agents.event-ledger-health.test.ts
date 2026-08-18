@@ -2,26 +2,26 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { requestSessionEndExplicitV2 } from "../core/agents/session-finalizer-v2.ts";
-import { canonicalJsonV2, sha256V2 } from "../core/events/v2/canonical.ts";
-import { adapterCapabilityProfileDigestV2 } from "../core/events/v2/capabilities.ts";
+import { requestSessionEndExplicitV3 } from "../core/agents/session-finalizer-v3.ts";
+import { canonicalJsonV3, sha256V3 } from "../core/events/v3/canonical.ts";
+import { adapterCapabilityProfileDigestV3 } from "../core/events/v3/capabilities.ts";
 import {
-  buildCandidateGenesisManifestV2,
-  EVENT_V2_GENESIS_MANIFEST,
-  repairEventV2ControlPair,
-} from "../core/events/v2/control.ts";
-import { loadOrCreateFingerprintKeyStoreV2 } from "../core/events/v2/fingerprint-keys.ts";
-import { EVENT_V2_SCHEMA_DIGEST } from "../core/events/v2/generated.ts";
+  buildCandidateGenesisManifestV3,
+  EVENT_V3_GENESIS_MANIFEST,
+  repairEventV3ControlPair,
+} from "../core/events/v3/control.ts";
+import { loadOrCreateFingerprintKeyStoreV3 } from "../core/events/v3/fingerprint-keys.ts";
+import { EVENT_V3_SCHEMA_DIGEST } from "../core/events/v3/generated.ts";
 import {
-  appendHookIntakeRecordV2,
-  writeProducerDiagnosticV2,
-} from "../core/events/v2/producers/intake.ts";
+  appendHookIntakeRecordV3,
+  writeProducerDiagnosticV3,
+} from "../core/events/v3/producers/intake.ts";
 import {
-  readHookProducerStateV2,
-  recordHookSignalV2,
-} from "../core/events/v2/producers/recorder.ts";
+  readHookProducerStateV3,
+  recordHookSignalV3,
+} from "../core/events/v3/producers/recorder.ts";
 import type { ParsedPayload } from "../core/hooks/adapter/parse.ts";
-import { collectEventLedgerHealthV2 } from "./agents.ts";
+import { collectEventLedgerHealthV3 } from "./agents.ts";
 
 const roots: string[] = [];
 
@@ -30,10 +30,10 @@ afterEach(() => {
 });
 
 describe("event-ledger health counters", () => {
-  test("degrades to unavailable when no V2 ledger route is live", () => {
+  test("degrades to unavailable when no V3 ledger route is live", () => {
     const root = temporaryRoot();
 
-    const health = collectEventLedgerHealthV2(root);
+    const health = collectEventLedgerHealthV3(root);
 
     expect(health).toEqual({
       state: "unavailable",
@@ -49,12 +49,12 @@ describe("event-ledger health counters", () => {
     // session-start + turn + pre-tool-use (opens a span) + stop (closes the
     // turn, leaving the span open with no open turn: the orphan signature).
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), adapter),
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "user-prompt-submit",
@@ -64,7 +64,7 @@ describe("event-ledger health counters", () => {
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "pre-tool-use",
@@ -74,18 +74,18 @@ describe("event-ledger health counters", () => {
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "stop", parsed({ session_id: nativeSession, turn_id: "turn-1" }), adapter),
       ).state,
     ).toBe("recorded");
 
-    const producer = readHookProducerStateV2(root, adapter, nativeSession);
+    const producer = readHookProducerStateV3(root, adapter, nativeSession);
     if (!producer) throw new Error("expected producer state");
     expect(producer.spans).toHaveLength(1);
     expect(producer.current_turn_id).toBeUndefined();
 
     // Explicit end with an open span queues a pending finalization request.
-    const requested = requestSessionEndExplicitV2({
+    const requested = requestSessionEndExplicitV3({
       coordRoot: root,
       instance_id: producer.instance_id,
       generation_id: producer.generation_id,
@@ -94,8 +94,8 @@ describe("event-ledger health counters", () => {
     expect(requested.state).toBe("queued");
 
     // One queued intake record + one diagnostics-spool entry, for depth counts.
-    appendHookIntakeRecordV2(root, `hid_${"a".repeat(64)}`, {
-      format: "harnery-v2-hook-intake",
+    appendHookIntakeRecordV3(root, `hid_${"a".repeat(64)}`, {
+      format: "harnery-v3-hook-intake",
       format_version: 1,
       mode: "candidate",
       signal: "post-tool-use",
@@ -106,9 +106,9 @@ describe("event-ledger health counters", () => {
       build_id: "build_fixture",
       platform: "linux",
     });
-    expect(writeProducerDiagnosticV2(root, "unpairable_tool", { note: "fixture" })).toBeDefined();
+    expect(writeProducerDiagnosticV3(root, "unpairable_tool", { note: "fixture" })).toBeDefined();
 
-    const health = collectEventLedgerHealthV2(root);
+    const health = collectEventLedgerHealthV3(root);
     if (health.state !== "live") throw new Error(`expected live health, got ${health.reason}`);
 
     expect(health.mode).toBe("candidate");
@@ -156,19 +156,19 @@ describe("event-ledger health counters", () => {
 
 function candidateRoot(): string {
   const root = temporaryRoot();
-  const keyStore = loadOrCreateFingerprintKeyStoreV2(root);
-  const manifest = buildCandidateGenesisManifestV2({
+  const keyStore = loadOrCreateFingerprintKeyStoreV3(root);
+  const manifest = buildCandidateGenesisManifestV3({
     profile: {
-      initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
-      contract_source_digest: sha256V2("contract"),
+      initial_schema_digest: EVENT_V3_SCHEMA_DIGEST,
+      contract_source_digest: sha256V3("contract"),
       harnery_commit: "fixture",
       host_repository_commit: "fixture",
       producer_build_ids: ["build_fixture"],
       adapter_capability_profile_digests: [
-        `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
-        `sha256:${adapterCapabilityProfileDigestV2("cursor").slice(4)}`,
+        `sha256:${adapterCapabilityProfileDigestV3("claude-code").slice(4)}`,
+        `sha256:${adapterCapabilityProfileDigestV3("cursor").slice(4)}`,
       ],
-      config_digest: sha256V2("config"),
+      config_digest: sha256V3("config"),
       canonicalizer_version: "harnery-jcs-nfc-v1",
       fingerprint_version: "hmac-sha256-v1",
       privacy_key_epoch: keyStore.active_epoch_id,
@@ -184,16 +184,16 @@ function candidateRoot(): string {
       platform: "linux",
     },
   });
-  const manifestPath = join(root, EVENT_V2_GENESIS_MANIFEST);
+  const manifestPath = join(root, EVENT_V3_GENESIS_MANIFEST);
   mkdirSync(dirname(manifestPath), { recursive: true, mode: 0o700 });
-  writeFileSync(manifestPath, `${canonicalJsonV2(manifest)}\n`, { mode: 0o600 });
-  expect(repairEventV2ControlPair(root).state).toBe("candidate");
+  writeFileSync(manifestPath, `${canonicalJsonV3(manifest)}\n`, { mode: 0o600 });
+  expect(repairEventV3ControlPair(root).state).toBe("candidate");
   return root;
 }
 
 function baseInput(
   root: string,
-  signal: Parameters<typeof recordHookSignalV2>[0]["signal"],
+  signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
   payload: ParsedPayload,
   adapter: "claude-code" | "cursor" = "claude-code",
 ) {

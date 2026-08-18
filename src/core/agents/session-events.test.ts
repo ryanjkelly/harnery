@@ -2,13 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
-import { sha256V2 } from "../events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { sha256V3 } from "../events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
-import { readActiveLedgerV2 } from "../events/v2/reader.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
+import { readLedgerV3 } from "../events/v3/reader.ts";
 import { writeSessionEvent } from "./session-events.ts";
 
 const roots: string[] = [];
@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("session event live ledger routing", () => {
-  test("refuses command recording before the V2 ledger is initialized", () => {
+  test("refuses command recording before the V3 ledger is initialized", () => {
     const root = temporaryRoot();
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
 
@@ -32,18 +32,18 @@ describe("session event live ledger routing", () => {
       intent: "inspect status",
     });
 
-    expect(existsSync(join(root, ".harnery", "ledgers", "v2", "active.ndjson"))).toBeFalse();
+    expect(existsSync(join(root, ".harnery", "ledgers", "v3", "active.ndjson"))).toBeFalse();
   });
 
-  test("records command spans in the active V2 ledger", () => {
+  test("records command spans in the active V3 ledger", () => {
     const root = activeRoot();
-    const instanceId = "agent-v2-fixture";
-    const nativeSession = "native-v2-session";
+    const instanceId = "agent-v3-fixture";
+    const nativeSession = "native-v3-session";
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
-    const route = resolveLiveEventLedgerRouteV2(root);
-    if (route.state !== "v2") throw new Error("expected V2 route");
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
     expect(
-      recordLiveHookSignalV2({
+      recordLiveHookSignalV3({
         coordRoot: root,
         route,
         eventName: "session-start",
@@ -53,7 +53,7 @@ describe("session event live ledger routing", () => {
       }).state,
     ).toBe("recorded");
     expect(
-      recordLiveHookSignalV2({
+      recordLiveHookSignalV3({
         coordRoot: root,
         route,
         eventName: "user-prompt-submit",
@@ -66,24 +66,24 @@ describe("session event live ledger routing", () => {
     const secret = "do-not-retain-this-output";
     writeSessionEvent("command.started", {
       instance_id: instanceId,
-      cmd_id: "cmd-v2",
+      cmd_id: "cmd-v3",
       cmd: "acme agents status --json",
       intent: "inspect agents",
     });
     writeSessionEvent("command.output_observed", {
       instance_id: instanceId,
-      cmd_id: "cmd-v2",
+      cmd_id: "cmd-v3",
       stream: "stdout",
       line: secret,
     });
     writeSessionEvent("command.completed", {
       instance_id: instanceId,
-      cmd_id: "cmd-v2",
+      cmd_id: "cmd-v3",
       exit: 0,
       duration_ms: 25,
     });
 
-    const commandEvents = readActiveLedgerV2(root)
+    const commandEvents = readLedgerV3(root)
       .events.map(({ event }) => event)
       .filter((event) => event.producer.component === "session-tee");
     expect(commandEvents.map((event) => event.event_type)).toEqual([
@@ -92,23 +92,23 @@ describe("session event live ledger routing", () => {
       "command.completed",
     ]);
     expect(existsSync(join(root, ".harnery/active", `${instanceId}.json`))).toBeFalse();
-    expect(readFileSync(join(root, ".harnery/ledgers/v2/active.ndjson"), "utf8")).not.toContain(
+    expect(readFileSync(join(root, ".harnery/ledgers/v3/active.ndjson"), "utf8")).not.toContain(
       secret,
     );
   });
 
   test("classifies a command outside an open turn as unjoinable", () => {
     const root = activeRoot();
-    const instanceId = "agent-v2-no-turn";
+    const instanceId = "agent-v3-no-turn";
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
-    const route = resolveLiveEventLedgerRouteV2(root);
-    if (route.state !== "v2") throw new Error("expected V2 route");
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
     expect(
-      recordLiveHookSignalV2({
+      recordLiveHookSignalV3({
         coordRoot: root,
         route,
         eventName: "session-start",
-        payload: { session_id: "native-v2-no-turn", raw: {} },
+        payload: { session_id: "native-v3-no-turn", raw: {} },
         adapter: "claude-code",
         instanceId,
       }).state,
@@ -121,7 +121,7 @@ describe("session event live ledger routing", () => {
       intent: "inspect status",
     });
 
-    const diagnostics = readdirSync(join(root, ".harnery/ledgers/v2/diagnostics"));
+    const diagnostics = readdirSync(join(root, ".harnery/ledgers/v3/diagnostics"));
     expect(diagnostics.some((name) => name.startsWith("command_emit_unjoinable-"))).toBeTrue();
     expect(diagnostics.some((name) => name.startsWith("command_emit_rejected-"))).toBeFalse();
   });
@@ -129,11 +129,11 @@ describe("session event live ledger routing", () => {
 
 function activeRoot(): string {
   const root = temporaryRoot();
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-session-events",
     now: () => new Date("2026-08-16T18:00:00.000Z"),
   });

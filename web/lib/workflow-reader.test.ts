@@ -4,9 +4,9 @@ import { basename, join } from "node:path";
 import type { WorkflowProof } from "harnery/core/workflow";
 import { writeWorkflowRunManifest } from "harnery/core/workflow";
 import {
-  endWorkflowChildSessionV2,
-  startWorkflowChildSessionV2,
-} from "../../src/core/workflow/live-session-v2";
+  endWorkflowChildSessionV3,
+  startWorkflowChildSessionV3,
+} from "../../src/core/workflow/live-session-v3";
 import {
   readWorkflowChildSessions,
   readWorkflowRun,
@@ -148,7 +148,7 @@ describe("workflow proof reader", () => {
       "utf8",
     );
     // A live child with no agent stamp, an unrelated run's child, and a live
-    // V2 generation for the session the transcript already closed.
+    // V3 generation for the session the transcript already closed.
     writeWorkflowGeneration(root, "live", { workflow_run_id: "wf-reader", session_id: "s-live" });
     writeWorkflowGeneration(root, "other", { workflow_run_id: "wf-other", session_id: "s-other" });
     writeWorkflowGeneration(root, "ended-but-warm", {
@@ -276,7 +276,7 @@ describe("run coord-root resolution", () => {
     }
   });
 
-  test("reads child V2 generations from the run's own root", () => {
+  test("reads child V3 generations from the run's own root", () => {
     const sibling = join(root, "..", `${basename(root)}-hb`);
     mkdirSync(join(sibling, ".harnery", "active"), { recursive: true });
     try {
@@ -301,7 +301,7 @@ function writeManifestWithCwd(cwd: string): void {
   writeFileSync(join(runDir, "run.json"), JSON.stringify({ execution: { cwd } }), "utf8");
 }
 
-/** One canonical V2 workflow-child generation. */
+/** One canonical V3 workflow-child generation. */
 function writeWorkflowGeneration(
   coordRoot: string,
   name: string,
@@ -320,8 +320,8 @@ function writeWorkflowGeneration(
     sessionId: hb.session_id,
     adapter: "codex",
   };
-  startWorkflowChildSessionV2(input);
-  if (hb.ended_at) endWorkflowChildSessionV2({ ...input, cleanExit: true });
+  startWorkflowChildSessionV3(input);
+  if (hb.ended_at) endWorkflowChildSessionV3({ ...input, cleanExit: true });
 }
 
 function writeSharedManifest(): void {

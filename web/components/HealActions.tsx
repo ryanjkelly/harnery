@@ -29,20 +29,20 @@ const KIND_META: Record<
   }
 > = {
   cache: {
-    label: "Rebuild V2 cache",
-    helper: "Rebuild the disposable coordination cache from the authoritative V2 generation.",
+    label: "Rebuild V3 cache",
+    helper: "Rebuild the disposable coordination cache from the authoritative V3 generation.",
     icon: DatabaseZap,
     variant: "outline",
-    title: "Rebuild this agent's V2 cache?",
+    title: "Rebuild this agent's V3 cache?",
     description:
-      "Recreates the generation-bound local cache from the authority-safe V2 ledger. This cannot create, revive, or terminate a session; it only repairs disposable derived state.",
+      "Recreates the generation-bound local cache from the authority-safe V3 ledger. This cannot create, revive, or terminate a session; it only repairs disposable derived state.",
     confirmLabel: "Rebuild cache",
   },
 };
 
 /**
  * Operator card surfaced on the agent detail page. The repair action shells
- * to harnery/bin/agent-coord and leave lifecycle authority in the V2 ledger.
+ * to harnery/bin/agent-coord and leave lifecycle authority in the V3 ledger.
  * via /api/agents/[id]/heal. Mirrors the upstream app's HealActions byte-for-byte;
  * tooltip prop drives the custom <Tooltip> popover (no native browser
  * tooltips on the buttons).

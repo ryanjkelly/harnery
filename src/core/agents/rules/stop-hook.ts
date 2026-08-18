@@ -1,13 +1,13 @@
 /**
- * Stop-hook verdict for the V2-only runtime.
+ * Stop-hook verdict for the V3-only runtime.
  *
- * V2 records lifecycle and turn completion authoritatively, but it does not
+ * V3 records lifecycle and turn completion authoritatively, but it does not
  * retain reply bodies. The old reply-ritual policy therefore cannot be
- * evaluated without violating V2's privacy contract. Stop remains fail-open;
- * session finalization is enforced independently by the V2 finalizer.
+ * evaluated without violating V3's privacy contract. Stop remains fail-open;
+ * session finalization is enforced independently by the V3 finalizer.
  */
 
-import { readEventV2ControlState } from "../../events/v2/control.ts";
+import { readEventV3ControlState } from "../../events/v3/control.ts";
 
 export type { VerdictResult } from "./verdict.ts";
 
@@ -52,14 +52,14 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
     };
   }
 
-  const control = readEventV2ControlState(coordRoot);
+  const control = readEventV3ControlState(coordRoot);
   return {
     allow: true,
     exit_code: 0,
-    rule: "stop-hook.v2_reply_evidence_unavailable",
+    rule: "stop-hook.v3_reply_evidence_unavailable",
     reason:
       control.state === "candidate" || control.state === "active"
-        ? "V2 intentionally does not retain reply bodies; session finalization is enforced separately"
-        : `V2 control state is ${control.state}; Stop remains fail-open`,
+        ? "V3 intentionally does not retain reply bodies; session finalization is enforced separately"
+        : `V3 control state is ${control.state}; Stop remains fail-open`,
   };
 }

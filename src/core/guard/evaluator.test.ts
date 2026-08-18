@@ -206,7 +206,7 @@ function input(
       last_event_id: events.at(-1)?.event_id ?? previous?.evidence.last_event_id,
       window_started_at: previous?.evidence.window_started_at ?? events[0]?.ts,
       window_ended_at: events.at(-1)?.ts ?? previous?.evidence.window_ended_at,
-      segment: ".harnery/ledgers/v2/active.ndjson",
+      segment: ".harnery/ledgers/v3/active.ndjson",
       truncated: false,
     },
     sufficient_history: true,

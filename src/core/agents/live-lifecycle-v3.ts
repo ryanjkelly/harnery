@@ -1,23 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { Adapter } from "../adapter.ts";
-import { buildEventV2 } from "../events/v2/builder.ts";
-import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
-import type { EventV2 } from "../events/v2/contract.ts";
-import { readEventV2ControlState } from "../events/v2/control.ts";
-import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
+import { buildEventV3 } from "../events/v3/builder.ts";
+import { normalizeNativeIdV3 } from "../events/v3/canonical.ts";
+import type { EventV3 } from "../events/v3/contract.ts";
+import { readEventV3ControlState } from "../events/v3/control.ts";
+import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
 import {
-  liveInstanceIdV2,
-  livePlatformV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
-import { readHookProducerStateV2 } from "../events/v2/producers/recorder.ts";
-import { writeEventV2 } from "../events/v2/writer.ts";
-import { LiveCoordinationAuthorityV2Error } from "./live-authority-v2.ts";
-import { liveCoordinationAdapterV2 } from "./state/live-coordination-view.ts";
+  liveInstanceIdV3,
+  livePlatformV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
+import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
+import { writeEventV3 } from "../events/v3/writer.ts";
+import { LiveCoordinationAuthorityV3Error } from "./live-authority-v3.ts";
+import { liveCoordinationAdapterV3 } from "./state/live-coordination-view.ts";
 
-export type LiveLifecycleObservationV2Result = { state: "recorded"; event: EventV2 };
+export type LiveLifecycleObservationV3Result = { state: "recorded"; event: EventV3 };
 
-interface LiveLifecycleObservationBaseV2 {
+interface LiveLifecycleObservationBaseV3 {
   coordRoot: string;
   owner: string;
   nativeSessionId: string;
@@ -25,23 +25,23 @@ interface LiveLifecycleObservationBaseV2 {
   observedAt?: string;
 }
 
-export function recordLiveSweepObservationV2(
-  input: LiveLifecycleObservationBaseV2 & {
+export function recordLiveSweepObservationV3(
+  input: LiveLifecycleObservationBaseV3 & {
     observation: "stale_heartbeat" | "killed" | "unparseable_heartbeat" | "missing_timestamp";
     ageMs: number;
   },
-): LiveLifecycleObservationV2Result {
+): LiveLifecycleObservationV3Result {
   return recordObservation(input, "lifecycle.sweep_observed", {
-    subject_instance_id: liveInstanceIdV2(input.owner),
+    subject_instance_id: liveInstanceIdV3(input.owner),
     observation: input.observation,
     provisional: true,
     age_ms: Math.max(0, Math.floor(input.ageMs)),
   });
 }
 
-export function recordLiveResumeObservationV2(
-  input: LiveLifecycleObservationBaseV2,
-): LiveLifecycleObservationV2Result {
+export function recordLiveResumeObservationV3(
+  input: LiveLifecycleObservationBaseV3,
+): LiveLifecycleObservationV3Result {
   const normalized = withAttestedAdapter(input);
   const hook = requireHookState(normalized);
   return recordObservation(normalized, "session.resumed", {
@@ -52,7 +52,7 @@ export function recordLiveResumeObservationV2(
 }
 
 function recordObservation<T extends "lifecycle.sweep_observed" | "session.resumed">(
-  input: LiveLifecycleObservationBaseV2,
+  input: LiveLifecycleObservationBaseV3,
   eventType: T,
   payload: T extends "lifecycle.sweep_observed"
     ? {
@@ -66,18 +66,18 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
         continuity: "native";
         evidence_reference: string;
       },
-): LiveLifecycleObservationV2Result {
-  const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
+): LiveLifecycleObservationV3Result {
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state === "blocked") throw new LiveCoordinationAuthorityV3Error(route.reason);
   input = withAttestedAdapter(input);
-  const control = readEventV2ControlState(input.coordRoot);
+  const control = readEventV3ControlState(input.coordRoot);
   if (control.state !== route.mode) {
-    throw new LiveCoordinationAuthorityV2Error("control_state_changed");
+    throw new LiveCoordinationAuthorityV3Error("control_state_changed");
   }
   const hook = requireHookState(input);
-  if (!hook.last_event_id) throw new LiveCoordinationAuthorityV2Error("generation_has_no_event");
+  if (!hook.last_event_id) throw new LiveCoordinationAuthorityV3Error("generation_has_no_event");
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
-  const context = fingerprintContextV2(
+  const context = fingerprintContextV3(
     input.coordRoot,
     rootId,
     hook.generation_id,
@@ -91,7 +91,7 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
       sequence: 1,
       component: "agent-coord" as const,
       build_id: route.build_id,
-      platform: livePlatformV2(),
+      platform: livePlatformV3(),
     },
     scope: {
       root_id: rootId,
@@ -105,7 +105,7 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
       source_event: `agent-coord.${eventType}`,
       attestation: "derived" as const,
       confidence: "exact" as const,
-      source_record_id: normalizeNativeIdV2(
+      source_record_id: normalizeNativeIdV3(
         context,
         `agent-coord.${eventType}`,
         nativeObservationId,
@@ -120,21 +120,21 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
     observed_at: input.observedAt,
     monotonic_ns: process.hrtime.bigint().toString(),
   };
-  const event = buildEventV2(eventType, { ...common, payload } as never) as EventV2;
-  writeEventV2(input.coordRoot, event);
+  const event = buildEventV3(eventType, { ...common, payload } as never) as EventV3;
+  writeEventV3(input.coordRoot, event);
   return { state: "recorded", event };
 }
 
-function withAttestedAdapter<T extends LiveLifecycleObservationBaseV2>(input: T): T {
-  const adapter = liveCoordinationAdapterV2(input.coordRoot, input.owner);
+function withAttestedAdapter<T extends LiveLifecycleObservationBaseV3>(input: T): T {
+  const adapter = liveCoordinationAdapterV3(input.coordRoot, input.owner);
   if (!adapter) return input;
   return { ...input, adapter };
 }
 
-function requireHookState(input: LiveLifecycleObservationBaseV2) {
-  const hook = readHookProducerStateV2(input.coordRoot, input.adapter, input.nativeSessionId);
-  if (!hook || hook.instance_id !== liveInstanceIdV2(input.owner)) {
-    throw new LiveCoordinationAuthorityV2Error("hook_generation_not_joinable");
+function requireHookState(input: LiveLifecycleObservationBaseV3) {
+  const hook = readHookProducerStateV3(input.coordRoot, input.adapter, input.nativeSessionId);
+  if (!hook || hook.instance_id !== liveInstanceIdV3(input.owner)) {
+    throw new LiveCoordinationAuthorityV3Error("hook_generation_not_joinable");
   }
   return hook;
 }

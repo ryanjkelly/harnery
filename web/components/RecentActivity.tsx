@@ -4,10 +4,10 @@ import { useMemo } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventRow } from "@/lib/coord-reader";
-import { describeEventV2, type EventDisplayVariantV2 } from "@/lib/event-v2-display";
+import { describeEventV3, type EventDisplayVariantV3 } from "@/lib/event-v3-display";
 
 /**
- * Recent activity for one agent, projected from the canonical V2 display DTO.
+ * Recent activity for one agent, projected from the canonical V3 display DTO.
  *
  * Live updates ride on the parent layout's <LiveRefresher>, which fires
  * router.refresh() when .harnery/ changes; no per-component SSE.
@@ -42,7 +42,7 @@ export function RecentActivity({ events }: { events: EventRow[] }) {
 
 function Row({ event }: { event: EventRow }) {
   const time = event.ts.slice(11, 23);
-  const display = describeEventV2(event);
+  const display = describeEventV3(event);
   const typeColor = variantClass(display.variant);
 
   return (
@@ -56,7 +56,7 @@ function Row({ event }: { event: EventRow }) {
   );
 }
 
-function variantClass(variant: EventDisplayVariantV2): string {
+function variantClass(variant: EventDisplayVariantV3): string {
   if (variant === "success") return "text-emerald-500";
   if (variant === "destructive") return "text-rose-500";
   if (variant === "warning") return "text-amber-500";

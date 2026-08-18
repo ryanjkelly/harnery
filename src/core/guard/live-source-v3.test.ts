@@ -1,17 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildEventV2,
-  eventIdV2,
-  generationIdV2,
-  type PositionedEventV2,
-  type ReadLedgerV2Result,
-} from "../events/v2/index.ts";
-import { projectRunQualityLiveSourceV2, RunQualityLiveSourceV2Error } from "./live-source-v2.ts";
+  buildEventV3,
+  eventIdV3,
+  generationIdV3,
+  type PositionedEventV3,
+  type ReadLedgerV3Result,
+} from "../events/v3/index.ts";
+import { projectRunQualityLiveSourceV3, RunQualityLiveSourceV3Error } from "./live-source-v3.ts";
 
-describe("V2 live run-quality source", () => {
+describe("V3 live run-quality source", () => {
   test("projects validated live generations through the shared evidence adapter", () => {
     const fixture = generationFixture("claude-code");
-    const source = projectRunQualityLiveSourceV2(
+    const source = projectRunQualityLiveSourceV3(
       completeRead(fixture.events),
       "gex_fixture",
       "candidate",
@@ -19,7 +19,7 @@ describe("V2 live run-quality source", () => {
     );
 
     expect(source).toMatchObject({
-      contract_major: 2,
+      contract_major: 3,
       genesis_id: "gex_fixture",
       epoch_state: "candidate",
     });
@@ -29,7 +29,7 @@ describe("V2 live run-quality source", () => {
       adapter: "claude-code",
       sufficient_history: true,
       role_wait: { wait_kind: "approval", fresh: true, record_id: "wait_fixture" },
-      evidence: { segment: "v2:1", truncated: false },
+      evidence: { segment: "v3:1", truncated: false },
     });
     expect(source.generations[0]?.events.map(({ kind }) => kind)).toEqual([
       "progress",
@@ -42,7 +42,7 @@ describe("V2 live run-quality source", () => {
   test("keeps pairing categories separate from behavioral evidence", () => {
     const fixture = generationFixture("codex");
     const incomplete = fixture.events.filter((event) => event.event_type !== "tool.completed");
-    const source = projectRunQualityLiveSourceV2(
+    const source = projectRunQualityLiveSourceV3(
       completeRead(incomplete),
       "gex_fixture",
       "active",
@@ -58,7 +58,7 @@ describe("V2 live run-quality source", () => {
 
   test("preserves unresolved adapter identity instead of coercing it", () => {
     const fixture = generationFixture(undefined);
-    const source = projectRunQualityLiveSourceV2(
+    const source = projectRunQualityLiveSourceV3(
       completeRead(fixture.events),
       "gex_fixture",
       "active",
@@ -69,7 +69,7 @@ describe("V2 live run-quality source", () => {
 
   test("excludes authoritative terminal generations", () => {
     const fixture = generationFixture("codex", true);
-    const source = projectRunQualityLiveSourceV2(
+    const source = projectRunQualityLiveSourceV3(
       completeRead(fixture.events),
       "gex_fixture",
       "active",
@@ -79,14 +79,15 @@ describe("V2 live run-quality source", () => {
   });
 
   test("fails closed on an incomplete validating read", () => {
-    const read: ReadLedgerV2Result = {
+    const read: ReadLedgerV3Result = {
       events: [],
       diagnostics: [{ code: "partial_final_frame", byte_offset: 4, segment_ordinal: 1 }],
       complete: false,
       bytes: 4,
+      advances: [],
     };
     try {
-      projectRunQualityLiveSourceV2(
+      projectRunQualityLiveSourceV3(
         read,
         "gex_fixture",
         "candidate",
@@ -94,16 +95,16 @@ describe("V2 live run-quality source", () => {
       );
       throw new Error("expected live source failure");
     } catch (error) {
-      expect(error).toBeInstanceOf(RunQualityLiveSourceV2Error);
-      expect((error as RunQualityLiveSourceV2Error).code).toBe("ledger_integrity_failure");
+      expect(error).toBeInstanceOf(RunQualityLiveSourceV3Error);
+      expect((error as RunQualityLiveSourceV3Error).code).toBe("ledger_integrity_failure");
     }
   });
 });
 
 function generationFixture(adapter: "claude-code" | "codex" | undefined, ended = false) {
-  const generationId = generationIdV2();
+  const generationId = generationIdV3();
   const attestationId = "att_fixture" as const;
-  const startId = eventIdV2();
+  const startId = eventIdV3();
   const turnId = `hid_${"d".repeat(64)}` as const;
   const scope = {
     root_id: "root_fixture" as const,
@@ -138,7 +139,7 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
         confidence: "exact" as const,
       }
     : { state: "unknown" as const, reason: "not_reported" };
-  const started = buildEventV2("session.started", {
+  const started = buildEventV3("session.started", {
     ...common(1),
     event_id: startId,
     payload: {
@@ -154,7 +155,7 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
       resume: { state: "not_applicable" },
     },
   });
-  const turn = buildEventV2("turn.started", {
+  const turn = buildEventV3("turn.started", {
     ...common(2),
     scope: { ...scope, turn_id: turnId },
     links: { caused_by: [started.event_id] },
@@ -163,7 +164,7 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
       intent_kind: "build",
     },
   });
-  const requested = buildEventV2("tool.requested", {
+  const requested = buildEventV3("tool.requested", {
     ...common(3),
     scope: { ...scope, turn_id: turnId },
     links: { caused_by: [turn.event_id], span_id: "spn_fixture" },
@@ -174,7 +175,7 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
       targets: [],
     },
   });
-  const completed = buildEventV2("tool.completed", {
+  const completed = buildEventV3("tool.completed", {
     ...common(4),
     scope: { ...scope, turn_id: turnId },
     links: { caused_by: [requested.event_id], span_id: "spn_fixture" },
@@ -187,24 +188,47 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
         attestation: "native",
         confidence: "exact",
       },
+      span: {
+        span_id: "spn_fixture",
+        opened_at: "2026-08-16T19:59:59.000Z",
+        duration_ms: {
+          state: "observed",
+          value: 10,
+          attestation: "native",
+          confidence: "exact",
+        },
+        open_event_id: requested.event_id,
+      },
       result: { storage: "omitted", media_type: "application/json", bytes: 4 },
     },
   });
-  const wait = buildEventV2("interaction.wait_started", {
+  const wait = buildEventV3("wait.started", {
     ...common(5),
+    scope: { ...scope, turn_id: turnId },
     links: { caused_by: [completed.event_id] },
     payload: { wait_id: "wait_fixture", kind: "approval", authority_reference: "approval_fixture" },
   });
   const events = [started, turn, requested, completed, wait];
   if (ended) {
     events.push(
-      buildEventV2("session.ended", {
+      buildEventV3("session.ended", {
         ...common(6),
         links: { caused_by: [wait.event_id] },
         payload: {
           outcome: "succeeded",
           authority: "native",
           reason: "native_clean_exit",
+          span: {
+            span_id: "span_session_fixture",
+            opened_at: "2026-08-16T19:59:58.000Z",
+            duration_ms: {
+              state: "observed",
+              value: 2_000,
+              attestation: "derived",
+              confidence: "high",
+            },
+            open_event_id: started.event_id,
+          },
           completeness: { state: "not_applicable" },
         },
       }) as never,
@@ -213,17 +237,18 @@ function generationFixture(adapter: "claude-code" | "codex" | undefined, ended =
   return { generationId, events };
 }
 
-function completeRead(events: readonly { event_id: string }[]): ReadLedgerV2Result {
+function completeRead(events: readonly { event_id: string }[]): ReadLedgerV3Result {
   return {
     events: events.map(
-      (event, index): PositionedEventV2 => ({
-        event: event as PositionedEventV2["event"],
+      (event, index): PositionedEventV3 => ({
+        event: event as PositionedEventV3["event"],
         position: { segment_ordinal: 1, byte_offset: index * 100 },
       }),
     ),
     diagnostics: [],
     complete: true,
     bytes: events.length * 100,
+    advances: [],
   };
 }
 

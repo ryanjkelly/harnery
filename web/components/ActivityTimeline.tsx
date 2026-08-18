@@ -6,7 +6,7 @@ import { AgentChip } from "@/components/AgentChip";
 import { useDateTimeFormat } from "@/components/DateTimeFormatProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventRow } from "@/lib/coord-reader";
-import { describeEventV2 } from "@/lib/event-v2-display";
+import { describeEventV3 } from "@/lib/event-v3-display";
 import { NO_DATA } from "@/lib/format/no-data";
 import { formatTemplate } from "@/lib/format/template";
 
@@ -42,7 +42,7 @@ interface TimelineDot {
  * along the lane by time. Color encodes event type. Hover reveals the cmd
  * or tool. Useful for "what is everyone doing right now" at a glance.
  *
- * Uses the shared V2 display projection, so this page and `/events` cannot
+ * Uses the shared V3 display projection, so this page and `/events` cannot
  * drift into separate event-name or payload interpretations.
  */
 export function ActivityTimeline({ initialEvents, instanceToName, windowMinutes = 30 }: Props) {
@@ -71,7 +71,7 @@ export function ActivityTimeline({ initialEvents, instanceToName, windowMinutes 
       const agent = ev.instance_id ? instanceToName[ev.instance_id] : null;
       if (!agent) continue;
 
-      const display = describeEventV2(ev);
+      const display = describeEventV3(ev);
       const kind = display.timeline_kind;
       if (!kind) continue;
       const label = display.summary;

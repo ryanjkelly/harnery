@@ -44,11 +44,11 @@ import {
   readContextState,
   recordContextSample,
 } from "../context/index.ts";
-import { tryWriteLiveDisplayV2 } from "../events/v2/live-feed.ts";
+import { tryWriteLiveDisplayV3 } from "../events/v3/live-feed.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
 import { captureSpanClockV3 } from "../events/v3/span-state.ts";
 import { fetchPresence } from "../presence/index.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
@@ -592,7 +592,7 @@ async function main(): Promise<number> {
 
   const coordRoot = findCoordRoot(process.cwd());
   if (!coordRoot) return 0;
-  const ledgerRoute = resolveLiveEventLedgerRouteV2(coordRoot);
+  const ledgerRoute = resolveLiveEventLedgerRouteV3(coordRoot);
 
   // Always log a breadcrumb, useful when an event_type maps to null or owner
   // resolution fails. Stays cheap (one append) and self-prunes via repo log
@@ -647,7 +647,7 @@ async function main(): Promise<number> {
   if (ledgerRoute.state === "blocked") {
     appendDebug(coordRoot, {
       ...debugBase,
-      skipped: "v2-control-blocked",
+      skipped: "v3-control-blocked",
       reason: ledgerRoute.reason,
       event_type: norm.event_type,
       owner_source: owner.source,
@@ -655,7 +655,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const v2Result = recordLiveHookSignalV2({
+  const v3Result = recordLiveHookSignalV3({
     coordRoot,
     route: ledgerRoute,
     eventName,
@@ -676,24 +676,24 @@ async function main(): Promise<number> {
     hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
     monotonic_ns: hookClock.monotonic_ns,
   });
-  const v2EventId =
-    v2Result && "event" in v2Result
-      ? v2Result.event.event_id
-      : v2Result && "event_id" in v2Result
-        ? v2Result.event_id
+  const v3EventId =
+    v3Result && "event" in v3Result
+      ? v3Result.event.event_id
+      : v3Result && "event_id" in v3Result
+        ? v3Result.event_id
         : undefined;
 
   if (
     norm.event_type === "tool.requested" &&
-    v2Result &&
-    v2Result.state === "recorded" &&
-    "generation_id" in v2Result.event.scope
+    v3Result &&
+    v3Result.state === "recorded" &&
+    "generation_id" in v3Result.event.scope
   ) {
     const intent = typeof data.intent === "string" ? data.intent : undefined;
     if (intent && intent !== "(no intent)") {
-      tryWriteLiveDisplayV2(coordRoot, {
-        generation_id: v2Result.event.scope.generation_id,
-        event_id: v2Result.event.event_id,
+      tryWriteLiveDisplayV3(coordRoot, {
+        generation_id: v3Result.event.scope.generation_id,
+        event_id: v3Result.event.event_id,
         ...(typeof data.tool_name === "string" ? { executable: data.tool_name } : {}),
         intent_display: intent,
       });
@@ -704,9 +704,9 @@ async function main(): Promise<number> {
     ...debugBase,
     event_type: norm.event_type,
     owner_source: owner.source,
-    ...(v2EventId ? { event_v2_id: v2EventId } : {}),
-    ...(v2Result ? { event_v2_state: v2Result.state } : {}),
-    ...(v2Result && "reason" in v2Result ? { event_v2_reason: v2Result.reason } : {}),
+    ...(v3EventId ? { event_v3_id: v3EventId } : {}),
+    ...(v3Result ? { event_v3_state: v3Result.state } : {}),
+    ...(v3Result && "reason" in v3Result ? { event_v3_reason: v3Result.reason } : {}),
   });
 
   // Context telemetry is opportunistic and truthful: only persist a sample
@@ -963,11 +963,11 @@ async function main(): Promise<number> {
     // when such a request exists; any later real work cancels it in the
     // finalizer instead of being terminated underneath the agent.
     try {
-      const { hasPendingExplicitSessionEndV2, reconcileSessionFinalizationV2 } = await import(
-        "../agents/session-finalizer-v2.ts"
+      const { hasPendingExplicitSessionEndV3, reconcileSessionFinalizationV3 } = await import(
+        "../agents/session-finalizer-v3.ts"
       );
-      if (hasPendingExplicitSessionEndV2(coordRoot)) {
-        reconcileSessionFinalizationV2(coordRoot);
+      if (hasPendingExplicitSessionEndV3(coordRoot)) {
+        reconcileSessionFinalizationV3(coordRoot);
       }
     } catch (err) {
       logError(coordRoot, err, { phase: "stop-explicit-session-finalization" });

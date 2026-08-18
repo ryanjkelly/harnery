@@ -3,12 +3,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
-import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../../src/core/events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing.ts";
 
 const HARN = join(resolve(import.meta.dir, "../.."), "bin", "harn");
 const OWNER = "quality-fixture";
@@ -78,17 +78,17 @@ function sandbox(mode: "shadow" | "report"): string {
       files_touched: [],
     }),
   );
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-run-quality-status",
   });
-  const route = resolveLiveEventLedgerRouteV2(root);
-  if (route.state !== "v2") throw new Error("expected active V2 route");
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected active V3 route");
   const record = (eventName: string, payload: Record<string, unknown>) =>
-    recordLiveHookSignalV2({
+    recordLiveHookSignalV3({
       coordRoot: root,
       route,
       eventName,

@@ -5,26 +5,26 @@
  *   1. `HARNERY_COORD_ROOT` env var (set by `harn web up` to the user's cwd)
  *   2. Walk up from process.cwd() looking for a `.harnery/` directory
  *
- * Reads the V2 coordination projection, councils, events, and journals.
+ * Reads the V3 coordination projection, councils, events, and journals.
  * Invalid disposable cache entries are diagnostics, never authority.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { listSessionFinalizationRequestsV2 } from "../../src/core/agents/session-finalization-state-v2";
+import { listSessionFinalizationRequestsV3 } from "../../src/core/agents/session-finalization-state-v3";
 import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
 import type { AgentActivity, TaskState } from "../../src/core/agents/state/session-state";
-import type { EventV2 } from "../../src/core/events/v2/contract";
-import { readEventV2ControlState } from "../../src/core/events/v2/control";
+import type { EventV3 } from "../../src/core/events/v3/contract";
+import { readEventV3ControlState } from "../../src/core/events/v3/control";
 import {
-  type CoordinationGenerationViewV2,
-  projectCoordinationViewV2,
-} from "../../src/core/events/v2/coordination-view";
-import { type LiveDisplayRowV2, listLiveDisplayV2 } from "../../src/core/events/v2/live-feed";
-import { liveInstanceIdV2 } from "../../src/core/events/v2/live-routing";
-import { listHookProducerStateRecordsV2 } from "../../src/core/events/v2/producers/recorder";
-import { readLedgerV2 } from "../../src/core/events/v2/reader";
-import { eventV2Paths } from "../../src/core/events/v2/writer";
+  type CoordinationGenerationViewV3,
+  projectCoordinationViewV3,
+} from "../../src/core/events/v3/coordination-view";
+import { type LiveDisplayRowV3, listLiveDisplayV3 } from "../../src/core/events/v3/live-feed";
+import { liveInstanceIdV3 } from "../../src/core/events/v3/live-routing";
+import { listHookProducerStateRecordsV3 } from "../../src/core/events/v3/producers/recorder";
+import { readLedgerV3 } from "../../src/core/events/v3/reader";
+import { eventV3Paths } from "../../src/core/events/v3/writer";
 import {
   buildContributionMatrix,
   type ContributionMatrix,
@@ -79,7 +79,7 @@ export function journalDir(): string {
 }
 
 export function eventsPath(): string {
-  return eventV2Paths(coordRoot()).active;
+  return eventV3Paths(coordRoot()).active;
 }
 
 export interface Heartbeat {
@@ -101,19 +101,19 @@ export interface Heartbeat {
   task_state_reason?: string | null;
   model?: string | null;
   age_seconds: number;
-  ledger_state?: AgentLedgerStateV2;
+  ledger_state?: AgentLedgerStateV3;
   generation_id?: string;
   open_span_count?: number;
 }
 
-export type AgentLedgerStateV2 = "live" | "ending" | "recovery-required" | "terminal";
+export type AgentLedgerStateV3 = "live" | "ending" | "recovery-required" | "terminal";
 
-export interface AgentLedgerRecordV2 {
+export interface AgentLedgerRecordV3 {
   instance_id: string;
   generation_id: string;
-  state: AgentLedgerStateV2;
+  state: AgentLedgerStateV3;
   open_span_count: number;
-  generation: CoordinationGenerationViewV2;
+  generation: CoordinationGenerationViewV3;
 }
 
 export interface InvalidHeartbeat {
@@ -144,17 +144,17 @@ export interface ClaimRow {
 
 const STALE_AGE_SECONDS = 5 * 60;
 
-function isV2CacheShape(v: unknown): v is Omit<Heartbeat, "age_seconds"> & {
+function isV3CacheShape(v: unknown): v is Omit<Heartbeat, "age_seconds"> & {
   schema_version: 2;
-  v2_instance_id: string;
-  v2_generation_id: string;
+  v3_instance_id: string;
+  v3_generation_id: string;
 } {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Record<string, unknown>;
   return (
     r.schema_version === 2 &&
-    typeof r.v2_instance_id === "string" &&
-    typeof r.v2_generation_id === "string" &&
+    typeof r.v3_instance_id === "string" &&
+    typeof r.v3_generation_id === "string" &&
     typeof r.instance_id === "string" &&
     typeof r.last_heartbeat === "string" &&
     Array.isArray(r.files_touched)
@@ -183,8 +183,8 @@ function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
       invalid.push({ file, issue: `parse error: ${(err as Error).message}` });
       continue;
     }
-    if (!isV2CacheShape(parsed)) {
-      invalid.push({ file, issue: "not a generation-bound V2 cache" });
+    if (!isV3CacheShape(parsed)) {
+      invalid.push({ file, issue: "not a generation-bound V3 cache" });
     }
   }
   return { invalid, dir };
@@ -193,7 +193,7 @@ function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
 export function readAgents(): AgentsSnapshot {
   const root = coordRoot();
   const { invalid, dir } = readCacheDiagnostics();
-  const ledgerRecords = readAgentLedgerRecordsV2();
+  const ledgerRecords = readAgentLedgerRecordsV3();
   const now = Date.now();
   const all: Heartbeat[] = readLiveCoordinationRows(root).map((row) => {
     const ts = Date.parse(row.last_heartbeat);
@@ -207,7 +207,7 @@ export function readAgents(): AgentsSnapshot {
   });
   const represented = new Set<string>();
   for (const heartbeat of all) {
-    const canonicalId = liveInstanceIdV2(heartbeat.instance_id);
+    const canonicalId = liveInstanceIdV3(heartbeat.instance_id);
     const record = ledgerRecords.get(heartbeat.instance_id) ?? ledgerRecords.get(canonicalId);
     if (!record) continue;
     represented.add(record.instance_id);
@@ -261,13 +261,13 @@ export function readAgent(instanceId: string): Heartbeat | null {
     [...snapshot.active, ...snapshot.stale].find(
       (heartbeat) =>
         heartbeat.instance_id === instanceId ||
-        liveInstanceIdV2(heartbeat.instance_id) === instanceId,
+        liveInstanceIdV3(heartbeat.instance_id) === instanceId,
     ) ?? null
   );
 }
 
 /**
- * Reconstruct a read-only coordination row for an agent whose live V2 generation is gone
+ * Reconstruct a read-only coordination row for an agent whose live V3 generation is gone
  * (session ended, or the file was pruned) but whose durable identity persists in
  * the append-only event log. Mirrors what `buildEndedAgentSummaries` does for the
  * hover card, so the standalone `/agents/[id]` page works for ended agents too
@@ -279,14 +279,14 @@ export function readAgent(instanceId: string): Heartbeat | null {
  * seen", more accurate than the start ts). The live-only fields (task,
  * files_touched and model) are intentionally empty: they
  * lived in the heartbeat and don't outlast it. Callers distinguish this from a
- * live V2 generation by checking `readAgent` first and gate live-only mutation
+ * live V3 generation by checking `readAgent` first and gate live-only mutation
  * actions (heal / kill / nudge / end-session) on that.
  *
  * Returns null when no identity exists for the instance (→ genuine notFound).
  */
 export function readEndedAgent(instanceId: string): Heartbeat | null {
-  const records = readAgentLedgerRecordsV2();
-  const terminal = records.get(instanceId) ?? records.get(liveInstanceIdV2(instanceId));
+  const records = readAgentLedgerRecordsV3();
+  const terminal = records.get(instanceId) ?? records.get(liveInstanceIdV3(instanceId));
   if (terminal?.state === "terminal") return heartbeatFromLedgerRecord(terminal);
   const identity = readInstanceIdentities()[instanceId];
   if (!identity) return null;
@@ -317,49 +317,49 @@ export function readEndedAgent(instanceId: string): Heartbeat | null {
   };
 }
 
-export function classifyAgentLedgerStateV2(input: {
+export function classifyAgentLedgerStateV3(input: {
   terminal: boolean;
   pending_finalization: boolean;
   open_span_count: number;
   turn_open: boolean;
-}): AgentLedgerStateV2 {
+}): AgentLedgerStateV3 {
   if (input.terminal) return "terminal";
   if (input.pending_finalization) return "ending";
   if (input.open_span_count > 0 && !input.turn_open) return "recovery-required";
   return "live";
 }
 
-function readAgentLedgerRecordsV2(): Map<string, AgentLedgerRecordV2> {
+function readAgentLedgerRecordsV3(): Map<string, AgentLedgerRecordV3> {
   const root = coordRoot();
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state !== "candidate" && control.state !== "active") return new Map();
   try {
-    const read = readLedgerV2(root);
+    const read = readLedgerV3(root);
     if (!read.complete) return new Map();
-    const view = projectCoordinationViewV2(read);
+    const view = projectCoordinationViewV3(read);
     const pending = new Set<string>(
-      listSessionFinalizationRequestsV2(root)
+      listSessionFinalizationRequestsV3(root)
         .filter((request) => request.status === "pending")
         .map((request) => request.generation_id),
     );
     const openSpans = new Map<string, { count: number; turn_open: boolean }>();
-    for (const { state } of listHookProducerStateRecordsV2(root)) {
+    for (const { state } of listHookProducerStateRecordsV3(root)) {
       if (state.spans.length === 0) continue;
       openSpans.set(state.generation_id, {
         count: state.spans.length,
         turn_open: Boolean(state.current_turn_id),
       });
     }
-    const records = new Map<string, AgentLedgerRecordV2>();
+    const records = new Map<string, AgentLedgerRecordV3>();
     for (const generation of [
       ...Object.values(view.instances),
       ...Object.values(view.terminal_generations),
     ]) {
       const spans = openSpans.get(generation.generation_id) ?? { count: 0, turn_open: false };
-      const record: AgentLedgerRecordV2 = {
+      const record: AgentLedgerRecordV3 = {
         instance_id: generation.instance_id,
         generation_id: generation.generation_id,
-        state: classifyAgentLedgerStateV2({
+        state: classifyAgentLedgerStateV3({
           terminal: generation.phase === "terminal",
           pending_finalization: pending.has(generation.generation_id),
           open_span_count: spans.count,
@@ -379,7 +379,7 @@ function readAgentLedgerRecordsV2(): Map<string, AgentLedgerRecordV2> {
   }
 }
 
-function heartbeatFromLedgerRecord(record: AgentLedgerRecordV2): Heartbeat {
+function heartbeatFromLedgerRecord(record: AgentLedgerRecordV3): Heartbeat {
   const generation = record.generation;
   const observedAt = generation.last_observed_at;
   const observedMs = Date.parse(observedAt);
@@ -396,7 +396,7 @@ function heartbeatFromLedgerRecord(record: AgentLedgerRecordV2): Heartbeat {
     task: null,
     activity: generation.activity === "terminal" ? "idle" : generation.activity,
     activity_updated_at: observedAt,
-    activity_source: "event-v2-coordination-view",
+    activity_source: "event-v3-coordination-view",
     task_state: normalizeTaskState(generation.task_state),
     task_state_updated_at: observedAt,
     task_state_reason: null,
@@ -420,7 +420,7 @@ function nameForLedgerInstance(instanceId: string): string {
         if (
           entry.name &&
           entry.instance_id &&
-          (entry.instance_id === instanceId || liveInstanceIdV2(entry.instance_id) === instanceId)
+          (entry.instance_id === instanceId || liveInstanceIdV3(entry.instance_id) === instanceId)
         ) {
           return entry.name.startsWith("agent-") ? entry.name.slice("agent-".length) : entry.name;
         }
@@ -594,8 +594,8 @@ export function readJournalArchive(instanceId: string, filename: string): string
   }
 }
 
-type EventRowForV2<E extends EventV2> = {
-  schema_version: 2;
+type EventRowForV3<E extends EventV3> = {
+  schema_version: 3;
   event_id: E["event_id"];
   event_type: E["event_type"];
   ts: string;
@@ -604,13 +604,13 @@ type EventRowForV2<E extends EventV2> = {
   adapter?: string;
   source?: string;
   data: E["payload"];
-  live_display?: Pick<LiveDisplayRowV2, "executable" | "intent_display" | "target_labels">;
+  live_display?: Pick<LiveDisplayRowV3, "executable" | "intent_display" | "target_labels">;
 };
 
-/** Discriminated, privacy-safe web DTO projected only from validated V2 rows. */
-export type EventRow = EventV2 extends infer E
-  ? E extends EventV2
-    ? EventRowForV2<E>
+/** Discriminated, privacy-safe web DTO projected only from validated V3 rows. */
+export type EventRow = EventV3 extends infer E
+  ? E extends EventV3
+    ? EventRowForV3<E>
     : never
   : never;
 
@@ -631,16 +631,16 @@ export function readEvents(
     /** Session-id allowlist. A main adapter session carries the same id in
      * `session_id` and `instance_id`, so either matching is a hit. */
     sessions?: Set<string>;
-    /** Read another checkout's V2 ledger. */
+    /** Read another checkout's V3 ledger. */
     root?: string;
   } = {},
 ): EventsResponse {
   const root = opts.root ?? coordRoot();
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state === "candidate" || control.state === "active") {
-    const catalogPath = path.join(root, ".harnery", "ledgers", "v2", "catalog.json");
-    const ledger = readLedgerV2(root);
-    const liveDisplay = new Map(listLiveDisplayV2(root).map((row) => [row.event_id, row]));
+    const catalogPath = path.join(root, ".harnery", "ledgers", "v3", "catalog.json");
+    const ledger = readLedgerV3(root);
+    const liveDisplay = new Map(listLiveDisplayV3(root).map((row) => [row.event_id, row]));
     const rows: EventRow[] = [];
     if (ledger.complete) {
       for (
@@ -651,7 +651,7 @@ export function readEvents(
         const event = ledger.events[index]!.event;
         const display = liveDisplay.get(event.event_id);
         const row = {
-          schema_version: 2,
+          schema_version: 3,
           event_id: event.event_id,
           event_type: event.event_type,
           ts: event.time.recorded_at,
@@ -688,7 +688,7 @@ export function readEvents(
       meta: {
         path: existsSync(catalogPath)
           ? catalogPath
-          : path.join(root, ".harnery", "ledgers", "v2", "active.ndjson"),
+          : path.join(root, ".harnery", "ledgers", "v3", "active.ndjson"),
         total_lines: ledger.events.length,
         returned: rows.length,
       },
@@ -697,14 +697,14 @@ export function readEvents(
   return {
     rows: [],
     meta: {
-      path: path.join(root, ".harnery", "ledgers", "v2"),
+      path: path.join(root, ".harnery", "ledgers", "v3"),
       total_lines: 0,
       returned: 0,
     },
   };
 }
 
-/** Durable instance identity projected exclusively from V2 plus name history. */
+/** Durable instance identity projected exclusively from V3 plus name history. */
 export interface InstanceIdentity {
   instance_id: string;
   name: string;
@@ -725,16 +725,16 @@ export interface InstanceIdentity {
 }
 
 export function __resetIdentityIndexCache(): void {
-  // V2 projection is rebuilt from the canonical reader on demand.
+  // V3 projection is rebuilt from the canonical reader on demand.
 }
 
 export function readInstanceIdentities(): Record<string, InstanceIdentity> {
   const root = coordRoot();
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state !== "candidate" && control.state !== "active") return {};
-  const ledger = readLedgerV2(root);
+  const ledger = readLedgerV3(root);
   if (!ledger.complete) return {};
-  const view = projectCoordinationViewV2(ledger);
+  const view = projectCoordinationViewV3(ledger);
   const generations = [
     ...Object.values(view.instances),
     ...Object.values(view.terminal_generations),
@@ -758,7 +758,7 @@ export function readInstanceIdentities(): Record<string, InstanceIdentity> {
           : null,
       activity: generation.activity === "terminal" ? "idle" : generation.activity,
       activity_updated_at: generation.last_observed_at,
-      activity_source: "event-v2-coordination-view",
+      activity_source: "event-v3-coordination-view",
       task_state: normalizeTaskState(generation.task_state),
       task_state_updated_at: generation.last_observed_at,
       task_state_reason: null,

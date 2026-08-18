@@ -20,7 +20,7 @@ interface PageProps {
 }
 
 /**
- * /live: structured command projection of the canonical V2 ledger.
+ * /live: structured command projection of the canonical V3 ledger.
  * command stream: the host CLI `command.*` + `narration` AND bare shell commands
  * (canonical `tool.requested` / `tool.completed`, with their intent metadata).
  * Non-command tool calls (Read/Edit/Write/…) and state/session events belong to
@@ -40,7 +40,7 @@ export default async function LivePage({ searchParams }: PageProps) {
   const { binName } = hostInfo();
   const snap = readAgents();
   const all = [...snap.active, ...snap.stale];
-  // Durable instance_id → identity from canonical V2 session events.
+  // Durable instance_id → identity from canonical V3 session events.
   // subagent.start (subagents). Persists past session end, so a finished
   // agent's rows keep its name instead of reverting to a raw instance_id.
   // One scan, shared with the summary builders below.

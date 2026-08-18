@@ -2,11 +2,11 @@ import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
-import { readEventV2ControlState } from "../events/v2/control.ts";
-import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
-import { listHookProducerStateRecordsV2 } from "../events/v2/producers/recorder.ts";
-import type { SessionArchiveObservationV2 } from "./session-finalizer-v2.ts";
+import { normalizeNativeIdV3 } from "../events/v3/canonical.ts";
+import { readEventV3ControlState } from "../events/v3/control.ts";
+import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
+import { listHookProducerStateRecordsV3 } from "../events/v3/producers/recorder.ts";
+import type { SessionArchiveObservationV3 } from "./session-finalizer-v3.ts";
 
 const require = createRequire(import.meta.url);
 
@@ -31,8 +31,8 @@ function openReadonlyDatabase(path: string): SqliteDatabase | null {
   }
 }
 
-export interface CodexArchiveScanResultV2 {
-  observations: SessionArchiveObservationV2[];
+export interface CodexArchiveScanResultV3 {
+  observations: SessionArchiveObservationV3[];
   diagnostics: string[];
 }
 
@@ -40,25 +40,25 @@ export interface CodexArchiveScanResultV2 {
  * Read only Codex's durable lifecycle columns. Conversation content, titles,
  * working directories, and model metadata never leave the adapter database.
  */
-export function readCodexArchiveObservationsV2(
+export function readCodexArchiveObservationsV3(
   coordRoot: string,
   options: { databasePath?: string; observedAt?: string } = {},
-): CodexArchiveScanResultV2 {
+): CodexArchiveScanResultV3 {
   const diagnostics: string[] = [];
   const databasePath = options.databasePath ?? locateCodexStateDatabase();
   if (!databasePath) return { observations: [], diagnostics: ["codex_state_database_missing"] };
-  const control = readEventV2ControlState(coordRoot);
+  const control = readEventV3ControlState(coordRoot);
   if (control.state !== "candidate" && control.state !== "active") {
-    return { observations: [], diagnostics: ["event_v2_control_unavailable"] };
+    return { observations: [], diagnostics: ["event_v3_control_unavailable"] };
   }
-  const context = fingerprintContextV2(
+  const context = fingerprintContextV3(
     coordRoot,
     control.genesis.event.scope.root_id as `root_${string}`,
     undefined,
     control.genesis.profile.privacy_key_epoch,
   );
   const liveCodexStateIds = new Set(
-    listHookProducerStateRecordsV2(coordRoot)
+    listHookProducerStateRecordsV3(coordRoot)
       .filter(({ state }) => state.adapter === "codex")
       .map(({ path }) => basename(path, ".json")),
   );
@@ -87,7 +87,7 @@ export function readCodexArchiveObservationsV2(
       return {
         observations: rows
           .filter((row) =>
-            liveCodexStateIds.has(normalizeNativeIdV2(context, "codex.session", row.id)),
+            liveCodexStateIds.has(normalizeNativeIdV3(context, "codex.session", row.id)),
           )
           .map((row) => ({
             adapter: "codex" as const,

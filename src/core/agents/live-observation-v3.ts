@@ -1,42 +1,42 @@
 import { randomUUID } from "node:crypto";
 import type { Adapter } from "../adapter.ts";
-import { buildEventV2 } from "../events/v2/builder.ts";
+import { buildEventV3 } from "../events/v3/builder.ts";
 import {
-  canonicalJsonV2,
-  fingerprintV2,
-  normalizeNativeIdV2,
-  sha256V2,
-} from "../events/v2/canonical.ts";
-import type { EventTypeV2, EventV2 } from "../events/v2/contract.ts";
-import { readEventV2ControlState } from "../events/v2/control.ts";
-import { readCoordinationViewV2 } from "../events/v2/coordination-view.ts";
-import { fingerprintContextV2 } from "../events/v2/fingerprint-keys.ts";
-import type { LiveCoordinationObservationV2 } from "../events/v2/live-observation.ts";
+  canonicalJsonV3,
+  fingerprintV3,
+  normalizeNativeIdV3,
+  sha256V3,
+} from "../events/v3/canonical.ts";
+import type { EventTypeV3, EventV3 } from "../events/v3/contract.ts";
+import { readEventV3ControlState } from "../events/v3/control.ts";
+import { readCoordinationViewV3 } from "../events/v3/coordination-view.ts";
+import { fingerprintContextV3 } from "../events/v3/fingerprint-keys.ts";
+import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 import {
-  liveInstanceIdV2,
-  livePlatformV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
-import { readHookProducerStateV2 } from "../events/v2/producers/recorder.ts";
-import { writeEventV2 } from "../events/v2/writer.ts";
-import { LiveCoordinationAuthorityV2Error } from "./live-authority-v2.ts";
-import { liveCoordinationAdapterV2 } from "./state/live-coordination-view.ts";
+  liveInstanceIdV3,
+  livePlatformV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
+import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
+import { writeEventV3 } from "../events/v3/writer.ts";
+import { LiveCoordinationAuthorityV3Error } from "./live-authority-v3.ts";
+import { liveCoordinationAdapterV3 } from "./state/live-coordination-view.ts";
 
-export type { LiveCoordinationObservationV2 } from "../events/v2/live-observation.ts";
+export type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 
-export interface RecordLiveCoordinationObservationV2Input {
+export interface RecordLiveCoordinationObservationV3Input {
   coordRoot: string;
   owner: string;
   nativeSessionId: string;
   adapter: Adapter;
-  observation: LiveCoordinationObservationV2;
+  observation: LiveCoordinationObservationV3;
   observationId?: string;
   observedAt?: string;
 }
 
-export interface RecordLiveCoordinationObservationV2Result {
+export interface RecordLiveCoordinationObservationV3Result {
   state: "recorded";
-  event: EventV2;
+  event: EventV3;
 }
 
 /**
@@ -44,28 +44,28 @@ export interface RecordLiveCoordinationObservationV2Result {
  * generation. Raw message and record bodies are used only to derive keyed
  * fingerprints or content digests; they never enter the ledger payload.
  */
-export function recordLiveCoordinationObservationV2(
-  input: RecordLiveCoordinationObservationV2Input,
-): RecordLiveCoordinationObservationV2Result {
-  const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
-  const control = readEventV2ControlState(input.coordRoot);
+export function recordLiveCoordinationObservationV3(
+  input: RecordLiveCoordinationObservationV3Input,
+): RecordLiveCoordinationObservationV3Result {
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state === "blocked") throw new LiveCoordinationAuthorityV3Error(route.reason);
+  const control = readEventV3ControlState(input.coordRoot);
   if (control.state !== route.mode) {
-    throw new LiveCoordinationAuthorityV2Error("control_state_changed");
+    throw new LiveCoordinationAuthorityV3Error("control_state_changed");
   }
-  const adapter = liveCoordinationAdapterV2(input.coordRoot, input.owner) ?? input.adapter;
-  const hook = readHookProducerStateV2(input.coordRoot, adapter, input.nativeSessionId);
+  const adapter = liveCoordinationAdapterV3(input.coordRoot, input.owner) ?? input.adapter;
+  const hook = readHookProducerStateV3(input.coordRoot, adapter, input.nativeSessionId);
   if (
     !hook ||
     hook.terminal ||
     !hook.last_event_id ||
-    hook.instance_id !== liveInstanceIdV2(input.owner)
+    hook.instance_id !== liveInstanceIdV3(input.owner)
   ) {
-    throw new LiveCoordinationAuthorityV2Error("hook_generation_not_joinable");
+    throw new LiveCoordinationAuthorityV3Error("hook_generation_not_joinable");
   }
 
   const rootId = control.genesis.event.scope.root_id as `root_${string}`;
-  const fingerprintContext = fingerprintContextV2(
+  const fingerprintContext = fingerprintContextV3(
     input.coordRoot,
     rootId,
     hook.generation_id,
@@ -74,7 +74,7 @@ export function recordLiveCoordinationObservationV2(
   const observationId = input.observationId ?? `${input.observation.event_type}-${randomUUID()}`;
   const subject =
     "subject" in input.observation && input.observation.subject
-      ? liveInstanceIdV2(input.observation.subject)
+      ? liveInstanceIdV3(input.observation.subject)
       : hook.instance_id;
   const common = {
     producer: {
@@ -83,7 +83,7 @@ export function recordLiveCoordinationObservationV2(
       sequence: 1,
       component: "agent-coord" as const,
       build_id: route.build_id,
-      platform: livePlatformV2(),
+      platform: livePlatformV3(),
     },
     scope: {
       root_id: rootId,
@@ -97,7 +97,7 @@ export function recordLiveCoordinationObservationV2(
       source_event: `agent-coord.${input.observation.event_type}`,
       attestation: "derived" as const,
       confidence: "exact" as const,
-      source_record_id: normalizeNativeIdV2(
+      source_record_id: normalizeNativeIdV3(
         fingerprintContext,
         "agent-coord.observation",
         observationId,
@@ -114,10 +114,10 @@ export function recordLiveCoordinationObservationV2(
   };
 
   const observation = input.observation;
-  let event: EventV2;
+  let event: EventV3;
   switch (observation.event_type) {
     case "coord.status_observed":
-      event = buildEventV2("coord.status_observed", {
+      event = buildEventV3("coord.status_observed", {
         ...common,
         payload: {
           observer_instance_id: hook.instance_id,
@@ -130,9 +130,9 @@ export function recordLiveCoordinationObservationV2(
       // The ledger projection, not the independently versioned presence file,
       // owns the canonical prior state. Omitting an unknown first prior keeps
       // the transition honest and avoids manufacturing a history.
-      const projectedPrior = readCoordinationViewV2(input.coordRoot).instances[hook.instance_id]
+      const projectedPrior = readCoordinationViewV3(input.coordRoot).instances[hook.instance_id]
         ?.presence_state;
-      event = buildEventV2("coord.presence_changed", {
+      event = buildEventV3("coord.presence_changed", {
         ...common,
         payload: {
           actor_instance_id: hook.instance_id,
@@ -146,14 +146,14 @@ export function recordLiveCoordinationObservationV2(
       break;
     }
     case "coord.message_observed":
-      event = buildEventV2("coord.message_observed", {
+      event = buildEventV3("coord.message_observed", {
         ...common,
         payload: {
           message_id: safeToken(observation.message_id ?? `msg_${randomUUID()}`),
           direction: observation.direction,
           peer_instance_id: subject,
           body_length: Buffer.byteLength(observation.body, "utf8"),
-          body_fingerprint: fingerprintV2(
+          body_fingerprint: fingerprintV3(
             fingerprintContext,
             "coord.message.body",
             observation.body,
@@ -163,41 +163,41 @@ export function recordLiveCoordinationObservationV2(
       });
       break;
     case "council.state_changed":
-      event = buildEventV2("council.state_changed", {
+      event = buildEventV3("council.state_changed", {
         ...common,
         payload: {
           council_id: safeToken(observation.council_id),
           ...(observation.prior_state ? { prior_state: safeToken(observation.prior_state) } : {}),
           new_state: safeToken(observation.new_state),
-          record_digest: sha256V2(canonicalJsonV2(observation.record)),
+          record_digest: sha256V3(canonicalJsonV3(observation.record)),
         },
       });
       break;
     case "decision.state_changed": {
-      const projectedDecisionPrior = readCoordinationViewV2(input.coordRoot).decisions[
+      const projectedDecisionPrior = readCoordinationViewV3(input.coordRoot).decisions[
         observation.decision_id
       ];
-      event = buildEventV2("decision.state_changed", {
+      event = buildEventV3("decision.state_changed", {
         ...common,
         payload: {
           decision_id: safeToken(observation.decision_id),
           ...(projectedDecisionPrior ? { prior_state: safeToken(projectedDecisionPrior) } : {}),
           new_state: safeToken(observation.new_state),
-          record_digest: sha256V2(canonicalJsonV2(observation.record)),
+          record_digest: sha256V3(canonicalJsonV3(observation.record)),
           authority: { record_id: safeToken(observation.decision_id) },
         },
       });
       break;
     }
   }
-  writeEventV2(input.coordRoot, event);
+  writeEventV3(input.coordRoot, event);
   return { state: "recorded", event };
 }
 
 function safeToken(value: string): string {
   const normalized = value.normalize("NFC");
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(normalized)) {
-    throw new LiveCoordinationAuthorityV2Error(`invalid_safe_token:${value}`);
+    throw new LiveCoordinationAuthorityV3Error(`invalid_safe_token:${value}`);
   }
   return normalized;
 }
@@ -205,12 +205,12 @@ function safeToken(value: string): string {
 function reasonCode(value: string): string {
   const normalized = value.normalize("NFC");
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/.test(normalized)) {
-    throw new LiveCoordinationAuthorityV2Error(`invalid_reason_code:${value}`);
+    throw new LiveCoordinationAuthorityV3Error(`invalid_reason_code:${value}`);
   }
   return normalized;
 }
 
-export type LiveCoordinationObservationEventTypeV2 = Extract<
-  EventTypeV2,
-  LiveCoordinationObservationV2["event_type"]
+export type LiveCoordinationObservationEventTypeV3 = Extract<
+  EventTypeV3,
+  LiveCoordinationObservationV3["event_type"]
 >;

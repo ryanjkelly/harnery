@@ -27,7 +27,7 @@ export default async function CodecPage() {
           <div>
             <h1 className="text-lg font-semibold tracking-tight">Codec</h1>
             <p className="text-sm text-muted-foreground">
-              Read-only presentation of live agent activity from the V2 event ledger. Local intent
+              Read-only presentation of live agent activity from the V3 event ledger. Local intent
               overlay lasts 15 minutes and never leaves this machine. Experimental; the dashboard
               remains the control surface.
             </p>

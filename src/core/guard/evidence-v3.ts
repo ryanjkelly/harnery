@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { canonicalJsonV2, type EventV2 } from "../events/v2/index.ts";
-import type { RunQualityCorpusCategoryV2, RunQualityEvidenceEvent } from "./types.ts";
+import { canonicalJsonV3, type EventV3 } from "../events/v3/index.ts";
+import type { RunQualityCorpusCategoryV3, RunQualityEvidenceEvent } from "./types.ts";
 
 interface GenerationScope {
   root_id: string;
@@ -16,12 +16,12 @@ interface GenerationLinks {
 }
 
 /**
- * Convert one validated V2 row into the evaluator's privacy-safe evidence.
+ * Convert one validated V3 row into the evaluator's privacy-safe evidence.
  * Both the live guard and offline corpus use this exact adapter.
  */
-export function normalizeRunQualityEventV2(
-  event: EventV2,
-  priorEvents: ReadonlyMap<string, EventV2> = new Map(),
+export function normalizeRunQualityEventV3(
+  event: EventV3,
+  priorEvents: ReadonlyMap<string, EventV3> = new Map(),
 ): RunQualityEvidenceEvent[] {
   const base = { event_id: event.event_id, ts: event.time.observed_at };
   const recovery = recoveryCategory(event, base);
@@ -79,16 +79,16 @@ export function normalizeRunQualityEventV2(
  * are audit metadata, not behavioral guard evidence: callers keep them in a
  * separate corpus-category dimension.
  */
-export function normalizeRunQualityPairingV2(
-  events: readonly EventV2[],
+export function normalizeRunQualityPairingV3(
+  events: readonly EventV3[],
 ): RunQualityEvidenceEvent[] {
   const spans = new Map<
     string,
     {
-      tool_requested: EventV2[];
-      tool_completed: EventV2[];
-      started_commands: EventV2[];
-      completed_commands: EventV2[];
+      tool_requested: EventV3[];
+      tool_completed: EventV3[];
+      started_commands: EventV3[];
+      completed_commands: EventV3[];
     }
   >();
   for (const event of events) {
@@ -137,9 +137,9 @@ export function normalizeRunQualityPairingV2(
   return markers;
 }
 
-export function isRunQualityCorpusCategoryV2(
+export function isRunQualityCorpusCategoryV3(
   kind: RunQualityEvidenceEvent["kind"],
-): kind is RunQualityCorpusCategoryV2 {
+): kind is RunQualityCorpusCategoryV3 {
   return (
     kind === "tool_pairing_incomplete" ||
     kind === "command_pairing_incomplete" ||
@@ -148,7 +148,7 @@ export function isRunQualityCorpusCategoryV2(
 }
 
 function recoveryCategory(
-  event: EventV2,
+  event: EventV3,
   base: Pick<RunQualityEvidenceEvent, "event_id" | "ts">,
 ): RunQualityEvidenceEvent[] {
   if (!("recovery" in event.payload) || event.payload.recovery === undefined) return [];
@@ -157,11 +157,11 @@ function recoveryCategory(
 
 function pairingMarker(
   kind: Extract<
-    RunQualityCorpusCategoryV2,
+    RunQualityCorpusCategoryV3,
     "tool_pairing_incomplete" | "command_pairing_incomplete"
   >,
-  left: EventV2[],
-  right: EventV2[],
+  left: EventV3[],
+  right: EventV3[],
 ): RunQualityEvidenceEvent {
   const witness = [...left, ...right].sort(
     (a, b) =>
@@ -171,8 +171,8 @@ function pairingMarker(
 }
 
 function trustedProgress(
-  event: Extract<EventV2, { event_type: "progress.observed" }>,
-  priorEvents: ReadonlyMap<string, EventV2>,
+  event: Extract<EventV3, { event_type: "progress.observed" }>,
+  priorEvents: ReadonlyMap<string, EventV3>,
 ): boolean {
   const links = event.links as GenerationLinks;
   const scope = event.scope as GenerationScope;
@@ -202,7 +202,7 @@ function combinedTargetHash(digests: string[]): string | undefined {
   const unique = [...new Set(digests.map(bareDigest))].sort();
   if (unique.length === 0) return undefined;
   if (unique.length === 1) return unique[0];
-  return createHash("sha256").update(canonicalJsonV2(unique)).digest("hex");
+  return createHash("sha256").update(canonicalJsonV3(unique)).digest("hex");
 }
 
 function bareDigest(digest: string): string {

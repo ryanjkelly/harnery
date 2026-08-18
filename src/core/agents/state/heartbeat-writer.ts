@@ -65,11 +65,11 @@ export interface Heartbeat {
   parent_instance_id?: string;
   workflow_run_id?: string;
   workflow_agent_id?: string;
-  /** Disposable-cache bindings that prove a row belongs to the current V2 generation. */
-  v2_instance_id?: `inst_${string}`;
-  v2_generation_id?: `gen_${string}`;
-  v2_projection_event_id?: string;
-  v2_task_state?: "set" | "cleared";
+  /** Disposable-cache bindings that prove a row belongs to the current V3 generation. */
+  v3_instance_id?: `inst_${string}`;
+  v3_generation_id?: `gen_${string}`;
+  v3_projection_event_id?: string;
+  v3_task_state?: "set" | "cleared";
   [extra: string]: unknown;
 }
 
@@ -144,7 +144,7 @@ export function setTask(coordRoot: string, instanceId: string, task: string): He
       ...hb,
       task: cleared ? undefined : task,
       task_updated_at: nowIsoSeconds(),
-      ...(hb.schema_version === 2 ? { v2_task_state: cleared ? "cleared" : "set" } : {}),
+      ...(hb.schema_version === 2 ? { v3_task_state: cleared ? "cleared" : "set" } : {}),
       ...(built ? { suggested_session_name: built.suggestedName } : {}),
     };
   });

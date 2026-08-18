@@ -1,4 +1,4 @@
-/** V2-only SSE event stream. */
+/** V3-only SSE event stream. */
 import { coordRoot, readEvents } from "@/lib/coord-reader";
 import { readWorkflowChildSessions, resolveRunCoordRoot } from "@/lib/workflow-reader";
 
@@ -31,7 +31,7 @@ export async function GET(request: Request): Promise<Response> {
     }
   }
 
-  return streamV2Events(request, {
+  return streamV3Events(request, {
     sourceRoot,
     initialLines,
     instanceFilter,
@@ -40,7 +40,7 @@ export async function GET(request: Request): Promise<Response> {
   });
 }
 
-function streamV2Events(
+function streamV3Events(
   request: Request,
   options: {
     sourceRoot: string;

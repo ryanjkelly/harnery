@@ -22,7 +22,7 @@ interface Props {
  *
  * Server pre-renders the initial 500 rows for first paint; the SSE snapshot
  * replaces them on connect so SSR + live state stay in sync. After that,
- * each newly recorded V2 event streams in as it lands.
+ * each newly recorded V3 event streams in as it lands.
  */
 export function EventsLogTable({
   initialRows,
@@ -47,7 +47,7 @@ export function EventsLogTable({
       initialAgent={initialAgent}
       initialKind={initialKind}
       knownKinds={knownKinds}
-      emptyStateHint="No V2 events yet. Tool calls, prompts, and lifecycle boundaries appear after the first recorded agent signal."
+      emptyStateHint="No V3 events yet. Tool calls, prompts, and lifecycle boundaries appear after the first recorded agent signal."
     />
   );
 }

@@ -10,8 +10,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
-import { startWorkflowChildSessionV2 } from "../workflow/live-session-v2.ts";
+import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { startWorkflowChildSessionV3 } from "../workflow/live-session-v3.ts";
 import { sessionNamePresence } from "./session-name-presence.ts";
 
 const NAME = "Agent Maya - Auth refactor";
@@ -19,14 +19,14 @@ const NAME = "Agent Maya - Auth refactor";
 function rootWith(body: Record<string, unknown>): string {
   const root = mkdtempSync(path.join(os.tmpdir(), "harn-name-presence-"));
   mkdirSync(root, { recursive: true });
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "session-name-test",
     hostBuild: "host-test",
     configDigest: `sha256:${"0".repeat(64)}`,
     approvalRecordId: "session-name-test",
   });
-  startWorkflowChildSessionV2({
+  startWorkflowChildSessionV3({
     coordRoot: root,
     instanceId: "self",
     runId: "session-name-test",

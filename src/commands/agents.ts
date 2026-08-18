@@ -36,7 +36,7 @@ import {
   readSessionWriteClaims,
 } from "../core/agents/finalization.ts";
 import {
-  emitEventV2,
+  emitEventV3,
   monorepoRoot,
   normalizeAdapter,
   resolveOwner,
@@ -45,12 +45,12 @@ import {
   sessionIdentityFromEnv,
 } from "../core/agents/index.ts";
 import {
-  listSessionFinalizationRequestsV2,
-  observeHostDisappearedV2,
-  reconcileSessionFinalizationV2,
-  requestSessionEndExplicitV2,
-  type SessionFinalizationRequestV2,
-} from "../core/agents/session-finalizer-v2.ts";
+  listSessionFinalizationRequestsV3,
+  observeHostDisappearedV3,
+  reconcileSessionFinalizationV3,
+  requestSessionEndExplicitV3,
+  type SessionFinalizationRequestV3,
+} from "../core/agents/session-finalizer-v3.ts";
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
@@ -71,20 +71,20 @@ import {
   resolveBinName,
   sessionFinalizationConfig,
 } from "../core/config.ts";
-import type { EventTypeV2 } from "../core/events/v2/contract.ts";
-import { readEventV2ControlState } from "../core/events/v2/control.ts";
-import { projectCoordinationViewV2 } from "../core/events/v2/coordination-view.ts";
-import { liveInstanceIdV2 } from "../core/events/v2/live-routing.ts";
+import type { EventTypeV3 } from "../core/events/v3/contract.ts";
+import { readEventV3ControlState } from "../core/events/v3/control.ts";
+import { projectCoordinationViewV3 } from "../core/events/v3/coordination-view.ts";
+import { liveInstanceIdV3 } from "../core/events/v3/live-routing.ts";
 import {
-  listHookIntakeGroupsV2,
-  listHookIntakeRecordsV2,
-} from "../core/events/v2/producers/intake.ts";
+  listHookIntakeGroupsV3,
+  listHookIntakeRecordsV3,
+} from "../core/events/v3/producers/intake.ts";
 import {
-  listHookProducerStateRecordsV2,
-  readHookProducerStateV2,
-} from "../core/events/v2/producers/recorder.ts";
-import { readLedgerV2 } from "../core/events/v2/reader.ts";
-import { EVENT_V2_LEDGER_RELATIVE_ROOT } from "../core/events/v2/writer.ts";
+  listHookProducerStateRecordsV3,
+  readHookProducerStateV3,
+} from "../core/events/v3/producers/recorder.ts";
+import { readLedgerV3 } from "../core/events/v3/reader.ts";
+import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../core/events/v3/writer.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
@@ -245,7 +245,7 @@ function taskStateOf(hb: Pick<Heartbeat, "task_state">): TaskState {
   return hb.task_state ?? "active";
 }
 
-/** Producer joins use the private native session ID; `session_id` is the canonical V2 fingerprint. */
+/** Producer joins use the private native session ID; `session_id` is the canonical V3 fingerprint. */
 function nativeSessionIdentity(
   row: Pick<Heartbeat, "native_session_id" | "session_id"> | null | undefined,
   fallback: string,
@@ -306,7 +306,7 @@ export function registerAgentsCommand(
     )
     .option(
       "--session-id <id>",
-      "Lookup the V2 generation by session_id directly, bypassing the ppid walk. " +
+      "Lookup the V3 generation by session_id directly, bypassing the ppid walk. " +
         "Use this when calling from a hook (the hook's process tree may not lead back to Claude Code's session pid). " +
         "The Stop hook payload includes session_id; pass it through.",
     )
@@ -327,7 +327,7 @@ export function registerAgentsCommand(
     .option("--json", "JSON output instead of the bare name")
     .option(
       "--session-id <id>",
-      "Lookup the V2 generation by session_id directly, bypassing the ppid walk.",
+      "Lookup the V3 generation by session_id directly, bypassing the ppid walk.",
     )
     .action((description: string[], opts: { json?: boolean; sessionId?: string }) => {
       runSuggestName(description, opts);
@@ -336,7 +336,7 @@ export function registerAgentsCommand(
   cmd
     .command("watch")
     .description(
-      "Stream peer state changes from the authoritative V2 coordination projection. " +
+      "Stream peer state changes from the authoritative V3 coordination projection. " +
         "Prints one line per delta: started / ended / activity / file claim / task change.",
     )
     .option("--poll-ms <n>", "Debounce window after a change event", "200")
@@ -406,10 +406,10 @@ export function registerAgentsCommand(
   cmd
     .command("end")
     .description(
-      "Finalize the current V2 session explicitly, or durably queue finalization until the current turn and tool spans close.",
+      "Finalize the current V3 session explicitly, or durably queue finalization until the current turn and tool spans close.",
     )
     .option("--session-id <id>", "Native adapter session id to finalize")
-    .option("--instance-id <id>", "Canonical V2 instance id to finalize")
+    .option("--instance-id <id>", "Canonical V3 instance id to finalize")
     .option(
       "--outcome <outcome>",
       "succeeded | failed | cancelled | timed_out | denied | interrupted | unknown",
@@ -422,7 +422,7 @@ export function registerAgentsCommand(
   cmd
     .command("reconcile")
     .description(
-      "Reconcile archive, idle, parent/run completion, stale, superseded, and host lifecycle signals into V2 session finalization.",
+      "Reconcile archive, idle, parent/run completion, stale, superseded, and host lifecycle signals into V3 session finalization.",
     )
     .option("--watch", "Keep reconciling until interrupted")
     .option("--interval-seconds <n>", "Watch interval in seconds")
@@ -434,7 +434,7 @@ export function registerAgentsCommand(
   cmd
     .command("observe-archive")
     .description(
-      "Record an adapter archive or unarchive observation and reconcile it through the canonical V2 finalizer.",
+      "Record an adapter archive or unarchive observation and reconcile it through the canonical V3 finalizer.",
     )
     .requiredOption("--adapter <id>", "claude-code | codex | cursor")
     .requiredOption("--session-id <id>", "Native adapter session id")
@@ -450,8 +450,8 @@ export function registerAgentsCommand(
     .description(
       "Record a provisional host-loss observation; finalization follows only after the configured cascade grace period.",
     )
-    .requiredOption("--instance-id <id>", "Canonical V2 instance id")
-    .requiredOption("--generation-id <id>", "Canonical V2 generation id")
+    .requiredOption("--instance-id <id>", "Canonical V3 instance id")
+    .requiredOption("--generation-id <id>", "Canonical V3 generation id")
     .option("--observed-at <iso>", "Observation time (defaults to now)")
     .action((opts: { instanceId: string; generationId: string; observedAt?: string }) => {
       runObserveHostDisappeared(opts);
@@ -569,17 +569,17 @@ export function registerAgentsCommand(
     .description(
       "Force a coord-layer recovery action on a specific agent. " +
         "Kinds: pidmap (repair process attribution) and cache (rebuild the " +
-        "disposable V2 coordination cache from the authoritative ledger).",
+        "disposable V3 coordination cache from the authoritative ledger).",
     )
     .requiredOption("--owner <id>", "Target agent's instance_id")
     .requiredOption("--kind <kind>", "pidmap | cache")
     .option(
       "--session-id <id>",
-      "(--kind cache) native session id used to join the authoritative V2 generation.",
+      "(--kind cache) native session id used to join the authoritative V3 generation.",
     )
     .option(
       "--adapter <id>",
-      "(--kind cache) adapter used to validate the authoritative V2 generation: " +
+      "(--kind cache) adapter used to validate the authoritative V3 generation: " +
         "claude-code | cursor | codex.",
     )
     .option(
@@ -628,23 +628,23 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
       "could not resolve the current session; pass --session-id or --instance-id",
     );
   }
-  const byInstance = listHookProducerStateRecordsV2(root, { includeTerminal: false }).filter(
+  const byInstance = listHookProducerStateRecordsV3(root, { includeTerminal: false }).filter(
     ({ state }) => state.instance_id === target,
   );
   const byNative = (["claude-code", "codex", "cursor"] as const).flatMap((adapter) => {
-    const state = readHookProducerStateV2(root, adapter, target);
+    const state = readHookProducerStateV3(root, adapter, target);
     return state && !state.terminal ? [{ path: "", modified_at_ms: 0, state }] : [];
   });
   const matches = byInstance.length > 0 ? byInstance : byNative;
   if (matches.length !== 1) {
     return failCommand(
       "session_identity_ambiguous",
-      `expected one live V2 generation for the target; found ${matches.length}`,
+      `expected one live V3 generation for the target; found ${matches.length}`,
     );
   }
   const record = matches[0];
   if (!record) {
-    return failCommand("session_identity_missing", "live V2 generation disappeared");
+    return failCommand("session_identity_missing", "live V3 generation disappeared");
   }
   const state = record.state;
   if (state.delegations.length > 0) {
@@ -663,7 +663,7 @@ function runEndSession(opts: { sessionId?: string; instanceId?: string; outcome:
       formatGitFinalizationFailure(finalized, resolveBinName(root)),
     );
   }
-  const result = requestSessionEndExplicitV2({
+  const result = requestSessionEndExplicitV3({
     coordRoot: root,
     instance_id: state.instance_id,
     generation_id: state.generation_id,
@@ -723,7 +723,7 @@ async function runSessionReconcile(opts: {
   }
   let stopped = false;
   do {
-    emit.data(reconcileSessionFinalizationV2(root));
+    emit.data(reconcileSessionFinalizationV3(root));
     if (!opts.watch || stopped) return;
     await new Promise<void>((resolvePromise) => {
       const timer = setTimeout(resolvePromise, interval * 1_000);
@@ -757,7 +757,7 @@ function runObserveArchive(opts: {
     return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
   }
   emit.data(
-    reconcileSessionFinalizationV2(root, {
+    reconcileSessionFinalizationV3(root, {
       now: new Date(observedAt),
       archive_observations: [
         {
@@ -779,17 +779,17 @@ function runObserveHostDisappeared(opts: {
   const root = monorepoRoot();
   if (!root) return failCommand("not_in_repo", "not in an agent session");
   if (!/^inst_[A-Za-z0-9._-]+$/.test(opts.instanceId)) {
-    return failCommand("invalid_instance_id", "invalid V2 instance id");
+    return failCommand("invalid_instance_id", "invalid V3 instance id");
   }
   if (!/^gen_[A-Za-z0-9._-]+$/.test(opts.generationId)) {
-    return failCommand("invalid_generation_id", "invalid V2 generation id");
+    return failCommand("invalid_generation_id", "invalid V3 generation id");
   }
   const observedAt = opts.observedAt ?? new Date().toISOString();
   if (Number.isNaN(Date.parse(observedAt))) {
     return failCommand("invalid_observed_at", "observed-at must be an ISO timestamp");
   }
   emit.data(
-    observeHostDisappearedV2({
+    observeHostDisappearedV3({
       coordRoot: root,
       instance_id: opts.instanceId as `inst_${string}`,
       generation_id: opts.generationId as `gen_${string}`,
@@ -1086,7 +1086,7 @@ export function registerCouncilCommands(parent: Command): void {
         "archive it first (trash-can pattern). Without --yes this prints " +
         "the paths that would be removed and exits 0 without touching " +
         "anything. Does NOT touch target_doc, close_handoff_path, or " +
-        "the canonical V2 event ledger, which is owned independently.",
+        "the canonical V3 event ledger, which is owned independently.",
     )
     .option("-y, --yes", "Required to actually delete; without this, dry-run")
     .option("--json", "JSON envelope output")
@@ -1425,11 +1425,11 @@ function normalizeKind(kind: string | undefined | null): string {
  * whose purpose is to hand the caller a canonical identity.
  */
 function noLiveGenerationMessage(owner: string): string {
-  return `resolved owner=${owner} but no authority-safe live V2 generation exists for it`;
+  return `resolved owner=${owner} but no authority-safe live V3 generation exists for it`;
 }
 
 /**
- * The instance_id of a live V2 generation that `prefix` strictly prefixes, or null.
+ * The instance_id of a live V3 generation that `prefix` strictly prefixes, or null.
  *
  * Used to recognize an abbreviated id handed back by a reader when the caller
  * supplied no canonical id of their own. Ambiguity is treated as "no answer":
@@ -1458,7 +1458,7 @@ async function runWatch(pollMs: number): Promise<void> {
 
   // Seed cache + print an initial roster line per live peer.
   const initial = listLiveGenerations(root);
-  process.stderr.write("watching authoritative V2 coordination state (Ctrl-C to exit)\n"); // lint-ok-emission: banner goes to stderr, stdout is the live stream
+  process.stderr.write("watching authoritative V3 coordination state (Ctrl-C to exit)\n"); // lint-ok-emission: banner goes to stderr, stdout is the live stream
   for (const h of initial) {
     cache.set(h.instance_id, h);
     emitWatchLine(
@@ -1543,7 +1543,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     });
     process.exit(1);
   }
-  // Match authority-safe V2 generations by resolved display name.
+  // Match authority-safe V3 generations by resolved display name.
   const nowSec = Math.floor(Date.now() / 1000);
   const cutoff = nowSec - freshnessCutoffSecs();
   const matches = readLiveCoordinationRows(root).filter((row) => {
@@ -1969,7 +1969,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
 
   const suggestedName = buildLifecycleSuggestedName(hb.name ?? "unknown", hb.task, state);
   const nameReminted = suggestedName !== null && suggestedName !== hb.suggested_session_name;
-  const emitted = emitEventV2({
+  const emitted = emitEventV3({
     owner: myOwner,
     session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
@@ -2144,7 +2144,7 @@ function runStatus(opts: {
     }
   }
 
-  emitEventV2({
+  emitEventV3({
     owner: myOwner,
     session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb.platform),
@@ -2159,20 +2159,20 @@ function runStatus(opts: {
     | { state: "recorded" | "already_ended"; terminal_event_id?: string }
     | undefined;
   if (opts.endSession) {
-    const canonicalInstanceId = liveInstanceIdV2(hb.instance_id);
-    const records = listHookProducerStateRecordsV2(root, { includeTerminal: true }).filter(
+    const canonicalInstanceId = liveInstanceIdV3(hb.instance_id);
+    const records = listHookProducerStateRecordsV3(root, { includeTerminal: true }).filter(
       ({ state }) => state.instance_id === canonicalInstanceId,
     );
     if (records.length !== 1 || !records[0]) {
       emit.error({
         code: "session_identity_ambiguous",
-        message: `expected one V2 generation for ${canonicalInstanceId}; found ${records.length}`,
+        message: `expected one V3 generation for ${canonicalInstanceId}; found ${records.length}`,
       });
       process.exitCode = 1;
       return;
     }
     const state = records[0].state;
-    const requested = requestSessionEndExplicitV2({
+    const requested = requestSessionEndExplicitV3({
       coordRoot: root,
       instance_id: state.instance_id,
       generation_id: state.generation_id,
@@ -2426,7 +2426,7 @@ export function collectStatusPeerHealth(
   try {
     rows = readLiveCoordinationRows(root);
   } catch {
-    // V2 authority failures must not resurrect disposable cache rows.
+    // V3 authority failures must not resurrect disposable cache rows.
   }
 
   const cutoffMs = nowMs - freshnessCutoffSecs() * 1000;
@@ -2690,9 +2690,9 @@ interface HealEvent {
   platform: string;
 }
 
-/** Bounded diagnostic event shape projected from the canonical V2 ledger. */
+/** Bounded diagnostic event shape projected from the canonical V3 ledger. */
 export interface CanonicalEvent {
-  event_type: EventTypeV2;
+  event_type: EventTypeV3;
   ts: string;
   instance_id?: string;
   adapter?: string;
@@ -2700,7 +2700,7 @@ export interface CanonicalEvent {
 }
 
 export interface AgentDiagnosticEventRead {
-  source: "v2";
+  source: "v3";
   authoritative: boolean;
   reason?: string;
   truncated: boolean;
@@ -2708,19 +2708,19 @@ export interface AgentDiagnosticEventRead {
   events: CanonicalEvent[];
 }
 
-/** Read validated canonical V2 events. */
+/** Read validated canonical V3 events. */
 export function readAgentDiagnosticEventsInWindow(
   root: string,
   cutoffMs: number,
 ): AgentDiagnosticEventRead {
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state === "candidate" || control.state === "active") {
-    const ledger = readLedgerV2(root);
+    const ledger = readLedgerV3(root);
     if (!ledger.complete) {
       return {
-        source: "v2",
+        source: "v3",
         authoritative: false,
-        reason: `V2 ledger validation failed: ${ledger.diagnostics.map((item) => item.code).join(", ") || "incomplete"}`,
+        reason: `V3 ledger validation failed: ${ledger.diagnostics.map((item) => item.code).join(", ") || "incomplete"}`,
         truncated: false,
         bytes: ledger.bytes,
         events: [],
@@ -2738,7 +2738,7 @@ export function readAgentDiagnosticEventsInWindow(
       });
     }
     return {
-      source: "v2",
+      source: "v3",
       authoritative: true,
       truncated: false,
       bytes: ledger.bytes,
@@ -2746,9 +2746,9 @@ export function readAgentDiagnosticEventsInWindow(
     };
   }
   return {
-    source: "v2",
+    source: "v3",
     authoritative: false,
-    reason: `V2 control state is ${control.state}`,
+    reason: `V3 control state is ${control.state}`,
     truncated: false,
     bytes: 0,
     events: [],
@@ -2855,7 +2855,7 @@ function runHealEvents(opts: {
     process.exit(1);
   }
 
-  // Heal telemetry is read from the canonical V2 ledger.
+  // Heal telemetry is read from the canonical V3 ledger.
   const cutoffMs = Date.now() - sinceSecs * 1000;
   const nameById = buildNameById(root);
   const events: HealEvent[] = [];
@@ -2997,12 +2997,12 @@ interface HealthReport {
   since: string;
   generated_at: string;
   event_telemetry: {
-    source: "v2";
+    source: "v3";
     authoritative: boolean;
     reason?: string;
   };
   active_agents: {
-    source: "event-ledger-v2";
+    source: "event-ledger-v3";
     total: number;
     by_platform: Record<string, number>;
     by_kind: Record<string, number>;
@@ -3042,7 +3042,7 @@ interface HealthReport {
   };
   // Canonical event stream growth + drain lag.
   stream: {
-    source: "v2";
+    source: "v3";
     authoritative: boolean;
     reason?: string;
     bytes: number;
@@ -3056,9 +3056,9 @@ interface HealthReport {
     count: number;
     samples: string[];
   };
-  // V2 event-ledger producer health: open tool spans, pending finalization
+  // V3 event-ledger producer health: open tool spans, pending finalization
   // requests, intake/diagnostics spool depth, span-count pressure.
-  event_ledger: EventLedgerHealthV2;
+  event_ledger: EventLedgerHealthV3;
   anomalies: string[];
 }
 
@@ -3067,7 +3067,7 @@ interface HealthReport {
  * pressure at half that gives room to act before reads start failing. */
 const SPAN_PRESSURE_SOFT_WATERMARK = 128;
 
-export type EventLedgerHealthV2 =
+export type EventLedgerHealthV3 =
   | { state: "unavailable"; reason: string }
   | {
       state: "live";
@@ -3112,15 +3112,15 @@ function errorText(error: unknown): string {
 }
 
 /**
- * Read-only health counters for the V2 event ledger's producer surfaces. Never
+ * Read-only health counters for the V3 event ledger's producer surfaces. Never
  * mutates ledger state (no control repair, no spool drain) and never throws:
  * a non-live route returns `{ state: "unavailable" }`, and each sub-surface
  * that fails to read lands in `collection_errors` instead of aborting the rest.
  */
-export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): EventLedgerHealthV2 {
-  let control: ReturnType<typeof readEventV2ControlState>;
+export function collectEventLedgerHealthV3(root: string, nowMs = Date.now()): EventLedgerHealthV3 {
+  let control: ReturnType<typeof readEventV3ControlState>;
   try {
-    control = readEventV2ControlState(root);
+    control = readEventV3ControlState(root);
   } catch (error) {
     return { state: "unavailable", reason: `control read failed: ${errorText(error)}` };
   }
@@ -3134,11 +3134,11 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
   const collectionErrors: string[] = [];
 
   // 1) Open tool spans per live (non-terminal) generation + span-count pressure.
-  const generations: Extract<EventLedgerHealthV2, { state: "live" }>["open_spans"]["generations"] =
+  const generations: Extract<EventLedgerHealthV3, { state: "live" }>["open_spans"]["generations"] =
     [];
-  const spanPressure: Extract<EventLedgerHealthV2, { state: "live" }>["span_pressure"] = [];
+  const spanPressure: Extract<EventLedgerHealthV3, { state: "live" }>["span_pressure"] = [];
   try {
-    for (const { state } of listHookProducerStateRecordsV2(root)) {
+    for (const { state } of listHookProducerStateRecordsV3(root)) {
       if (state.spans.length >= SPAN_PRESSURE_SOFT_WATERMARK) {
         spanPressure.push({
           instance_id: state.instance_id,
@@ -3160,9 +3160,9 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
   }
 
   // 2) Pending finalization requests with age + trigger.
-  const pending: Extract<EventLedgerHealthV2, { state: "live" }>["pending_finalizations"] = [];
+  const pending: Extract<EventLedgerHealthV3, { state: "live" }>["pending_finalizations"] = [];
   try {
-    for (const request of listSessionFinalizationRequestsV2(root)) {
+    for (const request of listSessionFinalizationRequestsV3(root)) {
       if (request.status !== "pending") continue;
       const observedMs = Date.parse(request.observed_at);
       pending.push({
@@ -3179,11 +3179,11 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
 
   // 3) Intake spool depth (queued hook signals awaiting a lease-holder drain).
   let intakeTotal = 0;
-  const intakeGroups: Extract<EventLedgerHealthV2, { state: "live" }>["intake_spool"]["groups"] =
+  const intakeGroups: Extract<EventLedgerHealthV3, { state: "live" }>["intake_spool"]["groups"] =
     [];
   try {
-    for (const group of listHookIntakeGroupsV2(root)) {
-      const count = listHookIntakeRecordsV2(group.directory).length;
+    for (const group of listHookIntakeGroupsV3(root)) {
+      const count = listHookIntakeRecordsV3(group.directory).length;
       if (count === 0) continue;
       intakeTotal += count;
       intakeGroups.push({ adapter: group.adapter, session_hash: group.session_hash, count });
@@ -3197,7 +3197,7 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
   // zero-padded epoch-ms, which also gives the last-24h split for free.
   const byCategory: Record<string, { total: number; last_24h: number }> = {};
   const recentByCategory: Extract<
-    EventLedgerHealthV2,
+    EventLedgerHealthV3,
     { state: "live" }
   >["diagnostics_spool"]["recent_by_category"] = {};
   let diagnosticsTotal = 0;
@@ -3205,7 +3205,7 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
   let diagnostics1h = 0;
   let latestDiagnosticMs = Number.NEGATIVE_INFINITY;
   try {
-    const diagnosticsDir = join(resolve(root), EVENT_V2_LEDGER_RELATIVE_ROOT, "diagnostics");
+    const diagnosticsDir = join(resolve(root), EVENT_V3_LEDGER_RELATIVE_ROOT, "diagnostics");
     if (existsSync(diagnosticsDir)) {
       const dayAgoMs = nowMs - 24 * 60 * 60 * 1000;
       const hourAgoMs = nowMs - 60 * 60 * 1000;
@@ -3372,7 +3372,7 @@ export function readHookErrors(
 function readStreamStats(root: string): HealthReport["stream"] {
   const read = readAgentDiagnosticEventsInWindow(root, 0);
   return {
-    source: "v2",
+    source: "v3",
     authoritative: read.authoritative,
     ...(read.reason ? { reason: read.reason } : {}),
     bytes: read.bytes,
@@ -3390,10 +3390,10 @@ export interface TraceEntry {
 
 export function traceInstanceIdsForEventSource(
   nativeInstanceIds: readonly string[],
-  source: "v2",
+  source: "v3",
 ): string[] {
   void source;
-  return nativeInstanceIds.map((instanceId) => liveInstanceIdV2(instanceId));
+  return nativeInstanceIds.map((instanceId) => liveInstanceIdV3(instanceId));
 }
 
 /** Map a canonical event to a concise trace line, or null to drop it. */
@@ -3477,10 +3477,10 @@ export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | n
     case "coord.identity_attested":
       detail = `${s("identity_id") || "identity"} · method=${s("method") || "unknown"}`;
       break;
-    case "interaction.wait_started":
+    case "wait.started":
       detail = s("kind") || "wait started";
       break;
-    case "interaction.wait_ended":
+    case "wait.ended":
       detail = `outcome=${s("outcome") || "unknown"}`;
       break;
     case "artifact.observed": {
@@ -3513,7 +3513,7 @@ export function traceLine(ev: CanonicalEvent, allTools: boolean): TraceEntry | n
 }
 
 export function pendingFinalizationTraceEntries(
-  requests: readonly SessionFinalizationRequestV2[],
+  requests: readonly SessionFinalizationRequestV3[],
   instanceId: string,
 ): TraceEntry[] {
   return requests
@@ -3591,9 +3591,9 @@ function runTrace(
 
   const events = byId.get(resolvedId) ?? [];
   let state = foldSessionState(events, { instance_id: resolvedId });
-  if (diagnosticRead.source === "v2" && diagnosticRead.authoritative) {
+  if (diagnosticRead.source === "v3" && diagnosticRead.authoritative) {
     try {
-      const view = projectCoordinationViewV2(readLedgerV2(root));
+      const view = projectCoordinationViewV3(readLedgerV3(root));
       const generation =
         view.instances[resolvedId] ??
         Object.values(view.terminal_generations).find(
@@ -3604,7 +3604,7 @@ function runTrace(
         state = {
           activity: generation.activity === "terminal" ? "idle" : generation.activity,
           activity_updated_at: generation.last_observed_at,
-          activity_source: "event-v2-coordination-view",
+          activity_source: "event-v3-coordination-view",
           task_state:
             lifecycleState === "active" || lifecycleState === "blocked" || lifecycleState === "done"
               ? lifecycleState
@@ -3614,18 +3614,18 @@ function runTrace(
       }
     } catch {
       diagnosticRead.authoritative = false;
-      diagnosticRead.reason = "V2 coordination projection is unavailable";
+      diagnosticRead.reason = "V3 coordination projection is unavailable";
     }
   }
-  let pendingFinalizations: SessionFinalizationRequestV2[] = [];
-  if (diagnosticRead.source === "v2") {
+  let pendingFinalizations: SessionFinalizationRequestV3[] = [];
+  if (diagnosticRead.source === "v3") {
     try {
-      pendingFinalizations = listSessionFinalizationRequestsV2(root).filter(
+      pendingFinalizations = listSessionFinalizationRequestsV3(root).filter(
         (request) => request.status === "pending" && request.instance_id === resolvedId,
       );
     } catch {
       diagnosticRead.authoritative = false;
-      diagnosticRead.reason = "V2 finalization requests are unreadable";
+      diagnosticRead.reason = "V3 finalization requests are unreadable";
     }
   }
   const lines = [
@@ -3639,7 +3639,7 @@ function runTrace(
     .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   const shown = lines.slice(-limit);
   const nativeResolvedId =
-    diagnosticRead.source === "v2"
+    diagnosticRead.source === "v3"
       ? nativeCandidateIds[candidateIds.indexOf(resolvedId)]
       : resolvedId;
   const displayName =
@@ -3692,7 +3692,7 @@ function runTrace(
 }
 
 export interface ActiveAgentHealthSummary {
-  source: "event-ledger-v2";
+  source: "event-ledger-v3";
   total: number;
   by_platform: Record<string, number>;
   by_kind: Record<string, number>;
@@ -3709,22 +3709,22 @@ type ActiveHealthHeartbeat = {
 };
 
 /**
- * V2 generations, not disposable heartbeat caches, are the active-agent authority.
+ * V3 generations, not disposable heartbeat caches, are the active-agent authority.
  */
 export function collectActiveAgentHealth(
   root: string,
   nowMs = Date.now(),
 ): ActiveAgentHealthSummary {
-  const source: ActiveAgentHealthSummary["source"] = "event-ledger-v2";
+  const source: ActiveAgentHealthSummary["source"] = "event-ledger-v3";
   let heartbeats: ActiveHealthHeartbeat[] = [];
   try {
-    const control = readEventV2ControlState(root);
+    const control = readEventV3ControlState(root);
     if (control.state === "candidate" || control.state === "active") {
       heartbeats = readLiveCoordinationRows(root);
     }
   } catch {
     // The event-ledger section reports the authority read failure. Do not
-    // substitute stale cache rows for a live V2 route.
+    // substitute stale cache rows for a live V3 route.
   }
 
   const byPlatform: Record<string, number> = {};
@@ -3736,9 +3736,10 @@ export function collectActiveAgentHealth(
     byPlatform[platform] = (byPlatform[platform] ?? 0) + 1;
     const kind = heartbeat.kind ?? "unknown";
     byKind[kind] = (byKind[kind] ?? 0) + 1;
-    const schemaVersion = (heartbeat as { schema_version?: number }).schema_version;
-    const schemaKey = schemaVersion === undefined ? "v0" : `v${schemaVersion}`;
-    bySchema[schemaKey] = (bySchema[schemaKey] ?? 0) + 1;
+    // These rows exist only after an authority-safe V3 projection. The
+    // disposable heartbeat file has its own cache-format version, which must
+    // not be reported as the ledger schema version.
+    bySchema.v3 = (bySchema.v3 ?? 0) + 1;
     const lastObservedMs = heartbeat.last_heartbeat
       ? Date.parse(heartbeat.last_heartbeat)
       : Number.NaN;
@@ -3783,7 +3784,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const activeDir = resolve(root, ".harnery/active");
   const councilsDir = resolve(root, ".harnery/councils");
 
-  // Coordination telemetry reads from the canonical V2 ledger.
+  // Coordination telemetry reads from the canonical V3 ledger.
   // Heals come from health.observed; council activity from council.state_changed.
   const heal: HealEvent[] = [];
   let councilAdvanced = 0;
@@ -3819,7 +3820,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
 
   const hookErrors = readHookErrors(root, cutoffMs, nowMs);
   const stream = readStreamStats(root);
-  const eventLedger = collectEventLedgerHealthV2(root);
+  const eventLedger = collectEventLedgerHealthV3(root);
 
   // Canonical health.* events carry the full instance_id, already resolved to
   // `agent-<name>` (or `agent-<hex8>` fallback) by canonicalToHealEvent via
@@ -3896,16 +3897,16 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     }
   }
   if (activeAgents.stale > 0) {
-    const noun = activeAgents.source === "event-ledger-v2" ? "V2 generation" : "heartbeat";
+    const noun = activeAgents.source === "event-ledger-v3" ? "V3 generation" : "heartbeat";
     const action =
-      activeAgents.source === "event-ledger-v2"
+      activeAgents.source === "event-ledger-v3"
         ? "lifecycle reconciliation may be delayed"
         : "heal mechanism may not be firing";
     anomalies.push(
       `${activeAgents.stale} active ${noun}(s) without activity for ${Math.floor(freshnessCutoffSecs() / 60)}min; ${action}`,
     );
   }
-  const expectedSchema = "v2";
+  const expectedSchema = "v3";
   const unexpectedSchemas = Object.keys(activeAgents.by_schema_version).filter(
     (schema) => schema !== expectedSchema,
   );
@@ -3926,7 +3927,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `projection cursor is ${stream.cursor_backlog} events behind; drain lagging (stop projection may be failing)`,
     );
   }
-  // Raw V2 stream size is not an anomaly; catalog rotation bounds readers.
+  // Raw V3 stream size is not an anomaly; catalog rotation bounds readers.
   if ((sweptByReason.unparseable ?? 0) > 0) {
     anomalies.push(
       `${sweptByReason.unparseable} heartbeat(s) swept as unparseable in ${opts.since}; possible corruption or a non-atomic writer`,
@@ -4047,7 +4048,7 @@ function renderHealthBox(report: HealthReport): void {
     councilParts.push(`${report.councils.archived_in_window} archived`);
 
   const activeSource =
-    report.active_agents.source === "event-ledger-v2" ? "ledger" : "heartbeat cache";
+    report.active_agents.source === "event-ledger-v3" ? "ledger" : "heartbeat cache";
   const activeStr = `${report.active_agents.total}${platforms ? ` (${platforms})` : ""}${schemas ? ` · ${schemas}` : ""}${report.active_agents.stale > 0 ? ` · ${report.active_agents.stale} stale` : ""} · ${activeSource}`;
 
   const sweptReasonStr = Object.entries(report.swept_events.by_reason)
@@ -4549,7 +4550,7 @@ function runPing(name: string, message: string, opts: { json?: boolean }): void 
   // Canonical delivery record: sender is the envelope owner, recipient rides
   // in data, so read-only observers can render the communication without
   // joining journal files.
-  emitEventV2({
+  emitEventV3({
     owner: myOwner,
     session: nativeSessionIdentity(myHb, myOwner),
     adapter: normalizeAdapter(myHb?.platform),
@@ -4743,7 +4744,7 @@ function runHeal(opts: {
 
   const action = kind === "pidmap" ? "heal-pidmap" : "repair-coordination-cache";
 
-  // Refuse to materialize a V2 cache at a truncated owner id.
+  // Refuse to materialize a V3 cache at a truncated owner id.
   //
   // Heartbeats are keyed by the whole instance_id, so healing at an
   // abbreviated id writes `.harnery/active/<prefix>.json` while every reader
@@ -4769,7 +4770,7 @@ function runHeal(opts: {
         ? opts.sessionId.trim()
         : liveIdWithPrefix(root, owner);
     if (canonical) {
-      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live V2 generation";
+      const source = opts.sessionId?.trim() === canonical ? "--session-id" : "a live V3 generation";
       emit.error({
         code: "truncated_owner",
         message:
@@ -4853,7 +4854,7 @@ function runHeal(opts: {
 }
 
 /**
- * Emit one V2 council audit transition keyed to the exact durable manifest.
+ * Emit one V3 council audit transition keyed to the exact durable manifest.
  * Falls through silently when no live session can attest the observation.
  */
 function emitCouncilStateEvent(
@@ -4864,7 +4865,7 @@ function emitCouncilStateEvent(
   const myOwner = resolveOwner();
   if (!myOwner) return;
   const hb = readCurrentCoordinationRow(myOwner);
-  emitEventV2({
+  emitEventV3({
     owner: myOwner,
     session: nativeSessionIdentity(hb, myOwner),
     adapter: normalizeAdapter(hb?.platform),
@@ -4993,7 +4994,7 @@ function runCouncilCreate(
 
   if (myOwner) {
     const myHbForEmit = readCurrentCoordinationRow(myOwner);
-    emitEventV2({
+    emitEventV3({
       owner: myOwner,
       session: nativeSessionIdentity(myHbForEmit, myOwner),
       adapter: normalizeAdapter(myHbForEmit?.platform),

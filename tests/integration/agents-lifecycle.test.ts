@@ -4,17 +4,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  recordLiveClaimChangeV2,
-  recordLiveTaskChangeV2,
-} from "../../src/core/agents/live-authority-v2.ts";
+  recordLiveClaimChangeV3,
+  recordLiveTaskChangeV3,
+} from "../../src/core/agents/live-authority-v3.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
-import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
-import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../../src/core/events/v2/live-routing.ts";
-import { readActiveLedgerV2 } from "../../src/core/events/v2/reader.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing.ts";
+import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
@@ -37,20 +37,20 @@ function makeSandbox(): string {
   writeFileSync(path.join(root, "seed.txt"), "seed\n");
   git(["add", "seed.txt"]);
   git(["commit", "-qm", "seed"]);
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-agents-lifecycle",
   });
   writeFileSync(
     path.join(root, ".harnery", ".name-history"),
     `${JSON.stringify({ instance_id: OWNER, name: "Hollis", kind: "session", ts: new Date().toISOString() })}\n`,
   );
-  const route = resolveLiveEventLedgerRouteV2(root);
-  if (route.state !== "v2") throw new Error("expected V2 route");
-  recordLiveHookSignalV2({
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  recordLiveHookSignalV3({
     coordRoot: root,
     route,
     eventName: "session-start",
@@ -59,7 +59,7 @@ function makeSandbox(): string {
     instanceId: OWNER,
   });
   ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
-  recordLiveTaskChangeV2({
+  recordLiveTaskChangeV3({
     coordRoot: root,
     owner: OWNER,
     nativeSessionId: OWNER,
@@ -85,7 +85,7 @@ function heartbeat(root: string): Record<string, unknown> {
 }
 
 function lifecycleEvents(root: string) {
-  return readActiveLedgerV2(root)
+  return readLedgerV3(root)
     .events.map(({ event }) => event)
     .filter((event) => event.event_type === "coord.lifecycle_changed");
 }
@@ -107,7 +107,7 @@ afterEach(() => {
   }
 });
 
-describe("harn agents lifecycle on the V2 ledger", () => {
+describe("harn agents lifecycle on the V3 ledger", () => {
   test("blocks, re-mints the title, and records one canonical lifecycle event", () => {
     const root = makeSandbox();
     const result = harn(root, [
@@ -166,7 +166,7 @@ describe("harn agents lifecycle on the V2 ledger", () => {
   test("done refuses dirty owned work, then succeeds after Git finalization", () => {
     const root = makeSandbox();
     writeFileSync(path.join(root, "owned.txt"), "dirty\n");
-    recordLiveClaimChangeV2({
+    recordLiveClaimChangeV3({
       coordRoot: root,
       owner: OWNER,
       nativeSessionId: OWNER,

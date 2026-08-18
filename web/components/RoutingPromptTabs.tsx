@@ -12,7 +12,7 @@ import { adapterLabel } from "@/lib/adapter";
 import type { CouncilPromptState } from "@/lib/coord-reader";
 import { formatRelativeAgo } from "@/lib/format/datetime";
 
-/** Live V2 observation for the member a prompt routes to. */
+/** Live V3 observation for the member a prompt routes to. */
 export interface MemberActivity {
   lastSeen: string;
 }
@@ -149,7 +149,7 @@ export function RoutingPromptTabs({
               <StateBadge state={selected.state} />
               {selected.activity && selected.state !== "contributed" && (
                 <Tooltip
-                  content={`${selected.member}'s V2 generation is active now: live off-screen progress; watch for the contribution to land.`}
+                  content={`${selected.member}'s V3 generation is active now: live off-screen progress; watch for the contribution to land.`}
                 >
                   <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-300 cursor-help">
                     <span className="live-dot" aria-hidden />
@@ -236,7 +236,7 @@ function PromptTab({
           <p className="font-mono text-foreground">{member}</p>
           <p>{stateHint}</p>
           {activity && state !== "contributed" && (
-            <p className="text-emerald-300">Active in V2 right now (off-screen progress).</p>
+            <p className="text-emerald-300">Active in V3 right now (off-screen progress).</p>
           )}
         </div>
       }
@@ -283,7 +283,7 @@ function StewardTab({
           <p>Steward: routes the prompts and contributes directly; no prompt to copy.</p>
           <p>{seat.contributed ? "Their take is in." : "Their take is still needed this round."}</p>
           {seat.activity && !seat.contributed && (
-            <p className="text-emerald-300">Active in V2 right now (off-screen progress).</p>
+            <p className="text-emerald-300">Active in V3 right now (off-screen progress).</p>
           )}
         </div>
       }
@@ -349,7 +349,7 @@ function StewardDetail({
         )}
         {seat.activity && !seat.contributed && (
           <Tooltip
-            content={`${seat.name}'s V2 generation is active now: live off-screen progress; watch for the contribution to land.`}
+            content={`${seat.name}'s V3 generation is active now: live off-screen progress; watch for the contribution to land.`}
           >
             <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-300 cursor-help">
               <span className="live-dot" aria-hidden />

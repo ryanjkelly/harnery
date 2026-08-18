@@ -1,6 +1,6 @@
 /**
  * Fixture-based tests for the web UI's coord-reader. Drops disposable caches,
- * a council manifest, and canonical V2 events into a temporary coordination root,
+ * a council manifest, and canonical V3 events into a temporary coordination root,
  * then asserts the reader returns the expected shape.
  *
  * Lives in tests/unit/ alongside commander.test.ts so `bun test` picks it up.
@@ -10,12 +10,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
-import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../../src/core/events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing.ts";
 
 const ROOT = mkdtempSync(path.join(os.tmpdir(), "harn-coord-test-"));
 process.env.HARNERY_COORD_ROOT = ROOT;
@@ -74,17 +74,17 @@ beforeAll(() => {
     }),
   );
 
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: ROOT,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-coord-reader",
   });
-  const route = resolveLiveEventLedgerRouteV2(ROOT);
-  if (route.state !== "v2") throw new Error("expected V2 route");
+  const route = resolveLiveEventLedgerRouteV3(ROOT);
+  if (route.state !== "v3") throw new Error("expected V3 route");
   const record = (instanceId: string, eventName: string, payload: Record<string, unknown>) =>
-    recordLiveHookSignalV2({
+    recordLiveHookSignalV3({
       coordRoot: ROOT,
       route,
       eventName,
@@ -134,7 +134,7 @@ describe("coord-reader", () => {
     expect(paths).toEqual([]);
   });
 
-  test("readAgent returns the V2 projection or null", () => {
+  test("readAgent returns the V3 projection or null", () => {
     expect(reader.readAgent("abc-fresh")?.name).toBe("abc-fresh");
     expect(reader.readAgent("not-real")).toBeNull();
   });
@@ -146,7 +146,7 @@ describe("coord-reader", () => {
     expect(snap.active[0].members).toEqual(["Alpha", "Beta"]);
   });
 
-  test("readEvents projects the V2 ledger newest-first with filter support", () => {
+  test("readEvents projects the V3 ledger newest-first with filter support", () => {
     const all = reader.readEvents({ limit: 10 });
     expect(all.rows.length).toBeGreaterThanOrEqual(4);
     expect(all.rows[0].event_type).toBe("session.started");

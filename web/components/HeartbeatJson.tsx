@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
- * Collapsible JSON view of the V2 coordination projection. Default collapsed because the
+ * Collapsible JSON view of the V3 coordination projection. Default collapsed because the
  * common case is "I just want the summary"; expand for diagnosis or schema
  * drift hunting. Mirrors the upstream app's HeartbeatJson.
  */
@@ -15,7 +15,7 @@ export function HeartbeatJson({ heartbeat }: { heartbeat: Record<string, unknown
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>V2 coordination state</CardTitle>
+        <CardTitle>V3 coordination state</CardTitle>
         <Button variant="outline" size="sm" onClick={() => setOpen((v) => !v)}>
           {open ? "Hide" : "Show JSON"}
         </Button>

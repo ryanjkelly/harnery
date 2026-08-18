@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { __resetCoordRootCache } from "@/lib/coord-reader";
-import { initializeEventLedgerV2 } from "../../../../src/core/events/v2/bootstrap";
-import { startWorkflowChildSessionV2 } from "../../../../src/core/workflow/live-session-v2";
+import { initializeEventLedgerV3 } from "../../../../src/core/events/v3/bootstrap";
+import { startWorkflowChildSessionV3 } from "../../../../src/core/workflow/live-session-v3";
 import { GET } from "./route";
 
 let root: string;
@@ -29,8 +29,8 @@ afterEach(() => {
 });
 
 describe("coord-version live refresh", () => {
-  test("a canonical V2 event changes the polling signal", async () => {
-    initializeEventLedgerV2({
+  test("a canonical V3 event changes the polling signal", async () => {
+    initializeEventLedgerV3({
       coordRoot: root,
       harneryBuild: "coord-version-test",
       hostBuild: "host-test",
@@ -39,7 +39,7 @@ describe("coord-version live refresh", () => {
     });
     const before = (await GET().json()) as { v: string };
 
-    startWorkflowChildSessionV2({
+    startWorkflowChildSessionV3({
       coordRoot: root,
       instanceId: "agent",
       runId: "coord-version-test",

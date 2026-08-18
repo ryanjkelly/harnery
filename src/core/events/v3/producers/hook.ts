@@ -28,6 +28,8 @@ export interface HookProducerContextV3 extends HookProducerContextV2 {
   turn_telemetry?: TurnTelemetryV3;
 }
 
+export type HookSignalV3 = HookSignalV2;
+
 const TERMINAL_EVENT_TYPES = new Set([
   "session.ended",
   "turn.completed",
@@ -81,14 +83,11 @@ export function upgradeHookEventV3(
         : base.event_type === "interaction.wait_ended"
           ? "wait.ended"
           : base.event_type,
-    links:
-      base.event_type === "agent.started"
-        ? {
-            ...(base.links as Record<string, unknown>),
-            span_id: context.span_id as `span_${string}`,
-            parent_span_id: context.parent_span_id as `span_${string}`,
-          }
-        : base.links,
+    links: {
+      ...(base.links as Record<string, unknown>),
+      ...(context.span_id ? { span_id: context.span_id } : {}),
+      ...(context.parent_span_id ? { parent_span_id: context.parent_span_id } : {}),
+    },
     payload: terminalPayload(base.event_type, base.payload, source, context),
   };
   assertEventV3(event);

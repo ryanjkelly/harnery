@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { buildEventV2, type EventV2, eventIdV2 } from "../events/v2/index.ts";
-import { normalizeRunQualityEventV2, normalizeRunQualityPairingV2 } from "./evidence-v2.ts";
+import { buildEventV3, type EventV3, eventIdV3 } from "../events/v3/index.ts";
+import { normalizeRunQualityEventV3, normalizeRunQualityPairingV3 } from "./evidence-v3.ts";
 
-describe("shared V2 run-quality evidence adapter", () => {
+describe("shared V3 run-quality evidence adapter", () => {
   test("normalizes hashes without exposing fingerprint metadata", () => {
-    const requested = buildEventV2("tool.requested", {
+    const requested = buildEventV3("tool.requested", {
       ...common(1),
       payload: {
         tool: { namespace: "claude", name: "Read" },
@@ -21,7 +21,7 @@ describe("shared V2 run-quality evidence adapter", () => {
       },
     });
 
-    expect(normalizeRunQualityEventV2(requested)).toEqual([
+    expect(normalizeRunQualityEventV3(requested)).toEqual([
       expect.objectContaining({
         event_id: requested.event_id,
         kind: "tool_call",
@@ -29,72 +29,76 @@ describe("shared V2 run-quality evidence adapter", () => {
         target_hash: "c".repeat(64),
       }),
     ]);
-    expect(JSON.stringify(normalizeRunQualityEventV2(requested))).not.toContain("pep_fixture");
+    expect(JSON.stringify(normalizeRunQualityEventV3(requested))).not.toContain("pep_fixture");
   });
 
   test("rejects forged, cross-generation, and failed progress evidence", () => {
-    const completed = buildEventV2("tool.completed", {
+    const completed = buildEventV3("tool.completed", {
       ...common(1),
       payload: {
         tool: { namespace: "claude", name: "Write" },
         outcome: "succeeded",
         duration_ms: measurement(10),
+        span: spanSummary("span_completed"),
         result: { storage: "omitted", media_type: "application/json", bytes: 10 },
       },
     });
-    const unknownId = eventIdV2();
+    const unknownId = eventIdV3();
     const forged = progress(2, [unknownId], [completed.event_id]);
-    expect(normalizeRunQualityEventV2(forged, new Map([[completed.event_id, completed]]))).toEqual(
+    expect(normalizeRunQualityEventV3(forged, new Map([[completed.event_id, completed]]))).toEqual(
       [],
     );
 
-    const crossGeneration = buildEventV2("tool.completed", {
+    const crossGeneration = buildEventV3("tool.completed", {
       ...common(3, "gen_other"),
       payload: {
         tool: { namespace: "claude", name: "Write" },
         outcome: "succeeded",
         duration_ms: measurement(10),
+        span: spanSummary("span_cross"),
         result: { storage: "omitted", media_type: "application/json", bytes: 10 },
       },
     });
     const cross = progress(4, [crossGeneration.event_id], [crossGeneration.event_id]);
     expect(
-      normalizeRunQualityEventV2(cross, new Map([[crossGeneration.event_id, crossGeneration]])),
+      normalizeRunQualityEventV3(cross, new Map([[crossGeneration.event_id, crossGeneration]])),
     ).toEqual([]);
 
-    const failed = buildEventV2("tool.completed", {
+    const failed = buildEventV3("tool.completed", {
       ...common(5),
       payload: {
         tool: { namespace: "claude", name: "Write" },
         outcome: "failed",
         duration_ms: measurement(10),
+        span: spanSummary("span_failed"),
         result: { storage: "omitted", media_type: "application/json", bytes: 10 },
       },
     });
     const failedProgress = progress(6, [failed.event_id], [failed.event_id]);
     expect(
-      normalizeRunQualityEventV2(failedProgress, new Map([[failed.event_id, failed]])),
+      normalizeRunQualityEventV3(failedProgress, new Map([[failed.event_id, failed]])),
     ).toEqual([]);
   });
 
   test("accepts only causally bound successful progress evidence", () => {
-    const completed = buildEventV2("tool.completed", {
+    const completed = buildEventV3("tool.completed", {
       ...common(1),
       payload: {
         tool: { namespace: "claude", name: "Write" },
         outcome: "succeeded",
         duration_ms: measurement(10),
+        span: spanSummary("span_progress"),
         result: { storage: "omitted", media_type: "application/json", bytes: 4 },
       },
     });
     const observed = progress(2, [completed.event_id], [completed.event_id]);
     expect(
-      normalizeRunQualityEventV2(observed, new Map([[completed.event_id, completed]])),
+      normalizeRunQualityEventV3(observed, new Map([[completed.event_id, completed]])),
     ).toEqual([expect.objectContaining({ event_id: observed.event_id, kind: "progress" })]);
   });
 
   test("separates recovered terminals and tool/command pairing gaps", () => {
-    const toolRequested = buildEventV2("tool.requested", {
+    const toolRequested = buildEventV3("tool.requested", {
       ...common(1),
       links: { caused_by: [], span_id: "span_tool_fixture" },
       payload: {
@@ -104,7 +108,7 @@ describe("shared V2 run-quality evidence adapter", () => {
         targets: [],
       },
     });
-    const commandStarted = buildEventV2("command.started", {
+    const commandStarted = buildEventV3("command.started", {
       ...common(2),
       links: { caused_by: [], span_id: "span_command_fixture" },
       payload: {
@@ -116,7 +120,7 @@ describe("shared V2 run-quality evidence adapter", () => {
         sensitive_argument_count: 0,
       },
     });
-    const recovered = buildEventV2("command.completed", {
+    const recovered = buildEventV3("command.completed", {
       ...common(1),
       producer: {
         ...common(1).producer,
@@ -131,22 +135,26 @@ describe("shared V2 run-quality evidence adapter", () => {
       },
       payload: {
         outcome: "unknown",
-        duration_ms: 0,
+        duration_ms: { state: "unknown", reason: "command_completion_not_observed" },
+        span: {
+          ...spanSummary("span_recovered_fixture"),
+          duration_ms: { state: "unknown", reason: "command_completion_not_observed" },
+        },
         recovery: { reason: "command_completion_not_observed" },
       },
     });
 
-    expect(normalizeRunQualityEventV2(recovered)).toEqual([
+    expect(normalizeRunQualityEventV3(recovered)).toEqual([
       expect.objectContaining({ kind: "recovered_terminal", event_id: recovered.event_id }),
     ]);
     expect(
-      normalizeRunQualityPairingV2([toolRequested, commandStarted]).map(({ kind }) => kind),
+      normalizeRunQualityPairingV3([toolRequested, commandStarted]).map(({ kind }) => kind),
     ).toEqual(["tool_pairing_incomplete", "command_pairing_incomplete"]);
   });
 });
 
-function progress(sequence: number, evidence: string[], causedBy: string[]): EventV2 {
-  return buildEventV2("progress.observed", {
+function progress(sequence: number, evidence: string[], causedBy: string[]): EventV3 {
+  return buildEventV3("progress.observed", {
     ...common(sequence),
     links: { caused_by: causedBy },
     payload: {
@@ -194,6 +202,14 @@ function measurement(value: number) {
     value,
     attestation: "derived" as const,
     confidence: "exact" as const,
+  };
+}
+
+function spanSummary(spanId: string) {
+  return {
+    span_id: spanId,
+    opened_at: "2026-08-16T19:59:59.000Z",
+    duration_ms: measurement(10),
   };
 }
 

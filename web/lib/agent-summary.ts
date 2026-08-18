@@ -1,6 +1,6 @@
 /**
  * Per-agent summary: identity registry entry + current activity state
- * (live V2 generation or most-recent journal archive). Server-side helper;
+ * (live V3 generation or most-recent journal archive). Server-side helper;
  * fed to `<AgentChipProvider>` so AgentChip popovers render with persona
  * metadata baked in (no client-side FS reads).
  */
@@ -61,7 +61,7 @@ function readActiveIndex(): {
   idToName: Map<string, string>;
 } {
   const out = new Map<string, ActivityState>();
-  // Every live V2 generation's instance_id → display name (no per-name dedupe): the
+  // Every live V3 generation's instance_id → display name (no per-name dedupe): the
   // lookup table for resolving a subagent's session_id to its parent's name.
   const idToName = new Map<string, string>();
   for (const hb of readAgents().active) {
@@ -167,7 +167,7 @@ function readJournalIndex(): Map<string, ActivityState> {
 /** Durable per-name session metadata that outlives the heartbeat. */
 export interface SessionMeta {
   platform: string | null;
-  /** The model the agent last used (from its newest canonical V2 turn evidence). */
+  /** The model the agent last used (from its newest canonical V3 turn evidence). */
   model: string | null;
 }
 
@@ -228,7 +228,7 @@ export function buildAgentSummaryMap(
     // text), so the sentinel carries no information; its only effect was to
     // CLOBBER a richer lower-priority card in a layered merge. The /images feed
     // spreads this map LAST (highest priority) over `buildObservedAgentSummaries`;
-    // an agent that's in the feed but has no live V2 generation / recent journal /
+    // an agent that's in the feed but has no live V3 generation / recent journal /
     // identity (e.g. un-healed agent-Zoe, journal since pruned) would otherwise
     // lose its synthesized observed card to this sentinel. Skipping lets the
     // observed/ended/subagent layers survive while still letting real
@@ -271,7 +271,7 @@ export function buildAgentSummaryMap(
 }
 
 /**
- * Active main V2 generations: instance_id → display name, for subagent-parent
+ * Active main V3 generations: instance_id → display name, for subagent-parent
  * resolution. A subagent runs under its dispatcher's session id, so matching a
  * subagent's `session_id` to a live generation's `instance_id` names its parent.
  */
@@ -320,7 +320,7 @@ export function buildSubagentSummaries(
 
 /**
  * Build AgentSummary entries for main agents whose session has ended, from the
- * durable `session.started` records in the shared V2 ledger
+ * durable `session.started` records in the shared V3 ledger
  * `identities` map. Keyed by bare name so AgentChip resolves them like live
  * agents; most-recent session wins per name.
  *
@@ -428,7 +428,7 @@ export interface KnownAgent {
 const KNOWN_AGENT_STALE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Union of active V2 generations + recently-archived journals,
+ * Union of active V3 generations + recently-archived journals,
  * deduped by name. Used by the steward picker.
  */
 export function listKnownAgents(): KnownAgent[] {

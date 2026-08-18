@@ -27,7 +27,7 @@ export interface ExpressiveAction {
 }
 
 export interface ExpressiveInputs {
-  /** Authoritative activity from the V2 coordination projection. */
+  /** Authoritative activity from the V3 coordination projection. */
   activity: CodecActivity;
   /** Last turn.started, if any. */
   lastTurnStarted?: { ts: string; event_id: string };

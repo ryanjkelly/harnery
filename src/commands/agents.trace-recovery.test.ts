@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SessionFinalizationRequestV2 } from "../core/agents/session-finalizer-v2.ts";
+import type { SessionFinalizationRequestV3 } from "../core/agents/session-finalizer-v3.ts";
 import { pendingFinalizationTraceEntries, traceLine } from "./agents.ts";
 
 describe("agents trace recovery visibility", () => {
@@ -38,7 +38,7 @@ describe("agents trace recovery visibility", () => {
 
   test("adds only this agent's pending finalization requests", () => {
     const request = {
-      format: "harnery-v2-session-finalization-request",
+      format: "harnery-v3-session-finalization-request",
       format_version: 1,
       request_id: "sfr_00000000-0000-7000-8000-000000000001",
       instance_id: "inst_fixture",
@@ -52,7 +52,7 @@ describe("agents trace recovery visibility", () => {
       allowed_open_span_ids: ["span_00000000-0000-7000-8000-000000000001"],
       coordination_finalized: true,
       status: "pending",
-    } satisfies SessionFinalizationRequestV2;
+    } satisfies SessionFinalizationRequestV3;
 
     expect(
       pendingFinalizationTraceEntries(

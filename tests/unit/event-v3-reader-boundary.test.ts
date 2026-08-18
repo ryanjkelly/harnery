@@ -11,10 +11,12 @@ afterEach(() => {
 });
 
 describe("event V3 canonical reader boundary", () => {
-  test("permits storage access only in the reader, catalog, and writer modules", () => {
+  test("permits storage access only in the canonical storage and control modules", () => {
     const root = fixtureRoot();
     write(root, "src/core/events/v3/reader.ts", 'const root = ".harnery/ledgers/v3";');
     write(root, "src/core/events/v3/catalog.ts", "readEventV3Catalog(path);");
+    write(root, "src/core/events/v3/control.ts", 'const root = ".harnery/ledgers/v3";');
+    write(root, "src/core/events/v3/authority-outbox.ts", "eventV3Paths(root);");
     write(root, "src/core/events/v3/writer.ts", "eventV3Paths(root);");
     expect(scanEventV3ReaderBoundary(root)).toEqual([]);
   });

@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readEventV2ControlState } from "../events/v2/control.ts";
-import { liveInstanceIdV2 } from "../events/v2/live-routing.ts";
+import { readEventV3ControlState } from "../events/v3/control.ts";
+import { liveInstanceIdV3 } from "../events/v3/live-routing.ts";
 import { readRunQualityConfig } from "./config.ts";
 import { evaluateRunQuality } from "./evaluator.ts";
-import { readRunQualityLiveSourceV2 } from "./live-source-v2.ts";
+import { readRunQualityLiveSourceV3 } from "./live-source-v3.ts";
 import {
   acquireEvaluationLock,
   cleanupOrphanSnapshots,
@@ -37,7 +37,7 @@ export function evaluateRunQualityIfDue(
   instanceId?: string,
 ): RunQualityEvaluationResult {
   const configResult = readRunQualityConfig(coordRoot);
-  const canonicalInstanceId = instanceId ? liveInstanceIdV2(instanceId) : undefined;
+  const canonicalInstanceId = instanceId ? liveInstanceIdV3(instanceId) : undefined;
   const previousForCaller = canonicalInstanceId
     ? readRunQualitySnapshot(coordRoot, canonicalInstanceId)
     : null;
@@ -90,11 +90,11 @@ export function evaluateRunQualityIfDue(
   const deadline = Date.now() + config.evaluation_timeout_seconds * 1000;
   let timedOut = false;
   try {
-    const control = readEventV2ControlState(coordRoot);
+    const control = readEventV3ControlState(coordRoot);
     if (control.state !== "candidate" && control.state !== "active") {
-      throw new Error(`run_quality_v2_control_${control.state}`);
+      throw new Error(`run_quality_v3_control_${control.state}`);
     }
-    return evaluateRunQualityV2({
+    return evaluateRunQualityV3({
       coordRoot,
       now,
       instanceId: canonicalInstanceId,
@@ -116,7 +116,7 @@ export function evaluateRunQualityIfDue(
   }
 }
 
-function evaluateRunQualityV2(input: {
+function evaluateRunQualityV3(input: {
   coordRoot: string;
   now: Date;
   instanceId?: string;
@@ -125,8 +125,8 @@ function evaluateRunQualityV2(input: {
   lockNonce: string;
 }): RunQualityEvaluationResult {
   const config = input.configResult.config;
-  if (!config) throw new Error("run_quality_v2_config_unavailable");
-  const source = readRunQualityLiveSourceV2(input.coordRoot, input.now);
+  if (!config) throw new Error("run_quality_v3_config_unavailable");
+  const source = readRunQualityLiveSourceV3(input.coordRoot, input.now);
   const snapshots: RunQualitySnapshot[] = [];
   for (const generation of source.generations) {
     const previous = readRunQualitySnapshot(input.coordRoot, generation.instance_id) ?? undefined;
@@ -176,7 +176,7 @@ function evaluateRunQualityV2(input: {
     input.coordRoot,
     {
       schema_version: 1,
-      segment: last ? `v2:${source.genesis_id}` : `v2:${source.genesis_id}:empty`,
+      segment: last ? `v3:${source.genesis_id}` : `v3:${source.genesis_id}:empty`,
       last_event_id: last?.event_id,
       next_eligible_at: new Date(
         input.now.getTime() + config.evaluation_interval_seconds * 1000,

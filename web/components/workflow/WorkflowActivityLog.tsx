@@ -22,8 +22,8 @@ interface Props {
  *
  * The run transcript is a poor activity feed by construction. An agent that works
  * for eighteen minutes writes exactly two lines to it, one at each end. The
- * activity lives in the canonical V2 ledger instead. Workflow children receive
- * an engine-owned V2 generation even when their headless adapter emits no hooks.
+ * activity lives in the canonical V3 ledger instead. Workflow children receive
+ * an engine-owned V3 generation even when their headless adapter emits no hooks.
  * `?run=` resolves the run root and filters the ledger by its workflow scope.
  *
  * Autoscroll, pause-on-scroll-away, search, and row expansion all come from the

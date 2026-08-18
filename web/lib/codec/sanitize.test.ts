@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildEventV2 } from "../../../src/core/events/v2/builder";
-import { fingerprintV2, sha256V2 } from "../../../src/core/events/v2/canonical";
-import type { EventTypeV2 } from "../../../src/core/events/v2/contract";
+import { buildEventV3 } from "../../../src/core/events/v3/builder";
+import { fingerprintV3, sha256V3 } from "../../../src/core/events/v3/canonical";
+import type { EventTypeV3 } from "../../../src/core/events/v3/contract";
 import {
-  attestationIdV2,
-  eventIdV2,
-  generationIdV2,
-  spanIdV2,
-} from "../../../src/core/events/v2/ids";
+  attestationIdV3,
+  eventIdV3,
+  generationIdV3,
+  spanIdV3,
+} from "../../../src/core/events/v3/ids";
 import { categorizeTool, sanitizeEvent, sanitizeLine } from "./sanitize";
 
 const BASE = {
@@ -49,12 +49,12 @@ describe("sanitizeEvent", () => {
     expect(sanitizeLine("{not json")).toBeNull();
   });
 
-  test("validates and maps V2 lifecycle, tool, command, and context evidence", () => {
-    const started = sanitizeEvent(v2Event("session.started", startedPayload()));
+  test("validates and maps V3 lifecycle, tool, command, and context evidence", () => {
+    const started = sanitizeEvent(v3Event("session.started", startedPayload()));
     expect(started).toMatchObject({ event_type: "session.started", instance_id: "inst_fixture" });
 
     const requested = sanitizeEvent(
-      v2Event(
+      v3Event(
         "tool.requested",
         {
           tool: { namespace: "fixture", name: "Read" },
@@ -73,12 +73,13 @@ describe("sanitizeEvent", () => {
     });
 
     const completed = sanitizeEvent(
-      v2Event(
+      v3Event(
         "tool.completed",
         {
           tool: { namespace: "fixture", name: "Edit" },
           outcome: "failed",
           duration_ms: { state: "unknown", reason: "not_reported" },
+          span: fixtureSpan({ state: "unknown", reason: "not_reported" }),
           result: { storage: "omitted", media_type: "text/plain", bytes: 0 },
           error: { class: "tool_error" },
         },
@@ -92,7 +93,7 @@ describe("sanitizeEvent", () => {
     });
 
     const lifecycle = sanitizeEvent(
-      v2Event("coord.lifecycle_changed", {
+      v3Event("coord.lifecycle_changed", {
         actor_instance_id: "inst_fixture",
         subject_instance_id: "inst_fixture",
         new_state: "blocked",
@@ -108,7 +109,7 @@ describe("sanitizeEvent", () => {
     expect(JSON.stringify(lifecycle)).not.toContain(SECRET_PROMPT);
 
     const context = sanitizeEvent(
-      v2Event("context.observed", {
+      v3Event("context.observed", {
         measurement: {
           state: "observed",
           value: {
@@ -131,7 +132,7 @@ describe("sanitizeEvent", () => {
 
   test("does not treat command intent_kind as operator-visible intent", () => {
     const command = sanitizeEvent(
-      v2Event(
+      v3Event(
         "command.started",
         {
           executable: "rg",
@@ -155,21 +156,30 @@ describe("sanitizeEvent", () => {
 
   test("maps waits, recovery, subject instance, and generation parentage", () => {
     const parentGen = generationId;
-    const childGen = generationIdV2();
+    const childGen = generationIdV3();
     const wait = sanitizeEvent(
-      v2Event("interaction.wait_started", { wait_id: "wait_perm", kind: "permission" }),
+      v3Event("wait.started", { wait_id: "wait_perm", kind: "permission" }),
     );
-    expect(wait).toMatchObject({ event_type: "interaction.wait_started" });
+    expect(wait).toMatchObject({ event_type: "wait.started" });
 
     const waitEnded = sanitizeEvent(
-      v2Event("interaction.wait_ended", { wait_id: "wait_perm", outcome: "succeeded" }),
+      v3Event("wait.ended", {
+        wait_id: "wait_perm",
+        outcome: "succeeded",
+        span: fixtureSpan({
+          state: "observed",
+          value: 10,
+          attestation: "derived",
+          confidence: "high",
+        }),
+      }),
     );
-    expect(waitEnded).toMatchObject({ event_type: "interaction.wait_ended" });
+    expect(waitEnded).toMatchObject({ event_type: "wait.ended" });
 
     const progress = sanitizeEvent(
-      v2Event("progress.observed", {
+      v3Event("progress.observed", {
         kind: "write",
-        evidence_event_ids: [eventIdV2()],
+        evidence_event_ids: [eventIdV3()],
         reducer_build_id: "build_fixture",
       }),
     );
@@ -180,7 +190,7 @@ describe("sanitizeEvent", () => {
     });
 
     const childStart = sanitizeEvent(
-      v2Event("session.started", startedPayload(), {
+      v3Event("session.started", startedPayload(), {
         instanceId: "inst_child",
         parentGenerationId: parentGen,
         generationId: childGen,
@@ -195,8 +205,8 @@ describe("sanitizeEvent", () => {
     expect(childStart?.parent_session_id).toBeUndefined();
 
     const delegated = sanitizeEvent(
-      v2Event("agent.started", {
-        delegation_id: `del_${generationIdV2().slice(4)}`,
+      v3Event("agent.started", {
+        delegation_id: `del_${generationIdV3().slice(4)}`,
         child_generation_id: childGen,
         role: "explore",
       }),
@@ -207,7 +217,7 @@ describe("sanitizeEvent", () => {
     });
 
     const recovered = sanitizeEvent(
-      v2Event("lifecycle.recovered", {
+      v3Event("lifecycle.recovered", {
         subject_instance_id: "inst_subject",
         recovery_kind: "span_salvage",
         new_digest: `sha256:${"a".repeat(64)}`,
@@ -219,7 +229,7 @@ describe("sanitizeEvent", () => {
     });
 
     const staleTerm = sanitizeEvent(
-      v2Event("session.termination_observed", {
+      v3Event("session.termination_observed", {
         observation: "stale",
         observer_instance_id: "inst_fixture",
         subject_instance_id: "inst_subject",
@@ -230,7 +240,7 @@ describe("sanitizeEvent", () => {
     expect(staleTerm).toBeNull();
 
     const killed = sanitizeEvent(
-      v2Event("session.termination_observed", {
+      v3Event("session.termination_observed", {
         observation: "killed",
         observer_instance_id: "inst_fixture",
         subject_instance_id: "inst_subject",
@@ -244,14 +254,14 @@ describe("sanitizeEvent", () => {
     });
   });
 
-  test("rejects V2 lookalikes, unknown digests, and forbidden extra payload fields", () => {
+  test("rejects V3 lookalikes, unknown digests, and forbidden extra payload fields", () => {
     expect(
       sanitizeEvent({
-        contract: { name: "harnery.event", major: 2, schema_digest: sha256V2("foreign") },
+        contract: { name: "harnery.event", major: 2, schema_digest: sha256V3("foreign") },
         event_type: "session.started",
       }),
     ).toBeNull();
-    const valid = v2Event(
+    const valid = v3Event(
       "tool.requested",
       {
         tool: { namespace: "fixture", name: "Read" },
@@ -279,11 +289,11 @@ describe("categorizeTool", () => {
   });
 });
 
-const generationId = generationIdV2();
-const attestationId = attestationIdV2();
+const generationId = generationIdV3();
+const attestationId = attestationIdV3();
 
-function v2Event(
-  eventType: EventTypeV2,
+function v3Event(
+  eventType: EventTypeV3,
   payload: Record<string, unknown>,
   opts:
     | boolean
@@ -298,7 +308,14 @@ function v2Event(
   const tool = options.tool === true;
   const instanceId = options.instanceId ?? "inst_fixture";
   const eventGenerationId = options.generationId ?? generationId;
-  const eventId = eventIdV2();
+  const eventId = eventIdV3();
+  const needsTurn =
+    tool ||
+    eventType.startsWith("command.") ||
+    eventType === "tool.requested" ||
+    eventType === "tool.completed" ||
+    eventType === "agent.started";
+  const eventSpanId = spanIdV3();
   const boundPayload =
     eventType === "session.started"
       ? {
@@ -309,13 +326,13 @@ function v2Event(
             declared_by_event_id: eventId,
           },
         }
-      : payload;
-  const needsTurn =
-    tool ||
-    eventType.startsWith("command.") ||
-    eventType === "tool.requested" ||
-    eventType === "tool.completed";
-  return buildEventV2(eventType, {
+      : "span" in payload
+        ? {
+            ...payload,
+            span: { ...(payload.span as Record<string, unknown>), span_id: eventSpanId },
+          }
+        : payload;
+  return buildEventV3(eventType, {
     event_id: eventId,
     producer: {
       producer_id: "prd_codec-fixture",
@@ -335,7 +352,8 @@ function v2Event(
     attestation_id: attestationId,
     links: {
       caused_by: [],
-      ...(needsTurn ? { span_id: spanIdV2() } : {}),
+      ...(needsTurn ? { span_id: eventSpanId } : {}),
+      ...(eventType === "agent.started" ? { parent_span_id: spanIdV3() } : {}),
       ...(options.parentGenerationId ? { parent_generation_id: options.parentGenerationId } : {}),
     },
     provenance: {
@@ -357,8 +375,16 @@ function v2Event(
   } as never);
 }
 
+function fixtureSpan(duration_ms: Record<string, unknown>) {
+  return {
+    span_id: spanIdV3(),
+    opened_at: "2026-08-16T09:59:59.000Z",
+    duration_ms,
+  };
+}
+
 function fixtureFingerprint(value: string) {
-  return fingerprintV2(
+  return fingerprintV3(
     {
       epochId: "pep_fixture",
       epochKey: Buffer.alloc(32, 0x43),

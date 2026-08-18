@@ -13,34 +13,34 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
-import { readCodexArchiveObservationsV2 } from "../../../agents/codex-archive-v2.ts";
+import { readCodexArchiveObservationsV3 } from "../../../agents/codex-archive-v3.ts";
 import {
-  listSessionFinalizationRequestsV2,
-  observeHostDisappearedV2,
-  reconcileSessionFinalizationV2,
-  requestSessionEndExplicitV2,
-} from "../../../agents/session-finalizer-v2.ts";
+  listSessionFinalizationRequestsV3,
+  observeHostDisappearedV3,
+  reconcileSessionFinalizationV3,
+  requestSessionEndExplicitV3,
+} from "../../../agents/session-finalizer-v3.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
-import { buildEventV2 } from "../builder.ts";
-import { canonicalJsonV2, sha256V2 } from "../canonical.ts";
-import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
+import { buildEventV3 } from "../builder.ts";
+import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
+import { adapterCapabilityProfileDigestV3 } from "../capabilities.ts";
 import {
-  type CandidateGenesisManifestV2,
-  type CandidateProfileV2,
-  candidateProfileDigestV2,
-  EVENT_V2_GENESIS_MANIFEST,
-  repairEventV2ControlPair,
+  type CandidateGenesisManifestV3,
+  type CandidateProfileV3,
+  candidateProfileDigestV3,
+  EVENT_V3_GENESIS_MANIFEST,
+  repairEventV3ControlPair,
 } from "../control.ts";
-import { loadOrCreateFingerprintKeyStoreV2 } from "../fingerprint-keys.ts";
-import { EVENT_V2_SCHEMA_DIGEST } from "../generated.ts";
-import { readActiveLedgerV2 } from "../reader.ts";
-import { eventV2Paths } from "../writer.ts";
+import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
+import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
+import { readLedgerV3 } from "../reader.ts";
+import { eventV3Paths } from "../writer.ts";
 import {
-  drainHookIntakeSpoolV2,
-  readHookProducerStateV2,
-  recordApprovedSessionEndV2,
-  recordHookSignalV2,
+  drainHookIntakeSpoolV3,
+  readHookProducerStateV3,
+  recordApprovedSessionEndV3,
+  recordHookSignalV3,
 } from "./recorder.ts";
 
 const roots: string[] = [];
@@ -49,9 +49,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("event ledger V2 persistent hook recorder", () => {
+describe("event ledger V3 persistent hook recorder", () => {
   test("is inert without an exact candidate or active gate", () => {
-    const result = recordHookSignalV2({
+    const result = recordHookSignalV3({
       ...baseInput(temporaryRoot(), "session-start", parsed({ session_id: "native" })),
       mode: "active",
     });
@@ -61,17 +61,17 @@ describe("event ledger V2 persistent hook recorder", () => {
   test("preserves generation, sequence, turn, span, timing, and privacy across hook processes", () => {
     const root = candidateRoot();
     const nativeSession = "native-account-session";
-    const start = recordHookSignalV2(
+    const start = recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession, model: "sonnet" })),
     );
-    const turn = recordHookSignalV2(
+    const turn = recordHookSignalV3(
       baseInput(
         root,
         "user-prompt-submit",
         parsed({ session_id: nativeSession, turn_id: "turn-secret", prompt: "patient secret" }),
       ),
     );
-    const requested = recordHookSignalV2({
+    const requested = recordHookSignalV3({
       ...baseInput(
         root,
         "pre-tool-use",
@@ -84,7 +84,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       ),
       monotonic_ns: "1000000000",
     });
-    const completed = recordHookSignalV2({
+    const completed = recordHookSignalV3({
       ...baseInput(
         root,
         "post-tool-use",
@@ -104,13 +104,13 @@ describe("event ledger V2 persistent hook recorder", () => {
       "recorded",
       "recorded",
     ]);
-    expect(existsSync(join(root, ".harnery/private/v2-producers"))).toBeFalse();
+    expect(existsSync(join(root, ".harnery/private/v3-producers"))).toBeFalse();
     expect(
-      readdirSync(join(root, ".harnery/ledgers/v2/private-producers/claude-code")).filter((name) =>
+      readdirSync(join(root, ".harnery/ledgers/v3/private-producers/claude-code")).filter((name) =>
         name.endsWith(".json"),
       ),
     ).toHaveLength(1);
-    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const events = readLedgerV3(root).events.map(({ event }) => event);
     const hookEvents = events.filter((event) => event.producer.producer_id === "prd_hook");
     expect(hookEvents.map((event) => event.producer.sequence)).toEqual([1, 2, 3, 4]);
     expect(
@@ -130,11 +130,11 @@ describe("event ledger V2 persistent hook recorder", () => {
     expect(completion?.payload.duration_ms).toEqual({
       state: "observed",
       value: 250,
-      attestation: "derived",
+      attestation: "native",
       confidence: "exact",
     });
-    const durable = readFileSync(eventV2Paths(root).active, "utf8");
-    const state = readHookProducerStateV2(root, "claude-code", nativeSession);
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    const state = readHookProducerStateV3(root, "claude-code", nativeSession);
     expect(`${durable}${JSON.stringify(state)}`).not.toContain("patient secret");
     expect(`${durable}${JSON.stringify(state)}`).not.toContain("API_SECRET_123");
     expect(`${durable}${JSON.stringify(state)}`).not.toContain("private output");
@@ -144,12 +144,12 @@ describe("event ledger V2 persistent hook recorder", () => {
   test("accumulates bounded hook CLI time inside the active turn", () => {
     const root = candidateRoot();
     const nativeSession = "hook-timing-session";
-    recordHookSignalV2({
+    recordHookSignalV3({
       ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
       hook_name: "SessionStart",
       hook_duration_ms: 40,
     });
-    recordHookSignalV2({
+    recordHookSignalV3({
       ...baseInput(
         root,
         "user-prompt-submit",
@@ -158,7 +158,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       hook_name: "UserPromptSubmit",
       hook_duration_ms: 12.8,
     });
-    recordHookSignalV2({
+    recordHookSignalV3({
       ...baseInput(
         root,
         "pre-tool-use",
@@ -172,7 +172,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       hook_name: "PreToolUse",
       hook_duration_ms: 30.4,
     });
-    recordHookSignalV2({
+    recordHookSignalV3({
       ...baseInput(
         root,
         "post-tool-use",
@@ -187,7 +187,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       hook_duration_ms: 5.9,
     });
 
-    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.turn_harness).toEqual({
+    expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.turn_harness).toEqual({
       hook_time_ms: 47,
       hook_count: 3,
       slowest_hook: "PreToolUse",
@@ -198,11 +198,11 @@ describe("event ledger V2 persistent hook recorder", () => {
   test("omits a concurrently reordered event clock without losing raw span timing", () => {
     const root = candidateRoot();
     const nativeSession = "reordered-clock-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
-    recordHookSignalV2(
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(
       baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession })),
     );
-    recordHookSignalV2({
+    recordHookSignalV3({
       ...baseInput(
         root,
         "pre-tool-use",
@@ -214,7 +214,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       ),
       monotonic_ns: "200",
     });
-    recordHookSignalV2({
+    recordHookSignalV3({
       ...baseInput(
         root,
         "pre-tool-use",
@@ -227,15 +227,15 @@ describe("event ledger V2 persistent hook recorder", () => {
       monotonic_ns: "100",
     });
 
-    const ledger = readActiveLedgerV2(root);
+    const ledger = readLedgerV3(root);
     const tools = ledger.events
       .map(({ event }) => event)
       .filter((event) => event.event_type === "tool.requested");
     expect(ledger.complete).toBeTrue();
     expect(tools.map((event) => event.time.monotonic_ns)).toEqual(["200", undefined]);
     expect(
-      readHookProducerStateV2(root, "claude-code", nativeSession)?.spans.map(
-        (span) => span.started_monotonic_ns,
+      readHookProducerStateV3(root, "claude-code", nativeSession)?.spans.map(
+        (span) => span.opened_monotonic_ns,
       ),
     ).toEqual(["200", "100"]);
   });
@@ -244,7 +244,7 @@ describe("event ledger V2 persistent hook recorder", () => {
     const root = candidateRoot();
     const input = baseInput(root, "session-start", parsed({ session_id: "retry-session" }));
     expect(() =>
-      recordHookSignalV2({
+      recordHookSignalV3({
         ...input,
         writerOptions: {
           onStep: (step) => {
@@ -254,10 +254,10 @@ describe("event ledger V2 persistent hook recorder", () => {
       }),
     ).toThrow("simulated producer kill");
 
-    const recovered = recordHookSignalV2(input);
+    const recovered = recordHookSignalV3(input);
     expect(recovered.state).toBe("recorded");
     if (recovered.state === "recorded") expect(recovered.recovered).toBeTrue();
-    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const events = readLedgerV3(root).events.map(({ event }) => event);
     expect(events).toHaveLength(2);
     expect(events[0]?.event_type).toBe("ledger.genesis");
     expect(events[1]?.event_type).toBe("session.started");
@@ -269,11 +269,11 @@ describe("event ledger V2 persistent hook recorder", () => {
     const nativeSession = "parent-session";
     const nativeChild = "child-account-secret";
     expect(
-      recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })))
+      recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })))
         .state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "sub-agent-start",
@@ -286,7 +286,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "sub-agent-stop",
@@ -295,13 +295,13 @@ describe("event ledger V2 persistent hook recorder", () => {
       ).state,
     ).toBe("recorded");
 
-    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const events = readLedgerV3(root).events.map(({ event }) => event);
     const started = events.find((event) => event.event_type === "agent.started");
     const completed = events.find((event) => event.event_type === "agent.completed");
     expect(started?.payload.delegation_id).toBe(completed?.payload.delegation_id);
     expect(started?.payload.child_generation_id).toBe(completed?.payload.child_generation_id);
-    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.delegations).toEqual([]);
-    expect(readFileSync(eventV2Paths(root).active, "utf8")).not.toContain(nativeChild);
+    expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.delegations).toEqual([]);
+    expect(readFileSync(eventV3Paths(root).active, "utf8")).not.toContain(nativeChild);
   });
 
   test("routes child-process tool hooks through the native session owner", () => {
@@ -310,13 +310,13 @@ describe("event ledger V2 persistent hook recorder", () => {
     const parentInstance = "inst_parent" as const;
     const childInstance = "inst_child" as const;
     expect(
-      recordHookSignalV2({
+      recordHookSignalV3({
         ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
         instance_id: parentInstance,
       }).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2({
+      recordHookSignalV3({
         ...baseInput(
           root,
           "user-prompt-submit",
@@ -326,7 +326,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       }).state,
     ).toBe("recorded");
 
-    const requested = recordHookSignalV2({
+    const requested = recordHookSignalV3({
       ...baseInput(
         root,
         "pre-tool-use",
@@ -334,7 +334,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       ),
       instance_id: childInstance,
     });
-    const completed = recordHookSignalV2({
+    const completed = recordHookSignalV3({
       ...baseInput(
         root,
         "post-tool-use",
@@ -349,7 +349,7 @@ describe("event ledger V2 persistent hook recorder", () => {
     });
 
     expect([requested.state, completed.state]).toEqual(["recorded", "recorded"]);
-    const toolEvents = readActiveLedgerV2(root)
+    const toolEvents = readLedgerV3(root)
       .events.map(({ event }) => event)
       .filter(
         (event) => event.event_type === "tool.requested" || event.event_type === "tool.completed",
@@ -361,7 +361,7 @@ describe("event ledger V2 persistent hook recorder", () => {
 
   test("routes identity-less Cursor hooks through their live instance authority", () => {
     const root = candidateRoot("cursor");
-    const start = recordHookSignalV2(
+    const start = recordHookSignalV3(
       baseInput(
         root,
         "session-start",
@@ -369,10 +369,10 @@ describe("event ledger V2 persistent hook recorder", () => {
         "cursor",
       ),
     );
-    const turn = recordHookSignalV2(
+    const turn = recordHookSignalV3(
       baseInput(root, "user-prompt-submit", parsed({ turn_id: "cursor-turn" }), "cursor"),
     );
-    const requested = recordHookSignalV2(
+    const requested = recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -380,7 +380,7 @@ describe("event ledger V2 persistent hook recorder", () => {
         "cursor",
       ),
     );
-    const completed = recordHookSignalV2(
+    const completed = recordHookSignalV3(
       baseInput(
         root,
         "post-tool-use",
@@ -396,11 +396,11 @@ describe("event ledger V2 persistent hook recorder", () => {
       "recorded",
     ]);
     expect(
-      readdirSync(join(root, ".harnery/ledgers/v2/private-producers/cursor")).filter((name) =>
+      readdirSync(join(root, ".harnery/ledgers/v3/private-producers/cursor")).filter((name) =>
         name.endsWith(".json"),
       ),
     ).toHaveLength(1);
-    const events = readActiveLedgerV2(root)
+    const events = readLedgerV3(root)
       .events.map(({ event }) => event)
       .filter((event) => event.producer.producer_id === "prd_hook");
     expect(
@@ -413,12 +413,12 @@ describe("event ledger V2 persistent hook recorder", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-session";
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "session-end",
@@ -427,7 +427,7 @@ describe("event ledger V2 persistent hook recorder", () => {
         ),
       ),
     ).toEqual({ state: "gate_closed", reason: "signal_not_approved:session_end" });
-    expect(readActiveLedgerV2(root).events.map(({ event }) => event.event_type)).toEqual([
+    expect(readLedgerV3(root).events.map(({ event }) => event.event_type)).toEqual([
       "ledger.genesis",
       "session.started",
     ]);
@@ -437,11 +437,11 @@ describe("event ledger V2 persistent hook recorder", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-approved-end";
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
       ).state,
     ).toBe("recorded");
-    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
     expect(state).toBeDefined();
     if (!state) throw new Error("producer state missing");
     const input = {
@@ -455,14 +455,14 @@ describe("event ledger V2 persistent hook recorder", () => {
       outcome: "succeeded" as const,
       coordination_finalized: true,
     };
-    expect(recordApprovedSessionEndV2(input).state).toBe("recorded");
-    expect(recordApprovedSessionEndV2(input).state).toBe("already_ended");
+    expect(recordApprovedSessionEndV3(input).state).toBe("recorded");
+    expect(recordApprovedSessionEndV3(input).state).toBe("already_ended");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
       ).state,
     ).not.toBe("recorded");
-    const terminal = readActiveLedgerV2(root)
+    const terminal = readLedgerV3(root)
       .events.map(({ event }) => event)
       .filter((event) => event.event_type === "session.ended");
     expect(terminal).toHaveLength(1);
@@ -475,13 +475,13 @@ describe("event ledger V2 persistent hook recorder", () => {
   test("queues an explicit end inside a live turn and finalizes after that turn closes", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-deferred-end";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -489,10 +489,10 @@ describe("event ledger V2 persistent hook recorder", () => {
         "codex",
       ),
     );
-    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("producer state missing");
     expect(
-      requestSessionEndExplicitV2({
+      requestSessionEndExplicitV3({
         coordRoot: root,
         instance_id: state.instance_id,
         generation_id: state.generation_id,
@@ -500,11 +500,11 @@ describe("event ledger V2 persistent hook recorder", () => {
         coordination_finalized: true,
       }).state,
     ).toBe("queued");
-    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+    expect(reconcileSessionFinalizationV3(root, { archive_observations: [] })).toMatchObject({
       finalized: 0,
       pending: 1,
     });
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "post-tool-use",
@@ -512,14 +512,14 @@ describe("event ledger V2 persistent hook recorder", () => {
         "codex",
       ),
     );
-    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
-    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+    recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    expect(reconcileSessionFinalizationV3(root, { archive_observations: [] })).toMatchObject({
       finalized: 1,
       pending: 0,
       cancelled: 0,
     });
-    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeTrue();
-    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.terminal).toBeTrue();
+    expect(listSessionFinalizationRequestsV3(root)[0]).toMatchObject({
       trigger: "explicit_end",
       status: "completed",
     });
@@ -528,32 +528,32 @@ describe("event ledger V2 persistent hook recorder", () => {
   test("cancels a deferred explicit end when new work starts", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-cancel-deferred-end";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
     );
-    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("producer state missing");
     expect(
-      requestSessionEndExplicitV2({
+      requestSessionEndExplicitV3({
         coordRoot: root,
         instance_id: state.instance_id,
         generation_id: state.generation_id,
         coordination_finalized: true,
       }).state,
     ).toBe("queued");
-    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
-    recordHookSignalV2(
+    recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    recordHookSignalV3(
       baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession }), "codex"),
     );
-    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+    expect(reconcileSessionFinalizationV3(root, { archive_observations: [] })).toMatchObject({
       finalized: 0,
       cancelled: 1,
     });
-    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeFalse();
-    expect(listSessionFinalizationRequestsV2(root)[0]?.status).toBe("cancelled");
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.terminal).toBeFalse();
+    expect(listSessionFinalizationRequestsV3(root)[0]?.status).toBe("cancelled");
   });
 
   test("gives verified archive a cancellation grace period before finalizing", () => {
@@ -564,12 +564,12 @@ describe("event ledger V2 persistent hook recorder", () => {
     );
     const nativeSession = "codex-archive-grace";
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
       ).state,
     ).toBe("recorded");
     const observedAt = "2026-08-17T12:00:00.000Z";
-    const first = reconcileSessionFinalizationV2(root, {
+    const first = reconcileSessionFinalizationV3(root, {
       now: new Date(observedAt),
       archive_observations: [
         {
@@ -581,13 +581,13 @@ describe("event ledger V2 persistent hook recorder", () => {
       ],
     });
     expect(first).toMatchObject({ observed: 1, finalized: 0, pending: 1 });
-    expect(listSessionFinalizationRequestsV2(root)[0]?.status).toBe("pending");
-    const second = reconcileSessionFinalizationV2(root, {
+    expect(listSessionFinalizationRequestsV3(root)[0]?.status).toBe("pending");
+    const second = reconcileSessionFinalizationV3(root, {
       now: new Date("2026-08-17T12:01:01.000Z"),
       archive_observations: [],
     });
     expect(second.finalized).toBe(1);
-    const terminal = readActiveLedgerV2(root)
+    const terminal = readLedgerV3(root)
       .events.map(({ event }) => event)
       .find((event) => event.event_type === "session.ended");
     expect(terminal?.payload).toMatchObject({
@@ -600,7 +600,7 @@ describe("event ledger V2 persistent hook recorder", () => {
     const root = candidateRoot("codex");
     const nativeSession = "known-codex-thread";
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
       ).state,
     ).toBe("recorded");
@@ -620,7 +620,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       1_776_668_401_000,
     ]);
     database.close();
-    expect(readCodexArchiveObservationsV2(root, { databasePath }).observations).toEqual([
+    expect(readCodexArchiveObservationsV3(root, { databasePath }).observations).toEqual([
       {
         adapter: "codex",
         native_session_id: nativeSession,
@@ -628,7 +628,7 @@ describe("event ledger V2 persistent hook recorder", () => {
         observed_at: "2026-04-20T07:00:00.000Z",
       },
     ]);
-    expect(readFileSync(eventV2Paths(root).active, "utf8")).not.toContain(nativeSession);
+    expect(readFileSync(eventV3Paths(root).active, "utf8")).not.toContain(nativeSession);
   });
 
   test("keeps host loss provisional until the cascade grace expires", () => {
@@ -638,13 +638,13 @@ describe("event ledger V2 persistent hook recorder", () => {
       JSON.stringify({ coord: { finalization: { cascade_grace_seconds: 30 } } }),
     );
     const nativeSession = "host-loss-session";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
     );
-    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("producer state missing");
     expect(
-      observeHostDisappearedV2({
+      observeHostDisappearedV3({
         coordRoot: root,
         instance_id: state.instance_id,
         generation_id: state.generation_id,
@@ -652,13 +652,13 @@ describe("event ledger V2 persistent hook recorder", () => {
       }).state,
     ).toBe("observed");
     expect(
-      reconcileSessionFinalizationV2(root, {
+      reconcileSessionFinalizationV3(root, {
         now: new Date("2026-08-17T13:00:29.000Z"),
         archive_observations: [],
       }).finalized,
     ).toBe(0);
     expect(
-      reconcileSessionFinalizationV2(root, {
+      reconcileSessionFinalizationV3(root, {
         now: new Date("2026-08-17T13:00:31.000Z"),
         archive_observations: [],
       }).finalized,
@@ -669,12 +669,12 @@ describe("event ledger V2 persistent hook recorder", () => {
     const root = candidateRoot("cursor");
     const nativeSession = "cursor-session";
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), "cursor"),
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "pre-compact",
@@ -684,7 +684,7 @@ describe("event ledger V2 persistent hook recorder", () => {
       ).state,
     ).toBe("recorded");
     expect(
-      recordHookSignalV2(
+      recordHookSignalV3(
         baseInput(
           root,
           "post-compact",
@@ -698,26 +698,26 @@ describe("event ledger V2 persistent hook recorder", () => {
 
 function candidateRoot(adapter: Adapter = "claude-code"): string {
   const root = temporaryRoot();
-  const keyStore = loadOrCreateFingerprintKeyStoreV2(
+  const keyStore = loadOrCreateFingerprintKeyStoreV3(
     root,
     () => new Date("2026-08-16T17:00:00.000Z"),
   );
-  const profile: CandidateProfileV2 = {
-    initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
-    contract_source_digest: sha256V2("contract"),
+  const profile: CandidateProfileV3 = {
+    initial_schema_digest: EVENT_V3_SCHEMA_DIGEST,
+    contract_source_digest: sha256V3("contract"),
     harnery_commit: "fixture",
     host_repository_commit: "fixture",
     producer_build_ids: ["build_fixture"],
     adapter_capability_profile_digests: [
-      `sha256:${adapterCapabilityProfileDigestV2(adapter).slice(4)}`,
+      `sha256:${adapterCapabilityProfileDigestV3(adapter).slice(4)}`,
     ],
-    config_digest: sha256V2("config"),
+    config_digest: sha256V3("config"),
     canonicalizer_version: "harnery-jcs-nfc-v1",
     fingerprint_version: "hmac-sha256-v1",
     privacy_key_epoch: keyStore.active_epoch_id,
     candidate_created_at: "2026-08-16T18:00:00.000Z",
   };
-  const event = buildEventV2("ledger.genesis", {
+  const event = buildEventV3("ledger.genesis", {
     producer: {
       producer_id: "prd_cutover",
       boot_id: "boot_cutover",
@@ -740,30 +740,30 @@ function candidateRoot(adapter: Adapter = "claude-code"): string {
     },
     payload: {
       genesis_id: "gex_00000000-0000-0000-0000-000000000001",
-      genesis_profile_digest: candidateProfileDigestV2(profile),
+      genesis_profile_digest: candidateProfileDigestV3(profile),
       contract_digest: profile.contract_source_digest,
-      generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
+      generated_schema_digest: EVENT_V3_SCHEMA_DIGEST,
       canonicalizer: "harnery-jcs-nfc-v1",
       privacy_epoch_id: profile.privacy_key_epoch,
       candidate_created_at: profile.candidate_created_at,
     },
   });
-  const manifest: CandidateGenesisManifestV2 = {
+  const manifest: CandidateGenesisManifestV3 = {
     manifest_version: 1,
     kind: "candidate_genesis",
     profile,
     event,
   };
-  const path = join(root, EVENT_V2_GENESIS_MANIFEST);
+  const path = join(root, EVENT_V3_GENESIS_MANIFEST);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${canonicalJsonV2(manifest)}\n`, { mode: 0o600 });
-  expect(repairEventV2ControlPair(root).state).toBe("candidate");
+  writeFileSync(path, `${canonicalJsonV3(manifest)}\n`, { mode: 0o600 });
+  expect(repairEventV3ControlPair(root).state).toBe("candidate");
   return root;
 }
 
 function baseInput(
   root: string,
-  signal: Parameters<typeof recordHookSignalV2>[0]["signal"],
+  signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
   payload: ParsedPayload,
   adapter: Adapter = "claude-code",
 ) {
@@ -787,13 +787,13 @@ function parsed(values: Partial<ParsedPayload>): ParsedPayload {
 }
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "harnery-v2-recorder-"));
+  const root = mkdtempSync(join(tmpdir(), "harnery-v3-recorder-"));
   roots.push(root);
   return root;
 }
 
-describe("event ledger V2 hook intake spool", () => {
-  const LEDGER_ROOT = ".harnery/ledgers/v2";
+describe("event ledger V3 hook intake spool", () => {
+  const LEDGER_ROOT = ".harnery/ledgers/v3";
 
   function statePathFor(root: string, adapter = "claude-code"): string {
     const directory = join(root, LEDGER_ROOT, "private-producers", adapter);
@@ -805,7 +805,7 @@ describe("event ledger V2 hook intake spool", () => {
   function holdStateLease(root: string, statePath: string) {
     return acquireNoClobberLease({
       path: `${statePath}.lease`,
-      scope: "event-v2-hook-producer",
+      scope: "event-v3-hook-producer",
       authoritySha256: createHash("sha256")
         .update(join(root))
         .update("\0")
@@ -835,11 +835,11 @@ describe("event ledger V2 hook intake spool", () => {
   test("a lease-contended signal spools durably and the next signal drains it in order", () => {
     const root = candidateRoot();
     const nativeSession = "spool-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
     const statePath = statePathFor(root);
     const lease = holdStateLease(root, statePath);
     try {
-      const contended = recordHookSignalV2(
+      const contended = recordHookSignalV3(
         baseInput(
           root,
           "user-prompt-submit",
@@ -851,7 +851,7 @@ describe("event ledger V2 hook intake spool", () => {
     } finally {
       lease.release();
     }
-    const next = recordHookSignalV2(
+    const next = recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -860,7 +860,7 @@ describe("event ledger V2 hook intake spool", () => {
     );
     expect(next.state).toBe("recorded");
     expect(intakeEntryCount(root)).toBe(0);
-    const ledger = readActiveLedgerV2(root);
+    const ledger = readLedgerV3(root);
     const types = ledger.events.map(({ event }) => event.event_type);
     expect(types).toContain("turn.started");
     const requested = ledger.events.find(({ event }) => event.event_type === "tool.requested");
@@ -873,11 +873,11 @@ describe("event ledger V2 hook intake spool", () => {
   test("reconcile-style drain records a marooned final signal with no later hook", () => {
     const root = candidateRoot();
     const nativeSession = "marooned-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
     const statePath = statePathFor(root);
     const lease = holdStateLease(root, statePath);
     try {
-      const contended = recordHookSignalV2(
+      const contended = recordHookSignalV3(
         baseInput(
           root,
           "user-prompt-submit",
@@ -888,21 +888,21 @@ describe("event ledger V2 hook intake spool", () => {
     } finally {
       lease.release();
     }
-    const drained = drainHookIntakeSpoolV2(root);
+    const drained = drainHookIntakeSpoolV3(root);
     expect(drained.groups_with_records).toBe(1);
     expect(drained.groups_drained).toBe(1);
     expect(intakeEntryCount(root)).toBe(0);
-    const ledger = readActiveLedgerV2(root);
+    const ledger = readLedgerV3(root);
     expect(ledger.events.map(({ event }) => event.event_type)).toContain("turn.started");
   });
 
   test("an unpairable post on a recovery-disabled adapter is preserved in diagnostics with content redacted", () => {
     const root = candidateRoot("cursor");
     const nativeSession = "unpairable-session";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "cursor"),
     );
-    const result = recordHookSignalV2(
+    const result = recordHookSignalV3(
       baseInput(
         root,
         "post-tool-use",
@@ -928,8 +928,8 @@ describe("event ledger V2 hook intake spool", () => {
   test("an unmatched post on a recovery-enabled adapter mints a derived request and pairs the native completion", () => {
     const root = candidateRoot();
     const nativeSession = "recovered-post-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
-    const result = recordHookSignalV2(
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    const result = recordHookSignalV3(
       baseInput(
         root,
         "post-tool-use",
@@ -947,7 +947,7 @@ describe("event ledger V2 hook intake spool", () => {
     expect(result.event.event_type).toBe("tool.completed");
     expect(result.event.provenance.attestation).toBe("native");
 
-    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const rows = readLedgerV3(root).events.map((entry) => entry.event);
     const derivedRequest = rows.find((event) => event.event_type === "tool.requested");
     if (derivedRequest?.event_type !== "tool.requested") {
       throw new Error("derived request missing");
@@ -959,7 +959,7 @@ describe("event ledger V2 hook intake spool", () => {
       (result.event.links as { span_id: string }).span_id,
     );
     // The pair closed the span: it lives in closed-span memory, not open spans.
-    const state = readHookProducerStateV2(root, "claude-code", nativeSession);
+    const state = readHookProducerStateV3(root, "claude-code", nativeSession);
     expect(state?.spans.length).toBe(0);
     expect(state?.closed_spans.length).toBe(1);
   });
@@ -968,15 +968,15 @@ describe("event ledger V2 hook intake spool", () => {
     const root = candidateRoot();
     const nativeSession = "late-signal-session";
     const base = { session_id: nativeSession, tool_use_id: "call-1", tool_name: "Read" };
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
-    recordHookSignalV2(baseInput(root, "pre-tool-use", parsed(base)));
-    recordHookSignalV2(baseInput(root, "post-tool-use", parsed(base)));
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(baseInput(root, "pre-tool-use", parsed(base)));
+    recordHookSignalV3(baseInput(root, "post-tool-use", parsed(base)));
 
-    const latePost = recordHookSignalV2(baseInput(root, "post-tool-use", parsed(base)));
+    const latePost = recordHookSignalV3(baseInput(root, "post-tool-use", parsed(base)));
     expect(latePost).toEqual({ state: "suppressed", reason: "closed_span" });
-    const latePre = recordHookSignalV2(baseInput(root, "pre-tool-use", parsed(base)));
+    const latePre = recordHookSignalV3(baseInput(root, "pre-tool-use", parsed(base)));
     expect(latePre).toEqual({ state: "suppressed", reason: "closed_span" });
-    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.spans.length).toBe(0);
+    expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.spans.length).toBe(0);
     expect(
       diagnosticsFiles(root).filter((name) => name.startsWith("late_pre_suppressed-")).length,
     ).toBe(1);
@@ -988,24 +988,24 @@ describe("event ledger V2 hook intake spool", () => {
   test("closes permission waits on a matching tool signal and on turn interruption", () => {
     const resolvedRoot = candidateRoot();
     const resolvedSession = "resolved-wait-session";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(resolvedRoot, "session-start", parsed({ session_id: resolvedSession })),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         resolvedRoot,
         "user-prompt-submit",
         parsed({ session_id: resolvedSession, turn_id: "turn-1", prompt: "go" }),
       ),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         resolvedRoot,
         "permission-request",
         parsed({ session_id: resolvedSession, tool_use_id: "permission-1" }),
       ),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         resolvedRoot,
         "pre-tool-use",
@@ -1016,17 +1016,17 @@ describe("event ledger V2 hook intake spool", () => {
         }),
       ),
     );
-    const resolved = readActiveLedgerV2(resolvedRoot)
+    const resolved = readLedgerV3(resolvedRoot)
       .events.map(({ event }) => event)
       .filter(
         (event) =>
-          event.event_type === "interaction.wait_started" ||
-          event.event_type === "interaction.wait_ended" ||
+          event.event_type === "wait.started" ||
+          event.event_type === "wait.ended" ||
           event.event_type === "tool.requested",
       );
     expect(resolved.map(({ event_type }) => event_type)).toEqual([
-      "interaction.wait_started",
-      "interaction.wait_ended",
+      "wait.started",
+      "wait.ended",
       "tool.requested",
     ]);
     const started = resolved[0];
@@ -1036,44 +1036,44 @@ describe("event ledger V2 hook intake spool", () => {
       outcome: "succeeded",
       resolution_reference: "pre-tool-use",
     });
-    expect(readHookProducerStateV2(resolvedRoot, "claude-code", resolvedSession)?.waits).toEqual(
+    expect(readHookProducerStateV3(resolvedRoot, "claude-code", resolvedSession)?.waits).toEqual(
       [],
     );
 
     const interruptedRoot = candidateRoot();
     const interruptedSession = "interrupted-wait-session";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(interruptedRoot, "session-start", parsed({ session_id: interruptedSession })),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         interruptedRoot,
         "user-prompt-submit",
         parsed({ session_id: interruptedSession, turn_id: "turn-1", prompt: "go" }),
       ),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         interruptedRoot,
         "permission-request",
         parsed({ session_id: interruptedSession, tool_use_id: "permission-2" }),
       ),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         interruptedRoot,
         "stop-failure",
         parsed({ session_id: interruptedSession, turn_id: "turn-1" }),
       ),
     );
-    const interrupted = readActiveLedgerV2(interruptedRoot)
+    const interrupted = readLedgerV3(interruptedRoot)
       .events.map(({ event }) => event)
       .filter(
         (event) =>
-          event.event_type === "interaction.wait_ended" || event.event_type === "turn.completed",
+          event.event_type === "wait.ended" || event.event_type === "turn.completed",
       );
     expect(interrupted.map(({ event_type }) => event_type)).toEqual([
-      "interaction.wait_ended",
+      "wait.ended",
       "turn.completed",
     ]);
     expect(interrupted[0]?.payload).toMatchObject({
@@ -1085,20 +1085,20 @@ describe("event ledger V2 hook intake spool", () => {
   test("a stop boundary terminalizes the ending turn's stamped spans before turn.completed", () => {
     const root = candidateRoot();
     const nativeSession = "boundary-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
-    recordHookSignalV2(
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(
       baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, prompt: "go" })),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
         parsed({ session_id: nativeSession, tool_use_id: "lost-call", tool_name: "Bash" }),
       ),
     );
-    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession })));
 
-    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const rows = readLedgerV3(root).events.map((entry) => entry.event);
     const derived = rows.find(
       (event) =>
         event.event_type === "tool.completed" && event.provenance.attestation === "derived",
@@ -1111,16 +1111,16 @@ describe("event ledger V2 hook intake spool", () => {
     expect(derived.payload.recovery?.requested_event_id).toBeDefined();
     const turnCompleted = rows.find((event) => event.event_type === "turn.completed");
     expect(rows.indexOf(derived)).toBeLessThan(rows.indexOf(turnCompleted as never));
-    expect(readHookProducerStateV2(root, "claude-code", nativeSession)?.spans.length).toBe(0);
+    expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.spans.length).toBe(0);
   });
 
   test("a lost stop is recovered at the next turn start", () => {
     const root = candidateRoot("codex");
     const nativeSession = "lost-stop-session";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "user-prompt-submit",
@@ -1128,7 +1128,7 @@ describe("event ledger V2 hook intake spool", () => {
         "codex",
       ),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -1142,7 +1142,7 @@ describe("event ledger V2 hook intake spool", () => {
       ),
     );
     // Stop hook lost; the next prompt starts turn-2.
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "user-prompt-submit",
@@ -1150,7 +1150,7 @@ describe("event ledger V2 hook intake spool", () => {
         "codex",
       ),
     );
-    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const rows = readLedgerV3(root).events.map((entry) => entry.event);
     const derived = rows.find(
       (event) =>
         event.event_type === "tool.completed" && event.provenance.attestation === "derived",
@@ -1160,13 +1160,13 @@ describe("event ledger V2 hook intake spool", () => {
     }
     expect(derived.payload.recovery?.reason).toBe("completion_not_observed_before_next_turn");
     expect(derived.provenance.confidence).toBe("low");
-    expect(readHookProducerStateV2(root, "codex", nativeSession)?.spans.length).toBe(0);
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.spans.length).toBe(0);
   });
 
   test("a mid-flight session onboards with a derived session.started; a terminal one never resurrects", () => {
     const root = candidateRoot();
     const nativeSession = "mid-flight-session";
-    const result = recordHookSignalV2(
+    const result = recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -1174,7 +1174,7 @@ describe("event ledger V2 hook intake spool", () => {
       ),
     );
     expect(result.state).toBe("recorded");
-    const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
+    const rows = readLedgerV3(root).events.map((entry) => entry.event);
     const started = rows.find((event) => event.event_type === "session.started");
     if (started?.event_type !== "session.started") {
       throw new Error("derived session.started missing");
@@ -1186,11 +1186,11 @@ describe("event ledger V2 hook intake spool", () => {
     });
 
     // Authoritative termination still refuses later signals.
-    const state = readHookProducerStateV2(root, "claude-code", nativeSession);
+    const state = readHookProducerStateV3(root, "claude-code", nativeSession);
     if (!state) throw new Error("missing state");
-    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession })));
     expect(
-      recordApprovedSessionEndV2({
+      recordApprovedSessionEndV3({
         coordRoot: root,
         mode: "candidate",
         instance_id: state.instance_id,
@@ -1202,7 +1202,7 @@ describe("event ledger V2 hook intake spool", () => {
         coordination_finalized: true,
       }).state,
     ).toBe("recorded");
-    const afterEnd = recordHookSignalV2(
+    const afterEnd = recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -1215,13 +1215,13 @@ describe("event ledger V2 hook intake spool", () => {
   test("a poison intake record is quarantined and the drain continues", () => {
     const root = candidateRoot();
     const nativeSession = "poison-session";
-    recordHookSignalV2(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
+    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
     const adapterDir = intakeDir(root);
     const group = readdirSync(adapterDir)[0]!;
     writeFileSync(join(adapterDir, group, "0000000000000-poison.json"), "not json", {
       mode: 0o600,
     });
-    const next = recordHookSignalV2(
+    const next = recordHookSignalV3(
       baseInput(
         root,
         "user-prompt-submit",
@@ -1239,10 +1239,10 @@ describe("pending explicit-end expiry", () => {
   test("a wedged explicit end (turn never closes) is cancelled after the grace period, never terminalized", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-wedged-end";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "user-prompt-submit",
@@ -1250,7 +1250,7 @@ describe("pending explicit-end expiry", () => {
         "codex",
       ),
     );
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -1265,9 +1265,9 @@ describe("pending explicit-end expiry", () => {
     );
     // The stop hook is lost: the turn never closes, so salvage stays
     // ineligible (open turn) and the wedge this expiry mechanism targets forms.
-    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("missing producer state");
-    const queued = requestSessionEndExplicitV2({
+    const queued = requestSessionEndExplicitV3({
       coordRoot: root,
       instance_id: state.instance_id,
       generation_id: state.generation_id,
@@ -1277,7 +1277,7 @@ describe("pending explicit-end expiry", () => {
     expect(queued.state).toBe("queued");
 
     // A second explicit end reports the exact blocker instead of a bare refusal.
-    const repeated = requestSessionEndExplicitV2({
+    const repeated = requestSessionEndExplicitV3({
       coordRoot: root,
       instance_id: state.instance_id,
       generation_id: state.generation_id,
@@ -1291,14 +1291,14 @@ describe("pending explicit-end expiry", () => {
     }
 
     // Inside the grace period the request stays pending.
-    expect(reconcileSessionFinalizationV2(root, { archive_observations: [] })).toMatchObject({
+    expect(reconcileSessionFinalizationV3(root, { archive_observations: [] })).toMatchObject({
       pending: 1,
       cancelled: 0,
     });
     // Past the grace period it is cancelled (a safe, reversible transition) —
     // never terminalized from age alone.
     const future = new Date(Date.now() + 25 * 60 * 60 * 1000);
-    const expired = reconcileSessionFinalizationV2(root, {
+    const expired = reconcileSessionFinalizationV3(root, {
       archive_observations: [],
       now: future,
     });
@@ -1306,19 +1306,19 @@ describe("pending explicit-end expiry", () => {
     expect(
       expired.diagnostics.some((d) => d.startsWith("expired_pending_explicit_end:")),
     ).toBeTrue();
-    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeFalse();
-    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({ status: "cancelled" });
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.terminal).toBeFalse();
+    expect(listSessionFinalizationRequestsV3(root)[0]).toMatchObject({ status: "cancelled" });
   });
 
   test("a closed-turn explicit end with approved orphan spans salvages instead of expiring", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-salvage-end";
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
     );
     // No turn context: the orphan span stays unstamped, survives the stop
     // boundary sweep (fail closed), and only explicit-end salvage can reach it.
-    recordHookSignalV2(
+    recordHookSignalV3(
       baseInput(
         root,
         "pre-tool-use",
@@ -1326,12 +1326,12 @@ describe("pending explicit-end expiry", () => {
         "codex",
       ),
     );
-    recordHookSignalV2(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
-    expect(readHookProducerStateV2(root, "codex", nativeSession)?.spans.length).toBe(1);
+    recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession }), "codex"));
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.spans.length).toBe(1);
 
-    const state = readHookProducerStateV2(root, "codex", nativeSession);
+    const state = readHookProducerStateV3(root, "codex", nativeSession);
     if (!state) throw new Error("missing producer state");
-    const queued = requestSessionEndExplicitV2({
+    const queued = requestSessionEndExplicitV3({
       coordRoot: root,
       instance_id: state.instance_id,
       generation_id: state.generation_id,
@@ -1340,10 +1340,10 @@ describe("pending explicit-end expiry", () => {
     });
     expect(queued.state).toBe("queued");
 
-    const reconciled = reconcileSessionFinalizationV2(root, { archive_observations: [] });
+    const reconciled = reconcileSessionFinalizationV3(root, { archive_observations: [] });
     expect(reconciled.finalized).toBe(1);
     expect(reconciled.diagnostics.some((d) => d.startsWith("salvaged_explicit_end:"))).toBeTrue();
-    const rows = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const rows = readLedgerV3(root).events.map(({ event }) => event);
     const salvage = rows.find(
       (event) =>
         event.event_type === "tool.completed" &&
@@ -1355,7 +1355,7 @@ describe("pending explicit-end expiry", () => {
     expect(salvage.payload.outcome).toBe("unknown");
     const ended = rows.find((event) => event.event_type === "session.ended");
     expect(ended).toBeDefined();
-    expect(readHookProducerStateV2(root, "codex", nativeSession)?.terminal).toBeTrue();
-    expect(listSessionFinalizationRequestsV2(root)[0]).toMatchObject({ status: "completed" });
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.terminal).toBeTrue();
+    expect(listSessionFinalizationRequestsV3(root)[0]).toMatchObject({ status: "completed" });
   });
 });

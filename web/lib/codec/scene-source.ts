@@ -16,14 +16,14 @@ import path from "node:path";
 import { coordRoot, readAgents } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 import { readWorkflowChildSessions } from "@/lib/workflow-reader";
-import { readEventV2ControlState } from "../../../src/core/events/v2/control";
+import { readEventV3ControlState } from "../../../src/core/events/v3/control";
 import {
-  EVENT_V2_LIVE_RELATIVE_ROOT,
-  type LiveDisplayRowV2,
-  listLiveDisplayV2,
-} from "../../../src/core/events/v2/live-feed";
-import { readLedgerV2 } from "../../../src/core/events/v2/reader";
-import { eventV2Paths } from "../../../src/core/events/v2/writer";
+  EVENT_V3_LIVE_RELATIVE_ROOT,
+  type LiveDisplayRowV3,
+  listLiveDisplayV3,
+} from "../../../src/core/events/v3/live-feed";
+import { readLedgerV3 } from "../../../src/core/events/v3/reader";
+import { eventV3Paths } from "../../../src/core/events/v3/writer";
 
 import type { CodecScene, CodecSourceEvidence } from "./contracts";
 import { allocateCharacters } from "./packs";
@@ -72,17 +72,17 @@ export async function readSanitizedTail(filePath?: string): Promise<CodecSourceE
   if (filePath) return readSanitizedTails([filePath]);
 
   const root = coordRoot();
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state !== "candidate" && control.state !== "active") return [];
 
-  const ledger = readLedgerV2(root);
+  const ledger = readLedgerV3(root);
   if (!ledger.complete) return [];
   const rows = ledger.events
     .map(({ event }) => sanitizeEvent(event))
     .filter((event): event is CodecSourceEvidence => event !== null);
   const sliced = rows.slice(-Math.max(1, Math.floor(TAIL_BYTES / 1_000)));
   try {
-    return applyLiveFeedOverlay(sliced, listLiveDisplayV2(root));
+    return applyLiveFeedOverlay(sliced, listLiveDisplayV3(root));
   } catch {
     return sliced;
   }
@@ -165,11 +165,11 @@ export async function buildScene(now?: string): Promise<CodecScene> {
 
 export function eventsFilePaths(): string[] {
   const root = coordRoot();
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state === "candidate" || control.state === "active") {
-    const paths = eventV2Paths(root);
+    const paths = eventV3Paths(root);
     const watched = [paths.active, paths.catalog];
-    const liveRoot = path.join(root, EVENT_V2_LIVE_RELATIVE_ROOT);
+    const liveRoot = path.join(root, EVENT_V3_LIVE_RELATIVE_ROOT);
     if (fs.existsSync(liveRoot)) watched.push(liveRoot);
     return watched;
   }
@@ -189,9 +189,9 @@ function clampOverlay(value: string): string | undefined {
 /** Attach unexpired live-display intent onto matching evidence event ids. */
 export function applyLiveFeedOverlay(
   events: readonly CodecSourceEvidence[],
-  overlays: readonly LiveDisplayRowV2[],
+  overlays: readonly LiveDisplayRowV3[],
 ): CodecSourceEvidence[] {
-  const byEvent = new Map<string, LiveDisplayRowV2>();
+  const byEvent = new Map<string, LiveDisplayRowV3>();
   for (const row of overlays) {
     if (!row.intent_display) continue;
     byEvent.set(row.event_id, row);

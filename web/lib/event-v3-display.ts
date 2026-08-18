@@ -1,6 +1,6 @@
 import type { EventRow } from "./coord-reader";
 
-export type EventDisplayVariantV2 =
+export type EventDisplayVariantV3 =
   | "muted"
   | "info"
   | "success"
@@ -9,7 +9,7 @@ export type EventDisplayVariantV2 =
   | "accent"
   | "secondary";
 
-export type EventTimelineKindV2 =
+export type EventTimelineKindV3 =
   | "action_started"
   | "action_completed_ok"
   | "action_completed_fail"
@@ -17,20 +17,20 @@ export type EventTimelineKindV2 =
   | "session"
   | "task";
 
-export interface EventDisplayV2 {
+export interface EventDisplayV3 {
   kind: string;
   summary: string;
-  variant: EventDisplayVariantV2;
-  timeline_kind?: EventTimelineKindV2;
+  variant: EventDisplayVariantV3;
+  timeline_kind?: EventTimelineKindV3;
   workspace_path?: string;
 }
 
 /**
- * One structural display projection for every canonical V2 event. Durable
+ * One structural display projection for every canonical V3 event. Durable
  * payloads stay metadata-only; unexpired prose can come only from the narrow
  * live-display overlay already scrubbed by its producer.
  */
-export function describeEventV2(event: EventRow): EventDisplayV2 {
+export function describeEventV3(event: EventRow): EventDisplayV3 {
   const live = event.live_display;
   switch (event.event_type) {
     case "ledger.genesis":
@@ -136,12 +136,13 @@ export function describeEventV2(event: EventRow): EventDisplayV2 {
       );
     case "command.completed": {
       const ok = event.data.outcome === "succeeded";
+      const duration = observedValue(event.data.duration_ms);
       return display(
         ok ? "command ok" : "command fail",
         [
           event.data.outcome,
           event.data.exit_code === undefined ? undefined : `exit ${event.data.exit_code}`,
-          formatDuration(event.data.duration_ms),
+          typeof duration === "number" ? formatDuration(duration) : undefined,
           event.data.error_class,
         ]
           .filter(Boolean)
@@ -182,9 +183,9 @@ export function describeEventV2(event: EventRow): EventDisplayV2 {
         `${event.data.child_generation_id} · ${event.data.outcome}`,
         outcomeVariant(event.data.outcome),
       );
-    case "interaction.wait_started":
+    case "wait.started":
       return display("wait start", event.data.kind, "warning");
-    case "interaction.wait_ended":
+    case "wait.ended":
       return display("wait end", event.data.outcome, outcomeVariant(event.data.outcome));
     case "artifact.observed":
       return display(
@@ -242,19 +243,25 @@ export function describeEventV2(event: EventRow): EventDisplayV2 {
         `${event.data.subsystem} · ${event.data.severity}`,
         event.data.severity === "healthy" ? "success" : "warning",
       );
+    case "health.capability_drift":
+      return display(
+        "capability drift",
+        `${event.data.signal} · ${event.data.observed_count}/${event.data.expected_count}`,
+        "warning",
+      );
   }
 }
 
 function display(
   kind: string,
   summary: string,
-  variant: EventDisplayVariantV2,
-  timeline_kind?: EventTimelineKindV2,
-): EventDisplayV2 {
+  variant: EventDisplayVariantV3,
+  timeline_kind?: EventTimelineKindV3,
+): EventDisplayV3 {
   return { kind, summary, variant, ...(timeline_kind ? { timeline_kind } : {}) };
 }
 
-function outcomeVariant(outcome: string): EventDisplayVariantV2 {
+function outcomeVariant(outcome: string): EventDisplayVariantV3 {
   if (outcome === "succeeded") return "success";
   if (outcome === "unknown") return "warning";
   return "destructive";

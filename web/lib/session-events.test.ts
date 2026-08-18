@@ -1,17 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
-import { eventIdV2, spanIdV2 } from "../../src/core/events/v2/ids";
+import { eventIdV3, spanIdV3 } from "../../src/core/events/v3/ids";
 import {
-  type CommandProducerContextV2,
-  normalizeCommandEventV2,
-} from "../../src/core/events/v2/producers/command";
-import { projectSessionEventV2 } from "./session-events";
+  type CommandProducerContextV3,
+  normalizeCommandEventV3,
+} from "../../src/core/events/v3/producers/command";
+import { projectSessionEventV3 } from "./session-events";
 
-describe("V2 live command projection", () => {
+describe("V3 live command projection", () => {
   test("renders structural command evidence without recovering private bodies", () => {
     const context = commandContext();
     const secret = "API_TOKEN=never-render-this";
-    const started = normalizeCommandEventV2(
+    const started = normalizeCommandEventV3(
       "command.started",
       {
         native_command_id: "cmd-1",
@@ -24,35 +24,46 @@ describe("V2 live command projection", () => {
       },
       context,
     )!;
-    const completed = normalizeCommandEventV2(
+    const completed = normalizeCommandEventV3(
       "command.completed",
       { native_command_id: "cmd-1", exit_code: 0, duration_ms: 42 },
       {
         ...context,
         sequence: 2,
         caused_by: [started.event_id as `evt_${string}`],
+        terminal_span: {
+          span_id: context.span_id,
+          opened_at: "2026-08-16T10:00:00.000Z",
+          duration_ms: {
+            state: "observed",
+            value: 42,
+            attestation: "native",
+            confidence: "exact",
+          },
+          open_event_id: started.event_id as `evt_${string}`,
+        },
       },
     )!;
 
-    expect(projectSessionEventV2(started)).toMatchObject({
+    expect(projectSessionEventV3(started)).toMatchObject({
       type: "command.started",
       cmd: "acme",
       intent: "deploy",
       cmd_id: context.span_id,
     });
-    expect(projectSessionEventV2(completed)).toMatchObject({
+    expect(projectSessionEventV3(completed)).toMatchObject({
       type: "command.completed",
       exit: 0,
       duration_ms: 42,
       cmd_id: context.span_id,
     });
     expect(
-      JSON.stringify([projectSessionEventV2(started), projectSessionEventV2(completed)]),
+      JSON.stringify([projectSessionEventV3(started), projectSessionEventV3(completed)]),
     ).not.toContain(secret);
   });
 });
 
-function commandContext(): CommandProducerContextV2 {
+function commandContext(): CommandProducerContextV3 {
   const generationId = "gen_11111111-1111-7111-8111-111111111111" as const;
   return {
     root_id: "root_fixture",
@@ -66,8 +77,8 @@ function commandContext(): CommandProducerContextV2 {
     sequence: 1,
     build_id: "build_fixture",
     platform: "linux",
-    span_id: spanIdV2(),
-    caused_by: [eventIdV2()],
+    span_id: spanIdV3(),
+    caused_by: [eventIdV3()],
     fingerprintContext: {
       epochId: "pep_fixture",
       epochKey: Buffer.alloc(32, 0x66),

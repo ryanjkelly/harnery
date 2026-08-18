@@ -4,7 +4,7 @@ export type AgentActivity = "unknown" | "working" | "needs_input" | "idle";
 /** Whether the declared task remains open. Activity never changes this axis. */
 export type TaskState = "active" | "blocked" | "done";
 
-/** Raw fields stored in the disposable V2 coordination cache and rebuilt from canonical events. */
+/** Raw fields stored in the disposable V3 coordination cache and rebuilt from canonical events. */
 export interface SessionStateFields {
   activity?: AgentActivity;
   activity_updated_at?: string;
@@ -26,14 +26,14 @@ export interface SessionStateSelector {
 }
 
 export interface SessionStateEvidenceEvent {
-  event_type: EventTypeV2;
+  event_type: EventTypeV3;
   ts: string;
   payload?: Record<string, unknown>;
   instance_id?: string;
   session_id?: string;
 }
 
-const TERMINAL_ACTIVITY_EVENTS: ReadonlySet<EventTypeV2> = new Set([
+const TERMINAL_ACTIVITY_EVENTS: ReadonlySet<EventTypeV3> = new Set([
   "session.ended",
   "agent.completed",
   "turn.completed",
@@ -61,9 +61,9 @@ export function applySessionStateEvent(
     setActivity(next, "idle", event);
   } else if (event.event_type === "turn.started" || event.event_type === "tool.requested") {
     setActivity(next, "working", event);
-  } else if (event.event_type === "interaction.wait_started") {
+  } else if (event.event_type === "wait.started") {
     setActivity(next, "needs_input", event);
-  } else if (event.event_type === "interaction.wait_ended") {
+  } else if (event.event_type === "wait.ended") {
     setActivity(next, "working", event);
   } else if (
     event.event_type === "command.started" &&
@@ -140,4 +140,4 @@ function field(data: Record<string, unknown>, key: string): unknown {
   return data[key];
 }
 
-import type { EventTypeV2 } from "../../events/v2/contract.ts";
+import type { EventTypeV3 } from "../../events/v3/contract.ts";

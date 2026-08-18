@@ -54,7 +54,7 @@ export interface LogRowRenderer<E> {
    * `command.started` and `command.completed` anchors.
    *
    * Used by /live to fold adjacent `command.output_observed` events that share
-   * one V2 span. /events passes no `getGroupKey` and renders every row
+   * one V3 span. /events passes no `getGroupKey` and renders every row
    * discretely.
    *
    * Folding runs on the already-sorted+filtered row list, so a search that

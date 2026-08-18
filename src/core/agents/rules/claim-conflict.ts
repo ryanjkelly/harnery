@@ -17,7 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { recordLiveClaimChangeV2 } from "../live-authority-v2.ts";
+import { recordLiveClaimChangeV3 } from "../live-authority-v3.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
 const FRESHNESS_SECS = 600;
@@ -244,7 +244,7 @@ function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
 function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolean {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === req.instance_id);
   try {
-    recordLiveClaimChangeV2({
+    recordLiveClaimChangeV3({
       coordRoot,
       owner: req.instance_id,
       nativeSessionId: req.session_id ?? owner?.session_id ?? req.instance_id,
@@ -267,7 +267,7 @@ function releaseClaimThroughLedger(
 ): boolean {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === actor.instance_id);
   try {
-    recordLiveClaimChangeV2({
+    recordLiveClaimChangeV3({
       coordRoot,
       owner: actor.instance_id,
       subject: subjectInstanceId,

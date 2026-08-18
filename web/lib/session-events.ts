@@ -1,9 +1,9 @@
-/** Privacy-safe V2 command projection consumed by the `/live` viewer. */
+/** Privacy-safe V3 command projection consumed by the `/live` viewer. */
 import path from "node:path";
 import { readLiveCoordinationRows } from "../../src/core/agents/state/live-coordination-view";
-import type { EventV2 } from "../../src/core/events/v2/contract";
-import { readEventV2ControlState } from "../../src/core/events/v2/control";
-import { readLedgerV2 } from "../../src/core/events/v2/reader";
+import type { EventV3 } from "../../src/core/events/v3/contract";
+import { readEventV3ControlState } from "../../src/core/events/v3/control";
+import { readLedgerV3 } from "../../src/core/events/v3/reader";
 import { harneryDir } from "./coord-reader";
 
 export interface SessionEvent {
@@ -49,7 +49,7 @@ function resolveAgentName(instanceId: string | undefined): string {
   return nameCache.map.get(instanceId) ?? "";
 }
 
-export function projectSessionEventV2(event: EventV2): SessionEvent | null {
+export function projectSessionEventV3(event: EventV3): SessionEvent | null {
   const instanceId = event.scope.instance_id;
   const base = {
     ts: event.time.recorded_at,
@@ -86,7 +86,10 @@ export function projectSessionEventV2(event: EventV2): SessionEvent | null {
               ? null
               : 1),
         signal: event.payload.signal,
-        duration_ms: event.payload.duration_ms,
+        duration_ms:
+          event.payload.duration_ms.state === "observed"
+            ? event.payload.duration_ms.value
+            : undefined,
       };
     case "tool.requested":
       return {
@@ -116,7 +119,7 @@ export function projectSessionEventV2(event: EventV2): SessionEvent | null {
   }
 }
 
-function eventSpanId(event: EventV2): string | undefined {
+function eventSpanId(event: EventV3): string | undefined {
   const links = event.links as { span_id?: unknown };
   return typeof links.span_id === "string" ? links.span_id : undefined;
 }
@@ -125,18 +128,18 @@ export async function readSessionEventsTail(
   opts: { lines?: number; agent?: string } = {},
 ): Promise<SessionEvent[]> {
   const { lines = 200, agent } = opts;
-  const events = readV2CommandEvents();
+  const events = readV3CommandEvents();
   const selected = agent ? events.filter((event) => event.agent_name === agent) : events;
   return selected.length > lines ? selected.slice(-lines) : selected;
 }
 
-function readV2CommandEvents(): SessionEvent[] {
+function readV3CommandEvents(): SessionEvent[] {
   const root = path.dirname(harneryDir());
-  const control = readEventV2ControlState(root);
+  const control = readEventV3ControlState(root);
   if (control.state !== "candidate" && control.state !== "active") return [];
-  const ledger = readLedgerV2(root);
+  const ledger = readLedgerV3(root);
   if (!ledger.complete) return [];
   return ledger.events
-    .map(({ event }) => projectSessionEventV2(event))
+    .map(({ event }) => projectSessionEventV3(event))
     .filter((event): event is SessionEvent => event !== null);
 }

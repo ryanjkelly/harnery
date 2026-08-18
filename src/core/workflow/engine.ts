@@ -40,7 +40,7 @@ import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
-import { endWorkflowChildSessionV2, startWorkflowChildSessionV2 } from "./live-session-v2.ts";
+import { endWorkflowChildSessionV3, startWorkflowChildSessionV3 } from "./live-session-v3.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -950,7 +950,7 @@ async function executeWorkflow(
       // Headless children do not reliably fire adapter hooks. The engine owns
       // their canonical V2 start so every dispatched child has an auditable
       // generation before it begins work.
-      startWorkflowChildSessionV2({
+      startWorkflowChildSessionV3({
         coordRoot: opts.coordRoot,
         instanceId: childInstanceId(runId, id),
         runId,
@@ -1074,7 +1074,7 @@ async function executeWorkflow(
       reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
       // Record the canonical terminal before removing the disposable cache.
       try {
-        endWorkflowChildSessionV2({
+        endWorkflowChildSessionV3({
           coordRoot: opts.coordRoot,
           instanceId: childInstanceId(runId, id),
           runId,

@@ -263,7 +263,7 @@ export function AgentChip({
               <span className="font-mono font-semibold text-foreground">agent-{summary.name}</span>
             </span>
             <span className="block">
-              Records or queues a canonical V2 session-ended event after open turns and tool spans
+              Records or queues a canonical V3 session-ended event after open turns and tool spans
               close. It does not kill the agent process or manufacture a terminal event from cache
               state.
             </span>
@@ -486,12 +486,12 @@ function AgentActions({
   const router = useRouter();
   const isActive = summary.state === "active";
   const hasOwner = !!summary.instance_id;
-  // Cache repair and session finalization need a live V2 generation.
+  // Cache repair and session finalization need a live V3 generation.
   // carries an instance_id only so its page is reachable, not so its (gone)
   // generation can be acted on. Gate the live-only actions on liveness, matching
   // The standalone page likewise hides live-only actions for ended agents.
   const canMutate = hasOwner && isActive;
-  // The /agents/[id] page resolves live and ended generations from V2. Link by
+  // The /agents/[id] page resolves live and ended generations from V3. Link by
   // instance_id for any card that carries one.
   const agentPagePath = summary.instance_id
     ? `/agents/${encodeURIComponent(summary.instance_id)}`
@@ -555,7 +555,7 @@ function AgentActions({
         <Tooltip
           content={
             canMutate
-              ? "Rebuild the disposable coordination cache from the authoritative V2 generation."
+              ? "Rebuild the disposable coordination cache from the authoritative V3 generation."
               : "The agent's session has ended. Cache repair requires a live generation."
           }
         >
@@ -572,7 +572,7 @@ function AgentActions({
         <Tooltip
           content={
             canMutate
-              ? "Request an authoritative V2 session end."
+              ? "Request an authoritative V3 session end."
               : "Only available for active sessions with a live instance."
           }
         >

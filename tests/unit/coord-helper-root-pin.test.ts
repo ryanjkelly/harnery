@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { coordHelperOpts } from "../../src/commands/agents.ts";
 import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
-import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
-import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../../src/core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../src/core/events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../../src/core/events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing.ts";
 
 /**
  * Regression: a shell cd'd into a nested directory that carries its own
@@ -32,16 +32,16 @@ function makeNestedRoots(): { outer: string; nested: string; owner: string } {
   const outer = mkdtempSync(join(tmpdir(), "coord-pin-"));
   dirs.push(outer);
   const owner = "test-owner-1234";
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: outer,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-root-pin",
   });
-  const route = resolveLiveEventLedgerRouteV2(outer);
-  if (route.state !== "v2") throw new Error("expected V2 route");
-  recordLiveHookSignalV2({
+  const route = resolveLiveEventLedgerRouteV3(outer);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  recordLiveHookSignalV3({
     coordRoot: outer,
     route,
     eventName: "session-start",
@@ -77,7 +77,7 @@ describe("agent-coord root pinning (coordHelperOpts)", () => {
       env: bareEnv(),
     });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("v2_not_initialized");
+    expect(r.stderr).toContain("v3_not_initialized");
   });
 
   test("pinned spawn from the same nested cwd finds the heartbeat (the fix)", () => {

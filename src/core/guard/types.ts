@@ -60,7 +60,7 @@ export type RunQualityEvidenceKind =
   | "compaction_started"
   | "compaction_completed";
 
-export type RunQualityCorpusCategoryV2 = Extract<
+export type RunQualityCorpusCategoryV3 = Extract<
   RunQualityEvidenceKind,
   "tool_pairing_incomplete" | "command_pairing_incomplete" | "recovered_terminal"
 >;

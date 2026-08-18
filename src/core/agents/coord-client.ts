@@ -11,9 +11,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import {
-  listHookProducerStateRecordsV2,
-  readHookProducerStateV2,
-} from "../events/v2/producers/recorder.ts";
+  listHookProducerStateRecordsV3,
+  readHookProducerStateV3,
+} from "../events/v3/producers/recorder.ts";
 
 // NOTE: kept dependency-free (node builtins only); this file is vendored verbatim into
 // a downstream consumer, so it cannot import the coordEnv helper.
@@ -75,7 +75,7 @@ export function monorepoRoot(): string | null {
  * and the CLI's canonical emits — resolves through this one function, because a
  * root the two layers disagree about is a root that silently breaks the
  * end-of-turn rules: the hook evaluates `state.status_checked` from the stream
- * it reads, so an emit into a different V2 ledger root is invisible
+ * it reads, so an emit into a different V3 ledger root is invisible
  * and rule 1/3 blocks a turn that did run `agents status`, with no sequence of
  * CLI commands able to satisfy it.
  *
@@ -157,7 +157,7 @@ function ancestorCoordRoots(start: string): string[] {
  * Does this root's `.harnery/` already know the process asking?
  *
  * Two discriminators, both genuinely about *this* session: the adapter-exported
- * session id matching live V2 producer state, and a pid-map row on our own ppid
+ * session id matching live V3 producer state, and a pid-map row on our own ppid
  * chain. Deliberately NOT the single-live-agent fallback that owner resolution
  * ends with — a lone stranger in the wrong root is exactly how `whoami` came to
  * report another agent's name and task as its own.
@@ -368,7 +368,7 @@ export function resolveOwnerWithSource(): {
 } {
   const bridge = process.env.HARNERY_AGENT_COORD_BRIDGE?.trim();
   const envOwner = process.env.HARNERY_AGENT_COORD_OWNER?.trim();
-  // A bridge-marked child must prove identity through a live V2 producer. An
+  // A bridge-marked child must prove identity through a live V3 producer. An
   // inherited owner override is only a string, so trusting it here would let a
   // stale or foreign environment bypass the bridge's fail-closed contract.
   if (envOwner && !bridge) {
@@ -379,7 +379,7 @@ export function resolveOwnerWithSource(): {
   if (!root) return { owner: null, source: "none" };
 
   // Every supported adapter exports its native session id into subprocesses.
-  // Match it against the live V2 producer state, never a disposable cache.
+  // Match it against the live V3 producer state, never a disposable cache.
   if (shouldPreferSessionEnv()) {
     const bySession = resolveOwnerBySessionEnv(root);
     if (bySession) {
@@ -388,7 +388,7 @@ export function resolveOwnerWithSource(): {
   }
 
   // Connector children cross process-tree boundaries where pid ancestry is
-  // not logical session identity. Once marked, a missing V2 generation is
+  // not logical session identity. Once marked, a missing V3 generation is
   // terminal: never guess through pid-map or singleton fallback.
   if (bridge) return { owner: null, source: "none" };
 
@@ -397,7 +397,7 @@ export function resolveOwnerWithSource(): {
   const byPidmap = resolveOwnerByPidmap(root);
   if (byPidmap.owner) return byPidmap;
 
-  // Last resort: if exactly one V2 generation is live in this coord root, it's
+  // Last resort: if exactly one V3 generation is live in this coord root, it's
   // unambiguously us — resolve to it. This is what lets the bare `agents
   // status` / `set-task` the stop hook recommends work without a `--session-id`
   // flag in the common single-agent case. With 0 or 2+ live agents it would be
@@ -508,7 +508,7 @@ function sessionIdFromEnv(): string | null {
  * agent's name and file list.
  *
  * This only reorders the two. Session-env resolution still requires a live
- * V2 producer carrying that session id, so when it does not match, the walk runs
+ * V3 producer carrying that session id, so when it does not match, the walk runs
  * exactly as before.
  */
 function shouldPreferSessionEnv(): boolean {
@@ -516,7 +516,7 @@ function shouldPreferSessionEnv(): boolean {
 }
 
 /**
- * Resolve the owner by joining adapter session environment to the live V2
+ * Resolve the owner by joining adapter session environment to the live V3
  * hook-producer state. A missing, terminal, or ambiguous generation fails
  * closed. The disposable cache is consulted only to recover the native
  * instance label bound to an already-authoritative canonical instance.
@@ -530,15 +530,15 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
   const matches = new Set<string>();
   for (const sessionId of sessionIds) {
     for (const adapter of adapters) {
-      const state = readHookProducerStateV2(root, adapter, sessionId);
-      if (state && !state.terminal) matches.add(nativeOwnerForV2Instance(root, state.instance_id));
+      const state = readHookProducerStateV3(root, adapter, sessionId);
+      if (state && !state.terminal) matches.add(nativeOwnerForV3Instance(root, state.instance_id));
     }
   }
   return matches.size === 1 ? [...matches][0]! : null;
 }
 
 /**
- * Return the native instance label of the sole live V2 generation in this
+ * Return the native instance label of the sole live V3 generation in this
  * coord root, or null if there are zero or more than one.
  *
  * Exported for unit testing with an injectable root (the caller in
@@ -546,8 +546,8 @@ export function resolveOwnerBySessionEnv(root: string): string | null {
  */
 export function resolveSingleActiveOwner(root: string): string | null {
   const live = new Set(
-    listHookProducerStateRecordsV2(root, { includeTerminal: false }).map(({ state }) =>
-      nativeOwnerForV2Instance(root, state.instance_id),
+    listHookProducerStateRecordsV3(root, { includeTerminal: false }).map(({ state }) =>
+      nativeOwnerForV3Instance(root, state.instance_id),
     ),
   );
   return live.size === 1 ? [...live][0]! : null;
@@ -559,7 +559,7 @@ function adapterCandidatesFromEnv(): Array<"claude-code" | "codex" | "cursor"> {
   return ["claude-code", "codex", "cursor"];
 }
 
-function nativeOwnerForV2Instance(root: string, instanceId: string): string {
+function nativeOwnerForV3Instance(root: string, instanceId: string): string {
   const activeDir = resolve(root, ".harnery", "active");
   try {
     for (const file of readdirSync(activeDir)) {
@@ -570,7 +570,7 @@ function nativeOwnerForV2Instance(root: string, instanceId: string): string {
       >;
       if (
         parsed.schema_version === 2 &&
-        parsed.v2_instance_id === instanceId &&
+        parsed.v3_instance_id === instanceId &&
         typeof parsed.instance_id === "string"
       ) {
         return parsed.instance_id;

@@ -416,7 +416,7 @@ export function pruneArchives(days = ARCHIVE_RETENTION_DAYS): number {
   return deleted;
 }
 
-/** Sweep journals whose corresponding authoritative V2 generation is gone. */
+/** Sweep journals whose corresponding authoritative V3 generation is gone. */
 export function sweepOrphanJournals(): string[] {
   const dir = journalDir();
   const root = monorepoRoot();

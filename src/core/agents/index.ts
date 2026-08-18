@@ -9,6 +9,6 @@
 
 export * from "./canonical-emit.js";
 export * from "./coord-client.js";
-export * from "./live-observation-v2.js";
+export * from "./live-observation-v3.js";
 export * from "./session-events.js";
 export * from "./state/session-state.js";

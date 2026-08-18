@@ -1,7 +1,7 @@
 /**
  * Image-feed reader for the harnery web UI.
  *
- * V2 intentionally does not retain raw image blobs. The feed reports explicit
+ * V3 intentionally does not retain raw image blobs. The feed reports explicit
  * unavailability until a privacy-safe artifact projection is added.
  */
 
@@ -74,7 +74,7 @@ export interface ImageCapturesResponse {
 }
 
 /**
- * Return the V2 image-artifact projection. Raw blobs are deliberately absent
+ * Return the V3 image-artifact projection. Raw blobs are deliberately absent
  * until artifact observations carry a privacy-safe blob reference.
  */
 export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesResponse {
@@ -89,7 +89,7 @@ export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesR
       source: "v2",
       authoritative: false,
       reason:
-        "V2 artifact observations do not expose the content-addressed blob key and extension required by the image feed",
+        "V3 artifact observations do not expose the content-addressed blob key and extension required by the image feed",
     },
   };
 }

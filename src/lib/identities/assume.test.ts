@@ -12,13 +12,13 @@ import os from "node:os";
 import path from "node:path";
 import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-view.ts";
 import { resolveName } from "../../core/agents/state/names.ts";
-import { initializeEventLedgerV2 } from "../../core/events/v2/bootstrap.ts";
-import { sha256V2 } from "../../core/events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../../core/events/v3/bootstrap.ts";
+import { sha256V3 } from "../../core/events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../../core/events/v2/live-routing.ts";
-import { readActiveLedgerV2 } from "../../core/events/v2/reader.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../core/events/v3/live-routing.ts";
+import { readLedgerV3 } from "../../core/events/v3/reader.ts";
 import { assumeIdentity, IdentityAssumeError } from "./assume.ts";
 
 describe("assumeIdentity", () => {
@@ -57,20 +57,20 @@ describe("assumeIdentity", () => {
 
     const personaFiles = readdirSync(path.join(root, ".harnery", "identities"));
     expect(personaFiles).toEqual([`${result.agent_id}.json`]);
-    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const events = readLedgerV3(root).events.map(({ event }) => event);
     expect(events.some((event) => event.event_type === "coord.identity_attested")).toBe(true);
   });
 
   test("is idempotent after the session already owns the durable persona", () => {
     assumeIdentity(root, "session-new", "Yann");
     const historyPath = path.join(root, ".harnery", ".name-history");
-    const eventsBefore = readActiveLedgerV2(root).events.length;
+    const eventsBefore = readLedgerV3(root).events.length;
     const historyBefore = readFileSync(historyPath, "utf8");
 
     const retry = assumeIdentity(root, "session-new", "Yann");
     expect(retry.changed).toBe(false);
     expect(retry.event_id).toBeNull();
-    expect(readActiveLedgerV2(root).events).toHaveLength(eventsBefore);
+    expect(readLedgerV3(root).events).toHaveLength(eventsBefore);
     expect(readFileSync(historyPath, "utf8")).toBe(historyBefore);
   });
 
@@ -105,7 +105,7 @@ describe("assumeIdentity", () => {
     expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(false);
     expect(existsSync(path.join(root, ".harnery", "pid-map", "999999999"))).toBe(false);
 
-    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    const events = readLedgerV3(root).events.map(({ event }) => event);
     expect(events.some((event) => event.event_type === "lifecycle.sweep_observed")).toBe(true);
   });
 
@@ -117,7 +117,7 @@ describe("assumeIdentity", () => {
     expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(false);
   });
 
-  test("ignores a forged stale cache timestamp and follows V2 liveness", () => {
+  test("ignores a forged stale cache timestamp and follows V3 liveness", () => {
     seedHeartbeat(root, "session-old", "Beatrice", Date.now() - 20 * 60_000);
     const result = assumeIdentity(root, "session-new", "Beatrice");
     expect(result.name).toBe("Beatrice");
@@ -133,9 +133,9 @@ function seedHeartbeat(root: string, instanceId: string, name: string, nowMs = D
     historyPath,
     `${priorHistory}${JSON.stringify({ instance_id: instanceId, name, kind: "session", source: "pool", ts })}\n`,
   );
-  const route = resolveLiveEventLedgerRouteV2(root);
-  if (route.state !== "v2") throw new Error("expected V2 route");
-  recordLiveHookSignalV2({
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected V3 route");
+  recordLiveHookSignalV3({
     coordRoot: root,
     route,
     eventName: "session-start",
@@ -144,7 +144,7 @@ function seedHeartbeat(root: string, instanceId: string, name: string, nowMs = D
     instanceId,
   });
   const cache = ensureLiveCoordinationHeartbeat(root, instanceId, instanceId, "codex");
-  if (!cache) throw new Error("expected V2 cache");
+  if (!cache) throw new Error("expected V3 cache");
   writeFileSync(
     path.join(root, ".harnery", "active", `${instanceId}.json`),
     JSON.stringify({
@@ -160,11 +160,11 @@ function seedHeartbeat(root: string, instanceId: string, name: string, nowMs = D
 }
 
 function initializeLedger(root: string): void {
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-identity-assume",
   });
 }

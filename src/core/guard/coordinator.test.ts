@@ -2,12 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
-import { sha256V2 } from "../events/v2/canonical.ts";
+import { initializeEventLedgerV3 } from "../events/v3/bootstrap.ts";
+import { sha256V3 } from "../events/v3/canonical.ts";
 import {
-  recordLiveHookSignalV2,
-  resolveLiveEventLedgerRouteV2,
-} from "../events/v2/live-routing.ts";
+  recordLiveHookSignalV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../events/v3/live-routing.ts";
 import { evaluateRunQualityIfDue } from "./coordinator.ts";
 
 const roots: string[] = [];
@@ -16,7 +16,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("V2 run-quality coordinator", () => {
+describe("V3 run-quality coordinator", () => {
   test("evaluates the active generation and honors the due cursor", () => {
     const project = fixture("report");
     seedRepeatedRead(project);
@@ -43,7 +43,7 @@ describe("V2 run-quality coordinator", () => {
   test("invalid config is recorded once without touching the event ledger", () => {
     const project = fixture("report", { max_tail_bytes: 1 });
     const before = readFileSync(
-      join(project, ".harnery", "ledgers", "v2", "active.ndjson"),
+      join(project, ".harnery", "ledgers", "v3", "active.ndjson"),
       "utf8",
     );
 
@@ -53,14 +53,14 @@ describe("V2 run-quality coordinator", () => {
     expect(first.config.valid).toBeFalse();
     expect(second.evaluated).toBeFalse();
     expect(existsSync(join(project, ".harnery", "guard", "config-invalid.json"))).toBeTrue();
-    expect(readFileSync(join(project, ".harnery", "ledgers", "v2", "active.ndjson"), "utf8")).toBe(
+    expect(readFileSync(join(project, ".harnery", "ledgers", "v3", "active.ndjson"), "utf8")).toBe(
       before,
     );
   });
 });
 
 function fixture(mode: "shadow" | "report", extra: Record<string, unknown> = {}): string {
-  const root = mkdtempSync(join(tmpdir(), "harnery-v2-quality-"));
+  const root = mkdtempSync(join(tmpdir(), "harnery-v3-quality-"));
   roots.push(root);
   mkdirSync(join(root, ".harnery"), { recursive: true });
   writeFileSync(
@@ -82,21 +82,21 @@ function fixture(mode: "shadow" | "report", extra: Record<string, unknown> = {})
       },
     })}\n`,
   );
-  initializeEventLedgerV2({
+  initializeEventLedgerV3({
     coordRoot: root,
     harneryBuild: "fixture",
     hostBuild: "fixture",
-    configDigest: sha256V2("config"),
+    configDigest: sha256V3("config"),
     approvalRecordId: "test-quality-coordinator",
   });
   return root;
 }
 
 function seedRepeatedRead(root: string): void {
-  const route = resolveLiveEventLedgerRouteV2(root);
-  if (route.state !== "v2") throw new Error("expected active V2 route");
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state !== "v3") throw new Error("expected active V3 route");
   const record = (eventName: string, payload: Record<string, unknown>) =>
-    recordLiveHookSignalV2({
+    recordLiveHookSignalV3({
       coordRoot: root,
       route,
       eventName,

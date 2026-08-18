@@ -10,8 +10,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../config.ts";
-import { readFinalizationScopeV2 } from "../events/v2/finalization-view.ts";
-import { liveInstanceIdV2, resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
+import { readFinalizationScopeV3 } from "../events/v3/finalization-view.ts";
+import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../events/v3/live-routing.ts";
 
 const GIT_DISCOVERY_VARS = [
   "GIT_DIR",
@@ -98,10 +98,10 @@ export function readSessionWriteClaims(
   instanceId: string,
   _sessionId: string,
 ): SessionWriteClaims {
-  const route = resolveLiveEventLedgerRouteV2(coordRoot);
+  const route = resolveLiveEventLedgerRouteV3(coordRoot);
   if (route.state === "blocked") return { paths: [], complete: false };
   try {
-    const scope = readFinalizationScopeV2(coordRoot, liveInstanceIdV2(instanceId));
+    const scope = readFinalizationScopeV3(coordRoot, liveInstanceIdV3(instanceId));
     return { paths: scope.files_touched, complete: true };
   } catch {
     return { paths: [], complete: false };

@@ -8,7 +8,7 @@
  * (normal responses aren't buffered by the tunnel, only event streams are).
  *
  * `v` is a hash over the mtime+size of everything the SSE route watches:
- * the V2 ledger plus council and journal files.
+ * the V3 ledger plus council and journal files.
  * Just stats, no file-content reads, so it's sub-millisecond per call.
  */
 

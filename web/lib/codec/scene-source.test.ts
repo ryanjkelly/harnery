@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildEventV2 } from "../../../src/core/events/v2/builder";
-import { attestationIdV2, eventIdV2, generationIdV2 } from "../../../src/core/events/v2/ids";
-import type { LiveDisplayRowV2 } from "../../../src/core/events/v2/live-feed";
+import { buildEventV3 } from "../../../src/core/events/v3/builder";
+import { attestationIdV3, eventIdV3, generationIdV3 } from "../../../src/core/events/v3/ids";
+import type { LiveDisplayRowV3 } from "../../../src/core/events/v3/live-feed";
 import {
   CODEC_SCHEMA_VERSION,
   type CodecScene,
@@ -20,15 +20,15 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("Codec V2 ledger tail", () => {
-  test("reads and sanitizes validated V2 rows", async () => {
-    const root = mkdtempSync(join(tmpdir(), "codec-v2-ledger-"));
+describe("Codec V3 ledger tail", () => {
+  test("reads and sanitizes validated V3 rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v3-ledger-"));
     roots.push(root);
-    const v2Path = join(root, "v2.ndjson");
-    const eventId = eventIdV2();
-    const generationId = generationIdV2();
-    const attestationId = attestationIdV2();
-    const v2 = buildEventV2("session.started", {
+    const v3Path = join(root, "v3.ndjson");
+    const eventId = eventIdV3();
+    const generationId = generationIdV3();
+    const attestationId = attestationIdV3();
+    const v3 = buildEventV3("session.started", {
       event_id: eventId,
       producer: {
         producer_id: "prd_codec-fixture",
@@ -82,9 +82,9 @@ describe("Codec V2 ledger tail", () => {
         resume: { state: "not_applicable" },
       },
     });
-    writeFileSync(v2Path, `${JSON.stringify(v2)}\n`);
+    writeFileSync(v3Path, `${JSON.stringify(v3)}\n`);
 
-    const rows = await readSanitizedTails([v2Path]);
+    const rows = await readSanitizedTails([v3Path]);
     expect(rows.map((row) => row.event_id)).toEqual([eventId]);
     expect(rows.map((row) => row.event_type)).toEqual(["session.started"]);
   });
@@ -92,8 +92,8 @@ describe("Codec V2 ledger tail", () => {
 
 describe("Codec live-display overlay", () => {
   test("merges unexpired intent onto matching event ids and strips it for remote", () => {
-    const eventId = eventIdV2();
-    const generationId = generationIdV2();
+    const eventId = eventIdV3();
+    const generationId = generationIdV3();
     const events: CodecSourceEvidence[] = [
       {
         schema_version: 2,
@@ -106,8 +106,8 @@ describe("Codec live-display overlay", () => {
         outcome: "started",
       },
     ];
-    const overlay: LiveDisplayRowV2 = {
-      format: "harnery-event-v2-live-display",
+    const overlay: LiveDisplayRowV3 = {
+      format: "harnery-event-v3-live-display",
       format_version: 1,
       row_id: "live_11111111-1111-4111-8111-111111111111",
       generation_id: generationId,
@@ -205,18 +205,18 @@ describe("Codec live-display overlay", () => {
     const events: CodecSourceEvidence[] = [
       {
         schema_version: 2,
-        event_id: eventIdV2(),
+        event_id: eventIdV3(),
         event_type: "command.started",
         ts: "2026-08-16T10:00:00.000Z",
         instance_id: "inst-1",
       },
     ];
-    const overlay: LiveDisplayRowV2 = {
-      format: "harnery-event-v2-live-display",
+    const overlay: LiveDisplayRowV3 = {
+      format: "harnery-event-v3-live-display",
       format_version: 1,
       row_id: "live_11111111-1111-4111-8111-111111111111",
-      generation_id: generationIdV2(),
-      event_id: eventIdV2(),
+      generation_id: generationIdV3(),
+      event_id: eventIdV3(),
       written_at: "2026-08-16T10:00:00.000Z",
       expires_at: "2026-08-16T10:15:00.000Z",
       intent_display: "Should not attach",

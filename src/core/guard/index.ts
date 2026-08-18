@@ -3,19 +3,19 @@ export type { RunQualityEvaluationResult } from "./coordinator.ts";
 export { evaluateRunQualityIfDue } from "./coordinator.ts";
 export { evaluateRunQuality } from "./evaluator.ts";
 export {
-  isRunQualityCorpusCategoryV2,
-  normalizeRunQualityEventV2,
-  normalizeRunQualityPairingV2,
-} from "./evidence-v2.ts";
+  isRunQualityCorpusCategoryV3,
+  normalizeRunQualityEventV3,
+  normalizeRunQualityPairingV3,
+} from "./evidence-v3.ts";
 export type {
-  RunQualityLiveGenerationV2,
-  RunQualityLiveSourceV2,
-} from "./live-source-v2.ts";
+  RunQualityLiveGenerationV3,
+  RunQualityLiveSourceV3,
+} from "./live-source-v3.ts";
 export {
-  projectRunQualityLiveSourceV2,
-  RunQualityLiveSourceV2Error,
-  readRunQualityLiveSourceV2,
-} from "./live-source-v2.ts";
+  projectRunQualityLiveSourceV3,
+  RunQualityLiveSourceV3Error,
+  readRunQualityLiveSourceV3,
+} from "./live-source-v3.ts";
 export {
   readFreshRunQualitySnapshot,
   readRunQualitySnapshot,
@@ -24,7 +24,7 @@ export type {
   EvaluateRunQualityInput,
   RunQualityConfig,
   RunQualityConfigResult,
-  RunQualityCorpusCategoryV2,
+  RunQualityCorpusCategoryV3,
   RunQualityEvidenceEvent,
   RunQualityMode,
   RunQualityRoleWait,

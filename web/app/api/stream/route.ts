@@ -71,7 +71,7 @@ export function GET(): Response {
         }
       }
 
-      // The active V2 segment is a single file; watch its parent directory.
+      // The active V3 segment is a single file; watch its parent directory.
       const eventsP = eventsPath();
       if (existsSync(path.dirname(eventsP))) {
         try {
@@ -87,7 +87,7 @@ export function GET(): Response {
         }
       }
 
-      // Safety-net filesize poll for the active V2 segment. A directory `fs.watch` does
+      // Safety-net filesize poll for the active V3 segment. A directory `fs.watch` does
       // NOT fire on a plain append to an existing file on Linux/WSL (inotify
       // reports create/rename/delete for a dir watch, not the IN_MODIFY of a
       // child append), so the directory watch catches

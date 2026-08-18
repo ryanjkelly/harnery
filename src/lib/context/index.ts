@@ -154,9 +154,9 @@ function buildSelf(): SelfSection {
   const root = monorepoRoot();
   const hb = root ? readLiveCoordinationRow(root, owner) : null;
   // Full id, never abbreviated: command surfaces pass this identity back to
-  // the authority-safe V2 coordination projection.
+  // the authority-safe V3 coordination projection.
   if (!hb) {
-    throw new Error(`pid-map resolved owner=${owner} but no live V2 generation exists for it`);
+    throw new Error(`pid-map resolved owner=${owner} but no live V3 generation exists for it`);
   }
   const startedMs = Date.parse(hb.started_at ?? "");
   const ageSecs = Number.isFinite(startedMs)

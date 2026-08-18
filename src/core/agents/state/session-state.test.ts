@@ -25,7 +25,7 @@ describe("session state transition table", () => {
     const events = [
       event("session.started", "2026-08-12T10:00:00Z"),
       event("turn.started", "2026-08-12T10:01:00Z"),
-      event("interaction.wait_started", "2026-08-12T10:02:00Z", {
+      event("wait.started", "2026-08-12T10:02:00Z", {
         kind: "approval",
       }),
       event("tool.completed", "2026-08-12T10:03:00Z"),
@@ -35,7 +35,7 @@ describe("session state transition table", () => {
     expect(foldSessionState(events)).toMatchObject({
       activity: "needs_input",
       activity_updated_at: "2026-08-12T10:02:00Z",
-      activity_source: "interaction.wait_started",
+      activity_source: "wait.started",
       task_state: "active",
     });
   });
@@ -43,7 +43,7 @@ describe("session state transition table", () => {
   test("new progress clears an input wait and turn.completed returns to idle", () => {
     const events = [
       event("turn.started", "2026-08-12T10:00:00Z"),
-      event("interaction.wait_started", "2026-08-12T10:01:00Z"),
+      event("wait.started", "2026-08-12T10:01:00Z"),
       event("command.started", "2026-08-12T10:02:00Z"),
       event("turn.completed", "2026-08-12T10:03:00Z"),
     ];
@@ -96,7 +96,7 @@ describe("session state transition table", () => {
     const events = [
       event("turn.started", "2026-08-12T10:00:00Z", {}, "owner-a"),
       event("turn.completed", "2026-08-12T10:00:30Z", {}, "owner-b"),
-      event("interaction.wait_started", "2026-08-12T10:01:00Z", {}, "owner-a"),
+      event("wait.started", "2026-08-12T10:01:00Z", {}, "owner-a"),
     ];
 
     expect(foldSessionState(events, { instance_id: "owner-a" }).activity).toBe("needs_input");

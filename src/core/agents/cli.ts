@@ -124,14 +124,14 @@ async function handleVerdict(root: string): Promise<number> {
 }
 
 async function handleProject(root: string, rest: string[]): Promise<number> {
-  const { resolveLiveEventLedgerRouteV2 } = await import("../events/v2/live-routing.ts");
-  const route = resolveLiveEventLedgerRouteV2(root);
+  const { resolveLiveEventLedgerRouteV3 } = await import("../events/v3/live-routing.ts");
+  const route = resolveLiveEventLedgerRouteV3(root);
   if (route.state === "blocked") {
     process.stderr.write(`agent-coord project: V2 route is unsafe (${route.reason})\n`);
     return 1;
   }
-  const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
-  const view = readCoordinationViewV2(root);
+  const { readCoordinationViewV3 } = await import("../events/v3/coordination-view.ts");
+  const view = readCoordinationViewV3(root);
   const report = {
     contract_major: 2,
     source_complete: view.source_complete,
@@ -165,8 +165,8 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       const before = writer.readHeartbeat(root, owner);
       let hb: ReturnType<typeof writer.setTask>;
       try {
-        const { recordLiveTaskChangeV2 } = await import("./live-authority-v2.ts");
-        recordLiveTaskChangeV2({
+        const { recordLiveTaskChangeV3 } = await import("./live-authority-v3.ts");
+        recordLiveTaskChangeV3({
           coordRoot: root,
           owner,
           nativeSessionId: before?.session_id ?? owner,
@@ -202,8 +202,8 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       const before = writer.readHeartbeat(root, owner);
       let hb: ReturnType<typeof writer.releaseClaim>;
       try {
-        const { recordLiveClaimChangeV2 } = await import("./live-authority-v2.ts");
-        recordLiveClaimChangeV2({
+        const { recordLiveClaimChangeV3 } = await import("./live-authority-v3.ts");
+        recordLiveClaimChangeV3({
           coordRoot: root,
           owner,
           nativeSessionId: before?.session_id ?? owner,
@@ -233,8 +233,8 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         return 2;
       }
       try {
-        const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
-        liveCoordinationWriteModeV2(root);
+        const { liveCoordinationWriteModeV3 } = await import("./live-authority-v3.ts");
+        liveCoordinationWriteModeV3(root);
         writer.healPidmap(root, owner, pid);
       } catch (error) {
         process.stderr.write(
@@ -257,14 +257,14 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       const model = positional[1];
       let hb: import("./state/heartbeat-writer.ts").Heartbeat | null;
       try {
-        const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
-        liveCoordinationWriteModeV2(root);
-        const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
-        const { liveInstanceIdV2 } = await import("../events/v2/live-routing.ts");
-        const projected = readCoordinationViewV2(root).instances[liveInstanceIdV2(owner)];
+        const { liveCoordinationWriteModeV3 } = await import("./live-authority-v3.ts");
+        liveCoordinationWriteModeV3(root);
+        const { readCoordinationViewV3 } = await import("../events/v3/coordination-view.ts");
+        const { liveInstanceIdV3 } = await import("../events/v3/live-routing.ts");
+        const projected = readCoordinationViewV3(root).instances[liveInstanceIdV3(owner)];
         if (projected?.provisional_termination) {
-          const { recordLiveResumeObservationV2 } = await import("./live-lifecycle-v2.ts");
-          recordLiveResumeObservationV2({
+          const { recordLiveResumeObservationV3 } = await import("./live-lifecycle-v3.ts");
+          recordLiveResumeObservationV3({
             coordRoot: root,
             owner,
             nativeSessionId: sessionId ?? owner,
@@ -514,8 +514,8 @@ async function handleStaleSweep(root: string, _rest: string[]): Promise<number> 
 }
 
 async function handleReconcileFinalization(root: string): Promise<number> {
-  const { reconcileSessionFinalizationV2 } = await import("./session-finalizer-v2.ts");
-  const result = reconcileSessionFinalizationV2(root);
+  const { reconcileSessionFinalizationV3 } = await import("./session-finalizer-v3.ts");
+  const result = reconcileSessionFinalizationV3(root);
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result.diagnostics.some((item) => item === "ledger_not_authority_safe") ? 2 : 0;
 }
@@ -523,13 +523,13 @@ async function handleReconcileFinalization(root: string): Promise<number> {
 async function handleEndSession(root: string, rest: string[]): Promise<number> {
   const instanceId = rest[0];
   if (!instanceId || !/^inst_[A-Za-z0-9._-]+$/.test(instanceId)) return 2;
-  const { listHookProducerStateRecordsV2 } = await import("../events/v2/producers/recorder.ts");
-  const record = listHookProducerStateRecordsV2(root, { includeTerminal: false }).find(
+  const { listHookProducerStateRecordsV3 } = await import("../events/v3/producers/recorder.ts");
+  const record = listHookProducerStateRecordsV3(root, { includeTerminal: false }).find(
     ({ state }) => state.instance_id === instanceId,
   );
   if (!record) return 2;
-  const { requestSessionEndExplicitV2 } = await import("./session-finalizer-v2.ts");
-  const result = requestSessionEndExplicitV2({
+  const { requestSessionEndExplicitV3 } = await import("./session-finalizer-v3.ts");
+  const result = requestSessionEndExplicitV3({
     coordRoot: root,
     instance_id: record.state.instance_id,
     generation_id: record.state.generation_id,
@@ -693,8 +693,8 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     return 2;
   }
 
-  const { resolveLiveEventLedgerRouteV2 } = await import("../events/v2/live-routing.ts");
-  const ledgerRoute = resolveLiveEventLedgerRouteV2(root);
+  const { resolveLiveEventLedgerRouteV3 } = await import("../events/v3/live-routing.ts");
+  const ledgerRoute = resolveLiveEventLedgerRouteV3(root);
   if (ledgerRoute.state === "blocked") {
     process.stderr.write(
       `agent-coord emit-event: V2 ledger route is unsafe (${ledgerRoute.reason})\n`,
@@ -711,9 +711,9 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
       process.stderr.write("agent-coord emit-event: invalid V2 lifecycle state\n");
       return 2;
     }
-    const { recordLiveLifecycleChangeV2 } = await import("./live-authority-v2.ts");
+    const { recordLiveLifecycleChangeV3 } = await import("./live-authority-v3.ts");
     try {
-      const routed = recordLiveLifecycleChangeV2({
+      const routed = recordLiveLifecycleChangeV3({
         coordRoot: root,
         owner: instanceId,
         nativeSessionId: sessionId,
@@ -743,9 +743,9 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     eventType === "council.state_changed" ||
     eventType === "decision.state_changed"
   ) {
-    const { recordLiveCoordinationObservationV2 } = await import("./live-observation-v2.ts");
+    const { recordLiveCoordinationObservationV3 } = await import("./live-observation-v3.ts");
     try {
-      const routed = recordLiveCoordinationObservationV2({
+      const routed = recordLiveCoordinationObservationV3({
         coordRoot: root,
         owner: instanceId,
         nativeSessionId: sessionId,
@@ -843,11 +843,11 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
       })?.instance_id;
       if (!owner) return 0;
       const { findGroupClaims } = await import("./state/heartbeat-writer.ts");
-      const { recordLiveClaimChangeV2 } = await import("./live-authority-v2.ts");
+      const { recordLiveClaimChangeV3 } = await import("./live-authority-v3.ts");
       for (const path of paths) {
         try {
           for (const hit of findGroupClaims(root, owner, path)) {
-            recordLiveClaimChangeV2({
+            recordLiveClaimChangeV3({
               coordRoot: root,
               owner,
               subject: hit.instance_id,

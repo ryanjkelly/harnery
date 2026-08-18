@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge";
-import type { AgentLedgerStateV2 } from "@/lib/coord-reader";
+import type { AgentLedgerStateV3 } from "@/lib/coord-reader";
 
 const COPY: Record<
-  AgentLedgerStateV2,
+  AgentLedgerStateV3,
   { label: string; variant: "muted" | "info" | "success"; hint: string }
 > = {
   live: {
@@ -27,7 +27,7 @@ const COPY: Record<
   },
 };
 
-export function AgentLedgerStateBadge({ state }: { state: AgentLedgerStateV2 }) {
+export function AgentLedgerStateBadge({ state }: { state: AgentLedgerStateV3 }) {
   const copy = COPY[state];
   return (
     <Badge variant={copy.variant} title={copy.hint}>

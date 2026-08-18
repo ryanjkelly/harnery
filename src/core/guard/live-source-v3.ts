@@ -1,30 +1,30 @@
 import {
-  type EventV2,
-  type ReadLedgerV2Result,
-  readEventV2ControlState,
-  readLedgerV2,
-  reduceSafetyProjectionV2,
-} from "../events/v2/index.ts";
+  type EventV3,
+  type ReadLedgerV3Result,
+  readEventV3ControlState,
+  readLedgerV3,
+  reduceSafetyProjectionV3,
+} from "../events/v3/index.ts";
 import {
-  isRunQualityCorpusCategoryV2,
-  normalizeRunQualityEventV2,
-  normalizeRunQualityPairingV2,
-} from "./evidence-v2.ts";
+  isRunQualityCorpusCategoryV3,
+  normalizeRunQualityEventV3,
+  normalizeRunQualityPairingV3,
+} from "./evidence-v3.ts";
 import type {
-  RunQualityCorpusCategoryV2,
+  RunQualityCorpusCategoryV3,
   RunQualityEvidenceEvent,
   RunQualityRoleWait,
 } from "./types.ts";
 
-export type RunQualityLiveEpochStateV2 = "candidate" | "active";
+export type RunQualityLiveEpochStateV3 = "candidate" | "active";
 
-export interface RunQualityLiveGenerationV2 {
+export interface RunQualityLiveGenerationV3 {
   instance_id: string;
   session_id: string;
   generation_id: string;
   adapter: string;
   events: RunQualityEvidenceEvent[];
-  corpus_categories: RunQualityCorpusCategoryV2[];
+  corpus_categories: RunQualityCorpusCategoryV3[];
   role_wait: RunQualityRoleWait;
   evidence: {
     first_event_id?: string;
@@ -37,40 +37,40 @@ export interface RunQualityLiveGenerationV2 {
   sufficient_history: boolean;
 }
 
-export interface RunQualityLiveSourceV2 {
-  contract_major: 2;
+export interface RunQualityLiveSourceV3 {
+  contract_major: 3;
   genesis_id: string;
-  epoch_state: RunQualityLiveEpochStateV2;
-  generations: RunQualityLiveGenerationV2[];
+  epoch_state: RunQualityLiveEpochStateV3;
+  generations: RunQualityLiveGenerationV3[];
 }
 
-export class RunQualityLiveSourceV2Error extends Error {
+export class RunQualityLiveSourceV3Error extends Error {
   constructor(
     public readonly code: "control_not_ready" | "ledger_integrity_failure",
     public readonly details: string[],
   ) {
-    super(`run_quality_live_v2:${code}:${details.join(",")}`);
-    this.name = "RunQualityLiveSourceV2Error";
+    super(`run_quality_live_v3:${code}:${details.join(",")}`);
+    this.name = "RunQualityLiveSourceV3Error";
   }
 }
 
 /**
- * Read live advisory inputs from the validated V2 ledger. Candidate epochs are
+ * Read live advisory inputs from the validated V3 ledger. Candidate epochs are
  * observable here for rehearsal, but corpus eligibility remains active-only.
  */
-export function readRunQualityLiveSourceV2(
+export function readRunQualityLiveSourceV3(
   coordRoot: string,
   now: Date = new Date(),
-): RunQualityLiveSourceV2 {
-  const control = readEventV2ControlState(coordRoot);
+): RunQualityLiveSourceV3 {
+  const control = readEventV3ControlState(coordRoot);
   if (control.state !== "candidate" && control.state !== "active") {
-    throw new RunQualityLiveSourceV2Error("control_not_ready", [
+    throw new RunQualityLiveSourceV3Error("control_not_ready", [
       control.state,
       "reason" in control ? control.reason : "unknown",
     ]);
   }
-  return projectRunQualityLiveSourceV2(
-    readLedgerV2(coordRoot),
+  return projectRunQualityLiveSourceV3(
+    readLedgerV3(coordRoot),
     control.genesis.event.payload.genesis_id,
     control.state,
     now,
@@ -78,19 +78,19 @@ export function readRunQualityLiveSourceV2(
 }
 
 /** Pure projection used by the live coordinator and replay-equivalence tests. */
-export function projectRunQualityLiveSourceV2(
-  read: ReadLedgerV2Result,
+export function projectRunQualityLiveSourceV3(
+  read: ReadLedgerV3Result,
   genesisId: string,
-  epochState: RunQualityLiveEpochStateV2,
+  epochState: RunQualityLiveEpochStateV3,
   now: Date,
-): RunQualityLiveSourceV2 {
+): RunQualityLiveSourceV3 {
   if (!read.complete) {
-    throw new RunQualityLiveSourceV2Error("ledger_integrity_failure", [
+    throw new RunQualityLiveSourceV3Error("ledger_integrity_failure", [
       ...new Set(read.diagnostics.map(({ code }) => code)),
     ]);
   }
-  const safety = reduceSafetyProjectionV2(read);
-  const generations: RunQualityLiveGenerationV2[] = [];
+  const safety = reduceSafetyProjectionV3(read);
+  const generations: RunQualityLiveGenerationV3[] = [];
   for (const state of Object.values(safety.generations)) {
     if (state.phase !== "live") continue;
     const positioned = read.events.filter(
@@ -99,18 +99,18 @@ export function projectRunQualityLiveSourceV2(
     );
     const started = positioned.find(({ event }) => event.event_type === "session.started")?.event;
     if (started?.event_type !== "session.started") continue;
-    const prior = new Map<string, EventV2>();
+    const prior = new Map<string, EventV3>();
     const evidenceEvents: RunQualityEvidenceEvent[] = [];
-    const corpusCategories = new Set<RunQualityCorpusCategoryV2>();
+    const corpusCategories = new Set<RunQualityCorpusCategoryV3>();
     for (const { event } of positioned) {
-      for (const normalized of normalizeRunQualityEventV2(event, prior)) {
-        if (isRunQualityCorpusCategoryV2(normalized.kind)) corpusCategories.add(normalized.kind);
+      for (const normalized of normalizeRunQualityEventV3(event, prior)) {
+        if (isRunQualityCorpusCategoryV3(normalized.kind)) corpusCategories.add(normalized.kind);
         else evidenceEvents.push(normalized);
       }
       prior.set(event.event_id, event);
     }
-    for (const marker of normalizeRunQualityPairingV2(positioned.map(({ event }) => event))) {
-      if (isRunQualityCorpusCategoryV2(marker.kind)) corpusCategories.add(marker.kind);
+    for (const marker of normalizeRunQualityPairingV3(positioned.map(({ event }) => event))) {
+      if (isRunQualityCorpusCategoryV3(marker.kind)) corpusCategories.add(marker.kind);
     }
     const first = evidenceEvents[0];
     const last = evidenceEvents.at(-1);
@@ -131,17 +131,17 @@ export function projectRunQualityLiveSourceV2(
         last_event_id: last?.event_id,
         window_started_at: first?.ts,
         window_ended_at: last?.ts,
-        segment: `v2:${lastPosition?.segment_ordinal ?? 0}`,
+        segment: `v3:${lastPosition?.segment_ordinal ?? 0}`,
         truncated: diagnostic,
       },
       sufficient_history: !diagnostic,
     });
   }
   generations.sort((left, right) => left.generation_id.localeCompare(right.generation_id));
-  return { contract_major: 2, genesis_id: genesisId, epoch_state: epochState, generations };
+  return { contract_major: 3, genesis_id: genesisId, epoch_state: epochState, generations };
 }
 
-function observedAdapter(event: Extract<EventV2, { event_type: "session.started" }>): string {
+function observedAdapter(event: Extract<EventV3, { event_type: "session.started" }>): string {
   const adapter = event.payload.runtime_attestation.adapter;
   return adapter.state === "observed" ? adapter.value.id : "unknown";
 }
@@ -166,7 +166,7 @@ function roleWait(
     return {
       role: "agent",
       wait_kind: "none",
-      source: "event_v2",
+      source: "event_v3",
       observed_at: generationStartedAt,
       fresh: false,
     };
@@ -179,7 +179,7 @@ function roleWait(
   return {
     role: "agent",
     wait_kind: current.length > 1 ? "unknown" : waitKind(latest.kind),
-    source: "event_v2",
+    source: "event_v3",
     observed_at: latest.started_at,
     fresh: !scheduledExpired,
     record_id: latest.wait_id,

@@ -33,7 +33,7 @@ export const dynamic = "force-dynamic";
 export default async function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const decoded = decodeURIComponent(id);
-  // The live V2 generation wins. Once it ends, fall back to the durable V2
+  // The live V3 generation wins. Once it ends, fall back to the durable V3
   // terminal record so the hover card never dead-ends at a 404.
   const live = readAgent(decoded);
   const hb = live ?? readEndedAgent(decoded);
@@ -76,7 +76,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>V2 generation</CardTitle>
+              <CardTitle>V3 generation</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-[8rem_1fr] gap-y-1 text-xs">
@@ -161,7 +161,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
           </div>
         ) : (
           <div className="mb-4 rounded-md border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
-            This view is read-only because no live V2 generation is available. Durable lifecycle and
+            This view is read-only because no live V3 generation is available. Durable lifecycle and
             recent activity remain visible.
           </div>
         )}

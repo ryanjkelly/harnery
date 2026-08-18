@@ -14,7 +14,7 @@ export const revalidate = 0;
 export const metadata = { title: "Images · Harnery" };
 
 /**
- * /images: the V2 image-artifact surface. V2 currently retains metadata but
+ * /images: the V3 image-artifact surface. V3 currently retains metadata but
  * not the raw blob key needed for thumbnails, so the page fails closed with a
  * clear availability reason instead of consulting the retired V1 event feed.
  */

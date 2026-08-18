@@ -38,7 +38,7 @@ export async function POST(
     );
   }
 
-  // Post-repair V2 projection so the client can verify the derived cache landed.
+  // Post-repair V3 projection so the client can verify the derived cache landed.
   const after = readAgent(instanceId);
   return Response.json(
     { ok: true, action: `heal-${kind}`, instance_id: instanceId, after },

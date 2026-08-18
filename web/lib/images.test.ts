@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe("readImageCaptures", () => {
-  test("reports the privacy-safe V2 image feed as explicitly unavailable", () => {
+  test("reports the privacy-safe V3 image feed as explicitly unavailable", () => {
     const root = mkdtempSync(join(tmpdir(), "harnery-images-v2-"));
     roots.push(root);
     mkdirSync(join(root, ".harnery"), { recursive: true });

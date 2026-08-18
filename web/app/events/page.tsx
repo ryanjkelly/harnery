@@ -17,7 +17,7 @@ interface PageProps {
 }
 
 /**
- * /events: canonical V2 event-ledger view.
+ * /events: canonical V3 event-ledger view.
  *
  * Server renders the most-recent N rows for first paint, then the client
  * subscribes to `/api/events-stream` for live appends. Both pages
@@ -35,7 +35,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
   const data = readEvents({ limit, instanceId: instanceId ?? undefined });
   const snap = readAgents();
 
-  // Durable instance_id → identity from canonical V2 session events.
+  // Durable instance_id → identity from canonical V3 session events.
   // subagent.start (Agent-tool dispatches). Unlike heartbeats, these persist in
   // the append-only log after a session ends, so a finished agent keeps its
   // name instead of reverting to a raw instance_id. One scan, shared with the

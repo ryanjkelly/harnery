@@ -25,10 +25,10 @@ import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME, pinnedBinName, stripJsonComments } from "../core/config.ts";
 import {
-  initializeEventLedgerV2,
-  readEventV2ControlState,
-  sha256V2,
-} from "../core/events/v2/index.ts";
+  initializeEventLedgerV3,
+  readEventV3ControlState,
+  sha256V3,
+} from "../core/events/v3/index.ts";
 import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
 import {
   commandWiresSubcommand,
@@ -90,8 +90,8 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
         const gitHooks = checkGitHooks(projectRoot);
         if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
-        const ledger = readEventV2ControlState(projectRoot);
-        if (ledger.state !== "active") issues.push(`event ledger V2 is ${ledger.state}`);
+        const ledger = readEventV3ControlState(projectRoot);
+        if (ledger.state !== "active") issues.push(`event ledger V3 is ${ledger.state}`);
         const merged =
           status === "error"
             ? "error"
@@ -149,26 +149,26 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         if (stamp) actions.push(stamp);
       }
 
-      // ── 1d. universal V2 event ledger ────────────────────────────────────
+      // ── 1d. universal V3 event ledger ────────────────────────────────────
       if (dryRun) {
-        const ledger = readEventV2ControlState(projectRoot);
+        const ledger = readEventV3ControlState(projectRoot);
         actions.push(
           ledger.state === "active"
-            ? "· event ledger V2 is active"
-            : `+ would initialize event ledger V2 (current state: ${ledger.state})`,
+            ? "· event ledger V3 is active"
+            : `+ would initialize event ledger V3 (current state: ${ledger.state})`,
         );
       } else {
-        const initialized = initializeEventLedgerV2({
+        const initialized = initializeEventLedgerV3({
           coordRoot: projectRoot,
           harneryBuild: gitBuild(HARNERY_ROOT),
           hostBuild: gitBuild(projectRoot),
           configDigest: digestConfig(resolve(coordDir, "config.jsonc")),
-          approvalRecordId: "harnery-init-v2-universal",
+          approvalRecordId: "harnery-init-v3-universal",
         });
         actions.push(
           initialized.initialized
-            ? "+ initialized event ledger V2"
-            : "· event ledger V2 already active",
+            ? "+ initialized event ledger V3"
+            : "· event ledger V3 already active",
         );
       }
 
@@ -251,7 +251,7 @@ function gitBuild(root: string): string {
 }
 
 function digestConfig(path: string): `sha256:${string}` {
-  return sha256V2(existsSync(path) ? readFileSync(path) : Buffer.from("{}\n"));
+  return sha256V3(existsSync(path) ? readFileSync(path) : Buffer.from("{}\n"));
 }
 
 export function codexHookReviewAction(adapter: AdapterId): string | null {

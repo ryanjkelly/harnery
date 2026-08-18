@@ -11,7 +11,7 @@ import { stableScopeId } from "../../src/core/workflow/scope-id";
 /**
  * Transcript-driven reader for workflow runs (`.harnery/workflows/<run-id>/
  * transcript.jsonl`). The transcript is the source of truth for run structure —
- * the V2 coordination projection only adds live color.
+ * the V3 coordination projection only adds live color.
  */
 
 export interface WorkflowAgentRow {
@@ -104,7 +104,7 @@ interface WorkflowChildGeneration {
 }
 
 /**
- * Workflow-child V2 generations indexed by canonical run id.
+ * Workflow-child V3 generations indexed by canonical run id.
  *
  * Read once per page render and shared across runs: the directory holds one
  * file per *active agent in the repo*, so re-scanning it inside a per-run loop
@@ -129,19 +129,19 @@ export function readWorkflowChildGenerations(root: string): Map<string, Workflow
  * Every child adapter session of a run, live and finished.
  *
  * Both sources are needed, and together they leave no gap: a live child appears
- * only in the V2 coordination projection (the transcript does not learn its session id until
+ * only in the V3 coordination projection (the transcript does not learn its session id until
  * `agent.end`, because the adapter mints the id and only reports it in the
  * result envelope), and a finished child appears only in the transcript (its
  * heartbeat is deleted on session end).
  *
  * This is the join key for run-scoped activity: child sessions write ordinary
  * canonical tool events to the run's coord root, so filtering
- * the V2 ledger to these generation bindings yields what the run actually did.
+ * the V3 ledger to these generation bindings yields what the run actually did.
  */
 export function readWorkflowChildSessions(
   root: string,
   runId: string,
-  /** Root holding the children's V2 ledger, when the run executed in another checkout. */
+  /** Root holding the children's V3 ledger, when the run executed in another checkout. */
   opts: { coordinationRoot?: string } = {},
 ): WorkflowChildSession[] {
   const byId = new Map<string, WorkflowChildSession>();
@@ -159,7 +159,7 @@ export function readWorkflowChildSessions(
   for (const agent of run?.agents ?? []) {
     if (!agent.sessionId) continue;
     const existing = byId.get(agent.sessionId);
-    // The transcript is authoritative for which agent ran a session; the V2 generation
+    // The transcript is authoritative for which agent ran a session; the V3 generation
     // is authoritative for whether it is still running.
     byId.set(agent.sessionId, {
       sessionId: agent.sessionId,
@@ -198,7 +198,7 @@ export function readWorkflowRuns(root: string): WorkflowRunSummary[] {
 export function readWorkflowRun(
   root: string,
   runId: string,
-  /** Pre-read V2 generation index so a list page scans the ledger once per root. */
+  /** Pre-read V3 generation index so a list page scans the ledger once per root. */
   generations?: Map<string, WorkflowChildGeneration[]>,
 ): WorkflowRunSummary | null {
   const transcriptPath = join(root, ".harnery", "workflows", runId, "transcript.jsonl");
