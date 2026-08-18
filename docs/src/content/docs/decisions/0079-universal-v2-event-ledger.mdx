@@ -70,3 +70,11 @@ evidence boundary.
 **Translate historical rows into the current contract.** Earlier records do not
 contain enough exact timing, pairing, capability, privacy, or terminal evidence.
 Inventing those fields would make an audit trail less trustworthy.
+
+## Prospective successor
+
+ADR 0080 defines the span-native V3 contract and in-place additive schema
+advances. V2 remains the only live runtime until V3 completes its candidate,
+canary, rollback, residue, and activation gates. At activation, ADR 0080
+supersedes this ADR's contract-major and schema-evolution rules; sealed V2
+epochs remain audit evidence.

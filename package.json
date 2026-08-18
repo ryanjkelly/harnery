@@ -102,6 +102,11 @@
       "types": "./dist/core/events/v2/index.d.ts",
       "import": "./dist/core/events/v2/index.js"
     },
+    "./core/events/v3": {
+      "bun": "./src/core/events/v3/index.ts",
+      "types": "./dist/core/events/v3/index.d.ts",
+      "import": "./dist/core/events/v3/index.js"
+    },
     "./core/governor/plans": {
       "bun": "./src/core/governor/plan-read.ts",
       "types": "./dist/core/governor/plan-read.d.ts",
@@ -210,7 +215,9 @@
     "verify:contracts": "bun run scripts/sync-verified-contracts.ts",
     "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check",
     "generate:event-v2": "bun run scripts/generate-event-v2-contract.ts",
-    "check:event-v2": "bun run scripts/generate-event-v2-contract.ts --check"
+    "check:event-v2": "bun run scripts/generate-event-v2-contract.ts --check",
+    "generate:event-v3": "bun run scripts/generate-event-v3-contract.ts",
+    "check:event-v3": "bun run scripts/generate-event-v3-contract.ts --check"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

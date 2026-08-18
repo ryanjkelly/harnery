@@ -120,8 +120,16 @@ is not a run-quality status and is not synthesized during snapshot cleanup.
 
 A resolver joins heartbeat identity to workflow run state, approval state,
 durable-work/governor state, and declared workflow role. It returns normalized
-`role`, `wait_kind`, evidence source, and observation time. Wait kinds are
-`none | needs_input | decision | approval | scheduled | unknown`.
+`role`, `wait_kind`, evidence source, and observation time. Active wait kinds
+share ADR 0080's V3 ledger vocabulary:
+`permission | needs_input | decision | approval | scheduled | rate_limit |
+unknown`. `none` means that no wait span is open; it is a projection state,
+not an emitted wait kind.
+
+V3 `wait.started` and `wait.ended` spans are the canonical interval evidence.
+Before V3 activation, the V2 coordination and approval records remain the live
+source and normalize into the same vocabulary. This changes evidence sourcing,
+not the report-only authority boundary in this ADR.
 
 Freshness is wait-kind-specific. `approval` and `decision` are fresh while the
 referenced durable record remains open when re-read at evaluation time.
