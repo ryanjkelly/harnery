@@ -51,7 +51,7 @@ import {
 } from "../events/v2/live-routing.ts";
 import { fetchPresence } from "../presence/index.ts";
 import { stableScopeId } from "../workflow/scope-id.ts";
-import { detectAdapter } from "./adapter/detect.ts";
+import { detectAdapter, shouldSkipHookAdapter } from "./adapter/detect.ts";
 import {
   extractBashCommand,
   extractToolDescription,
@@ -533,6 +533,31 @@ async function main(): Promise<number> {
   const { eventName, extra } = parseArgv(process.argv.slice(2));
   const adapter = detectAdapter(process.argv.slice(2));
   const raw = await readStdin();
+
+  // A Cursor runtime executes the Claude Code project hooks too on hosts wired
+  // for both adapters. That stray `--adapter claude-code` dispatch must not
+  // record (twin generation) or play Claude-Code-only sounds, so it bails here,
+  // before every effect. Cursor's own `--adapter cursor` dispatch of the same
+  // event carries the session.
+  if (shouldSkipHookAdapter(adapter)) {
+    if (coordEnv("AGENT_COORD_OFF") !== "1") {
+      const coordRoot = findCoordRoot(process.cwd());
+      if (coordRoot) {
+        appendDebug(coordRoot, {
+          ts: new Date().toISOString(),
+          event_name: eventName,
+          adapter,
+          extra_argv: extra,
+          payload_bytes: raw.length,
+          cwd: process.cwd(),
+          pid: process.pid,
+          ppid: process.ppid,
+          skipped: "cursor-runtime-claude-adapter",
+        });
+      }
+    }
+    return 0;
+  }
 
   // Kill-switch-INDEPENDENT effects: notification sounds fire BEFORE the
   // HARNERY_AGENT_COORD_OFF gate so audible feedback survives incident-triage
