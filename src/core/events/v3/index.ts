@@ -69,6 +69,16 @@ export {
   type SchemaAdvanceV3,
 } from "./reader.ts";
 export {
+  type CloseSpanV3Input,
+  captureSpanClockV3,
+  closeSpanStateV3,
+  linuxUptimeNanosecondsV3,
+  type OpenSpanStateV3,
+  type OpenSpanV3Input,
+  openSpanStateV3,
+  type SpanClockV3,
+} from "./span-state.ts";
+export {
   assertEventV3,
   type EventV3ValidationResult,
   validateEventV3,
