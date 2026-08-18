@@ -79,6 +79,14 @@ interface ClosedSpanV2 {
   turn_ordinal: number;
 }
 
+interface OpenWaitV2 {
+  wait_id: `hid_${string}`;
+  started_event_id: `evt_${string}`;
+  turn_id: `tid_${string}`;
+  opened_at: string;
+  started_monotonic_ns?: string;
+}
+
 interface PendingEventV2 {
   source_id?: `hid_${string}`;
   event: EventV2;
@@ -112,6 +120,7 @@ export interface HookProducerStateV2 {
   spans: SpanStateV2[];
   delegations: DelegationStateV2[];
   closed_spans: ClosedSpanV2[];
+  waits: OpenWaitV2[];
   turn_ordinal: number;
   pending?: PendingEventV2;
 }
@@ -546,6 +555,14 @@ function processHookSignalLocked(
           input.payload.turn_id,
         ).replace(/^hid_/, "tid_") as `tid_${string}`)
       : undefined;
+
+    closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
+    if (input.signal === "permission-request") {
+      const waitId = waitIdForInput(input, fingerprintContext);
+      if (waitId && state.waits.some((wait) => wait.wait_id === waitId)) {
+        return { state: "ignored" };
+      }
+    }
 
     // Turn-boundary recovery (ADR 0078): a turn terminal is authoritative for
     // the spans it owns. Derived terminals land BEFORE the native turn event.
@@ -1304,6 +1321,7 @@ function newProducerState(
     spans: [],
     delegations: [],
     closed_spans: [],
+    waits: [],
     turn_ordinal: 0,
   };
 }
@@ -1325,6 +1343,23 @@ function applyCommittedEvent(state: HookProducerStateV2, event: EventV2): void {
     );
   }
   if (event.event_type === "tool.requested") state.tool_call_count += 1;
+  if (event.event_type === "interaction.wait_started") {
+    const waitId = (event.payload as { wait_id: `hid_${string}` }).wait_id;
+    const turnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
+    if (!state.waits.some((wait) => wait.wait_id === waitId)) {
+      state.waits.push({
+        wait_id: waitId,
+        started_event_id: event.event_id as `evt_${string}`,
+        turn_id: turnId,
+        opened_at: event.time.observed_at,
+        ...(event.time.monotonic_ns ? { started_monotonic_ns: event.time.monotonic_ns } : {}),
+      });
+    }
+  }
+  if (event.event_type === "interaction.wait_ended") {
+    const waitId = (event.payload as { wait_id: string }).wait_id;
+    state.waits = state.waits.filter((wait) => wait.wait_id !== waitId);
+  }
   if (event.event_type === "tool.completed") {
     const completedSpan = (event.links as { span_id: `span_${string}` }).span_id;
     const closing = state.spans.find((span) => span.span_id === completedSpan);
@@ -1393,6 +1428,85 @@ function sourceIdForSignal(
         `${input.adapter}.hook-source`,
         `${toolSignal ? "tool" : subagentSignal ? "subagent" : input.signal}:${native}`,
       )
+    : undefined;
+}
+
+function closeResolvedWaits(
+  input: RecordHookSignalV2Input,
+  state: HookProducerStateV2,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV2>,
+  nativeTid: `tid_${string}` | undefined,
+): void {
+  const toolResolution =
+    input.signal === "pre-tool-use" ||
+    input.signal === "post-tool-use" ||
+    input.signal === "post-tool-use-failure";
+  const resolvedWaitId = toolResolution ? waitIdForInput(input, fingerprintContext) : undefined;
+  const endingTurnId =
+    input.signal === "stop" || input.signal === "stop-failure"
+      ? (nativeTid ?? state.current_turn_id)
+      : undefined;
+  const waits = state.waits.filter(
+    (wait) => wait.wait_id === resolvedWaitId || wait.turn_id === endingTurnId,
+  );
+  for (const wait of waits) {
+    const outcome = endingTurnId
+      ? "interrupted"
+      : input.signal === "post-tool-use-failure"
+        ? "denied"
+        : "succeeded";
+    const event = buildEventV2("interaction.wait_ended", {
+      producer: {
+        producer_id: input.producer_id,
+        boot_id: state.boot_id,
+        sequence: state.next_sequence,
+        component: "agent-hook",
+        build_id: input.build_id,
+        platform: input.platform,
+        ...(input.bridge ? { bridge: input.bridge } : {}),
+      },
+      scope: {
+        root_id: rootId,
+        instance_id: state.instance_id,
+        session_id: state.session_id,
+        generation_id: state.generation_id,
+        turn_id: wait.turn_id,
+        ...(input.run_id ? { run_id: input.run_id } : {}),
+        ...(input.workflow_id ? { workflow_id: input.workflow_id } : {}),
+        ...(input.workflow_agent_id ? { workflow_agent_id: input.workflow_agent_id } : {}),
+      },
+      attestation_id: state.attestation_id,
+      links: { caused_by: [wait.started_event_id] },
+      provenance: {
+        source_event: `${input.adapter}.permission-resolution`,
+        attestation: "derived",
+        confidence: "high",
+        attribution: {
+          method: "native_payload",
+          state: "verified",
+          subject_instance_id: state.instance_id,
+        },
+      },
+      monotonic_ns: input.monotonic_ns,
+      clock_id: state.clock_id,
+      payload: {
+        wait_id: wait.wait_id,
+        outcome,
+        resolution_reference: endingTurnId ? "turn_terminal" : input.signal,
+      },
+    }) as EventV2;
+    commitEventLocked(input, state, path, event);
+  }
+}
+
+function waitIdForInput(
+  input: RecordHookSignalV2Input,
+  fingerprintContext: ReturnType<typeof fingerprintContextV2>,
+): `hid_${string}` | undefined {
+  return input.payload.tool_use_id
+    ? normalizeNativeIdV2(fingerprintContext, `${input.adapter}.wait`, input.payload.tool_use_id)
     : undefined;
 }
 
@@ -1491,6 +1605,9 @@ function readProducerState(path: string): HookProducerStateV2 {
     state.closed_spans ??= [];
     state.turn_ordinal ??= 0;
   }
+  // Additive format-2 state: existing files predate wait tracking but remain
+  // valid and acquire an empty set on their next read.
+  state.waits ??= [];
   const allowedKeys = new Set([
     "adapter",
     "attestation_id",
@@ -1514,6 +1631,7 @@ function readProducerState(path: string): HookProducerStateV2 {
     "terminal",
     "tool_call_count",
     "turn_ordinal",
+    "waits",
   ]);
   if (
     Object.keys(state).some((key) => !allowedKeys.has(key)) ||
@@ -1567,6 +1685,16 @@ function readProducerState(path: string): HookProducerStateV2 {
         !/^evt_[0-9a-f-]{36}$/.test(closed.closed_event_id) ||
         !Number.isSafeInteger(closed.turn_ordinal) ||
         closed.turn_ordinal < 0,
+    ) ||
+    !Array.isArray(state.waits) ||
+    state.waits.length > 256 ||
+    state.waits.some(
+      (wait) =>
+        !/^hid_[a-f0-9]{64}$/.test(wait.wait_id) ||
+        !/^evt_[0-9a-f-]{36}$/.test(wait.started_event_id) ||
+        !/^tid_[a-f0-9]{64}$/.test(wait.turn_id) ||
+        !Number.isFinite(Date.parse(wait.opened_at)) ||
+        (wait.started_monotonic_ns !== undefined && !/^\d+$/.test(wait.started_monotonic_ns)),
     ) ||
     !Number.isSafeInteger(state.turn_ordinal) ||
     state.turn_ordinal < 0 ||

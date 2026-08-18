@@ -886,6 +886,103 @@ describe("event ledger V2 hook intake spool", () => {
     ).toBe(1);
   });
 
+  test("closes permission waits on a matching tool signal and on turn interruption", () => {
+    const resolvedRoot = candidateRoot();
+    const resolvedSession = "resolved-wait-session";
+    recordHookSignalV2(
+      baseInput(resolvedRoot, "session-start", parsed({ session_id: resolvedSession })),
+    );
+    recordHookSignalV2(
+      baseInput(
+        resolvedRoot,
+        "user-prompt-submit",
+        parsed({ session_id: resolvedSession, turn_id: "turn-1", prompt: "go" }),
+      ),
+    );
+    recordHookSignalV2(
+      baseInput(
+        resolvedRoot,
+        "permission-request",
+        parsed({ session_id: resolvedSession, tool_use_id: "permission-1" }),
+      ),
+    );
+    recordHookSignalV2(
+      baseInput(
+        resolvedRoot,
+        "pre-tool-use",
+        parsed({
+          session_id: resolvedSession,
+          tool_use_id: "permission-1",
+          tool_name: "Bash",
+        }),
+      ),
+    );
+    const resolved = readActiveLedgerV2(resolvedRoot)
+      .events.map(({ event }) => event)
+      .filter(
+        (event) =>
+          event.event_type === "interaction.wait_started" ||
+          event.event_type === "interaction.wait_ended" ||
+          event.event_type === "tool.requested",
+      );
+    expect(resolved.map(({ event_type }) => event_type)).toEqual([
+      "interaction.wait_started",
+      "interaction.wait_ended",
+      "tool.requested",
+    ]);
+    const started = resolved[0];
+    const ended = resolved[1];
+    expect(ended?.payload).toMatchObject({
+      wait_id: (started?.payload as { wait_id: string }).wait_id,
+      outcome: "succeeded",
+      resolution_reference: "pre-tool-use",
+    });
+    expect(readHookProducerStateV2(resolvedRoot, "claude-code", resolvedSession)?.waits).toEqual(
+      [],
+    );
+
+    const interruptedRoot = candidateRoot();
+    const interruptedSession = "interrupted-wait-session";
+    recordHookSignalV2(
+      baseInput(interruptedRoot, "session-start", parsed({ session_id: interruptedSession })),
+    );
+    recordHookSignalV2(
+      baseInput(
+        interruptedRoot,
+        "user-prompt-submit",
+        parsed({ session_id: interruptedSession, turn_id: "turn-1", prompt: "go" }),
+      ),
+    );
+    recordHookSignalV2(
+      baseInput(
+        interruptedRoot,
+        "permission-request",
+        parsed({ session_id: interruptedSession, tool_use_id: "permission-2" }),
+      ),
+    );
+    recordHookSignalV2(
+      baseInput(
+        interruptedRoot,
+        "stop-failure",
+        parsed({ session_id: interruptedSession, turn_id: "turn-1" }),
+      ),
+    );
+    const interrupted = readActiveLedgerV2(interruptedRoot)
+      .events.map(({ event }) => event)
+      .filter(
+        (event) =>
+          event.event_type === "interaction.wait_ended" || event.event_type === "turn.completed",
+      );
+    expect(interrupted.map(({ event_type }) => event_type)).toEqual([
+      "interaction.wait_ended",
+      "turn.completed",
+    ]);
+    expect(interrupted[0]?.payload).toMatchObject({
+      outcome: "interrupted",
+      resolution_reference: "turn_terminal",
+    });
+  });
+
   test("a stop boundary terminalizes the ending turn's stamped spans before turn.completed", () => {
     const root = candidateRoot();
     const nativeSession = "boundary-session";
