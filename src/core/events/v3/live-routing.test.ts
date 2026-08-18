@@ -12,6 +12,7 @@ import {
 import { loadOrCreateFingerprintKeyStoreV3 } from "./fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import {
+  hookSignalV3,
   liveEventV3BuildId,
   liveInstanceIdV3,
   recordLiveHookSignalV3,
@@ -27,6 +28,11 @@ afterEach(() => {
 });
 
 describe("live V3 ledger routing", () => {
+  test("maps Cursor shell fallbacks onto canonical tool signals", () => {
+    expect(hookSignalV3("before-shell-execution")).toBe("pre-tool-use");
+    expect(hookSignalV3("after-shell-execution")).toBe("post-tool-use");
+  });
+
   test("blocks an uninitialized root", () => {
     expect(resolveLiveEventLedgerRouteV3(temporaryRoot())).toEqual({
       state: "blocked",

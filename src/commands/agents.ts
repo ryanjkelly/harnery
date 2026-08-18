@@ -3597,15 +3597,19 @@ function runTrace(
 
   const events = byId.get(resolvedId) ?? [];
   let state = foldSessionState(events, { instance_id: resolvedId });
+  let sessionState: "live" | "ended" = events.some((event) => event.event_type === "session.ended")
+    ? "ended"
+    : "live";
   if (diagnosticRead.source === "v3" && diagnosticRead.authoritative) {
     try {
       const view = projectCoordinationViewV3(readLedgerV3(root));
-      const generation =
-        view.instances[resolvedId] ??
-        Object.values(view.terminal_generations).find(
-          (candidate) => candidate.instance_id === resolvedId,
-        );
+      const liveGeneration = view.instances[resolvedId];
+      const terminalGeneration = Object.values(view.terminal_generations).find(
+        (candidate) => candidate.instance_id === resolvedId,
+      );
+      const generation = liveGeneration ?? terminalGeneration;
       if (generation) {
+        sessionState = terminalGeneration && !liveGeneration ? "ended" : "live";
         const lifecycleState = generation.lifecycle_state;
         state = {
           activity: generation.activity === "terminal" ? "idle" : generation.activity,
@@ -3664,6 +3668,7 @@ function runTrace(
     other_instances: candidateIds.filter((id) => id !== resolvedId),
     pending_finalizations: pendingFinalizations,
     total_events: events.length,
+    session_state: sessionState,
     activity: state.activity,
     activity_updated_at: state.activity_updated_at ?? null,
     activity_source: state.activity_source ?? null,
@@ -3682,7 +3687,7 @@ function runTrace(
   const header = `Trace: agent-${displayName}  (${resolvedId.slice(0, 8)}…)  ${events.length} events${result.other_instances.length ? ` · ${result.other_instances.length} older instance(s) of this name` : ""}`;
   process.stdout.write(`${header}\n`); // lint-ok-emission: human trace view
   process.stdout.write(
-    `  activity=${state.activity} · lifecycle=${state.task_state}${state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
+    `  activity=${state.activity} · session=${sessionState} · lifecycle=${state.task_state}${state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
   ); // lint-ok-emission: human trace view
   if (!diagnosticRead.authoritative) {
     process.stdout.write(`  unavailable: ${diagnosticRead.reason ?? "event source incomplete"}\n`); // lint-ok-emission: explicit no-fallback diagnostic

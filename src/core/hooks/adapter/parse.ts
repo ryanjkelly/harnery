@@ -55,6 +55,13 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
   const sessionId = normalizeSessionId(adapter, pickStr(json, "session_id"));
   const conversationId = normalizeSessionId(adapter, pickStr(json, "conversation_id"));
   const parentSessionId = normalizeSessionId(adapter, pickStr(json, "parent_session_id"));
+  const hookEventName = pickStr(json, "hook_event_name");
+  const cursorGenerationId = adapter === "cursor" ? pickStr(json, "generation_id") : undefined;
+  const cursorShellHook =
+    adapter === "cursor" &&
+    (hookEventName === "beforeShellExecution" || hookEventName === "afterShellExecution");
+  const cursorCommand = cursorShellHook ? pickStr(json, "command") : undefined;
+  const normalizedToolInput = normalizeToolInput(json.tool_input, adapter);
   const normalizedRaw =
     adapter === "cursor"
       ? {
@@ -66,7 +73,7 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
       : json;
 
   return {
-    hook_event_name: pickStr(json, "hook_event_name"),
+    hook_event_name: hookEventName,
     session_id: sessionId,
     agent_id: pickStr(json, "agent_id"),
     subagent_id: pickStr(json, "subagent_id"),
@@ -74,7 +81,7 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     parent_session_id: parentSessionId,
     // Claude Code names its native turn identifier prompt_id; both are the
     // adapter's turn-scoped id and feed native turn stamping (ADR 0078).
-    turn_id: pickStr(json, "turn_id") ?? pickStr(json, "prompt_id"),
+    turn_id: pickStr(json, "turn_id") ?? pickStr(json, "prompt_id") ?? cursorGenerationId,
     parent_turn_id: pickStr(json, "parent_turn_id"),
     transcript_path: pickStr(json, "transcript_path"),
     cwd: pickStr(json, "cwd"),
@@ -82,9 +89,9 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     model: pickStr(json, "model"),
     source: pickStr(json, "source"),
     prompt: pickStr(json, "prompt"),
-    tool_name: pickStr(json, "tool_name"),
-    tool_input: json.tool_input,
-    tool_response: json.tool_response,
+    tool_name: cursorShellHook ? "Shell" : pickStr(json, "tool_name"),
+    tool_input: cursorCommand ? { command: cursorCommand } : normalizedToolInput,
+    tool_response: hookEventName === "afterShellExecution" ? json.output : json.tool_response,
     tool_use_id: pickStr(json, "tool_use_id"),
     stop_hook_active: pickBool(json, "stop_hook_active"),
     clean_exit: pickBool(json, "clean_exit"),
@@ -92,6 +99,16 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     reason: pickStr(json, "reason"),
     raw: normalizedRaw,
   };
+}
+
+/** Cursor can serialize generic tool_input as a JSON string instead of an object. */
+function normalizeToolInput(value: unknown, adapter: Adapter): unknown {
+  if (adapter !== "cursor" || typeof value !== "string") return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
 }
 
 /** Cursor Glass prefixes conversation ids with `bc-`; coordination uses the bare id everywhere. */
@@ -153,8 +170,8 @@ function pickBool(o: Record<string, unknown>, k: string): boolean | undefined {
  * Map the CLI-arg event-name (kebab-case, set by us in the wiring) to one of
  * the canonical event_types. Phase 2's CLI passes the kebab event
  * name; this returns the canonical event_type or null when the event has no
- * canonical equivalent (e.g. Cursor's before-shell-execution duplicates
- * pre-tool-use semantically, so we route both to `tool.requested`).
+ * canonical equivalent. Cursor's shell-specific hooks are retained as reliable
+ * remote/CLI fallbacks and normalized to the same tool events as generic hooks.
  */
 export function normalizeEventName(
   eventName: string,
@@ -180,6 +197,7 @@ export function normalizeEventName(
     case "permission-request":
       return { event_type: "wait.started", intra_turn: true };
     case "post-tool-use":
+    case "after-shell-execution":
     case "post-tool-use-failure":
       return { event_type: "tool.completed", intra_turn: true };
     case "pre-compact":

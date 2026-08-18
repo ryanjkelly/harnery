@@ -16,7 +16,7 @@ import {
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
-import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
@@ -38,10 +38,7 @@ import {
   openSpanStateV3,
   type SpanClockV3,
 } from "../span-state.ts";
-import {
-  type ContextMeasurementV3,
-  extractTurnTelemetryV3,
-} from "../turn-telemetry.ts";
+import { type ContextMeasurementV3, extractTurnTelemetryV3 } from "../turn-telemetry.ts";
 import { assertEventV3, validateEventV3 } from "../validate.ts";
 import {
   EVENT_V3_LEDGER_RELATIVE_ROOT,
@@ -72,10 +69,11 @@ const SPAN_SOFT_WATERMARK = 128;
  * Kept in code, outside the digested capability profiles, so tuning recovery
  * never changes an adapter capability digest (ADR 0078).
  */
-const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<Adapter> = new Set(["claude-code", "codex"]);
+const RECOVERY_ENABLED_ADAPTERS: ReadonlySet<Adapter> = new Set(["claude-code", "codex", "cursor"]);
 
 interface SpanStateV3 extends OpenSpanStateV3 {
   source_id: `hid_${string}`;
+  semantic_key?: `hid_${string}`;
   recovery_reason?: string;
   turn_id?: `tid_${string}`;
   turn_stamp?: "native_payload" | "producer_state";
@@ -85,6 +83,7 @@ interface SpanStateV3 extends OpenSpanStateV3 {
 
 interface ClosedSpanV3 {
   source_id: `hid_${string}`;
+  semantic_key?: `hid_${string}`;
   span_id: `span_${string}`;
   closed_event_id: `evt_${string}`;
   turn_ordinal: number;
@@ -633,10 +632,18 @@ function processHookSignalLocked(
       );
     }
 
-    const sourceId = sourceIdForSignal(input, rootFingerprintContext);
+    let sourceId = sourceIdForSignal(input, rootFingerprintContext);
+    const semanticKey = cursorShellSemanticKey(input, rootFingerprintContext);
     let span: SpanStateV3 | undefined;
     let delegation: DelegationStateV3 | undefined;
     if (input.signal === "pre-tool-use") {
+      span = semanticKey
+        ? state.spans.find((candidate) => candidate.semantic_key === semanticKey)
+        : undefined;
+      if (span?.requested_event_id) return { state: "ignored" };
+      if (!sourceId && semanticKey) {
+        sourceId = cursorShellFallbackSourceId(semanticKey, state, rootFingerprintContext);
+      }
       if (!sourceId) return unpairableTool(input, sessionHash, "missing_tool_use_id");
       if (state.closed_spans.some((closed) => closed.source_id === sourceId)) {
         // A late pre for a closed span must never open a fresh span: that is
@@ -654,7 +661,8 @@ function processHookSignalLocked(
           "span_cap_pressure",
         );
       }
-      span = state.spans.find((candidate) => candidate.source_id === sourceId);
+      span ??= state.spans.find((candidate) => candidate.source_id === sourceId);
+      if (span?.requested_event_id) return { state: "ignored" };
       if (!span) {
         const opened = openSpanStateV3({
           span_id: spanIdV3(),
@@ -664,15 +672,31 @@ function processHookSignalLocked(
         });
         span = {
           source_id: sourceId,
+          ...(semanticKey ? { semantic_key: semanticKey } : {}),
           ...opened,
           ...(input.payload.tool_name ? { tool_name: safeRole(input.payload.tool_name) } : {}),
         };
         state.spans.push(span);
       }
     } else if (input.signal === "post-tool-use" || input.signal === "post-tool-use-failure") {
+      span = sourceId
+        ? state.spans.find((candidate) => candidate.source_id === sourceId)
+        : undefined;
+      span ??= semanticKey
+        ? state.spans.find((candidate) => candidate.semantic_key === semanticKey)
+        : undefined;
+      if (span) sourceId = span.source_id;
+      if (!sourceId && semanticKey) {
+        sourceId = cursorShellFallbackSourceId(semanticKey, state, rootFingerprintContext);
+      }
       if (!sourceId) return unpairableTool(input, sessionHash, "missing_tool_use_id");
-      span = state.spans.find((candidate) => candidate.source_id === sourceId);
       if (!span) {
+        if (
+          semanticKey &&
+          state.closed_spans.some((closed) => closed.semantic_key === semanticKey)
+        ) {
+          return { state: "ignored" };
+        }
         if (state.closed_spans.some((closed) => closed.source_id === sourceId)) {
           return suppressClosedSpanSignal(input, sessionHash, "late_post_suppressed");
         }
@@ -687,6 +711,7 @@ function processHookSignalLocked(
         });
         span = {
           source_id: sourceId,
+          ...(semanticKey ? { semantic_key: semanticKey } : {}),
           ...opened,
           recovery_reason: "request_not_observed",
           ...(input.payload.tool_name ? { tool_name: safeRole(input.payload.tool_name) } : {}),
@@ -1258,11 +1283,9 @@ export function recordApprovedSessionEndV3(
     const missing = expected.filter((field) => !observedSet.has(field));
     const causedBy = [
       ...new Set(
-        [
-          state.last_event_id,
-          input.caused_by_event_id,
-          state.session_span.open_event_id,
-        ].filter(Boolean),
+        [state.last_event_id, input.caused_by_event_id, state.session_span.open_event_id].filter(
+          Boolean,
+        ),
       ),
     ] as [`evt_${string}`, ...`evt_${string}`[]] | [];
     const event = buildEventV3("session.ended", {
@@ -1625,9 +1648,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
         started_event_id: event.event_id as `evt_${string}`,
         turn_id: turnId,
         span_id: waitLinks.span_id,
-        ...(waitLinks.parent_span_id
-          ? { parent_span_id: waitLinks.parent_span_id }
-          : {}),
+        ...(waitLinks.parent_span_id ? { parent_span_id: waitLinks.parent_span_id } : {}),
         opened_at: event.time.observed_at,
         boot_id: state.boot_id,
         ...(event.time.monotonic_ns ? { opened_monotonic_ns: event.time.monotonic_ns } : {}),
@@ -1645,6 +1666,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
     if (closing) {
       state.closed_spans.push({
         source_id: closing.source_id,
+        ...(closing.semantic_key ? { semantic_key: closing.semantic_key } : {}),
         span_id: closing.span_id,
         closed_event_id: event.event_id as `evt_${string}`,
         turn_ordinal: state.turn_ordinal,
@@ -1716,6 +1738,29 @@ function sourceIdForSignal(
         `${toolSignal ? "tool" : subagentSignal ? "subagent" : input.signal}:${native}`,
       )
     : undefined;
+}
+
+function cursorShellSemanticKey(
+  input: RecordHookSignalV3Input,
+  context: ReturnType<typeof fingerprintContextV3>,
+): `hid_${string}` | undefined {
+  if (input.adapter !== "cursor") return undefined;
+  const command = extractBashCommand(input.payload.tool_name, input.payload.tool_input);
+  return command
+    ? normalizeNativeIdV3(context, "cursor.shell-operation", command.normalize("NFC"))
+    : undefined;
+}
+
+function cursorShellFallbackSourceId(
+  semanticKey: `hid_${string}`,
+  state: HookProducerStateV3,
+  context: ReturnType<typeof fingerprintContextV3>,
+): `hid_${string}` {
+  return normalizeNativeIdV3(
+    context,
+    "cursor.hook-source",
+    `shell:${semanticKey}:${state.turn_ordinal}:${state.tool_call_count}`,
+  );
 }
 
 function closeResolvedWaits(
@@ -1806,7 +1851,9 @@ function waitIdForInput(
     : undefined;
 }
 
-function signalClock(input: Pick<RecordHookSignalV3Input, "observed_at" | "monotonic_ns">): SpanClockV3 {
+function signalClock(
+  input: Pick<RecordHookSignalV3Input, "observed_at" | "monotonic_ns">,
+): SpanClockV3 {
   return {
     observed_at: input.observed_at ?? new Date().toISOString(),
     ...(input.monotonic_ns ? { monotonic_ns: input.monotonic_ns } : {}),
@@ -1986,6 +2033,7 @@ function readProducerState(path: string): HookProducerStateV3 {
           span.turn_stamp !== "producer_state") ||
         (span.requested_event_id !== undefined &&
           !/^evt_[0-9a-f-]{36}$/.test(span.requested_event_id)) ||
+        (span.semantic_key !== undefined && !/^hid_[a-f0-9]{64}$/.test(span.semantic_key)) ||
         (span.tool_name !== undefined &&
           !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(span.tool_name)),
     ) ||
@@ -1994,6 +2042,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     state.closed_spans.some(
       (closed) =>
         !/^hid_[a-f0-9]{64}$/.test(closed.source_id) ||
+        (closed.semantic_key !== undefined && !/^hid_[a-f0-9]{64}$/.test(closed.semantic_key)) ||
         !/^span_[0-9a-f-]{36}$/.test(closed.span_id) ||
         !/^evt_[0-9a-f-]{36}$/.test(closed.closed_event_id) ||
         !Number.isSafeInteger(closed.turn_ordinal) ||

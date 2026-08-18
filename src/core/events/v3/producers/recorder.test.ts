@@ -409,7 +409,135 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(events.every((event) => event.scope.instance_id === "inst_fixture")).toBeTrue();
   });
 
-  test("refuses unsupported Codex terminal authority even if a stale hook invokes it", () => {
+  test("onboards Cursor when its first prompt arrives before sessionStart", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-prompt-first";
+    const prompt = recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({
+          conversation_id: nativeSession,
+          turn_id: "cursor-turn-one",
+          prompt: "pick one item",
+        }),
+        "cursor",
+      ),
+    );
+    const lateStart = recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ conversation_id: nativeSession }), "cursor"),
+    );
+
+    expect(prompt.state).toBe("recorded");
+    expect(lateStart.state).toBe("already_started");
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.map((event) => event.event_type)).toEqual([
+      "ledger.genesis",
+      "session.started",
+      "turn.started",
+    ]);
+    const started = events.find((event) => event.event_type === "session.started");
+    expect(started?.provenance).toMatchObject({
+      attestation: "derived",
+      confidence: "medium",
+    });
+  });
+
+  test("deduplicates Cursor generic and shell fallback hooks and counts repeated commands", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-shell-fallback";
+    const command = "harn agents status --end-turn";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ conversation_id: nativeSession }), "cursor"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ conversation_id: nativeSession, turn_id: "cursor-turn" }),
+        "cursor",
+      ),
+    );
+    const shellPayload = parsed({
+      conversation_id: nativeSession,
+      turn_id: "cursor-turn",
+      tool_name: "Shell",
+      tool_input: { command },
+      raw: { hook_event_name: "beforeShellExecution", command },
+    });
+    const genericPayload = parsed({
+      conversation_id: nativeSession,
+      turn_id: "cursor-turn",
+      tool_use_id: "cursor-tool-one",
+      tool_name: "Shell",
+      tool_input: { command },
+      raw: { hook_event_name: "preToolUse" },
+    });
+
+    expect(recordHookSignalV3(baseInput(root, "pre-tool-use", shellPayload, "cursor")).state).toBe(
+      "recorded",
+    );
+    expect(recordHookSignalV3(baseInput(root, "pre-tool-use", genericPayload, "cursor"))).toEqual({
+      state: "ignored",
+    });
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "post-tool-use",
+          parsed({
+            ...shellPayload,
+            tool_response: "ok",
+            raw: { hook_event_name: "afterShellExecution", command, output: "ok" },
+          }),
+          "cursor",
+        ),
+      ).state,
+    ).toBe("recorded");
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "post-tool-use",
+          parsed({ ...genericPayload, tool_response: "ok" }),
+          "cursor",
+        ),
+      ),
+    ).toEqual({ state: "ignored" });
+
+    // The same command in the same turn is a new call after the first closes.
+    expect(recordHookSignalV3(baseInput(root, "pre-tool-use", shellPayload, "cursor")).state).toBe(
+      "recorded",
+    );
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "post-tool-use",
+          parsed({ ...shellPayload, tool_response: "ok" }),
+          "cursor",
+        ),
+      ).state,
+    ).toBe("recorded");
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ conversation_id: nativeSession, turn_id: "cursor-turn" }),
+        "cursor",
+      ),
+    );
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.filter((event) => event.event_type === "tool.requested")).toHaveLength(2);
+    expect(events.filter((event) => event.event_type === "tool.completed")).toHaveLength(2);
+    const stopped = events.find((event) => event.event_type === "turn.completed");
+    expect(
+      stopped?.event_type === "turn.completed" && stopped.payload.tool_call_count,
+    ).toMatchObject({ state: "observed", value: 2 });
+  });
+
+  test("records supported native Codex terminal authority", () => {
     const root = candidateRoot("codex");
     const nativeSession = "codex-session";
     expect(
@@ -425,11 +553,12 @@ describe("event ledger V3 persistent hook recorder", () => {
           parsed({ session_id: nativeSession, clean_exit: true }),
           "codex",
         ),
-      ),
-    ).toEqual({ state: "gate_closed", reason: "signal_not_approved:session_end" });
+      ).state,
+    ).toBe("recorded");
     expect(readLedgerV3(root).events.map(({ event }) => event.event_type)).toEqual([
       "ledger.genesis",
       "session.started",
+      "session.ended",
     ]);
   });
 
@@ -896,7 +1025,7 @@ describe("event ledger V3 hook intake spool", () => {
     expect(ledger.events.map(({ event }) => event.event_type)).toContain("turn.started");
   });
 
-  test("an unpairable post on a recovery-disabled adapter is preserved in diagnostics with content redacted", () => {
+  test("an unidentified Cursor post is preserved in diagnostics with content redacted", () => {
     const root = candidateRoot("cursor");
     const nativeSession = "unpairable-session";
     recordHookSignalV3(
@@ -908,20 +1037,17 @@ describe("event ledger V3 hook intake spool", () => {
         "post-tool-use",
         parsed({
           session_id: nativeSession,
-          tool_use_id: "never-seen",
-          tool_name: "Bash",
           tool_response: { output: "RAW_TOOL_OUTPUT_SECRET" },
         }),
         "cursor",
       ),
     );
-    expect(result).toEqual({ state: "unpairable_tool", reason: "no_open_span" });
+    expect(result).toEqual({ state: "unpairable_tool", reason: "missing_tool_use_id" });
     const files = diagnosticsFiles(root).filter((name) => name.startsWith("unpairable_tool-"));
     expect(files.length).toBe(1);
     const contents = readFileSync(join(root, LEDGER_ROOT, "diagnostics", files[0]!), "utf8");
     expect(contents).not.toContain("RAW_TOOL_OUTPUT_SECRET");
-    expect(contents).toContain("no_open_span");
-    expect(contents).not.toContain("never-seen");
+    expect(contents).toContain("missing_tool_use_id");
     expect(contents).toContain("sha256");
   });
 
@@ -1069,8 +1195,7 @@ describe("event ledger V3 hook intake spool", () => {
     const interrupted = readLedgerV3(interruptedRoot)
       .events.map(({ event }) => event)
       .filter(
-        (event) =>
-          event.event_type === "wait.ended" || event.event_type === "turn.completed",
+        (event) => event.event_type === "wait.ended" || event.event_type === "turn.completed",
       );
     expect(interrupted.map(({ event_type }) => event_type)).toEqual([
       "wait.ended",

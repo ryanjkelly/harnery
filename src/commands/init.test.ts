@@ -98,7 +98,7 @@ describe("wireHooks: Claude Code", () => {
 });
 
 describe("wireHooks: Cursor", () => {
-  test("uses the flat entry shape, sets version, and omits duplicate shell + StopFailure hooks", () => {
+  test("uses the flat entry shape, sets version, and installs shell fallbacks without StopFailure", () => {
     const settings: Record<string, unknown> = {};
     const { wired, already } = wireHooks(settings as never, CURSOR, HOOK, "cursor");
     expect(wired).toBe(CURSOR.events.length);
@@ -108,7 +108,12 @@ describe("wireHooks: Cursor", () => {
     // Flat `{ command }`, no inner `hooks` array.
     expect(hooks.stop[0]).toEqual({ command: `bash ${HOOK} stop --adapter cursor` });
     expect(hooks.preCompact[0]).toEqual({ command: `bash ${HOOK} pre-compact --adapter cursor` });
-    expect(hooks.beforeShellExecution).toBeUndefined();
+    expect(hooks.beforeShellExecution[0]).toEqual({
+      command: `bash ${HOOK} before-shell-execution --adapter cursor`,
+    });
+    expect(hooks.afterShellExecution[0]).toEqual({
+      command: `bash ${HOOK} after-shell-execution --adapter cursor`,
+    });
     expect(hooks.StopFailure).toBeUndefined(); // Cursor has no StopFailure event
   });
 
@@ -122,7 +127,7 @@ describe("wireHooks: Cursor", () => {
     expect(hooks.stop.length).toBe(1); // not duplicated
   });
 
-  test("removes the superseded shell-specific hook", () => {
+  test("keeps the canonical shell fallback and preserves unrelated commands", () => {
     const settings = {
       version: 1,
       hooks: {
@@ -133,8 +138,9 @@ describe("wireHooks: Cursor", () => {
       },
     };
     const result = wireHooks(settings as never, CURSOR, HOOK, "cursor");
-    expect(result.removed).toBe(1);
+    expect(result.removed).toBe(0);
     expect(settings.hooks.beforeShellExecution).toEqual([
+      { command: `bash ${HOOK} before-shell-execution --adapter cursor` },
       { command: "bash scripts/hooks/host-shell-check" },
     ]);
   });

@@ -66,6 +66,8 @@ export function hookSignalV3(eventName: string): HookSignalV3 | undefined {
       return eventName;
     case "before-shell-execution":
       return "pre-tool-use";
+    case "after-shell-execution":
+      return "post-tool-use";
     default:
       return undefined;
   }
@@ -114,4 +116,3 @@ export function livePlatformV3(): "linux" | "windows" | "macos" | "unknown" {
   if (process.platform === "darwin") return "macos";
   return "unknown";
 }
-

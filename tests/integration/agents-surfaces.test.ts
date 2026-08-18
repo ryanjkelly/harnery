@@ -14,6 +14,10 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import {
+  readHookProducerStateV3,
+  recordApprovedSessionEndV3,
+} from "../../src/core/events/v3/producers/recorder.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
@@ -150,7 +154,45 @@ describe("harn agents state surfaces", () => {
     expect(entries.some((entry) => entry.event_type === "wait.started")).toBe(true);
     expect(entries.some((entry) => entry.event_type === "coord.lifecycle_changed")).toBe(true);
     const human = harn(root, ["agents", "trace", "Hollis"]);
-    expect(human.stdout).toContain("activity=needs_input · lifecycle=blocked");
+    expect(human.stdout).toContain("activity=needs_input · session=live · lifecycle=blocked");
+  });
+
+  test("trace labels an ended session separately from its durable work lifecycle", () => {
+    const root = makeSandbox();
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected active V3 route");
+    recordLiveHookSignalV3({
+      coordRoot: root,
+      route,
+      eventName: "stop",
+      payload: { session_id: OWNER, turn_id: "turn-surface", raw: {} },
+      adapter: "codex",
+      instanceId: OWNER,
+    });
+    const state = readHookProducerStateV3(root, "codex", OWNER);
+    if (!state) throw new Error("expected producer state");
+    expect(
+      recordApprovedSessionEndV3({
+        coordRoot: root,
+        mode: "active",
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        build_id: route.build_id,
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+
+    expect(json(harn(root, ["agents", "trace", "Hollis", "--json"]))).toMatchObject({
+      session_state: "ended",
+      activity: "idle",
+      task_state: "blocked",
+    });
+    expect(harn(root, ["agents", "trace", "Hollis"]).stdout).toContain(
+      "activity=idle · session=ended · lifecycle=blocked",
+    );
   });
 
   test("an incomplete disposable cache cannot override V3 evidence", () => {

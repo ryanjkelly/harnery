@@ -70,9 +70,10 @@ export const CLAUDE_CODE_EVENTS: HookEvent[] = [
 
 /**
  * Cursor: `.cursor/hooks.json`. camelCase event keys; flat `{ command }` entries;
- * no `StopFailure` event. Current Cursor exposes generic `preToolUse`, so the
- * older shell-specific `beforeShellExecution` entry is retired to avoid
- * delivering the same shell call twice as V3 `tool.requested`.
+ * no `StopFailure` event. Generic tool hooks remain useful in the IDE, while
+ * shell-specific hooks are also installed because remote/CLI modes do not
+ * dispatch generic tool hooks consistently. V3 deduplicates overlapping shell
+ * deliveries by a private command fingerprint.
  */
 export const CURSOR_EVENTS: HookEvent[] = [
   { settingsKey: "sessionStart", subcommand: "session-start" },
@@ -80,16 +81,13 @@ export const CURSOR_EVENTS: HookEvent[] = [
   { settingsKey: "preToolUse", subcommand: "pre-tool-use" },
   { settingsKey: "postToolUse", subcommand: "post-tool-use" },
   { settingsKey: "postToolUseFailure", subcommand: "post-tool-use-failure" },
+  { settingsKey: "beforeShellExecution", subcommand: "before-shell-execution" },
+  { settingsKey: "afterShellExecution", subcommand: "after-shell-execution" },
   { settingsKey: "subagentStart", subcommand: "sub-agent-start" },
   { settingsKey: "subagentStop", subcommand: "sub-agent-stop" },
   { settingsKey: "beforeSubmitPrompt", subcommand: "user-prompt-submit" },
   { settingsKey: "preCompact", subcommand: "pre-compact" },
   { settingsKey: "stop", subcommand: "stop" },
-];
-
-/** Cursor entries superseded by a generic lifecycle hook with the same meaning. */
-export const LEGACY_CURSOR_EVENTS: HookEvent[] = [
-  { settingsKey: "beforeShellExecution", subcommand: "before-shell-execution" },
 ];
 
 /** Codex events that harnery uses from the current native lifecycle surface. */
@@ -141,7 +139,6 @@ export const ADAPTER_SPECS: Record<AdapterId, AdapterSpec> = {
     events: CURSOR_EVENTS,
     entryShape: "cursor",
     rootVersion: 1,
-    legacyEvents: LEGACY_CURSOR_EVENTS,
   },
   codex: {
     settingsFile: ".codex/hooks.json",

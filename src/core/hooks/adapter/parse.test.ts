@@ -41,6 +41,55 @@ describe("parsePayload session ids", () => {
   });
 });
 
+describe("Cursor shell hook payloads", () => {
+  test("normalizes shell fallbacks into pairable tool payloads", () => {
+    const before = parsePayload(
+      JSON.stringify({
+        conversation_id: "cursor-session",
+        generation_id: "cursor-turn",
+        hook_event_name: "beforeShellExecution",
+        command: "harn agents status --end-turn",
+      }),
+      "cursor",
+    );
+    const after = parsePayload(
+      JSON.stringify({
+        conversation_id: "cursor-session",
+        generation_id: "cursor-turn",
+        hook_event_name: "afterShellExecution",
+        command: "harn agents status --end-turn",
+        output: "ok",
+      }),
+      "cursor",
+    );
+
+    expect(before).toMatchObject({
+      turn_id: "cursor-turn",
+      tool_name: "Shell",
+      tool_input: { command: "harn agents status --end-turn" },
+    });
+    expect(after).toMatchObject({
+      turn_id: "cursor-turn",
+      tool_name: "Shell",
+      tool_input: { command: "harn agents status --end-turn" },
+      tool_response: "ok",
+    });
+    expect(normalizeEventName("after-shell-execution")).toEqual({
+      event_type: "tool.completed",
+      intra_turn: true,
+    });
+  });
+
+  test("parses stringified generic tool input", () => {
+    expect(
+      parsePayload(
+        JSON.stringify({ tool_name: "Shell", tool_input: '{"command":"harn doctor"}' }),
+        "cursor",
+      ),
+    ).toMatchObject({ tool_input: { command: "harn doctor" } });
+  });
+});
+
 describe("Codex PermissionRequest contract fixture", () => {
   test("normalizes verified adapter evidence to wait.started", () => {
     const raw = readFileSync(
