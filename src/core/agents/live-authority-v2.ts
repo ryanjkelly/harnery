@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Adapter } from "../adapter.ts";
 import type { AuthorityMutationV2 } from "../events/v2/authority-outbox.ts";
 import { canonicalJsonV2, sha256V2 } from "../events/v2/canonical.ts";
 import type { EventV2WriteMode } from "../events/v2/control.ts";
@@ -15,19 +16,20 @@ import {
   type RecordCoordinationAuthorityV2Result,
   recordCoordinationAuthorityV2,
 } from "../events/v2/producers/coordination-recorder.ts";
-import type { Adapter } from "../hooks/events/schema.ts";
 import {
   acquireClaim,
   type Heartbeat,
   readHeartbeat,
   releaseClaim,
+  setIdentityCache,
+  setLifecycleCache,
   setTask,
-  stampSessionStateEvent,
 } from "./state/heartbeat-writer.ts";
 import {
   ensureLiveCoordinationHeartbeat,
   liveCoordinationAdapterV2,
 } from "./state/live-coordination-view.ts";
+import { recordNameAssumption } from "./state/names.ts";
 
 export const LIVE_COORDINATION_V2_PRODUCER_ID = "prd_agent-coord" as const;
 
@@ -39,7 +41,6 @@ export class LiveCoordinationAuthorityV2Error extends Error {
 }
 
 export type LiveCoordinationAuthorityV2Result =
-  | { state: "v1" }
   | { state: "unchanged" }
   | { state: "recorded"; result: RecordCoordinationAuthorityV2Result };
 
@@ -55,7 +56,7 @@ interface LiveAuthorityBaseV2 {
 export function recordLiveTaskChangeV2(
   input: LiveAuthorityBaseV2 & { task: string },
 ): LiveCoordinationAuthorityV2Result {
-  if (liveCoordinationWriteModeV2(input.coordRoot) === "v1") return { state: "v1" };
+  liveCoordinationWriteModeV2(input.coordRoot);
   const before = requireHeartbeat(input, input.subject ?? input.owner);
   const cleared = input.task.length === 0;
   const desired = {
@@ -94,19 +95,20 @@ export function recordLiveLifecycleChangeV2(
   input: LiveAuthorityBaseV2 & {
     state: "active" | "blocked" | "done";
     reason?: string;
+    suggestedSessionName?: string;
     observedAt?: string;
   },
 ): LiveCoordinationAuthorityV2Result {
-  if (liveCoordinationWriteModeV2(input.coordRoot) === "v1") return { state: "v1" };
+  liveCoordinationWriteModeV2(input.coordRoot);
   const subject = input.subject ?? input.owner;
   const before = requireHeartbeat(input, subject);
   const desired: Heartbeat = {
     ...before,
     task_state: input.state,
-    task_state_reason: undefined,
+    task_state_reason: input.state === "active" ? undefined : input.reason,
+    ...(input.suggestedSessionName ? { suggested_session_name: input.suggestedSessionName } : {}),
   };
   if (authorityStateDigest(before) === authorityStateDigest(desired)) return { state: "unchanged" };
-  const observedAt = input.observedAt ?? new Date().toISOString();
   return recordLiveAuthority(
     input,
     "lifecycle-changed",
@@ -119,11 +121,13 @@ export function recordLiveLifecycleChangeV2(
     desired,
     () => {
       if (
-        !stampSessionStateEvent(input.coordRoot, subject, {
-          event_type: "state.task_state",
-          ts: observedAt,
-          data: { state: input.state, reason: null },
-        })
+        !setLifecycleCache(
+          input.coordRoot,
+          subject,
+          input.state,
+          input.reason,
+          input.suggestedSessionName,
+        )
       ) {
         throw new LiveCoordinationAuthorityV2Error("lifecycle_materialization_failed");
       }
@@ -138,7 +142,7 @@ export function recordLiveClaimChangeV2(
     access?: "read" | "write";
   },
 ): LiveCoordinationAuthorityV2Result {
-  if (liveCoordinationWriteModeV2(input.coordRoot) === "v1") return { state: "v1" };
+  liveCoordinationWriteModeV2(input.coordRoot);
   const subject = input.subject ?? input.owner;
   const before = requireHeartbeat(input, subject);
   const canonical = canonicalClaimPath(input.coordRoot, input.path);
@@ -178,6 +182,33 @@ export function recordLiveClaimChangeV2(
   );
 }
 
+export function recordLiveIdentityChangeV2(
+  input: LiveAuthorityBaseV2 & { name: string; identityId: string },
+): LiveCoordinationAuthorityV2Result {
+  liveCoordinationWriteModeV2(input.coordRoot);
+  const subject = input.subject ?? input.owner;
+  const before = requireHeartbeat(input, subject);
+  const desired: Heartbeat = { ...before, name: input.name, agent_id: input.identityId };
+  if (authorityStateDigest(before) === authorityStateDigest(desired)) return { state: "unchanged" };
+  return recordLiveAuthority(
+    input,
+    "identity-attested",
+    {
+      native_observation_id: input.observationId ?? `identity-${randomUUID()}`,
+      identity_id: input.identityId,
+      method: "operator_assumption",
+    },
+    before,
+    desired,
+    () => {
+      recordNameAssumption(input.coordRoot, subject, input.name, input.identityId, "session");
+      if (!setIdentityCache(input.coordRoot, subject, input.name, input.identityId)) {
+        throw new LiveCoordinationAuthorityV2Error("identity_materialization_failed");
+      }
+    },
+  );
+}
+
 function recordLiveAuthority<S extends CoordinationAuthoritySignalV2>(
   input: LiveAuthorityBaseV2,
   signal: S,
@@ -187,7 +218,6 @@ function recordLiveAuthority<S extends CoordinationAuthoritySignalV2>(
   apply: () => void,
 ): LiveCoordinationAuthorityV2Result {
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state === "v1") return { state: "v1" };
   if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
   const adapter = liveCoordinationAdapterV2(input.coordRoot, input.owner);
   if (!adapter) throw new LiveCoordinationAuthorityV2Error("actor_generation_missing");
@@ -232,10 +262,10 @@ function recordAuthority<S extends CoordinationAuthoritySignalV2>(
   return recordCoordinationAuthorityV2(input);
 }
 
-export function liveCoordinationWriteModeV2(coordRoot: string): EventV2WriteMode | "v1" {
+export function liveCoordinationWriteModeV2(coordRoot: string): EventV2WriteMode {
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
   if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
-  return route.state === "v1" ? "v1" : route.mode;
+  return route.mode;
 }
 
 function requireHeartbeat(input: LiveAuthorityBaseV2, owner: string): Heartbeat {
@@ -258,6 +288,8 @@ function authorityStateDigest(heartbeat: Heartbeat): `sha256:${string}` {
       lifecycle_state: heartbeat.task_state ?? "active",
       task_state_reason: heartbeat.task_state_reason ?? null,
       files_touched: [...new Set(heartbeat.files_touched ?? [])].sort(),
+      identity_id: heartbeat.agent_id ?? null,
+      display_name: heartbeat.name ?? null,
     }),
   );
 }

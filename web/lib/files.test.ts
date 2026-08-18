@@ -23,12 +23,12 @@ import {
 import os from "node:os";
 import path from "node:path";
 import {
-  type ResolveResult,
   __resetFilesCaches,
   __setResolveTestHooks,
   compileGlob,
   evaluateDeny,
   loadFilesConfig,
+  type ResolveResult,
   resolveFile,
   scanChunk,
   stripJsonComments,
@@ -847,7 +847,7 @@ describe("fuzz", () => {
       "node_modules",
       "package.json",
       ".harnery",
-      "events.ndjson",
+      "active.ndjson",
     ];
     for (let i = 0; i < 2000; i++) {
       const depth = 1 + Math.floor(rand() * 5);

@@ -1,5 +1,5 @@
+import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { Adapter } from "../../../hooks/events/schema.ts";
 import { buildEventV2 } from "../builder.ts";
 import { type FingerprintContextV2, fingerprintV2, normalizeNativeIdV2 } from "../canonical.ts";
 import { adapterSignalSupportV2 } from "../capabilities.ts";
@@ -28,6 +28,8 @@ export interface HookProducerContextV2 {
   adapterVersion?: string;
   harnessVersion?: string;
   root_id: `root_${string}`;
+  run_id?: `run_${string}`;
+  workflow_id?: `wf_${string}`;
   instance_id: `inst_${string}`;
   generation_id: `gen_${string}`;
   attestation_id: `att_${string}`;
@@ -86,6 +88,8 @@ export function normalizeHookEventV2(
     instance_id: context.instance_id,
     session_id: sessionId,
     generation_id: context.generation_id,
+    ...(context.run_id ? { run_id: context.run_id } : {}),
+    ...(context.workflow_id ? { workflow_id: context.workflow_id } : {}),
   };
   const turnScope = { ...generationScope, turn_id: turnId };
   const producer = {

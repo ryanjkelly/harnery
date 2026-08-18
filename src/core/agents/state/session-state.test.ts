@@ -1,22 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import type { CanonicalEvent } from "../events/consume.ts";
-import { applySessionStateEvent, foldSessionState } from "./session-state.ts";
+import {
+  applySessionStateEvent,
+  foldSessionState,
+  type SessionStateEvidenceEvent,
+} from "./session-state.ts";
 
 function event(
   event_type: string,
   ts: string,
   data: Record<string, unknown> = {},
   instance_id = "owner-a",
-): CanonicalEvent {
+): SessionStateEvidenceEvent {
   return {
-    schema_version: 1,
-    event_id: `${ts}-${event_type}`,
     event_type,
     ts,
     instance_id,
     session_id: instance_id,
-    adapter: "codex",
-    source: "test",
     data,
   };
 }

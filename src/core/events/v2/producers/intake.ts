@@ -13,8 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import type { EventV2WriteMode } from "../control.ts";
 import { EVENT_V2_LEDGER_RELATIVE_ROOT } from "../writer.ts";
@@ -50,12 +50,29 @@ const HOOK_SIGNALS: ReadonlySet<string> = new Set([
   "pre-compact",
   "post-compact",
 ]);
-const REDACTED_PAYLOAD_KEYS = [
-  "tool_input",
-  "tool_response",
-  "prompt",
-  "last_assistant_message",
-] as const;
+const DIAGNOSTIC_METADATA_KEYS = new Set([
+  "adapter",
+  "signal",
+  "mode",
+  "state",
+  "reason",
+  "code",
+  "instance_id",
+  "producer_id",
+  "build_id",
+  "platform",
+  "bridge",
+  "session_hash",
+  "event_id",
+  "span_id",
+  "generation_id",
+  "turn_id",
+  "tool_name",
+  "outcome",
+  "sequence",
+  "expected",
+  "actual",
+]);
 
 export interface HookIntakeRecordV2 {
   format: typeof INTAKE_FORMAT;
@@ -252,22 +269,19 @@ export function writeProducerDiagnosticV2(
 }
 
 function redactDiagnosticRecord(record: Record<string, unknown>): Record<string, unknown> {
-  const copy: Record<string, unknown> = { ...record };
-  if (copy.payload && typeof copy.payload === "object" && !Array.isArray(copy.payload)) {
-    copy.payload = redactPayloadContent(copy.payload as Record<string, unknown>);
+  const metadata: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (!DIAGNOSTIC_METADATA_KEYS.has(key)) continue;
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null
+    ) {
+      metadata[key] = value;
+    }
   }
-  return copy;
-}
-
-function redactPayloadContent(payload: Record<string, unknown>): Record<string, unknown> {
-  const copy: Record<string, unknown> = { ...payload };
-  for (const key of REDACTED_PAYLOAD_KEYS) {
-    if (copy[key] !== undefined) copy[key] = contentDigest(copy[key]);
-  }
-  if (copy.raw && typeof copy.raw === "object" && !Array.isArray(copy.raw)) {
-    copy.raw = redactPayloadContent(copy.raw as Record<string, unknown>);
-  }
-  return copy;
+  return { ...metadata, content_fingerprint: contentDigest(record) };
 }
 
 function contentDigest(value: unknown): { bytes: number; sha256: string } {

@@ -37,7 +37,7 @@ describe("event-ledger health counters", () => {
 
     expect(health).toEqual({
       state: "unavailable",
-      reason: "V1 stream is live (no V2 ledger)",
+      reason: "closed: no_candidate",
     });
   });
 
@@ -172,9 +172,6 @@ function candidateRoot(): string {
       canonicalizer_version: "harnery-jcs-nfc-v1",
       fingerprint_version: "hmac-sha256-v1",
       privacy_key_epoch: keyStore.active_epoch_id,
-      v1_terminal_digest: sha256V2("v1"),
-      v1_terminal_bytes: 1,
-      v1_terminal_rows: 1,
       candidate_created_at: "2026-08-16T18:00:00.000Z",
     },
     root_id: "root_fixture",

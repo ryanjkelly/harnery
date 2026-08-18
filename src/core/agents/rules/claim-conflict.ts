@@ -10,14 +10,13 @@
  *      B, B must sort > A lexicographically. Otherwise emit
  *      claim.conflict (ordering_violation) and block.
  *
- * Reads from `.harnery/active/<id>.json`, the single canonical heartbeat
- * location after Phase 8 collapsed the v1/v2 dual-write.
+ * Reads the authority-safe V2 coordination projection. Disposable heartbeat
+ * caches are materialization targets, never the source of claim authority.
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { emit } from "../events/emit.ts";
 import { recordLiveClaimChangeV2 } from "../live-authority-v2.ts";
 import { readLiveCoordinationRows } from "../state/live-coordination-view.ts";
 
@@ -164,59 +163,11 @@ export function evaluateClaim(coordRoot: string, req: ClaimRequest): VerdictResu
   return { allow: true, exit_code: 0, rule: "claim.pass" };
 }
 
-/**
- * Add `relPath` to the owner's heartbeat `files_touched` array (idempotent;
- * no-op if already present). Atomic temp + rename. If the owner has no
- * heartbeat yet (subagent that hasn't been initialized), creates a minimal one.
- */
-function addClaimToOwner(coordRoot: string, instanceId: string, relPath: string): void {
-  const activeDir = join(coordRoot, ".harnery", "active");
-  if (!existsSync(activeDir)) return;
-  const path = join(activeDir, `${instanceId}.json`);
-  if (!existsSync(path)) {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    const minimal = {
-      schema_version: 1,
-      instance_id: instanceId,
-      session_id: instanceId,
-      files_touched: [relPath],
-      started_at: now,
-      last_heartbeat: now,
-    };
-    try {
-      const tmp = `${path}.tmp.${process.pid}`;
-      writeFileSync(tmp, JSON.stringify(minimal, null, 2), "utf8");
-      renameSync(tmp, path);
-    } catch {
-      /* silent */
-    }
-    return;
-  }
-  try {
-    const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    const files = (body.files_touched as string[] | undefined) ?? [];
-    if (files.includes(relPath)) return;
-    body.files_touched = [...files, relPath];
-    const tmp = `${path}.tmp.${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(body, null, 2), "utf8");
-    renameSync(tmp, path);
-  } catch {
-    /* silent */
-  }
-}
-
 function readPeers(coordRoot: string): PeerView[] {
   return readLiveCoordinationRows(coordRoot).map((heartbeat) => {
-    // V2 supplies explicit parent lineage. The session-id inference is a V1
-    // compatibility rule only; V2 session IDs are opaque fingerprints and
-    // must never be interpreted as instance IDs.
-    const inferredParent =
-      heartbeat.parent_instance_id ??
-      (heartbeat.schema_version === 2
-        ? undefined
-        : heartbeat.session_id !== heartbeat.instance_id
-          ? heartbeat.session_id
-          : undefined);
+    // Session IDs are opaque fingerprints. Parentage is valid only when the
+    // V2 projection supplies an explicit parent instance.
+    const inferredParent = heartbeat.parent_instance_id;
     return {
       instance_id: heartbeat.instance_id,
       name: heartbeat.name,
@@ -290,55 +241,10 @@ function isFileCommittedClean(coordRoot: string, relPath: string): boolean {
   }
 }
 
-/**
- * Remove a stale claim from a peer's heartbeat. Atomic temp + rename. Silent
- * on failure.
- */
-function pruneClaimFromPeer(coordRoot: string, instanceId: string, relPath: string): void {
-  const path = join(coordRoot, ".harnery", "active", `${instanceId}.json`);
-  if (!existsSync(path)) return;
-  try {
-    const body = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    const files = (body.files_touched as string[] | undefined) ?? [];
-    // Normalize both sides: files_touched can hold absolute-under-coordRoot
-    // entries as well as canonical relative ones — an
-    // exact-string filter silently no-ops on the mixed-form case and the
-    // stale claim never heals.
-    const norm = (p: string): string =>
-      p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
-    const target = norm(relPath);
-    const next = files.filter((p) => norm(p) !== target);
-    if (next.length === files.length) return;
-    body.files_touched = next;
-    const tmp = `${path}.tmp.${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(body, null, 2), "utf8");
-    renameSync(tmp, path);
-    // Durable subtraction: the projector rebuilds files_touched from the
-    // permanent Edit/Write events, so a file-only prune resurrects on the
-    // next replay. Soft-fail — the heartbeat write already landed.
-    try {
-      const platform = body.platform as string | undefined;
-      emit(coordRoot, {
-        event_type: "claim.release",
-        instance_id: instanceId,
-        session_id: (body.session_id as string | undefined) ?? instanceId,
-        adapter: platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code",
-        source: "agent-coord",
-        data: { path: target, reason: "heal" },
-        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-      } as Parameters<typeof emit>[1]);
-    } catch {
-      /* soft-fail */
-    }
-  } catch {
-    /* silent */
-  }
-}
-
 function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolean {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === req.instance_id);
   try {
-    const routed = recordLiveClaimChangeV2({
+    recordLiveClaimChangeV2({
       coordRoot,
       owner: req.instance_id,
       nativeSessionId: req.session_id ?? owner?.session_id ?? req.instance_id,
@@ -347,7 +253,6 @@ function acquireClaimThroughLedger(coordRoot: string, req: ClaimRequest): boolea
       path: req.path,
       access: "write",
     });
-    if (routed.state === "v1") addClaimToOwner(coordRoot, req.instance_id, req.path);
     return true;
   } catch {
     return false;
@@ -362,7 +267,7 @@ function releaseClaimThroughLedger(
 ): boolean {
   const owner = readPeers(coordRoot).find((peer) => peer.instance_id === actor.instance_id);
   try {
-    const routed = recordLiveClaimChangeV2({
+    recordLiveClaimChangeV2({
       coordRoot,
       owner: actor.instance_id,
       subject: subjectInstanceId,
@@ -372,7 +277,6 @@ function releaseClaimThroughLedger(
       path: relPath,
       access: "write",
     });
-    if (routed.state === "v1") pruneClaimFromPeer(coordRoot, subjectInstanceId, relPath);
     return true;
   } catch {
     return false;

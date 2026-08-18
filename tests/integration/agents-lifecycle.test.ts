@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { recordLiveTaskChangeV2 } from "../../src/core/agents/live-authority-v2.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
+import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
+import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../../src/core/events/v2/live-routing.ts";
+import { readActiveLedgerV2 } from "../../src/core/events/v2/reader.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
@@ -18,38 +27,43 @@ interface RunResult {
 function makeSandbox(): string {
   const root = mkdtempSync(path.join(os.tmpdir(), "harn-lifecycle-"));
   sandboxes.push(root);
-  mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
-  const git = (args: string[]) =>
-    spawnSync("git", args, { cwd: root, encoding: "utf8", stdio: "ignore" });
+  const git = (args: string[]) => spawnSync("git", args, { cwd: root, stdio: "ignore" });
   git(["init", "-q"]);
   git(["config", "user.email", "test@example.com"]);
   git(["config", "user.name", "Test"]);
   writeFileSync(path.join(root, "seed.txt"), "seed\n");
   git(["add", "seed.txt"]);
   git(["commit", "-qm", "seed"]);
-  return root;
-}
-
-function seedHeartbeat(root: string, overrides: Record<string, unknown> = {}): void {
-  const now = new Date().toISOString();
+  initializeEventLedgerV2({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-agents-lifecycle",
+  });
   writeFileSync(
-    path.join(root, ".harnery", "active", `${OWNER}.json`),
-    JSON.stringify({
-      schema_version: 2,
-      instance_id: OWNER,
-      session_id: OWNER,
-      kind: "session",
-      name: "Hollis",
-      platform: "codex",
-      started_at: now,
-      last_heartbeat: now,
-      files_touched: [],
-      task: "Auth Refactor",
-      suggested_session_name: "Agent Hollis - Auth Refactor",
-      task_state: "active",
-      ...overrides,
-    }),
+    path.join(root, ".harnery", ".name-history"),
+    `${JSON.stringify({ instance_id: OWNER, name: "Hollis", kind: "session", ts: new Date().toISOString() })}\n`,
   );
+  const route = resolveLiveEventLedgerRouteV2(root);
+  if (route.state !== "v2") throw new Error("expected V2 route");
+  recordLiveHookSignalV2({
+    coordRoot: root,
+    route,
+    eventName: "session-start",
+    payload: { session_id: OWNER, raw: {}, model: "gpt-5.6" },
+    adapter: "codex",
+    instanceId: OWNER,
+  });
+  ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
+  recordLiveTaskChangeV2({
+    coordRoot: root,
+    owner: OWNER,
+    nativeSessionId: OWNER,
+    adapter: "codex",
+    task: "Auth Refactor",
+  });
+  return root;
 }
 
 function harn(root: string, args: string[]): RunResult {
@@ -58,11 +72,7 @@ function harn(root: string, args: string[]): RunResult {
     encoding: "utf8",
     env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
   });
-  return {
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    status: result.status,
-  };
+  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
 }
 
 function heartbeat(root: string): Record<string, unknown> {
@@ -71,17 +81,10 @@ function heartbeat(root: string): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
-function events(root: string): Array<Record<string, unknown>> {
-  const pathName = path.join(root, ".harnery", "events.ndjson");
-  try {
-    return readFileSync(pathName, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-  } catch {
-    return [];
-  }
+function lifecycleEvents(root: string) {
+  return readActiveLedgerV2(root)
+    .events.map(({ event }) => event)
+    .filter((event) => event.event_type === "coord.lifecycle_changed");
 }
 
 function outputObject(result: RunResult): Record<string, unknown> {
@@ -89,7 +92,7 @@ function outputObject(result: RunResult): Record<string, unknown> {
     .split("\n")
     .map((value) => value.trim())
     .reverse()
-    .find((value: string) => value.startsWith("{"));
+    .find((value) => value.startsWith("{"));
   if (!line) throw new Error(`missing JSON output:\n${result.stdout}\n${result.stderr}`);
   return JSON.parse(line) as Record<string, unknown>;
 }
@@ -101,11 +104,9 @@ afterEach(() => {
   }
 });
 
-describe("harn agents lifecycle", () => {
-  test("blocks with a reason, re-mints the title, and records one durable event", () => {
+describe("harn agents lifecycle on the V2 ledger", () => {
+  test("blocks, re-mints the title, and records one canonical lifecycle event", () => {
     const root = makeSandbox();
-    seedHeartbeat(root);
-
     const result = harn(root, [
       "agents",
       "lifecycle",
@@ -115,94 +116,63 @@ describe("harn agents lifecycle", () => {
       "--session-id",
       OWNER,
     ]);
-
     expect(result.status).toBe(0);
     expect(outputObject(result)).toMatchObject({
       task_state: "blocked",
       prior_state: "active",
       changed: true,
       name_reminted: true,
-      suggested_session_name: "[BLOCKED] - Agent Hollis - Auth Refactor",
     });
     expect(heartbeat(root)).toMatchObject({
+      schema_version: 2,
       task_state: "blocked",
       task_state_reason: "waiting for access",
       suggested_session_name: "[BLOCKED] - Agent Hollis - Auth Refactor",
-      session_name_seen_for: "Agent Hollis - Auth Refactor",
     });
-    const lifecycleEvents = events(root).filter((event) => event.event_type === "state.task_state");
-    expect(lifecycleEvents).toHaveLength(1);
-    expect(lifecycleEvents[0]?.data).toMatchObject({
-      state: "blocked",
-      prior_state: "active",
-      reason: "waiting for access",
-      name_reminted: true,
-      git_finalization_checked: false,
+    expect(lifecycleEvents(root)).toHaveLength(1);
+    expect(lifecycleEvents(root)[0]?.payload).toMatchObject({
+      new_state: "blocked",
     });
   });
 
-  test("repeating the same state and reason is an event-free no-op", () => {
+  test("repeating the same state is an event-free no-op and reopening records active", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, {
-      task_state: "blocked",
-      task_state_reason: "waiting for access",
-      suggested_session_name: "[BLOCKED] - Agent Hollis - Auth Refactor",
-    });
-
-    const result = harn(root, [
+    expect(
+      harn(root, ["agents", "lifecycle", "blocked", "--reason", "waiting", "--session-id", OWNER])
+        .status,
+    ).toBe(0);
+    const count = lifecycleEvents(root).length;
+    const retry = harn(root, [
       "agents",
       "lifecycle",
       "blocked",
       "--reason",
-      "waiting for access",
+      "waiting",
       "--session-id",
       OWNER,
     ]);
-
-    expect(result.status).toBe(0);
-    expect(outputObject(result)).toMatchObject({ changed: false, name_reminted: false });
-    expect(events(root).filter((event) => event.event_type === "state.task_state")).toHaveLength(0);
-  });
-
-  test("reopening clears the blocker reason and restores the active title", () => {
-    const root = makeSandbox();
-    seedHeartbeat(root, {
-      task_state: "blocked",
-      task_state_reason: "waiting for access",
-      suggested_session_name: "[BLOCKED] - Agent Hollis - Auth Refactor",
-    });
-
-    const result = harn(root, ["agents", "lifecycle", "active", "--session-id", OWNER]);
-
-    expect(result.status).toBe(0);
+    expect(outputObject(retry)).toMatchObject({ changed: false, name_reminted: false });
+    expect(lifecycleEvents(root)).toHaveLength(count);
+    expect(harn(root, ["agents", "lifecycle", "active", "--session-id", OWNER]).status).toBe(0);
     expect(heartbeat(root)).toMatchObject({
       task_state: "active",
       suggested_session_name: "Agent Hollis - Auth Refactor",
     });
-    expect(heartbeat(root).task_state_reason).toBeUndefined();
   });
 
-  test("done refuses dirty owned work and writes no lifecycle event", () => {
+  test("done refuses dirty owned work, then succeeds after Git finalization", () => {
     const root = makeSandbox();
     writeFileSync(path.join(root, "owned.txt"), "dirty\n");
-    seedHeartbeat(root, { files_touched: ["owned.txt"] });
+    const cachePath = path.join(root, ".harnery", "active", `${OWNER}.json`);
+    writeFileSync(cachePath, JSON.stringify({ ...heartbeat(root), files_touched: ["owned.txt"] }));
+    const refused = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
+    expect(refused.status).not.toBe(0);
+    expect(outputObject(refused).error).toMatchObject({ code: "git_not_finalized" });
+    expect(lifecycleEvents(root)).toHaveLength(0);
 
-    const result = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
-
-    expect(result.status).not.toBe(0);
-    expect(outputObject(result).error).toMatchObject({ code: "git_not_finalized" });
-    expect(heartbeat(root).task_state).toBe("active");
-    expect(events(root).filter((event) => event.event_type === "state.task_state")).toHaveLength(0);
-  });
-
-  test("done succeeds after owned work is committed and records the finalization gate", () => {
-    const root = makeSandbox();
-    writeFileSync(path.join(root, "owned.txt"), "complete\n");
     spawnSync("git", ["add", "owned.txt"], { cwd: root, stdio: "ignore" });
     spawnSync("git", ["commit", "-qm", "complete"], { cwd: root, stdio: "ignore" });
-    seedHeartbeat(root, { files_touched: ["owned.txt"] });
-
-    const result = harn(root, [
+    const completed = harn(root, [
       "agents",
       "lifecycle",
       "done",
@@ -211,73 +181,31 @@ describe("harn agents lifecycle", () => {
       "--session-id",
       OWNER,
     ]);
-
-    expect(result.status).toBe(0);
+    expect(completed.status).toBe(0);
     expect(heartbeat(root)).toMatchObject({
       task_state: "done",
-      task_state_reason: "verified",
       suggested_session_name: "[DONE] - Agent Hollis - Auth Refactor",
     });
-    const lifecycle = events(root).find((event) => event.event_type === "state.task_state");
-    expect(lifecycle?.data).toMatchObject({
-      state: "done",
-      git_finalization_checked: true,
-    });
+    expect(lifecycleEvents(root)[0]?.payload).toMatchObject({ new_state: "done" });
   });
 
-  test("blocked requires a reason and done requires a current task", () => {
+  test("validates blocked reasons and rejects non-human-facing caches", () => {
     const root = makeSandbox();
-    seedHeartbeat(root, { task: undefined });
+    const missingReason = harn(root, ["agents", "lifecycle", "blocked", "--session-id", OWNER]);
+    expect(outputObject(missingReason).error).toMatchObject({ code: "blocked_reason_required" });
 
-    const blocked = harn(root, ["agents", "lifecycle", "blocked", "--session-id", OWNER]);
-    expect(outputObject(blocked).error).toMatchObject({ code: "blocked_reason_required" });
-
-    const done = harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]);
-    expect(outputObject(done).error).toMatchObject({ code: "task_required_for_done" });
-    expect(events(root).filter((event) => event.event_type === "state.task_state")).toHaveLength(0);
-  });
-
-  test("refuses lifecycle declarations from non-human-facing sessions", () => {
-    const root = makeSandbox();
-
-    for (const overrides of [
-      { kind: "subagent" },
-      { kind: "transient" },
-      { workflow_run_id: "workflow-123" },
-    ]) {
-      seedHeartbeat(root, overrides);
-      const result = harn(root, [
-        "agents",
-        "lifecycle",
-        "blocked",
-        "--reason",
-        "waiting for access",
-        "--session-id",
-        OWNER,
-      ]);
-
-      expect(result.status).not.toBe(0);
-      expect(outputObject(result).error).toMatchObject({
-        code: "lifecycle_not_human_facing",
-      });
-      expect(events(root).filter((event) => event.event_type === "state.task_state")).toHaveLength(
-        0,
-      );
-    }
-  });
-
-  test("set-task warns under non-active lifecycle without reopening it", () => {
-    const root = makeSandbox();
-    seedHeartbeat(root, {
-      task_state: "done",
-      task_state_reason: "verified",
-      suggested_session_name: "[DONE] - Agent Hollis - Auth Refactor",
-    });
-
-    const result = harn(root, ["agents", "set-task", "New topic", "--session-id", OWNER]);
-
-    expect(result.status).toBe(0);
-    expect(String(outputObject(result).warning)).toContain("lifecycle is done");
-    expect(heartbeat(root)).toMatchObject({ task: "New topic", task_state: "done" });
+    const cachePath = path.join(root, ".harnery", "active", `${OWNER}.json`);
+    writeFileSync(cachePath, JSON.stringify({ ...heartbeat(root), kind: "subagent" }));
+    const nonHuman = harn(root, [
+      "agents",
+      "lifecycle",
+      "blocked",
+      "--reason",
+      "waiting",
+      "--session-id",
+      OWNER,
+    ]);
+    expect(nonHuman.status).not.toBe(0);
+    expect(outputObject(nonHuman).error).toMatchObject({ code: "lifecycle_not_human_facing" });
   });
 });

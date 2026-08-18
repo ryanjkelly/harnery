@@ -6,26 +6,13 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  readSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RunQualitySnapshot } from "./types.ts";
-
-export interface CanonicalGuardEvent {
-  schema_version: number;
-  event_id: string;
-  event_type: string;
-  ts: string;
-  instance_id: string;
-  session_id: string;
-  adapter: string;
-  data: Record<string, unknown>;
-  segment: string;
-}
 
 export interface GuardCursor {
   schema_version: 1;
@@ -129,48 +116,6 @@ export function releaseEvaluationLock(coordRoot: string, nonce: string): void {
   }
 }
 
-export function readGuardEventWindow(
-  coordRoot: string,
-  maxBytes: number,
-): { events: CanonicalGuardEvent[]; truncated: boolean; segment: string } {
-  const dir = join(coordRoot, ".harnery");
-  const live = join(dir, "events.ndjson");
-  const archives = existsSync(dir)
-    ? readdirSync(dir)
-        .filter((name) => /^events-.+\.ndjson$/.test(name))
-        .map((name) => join(dir, name))
-        .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs || b.localeCompare(a))
-    : [];
-  const paths = [...archives.slice(0, 1).reverse(), ...(existsSync(live) ? [live] : [])];
-  const events: CanonicalGuardEvent[] = [];
-  let truncated = false;
-  let segment = ".harnery/events.ndjson";
-  for (const path of paths) {
-    const read = readTail(path, maxBytes);
-    truncated ||= read.truncated;
-    const relativeSegment = `.harnery/${basename(path)}`;
-    segment = relativeSegment;
-    for (const line of read.text.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line) as Omit<CanonicalGuardEvent, "segment">;
-        if (
-          typeof event.event_id === "string" &&
-          typeof event.event_type === "string" &&
-          typeof event.instance_id === "string" &&
-          event.data &&
-          typeof event.data === "object"
-        ) {
-          events.push({ ...event, segment: relativeSegment });
-        }
-      } catch {
-        // An incomplete or malformed ledger line is not evidence.
-      }
-    }
-  }
-  return { events, truncated, segment };
-}
-
 export function cleanupOrphanSnapshots(coordRoot: string, liveIds: Set<string>): void {
   const dir = guardDir(coordRoot);
   if (!existsSync(dir)) return;
@@ -229,31 +174,6 @@ function processAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
-}
-
-function readTail(path: string, maxBytes: number): { text: string; truncated: boolean } {
-  const size = statSync(path).size;
-  const length = Math.min(size, maxBytes);
-  const start = size - length;
-  const buffer = Buffer.allocUnsafe(length);
-  const fd = openSync(path, "r");
-  let offset = 0;
-  try {
-    while (offset < length) {
-      const count = readSync(fd, buffer, offset, length - offset, start + offset);
-      if (count === 0) break;
-      offset += count;
-    }
-  } finally {
-    closeSync(fd);
-  }
-  let text = buffer.toString("utf8", 0, offset);
-  const truncated = start > 0;
-  if (truncated) {
-    const newline = text.indexOf("\n");
-    text = newline >= 0 ? text.slice(newline + 1) : "";
-  }
-  return { text, truncated };
 }
 
 function readBoundedJson<T>(path: string, maxBytes: number): T | null {

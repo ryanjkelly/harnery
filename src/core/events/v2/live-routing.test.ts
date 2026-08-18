@@ -26,11 +26,14 @@ afterEach(() => {
 });
 
 describe("live V2 ledger routing", () => {
-  test("keeps V1 until a candidate exists", () => {
-    expect(resolveLiveEventLedgerRouteV2(temporaryRoot())).toEqual({ state: "v1" });
+  test("blocks an uninitialized root", () => {
+    expect(resolveLiveEventLedgerRouteV2(temporaryRoot())).toEqual({
+      state: "blocked",
+      reason: "v2_not_initialized",
+    });
   });
 
-  test("repairs a candidate packet and records V2 without opening a V1 fallback", () => {
+  test("repairs a candidate packet and records through the canonical route", () => {
     const root = candidateRoot("claude-code");
     const route = resolveLiveEventLedgerRouteV2(root);
     expect(route).toEqual({ state: "v2", mode: "candidate", build_id: "build_fixture" });
@@ -64,10 +67,9 @@ describe("live V2 ledger routing", () => {
         .every(({ event }) => event.time.monotonic_ns === undefined),
     ).toBeTrue();
     expect(liveInstanceIdV2("agent-Helene")).toBe("inst_agent-Helene");
-    expect(Bun.file(join(root, ".harnery/events.ndjson")).size).toBe(0);
   });
 
-  test("does not downgrade an unsupported Cursor signal to V1", () => {
+  test("refuses an unsupported Cursor signal", () => {
     const root = candidateRoot("cursor");
     const route = resolveLiveEventLedgerRouteV2(root);
     if (route.state !== "v2") throw new Error("expected V2 route");
@@ -93,7 +95,6 @@ describe("live V2 ledger routing", () => {
       state: "gate_closed",
       reason: "signal_not_approved:post_compaction",
     });
-    expect(Bun.file(join(root, ".harnery/events.ndjson")).size).toBe(0);
   });
 
   test("blocks a candidate that did not approve the live producer build", () => {
@@ -124,9 +125,6 @@ function candidateRoot(
     canonicalizer_version: "harnery-jcs-nfc-v1",
     fingerprint_version: "hmac-sha256-v1",
     privacy_key_epoch: keys.active_epoch_id,
-    v1_terminal_digest: sha256V2("v1"),
-    v1_terminal_bytes: 1,
-    v1_terminal_rows: 1,
     candidate_created_at: "2026-08-16T18:00:00.000Z",
   };
   const manifest = buildCandidateGenesisManifestV2({

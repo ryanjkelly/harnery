@@ -9,11 +9,7 @@ import {
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
 import { hostInfo } from "@/lib/config";
-import {
-  coordRoot,
-  readAgents,
-  readInstanceIdentities,
-} from "@/lib/coord-reader";
+import { coordRoot, readAgents, readInstanceIdentities } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -24,7 +20,7 @@ interface PageProps {
 }
 
 /**
- * /live: structured tail of `.harnery/events.ndjson`, projected to the
+ * /live: structured command projection of the canonical V2 ledger.
  * command stream: the host CLI `command.*` + `narration` AND bare shell commands
  * (Bash `tool.pre_use` / `tool.post_use`, with their `# intent:` narration).
  * Non-command tool calls (Read/Edit/Write/…) and state/session events belong to
@@ -77,21 +73,17 @@ export default async function LivePage({ searchParams }: PageProps) {
             <h1 className="text-xl font-semibold tracking-tight">Live session</h1>
             <p className="text-xs text-muted-foreground">
               Every shell command + its intent: <code className="font-mono">{binName}</code> (the
-              host CLI) and bare shell (
-              <code className="font-mono">git</code>, <code className="font-mono">grep</code>,{" "}
-              <code className="font-mono">curl</code>…). File reads, edits, and other
-              non-command tool calls stream to{" "}
-              <Link
-                href="/events"
-                className="underline underline-offset-2 hover:text-foreground"
-              >
+              host CLI) and bare shell (<code className="font-mono">git</code>,{" "}
+              <code className="font-mono">grep</code>, <code className="font-mono">curl</code>…).
+              File reads, edits, and other non-command tool calls stream to{" "}
+              <Link href="/events" className="underline underline-offset-2 hover:text-foreground">
                 Events
               </Link>
               .
             </p>
           </div>
           <code className="font-mono text-xs text-muted-foreground">
-            .harnery/events.ndjson · command stream
+            .harnery/ledgers/v2 · command projection
           </code>
         </header>
 

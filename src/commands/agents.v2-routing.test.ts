@@ -24,36 +24,29 @@ describe("agents command V2 diagnostic routing", () => {
     expect(traceInstanceIdsForEventSource(["native-session-id"], "v2")).toEqual([
       "inst_native-session-id",
     ]);
-    expect(traceInstanceIdsForEventSource(["native-session-id"], "v1")).toEqual([
-      "native-session-id",
-    ]);
   });
 
-  test("closed control preserves the bounded V1 diagnostic reader", () => {
+  test("closed control is explicitly unavailable", () => {
     const root = temporaryRoot();
-    writeV1Event(root, "v1.closed");
 
     const read = readAgentDiagnosticEventsInWindow(root, 0);
 
-    expect(read).toMatchObject({ source: "v1", authoritative: true, truncated: false });
-    expect(read.events.map((event) => event.event_type)).toEqual(["v1.closed"]);
+    expect(read).toMatchObject({ source: "v2", authoritative: false, truncated: false });
+    expect(read.events).toEqual([]);
   });
 
-  test("candidate control reads validated V2 and never includes fenced V1 rows", () => {
+  test("candidate control reads validated V2 rows", () => {
     const root = temporaryRoot();
-    writeV1Event(root, "v1.must_not_be_read");
     openCandidateGate(root);
 
     const read = readAgentDiagnosticEventsInWindow(root, 0);
 
     expect(read).toMatchObject({ source: "v2", authoritative: true, truncated: false });
     expect(read.events.map((event) => event.event_type)).toEqual(["ledger.genesis"]);
-    expect(read.events.some((event) => event.event_type.startsWith("v1."))).toBe(false);
   });
 
   test("ambiguous V2 control returns explicit non-authoritative emptiness", () => {
     const root = temporaryRoot();
-    writeV1Event(root, "v1.must_not_be_read");
     const manifestPath = join(root, EVENT_V2_GENESIS_MANIFEST);
     mkdirSync(dirname(manifestPath), { recursive: true });
     writeFileSync(manifestPath, "{}\n", "utf8");
@@ -61,7 +54,7 @@ describe("agents command V2 diagnostic routing", () => {
     const read = readAgentDiagnosticEventsInWindow(root, 0);
 
     expect(read).toMatchObject({ source: "v2", authoritative: false, events: [] });
-    expect(read.reason).toContain("fenced V1 event history was not read");
+    expect(read.reason).toContain("V2 control state is invalid");
   });
 });
 
@@ -70,21 +63,6 @@ function temporaryRoot(): string {
   roots.push(root);
   mkdirSync(join(root, ".harnery"), { recursive: true });
   return root;
-}
-
-function writeV1Event(root: string, eventType: string): void {
-  writeFileSync(
-    join(root, ".harnery", "events.ndjson"),
-    `${JSON.stringify({
-      schema_version: 1,
-      event_id: "v1-event",
-      event_type: eventType,
-      ts: "2026-08-16T18:00:00.000Z",
-      instance_id: "legacy-owner",
-      data: {},
-    })}\n`,
-    "utf8",
-  );
 }
 
 function openCandidateGate(root: string): void {
@@ -103,9 +81,6 @@ function openCandidateGate(root: string): void {
       canonicalizer_version: "harnery-jcs-nfc-v1",
       fingerprint_version: "hmac-sha256-v1",
       privacy_key_epoch: keyStore.active_epoch_id,
-      v1_terminal_digest: sha256V2("v1"),
-      v1_terminal_bytes: 1,
-      v1_terminal_rows: 1,
       candidate_created_at: "2026-08-16T18:00:00.000Z",
     },
     root_id: "root_fixture",

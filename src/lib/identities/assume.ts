@@ -25,10 +25,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-import { emitAndProject } from "../../core/agents/cli-emit.ts";
-import { emit } from "../../core/agents/events/emit.ts";
+import { recordLiveIdentityChangeV2 } from "../../core/agents/live-authority-v2.ts";
+import { recordLiveSweepObservationV2 } from "../../core/agents/live-lifecycle-v2.ts";
 import { type Heartbeat, readHeartbeat } from "../../core/agents/state/heartbeat-writer.ts";
-import { recordNameAssumption, resolveForkAncestry } from "../../core/agents/state/names.ts";
+import { resolveForkAncestry } from "../../core/agents/state/names.ts";
 import { instanceHasLivePid, removePidmapRowsForInstance } from "../../core/agents/state/pidmap.ts";
 import { coordFreshnessSeconds } from "../../core/config.ts";
 import { readRemoteMachines } from "../../core/presence/index.ts";
@@ -160,23 +160,14 @@ export function reclaimAbandonedLocalConflict(
     }
   }
   removePidmapRowsForInstance(coordRoot, conflict.instance_id);
-  try {
-    emit(coordRoot, {
-      event_type: "health.heartbeat_swept",
-      instance_id: conflict.instance_id,
-      session_id: sessionId,
-      adapter,
-      source: "agent-coord",
-      data: {
-        reason: "stale",
-        ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}),
-        reclaimed_by: "identity.assume",
-      },
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-    } as Parameters<typeof emit>[1]);
-  } catch {
-    /* telemetry only */
-  }
+  recordLiveSweepObservationV2({
+    coordRoot,
+    owner: conflict.instance_id,
+    nativeSessionId: sessionId,
+    adapter,
+    observation: "stale_heartbeat",
+    ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
+  });
   return true;
 }
 
@@ -312,15 +303,7 @@ export function assumeIdentity(
 
     const previousName = hb.name || null;
     const previousAgentId = hb.agent_id || null;
-    const history = recordNameAssumption(
-      coordRoot,
-      instanceId,
-      identity.name,
-      identity.agent_id,
-      "session",
-    );
-    const changed =
-      history.changed || previousName !== identity.name || previousAgentId !== identity.agent_id;
+    const changed = previousName !== identity.name || previousAgentId !== identity.agent_id;
     if (!changed) {
       return {
         changed: false,
@@ -336,28 +319,14 @@ export function assumeIdentity(
       };
     }
 
-    const emitted = emitAndProject(
-      {
-        event_type: "identity.assumed",
-        instance_id: instanceId,
-        session_id: hb.session_id,
-        adapter: adapterOf(hb.platform),
-        data: {
-          name: identity.name,
-          agent_id: identity.agent_id,
-          ...(previousName ? { previous_name: previousName } : {}),
-          ...(previousAgentId ? { previous_agent_id: previousAgentId } : {}),
-          ...(reclaimedInstanceId ? { reclaimed_instance_id: reclaimedInstanceId } : {}),
-        },
-      },
-      { coordRoot },
-    );
-    if (!emitted?.projected) {
-      throw new IdentityAssumeError(
-        "projection_failed",
-        "the durable name binding was recorded but event projection failed; rerun the command to heal it",
-      );
-    }
+    const emitted = recordLiveIdentityChangeV2({
+      coordRoot,
+      owner: instanceId,
+      nativeSessionId: hb.session_id,
+      adapter: adapterOf(hb.platform),
+      name: identity.name,
+      identityId: identity.agent_id,
+    });
 
     const projected = readHeartbeat(coordRoot, instanceId);
     if (projected?.name !== identity.name || projected.agent_id !== identity.agent_id) {
@@ -375,7 +344,10 @@ export function assumeIdentity(
       name: identity.name,
       agent_id: identity.agent_id,
       identity_created: created,
-      event_id: emitted.envelope.event_id,
+      event_id:
+        emitted.state === "recorded" && emitted.result.state === "recorded"
+          ? emitted.result.event.event_id
+          : null,
       reclaimed_instance_id: reclaimedInstanceId,
     };
   } finally {

@@ -1,26 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { canonicalJsonV2, sha256V2 } from "../events/v2/canonical.ts";
-import { adapterCapabilityProfileDigestV2 } from "../events/v2/capabilities.ts";
+import { join } from "node:path";
+import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
+import { sha256V2 } from "../events/v2/canonical.ts";
 import {
-  buildCandidateGenesisManifestV2,
-  type CandidateProfileV2,
-  EVENT_V2_GENESIS_MANIFEST,
-} from "../events/v2/control.ts";
-import { loadOrCreateFingerprintKeyStoreV2 } from "../events/v2/fingerprint-keys.ts";
-import { EVENT_V2_SCHEMA_DIGEST } from "../events/v2/generated.ts";
-import {
-  liveEventV2BuildId,
   recordLiveHookSignalV2,
   resolveLiveEventLedgerRouteV2,
 } from "../events/v2/live-routing.ts";
@@ -28,36 +12,34 @@ import { readActiveLedgerV2 } from "../events/v2/reader.ts";
 import { writeSessionEvent } from "./session-events.ts";
 
 const roots: string[] = [];
-const priorEventsPath = process.env.HARNERY_EVENTS_PATH;
+const priorCoordRoot = process.env.HARNERY_COORD_ROOT_OVERRIDE;
 
 afterEach(() => {
-  if (priorEventsPath === undefined) delete process.env.HARNERY_EVENTS_PATH;
-  else process.env.HARNERY_EVENTS_PATH = priorEventsPath;
+  if (priorCoordRoot === undefined) delete process.env.HARNERY_COORD_ROOT_OVERRIDE;
+  else process.env.HARNERY_COORD_ROOT_OVERRIDE = priorCoordRoot;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("session event live ledger routing", () => {
-  test("preserves the V1 command stream while the V2 gate is closed", () => {
+  test("refuses command recording before the V2 ledger is initialized", () => {
     const root = temporaryRoot();
-    const instanceId = "agent-v1-fixture";
-    configureSession(root, instanceId, "native-v1-session");
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
 
     writeSessionEvent("command_start", {
-      instance_id: instanceId,
-      cmd_id: "cmd-v1",
+      instance_id: "agent-uninitialized",
+      cmd_id: "cmd-uninitialized",
       cmd: "acme agents status",
       intent: "inspect status",
     });
 
-    const v1 = readFileSync(join(root, ".harnery/events.ndjson"), "utf8");
-    expect(v1).toContain('"event_type":"command.start"');
+    expect(existsSync(join(root, ".harnery", "ledgers", "v2", "active.ndjson"))).toBeFalse();
   });
 
-  test("records command spans only in V2 once a candidate exists", () => {
-    const root = candidateRoot();
+  test("records command spans in the active V2 ledger", () => {
+    const root = activeRoot();
     const instanceId = "agent-v2-fixture";
     const nativeSession = "native-v2-session";
-    process.env.HARNERY_EVENTS_PATH = join(root, ".harnery/session-events.ndjson");
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
     const route = resolveLiveEventLedgerRouteV2(root);
     if (route.state !== "v2") throw new Error("expected V2 route");
     expect(
@@ -109,7 +91,6 @@ describe("session event live ledger routing", () => {
       "command.output_observed",
       "command.completed",
     ]);
-    expect(existsSync(join(root, ".harnery/events.ndjson"))).toBeFalse();
     expect(existsSync(join(root, ".harnery/active", `${instanceId}.json`))).toBeFalse();
     expect(readFileSync(join(root, ".harnery/ledgers/v2/active.ndjson"), "utf8")).not.toContain(
       secret,
@@ -117,9 +98,9 @@ describe("session event live ledger routing", () => {
   });
 
   test("classifies a command outside an open turn as unjoinable", () => {
-    const root = candidateRoot();
+    const root = activeRoot();
     const instanceId = "agent-v2-no-turn";
-    process.env.HARNERY_EVENTS_PATH = join(root, ".harnery/session-events.ndjson");
+    process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
     const route = resolveLiveEventLedgerRouteV2(root);
     if (route.state !== "v2") throw new Error("expected V2 route");
     expect(
@@ -146,49 +127,16 @@ describe("session event live ledger routing", () => {
   });
 });
 
-function configureSession(root: string, instanceId: string, sessionId: string): void {
-  process.env.HARNERY_EVENTS_PATH = join(root, ".harnery/session-events.ndjson");
-  const heartbeat = join(root, ".harnery/active", `${instanceId}.json`);
-  mkdirSync(dirname(heartbeat), { recursive: true });
-  writeFileSync(heartbeat, JSON.stringify({ session_id: sessionId, platform: "claude-code" }));
-}
-
-function candidateRoot(): string {
+function activeRoot(): string {
   const root = temporaryRoot();
-  const keys = loadOrCreateFingerprintKeyStoreV2(root, () => new Date("2026-08-16T17:00:00.000Z"));
-  const profile: CandidateProfileV2 = {
-    initial_schema_digest: EVENT_V2_SCHEMA_DIGEST,
-    contract_source_digest: sha256V2("contract"),
-    harnery_commit: "fixture",
-    host_repository_commit: "fixture",
-    producer_build_ids: [liveEventV2BuildId("fixture")],
-    adapter_capability_profile_digests: [
-      `sha256:${adapterCapabilityProfileDigestV2("claude-code").slice(4)}`,
-    ],
-    config_digest: sha256V2("config"),
-    canonicalizer_version: "harnery-jcs-nfc-v1",
-    fingerprint_version: "hmac-sha256-v1",
-    privacy_key_epoch: keys.active_epoch_id,
-    v1_terminal_digest: sha256V2("v1"),
-    v1_terminal_bytes: 1,
-    v1_terminal_rows: 1,
-    candidate_created_at: "2026-08-16T18:00:00.000Z",
-  };
-  const manifest = buildCandidateGenesisManifestV2({
-    profile,
-    root_id: "root_fixture",
-    instance_id: "inst_cutover",
-    producer: {
-      producer_id: "prd_cutover",
-      boot_id: "boot_cutover",
-      sequence: 1,
-      build_id: "build_fixture",
-      platform: "linux",
-    },
+  initializeEventLedgerV2({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-session-events",
+    now: () => new Date("2026-08-16T18:00:00.000Z"),
   });
-  const path = join(root, EVENT_V2_GENESIS_MANIFEST);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${canonicalJsonV2(manifest)}\n`, { mode: 0o600 });
   return root;
 }
 

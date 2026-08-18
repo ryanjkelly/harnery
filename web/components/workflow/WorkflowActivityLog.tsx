@@ -3,8 +3,8 @@
 import { useMemo } from "react";
 
 import { useHostInfo } from "@/components/HostInfoProvider";
-import { LogTable } from "@/components/log-table/LogTable";
 import { makeHookEventRenderer } from "@/components/log-table/event-renderers";
+import { LogTable } from "@/components/log-table/LogTable";
 import type { EventRow } from "@/lib/coord-reader";
 
 interface Props {
@@ -22,12 +22,9 @@ interface Props {
  *
  * The run transcript is a poor activity feed by construction. An agent that works
  * for eighteen minutes writes exactly two lines to it, one at each end. The
- * activity lives in the coordination stream instead: workflow children run with
- * hooks on, so each one emits ordinary `tool.pre_use` / `tool.post_use` rows to
- * the coord root it ran in, tagged with its own session id. `?run=` on the
- * events endpoints resolves that root from the run manifest and filters its
- * `events.ndjson` down to this run's child sessions, which is what gives this
- * page anything to show.
+ * activity lives in the canonical V2 ledger instead. Workflow children receive
+ * an engine-owned V2 generation even when their headless adapter emits no hooks.
+ * `?run=` resolves the run root and filters the ledger by its workflow scope.
  *
  * Autoscroll, pause-on-scroll-away, search, and row expansion all come from the
  * shared <LogTable> unchanged; this binding only supplies the scope. The house

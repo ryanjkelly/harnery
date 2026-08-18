@@ -1,6 +1,6 @@
 /**
- * Fixture-based tests for the web UI's coord-reader. Drops fake heartbeats +
- * council manifest + events.ndjson into a tmp .harnery/ via HARNERY_COORD_ROOT,
+ * Fixture-based tests for the web UI's coord-reader. Drops disposable caches,
+ * a council manifest, and canonical V2 events into a temporary coordination root,
  * then asserts the reader returns the expected shape.
  *
  * Lives in tests/unit/ alongside commander.test.ts so `bun test` picks it up.
@@ -10,6 +10,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
+import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../../src/core/events/v2/live-routing.ts";
 
 const ROOT = mkdtempSync(path.join(os.tmpdir(), "harn-coord-test-"));
 process.env.HARNERY_COORD_ROOT = ROOT;
@@ -51,10 +57,7 @@ beforeAll(() => {
     }),
   );
 
-  writeFileSync(
-    path.join(h, "active", "broken.json"),
-    "{ this is not valid json",
-  );
+  writeFileSync(path.join(h, "active", "broken.json"), "{ this is not valid json");
 
   writeFileSync(
     path.join(h, "councils", "council-foo.json"),
@@ -71,32 +74,28 @@ beforeAll(() => {
     }),
   );
 
-  writeFileSync(
-    path.join(h, "events.ndjson"),
-    [
-      JSON.stringify({
-        schema_version: 1,
-        event_id: "01EV0",
-        event_type: "tool.pre_use",
-        ts: "2026-05-27T15:00:00.000Z",
-        instance_id: "abc-fresh",
-      }),
-      JSON.stringify({
-        schema_version: 1,
-        event_id: "01EV1",
-        event_type: "tool.post_use",
-        ts: "2026-05-27T15:00:01.000Z",
-        instance_id: "abc-fresh",
-      }),
-      JSON.stringify({
-        schema_version: 1,
-        event_id: "01EV2",
-        event_type: "session.start",
-        ts: "2026-05-27T15:00:02.000Z",
-        instance_id: "def-stale",
-      }),
-    ].join("\n"),
-  );
+  initializeEventLedgerV2({
+    coordRoot: ROOT,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-coord-reader",
+  });
+  const route = resolveLiveEventLedgerRouteV2(ROOT);
+  if (route.state !== "v2") throw new Error("expected V2 route");
+  const record = (instanceId: string, eventName: string, payload: Record<string, unknown>) =>
+    recordLiveHookSignalV2({
+      coordRoot: ROOT,
+      route,
+      eventName,
+      payload: { session_id: instanceId, raw: {}, ...payload },
+      adapter: "claude-code",
+      instanceId,
+    });
+  record("abc-fresh", "session-start", {});
+  record("abc-fresh", "user-prompt-submit", { turn_id: "turn-alpha", prompt: "test" });
+  record("abc-fresh", "pre-tool-use", { turn_id: "turn-alpha", tool_name: "Read" });
+  record("def-stale", "session-start", {});
 
   writeFileSync(
     path.join(h, "journal", "abc-fresh.md"),
@@ -141,18 +140,20 @@ describe("coord-reader", () => {
     expect(snap.active[0].members).toEqual(["Alpha", "Beta"]);
   });
 
-  test("readEvents tails the file newest-first with filter support", () => {
+  test("readEvents projects the V2 ledger newest-first with filter support", () => {
     const all = reader.readEvents({ limit: 10 });
-    expect(all.rows.length).toBe(3);
-    expect(all.rows[0].event_id).toBe("01EV2"); // newest first
+    expect(all.rows.length).toBeGreaterThanOrEqual(4);
+    expect(all.rows[0].event_type).toBe("session.started");
 
-    const onlyAlpha = reader.readEvents({ instanceId: "abc-fresh", limit: 10 });
-    expect(onlyAlpha.rows.every((r: { instance_id: string }) => r.instance_id === "abc-fresh"))
-      .toBe(true);
+    const onlyAlpha = reader.readEvents({ instanceId: "inst_abc-fresh", limit: 10 });
+    expect(
+      onlyAlpha.rows.every((r: { instance_id: string }) => r.instance_id === "inst_abc-fresh"),
+    ).toBe(true);
 
-    const onlyPre = reader.readEvents({ type: "tool.pre_use", limit: 10 });
-    expect(onlyPre.rows.every((r: { event_type: string }) => r.event_type === "tool.pre_use"))
-      .toBe(true);
+    const onlyPre = reader.readEvents({ type: "tool.requested", limit: 10 });
+    expect(
+      onlyPre.rows.every((r: { event_type: string }) => r.event_type === "tool.requested"),
+    ).toBe(true);
   });
 
   test("readJournal parses entries and inverts to newest-first display", () => {

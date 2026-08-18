@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Adapter } from "../../core/hooks/events/schema.ts";
+import type { Adapter } from "../../core/adapter.ts";
 
 export type InstructionComponentRole = "always_loaded" | "just_in_time" | "runtime_config";
 

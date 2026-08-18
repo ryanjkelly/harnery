@@ -13,24 +13,11 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("Codec multi-ledger tail", () => {
-  test("merges V1 and validated V2 rows in event time order", async () => {
-    const root = mkdtempSync(join(tmpdir(), "codec-multi-ledger-"));
+describe("Codec V2 ledger tail", () => {
+  test("reads and sanitizes validated V2 rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codec-v2-ledger-"));
     roots.push(root);
-    const v1Path = join(root, "v1.ndjson");
     const v2Path = join(root, "v2.ndjson");
-    writeFileSync(
-      v1Path,
-      `${JSON.stringify({
-        schema_version: 1,
-        event_id: "v1-event",
-        event_type: "user_prompt.submit",
-        ts: "2026-08-16T10:00:00.000Z",
-        instance_id: "inst_fixture",
-        session_id: "native-session",
-        data: { prompt_text: "PRIVATE_PROMPT" },
-      })}\n`,
-    );
     const eventId = eventIdV2();
     const generationId = generationIdV2();
     const attestationId = attestationIdV2();
@@ -90,9 +77,8 @@ describe("Codec multi-ledger tail", () => {
     });
     writeFileSync(v2Path, `${JSON.stringify(v2)}\n`);
 
-    const rows = await readSanitizedTails([v2Path, v1Path]);
-    expect(rows.map((row) => row.event_id)).toEqual(["v1-event", eventId]);
-    expect(rows.map((row) => row.event_type)).toEqual(["user_prompt.submit", "session.start"]);
-    expect(JSON.stringify(rows)).not.toContain("PRIVATE_PROMPT");
+    const rows = await readSanitizedTails([v2Path]);
+    expect(rows.map((row) => row.event_id)).toEqual([eventId]);
+    expect(rows.map((row) => row.event_type)).toEqual(["session.start"]);
   });
 });

@@ -9,9 +9,9 @@
  * Codex `.codex/hooks.json`).
  */
 
-export type { Adapter as AdapterId } from "../events/schema.ts";
+export type { Adapter as AdapterId } from "../../adapter.ts";
 
-import type { Adapter as AdapterId } from "../events/schema.ts";
+import type { Adapter as AdapterId } from "../../adapter.ts";
 
 export interface HookEvent {
   /** Key under the adapter settings file's `hooks` map (e.g. `SessionStart`, `preToolUse`). */

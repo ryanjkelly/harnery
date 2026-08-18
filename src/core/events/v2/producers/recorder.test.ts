@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { Adapter } from "../../../adapter.ts";
 import { readCodexArchiveObservationsV2 } from "../../../agents/codex-archive-v2.ts";
 import {
   listSessionFinalizationRequestsV2,
@@ -20,7 +21,6 @@ import {
   requestSessionEndExplicitV2,
 } from "../../../agents/session-finalizer-v2.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { Adapter } from "../../../hooks/events/schema.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV2 } from "../builder.ts";
 import { canonicalJsonV2, sha256V2 } from "../canonical.ts";
@@ -616,9 +616,6 @@ function candidateRoot(adapter: Adapter = "claude-code"): string {
     canonicalizer_version: "harnery-jcs-nfc-v1",
     fingerprint_version: "hmac-sha256-v1",
     privacy_key_epoch: keyStore.active_epoch_id,
-    v1_terminal_digest: sha256V2("v1"),
-    v1_terminal_bytes: 1,
-    v1_terminal_rows: 1,
     candidate_created_at: "2026-08-16T18:00:00.000Z",
   };
   const event = buildEventV2("ledger.genesis", {
@@ -647,7 +644,6 @@ function candidateRoot(adapter: Adapter = "claude-code"): string {
       genesis_profile_digest: candidateProfileDigestV2(profile),
       contract_digest: profile.contract_source_digest,
       generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
-      v1_terminal_segment_digest: profile.v1_terminal_digest,
       canonicalizer: "harnery-jcs-nfc-v1",
       privacy_epoch_id: profile.privacy_key_epoch,
       candidate_created_at: profile.candidate_created_at,
@@ -826,7 +822,7 @@ describe("event ledger V2 hook intake spool", () => {
     const contents = readFileSync(join(root, LEDGER_ROOT, "diagnostics", files[0]!), "utf8");
     expect(contents).not.toContain("RAW_TOOL_OUTPUT_SECRET");
     expect(contents).toContain("no_open_span");
-    expect(contents).toContain("never-seen");
+    expect(contents).not.toContain("never-seen");
     expect(contents).toContain("sha256");
   });
 
@@ -854,7 +850,7 @@ describe("event ledger V2 hook intake spool", () => {
 
     const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
     const derivedRequest = rows.find((event) => event.event_type === "tool.requested");
-    if (!derivedRequest || derivedRequest.event_type !== "tool.requested") {
+    if (derivedRequest?.event_type !== "tool.requested") {
       throw new Error("derived request missing");
     }
     expect(derivedRequest.provenance.attestation).toBe("derived");
@@ -911,7 +907,7 @@ describe("event ledger V2 hook intake spool", () => {
       (event) =>
         event.event_type === "tool.completed" && event.provenance.attestation === "derived",
     );
-    if (!derived || derived.event_type !== "tool.completed") {
+    if (derived?.event_type !== "tool.completed") {
       throw new Error("derived terminal missing");
     }
     expect(derived.payload.outcome).toBe("unknown");
@@ -963,7 +959,7 @@ describe("event ledger V2 hook intake spool", () => {
       (event) =>
         event.event_type === "tool.completed" && event.provenance.attestation === "derived",
     );
-    if (!derived || derived.event_type !== "tool.completed") {
+    if (derived?.event_type !== "tool.completed") {
       throw new Error("derived terminal missing");
     }
     expect(derived.payload.recovery?.reason).toBe("completion_not_observed_before_next_turn");
@@ -984,7 +980,7 @@ describe("event ledger V2 hook intake spool", () => {
     expect(result.state).toBe("recorded");
     const rows = readActiveLedgerV2(root).events.map((entry) => entry.event);
     const started = rows.find((event) => event.event_type === "session.started");
-    if (!started || started.event_type !== "session.started") {
+    if (started?.event_type !== "session.started") {
       throw new Error("derived session.started missing");
     }
     expect(started.provenance.attestation).toBe("derived");
@@ -1157,7 +1153,7 @@ describe("pending explicit-end expiry", () => {
         event.event_type === "tool.completed" &&
         event.payload.recovery?.reason === "explicit_end_salvage",
     );
-    if (!salvage || salvage.event_type !== "tool.completed") {
+    if (salvage?.event_type !== "tool.completed") {
       throw new Error("salvage terminal missing");
     }
     expect(salvage.payload.outcome).toBe("unknown");

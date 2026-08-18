@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Adapter } from "../hooks/events/schema.ts";
+import type { Adapter } from "../adapter.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPSULE_BYTES = 32 * 1024;

@@ -298,7 +298,8 @@ function computePeerTableIfChanged(
     (heartbeat) => heartbeat.instance_id && heartbeat.instance_id !== selfInstanceId,
   );
   // Cross-machine presence (ADR 0016): sessions on other machines, from the
-  // locally-fetched presence refs. Advisory (no claim blocking in v1).
+  // locally-fetched presence refs. Advisory only; remote presence never grants
+  // claim authority.
   const remote = readRemoteMachinesSafe(coordRoot);
   if (peers.length === 0 && remote.length === 0) return "";
 

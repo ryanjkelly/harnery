@@ -4,15 +4,11 @@
  * Per-event-shape `LogRowRenderer` configs consumed by the shared
  * `<LogTable>`. Two flavors today:
  *
- *   - `hookEventRenderer`: `.harnery/events.ndjson` (canonical per-hook log).
- *     One row per PreToolUse/PostToolUse/PromptSubmit/SessionStart event from
- *     agent-hooks. `data.tool_input` arrives as a JSON-encoded STRING; the
- *     renderer parses it back to an object so the expand-row JSON view
- *     shows structure instead of an escaped blob.
+ *   - `hookEventRenderer`: canonical V2 events across hooks, commands, and
+ *     coordination producers.
  *
- *   - `sessionEventRenderer`: `.harnery/session-events.ndjson` (session-tee
- *     command stream). command_start / output / command_end / narration /
- *     end_of_turn / hook_event. Higher cadence; rows are typically smaller.
+ *   - `sessionEventRenderer`: privacy-safe V2 command projection. Rows are
+ *     typically smaller and optimized for live command review.
  *
  * Both renderers produce the same `LogRow` shape so the table doesn't have
  * to know which source it's rendering.
@@ -38,7 +34,9 @@ export function makeHookEventRenderer(
     getKindVariant: (e) => hookEventVariant(e.event_type),
     getAgentName: (e) => (e.instance_id ? (instanceToName[e.instance_id] ?? null) : null),
     getAgentInstanceId: (e) => e.instance_id ?? null,
-    renderSummary: (e) => <HookEventSummary type={e.event_type} data={e.data} repoRoot={repoRoot} />,
+    renderSummary: (e) => (
+      <HookEventSummary type={e.event_type} data={e.data} repoRoot={repoRoot} />
+    ),
     getSearchableText: (e) => hookEventSearchText(e, instanceToName),
     getRaw: (e) => ({ ...e, data: unpackToolInput(e.data) }),
   };

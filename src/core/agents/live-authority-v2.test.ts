@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { Adapter } from "../adapter.ts";
 import { buildEventV2 } from "../events/v2/builder.ts";
 import { canonicalJsonV2, sha256V2 } from "../events/v2/canonical.ts";
 import { adapterCapabilityProfileDigestV2 } from "../events/v2/capabilities.ts";
@@ -19,7 +20,6 @@ import { EVENT_V2_SCHEMA_DIGEST } from "../events/v2/generated.ts";
 import { recordHookSignalV2 } from "../events/v2/producers/recorder.ts";
 import { readActiveLedgerV2 } from "../events/v2/reader.ts";
 import type { ParsedPayload } from "../hooks/adapter/parse.ts";
-import type { Adapter } from "../hooks/events/schema.ts";
 import {
   recordLiveClaimChangeV2,
   recordLiveLifecycleChangeV2,
@@ -31,7 +31,7 @@ import {
 } from "./live-lifecycle-v2.ts";
 import { renderPromptContext } from "./render/prompt-context.ts";
 import { renderSessionContext } from "./render/session-context.ts";
-import { healHeartbeat, readHeartbeat } from "./state/heartbeat-writer.ts";
+import { readHeartbeat } from "./state/heartbeat-writer.ts";
 import {
   ensureLiveCoordinationHeartbeat,
   readLiveCoordinationRows,
@@ -43,8 +43,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("live V2 coordination cutover", () => {
-  test("records task, claim, and lifecycle authority without writing a V1 row", () => {
+describe("live V2 coordination", () => {
+  test("records task, claim, and lifecycle authority canonically", () => {
     const root = startedRoot();
 
     expect(existsSync(join(root, ".harnery/active/operator.json"))).toBe(false);
@@ -73,7 +73,6 @@ describe("live V2 coordination cutover", () => {
       "coord.lifecycle_changed",
     ]);
     expect(coordinationEvents.every((event) => event.time.monotonic_ns === undefined)).toBeTrue();
-    expect(existsSync(join(root, ".harnery/events.ndjson"))).toBe(false);
     expect(readHeartbeat(root, "operator")).toMatchObject({
       schema_version: 2,
       task: "Ship V2",
@@ -83,7 +82,7 @@ describe("live V2 coordination cutover", () => {
       v2_task_state: "set",
       suggested_session_name: "Agent unknown - Ship V2",
     });
-    expect(readHeartbeat(root, "operator")?.task_state_reason).toBeUndefined();
+    expect(readHeartbeat(root, "operator")?.task_state_reason).toBe("dependency");
     expect(JSON.stringify(coordinationEvents)).not.toContain("Ship V2");
     expect(readCoordinationViewV2(root)).toMatchObject({
       source_complete: true,
@@ -98,21 +97,25 @@ describe("live V2 coordination cutover", () => {
     });
   });
 
-  test("heals a new generation and replaces stale V1 cache state before task and claim", () => {
+  test("heals a new generation and replaces a stale generation cache before task and claim", () => {
     const root = startedRoot();
     const active = join(root, ".harnery/active/operator.json");
     mkdirSync(dirname(active), { recursive: true });
     writeFileSync(
       active,
       JSON.stringify({
-        schema_version: 1,
+        schema_version: 2,
         instance_id: "operator",
         session_id: "stale-session",
         platform: "cursor",
         last_heartbeat: "2020-01-01T00:00:00.000Z",
         started_at: "2020-01-01T00:00:00.000Z",
-        files_touched: ["stale-v1.ts"],
-        task: "stale V1 task",
+        files_touched: ["stale-generation.ts"],
+        task: "stale task",
+        v2_instance_id: "inst_operator",
+        v2_generation_id: "gen_stale",
+        v2_projection_event_id: "evt_stale",
+        v2_task_state: "set",
       }),
     );
 
@@ -205,14 +208,14 @@ describe("live V2 coordination cutover", () => {
     });
   });
 
-  test("hook context excludes populated stale V1 active rows in candidate mode", () => {
+  test("hook context excludes populated stale-generation cache rows", () => {
     const root = startedRoot();
     const stale = join(root, ".harnery/active/stale-peer.json");
     mkdirSync(dirname(stale), { recursive: true });
     writeFileSync(
       stale,
       JSON.stringify({
-        schema_version: 1,
+        schema_version: 2,
         instance_id: "stale-peer",
         session_id: "stale-session",
         name: "Zombie",
@@ -221,7 +224,11 @@ describe("live V2 coordination cutover", () => {
         started_at: "2020-01-01T00:00:00.000Z",
         last_heartbeat: "2020-01-01T00:00:00.000Z",
         files_touched: ["stale-only.ts"],
-        task: "legacy task",
+        task: "stale task",
+        v2_instance_id: "inst_stale-peer",
+        v2_generation_id: "gen_stale-peer",
+        v2_projection_event_id: "evt_stale-peer",
+        v2_task_state: "set",
       }),
     );
 
@@ -282,7 +289,7 @@ describe("live V2 coordination cutover", () => {
       readCoordinationViewV2(root).instances.inst_operator?.provisional_termination,
     ).toBeUndefined();
     expect(
-      healHeartbeat(root, "operator", "native-session", undefined, "claude-code"),
+      ensureLiveCoordinationHeartbeat(root, "operator", "native-session", "claude-code"),
     ).not.toBeNull();
   });
 });
@@ -340,9 +347,6 @@ function candidateRoot(adapter: Adapter = "claude-code"): string {
     canonicalizer_version: "harnery-jcs-nfc-v1",
     fingerprint_version: "hmac-sha256-v1",
     privacy_key_epoch: keyStore.active_epoch_id,
-    v1_terminal_digest: sha256V2("v1"),
-    v1_terminal_bytes: 1,
-    v1_terminal_rows: 1,
     candidate_created_at: "2026-08-16T18:00:00.000Z",
   };
   const event = buildEventV2("ledger.genesis", {
@@ -371,7 +375,6 @@ function candidateRoot(adapter: Adapter = "claude-code"): string {
       genesis_profile_digest: candidateProfileDigestV2(profile),
       contract_digest: profile.contract_source_digest,
       generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
-      v1_terminal_segment_digest: profile.v1_terminal_digest,
       canonicalizer: "harnery-jcs-nfc-v1",
       privacy_epoch_id: profile.privacy_key_epoch,
       candidate_created_at: profile.candidate_created_at,

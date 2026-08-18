@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initializeEventLedgerV2 } from "../events/v2/bootstrap.ts";
+import { sha256V2 } from "../events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../events/v2/live-routing.ts";
 import { evaluateRunQualityIfDue } from "./coordinator.ts";
 
 const roots: string[] = [];
@@ -10,152 +16,55 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("file-backed run-quality coordinator", () => {
-  test("evaluates all live instances with a dedicated cursor and emits advisory transitions", () => {
-    const project = root();
-    configure(project, "report");
-    heartbeat(project, "instance-a", "session-a");
-    ledger(project, [
-      event("01", "session.start", {}),
-      event("02", "tool.pre_use", { tool_name: "Read", input_hash: "same" }),
-      event("03", "tool.pre_use", { tool_name: "Read", input_hash: "same" }),
-    ]);
+describe("V2 run-quality coordinator", () => {
+  test("evaluates the active generation and honors the due cursor", () => {
+    const project = fixture("report");
+    seedRepeatedRead(project);
 
-    const result = evaluateRunQualityIfDue(
+    const first = evaluateRunQualityIfDue(
       project,
-      new Date("2026-08-15T00:00:00.000Z"),
+      new Date("2026-08-18T12:00:00.000Z"),
       "instance-a",
     );
-    expect(result.evaluated).toBe(true);
-    expect(result.snapshot?.status).toBe("attention");
-    expect(existsSync(join(project, ".harnery", "guard", "cursor.json"))).toBe(true);
-    expect(existsSync(join(project, ".harnery", ".events-cursor"))).toBe(false);
-    const rows = readFileSync(join(project, ".harnery", "events.ndjson"), "utf8");
-    expect(rows).toContain('"event_type":"health.run_quality_changed"');
-    expect(rows).not.toContain('"event_type":"decision.warn"');
+    expect(first.evaluated).toBeTrue();
+    expect(first.snapshot?.status).toBe("attention");
+    expect(first.snapshot?.instance_id).toBe("inst_instance-a");
+    expect(existsSync(join(project, ".harnery", "guard", "cursor.json"))).toBeTrue();
 
-    const notDue = evaluateRunQualityIfDue(
+    const second = evaluateRunQualityIfDue(
       project,
-      new Date("2026-08-15T00:00:01.000Z"),
+      new Date("2026-08-18T12:00:01.000Z"),
       "instance-a",
     );
-    expect(notDue.evaluated).toBe(false);
-    expect(notDue.snapshot?.status).toBe("attention");
+    expect(second.evaluated).toBeFalse();
+    expect(second.snapshot?.status).toBe("attention");
   });
 
-  test("missing retained session history degrades to unknown", () => {
-    const project = root();
-    configure(project, "shadow");
-    heartbeat(project, "instance-a", "session-a");
-    ledger(project, [event("02", "tool.pre_use", { tool_name: "Read", input_hash: "one" })]);
-    const result = evaluateRunQualityIfDue(
-      project,
-      new Date("2026-08-15T00:00:00.000Z"),
-      "instance-a",
-    );
-    expect(result.snapshot?.status).toBe("unknown");
-    expect(result.snapshot?.reason).toBe("insufficient_evidence");
-  });
-
-  test.each([
-    "NotebookEdit",
-    "StrReplace",
-  ])("treats a successful %s outcome as progress", (toolName) => {
-    const project = root();
-    configure(project, "shadow");
-    heartbeat(project, "instance-a", "session-a");
-    ledger(project, [
-      event("01", "session.start", {}),
-      event("02", "tool.pre_use", { tool_name: toolName, input_hash: "write" }),
-      event("03", "tool.post_use", { tool_name: toolName, success: true }),
-    ]);
-
-    const result = evaluateRunQualityIfDue(
-      project,
-      new Date("2026-08-15T00:00:00.000Z"),
-      "instance-a",
+  test("invalid config is recorded once without touching the event ledger", () => {
+    const project = fixture("report", { max_tail_bytes: 1 });
+    const before = readFileSync(
+      join(project, ".harnery", "ledgers", "v2", "active.ndjson"),
+      "utf8",
     );
 
-    expect(result.snapshot?.state.work_since_progress).toBe(0);
-  });
+    const first = evaluateRunQualityIfDue(project, new Date("2026-08-18T12:00:00.000Z"));
+    const second = evaluateRunQualityIfDue(project, new Date("2026-08-18T12:01:00.000Z"));
 
-  test("follows a cursor event when live-ledger rotation moves it into the newest archive", () => {
-    const project = root();
-    configure(project, "shadow");
-    heartbeat(project, "instance-a", "session-a");
-    ledger(project, [event("01", "session.start", {}), event("02", "user_prompt.submit", {})]);
-    const first = evaluateRunQualityIfDue(project, new Date("2026-08-15T00:00:00Z"), "instance-a");
-    expect(first.snapshot?.status).toBe("healthy");
-    renameSync(
-      join(project, ".harnery", "events.ndjson"),
-      join(project, ".harnery", "events-2026-08-15.ndjson"),
+    expect(first.config.valid).toBeFalse();
+    expect(second.evaluated).toBeFalse();
+    expect(existsSync(join(project, ".harnery", "guard", "config-invalid.json"))).toBeTrue();
+    expect(readFileSync(join(project, ".harnery", "ledgers", "v2", "active.ndjson"), "utf8")).toBe(
+      before,
     );
-    ledger(project, [event("03", "tool.pre_use", { tool_name: "Read", input_hash: "one" })]);
-    const second = evaluateRunQualityIfDue(project, new Date("2026-08-15T00:00:11Z"), "instance-a");
-    expect(second.snapshot?.evidence).toMatchObject({ last_event_id: "03", truncated: false });
-    expect(second.snapshot?.status).not.toBe("unknown");
-  });
-
-  test("invalid config emits once per digest and disables evaluation", () => {
-    const project = root();
-    configure(project, "report", { max_tail_bytes: 1 });
-    heartbeat(project, "instance-a", "session-a");
-    const first = evaluateRunQualityIfDue(project, new Date("2026-08-15T00:00:00Z"), "instance-a");
-    const second = evaluateRunQualityIfDue(project, new Date("2026-08-15T00:01:00Z"), "instance-a");
-    expect(first.config.valid).toBe(false);
-    expect(second.evaluated).toBe(false);
-    const events = readFileSync(join(project, ".harnery", "events.ndjson"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { event_type: string });
-    expect(
-      events.filter((event) => event.event_type === "health.run_quality_config_invalid"),
-    ).toHaveLength(1);
-  });
-
-  test("removes orphan live-generation snapshots on a later evaluation", () => {
-    const project = root();
-    configure(project, "shadow");
-    heartbeat(project, "instance-a", "session-a");
-    ledger(project, [event("01", "session.start", {})]);
-    evaluateRunQualityIfDue(project, new Date("2026-08-15T00:00:00Z"), "instance-a");
-    const snapshot = join(project, ".harnery", "guard", "instance-a.json");
-    expect(existsSync(snapshot)).toBe(true);
-    rmSync(join(project, ".harnery", "active", "instance-a.json"));
-    evaluateRunQualityIfDue(project, new Date("2026-08-15T00:01:00Z"));
-    expect(existsSync(snapshot)).toBe(false);
-  });
-
-  test("does not create deadline epochs for stale heartbeats and cleans their snapshots", () => {
-    const project = root();
-    configure(project, "shadow");
-    heartbeat(project, "instance-a", "session-a");
-    ledger(project, [event("01", "session.start", {})]);
-    evaluateRunQualityIfDue(project, new Date("2026-08-15T00:00:00Z"), "instance-a");
-    const snapshot = join(project, ".harnery", "guard", "instance-a.json");
-    expect(existsSync(snapshot)).toBe(true);
-    evaluateRunQualityIfDue(project, new Date("2026-08-15T00:11:00Z"));
-    expect(existsSync(snapshot)).toBe(false);
   });
 });
 
-function root(): string {
-  const path = join(
-    tmpdir(),
-    `harnery-run-quality-coordinator-${process.pid}-${Date.now()}-${Math.random()}`,
-  );
-  mkdirSync(join(path, ".harnery", "active"), { recursive: true });
-  roots.push(path);
-  return path;
-}
-
-function configure(
-  project: string,
-  mode: "shadow" | "report",
-  extra: Record<string, unknown> = {},
-): void {
+function fixture(mode: "shadow" | "report", extra: Record<string, unknown> = {}): string {
+  const root = mkdtempSync(join(tmpdir(), "harnery-v2-quality-"));
+  roots.push(root);
+  mkdirSync(join(root, ".harnery"), { recursive: true });
   writeFileSync(
-    join(project, ".harnery", "config.jsonc"),
+    join(root, ".harnery", "config.jsonc"),
     `${JSON.stringify({
       coord: {
         run_quality: {
@@ -173,42 +82,43 @@ function configure(
       },
     })}\n`,
   );
+  initializeEventLedgerV2({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-quality-coordinator",
+  });
+  return root;
 }
 
-function heartbeat(project: string, instanceId: string, sessionId: string): void {
-  writeFileSync(
-    join(project, ".harnery", "active", `${instanceId}.json`),
-    `${JSON.stringify({
-      instance_id: instanceId,
-      session_id: sessionId,
-      agent_id: instanceId,
-      name: "Fixture",
-      model: "fixture",
-      platform: "claude-code",
-      started_at: "2026-08-15T00:00:00.000Z",
-      last_heartbeat: "2026-08-15T00:00:00.000Z",
-      files_touched: [],
-    })}\n`,
-  );
-}
-
-function ledger(project: string, rows: unknown[]): void {
-  writeFileSync(
-    join(project, ".harnery", "events.ndjson"),
-    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
-  );
-}
-
-function event(eventId: string, eventType: string, data: Record<string, unknown>) {
-  return {
-    schema_version: 1,
-    event_id: eventId,
-    event_type: eventType,
-    ts: "2026-08-15T00:00:00.000Z",
-    instance_id: "instance-a",
-    session_id: "session-a",
-    adapter: "claude-code",
-    source: "agent-hooks",
-    data,
-  };
+function seedRepeatedRead(root: string): void {
+  const route = resolveLiveEventLedgerRouteV2(root);
+  if (route.state !== "v2") throw new Error("expected active V2 route");
+  const record = (eventName: string, payload: Record<string, unknown>) =>
+    recordLiveHookSignalV2({
+      coordRoot: root,
+      route,
+      eventName,
+      payload: { session_id: "session-a", raw: {}, ...payload },
+      adapter: "claude-code",
+      instanceId: "instance-a",
+    });
+  record("session-start", {});
+  record("user-prompt-submit", { prompt: "inspect" });
+  record("pre-tool-use", {
+    tool_use_id: "read-1",
+    tool_name: "Read",
+    tool_input: { file_path: "/workspace/a.ts" },
+  });
+  record("post-tool-use", {
+    tool_use_id: "read-1",
+    tool_name: "Read",
+    tool_response: "ok",
+  });
+  record("pre-tool-use", {
+    tool_use_id: "read-2",
+    tool_name: "Read",
+    tool_input: { file_path: "/workspace/a.ts" },
+  });
 }

@@ -1,13 +1,8 @@
 /**
  * Image-feed reader for the harnery web UI.
  *
- * In closed mode, the source of truth is the V1 canonical event stream:
- * `image.captured` events point at content-addressed blobs in `.harnery/images/`.
- * V2 fails explicitly unavailable until its artifact reference carries the
- * blob-address fields this reader needs; fenced V1 rows are never consulted.
- * This module groups those events by content hash (one card per distinct
- * image with a touch timeline) and resolves a blob path for the byte-serving
- * route. No sibling-JSON store: the event stream IS the context.
+ * V2 intentionally does not retain raw image blobs. The feed reports explicit
+ * unavailability until a privacy-safe artifact projection is added.
  */
 
 import { randomUUID } from "node:crypto";
@@ -22,8 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { readEventV2ControlState } from "../../src/core/events/v2/control";
-import { harneryDir, readAgents, readInstanceIdentities, scanEventsTail } from "./coord-reader";
+import { harneryDir } from "./coord-reader";
 
 /** ext → HTTP content-type. Mirrors the IMAGE_EXTS set in the capture effect. */
 const CONTENT_TYPES: Record<string, string> = {
@@ -86,30 +80,10 @@ export interface ImageCapturesResponse {
     dir: string;
     distinct: number;
     total_touches: number;
-    source: "v1" | "v2";
+    source: "v2";
     authoritative: boolean;
     reason?: string;
   };
-}
-
-/** Resolve `instance_id → display name`, mirroring /events: live heartbeats
- * win, the durable start-event log fills in agents that have since ended. */
-function buildNameMap(): Record<string, string> {
-  const map: Record<string, string> = {};
-  const snap = readAgents();
-  for (const hb of [...snap.active, ...snap.stale]) map[hb.instance_id] = hb.name;
-  const ids = readInstanceIdentities();
-  for (const [iid, id] of Object.entries(ids)) {
-    if (!map[iid]) map[iid] = id.name;
-  }
-  return map;
-}
-
-function displayName(instanceId: string | undefined, nameMap: Record<string, string>): string {
-  if (!instanceId) return "unknown";
-  const name = nameMap[instanceId];
-  if (name) return name.startsWith("agent-") ? name : `agent-${name}`;
-  return `agent-${instanceId.slice(0, 8)}`;
 }
 
 /**
@@ -117,96 +91,18 @@ function displayName(instanceId: string | undefined, nameMap: Record<string, str
  * `limit` caps the number of distinct images returned (not raw events).
  */
 export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesResponse {
-  const limit = opts.limit ?? 300;
+  void opts;
   const dir = imagesDir();
-  const control = readEventV2ControlState(path.dirname(harneryDir()));
-  if (control.state !== "closed") {
-    return {
-      images: [],
-      meta: {
-        dir,
-        distinct: 0,
-        total_touches: 0,
-        source: "v2",
-        authoritative: false,
-        reason:
-          control.state === "candidate" || control.state === "active"
-            ? "V2 artifact observations do not yet expose the content-addressed blob key and extension required by the image feed"
-            : `V2 control state is ${control.state}; fenced V1 image history was not read`,
-      },
-    };
-  }
-
-  const nameMap = buildNameMap();
-  const blobExt = blobExtIndex(dir); // hash → ext present on disk
-
-  const byHash = new Map<string, ImageCapture>();
-  let totalTouches = 0;
-
-  // Tail-scan the ledger newest-first. `image.captured` events are sparse, so
-  // we walk back (bounded by scanEventsTail's cap) collecting the newest
-  // `limit` distinct images; the whole-file readFileSync this replaced silently
-  // returned [] once events.ndjson passed V8's ~512MB max string length.
-  scanEventsTail((row) => {
-    if (row.event_type !== "image.captured") return;
-    const d = row.data as unknown as ImageCaptureData | undefined;
-    if (!d?.hash) return;
-    const existing = byHash.get(d.hash);
-    // Newest `limit` distinct images already collected — the next new hash is
-    // an older image the feed won't show, so stop the scan.
-    if (!existing && byHash.size >= limit) return false;
-
-    const ts = row.ts ?? "";
-    const touch: ImageTouch = {
-      instance_id: row.instance_id ?? "",
-      agent: displayName(row.instance_id, nameMap),
-      role: d.role,
-      ts,
-      source_path: d.source_path,
-      tool_name: d.tool_name,
-      intent: d.intent,
-      command_head: d.command_head,
-      adapter: row.adapter,
-    };
-    totalTouches++;
-
-    if (existing) {
-      existing.touches.push(touch);
-      existing.touch_count++;
-      if (ts > existing.latest_ts) existing.latest_ts = ts;
-      if (ts < existing.first_ts) existing.first_ts = ts;
-      if (!existing.agents.includes(touch.agent)) existing.agents.push(touch.agent);
-      if (!existing.roles.includes(touch.role)) existing.roles.push(touch.role);
-    } else {
-      byHash.set(d.hash, {
-        hash: d.hash,
-        ext: d.ext,
-        bytes: d.bytes,
-        latest_ts: ts,
-        first_ts: ts,
-        touch_count: 1,
-        agents: [touch.agent],
-        roles: [touch.role],
-        touches: [touch],
-        blob_exists: blobExt.has(d.hash),
-      });
-    }
-  });
-
-  const images = [...byHash.values()];
-  for (const img of images) {
-    img.touches.sort((a, b) => (a.ts < b.ts ? 1 : -1)); // newest-first
-  }
-  images.sort((a, b) => (a.latest_ts < b.latest_ts ? 1 : -1));
-
   return {
-    images: images.slice(0, limit),
+    images: [],
     meta: {
       dir,
-      distinct: byHash.size,
-      total_touches: totalTouches,
-      source: "v1",
-      authoritative: true,
+      distinct: 0,
+      total_touches: 0,
+      source: "v2",
+      authoritative: false,
+      reason:
+        "V2 artifact observations do not expose the content-addressed blob key and extension required by the image feed",
     },
   };
 }

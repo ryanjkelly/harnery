@@ -157,7 +157,6 @@ function fixtureEvents(): {
       genesis_profile_digest: `sha256:${"1".repeat(64)}`,
       contract_digest: `sha256:${"2".repeat(64)}`,
       generated_schema_digest: `sha256:${"3".repeat(64)}`,
-      v1_terminal_segment_digest: `sha256:${"4".repeat(64)}`,
       canonicalizer: "harnery-jcs-nfc-v1",
       privacy_epoch_id: "pep_fixture",
       candidate_created_at: "2026-08-16T15:00:00.000Z",

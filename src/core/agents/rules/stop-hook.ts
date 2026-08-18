@@ -1,182 +1,31 @@
 /**
- * Stop-hook verdict: rule 1/3, 2/3, 3/3 enforcement evaluated
- * from the canonical event stream alone (no transcript scan).
+ * Stop-hook verdict for the V2-only runtime.
  *
- * Codex is observe-only: its Stop continuation can replace the user-facing
- * answer in clients that retain only the final continuation response.
- *
- * Enforced adapters:
- * Rule 1/3: `state.status_checked` event with matching turn boundary exists.
- * Rule 2/3: latest `turn.stop` event has `status_box_present: true` (or the
- *            stop currently firing carries that field via the in-flight event
- *            agent-hook emits before the stop hook runs).
- * Rule 3/3: `state.task_set` event with matching turn boundary exists.
- * Session-naming rule (at most once per session, CC semantics only): the turn
- *            whose set-task produced `suggested_session_name` must carry an
- *            in-window `turn.stop` with `session_name_present: true`.
- *
- * Pure-prose-turn exemption: when zero `tool.pre_use` events fire in
- * the current turn, rules 1/3 and 3/3 do not apply. Rule 2/3 still applies
- * as a user-visible mobile cue.
- *
- * Remediation continuity: an adapter whose Stop channel re-prompts by
- * submitting a new user message (Cursor's `followup_message`) opens a fresh
- * turn to repair the previous one. Such a turn inherits the window of the turn
- * it repairs, so ritual events accumulate instead of alternating. See
- * `resolveTurnStartMs`.
+ * V2 records lifecycle and turn completion authoritatively, but it does not
+ * retain reply bodies. The old reply-ritual policy therefore cannot be
+ * evaluated without violating V2's privacy contract. Stop remains fail-open;
+ * session finalization is enforced independently by the V2 finalizer.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import {
-  agentsRequireGitFinalization,
-  endOfTurnStatusCommand,
-  resolveBinName,
-} from "../../config.ts";
 import { readEventV2ControlState } from "../../events/v2/control.ts";
 
 export type { VerdictResult } from "./verdict.ts";
 
 import type { VerdictResult } from "./verdict.ts";
 
-interface CanonicalEvent {
-  event_id: string;
-  event_type: string;
-  ts: string;
-  instance_id: string;
-  session_id: string;
-  turn_id?: string;
-  adapter: string;
-  source: string;
-  data: Record<string, unknown>;
-}
-
 export interface StopHookRequest {
   rule: "stop-hook";
   instance_id: string;
   session_id?: string;
-  /** Firing adapter. Selects the end-of-turn ack signal (see `ackSignalFor`).
-   * Undefined → Claude Code semantics (transcript-scanned status box). */
   adapter?: string;
-  /** Wall-clock cutoff for the current turn; events strictly after this are not yet relevant. */
   now_ms?: number;
-  /** Override the turn-window discovery (used by tests). */
   turn_window?: { start_ms: number; end_ms: number };
-  /** Bypass switch: operator escape hatch identical to HARNERY_AGENT_COORD_BYPASS_STOP. */
   bypass?: boolean;
-  /** Headless child spawned by `harn workflow` (HARNERY_WORKFLOW_CHILD=1).
-   * The end-of-turn ritual exists to surface status to a HUMAN reader; a
-   * workflow child reports to the engine's transcript instead, so the ritual is
-   * meaningless there — worse, blocking burns the child's turn budget on
-   * re-prompts (observed as error_max_turns in the Phase 1 spike). Exempting
-   * here, rather than disabling the child's hooks wholesale, keeps heartbeat +
-   * event capture on: the child stays visible to peers and the coord layer. */
   workflow_child?: boolean;
 }
 
-/**
- * The end-of-turn "I surfaced my status" signal, detected differently per
- * adapter because the ritual's *goal* (status visible to the human) is reached
- * by different means:
- *
- * - **Claude Code / Codex** collapse tool calls in the UI, so the human-visible
- *   signal is the verbatim status-box paste in the reply (rule 2/3, detected
- *   by scanning the transcript for the `┌─ agent-` prefix, `status_box_present`
- *   on `turn.stop`).
- * - **Cursor** renders Shell output inline, so simply *running* `harn agents
- *   status` (which emits `state.status_checked`) already puts the box on
- *   screen. The separate paste is redundant, and undetectable anyway, since
- *   Cursor's stop payload carries neither a transcript path nor the assistant
- *   message. So rule 1/3 *is* the ack signal on Cursor; rule 2/3 collapses into
- *   it rather than being a second requirement.
- *
- * This is why the fix is not "relax 2/3 because we can't see it": it's "2/3
- * and 1/3 are two detections of the same thing, and Cursor's inline UI makes
- * 1/3 the right one." The enforcement *channel* (exit-2+stderr vs Cursor's
- * `followup_message`) is handled separately in hooks/adapter/output.ts.
- */
-type AckSignal = "status_box_present" | "status_checked";
-
-function ackSignalFor(adapter?: string): AckSignal {
-  return adapter === "cursor" ? "status_checked" : "status_box_present";
-}
-
-const RECENT_EVENT_WINDOW_LINES = 5_000;
-
-/**
- * Machine marker that opens a Stop-remediation message. Written by
- * `hooks/adapter/output.ts` on the adapters whose Stop channel is a new user
- * message, and read back here off `user_prompt.submit.data.prompt_text` to
- * recognize a turn Harnery itself opened.
- *
- * Leading position is deliberate: `prompt_text` is clamped when recorded, so a
- * trailing marker could be truncated away on a long reason.
- */
 export const STOP_REMEDIATION_MARKER = "[harnery:stop-remediation";
 
-/** How far back the remediation walk may travel. Adapters cap their own
- * followup chains (Cursor's `loop_limit`), and each prompt can appear once per
- * observing adapter, so this only guards a pathological stream. */
-const MAX_REMEDIATION_WALK_BACK = 16;
-
-function isStopRemediationPrompt(event: CanonicalEvent): boolean {
-  const text = event.data.prompt_text;
-  if (typeof text !== "string") return false;
-  return text.includes(STOP_REMEDIATION_MARKER);
-}
-
-/**
- * Start of the window this Stop verdict judges.
- *
- * Normally the most recent `user_prompt.submit`. The exception is the
- * remediation chain: Cursor does not continue a turn on Stop, it auto-submits
- * our message as a new user turn (`followup_message`). Scoping the verdict to
- * that new turn alone makes the ritual unsatisfiable in one pass, because
- * remediation itself runs a tool, so the repair turn needs every rule again
- * while the signal from the previous turn sits just outside the window. Running
- * `set-task` then clears rule 3/3 and fails rule 1/3, running `status` clears
- * 1/3 and fails 3/3, and the pair alternates until the adapter's loop cap.
- *
- * Anchoring the window at the last prompt Harnery did not author makes progress
- * monotonic: each repair adds a signal and none are lost, so the chain ends.
- * A genuine human prompt always anchors a fresh window, so this cannot be used
- * to inherit ritual credit across real turns.
- */
-function resolveTurnStartMs(
-  ownerEvents: CanonicalEvent[],
-  nowMs: number,
-  fallbackMs: number,
-): number {
-  // Honor the cutoff: `now_ms` marks what is relevant yet, so a prompt after it
-  // cannot anchor this turn. In production the cutoff is the clock and nothing
-  // follows it, but a replay over recorded history passes a past cutoff, and an
-  // unclamped search would anchor on a later turn and hand back an empty window.
-  const prompts = ownerEvents.filter((e) => {
-    if (e.event_type !== "user_prompt.submit") return false;
-    const t = Date.parse(e.ts);
-    return Number.isFinite(t) && t <= nowMs;
-  });
-  if (prompts.length === 0) return fallbackMs;
-
-  let index = prompts.length - 1;
-  let hops = 0;
-  while (index > 0 && hops < MAX_REMEDIATION_WALK_BACK) {
-    const prompt = prompts[index];
-    if (!prompt || !isStopRemediationPrompt(prompt)) break;
-    index -= 1;
-    hops += 1;
-  }
-
-  const anchor = prompts[index];
-  const parsed = anchor ? Date.parse(anchor.ts) : Number.NaN;
-  return Number.isFinite(parsed) ? parsed : fallbackMs;
-}
-
-/**
- * Evaluate the Stop-hook verdict. Returns the first failing rule (or allow
- * when all three pass). Soft-fails open when the event stream isn't
- * readable, fail-open posture on a verdict failure.
- */
 export function evaluateStopHook(coordRoot: string, req: StopHookRequest): VerdictResult {
   if (req.bypass) {
     return {
@@ -186,7 +35,6 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
       reason: "HARNERY_AGENT_COORD_BYPASS_STOP=1",
     };
   }
-
   if (req.workflow_child) {
     return {
       allow: true,
@@ -195,13 +43,6 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
       reason: "HARNERY_WORKFLOW_CHILD=1: headless workflow child; ritual not applicable",
     };
   }
-
-  // A blocked Codex Stop does not reject the turn. Codex creates a continuation
-  // prompt and asks the model to answer again. Some clients retain only that
-  // final continuation response, so a coordination reminder can replace a
-  // correct user-facing answer with status output. The Stop path has already
-  // emitted turn.stop and projected the coordination state before this verdict
-  // runs. Keep that telemetry, but never continue a Codex turn for this ritual.
   if (req.adapter === "codex") {
     return {
       allow: true,
@@ -211,203 +52,14 @@ export function evaluateStopHook(coordRoot: string, req: StopHookRequest): Verdi
     };
   }
 
-  const eventControl = readEventV2ControlState(coordRoot);
-  if (eventControl.state !== "closed") {
-    return {
-      allow: true,
-      exit_code: 0,
-      rule: "stop-hook.v2_evidence_unavailable",
-      reason:
-        eventControl.state === "candidate" || eventControl.state === "active"
-          ? "V2 does not yet record the reply-visible ritual evidence required for authoritative Stop enforcement; failing open without reading fenced V1 history"
-          : `V2 control state is ${eventControl.state}; failing open without reading fenced V1 history`,
-    };
-  }
-
-  let events: CanonicalEvent[];
-  try {
-    events = readRecentEvents(coordRoot, RECENT_EVENT_WINDOW_LINES);
-  } catch {
-    return {
-      allow: true,
-      exit_code: 0,
-      rule: "stop-hook.fail_open",
-      reason: "events.ndjson not readable; failing open",
-    };
-  }
-
-  const ownerEvents = events.filter((e) => e.instance_id === req.instance_id);
-  if (ownerEvents.length === 0) {
-    return {
-      allow: true,
-      exit_code: 0,
-      rule: "stop-hook.no_history",
-      reason: "no canonical events for this owner; nothing to evaluate",
-    };
-  }
-
-  // Turn window: from the most recent user_prompt.submit (this owner) up to
-  // either the explicit now_ms or the last event we see, walking back over any
-  // Harnery-authored Stop-remediation prompts so a repair turn is judged
-  // together with the turn it repairs (see `resolveTurnStartMs`). Fall back to a
-  // 5-minute window when no user_prompt.submit is in scope (fresh wiring,
-  // out-of-window prompt, etc.) so a stale stream doesn't silently pass.
-  const nowMs = req.now_ms ?? Date.now();
-  const startMs = req.turn_window
-    ? req.turn_window.start_ms
-    : resolveTurnStartMs(ownerEvents, nowMs, nowMs - 5 * 60 * 1000);
-  const endMs = req.turn_window ? req.turn_window.end_ms : nowMs;
-
-  const inTurn = ownerEvents.filter((e) => {
-    const t = Date.parse(e.ts);
-    return Number.isFinite(t) && t >= startMs && t <= endMs;
-  });
-
-  const toolPreUseInTurn = inTurn.some((e) => e.event_type === "tool.pre_use");
-  const statusEvents = inTurn.filter((e) => e.event_type === "state.status_checked");
-  const statusChecked = statusEvents.length > 0;
-  const requiredStatusChecked = agentsRequireGitFinalization(coordRoot)
-    ? statusEvents.some((e) => e.data.git_finalization_checked === true)
-    : statusChecked;
-  const taskSet = inTurn.some((e) => e.event_type === "state.task_set");
-
-  // Rule 2/3: status_box_present on the most recent turn.stop for this owner.
-  // The turn.stop event fires from agent-hook stop, which is wired BEFORE
-  // the stop-hook verdict, so by the time we evaluate, the just-
-  // fired turn.stop is already in the stream.
-  const latestTurnStop = [...inTurn].reverse().find((e) => e.event_type === "turn.stop");
-  const boxPresent = latestTurnStop ? Boolean(latestTurnStop.data.status_box_present) : false;
-
-  // Adapter-aware end-of-turn ack signal (see `ackSignalFor`). On Cursor the
-  // ack is `status_checked` (running `harn agents status` shows the box inline);
-  // on Claude Code / Codex it's the transcript-scanned `status_box_present`.
-  // The matching block helper carries the right "how to fix" message.
-  const ackSignal = ackSignalFor(req.adapter);
-  const ackPresent =
-    ackSignal === "status_checked"
-      ? toolPreUseInTurn
-        ? requiredStatusChecked
-        : statusChecked
-      : boxPresent;
-  const ackBlock =
-    ackSignal === "status_checked" ? () => rule13Block(coordRoot) : () => rule23Block(coordRoot);
-
-  // Pure-prose-turn exemption: only the ack signal applies. Parity
-  // across adapters: CC requires the box; Cursor requires status_checked.
-  if (!toolPreUseInTurn) {
-    if (!ackPresent) {
-      return ackBlock();
-    }
-    return {
-      allow: true,
-      exit_code: 0,
-      rule: "stop-hook.pure_prose_pass",
-      reason: "no tool calls this turn; rules 1/3 + 3/3 skipped",
-    };
-  }
-
-  if (!requiredStatusChecked) return rule13Block(coordRoot);
-  // On Cursor `ackPresent === statusChecked` (already true here), so this is a
-  // no-op and rule 2/3 is not enforced; on CC/Codex it's the box-paste check.
-  if (!ackPresent) return ackBlock();
-  if (!taskSet) return rule33Block();
-
-  // Session-naming rule (at most once per session, evaluated last so
-  // remediation stays monotonic in the established order): the turn whose
-  // set-task produced the suggested session name must show that name in the
-  // reply. Claude Code semantics only — Cursor's Stop payload carries neither
-  // a transcript nor the assistant message, so the fence is undetectable there
-  // (the same reason rule 2/3 collapses into 1/3 on Cursor), and Codex
-  // returned observe-only above. Detection rides `turn.stop`'s
-  // `session_name_present` (assistant-text-only transcript scan), mirroring
-  // how rule 2/3 rides `status_box_present`.
-  if (ackSignal === "status_box_present") {
-    const namingEvent = inTurn.find(
-      (e) =>
-        ((e.event_type === "state.task_set" && e.data.first_of_session === true) ||
-          (e.event_type === "state.task_state" && e.data.name_reminted === true)) &&
-        typeof e.data.suggested_session_name === "string" &&
-        e.data.suggested_session_name.length > 0,
-    );
-    if (namingEvent) {
-      // ANY in-window turn.stop with the flag satisfies the rule, not just the
-      // latest: once seen, `session_name_seen_at` is stamped and later
-      // turn.stops OMIT the field, so a later block on a different rule (whose
-      // repair fires a fresh turn.stop) must not un-satisfy this one.
-      const namePresent = inTurn.some(
-        (e) => e.event_type === "turn.stop" && e.data.session_name_present === true,
-      );
-      if (!namePresent) {
-        return sessionNameBlock(String(namingEvent.data.suggested_session_name));
-      }
-    }
-  }
-
+  const control = readEventV2ControlState(coordRoot);
   return {
     allow: true,
     exit_code: 0,
-    rule: "stop-hook.pass",
+    rule: "stop-hook.v2_reply_evidence_unavailable",
+    reason:
+      control.state === "candidate" || control.state === "active"
+        ? "V2 intentionally does not retain reply bodies; session finalization is enforced separately"
+        : `V2 control state is ${control.state}; Stop remains fail-open`,
   };
-}
-
-function rule13Block(coordRoot?: string): VerdictResult {
-  const missingEvidence = agentsRequireGitFinalization(coordRoot)
-    ? "no Git-finalized state.status_checked event found in this turn"
-    : "no state.status_checked event found in this turn";
-  return {
-    allow: false,
-    exit_code: 2,
-    rule: "stop-hook.rule_1_3",
-    reason: `End-of-turn rule (1/3): ${missingEvidence}; run \`${endOfTurnStatusCommand(coordRoot)}\` as your last tool call.`,
-  };
-}
-
-function rule23Block(coordRoot?: string): VerdictResult {
-  return {
-    allow: false,
-    exit_code: 2,
-    rule: "stop-hook.rule_2_3",
-    reason: `End-of-turn rule (2/3): turn.stop did not see the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
-  };
-}
-
-function sessionNameBlock(name: string): VerdictResult {
-  return {
-    allow: false,
-    exit_code: 2,
-    rule: "stop-hook.session_name",
-    reason: `Session-naming rule: this turn's set-task produced the session name, but your reply doesn't show it. Reproduce it by itself in a fenced code block so the operator can one-click-copy it as the session/tab title: ${name}`,
-  };
-}
-
-function rule33Block(): VerdictResult {
-  return {
-    allow: false,
-    exit_code: 2,
-    rule: "stop-hook.rule_3_3",
-    reason: `End-of-turn rule (3/3): no state.task_set event found in this turn; run \`${resolveBinName()} agents set-task "<short focus>"\` to declare what you're working on. Pass an empty string if the turn was purely conversational.`,
-  };
-}
-
-/**
- * Read the last N JSON lines from events.ndjson. The Stop-hook verdict needs
- * just the most recent turn so we tail-read aggressively.
- */
-function readRecentEvents(coordRoot: string, maxLines: number): CanonicalEvent[] {
-  const path = join(coordRoot, ".harnery", "events.ndjson");
-  if (!existsSync(path)) return [];
-  const raw = readFileSync(path, "utf8");
-  const lines = raw.split("\n");
-  const start = Math.max(0, lines.length - maxLines);
-  const out: CanonicalEvent[] = [];
-  for (let i = start; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line?.trim()) continue;
-    try {
-      out.push(JSON.parse(line) as CanonicalEvent);
-    } catch {
-      /* skip malformed */
-    }
-  }
-  return out;
 }

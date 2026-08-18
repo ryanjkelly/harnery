@@ -25,9 +25,7 @@ export function GET(): Response {
       const enc = new TextEncoder();
       const send = (eventName: string, data: unknown): void => {
         try {
-          controller.enqueue(
-            enc.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`),
-          );
+          controller.enqueue(enc.encode(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`));
         } catch {
           // controller closed
         }
@@ -74,7 +72,7 @@ export function GET(): Response {
         }
       }
 
-      // events.ndjson is a single file; watch its parent dir.
+      // The active V2 segment is a single file; watch its parent directory.
       const eventsP = eventsPath();
       if (existsSync(path.dirname(eventsP))) {
         try {
@@ -90,10 +88,10 @@ export function GET(): Response {
         }
       }
 
-      // Safety-net filesize poll for events.ndjson. A directory `fs.watch` does
+      // Safety-net filesize poll for the active V2 segment. A directory `fs.watch` does
       // NOT fire on a plain append to an existing file on Linux/WSL (inotify
       // reports create/rename/delete for a dir watch, not the IN_MODIFY of a
-      // child append), so the watch above on `dirname(events.ndjson)` catches
+      // child append), so the directory watch catches
       // rotation but misses every append. That means a `subagent.start` (or any
       // event) append goes unnoticed here until the next `.harnery/active/`
       // heartbeat write happens to churn that watched dir, minutes away when

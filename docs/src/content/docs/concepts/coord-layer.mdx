@@ -13,12 +13,15 @@ The coord layer was extracted from years of running multiple Claude Code / Curso
 
 ## How it works
 
-Three primitives on disk, plus hook scripts wired into Claude Code / Cursor / Codex + git:
+Three primitives on disk, plus hook scripts wired into Claude Code, Cursor, Codex, and git:
 
-- **`.harnery/active/<id>.json`**: heartbeat per agent, declaring what files are claimed
-- **`.harnery/events.ndjson`**: canonical append-only event log under `flock`, surfaced live by the [web UI](/concepts/web-ui/)
+- **`.harnery/ledgers/v2/`**: canonical append-only ledger, validating catalog, and immutable control pair
+- **`.harnery/active/<id>.json`**: disposable generation-bound caches projected from the ledger
+- **`.harnery/journal/`**: operator and peer messages that remain separate from event authority
 
-The hooks fire **before** an edit lands (claim time) and **before** a commit lands (commit time), block conflicts, and emit structured events.
+The hooks fire **before** an edit lands (claim time) and **before** a commit lands
+(commit time), block conflicts, and record structured V2 events. The
+[web UI](/concepts/web-ui/) reads the same validated projection.
 
 The agent sees **nothing** when nothing's going wrong. Single-agent runs are indistinguishable from no coord layer at all.
 
@@ -59,6 +62,7 @@ the gap: each machine publishes its live sessions to
 `refs/harnery/presence/<machine>` on the repo's own origin (zero config: repo access is the credential), and peers render them in the agents list,
 status box, and peer tables, labeled `@<machine>`. An optional
 end-to-end-encrypted relay upgrades latency from minutes to seconds. Remote
-peers are advisory in v1: they inform, they don't block claims. Details:
+peers are advisory: they inform, but they do not grant or block local claim
+authority. Details:
 [`harn presence`](/cli/presence/#cross-machine-session-presence) and
 [decision record 0016](/decisions/0016-cross-machine-presence/).

@@ -19,7 +19,7 @@ function rootWith(body: Record<string, unknown>): string {
   mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
   writeFileSync(
     path.join(root, ".harnery", "active", "self.json"),
-    JSON.stringify({ schema_version: 1, instance_id: "self", ...body }),
+    JSON.stringify({ schema_version: 2, instance_id: "self", ...body }),
     "utf8",
   );
   return root;

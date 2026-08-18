@@ -13,7 +13,6 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { coordFreshnessSeconds } from "../../config.ts";
-import { emit } from "../events/emit.ts";
 import { recordLiveSweepObservationV2 } from "../live-lifecycle-v2.ts";
 
 /** platform → adapter, for the swept-event envelope (mirrors heartbeat-writer's adapterOf). */
@@ -33,7 +32,7 @@ function emitSwept(
   ageSecs?: number,
 ): boolean {
   try {
-    const routed = recordLiveSweepObservationV2({
+    recordLiveSweepObservationV2({
       coordRoot,
       owner: instanceId,
       nativeSessionId: sessionId,
@@ -46,16 +45,6 @@ function emitSwept(
             : "missing_timestamp",
       ageMs: Math.max(0, (ageSecs ?? 0) * 1_000),
     });
-    if (routed.state !== "v1") return true;
-    emit(coordRoot, {
-      event_type: "health.heartbeat_swept",
-      instance_id: instanceId,
-      session_id: sessionId,
-      adapter,
-      source: "agent-coord",
-      data: { reason, ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}) },
-      // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-    } as Parameters<typeof emit>[1]);
     return true;
   } catch {
     return false;

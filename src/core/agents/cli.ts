@@ -130,119 +130,25 @@ async function handleProject(root: string, rest: string[]): Promise<number> {
     process.stderr.write(`agent-coord project: V2 route is unsafe (${route.reason})\n`);
     return 1;
   }
-  if (route.state === "v2") {
-    const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
-    const view = readCoordinationViewV2(root);
-    const report = {
-      contract_major: 2,
-      source_complete: view.source_complete,
-      authority_safe: view.authority_safe,
-      owners_projected: Object.keys(view.instances).length,
-      owners: Object.keys(view.instances).sort(),
-      diagnostics: view.diagnostics,
-      materialized: false,
-    };
-    process.stdout.write(`${JSON.stringify(report, null, rest.includes("--json") ? 2 : 0)}\n`);
-    return view.authority_safe ? 0 : 1;
-  }
-  const { consumeSince, writeCursor } = await import("./events/consume.ts");
-  const { projectHeartbeats } = await import("./state/heartbeat-projector.ts");
-  const replayAll = rest.includes("--replay-all");
-  const result = consumeSince(root, { replayAll });
-  const project = projectHeartbeats(root, result.events);
+  const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
+  const view = readCoordinationViewV2(root);
   const report = {
-    events_consumed: result.events.length,
-    stream_bytes: result.streamBytes,
-    owners_projected: project.written.length,
-    owners: project.written,
-    cursor: result.lastEventId,
-    replayed_all: replayAll,
+    contract_major: 2,
+    source_complete: view.source_complete,
+    authority_safe: view.authority_safe,
+    owners_projected: Object.keys(view.instances).length,
+    owners: Object.keys(view.instances).sort(),
+    diagnostics: view.diagnostics,
+    materialized: false,
   };
-  if (result.lastEventId) writeCursor(root, result.lastEventId);
-  if (rest.includes("--json")) {
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  } else {
-    process.stdout.write(
-      `projected ${report.events_consumed} events across ${report.owners_projected} owners\n  cursor → ${report.cursor ?? "<none>"}\n${
-        report.owners.length
-          ? `  owners: ${report.owners.map((o) => o.slice(0, 8)).join(", ")}\n`
-          : ""
-      }`,
-    );
-  }
-  return 0;
+  process.stdout.write(`${JSON.stringify(report, null, rest.includes("--json") ? 2 : 0)}\n`);
+  return view.authority_safe ? 0 : 1;
 }
 
 function adapterFromPlatform(platform: unknown): "claude-code" | "cursor" | "codex" {
   if (platform === "cursor") return "cursor";
   if (platform === "codex") return "codex";
   return "claude-code";
-}
-
-/**
- * Append a canonical `health.heartbeat_swept` event after an operator kill.
- * Same envelope stale-sweep emits, so the projector's terminal / ended_at
- * guards treat kill and sweep identically. Soft-fails: the unlink already
- * happened.
- */
-async function emitHeartbeatSwept(
-  root: string,
-  owner: string,
-  hb: { session_id?: string; platform?: string; last_heartbeat?: string },
-): Promise<void> {
-  try {
-    const { emit } = await import("./events/emit.ts");
-    let ageSecs: number | undefined;
-    if (hb.last_heartbeat) {
-      const ts = Date.parse(hb.last_heartbeat);
-      if (Number.isFinite(ts)) {
-        ageSecs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-      }
-    }
-    emit(root, {
-      event_type: "health.heartbeat_swept",
-      instance_id: owner,
-      session_id: hb.session_id ?? owner,
-      adapter: adapterFromPlatform(hb.platform),
-      source: "agent-coord",
-      data: {
-        reason: "killed",
-        ...(ageSecs !== undefined ? { age_secs: ageSecs } : {}),
-      },
-    });
-  } catch {
-    /* soft-fail: never break the caller */
-  }
-}
-
-/**
- * Append a canonical `claim.release` event for a path dropped from an owner's
- * files_touched. The path is canonicalized to repo-relative (matching the
- * projector's normalization) so the subtraction matches on replay regardless
- * of the form the caller passed. Soft-fails: a failed emit must never break
- * the release/kill flow — the file mutation already happened.
- */
-async function emitClaimRelease(
-  root: string,
-  owner: string,
-  hb: { session_id?: string; platform?: string },
-  path: string,
-  reason: "explicit" | "heal" | "commit" | "checkout",
-): Promise<void> {
-  try {
-    const { emit } = await import("./events/emit.ts");
-    const canonical = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
-    emit(root, {
-      event_type: "claim.release",
-      instance_id: owner,
-      session_id: hb.session_id ?? owner,
-      adapter: adapterFromPlatform(hb.platform),
-      source: "agent-coord",
-      data: { path: canonical, reason },
-    });
-  } catch {
-    /* soft-fail: never break the caller */
-  }
 }
 
 async function handleStateAction(root: string, action: string, rest: string[]): Promise<number> {
@@ -260,17 +166,14 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       let hb: ReturnType<typeof writer.setTask>;
       try {
         const { recordLiveTaskChangeV2 } = await import("./live-authority-v2.ts");
-        const routed = recordLiveTaskChangeV2({
+        recordLiveTaskChangeV2({
           coordRoot: root,
           owner,
           nativeSessionId: before?.session_id ?? owner,
           adapter: adapterFromPlatform(before?.platform),
           task,
         });
-        hb =
-          routed.state === "v1"
-            ? writer.setTask(root, owner, task)
-            : writer.readHeartbeat(root, owner);
+        hb = writer.readHeartbeat(root, owner);
       } catch (error) {
         process.stderr.write(
           `agent-coord set-task: V2 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
@@ -307,10 +210,9 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       }
       const before = writer.readHeartbeat(root, owner);
       let hb: ReturnType<typeof writer.releaseClaim>;
-      let v1 = false;
       try {
         const { recordLiveClaimChangeV2 } = await import("./live-authority-v2.ts");
-        const routed = recordLiveClaimChangeV2({
+        recordLiveClaimChangeV2({
           coordRoot: root,
           owner,
           nativeSessionId: before?.session_id ?? owner,
@@ -319,8 +221,7 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
           path,
           access: "write",
         });
-        v1 = routed.state === "v1";
-        hb = v1 ? writer.releaseClaim(root, owner, path) : writer.readHeartbeat(root, owner);
+        hb = writer.readHeartbeat(root, owner);
       } catch (error) {
         process.stderr.write(
           `agent-coord release-claim: V2 authority refused (${error instanceof Error ? error.message : String(error)})\n`,
@@ -328,17 +229,6 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         return 1;
       }
       if (!hb) return 1;
-      // Durability: the projector rebuilds files_touched by replaying the
-      // permanent Edit/Write events, so a file-only release is silently
-      // reverted by the next full replay. Emitting claim.release puts the
-      // subtraction into the stream so every future replay honors it. Only
-      // emit when the release actually removed a held path (idempotent
-      // re-releases stay quiet).
-      const heldBefore = before?.files_touched?.length ?? 0;
-      const heldAfter = hb.files_touched?.length ?? 0;
-      if (v1 && heldBefore > heldAfter) {
-        await emitClaimRelease(root, owner, before ?? hb, path, "explicit");
-      }
       process.stdout.write(
         `${JSON.stringify({ instance_id: owner, files_touched: hb.files_touched })}\n`,
       );
@@ -362,16 +252,8 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
         const { liveCoordinationWriteModeV2, recordLiveClaimChangeV2 } = await import(
           "./live-authority-v2.ts"
         );
-        const mode = liveCoordinationWriteModeV2(root);
-        if (mode === "v1") {
-          ok = writer.killHeartbeat(root, owner);
-          if (ok && before) {
-            await emitHeartbeatSwept(root, owner, before);
-            for (const held of before.files_touched ?? []) {
-              await emitClaimRelease(root, owner, before, held, "heal");
-            }
-          }
-        } else if (before) {
+        liveCoordinationWriteModeV2(root);
+        if (before) {
           for (const held of before.files_touched ?? []) {
             recordLiveClaimChangeV2({
               coordRoot: root,
@@ -430,49 +312,35 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       // fragility. Positionals (sessionId, model) stay as-is once flags are
       // filtered out.
       const adapter = args.find((a) => a.startsWith("--adapter="))?.slice("--adapter=".length);
-      const forkedFrom = args
-        .find((a) => a.startsWith("--forked-from="))
-        ?.slice("--forked-from=".length);
       const positional = args.filter((a) => !a.startsWith("--"));
       const sessionId = positional[0];
       const model = positional[1];
-      let hb: ReturnType<typeof writer.healHeartbeat>;
+      let hb: import("./state/heartbeat-writer.ts").Heartbeat | null;
       try {
         const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
-        const mode = liveCoordinationWriteModeV2(root);
-        if (mode !== "v1") {
-          const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
-          const { liveInstanceIdV2 } = await import("../events/v2/live-routing.ts");
-          const projected = readCoordinationViewV2(root).instances[liveInstanceIdV2(owner)];
-          if (projected?.provisional_termination) {
-            const { recordLiveResumeObservationV2 } = await import("./live-lifecycle-v2.ts");
-            recordLiveResumeObservationV2({
-              coordRoot: root,
-              owner,
-              nativeSessionId: sessionId ?? owner,
-              adapter: adapterFromPlatform(adapter),
-            });
-          }
-          const { ensureLiveCoordinationHeartbeat } = await import(
-            "./state/live-coordination-view.ts"
-          );
-          hb = ensureLiveCoordinationHeartbeat(
-            root,
+        liveCoordinationWriteModeV2(root);
+        const { readCoordinationViewV2 } = await import("../events/v2/coordination-view.ts");
+        const { liveInstanceIdV2 } = await import("../events/v2/live-routing.ts");
+        const projected = readCoordinationViewV2(root).instances[liveInstanceIdV2(owner)];
+        if (projected?.provisional_termination) {
+          const { recordLiveResumeObservationV2 } = await import("./live-lifecycle-v2.ts");
+          recordLiveResumeObservationV2({
+            coordRoot: root,
             owner,
-            sessionId ?? owner,
-            adapterFromPlatform(adapter),
-            model,
-          );
-        } else {
-          hb = writer.healHeartbeat(
-            root,
-            owner,
-            sessionId,
-            model,
-            adapter,
-            forkedFrom ? { forkedFrom } : undefined,
-          );
+            nativeSessionId: sessionId ?? owner,
+            adapter: adapterFromPlatform(adapter),
+          });
         }
+        const { ensureLiveCoordinationHeartbeat } = await import(
+          "./state/live-coordination-view.ts"
+        );
+        hb = ensureLiveCoordinationHeartbeat(
+          root,
+          owner,
+          sessionId ?? owner,
+          adapterFromPlatform(adapter),
+          model,
+        );
       } catch (error) {
         process.stderr.write(
           `agent-coord heal-heartbeat: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
@@ -487,19 +355,18 @@ async function handleStateAction(root: string, action: string, rest: string[]): 
       const target = args.slice(1).join(" ");
       try {
         const { liveCoordinationWriteModeV2 } = await import("./live-authority-v2.ts");
-        if (liveCoordinationWriteModeV2(root) !== "v1") {
-          const prior = writer.readHeartbeat(root, owner);
-          const { ensureLiveCoordinationHeartbeat } = await import(
-            "./state/live-coordination-view.ts"
-          );
-          ensureLiveCoordinationHeartbeat(
-            root,
-            owner,
-            prior?.schema_version === 2 ? prior.session_id : owner,
-            adapterFromPlatform(prior?.schema_version === 2 ? prior.platform : undefined),
-            prior?.schema_version === 2 ? prior.model : undefined,
-          );
-        }
+        liveCoordinationWriteModeV2(root);
+        const prior = writer.readHeartbeat(root, owner);
+        const { ensureLiveCoordinationHeartbeat } = await import(
+          "./state/live-coordination-view.ts"
+        );
+        ensureLiveCoordinationHeartbeat(
+          root,
+          owner,
+          prior?.schema_version === 2 ? prior.session_id : owner,
+          adapterFromPlatform(prior?.schema_version === 2 ? prior.platform : undefined),
+          prior?.schema_version === 2 ? prior.model : undefined,
+        );
       } catch (error) {
         process.stderr.write(
           `agent-coord stamp-tool-activity: V2 route refused (${error instanceof Error ? error.message : String(error)})\n`,
@@ -730,32 +597,11 @@ async function handleShellMutationClaimLog(root: string, rest: string[]): Promis
   const platform = args.platform ?? "unknown";
   const owner = args.owner ?? null;
   const { shellMutationPaths } = await import("./state/shell-mutation.ts");
-  const { emit } = await import("./events/emit.ts");
-  const { readHeartbeat } = await import("./state/heartbeat-writer.ts");
   const paths = shellMutationPaths(cmd, root);
   const truncated = cmd.length > 80 ? cmd.slice(0, 80) : cmd;
-  // Warn-only peer-shell-mutation signal. Formerly a SHELL_CLAIM_CANDIDATE line
-  // in a log file; now a canonical decision.warn so the
-  // signal survives in events.ndjson. (The blocking claim-conflict path is
-  // separate: claim.conflict / verdict, and unaffected.)
-  const adapter = platform === "cursor" ? "cursor" : platform === "codex" ? "codex" : "claude-code";
-  const hb = owner ? readHeartbeat(root, owner) : null;
-  for (const p of paths) {
-    try {
-      emit(root, {
-        event_type: "decision.warn",
-        instance_id: owner ?? "unknown",
-        session_id: hb?.session_id ?? owner ?? "unknown",
-        adapter,
-        data: {
-          rule: "shell_mutation_candidate",
-          reason: `path=${p} cmd=${truncated} platform=${platform}`,
-        },
-      });
-    } catch {
-      /* telemetry only, never break the dispatcher */
-    }
-  }
+  process.stdout.write(
+    `${JSON.stringify({ schema_version: 2, owner, platform, command_preview: truncated, paths })}\n`,
+  );
   return 0;
 }
 
@@ -883,43 +729,6 @@ async function handleSessionContext(root: string, rest: string[]): Promise<numbe
   return 0;
 }
 
-async function handleCodexReplay(root: string, rest: string[]): Promise<number> {
-  const args: Record<string, string> = {};
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i]!;
-    if (a.startsWith("--")) {
-      const key = a.slice(2);
-      const val = rest[i + 1];
-      if (val === undefined || val.startsWith("--")) {
-        args[key] = "true";
-      } else {
-        args[key] = val;
-        i++;
-      }
-    }
-  }
-  const jsonlPath = args.jsonl;
-  const sessionId = args.session;
-  const instanceId = args.owner ?? sessionId;
-  const lastMsg = args["last-message"];
-  if (!jsonlPath || !sessionId) {
-    process.stderr.write(
-      "agent-coord codex-replay --jsonl <path> --session <id> [--owner <id>] [--last-message <text>]\n",
-    );
-    return 2;
-  }
-  const { replayCodexJsonl } = await import("./codex-replay.ts");
-  const result = replayCodexJsonl({
-    coordRoot: root,
-    jsonlPath,
-    sessionId,
-    instanceId: instanceId!,
-    lastAssistantMessage: lastMsg,
-  });
-  process.stdout.write(`${JSON.stringify({ session_id: sessionId, emitted: result.emitted })}\n`);
-  return 0;
-}
-
 async function handleResolveName(root: string, rest: string[]): Promise<number> {
   const { resolveName } = await import("./state/names.ts");
   const [owner, session] = rest;
@@ -939,7 +748,6 @@ async function handleResolveName(root: string, rest: string[]): Promise<number> 
 }
 
 async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
-  const { emitAndProject } = await import("./cli-emit.ts");
   const args: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
@@ -992,66 +800,39 @@ async function handleEmitEvent(root: string, rest: string[]): Promise<number> {
     );
     return 1;
   }
-  if (ledgerRoute.state === "v2") {
-    if (eventType === "state.task_state") {
-      const state = data.state;
-      if (state !== "active" && state !== "blocked" && state !== "done") {
-        process.stderr.write("agent-coord emit-event: invalid V2 lifecycle state\n");
-        return 2;
-      }
-      const { recordLiveLifecycleChangeV2 } = await import("./live-authority-v2.ts");
-      try {
-        const routed = recordLiveLifecycleChangeV2({
-          coordRoot: root,
-          owner: instanceId,
-          nativeSessionId: sessionId,
-          adapter,
-          state,
-          reason:
-            typeof data.reason === "string" && data.reason.length > 0 ? data.reason : undefined,
-        });
-        process.stdout.write(
-          `${JSON.stringify({ schema_version: 2, event_type: "coord.lifecycle_changed", state: routed.state })}\n`,
-        );
-        return 0;
-      } catch (error) {
-        process.stderr.write(
-          `agent-coord emit-event: V2 lifecycle authority refused (${error instanceof Error ? error.message : String(error)})\n`,
-        );
-        return 1;
-      }
+  if (eventType === "state.task_state") {
+    const state = data.state;
+    if (state !== "active" && state !== "blocked" && state !== "done") {
+      process.stderr.write("agent-coord emit-event: invalid V2 lifecycle state\n");
+      return 2;
     }
-
-    // These V1 rows are either already represented by an agent-coord V2
-    // authority transaction (task/claim), or have no V2 taxonomy mapping on
-    // this surface. Never reopen the retired V1 ledger after the hard cut.
-    process.stdout.write(
-      `${JSON.stringify({ schema_version: 2, event_type: eventType, state: "v1_row_suppressed" })}\n`,
-    );
-    return 0;
+    const { recordLiveLifecycleChangeV2 } = await import("./live-authority-v2.ts");
+    try {
+      const routed = recordLiveLifecycleChangeV2({
+        coordRoot: root,
+        owner: instanceId,
+        nativeSessionId: sessionId,
+        adapter,
+        state,
+        reason: typeof data.reason === "string" && data.reason.length > 0 ? data.reason : undefined,
+        suggestedSessionName:
+          typeof data.suggested_session_name === "string" && data.suggested_session_name.length > 0
+            ? data.suggested_session_name
+            : undefined,
+      });
+      process.stdout.write(
+        `${JSON.stringify({ schema_version: 2, event_type: "coord.lifecycle_changed", state: routed.state })}\n`,
+      );
+      return 0;
+    } catch (error) {
+      process.stderr.write(
+        `agent-coord emit-event: V2 lifecycle authority refused (${error instanceof Error ? error.message : String(error)})\n`,
+      );
+      return 1;
+    }
   }
-
-  const result = emitAndProject(
-    {
-      event_type: eventType,
-      instance_id: instanceId,
-      session_id: sessionId,
-      adapter,
-      turn_id: args["turn-id"],
-      parent_session_id: args["parent-session-id"],
-      parent_turn_id: args["parent-turn-id"],
-      data,
-    },
-    { coordRoot: root },
-  );
-
-  if (!result) {
-    process.stderr.write("agent-coord emit-event: emission failed\n");
-    return 1;
-  }
-
-  process.stdout.write(`${JSON.stringify(result.envelope)}\n`);
-  return 0;
+  process.stderr.write(`agent-coord emit-event: unsupported V2 event type ${eventType}\n`);
+  return 2;
 }
 
 /**
@@ -1129,12 +910,21 @@ async function handleGitHook(fallbackRoot: string, rest: string[]): Promise<numb
         coordRoot: root,
       })?.instance_id;
       if (!owner) return 0;
-      const { groupUnclaim } = await import("./state/heartbeat-writer.ts");
-      const reason = event === "post-commit" ? ("commit" as const) : ("checkout" as const);
+      const { findGroupClaims } = await import("./state/heartbeat-writer.ts");
+      const { recordLiveClaimChangeV2 } = await import("./live-authority-v2.ts");
       for (const path of paths) {
         try {
-          for (const hit of groupUnclaim(root, owner, path)) {
-            await emitClaimRelease(root, hit.instance_id, hit, path, reason);
+          for (const hit of findGroupClaims(root, owner, path)) {
+            recordLiveClaimChangeV2({
+              coordRoot: root,
+              owner,
+              subject: hit.instance_id,
+              nativeSessionId: hit.session_id ?? owner,
+              adapter: adapterFromPlatform(hit.platform),
+              operation: "released",
+              path,
+              access: "write",
+            });
           }
         } catch {
           /* best-effort */
@@ -1201,10 +991,6 @@ async function main(): Promise<number> {
 
   if (subcommand === "resolve-name") {
     return handleResolveName(root, rest);
-  }
-
-  if (subcommand === "codex-replay") {
-    return handleCodexReplay(root, rest);
   }
 
   if (subcommand === "stale-sweep") {

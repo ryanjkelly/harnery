@@ -85,7 +85,7 @@ Insurance for the coord state across machines:
 # One-time setup (creates the restic repo + password file)
 harn backup init
 
-# Take a snapshot of .harnery/ (events.ndjson + .lock excluded by default)
+# Take a snapshot of the durable V2 ledger and coordination state
 harn backup snapshot
 
 # Cross-machine sync of identities + archived journals + councils via rclone

@@ -195,16 +195,16 @@ describe("event ledger V2 vertical slice", () => {
     expect(readActiveLedgerV2(root).events).toEqual([]);
   });
 
-  test("rejects V1 and malformed rows instead of projecting them", () => {
+  test("rejects an unsupported major and malformed rows instead of projecting them", () => {
     const root = temporaryRoot();
     const active = eventV2Paths(root).active;
     mkdirSync(join(root, ".harnery/ledgers/v2"), { recursive: true });
-    writeFileSync(active, '{"schema_version":1}\n{"broken":', "utf8");
+    writeFileSync(active, '{"schema_version":3}\n{"broken":', "utf8");
     const read = readActiveLedgerV2(root);
     expect(read.events).toEqual([]);
     expect(read.complete).toBe(false);
     expect(read.diagnostics.map(({ code }) => code)).toEqual([
-      "unsupported_major",
+      "invalid_contract",
       "partial_final_frame",
     ]);
   });

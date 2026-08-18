@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Adapter } from "../../adapter.ts";
 import {
   type CoordinationGenerationViewV2,
   type CoordinationViewV2,
@@ -14,14 +15,12 @@ import {
   requireAuthoritySafeCoordinationViewV2,
 } from "../../events/v2/coordination-view.ts";
 import { liveInstanceIdV2, resolveLiveEventLedgerRouteV2 } from "../../events/v2/live-routing.ts";
-import type { Adapter } from "../../hooks/events/schema.ts";
-import { type Heartbeat, healHeartbeat, readHeartbeat } from "./heartbeat-writer.ts";
+import { type Heartbeat, readHeartbeat } from "./heartbeat-writer.ts";
 import { resolveName } from "./names.ts";
 
 /**
- * The legacy heartbeat file is only a disposable local cache after the V2
- * cutover. These bindings prevent an old V1 row (or a row from a prior V2
- * generation) from being mistaken for current coordination authority.
+ * Heartbeat files are disposable V2 caches. These bindings prevent a stale
+ * row from a prior generation from being mistaken for current authority.
  */
 export interface V2HeartbeatMaterialization extends Heartbeat {
   schema_version: 2;
@@ -34,7 +33,6 @@ export interface V2HeartbeatMaterialization extends Heartbeat {
 /** Read the live coordination rows through the hard-cut ledger route. */
 export function readLiveCoordinationRows(coordRoot: string): Heartbeat[] {
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state === "v1") return readV1Rows(coordRoot);
   if (route.state === "blocked") return [];
   let view: CoordinationViewV2;
   try {
@@ -56,13 +54,12 @@ export function readLiveCoordinationRows(coordRoot: string): Heartbeat[] {
     });
 }
 
-/** Read one current row without ever falling back to stale V1 state in V2. */
+/** Read one current row from the authority-safe V2 projection. */
 export function readLiveCoordinationRow(
   coordRoot: string,
   nativeInstanceId: string,
 ): Heartbeat | null {
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state === "v1") return readHeartbeat(coordRoot, nativeInstanceId);
   if (route.state === "blocked") return null;
   try {
     const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
@@ -95,7 +92,6 @@ export function liveCoordinationAdapterV2(
   nativeInstanceId: string,
 ): Adapter | null {
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state === "v1") return null;
   if (route.state === "blocked") throw new Error(`event_v2_coordination_view:${route.reason}`);
   const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
   const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
@@ -117,13 +113,10 @@ export function ensureLiveCoordinationHeartbeat(
   coordRoot: string,
   nativeInstanceId: string,
   nativeSessionId: string,
-  adapter: Adapter,
+  _adapter: Adapter,
   model?: string,
 ): Heartbeat | null {
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
-  if (route.state === "v1") {
-    return healHeartbeat(coordRoot, nativeInstanceId, nativeSessionId, model, adapter);
-  }
   if (route.state === "blocked") throw new Error(`event_v2_coordination_view:${route.reason}`);
   const view = requireAuthoritySafeCoordinationViewV2(readCoordinationViewV2(coordRoot));
   const generation = view.instances[liveInstanceIdV2(nativeInstanceId)];
@@ -156,7 +149,7 @@ export function ensureLiveCoordinationHeartbeat(
   return materialized;
 }
 
-function readV1Rows(coordRoot: string): Heartbeat[] {
+function readCacheRows(coordRoot: string): Heartbeat[] {
   const dir = join(coordRoot, ".harnery", "active");
   if (!existsSync(dir)) return [];
   const rows: Heartbeat[] = [];
@@ -172,7 +165,7 @@ function readV1Rows(coordRoot: string): Heartbeat[] {
 }
 
 function readV2Caches(coordRoot: string): Heartbeat[] {
-  return readV1Rows(coordRoot).filter(
+  return readCacheRows(coordRoot).filter(
     (row) => row.schema_version === 2 && typeof row.v2_generation_id === "string",
   );
 }
@@ -229,7 +222,10 @@ function projectHeartbeatV2(
     ...(taskIsSet && cache?.task ? { task: cache.task } : {}),
     task_updated_at: taskIsSet ? cache?.task_updated_at : null,
     activity: generation.activity === "terminal" ? "idle" : generation.activity,
+    activity_updated_at: generation.last_observed_at,
+    activity_source: "event-v2-coordination-view",
     task_state: lifecycle,
+    task_state_updated_at: generation.last_observed_at,
     task_state_reason: lifecycle === "blocked" ? cache?.task_state_reason : undefined,
     suggested_session_name: cache?.suggested_session_name,
     session_name_seen_at: cache?.session_name_seen_at,

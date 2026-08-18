@@ -12,9 +12,6 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { type AgentFinalizationDisposition, agentsFinalizationRoots } from "../config.ts";
 import { readFinalizationScopeV2 } from "../events/v2/finalization-view.ts";
 import { liveInstanceIdV2, resolveLiveEventLedgerRouteV2 } from "../events/v2/live-routing.ts";
-import { readStreamTailBounded } from "./events/consume.ts";
-
-const CLAIM_HISTORY_CAP_BYTES = 128 * 1024 * 1024;
 
 const GIT_DISCOVERY_VARS = [
   "GIT_DIR",
@@ -99,65 +96,16 @@ export interface SessionWriteClaims {
 export function readSessionWriteClaims(
   coordRoot: string,
   instanceId: string,
-  sessionId: string,
+  _sessionId: string,
 ): SessionWriteClaims {
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
   if (route.state === "blocked") return { paths: [], complete: false };
-  if (route.state === "v2") {
-    try {
-      const scope = readFinalizationScopeV2(coordRoot, liveInstanceIdV2(instanceId));
-      return { paths: scope.files_touched, complete: true };
-    } catch {
-      return { paths: [], complete: false };
-    }
+  try {
+    const scope = readFinalizationScopeV2(coordRoot, liveInstanceIdV2(instanceId));
+    return { paths: scope.files_touched, complete: true };
+  } catch {
+    return { paths: [], complete: false };
   }
-  const streamPath = join(coordRoot, ".harnery", "events.ndjson");
-  const { text, truncated } = readStreamTailBounded(streamPath, CLAIM_HISTORY_CAP_BYTES);
-  const paths = new Set<string>();
-  let sawSessionStart = false;
-  // Acquire events carry canonical repo-relative paths; release events may
-  // carry the raw absolute target (the guard releases what the adapter sent).
-  // Normalize both so a release always subtracts its acquire.
-  const norm = (p: string): string =>
-    p.startsWith(`${coordRoot}/`) ? p.slice(coordRoot.length + 1) : p;
-
-  for (const line of text.split("\n")) {
-    if (line.trim().length === 0) continue;
-    try {
-      const event = JSON.parse(line) as {
-        event_type?: string;
-        instance_id?: string;
-        session_id?: string;
-        data?: { path?: unknown; mode?: unknown };
-      };
-      if (event.instance_id !== instanceId || event.session_id !== sessionId) continue;
-      if (event.event_type === "session.start") sawSessionStart = true;
-      if (
-        event.event_type === "claim.acquire" &&
-        event.data?.mode === "write" &&
-        typeof event.data.path === "string"
-      ) {
-        paths.add(norm(event.data.path));
-      }
-      // A guard-denied release subtracts: the write NEVER HAPPENED (the guard
-      // blocked it before mutation), so there is no repo work to finalize and
-      // the phantom claim would block end-turn forever. Every other release
-      // reason stays in scope on purpose — released-but-mutated paths must
-      // still pass the committed-and-pushed check (see the released-sibling
-      // and commit-release tests).
-      if (event.event_type === "claim.release" && typeof event.data?.path === "string") {
-        const reason = (event.data as { reason?: unknown }).reason;
-        if (typeof reason === "string" && reason.startsWith("guard_denied")) {
-          paths.delete(norm(event.data.path));
-        }
-      }
-    } catch {
-      // Ignore malformed and crash-truncated event lines, matching the
-      // canonical stream consumer's recovery behavior.
-    }
-  }
-
-  return { paths: [...paths], complete: !truncated || sawSessionStart };
 }
 
 function git(args: string[], cwd: string): GitResult {

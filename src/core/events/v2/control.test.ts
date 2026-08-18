@@ -204,9 +204,6 @@ function candidateManifest(): CandidateGenesisManifestV2 {
     canonicalizer_version: "harnery-jcs-nfc-v1",
     fingerprint_version: "hmac-sha256-v1",
     privacy_key_epoch: "pep_fixture",
-    v1_terminal_digest: sha256V2("v1-terminal"),
-    v1_terminal_bytes: 1024,
-    v1_terminal_rows: 4,
     candidate_created_at: CREATED_AT,
   };
   const event = buildEventV2("ledger.genesis", {
@@ -219,7 +216,6 @@ function candidateManifest(): CandidateGenesisManifestV2 {
       genesis_profile_digest: candidateProfileDigestV2(profile),
       contract_digest: profile.contract_source_digest,
       generated_schema_digest: EVENT_V2_SCHEMA_DIGEST,
-      v1_terminal_segment_digest: profile.v1_terminal_digest,
       canonicalizer: "harnery-jcs-nfc-v1",
       privacy_epoch_id: profile.privacy_key_epoch,
       candidate_created_at: CREATED_AT,

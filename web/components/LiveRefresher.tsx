@@ -14,7 +14,7 @@ import { useLiveSignal } from "@/lib/useLiveSignal";
  * both redundant (the page is already live) and destructive: /api/stream fires
  * a `refresh` on ANY .harnery change, so during active image production —
  * exactly when /images is being watched — it saturates at ~4/sec, and each
- * refresh re-runs the server render (tail-scanning a multi-MB events.ndjson,
+ * refresh re-runs the server render (validating the current V2 projection,
  * rebuilding every summary) and re-reconciles the whole grid. That was the
  * cause of the ~2-3fps scroll on /images. We keep the live badge (the SSE
  * connection is cheap) and just skip the refresh call.
@@ -89,7 +89,9 @@ export function LiveRefresher() {
         className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wider cursor-help ${colorCls}`}
       >
         {icon}
-        <span>{isLive ? "live" : isPolling ? "polling" : isReconnecting ? "reconnecting" : "connecting"}</span>
+        <span>
+          {isLive ? "live" : isPolling ? "polling" : isReconnecting ? "reconnecting" : "connecting"}
+        </span>
       </span>
     </Tooltip>
   );

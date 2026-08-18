@@ -21,7 +21,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { killHeartbeat, registerWorkflowChild } from "../agents/state/heartbeat-writer.ts";
 import { snapshotRepo } from "../context/index.ts";
 import type {
   ExternalMutationRequest,
@@ -41,6 +40,7 @@ import { freezeWorkflowAttemptContext } from "./attempt-context.ts";
 import { type BillingProbe, probeBilling } from "./billing.ts";
 import { stableDigest } from "./durable-record.ts";
 import { evidencePreflightError } from "./evidence-preflight.ts";
+import { endWorkflowChildSessionV2, startWorkflowChildSessionV2 } from "./live-session-v2.ts";
 import {
   buildWorkflowProof,
   createEvidenceRecord,
@@ -947,23 +947,18 @@ async function executeWorkflow(
       });
       log(`[${name}] ${currentStage || "(no stage)"} → ${id} [${adapter}] ${label}`);
 
-      // Register the child ourselves rather than trusting its adapter to fire
-      // Harnery's hooks. Headless `codex exec` fires none, so codex children
-      // were invisible to `harn agents list` and the run page for the whole
-      // duration of a stage. The engine knows everything the heartbeat needs.
-      // Best-effort: coordination visibility must never fail a run.
-      try {
-        registerWorkflowChild(opts.coordRoot, {
-          instanceId: childInstanceId(runId, id),
-          runId,
-          agentId: id,
-          adapter,
-          label,
-          model: agentOpts.model,
-        });
-      } catch {
-        /* visibility is not worth failing a spawn over */
-      }
+      // Headless children do not reliably fire adapter hooks. The engine owns
+      // their canonical V2 start so every dispatched child has an auditable
+      // generation before it begins work.
+      startWorkflowChildSessionV2({
+        coordRoot: opts.coordRoot,
+        instanceId: childInstanceId(runId, id),
+        runId,
+        agentId: id,
+        adapter,
+        label,
+        model: agentOpts.model,
+      });
 
       let attemptPrompt = dispatchPrompt;
       let last: SpawnResult | null = null;
@@ -1077,13 +1072,18 @@ async function executeWorkflow(
       throw error;
     } finally {
       reservedCostUsd = Math.max(0, reservedCostUsd - reservedForDispatch);
-      // Deregister on every exit path, including throw. A child heartbeat that
-      // outlives its process reads as a live agent forever and blocks peers on
-      // its stale claims. The transcript remains the durable record.
+      // Record the canonical terminal before removing the disposable cache.
       try {
-        killHeartbeat(opts.coordRoot, childInstanceId(runId, id));
-      } catch {
-        /* already gone, or swept */
+        endWorkflowChildSessionV2({
+          coordRoot: opts.coordRoot,
+          instanceId: childInstanceId(runId, id),
+          runId,
+          agentId: id,
+          adapter,
+          cleanExit: agentProof.status === "succeeded",
+        });
+      } catch (error) {
+        log(`[${name}] V2 terminal recording failed: ${(error as Error).message}`);
       }
       release();
     }

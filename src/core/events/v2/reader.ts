@@ -98,8 +98,12 @@ export function readLedgerV2(
   coordRoot: string,
   options: ReadLedgerV2Options = {},
 ): ReadLedgerV2Result {
-  const state = createState(options);
   const paths = eventV2Paths(coordRoot);
+  // A fresh epoch has only an active segment. The catalog is created by the
+  // first rotation, so its absence is not corruption and must not hide live
+  // evidence from consumers.
+  if (!existsSync(paths.catalog)) return readActiveLedgerV2(coordRoot, options);
+  const state = createState(options);
   let catalog: EventV2Catalog;
   try {
     catalog = readEventV2Catalog(coordRoot);

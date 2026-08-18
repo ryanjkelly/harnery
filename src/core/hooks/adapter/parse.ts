@@ -10,7 +10,7 @@
  * events without affecting behavior": fail-soft beats fail-hard.
  */
 
-import type { Adapter } from "../events/schema.ts";
+import type { Adapter } from "../../adapter.ts";
 
 export interface ParsedPayload {
   hook_event_name?: string;

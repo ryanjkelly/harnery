@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 
-import { coordRoot, eventsPath, readAgents } from "@/lib/coord-reader";
+import { coordRoot, readAgents } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 import { readWorkflowChildSessions } from "@/lib/workflow-reader";
 import { readEventV2ControlState } from "../../../src/core/events/v2/control";
@@ -67,7 +67,6 @@ export async function readSanitizedTail(filePath?: string): Promise<CodecSourceE
 
   const root = coordRoot();
   const control = readEventV2ControlState(root);
-  if (control.state === "closed") return readSanitizedTails([eventsPath()]);
   if (control.state !== "candidate" && control.state !== "active") return [];
 
   const ledger = readLedgerV2(root);
@@ -155,7 +154,6 @@ export async function buildScene(now?: string): Promise<CodecScene> {
 
 export function eventsFilePaths(): string[] {
   const control = readEventV2ControlState(coordRoot());
-  if (control.state === "closed") return [eventsPath()];
   if (control.state === "candidate" || control.state === "active") {
     const paths = eventV2Paths(coordRoot());
     return [paths.active, paths.catalog];

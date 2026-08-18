@@ -15,8 +15,15 @@ import {
   resolveSingleActiveOwner,
   sessionIdentityFromEnv,
 } from "../../src/core/agents/coord-client.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
 import { writePidmapRow } from "../../src/core/agents/state/pidmap.ts";
 import { processStartToken } from "../../src/core/agents/state/proc-start.ts";
+import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
+import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../../src/core/events/v2/live-routing.ts";
 import { detectAdapter } from "../../src/core/hooks/adapter/detect.ts";
 import { findCoordRoot } from "../../src/core/hooks/resolve/coord-root.ts";
 import {
@@ -546,8 +553,14 @@ describe("codex-wsl bridge owner parity", () => {
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-codex-wsl-owner-"));
     activeDir = path.join(root, ".harnery", "active");
-    mkdirSync(activeDir, { recursive: true });
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    initializeEventLedgerV2({
+      coordRoot: root,
+      harneryBuild: "fixture",
+      hostBuild: "fixture",
+      configDigest: sha256V2("config"),
+      approvalRecordId: "test-codex-wsl-owner",
+    });
     for (const key of ENV_KEYS) delete process.env[key];
     process.env.HARNERY_COORD_ROOT_OVERRIDE = root;
     process.env.HARNERY_AGENT_COORD_BRIDGE = "codex-wsl";
@@ -563,20 +576,30 @@ describe("codex-wsl bridge owner parity", () => {
   });
 
   function writeHeartbeat(id: string, sessionId: string): void {
+    const route = resolveLiveEventLedgerRouteV2(root);
+    if (route.state !== "v2") throw new Error("expected V2 route");
+    recordLiveHookSignalV2({
+      coordRoot: root,
+      route,
+      eventName: "session-start",
+      payload: { session_id: sessionId, raw: {} },
+      adapter: "codex",
+      instanceId: id,
+    });
+    const cache = ensureLiveCoordinationHeartbeat(root, id, sessionId, "codex");
+    if (!cache) throw new Error("expected V2 cache");
     writeFileSync(
       path.join(activeDir, `${id}.json`),
       JSON.stringify({
-        instance_id: id,
-        session_id: sessionId,
+        ...cache,
         kind: "session",
         name: id,
-        platform: "codex",
         last_heartbeat: new Date().toISOString(),
       }),
     );
   }
 
-  test("validated bridge session beats inherited owner and conflicting pid-map", () => {
+  test("validated bridge command identity does not grant payload-free hook identity", () => {
     writeHeartbeat("codex-owner", "codex-thread");
     writeHeartbeat("foreign-owner", "foreign-session");
     writePidmapRow(root, process.pid, "foreign-owner", "claude-code");
@@ -588,10 +611,7 @@ describe("codex-wsl bridge owner parity", () => {
       owner: "codex-owner",
       source: "session_env",
     });
-    expect(resolveHookOwner({ payload: null, coordRoot: root })).toEqual({
-      instance_id: "codex-owner",
-      source: "session_env",
-    });
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
   });
 
   test("invalid bridge session fails closed across both resolvers", () => {

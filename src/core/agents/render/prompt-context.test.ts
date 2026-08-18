@@ -1,540 +1,98 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initializeV2Fixture, seedV2Session } from "../../../../tests/helpers/event-v2.ts";
 import { renderPromptContext } from "./prompt-context.ts";
 
 let root: string;
-let activeDir: string;
 
 beforeEach(() => {
-  root = join(
-    tmpdir(),
-    `agent-coord-prompt-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  );
-  activeDir = join(root, ".harnery", "active");
-  mkdirSync(activeDir, { recursive: true });
+  root = join(tmpdir(), `harnery-prompt-v2-${process.pid}-${crypto.randomUUID()}`);
+  initializeV2Fixture(root);
   writeFileSync(
     join(root, ".harnery", "config.jsonc"),
     `{ "agents": { "requireGitFinalization": false } }`,
     "utf8",
   );
-  // Seed a self heartbeat with task set so the nudge stays quiet by default.
-  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  writeFileSync(
-    join(activeDir, "self.json"),
-    JSON.stringify({
-      schema_version: 1,
-      instance_id: "self",
-      name: "Maya",
-      session_id: "self",
-      task: "current focus",
-      task_updated_at: now,
-      files_touched: [],
-      last_heartbeat: now,
-      started_at: now,
-    }),
-    "utf8",
-  );
+  seedV2Session(root, "self", { name: "Maya", task: "current focus" });
 });
 
-afterEach(() => {
-  try {
-    rmSync(root, { recursive: true, force: true });
-  } catch {
-    /* swallow */
-  }
-});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-describe("renderPromptContext", () => {
-  test("no peers, no councils, fresh task → empty output", () => {
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-    });
-    expect(out).toBe("");
+describe("renderPromptContext on the V2 coordination projection", () => {
+  test("no peers, no councils, and a current task produce no extra context", () => {
+    expect(render()).toBe("");
   });
 
-  test("Codex status footer is fresh on every prompt and preserves the answer", () => {
-    const opts = {
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      statusFooterNudge: true,
-    };
-
-    const first = renderPromptContext(opts);
-    const second = renderPromptContext(opts);
-
-    for (const out of [first, second]) {
-      expect(out).toContain("complete the user's request first");
-      expect(out).toContain("harn agents status");
-      expect(out).toContain("bottom of the same substantive reply");
-      expect(out).toContain("Keep the answer intact");
-      expect(out).toContain("Stop hook is observe-only");
-      expect(out).not.toContain("status --end-turn");
+  test("the Codex footer remains fresh and uses the host's configured finalization command", () => {
+    const first = render({ statusFooterNudge: true });
+    const second = render({ statusFooterNudge: true });
+    for (const output of [first, second]) {
+      expect(output).toContain("complete the user's request first");
+      expect(output).toContain("harn agents status");
+      expect(output).not.toContain("status --end-turn");
     }
-  });
 
-  test("Codex status footer requests the Git guard only when the host opts in", () => {
     writeFileSync(
       join(root, ".harnery", "config.jsonc"),
       `{ "agents": { "requireGitFinalization": true } }`,
       "utf8",
     );
-
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      statusFooterNudge: true,
-    });
-
-    expect(out).toContain("harn agents status --end-turn");
+    expect(render({ statusFooterNudge: true })).toContain("harn agents status --end-turn");
   });
 
-  test("Codex status footer skips subagents and workflow children", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
-      writeFileSync(
-        join(activeDir, "self.json"),
-        JSON.stringify({
-          schema_version: 1,
-          instance_id: "self",
-          name: "Maya",
-          session_id: "self",
-          files_touched: [],
-          last_heartbeat: now,
-          started_at: now,
-          ...extra,
-        }),
-        "utf8",
-      );
-      const out = renderPromptContext({
-        coordRoot: root,
-        instanceId: "self",
-        sessionId: "self",
-        agentName: "Maya",
-        statusFooterNudge: true,
-      });
-      expect(out).not.toContain("Codex status footer");
-    }
+  test("the stop-enforced turn ritual is adapter-specific", () => {
+    const claude = render({ turnRitualNudge: "claude-code" });
+    expect(claude).toContain("Turn ritual (Stop-enforced)");
+    expect(claude).toContain("paste its output verbatim in a fenced code block");
+
+    const cursor = render({ turnRitualNudge: "cursor" });
+    expect(cursor).toContain("Turn ritual (Stop-enforced)");
+    expect(cursor).not.toContain("paste its output verbatim in a fenced code block");
   });
 
-  test("turn-ritual reminder is fresh on every prompt for claude-code and asks for the pasted box", () => {
-    const opts = {
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      turnRitualNudge: "claude-code",
-    };
-
-    const first = renderPromptContext(opts);
-    const second = renderPromptContext(opts);
-
-    for (const out of [first, second]) {
-      expect(out).toContain("Turn ritual (Stop-enforced)");
-      expect(out).toContain('harn agents set-task "<short focus>"');
-      expect(out).toContain("harn agents status");
-      expect(out).toContain("paste its output verbatim in a fenced code block");
-      expect(out).toContain("bounced by the Stop hook");
-    }
-  });
-
-  test("turn-ritual reminder for cursor never asks for a second copy of the box", () => {
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      turnRitualNudge: "cursor",
-    });
-
-    expect(out).toContain("Turn ritual (Stop-enforced)");
-    expect(out).toContain("final tool call");
-    expect(out).not.toContain("paste its output verbatim");
-  });
-
-  test("turn-ritual reminder skips subagents and workflow children", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
-      writeFileSync(
-        join(activeDir, "self.json"),
-        JSON.stringify({
-          schema_version: 1,
-          instance_id: "self",
-          name: "Maya",
-          session_id: "self",
-          files_touched: [],
-          last_heartbeat: now,
-          started_at: now,
-          ...extra,
-        }),
-        "utf8",
-      );
-      const out = renderPromptContext({
-        coordRoot: root,
-        instanceId: "self",
-        sessionId: "self",
-        agentName: "Maya",
-        turnRitualNudge: "claude-code",
-      });
-      expect(out).not.toContain("Turn ritual");
-    }
-  });
-
-  test("turn-ritual reminder carries the Git-guarded status command when the host opts in", () => {
-    writeFileSync(
-      join(root, ".harnery", "config.jsonc"),
-      `{ "agents": { "requireGitFinalization": true } }`,
-      "utf8",
-    );
-
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      turnRitualNudge: "claude-code",
-    });
-
-    expect(out).toContain("harn agents status --end-turn");
-  });
-
-  test("hash dedup: second call with no changes returns empty", () => {
-    // Seed a peer
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "peer.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "peer",
-        name: "Adelaide",
-        session_id: "peer",
-        files_touched: ["docs/x.md"],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const first = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-    });
-    expect(first.length).toBeGreaterThan(0); // First call emits
-    const second = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-    });
-    expect(second).toBe(""); // Hash dedup suppresses
-  });
-
-  test("state-only peer changes refresh the semantic hash and rendered labels", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    const peerPath = join(activeDir, "peer.json");
-    const peer = {
-      schema_version: 2,
-      instance_id: "peer",
+  test("peer changes refresh the semantic hash from canonical V2 claims", () => {
+    seedV2Session(root, "peer", {
       name: "Adelaide",
-      session_id: "peer",
-      task: "review auth",
-      files_touched: ["docs/x.md"],
-      last_heartbeat: now,
-      started_at: now,
-      activity: "working",
-      task_state: "active",
-    };
-    writeFileSync(peerPath, JSON.stringify(peer), "utf8");
+      task: "review docs",
+      claims: ["docs/x.md"],
+    });
+    const first = render();
+    expect(first).toContain("agent-Adelaide");
+    expect(first).toContain("docs/x.md");
+    expect(render()).toBe("");
+    expect(existsSync(join(root, ".harnery", ".last-peer-hash.self"))).toBe(true);
+  });
+
+  test("an empty task produces one deduplicated focus nudge", () => {
+    seedV2Session(root, "unset", { name: "Nora" });
     const opts = {
       coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
+      instanceId: "unset",
+      sessionId: "unset",
+      agentName: "Nora",
+      taskNudge: true,
     };
-    expect(renderPromptContext(opts)).toContain("activity=working, lifecycle=active");
+    expect(renderPromptContext(opts)).toContain("set-task");
     expect(renderPromptContext(opts)).toBe("");
-
-    writeFileSync(
-      peerPath,
-      JSON.stringify({
-        ...peer,
-        activity: "needs_input",
-        task_state: "blocked",
-        task_state_reason: "waiting for approval",
-      }),
-      "utf8",
-    );
-    const changed = renderPromptContext(opts);
-    expect(changed).toContain("activity=needs_input");
-    expect(changed).toContain("lifecycle=blocked: waiting for approval");
   });
 
-  test("task nudge fires when taskNudge=true AND task is empty", () => {
-    // Replace self heartbeat with one that has no task
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      taskNudge: true,
-    });
-    expect(out).toContain("task");
-  });
-
-  test("first-session nudge tells every adapter how to print the suggested name", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        kind: "session",
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      sessionNameNudge: true,
-    });
-    expect(out).toContain('harn agents set-task "<2-5 word session topic>"');
-    expect(out).toContain("first_of_session: true");
-    expect(out).toContain("`suggested_session_name`");
-    expect(out).toContain("fenced code block");
-  });
-
-  test("first-session nudge re-emits on every prompt until a name is produced", () => {
-    // Deliberately NOT deduped: "still unnamed" is the failure state, and a
-    // one-shot reminder erased by dedup was the operator-reported miss mode.
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        kind: "session",
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const opts = {
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      sessionNameNudge: true,
-      taskNudge: true,
-    };
-    expect(renderPromptContext(opts)).toContain("suggested_session_name");
-    const second = renderPromptContext(opts);
-    expect(second).toContain("suggested_session_name");
-    // The naming reminder supersedes the generic task-unset reminder.
-    expect(second).not.toContain("task` field is unset");
-  });
-
-  test("first-session nudge still fires after a bare clear (clears never name)", () => {
-    // A first declaration of "" stamps task_updated_at but produces no name;
-    // the naming window must stay open.
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        kind: "session",
-        task_updated_at: now,
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      sessionNameNudge: true,
-    });
-    expect(out).toContain("suggested_session_name");
-  });
-
-  test("first-session nudge stops once the session has been named", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        kind: "session",
-        task: "Auth refactor",
-        task_updated_at: now,
-        suggested_session_name: "Agent Maya - Auth refactor",
-        session_name_seen_for: "Agent Maya - Auth refactor",
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      sessionNameNudge: true,
-    });
-    expect(out).not.toContain("suggested_session_name");
-    expect(out).not.toContain("lifecycle changed its suggested name");
-  });
-
-  test("lifecycle re-mint nudge persists until the new name is seen", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 2,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        kind: "session",
-        task: "Auth refactor",
-        task_updated_at: now,
-        suggested_session_name: "[DONE] - Agent Maya - Auth refactor",
-        session_name_seen_for: "Agent Maya - Auth refactor",
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const opts = {
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      sessionNameNudge: true,
-    };
-    expect(renderPromptContext(opts)).toContain("[DONE] - Agent Maya - Auth refactor");
-    expect(renderPromptContext(opts)).toContain("[DONE] - Agent Maya - Auth refactor");
-  });
-
-  test("first-session nudge skips subagents and workflow children", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    for (const extra of [{ kind: "subagent" }, { kind: "session", workflow_run_id: "wf-1" }]) {
-      writeFileSync(
-        join(activeDir, "self.json"),
-        JSON.stringify({
-          schema_version: 1,
-          instance_id: "self",
-          name: "Maya",
-          session_id: "self",
-          files_touched: [],
-          last_heartbeat: now,
-          started_at: now,
-          ...extra,
-        }),
-        "utf8",
-      );
-      const out = renderPromptContext({
-        coordRoot: root,
-        instanceId: "self",
-        sessionId: "self",
-        agentName: "Maya",
-        sessionNameNudge: true,
-        taskNudge: true,
-      });
-      expect(out).not.toContain("suggested_session_name");
-      expect(out).not.toContain("task` field is unset");
-    }
-  });
-
-  test("task nudge does NOT fire when taskNudge=false (cc default)", () => {
-    // Even with empty task, taskNudge=false suppresses
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "self.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "self",
-        name: "Maya",
-        session_id: "self",
-        files_touched: [],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    const out = renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-      // taskNudge omitted
-    });
-    expect(out).not.toContain("task");
-  });
-
-  test("hash file gets created at .harnery/.last-peer-hash.<id>", () => {
-    const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    writeFileSync(
-      join(activeDir, "peer.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "peer",
-        name: "Adelaide",
-        session_id: "peer",
-        files_touched: ["docs/x.md"],
-        last_heartbeat: now,
-        started_at: now,
-      }),
-      "utf8",
-    );
-    renderPromptContext({
-      coordRoot: root,
-      instanceId: "self",
-      sessionId: "self",
-      agentName: "Maya",
-    });
-    const hashFile = join(root, ".harnery", ".last-peer-hash.self");
-    expect(existsSync(hashFile)).toBe(true);
+  test("the peer hash retains no rendered identities", () => {
+    seedV2Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
+    render();
+    const hash = readFileSync(join(root, ".harnery", ".last-peer-hash.self"), "utf8");
+    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(hash).not.toContain("Adelaide");
   });
 });
+
+function render(extra: Record<string, unknown> = {}): string {
+  return renderPromptContext({
+    coordRoot: root,
+    instanceId: "self",
+    sessionId: "self",
+    agentName: "Maya",
+    ...extra,
+  });
+}

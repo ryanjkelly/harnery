@@ -12,6 +12,12 @@ export {
   readAuthorityTransactionV2,
   reconcileAuthorityTransactionV2,
 } from "./authority-outbox.ts";
+export {
+  ensureEventLedgerV2,
+  type InitializeEventLedgerV2Input,
+  type InitializeEventLedgerV2Result,
+  initializeEventLedgerV2,
+} from "./bootstrap.ts";
 export { type BuildEventV2Input, buildEventV2 } from "./builder.ts";
 export {
   canonicalJsonV2,
@@ -90,52 +96,6 @@ export {
   readCoordinationViewV2,
   requireAuthoritySafeCoordinationViewV2,
 } from "./coordination-view.ts";
-export {
-  assertV1WriterIdentityV2,
-  type CreateProjectionSnapshotV2Input,
-  type CutoverRehearsalV2Result,
-  type CutoverV2Step,
-  captureV1ActiveIdentityV2,
-  createProjectionSnapshotV2,
-  type ProjectionSnapshotEntryV2,
-  projectionSnapshotDigestV2,
-  type RollbackV1LedgerV2Input,
-  readProjectionSnapshotV2,
-  readV1SealManifestV2,
-  rehearseCutoverV2,
-  restoreProjectionSnapshotV2,
-  rollbackV1LedgerV2,
-  type SealV1LedgerV2Input,
-  sealV1LedgerV2,
-  type V1ActiveIdentityV2,
-  type V1AuditSegmentV2,
-  type V1ProjectionSnapshotManifestV2,
-  type V1RollbackRecordV2,
-  type V1SealManifestV2,
-  v1SealManifestDigestV2,
-  verifyV1SealV2,
-} from "./cutover.ts";
-export {
-  type AdvanceEpochV2Input,
-  type AdvanceEpochV2Result,
-  type ArchiveEpochAndRollbackV2Input,
-  type ArchiveEpochAndRollbackV2Result,
-  advanceEpochV2,
-  archiveEpochAndRollbackV2,
-  buildCandidateInstallPacketV2,
-  type CandidateInstallPacketV2,
-  type CandidateProfileBaseV2,
-  type EpochCutoverV2Step,
-  type InstallActivationV2Input,
-  type InstallActivationV2Result,
-  type InstallCandidateV2Input,
-  type InstallCandidateV2Result,
-  installActivationV2,
-  installCandidateV2,
-  type V2ArchiveEntryV2,
-  type V2EpochArchiveManifestV2,
-  validateCandidateInstallPacketV2,
-} from "./cutover-install.ts";
 export {
   EVENT_V2_FINALIZATION_VIEW_VERSION,
   type FinalizationScopeV2,

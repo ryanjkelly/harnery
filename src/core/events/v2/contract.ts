@@ -252,7 +252,6 @@ export const LedgerGenesisV2Schema = eventSchema(
     genesis_profile_digest: Sha256,
     contract_digest: Sha256,
     generated_schema_digest: Sha256,
-    v1_terminal_segment_digest: Sha256,
     canonicalizer: Type.Literal("harnery-jcs-nfc-v1"),
     privacy_epoch_id: Type.String({ pattern: "^pep_[a-zA-Z0-9._-]{1,128}$" }),
     candidate_created_at: Timestamp,

@@ -1,4 +1,4 @@
-import type { Adapter } from "../../hooks/events/schema.ts";
+import type { Adapter } from "../../adapter.ts";
 import { canonicalJsonV2, sha256V2 } from "./canonical.ts";
 
 export type CapabilitySupportV2 = "native" | "derived" | "conditional" | "unsupported";

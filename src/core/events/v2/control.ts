@@ -26,9 +26,6 @@ export interface CandidateProfileV2 {
   canonicalizer_version: "harnery-jcs-nfc-v1";
   fingerprint_version: string;
   privacy_key_epoch: `pep_${string}`;
-  v1_terminal_digest: `sha256:${string}`;
-  v1_terminal_bytes: number;
-  v1_terminal_rows: number;
   candidate_created_at: string;
 }
 
@@ -126,7 +123,6 @@ export function buildCandidateGenesisManifestV2(
       genesis_profile_digest: candidateProfileDigestV2(profile),
       contract_digest: profile.contract_source_digest,
       generated_schema_digest: profile.initial_schema_digest,
-      v1_terminal_segment_digest: profile.v1_terminal_digest,
       canonicalizer: profile.canonicalizer_version,
       privacy_epoch_id: profile.privacy_key_epoch,
       candidate_created_at: profile.candidate_created_at,
@@ -341,7 +337,6 @@ function parseGenesisManifestValue(value: unknown): ParseResult<CandidateGenesis
     event.payload.genesis_profile_digest !== candidateProfileDigestV2(profile.value) ||
     event.payload.contract_digest !== profile.value.contract_source_digest ||
     event.payload.generated_schema_digest !== profile.value.initial_schema_digest ||
-    event.payload.v1_terminal_segment_digest !== profile.value.v1_terminal_digest ||
     event.payload.canonicalizer !== profile.value.canonicalizer_version ||
     event.payload.privacy_epoch_id !== profile.value.privacy_key_epoch ||
     event.payload.candidate_created_at !== profile.value.candidate_created_at
@@ -460,9 +455,6 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> 
     "initial_schema_digest",
     "privacy_key_epoch",
     "producer_build_ids",
-    "v1_terminal_bytes",
-    "v1_terminal_digest",
-    "v1_terminal_rows",
   ];
   if (!exactKeys(value, keys)) return fail("genesis_profile_shape_invalid");
   if (
@@ -470,7 +462,6 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> 
     value.initial_schema_digest !== EVENT_V2_SCHEMA_DIGEST ||
     !isSha256(value.contract_source_digest) ||
     !isSha256(value.config_digest) ||
-    !isSha256(value.v1_terminal_digest) ||
     value.canonicalizer_version !== "harnery-jcs-nfc-v1" ||
     !safeString(value.privacy_key_epoch, "pep_") ||
     !safeToken(value.harnery_commit) ||
@@ -478,9 +469,7 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV2> 
     !safeToken(value.fingerprint_version) ||
     !safeTimestamp(value.candidate_created_at) ||
     !sortedSafeTokenArray(value.producer_build_ids) ||
-    !sortedSha256Array(value.adapter_capability_profile_digests) ||
-    !nonNegativeInteger(value.v1_terminal_bytes) ||
-    !nonNegativeInteger(value.v1_terminal_rows)
+    !sortedSha256Array(value.adapter_capability_profile_digests)
   ) {
     return fail("genesis_profile_fields_invalid");
   }
@@ -584,8 +573,4 @@ function sortedSha256Array(value: unknown): value is string[] {
     value.every((item, index) => index === 0 || value[index - 1]! < item) &&
     value.every(isSha256)
   );
-}
-
-function nonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }

@@ -1,5 +1,5 @@
 import { coordEnv } from "../../../lib/env.ts";
-import type { Adapter } from "../events/schema.ts";
+import type { Adapter } from "../../adapter.ts";
 
 /**
  * Resolve the adapter firing the hook. The dispatcher binary is always

@@ -9,11 +9,10 @@ sidebar:
 harn agents <subcommand> [options]
 ```
 
-The window into the coordination layer. Every agent sharing a checkout writes a
-heartbeat to `.harnery/active/<instance_id>.json` carrying its name, session
-age, the files it has claimed, its last tool call, and a self-declared task.
-`harn agents` reads that state, plus the append-only event ledger at
-`.harnery/events.ndjson`, to answer the questions that keep parallel agents out
+The window into the coordination layer. Every agent sharing a checkout records a
+generation to the V2 event ledger and materializes a disposable cache at
+`.harnery/active/<instance_id>.json`. `harn agents` reads the authority-safe V2
+projection to answer the questions that keep parallel agents out
 of each other's way: who else is here, what are they holding, what is each one
 doing, and did anything go wrong.
 
@@ -322,7 +321,8 @@ The layer's own diagnostics.
   blocks a clean session end), pending finalization requests with trigger and
   age, intake-spool depth, diagnostics-spool counts by category (with a
   last-24h split), and span-count pressure against the producer-state cap. On
-  a V1 stream the section reports `unavailable` instead.
+  an unavailable or invalid V2 control state the section reports that failure
+  explicitly instead.
 - **`heal-events`** surfaces PIDMAP_HEAL telemetry: how often the pid-map
   self-heal had to correct drift. Sustained high counts point at an upstream
   process-spawn bug. `--since <window>` (default `7d`), `--limit <n>` (default

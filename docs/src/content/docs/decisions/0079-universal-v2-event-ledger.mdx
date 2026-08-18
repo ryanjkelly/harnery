@@ -1,0 +1,72 @@
+---
+title: "0079: Universal V2 event ledger"
+description: "ADR: V2 is Harnery's only event-recording and coordination authority; initialization is automatic, readers never downgrade, and older ledger bytes are audit-only."
+---
+
+**Status:** accepted (2026-08-18) · **Scope:** product tier (`core/events/v2`, adapters, coordination, web, downstream mirrors)
+
+## Context
+
+The private V2 ledger has run in production long enough to verify its privacy,
+durability, terminal, and replay behavior. Keeping the retired writer and reader
+stack beside it now creates a larger risk. A missing control file could silently
+change the recording contract, copied consumers could disagree about authority,
+and tests could pass against a path the live system no longer uses.
+
+Harnery is still in alpha, so we can remove that ambiguity without preserving
+compatibility that no supported installation needs.
+
+## Decision
+
+V2 is the only canonical event ledger and the only source of coordination
+authority.
+
+- `harn init` creates and activates a V2 epoch. `harn init --check` requires an
+  active, valid control pair.
+- A missing, damaged, or unapproved control pair fails closed. Producers,
+  command tees, hooks, coordination mutations, web readers, Codec, and the
+  run-quality collector never choose another event source.
+- The CLI exposes only `ledger-v2 status` and `ledger-v2 initialize`. A schema
+  or build change advances the whole V2 epoch with `--force-new-epoch`.
+- Epoch replacement archives the complete current V2 directory read-only. It
+  does not restore an older writer, rebuild authority from truncated records,
+  or translate historical rows.
+- Heartbeats are generation-bound, disposable V2 caches. Task, claim,
+  lifecycle, identity, stale-sweep, session-finalization, and workflow-child
+  authority must first exist in the canonical ledger.
+- Every active adapter and downstream mirror ships the same generated schema
+  and hard-cut routing behavior.
+- Event files created by the retired contract may remain on an operator's disk
+  for audit. They are not tracked source, are never opened by current code, and
+  are excluded from current evidence.
+
+Independent contracts keep their own version numbers. Workflow proof packets,
+presence relay messages, browser-QA plans, Codec packs, canonicalizers, and
+fingerprint algorithms do not become version 2 merely because the event ledger
+did.
+
+## Consequences
+
+Hooks, commands, coordination, web surfaces, and evaluation now answer "where
+did this observation come from?" the same way. Installation is simpler.
+Unsupported states fail visibly. Current tests no longer carry fixtures for a
+retired runtime.
+
+The breaking change is deliberate. An installation that has not initialized V2
+cannot record or mutate coordination state until `harn init` or
+`harn ledger-v2 initialize` succeeds. A current epoch must be advanced when its
+approved schema or producer build changes.
+
+## Rejected alternatives
+
+**Keep a read-only compatibility reader in the product.** Historical audits can
+use the preserved release or an external conversion tool. Shipping that reader
+inside every current consumer keeps version ambiguity alive.
+
+**Retain automatic downgrade for uninitialized projects.** This makes a missing
+manifest look like a valid operating mode and can place sessions on the wrong
+evidence boundary.
+
+**Translate historical rows into the current contract.** Earlier records do not
+contain enough exact timing, pairing, capability, privacy, or terminal evidence.
+Inventing those fields would make an audit trail less trustworthy.

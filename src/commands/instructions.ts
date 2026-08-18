@@ -4,8 +4,8 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 import { countTokens } from "gpt-tokenizer/model/gpt-4o";
 import type { EmitContext } from "../commander.ts";
+import type { Adapter } from "../core/adapter.ts";
 import { monorepoRoot } from "../core/agents/index.ts";
-import type { Adapter } from "../core/hooks/events/schema.ts";
 import {
   buildInstructionBundle,
   type InstructionBundleComponent,

@@ -1,5 +1,5 @@
+import type { Adapter } from "../adapter.ts";
 import { isWslUncPath } from "./codex-wsl-bridge.ts";
-import type { Adapter } from "./events/schema.ts";
 
 export interface CrossShellInspection {
   adapter: Adapter;

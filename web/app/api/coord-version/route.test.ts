@@ -14,7 +14,6 @@ beforeEach(() => {
   for (const dir of ["active", "councils", "journal"]) {
     mkdirSync(path.join(root, ".harnery", dir), { recursive: true });
   }
-  writeFileSync(path.join(root, ".harnery", "events.ndjson"), "", "utf8");
   priorRoot = process.env.HARNERY_COORD_ROOT;
   process.env.HARNERY_COORD_ROOT = root;
   __resetCoordRootCache();

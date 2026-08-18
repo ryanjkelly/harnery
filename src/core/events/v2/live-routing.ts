@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
+import type { Adapter } from "../../adapter.ts";
 import type { ParsedPayload } from "../../hooks/adapter/parse.ts";
-import type { Adapter } from "../../hooks/events/schema.ts";
 import {
   type EventV2WriteMode,
   readEventV2ControlState,
@@ -13,19 +13,18 @@ export const LIVE_HOOK_V2_PRODUCER_ID = "prd_agent-hook" as const;
 export const LIVE_COMMAND_V2_PRODUCER_ID = "prd_session-tee" as const;
 
 export type LiveEventLedgerRouteV2 =
-  | { state: "v1" }
   | { state: "v2"; mode: EventV2WriteMode; build_id: `build_${string}` }
   | { state: "blocked"; reason: string };
 
 /**
- * Resolve the hard-cut ledger route. A missing candidate preserves V1. Once a
- * candidate manifest exists, ambiguity can never fall back to V1: a
- * manifest-first crash is repaired from its immutable packet and every other
- * invalid state closes the writer gate.
+ * Resolve the V2-only ledger route. A root without an initialized V2 control
+ * packet is blocked; no producer or consumer may fall back to an older ledger.
+ * Manifest-first crashes are repaired from the immutable packet and every
+ * other invalid state closes the writer gate.
  */
 export function resolveLiveEventLedgerRouteV2(coordRoot: string): LiveEventLedgerRouteV2 {
   let control = readEventV2ControlState(coordRoot);
-  if (control.state === "closed") return { state: "v1" };
+  if (control.state === "closed") return { state: "blocked", reason: "v2_not_initialized" };
   if (control.state === "repairable") control = repairEventV2ControlPair(coordRoot);
   if (control.state !== "candidate" && control.state !== "active") {
     return { state: "blocked", reason: `${control.state}:${control.reason}` };
@@ -79,6 +78,8 @@ export function recordLiveHookSignalV2(input: {
   payload: ParsedPayload | null;
   adapter: Adapter;
   instanceId: string;
+  run_id?: `run_${string}`;
+  workflow_id?: `wf_${string}`;
   bridge?: "codex-wsl";
   monotonic_ns?: string;
 }): RecordHookSignalV2Result | { state: "ignored" } {
@@ -91,6 +92,8 @@ export function recordLiveHookSignalV2(input: {
     payload: input.payload ?? { raw: {} },
     adapter: input.adapter,
     instance_id: liveInstanceIdV2(input.instanceId),
+    run_id: input.run_id,
+    workflow_id: input.workflow_id,
     producer_id: LIVE_HOOK_V2_PRODUCER_ID,
     build_id: input.route.build_id,
     platform: livePlatformV2(),

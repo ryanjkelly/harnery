@@ -17,12 +17,18 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import type { EmitContext } from "../commander.ts";
 import { DEFAULT_BIN_NAME, pinnedBinName, stripJsonComments } from "../core/config.ts";
+import {
+  initializeEventLedgerV2,
+  readEventV2ControlState,
+  sha256V2,
+} from "../core/events/v2/index.ts";
 import { ADAPTER_SPECS, type AdapterId, type AdapterSpec } from "../core/hooks/adapter/events.ts";
 import {
   commandWiresSubcommand,
@@ -84,8 +90,14 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
         const { status, issues } = checkInstructions(projectRoot, { binName: bin, adapter });
         const gitHooks = checkGitHooks(projectRoot);
         if (gitHooks.status !== "fresh") issues.push(...gitHooks.issues);
+        const ledger = readEventV2ControlState(projectRoot);
+        if (ledger.state !== "active") issues.push(`event ledger V2 is ${ledger.state}`);
         const merged =
-          status === "error" ? "error" : gitHooks.status !== "fresh" ? "drift" : status;
+          status === "error"
+            ? "error"
+            : gitHooks.status !== "fresh" || ledger.state !== "active"
+              ? "drift"
+              : status;
         const head =
           merged === "fresh"
             ? "harn init --check: instructions + skills + git hooks are current"
@@ -135,6 +147,29 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
       {
         const stamp = stampWorkflowDefaults(resolve(coordDir, "config.jsonc"), dryRun);
         if (stamp) actions.push(stamp);
+      }
+
+      // ── 1d. universal V2 event ledger ────────────────────────────────────
+      if (dryRun) {
+        const ledger = readEventV2ControlState(projectRoot);
+        actions.push(
+          ledger.state === "active"
+            ? "· event ledger V2 is active"
+            : `+ would initialize event ledger V2 (current state: ${ledger.state})`,
+        );
+      } else {
+        const initialized = initializeEventLedgerV2({
+          coordRoot: projectRoot,
+          harneryBuild: gitBuild(HARNERY_ROOT),
+          hostBuild: gitBuild(projectRoot),
+          configDigest: digestConfig(resolve(coordDir, "config.jsonc")),
+          approvalRecordId: "harnery-init-v2-universal",
+        });
+        actions.push(
+          initialized.initialized
+            ? "+ initialized event ledger V2"
+            : "· event ledger V2 already active",
+        );
       }
 
       // ── 2. adapter hooks ───────────────────────────────────────────────────
@@ -202,6 +237,21 @@ export function registerInitCommand(program: Command, emit: EmitContext, binName
 
       emit.text(render(projectRoot, dryRun, actions, [...applied.warnings, ...gitHooks.warnings]));
     });
+}
+
+function gitBuild(root: string): string {
+  const result = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  const commit = result.status === 0 ? result.stdout.trim() : "";
+  return /^[0-9a-f]{40,64}$/.test(commit)
+    ? commit
+    : createHash("sha256").update(resolve(root)).digest("hex");
+}
+
+function digestConfig(path: string): `sha256:${string}` {
+  return sha256V2(existsSync(path) ? readFileSync(path) : Buffer.from("{}\n"));
 }
 
 export function codexHookReviewAction(adapter: AdapterId): string | null {

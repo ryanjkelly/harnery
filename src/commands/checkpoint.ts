@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
+import type { Adapter } from "../core/adapter.ts";
 import { monorepoRoot, readHeartbeat, resolveOwner } from "../core/agents/index.ts";
 import {
   type CheckpointReason,
@@ -7,7 +8,6 @@ import {
   readContextState,
   readLatestCapsule,
 } from "../core/context/index.ts";
-import type { Adapter } from "../core/hooks/events/schema.ts";
 
 /**
  * `harn checkpoint`: durable context continuity across compaction.

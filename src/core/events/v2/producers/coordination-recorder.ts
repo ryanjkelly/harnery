@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import type { Adapter } from "../../../hooks/events/schema.ts";
+import type { Adapter } from "../../../adapter.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import {

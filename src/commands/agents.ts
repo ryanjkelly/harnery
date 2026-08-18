@@ -29,7 +29,6 @@ import { basename, join, resolve } from "node:path";
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import { coordBinPath } from "../core/agents/coord-bin.ts";
-import { readStreamTailBounded } from "../core/agents/events/consume.ts";
 import {
   checkGitFinalization,
   formatGitFinalizationFailure,
@@ -90,7 +89,6 @@ import { registerContextCommand } from "./context.ts";
 /** Cap for CLI scans of the unbounded event ledger (`trace` / `health`). Well
  * under V8's ~512MB max string length so a `readFileSync` of the whole file can
  * never throw; covers ample recent history for a diagnostic scan. */
-const STREAM_SCAN_CAP_BYTES = 128 * 1024 * 1024; // 128 MiB
 
 import { parsePsChainLine } from "../core/hooks/resolve/anchor.ts";
 import { appendEntry, resolveOwnerByName } from "../core/journal/index.ts";
@@ -141,7 +139,7 @@ function freshnessCutoffSecs(): number {
 }
 
 const SUBAGENT_NOTE =
-  "Bash identity is process-level in v1; if you're running inside a subagent, " +
+  "Bash identity is process-level; if you're running inside a subagent, " +
   "this resolves to the parent group's name, not the subagent's. A subagent-aware " +
   "bridge (per-shell marker file at .harnery/shells/<pid>) is out of scope.";
 
@@ -1077,7 +1075,7 @@ export function registerCouncilCommands(parent: Command): void {
         "archive it first (trash-can pattern). Without --yes this prints " +
         "the paths that would be removed and exits 0 without touching " +
         "anything. Does NOT touch target_doc, close_handoff_path, or " +
-        "session-events.ndjson, which are owned by separate authors.",
+        "the canonical V2 event ledger, which is owned independently.",
     )
     .option("-y, --yes", "Required to actually delete; without this, dry-run")
     .option("--json", "JSON envelope output")
@@ -1392,7 +1390,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
 
   // Cross-machine presence (ADR 0016): append sessions on OTHER machines from
   // the locally-fetched presence refs. Advisory rows (relation=remote) — they
-  // don't participate in local claim blocking in v1.
+  // never participate in local claim blocking.
   for (const rm of readRemoteMachines(root)) {
     for (const a of rm.agents) {
       rows.push({
@@ -2825,7 +2823,7 @@ export interface CanonicalEvent {
 }
 
 export interface AgentDiagnosticEventRead {
-  source: "v1" | "v2";
+  source: "v2";
   authoritative: boolean;
   reason?: string;
   truncated: boolean;
@@ -2833,7 +2831,7 @@ export interface AgentDiagnosticEventRead {
   events: CanonicalEvent[];
 }
 
-/** Read validated canonical events without crossing the V1/V2 control boundary. */
+/** Read validated canonical V2 events. */
 export function readAgentDiagnosticEventsInWindow(
   root: string,
   cutoffMs: number,
@@ -2871,53 +2869,14 @@ export function readAgentDiagnosticEventsInWindow(
       events,
     };
   }
-  if (control.state !== "closed") {
-    return {
-      source: "v2",
-      authoritative: false,
-      reason: `V2 control state is ${control.state}; fenced V1 event history was not read`,
-      truncated: false,
-      bytes: 0,
-      events: [],
-    };
-  }
-
-  const p = resolve(root, ".harnery", "events.ndjson");
-  if (!existsSync(p)) {
-    return { source: "v1", authoritative: true, truncated: false, bytes: 0, events: [] };
-  }
-  let raw: string;
-  let truncated = false;
-  let bytes = 0;
-  try {
-    bytes = statSync(p).size;
-    const tail = readStreamTailBounded(p, STREAM_SCAN_CAP_BYTES);
-    raw = tail.text;
-    truncated = tail.truncated;
-  } catch {
-    return {
-      source: "v1",
-      authoritative: false,
-      reason: "V1 event stream is unreadable",
-      truncated: false,
-      bytes,
-      events: [],
-    };
-  }
-  const out: CanonicalEvent[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
-    try {
-      const ev = JSON.parse(line) as CanonicalEvent;
-      if (!ev.event_type || !ev.ts) continue;
-      const tsMs = Date.parse(ev.ts);
-      if (!Number.isFinite(tsMs) || tsMs < cutoffMs) continue;
-      out.push(ev);
-    } catch {
-      /* skip malformed */
-    }
-  }
-  return { source: "v1", authoritative: true, truncated, bytes, events: out };
+  return {
+    source: "v2",
+    authoritative: false,
+    reason: `V2 control state is ${control.state}`,
+    truncated: false,
+    bytes: 0,
+    events: [],
+  };
 }
 
 /** Normalize adapter event data into the heartbeat platform value. */
@@ -3018,9 +2977,7 @@ function runHealEvents(opts: {
     process.exit(1);
   }
 
-  // Heal telemetry lives in the canonical .harnery/events.ndjson stream
-  // (health.pidmap_heal / health.heartbeat_heal), emitted by the writer on
-  // actual self-heal writes.
+  // Heal telemetry is read from the canonical V2 ledger.
   const cutoffMs = Date.now() - sinceSecs * 1000;
   const nameById = buildNameById(root);
   const events: HealEvent[] = [];
@@ -3064,11 +3021,8 @@ function runHealEvents(opts: {
     since: opts.since,
     telemetry: {
       source: diagnosticEvents.source,
-      authoritative: diagnosticEvents.authoritative && diagnosticEvents.source === "v1",
-      reason:
-        diagnosticEvents.source === "v2"
-          ? "V2 health observations do not preserve the legacy pid-map/heartbeat-heal taxonomy"
-          : diagnosticEvents.reason,
+      authoritative: diagnosticEvents.authoritative,
+      reason: diagnosticEvents.reason,
     },
     total: events.length,
     by_reason: byReason,
@@ -3165,12 +3119,12 @@ interface HealthReport {
   since: string;
   generated_at: string;
   event_telemetry: {
-    source: "v1" | "v2";
+    source: "v2";
     authoritative: boolean;
     reason?: string;
   };
   active_agents: {
-    source: "heartbeat-cache" | "event-ledger-v2";
+    source: "event-ledger-v2";
     total: number;
     by_platform: Record<string, number>;
     by_kind: Record<string, number>;
@@ -3210,7 +3164,7 @@ interface HealthReport {
   };
   // Canonical event stream growth + drain lag.
   stream: {
-    source: "v1" | "v2";
+    source: "v2";
     authoritative: boolean;
     reason?: string;
     bytes: number;
@@ -3295,10 +3249,7 @@ export function collectEventLedgerHealthV2(root: string, nowMs = Date.now()): Ev
   if (control.state !== "candidate" && control.state !== "active") {
     return {
       state: "unavailable",
-      reason:
-        control.state === "closed"
-          ? "V1 stream is live (no V2 ledger)"
-          : `${control.state}: ${control.reason}`,
+      reason: `${control.state}: ${control.reason}`,
     };
   }
 
@@ -3541,70 +3492,14 @@ export function readHookErrors(
 
 /** Canonical event stream size + drain lag (events appended after the cursor). */
 function readStreamStats(root: string): HealthReport["stream"] {
-  const control = readEventV2ControlState(root);
-  if (control.state !== "closed") {
-    const read = readAgentDiagnosticEventsInWindow(root, 0);
-    return {
-      source: "v2",
-      authoritative: read.authoritative,
-      ...(read.reason ? { reason: read.reason } : {}),
-      bytes: read.bytes,
-      lines: read.events.length,
-      cursor_backlog: 0,
-    };
-  }
-  const streamPath = resolve(root, ".harnery", "events.ndjson");
-  if (!existsSync(streamPath)) {
-    return {
-      source: "v1",
-      authoritative: true,
-      bytes: 0,
-      lines: 0,
-      cursor_backlog: 0,
-    };
-  }
-  let bytes = 0;
-  try {
-    bytes = statSync(streamPath).size;
-  } catch {
-    /* ignore */
-  }
-  let cursor: string | null = null;
-  const cursorPath = resolve(root, ".harnery", ".events-cursor");
-  if (existsSync(cursorPath)) {
-    try {
-      cursor = readFileSync(cursorPath, "utf8").trim() || null;
-    } catch {
-      /* ignore */
-    }
-  }
-  let lines = 0;
-  let backlog = 0;
-  let seenCursor = cursor === null; // no cursor → everything is "backlog"
-  try {
-    // Bounded tail read: the ledger grows without bound and a whole-file
-    // readFileSync throws past V8's ~512MB string limit. lines/backlog are then
-    // scoped to the scanned window; `bytes` (full size, via statSync above) still
-    // reflects the true stream size for the health rollup.
-    const { text } = readStreamTailBounded(streamPath, STREAM_SCAN_CAP_BYTES);
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      lines++;
-      if (seenCursor) {
-        backlog++;
-      } else if (cursor && line.includes(`"event_id":"${cursor}"`)) {
-        seenCursor = true;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
+  const read = readAgentDiagnosticEventsInWindow(root, 0);
   return {
-    source: "v1",
-    authoritative: true,
-    bytes,
-    lines,
-    cursor_backlog: backlog,
+    source: "v2",
+    authoritative: read.authoritative,
+    ...(read.reason ? { reason: read.reason } : {}),
+    bytes: read.bytes,
+    lines: read.events.length,
+    cursor_backlog: 0,
   };
 }
 
@@ -3617,11 +3512,10 @@ export interface TraceEntry {
 
 export function traceInstanceIdsForEventSource(
   nativeInstanceIds: readonly string[],
-  source: "v1" | "v2",
+  source: "v2",
 ): string[] {
-  return source === "v2"
-    ? nativeInstanceIds.map((instanceId) => liveInstanceIdV2(instanceId))
-    : [...nativeInstanceIds];
+  void source;
+  return nativeInstanceIds.map((instanceId) => liveInstanceIdV2(instanceId));
 }
 
 /** Map a canonical event to a concise trace line, or null to drop it. */
@@ -3805,12 +3699,6 @@ function runTrace(
     arr.push(ev);
     byId.set(ev.instance_id, arr);
   }
-  if (diagnosticRead.truncated) {
-    process.stderr.write(
-      `note: event ledger exceeds ${Math.round(STREAM_SCAN_CAP_BYTES / 1024 / 1024)}MB; traced only the most recent window (older events omitted)\n`,
-    );
-  }
-
   // If the name mapped to multiple instances, trace the one with the latest event.
   let resolvedId = candidateIds[0]!;
   if (candidateIds.length > 1) {
@@ -3839,14 +3727,14 @@ function runTrace(
           (candidate) => candidate.instance_id === resolvedId,
         );
       if (generation) {
-        const taskState = generation.task_state;
+        const lifecycleState = generation.lifecycle_state;
         state = {
           activity: generation.activity === "terminal" ? "idle" : generation.activity,
           activity_updated_at: generation.last_observed_at,
           activity_source: "event-v2-coordination-view",
           task_state:
-            taskState === "active" || taskState === "blocked" || taskState === "done"
-              ? taskState
+            lifecycleState === "active" || lifecycleState === "blocked" || lifecycleState === "done"
+              ? lifecycleState
               : "active",
           task_state_updated_at: generation.last_observed_at,
         };
@@ -3931,7 +3819,7 @@ function runTrace(
 }
 
 export interface ActiveAgentHealthSummary {
-  source: "heartbeat-cache" | "event-ledger-v2";
+  source: "event-ledger-v2";
   total: number;
   by_platform: Record<string, number>;
   by_kind: Record<string, number>;
@@ -3948,40 +3836,22 @@ type ActiveHealthHeartbeat = {
 };
 
 /**
- * V2 generations, not disposable heartbeat caches, are the active-agent
- * authority after cutover. V1 retains the legacy cache scan.
+ * V2 generations, not disposable heartbeat caches, are the active-agent authority.
  */
 export function collectActiveAgentHealth(
   root: string,
   nowMs = Date.now(),
 ): ActiveAgentHealthSummary {
-  let source: ActiveAgentHealthSummary["source"] = "heartbeat-cache";
+  const source: ActiveAgentHealthSummary["source"] = "event-ledger-v2";
   let heartbeats: ActiveHealthHeartbeat[] = [];
   try {
     const control = readEventV2ControlState(root);
     if (control.state === "candidate" || control.state === "active") {
-      source = "event-ledger-v2";
       heartbeats = readLiveCoordinationRows(root);
     }
   } catch {
     // The event-ledger section reports the authority read failure. Do not
     // substitute stale cache rows for a live V2 route.
-    source = "event-ledger-v2";
-  }
-  if (source === "heartbeat-cache") {
-    const activeDir = resolve(root, ".harnery/active");
-    if (existsSync(activeDir)) {
-      for (const file of readdirSync(activeDir)) {
-        if (!file.endsWith(".json")) continue;
-        try {
-          const parsed = JSON.parse(readFileSync(resolve(activeDir, file), "utf8"));
-          if (parsed && typeof parsed.instance_id === "string")
-            heartbeats.push(parsed as ActiveHealthHeartbeat);
-        } catch {
-          // Broken cache rows are reported by the zombie counter.
-        }
-      }
-    }
   }
 
   const byPlatform: Record<string, number> = {};
@@ -4040,7 +3910,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
   const activeDir = resolve(root, ".harnery/active");
   const councilsDir = resolve(root, ".harnery/councils");
 
-  // Coordination telemetry reads from the canonical events.ndjson stream.
+  // Coordination telemetry reads from the canonical V2 ledger.
   // Heals come from health.*; council window-activity from council.*. The
   const heal: HealEvent[] = [];
   let councilAdvanced = 0;
@@ -4164,7 +4034,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `${activeAgents.stale} active ${noun}(s) without activity for ${Math.floor(freshnessCutoffSecs() / 60)}min; ${action}`,
     );
   }
-  const expectedSchema = activeAgents.source === "event-ledger-v2" ? "v2" : "v1";
+  const expectedSchema = "v2";
   const unexpectedSchemas = Object.keys(activeAgents.by_schema_version).filter(
     (schema) => schema !== expectedSchema,
   );
@@ -4185,11 +4055,7 @@ function runHealth(opts: { since: string; json?: boolean }): void {
       `projection cursor is ${stream.cursor_backlog} events behind; drain lagging (stop projection may be failing)`,
     );
   }
-  // NB: raw stream size is NOT an anomaly. events.ndjson is a deliberate
-  // append-only ledger (names + forensics for the life of the log), and
-  // consumeSince tail-reads it, so size no longer drives latency. The
-  // bytes/lines still surface in the summary line for visibility;
-  // cursor_backlog above is the real drain-lag signal.
+  // Raw V2 stream size is not an anomaly; catalog rotation bounds readers.
   if ((sweptByReason.unparseable ?? 0) > 0) {
     anomalies.push(
       `${sweptByReason.unparseable} heartbeat(s) swept as unparseable in ${opts.since}; possible corruption or a non-atomic writer`,
@@ -4230,15 +4096,8 @@ function runHealth(opts: { since: string; json?: boolean }): void {
     generated_at: new Date().toISOString(),
     event_telemetry: {
       source: diagnosticEvents.source,
-      authoritative: diagnosticEvents.authoritative && diagnosticEvents.source === "v1",
-      ...(diagnosticEvents.source === "v2"
-        ? {
-            reason:
-              "V2 health observations do not preserve the legacy heal and council event taxonomy",
-          }
-        : diagnosticEvents.reason
-          ? { reason: diagnosticEvents.reason }
-          : {}),
+      authoritative: diagnosticEvents.authoritative,
+      ...(diagnosticEvents.reason ? { reason: diagnosticEvents.reason } : {}),
     },
     active_agents: {
       source: activeAgents.source,

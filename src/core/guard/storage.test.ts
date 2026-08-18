@@ -5,7 +5,6 @@ import { join } from "node:path";
 import {
   acquireEvaluationLock,
   evaluationLockOwned,
-  readGuardEventWindow,
   releaseEvaluationLock,
   writeAtomicJson,
 } from "./storage.ts";
@@ -49,35 +48,6 @@ describe("run-quality storage", () => {
     );
     expect(existsSync(path)).toBe(false);
   });
-
-  test("rebuild window reads only the newest archive plus the live segment", () => {
-    const project = root();
-    const dir = join(project, ".harnery");
-    writeFileSync(join(dir, "events-2026-08-13.ndjson"), `${line("01", "old")}\n`);
-    writeFileSync(join(dir, "events-2026-08-14.ndjson"), `${line("02", "newest")}\n`);
-    writeFileSync(join(dir, "events.ndjson"), `${line("03", "live")}\n`);
-    const window = readGuardEventWindow(project, 64 * 1024);
-    expect(window.events.map((event) => event.event_id)).toEqual(["02", "03"]);
-    expect(window.events.map((event) => event.segment)).toEqual([
-      ".harnery/events-2026-08-14.ndjson",
-      ".harnery/events.ndjson",
-    ]);
-  });
-
-  test("a maximum-tail scan remains byte-bounded and completes within the lazy-read budget", () => {
-    const project = root();
-    const row = `${line("01", "fixture")}\n`;
-    writeFileSync(
-      join(project, ".harnery", "events.ndjson"),
-      row.repeat(Math.ceil((4 * 1024 * 1024) / Buffer.byteLength(row))),
-    );
-    const started = performance.now();
-    const window = readGuardEventWindow(project, 2 * 1024 * 1024);
-    const durationMs = performance.now() - started;
-    expect(window.truncated).toBe(true);
-    expect(window.events.length).toBeGreaterThan(0);
-    expect(durationMs).toBeLessThan(2_000);
-  });
 });
 
 function root(): string {
@@ -88,18 +58,4 @@ function root(): string {
   mkdirSync(join(path, ".harnery"), { recursive: true });
   roots.push(path);
   return path;
-}
-
-function line(eventId: string, instanceId: string): string {
-  return JSON.stringify({
-    schema_version: 1,
-    event_id: eventId,
-    event_type: "tool.pre_use",
-    ts: "2026-08-15T00:00:00.000Z",
-    instance_id: instanceId,
-    session_id: instanceId,
-    adapter: "claude-code",
-    source: "agent-hooks",
-    data: { tool_name: "Read", input_hash: "a" },
-  });
 }

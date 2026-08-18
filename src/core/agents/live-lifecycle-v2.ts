@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Adapter } from "../adapter.ts";
 import { buildEventV2 } from "../events/v2/builder.ts";
 import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
 import type { EventV2 } from "../events/v2/contract.ts";
@@ -11,13 +12,10 @@ import {
 } from "../events/v2/live-routing.ts";
 import { readHookProducerStateV2 } from "../events/v2/producers/recorder.ts";
 import { writeEventV2 } from "../events/v2/writer.ts";
-import type { Adapter } from "../hooks/events/schema.ts";
 import { LiveCoordinationAuthorityV2Error } from "./live-authority-v2.ts";
 import { liveCoordinationAdapterV2 } from "./state/live-coordination-view.ts";
 
-export type LiveLifecycleObservationV2Result =
-  | { state: "v1" }
-  | { state: "recorded"; event: EventV2 };
+export type LiveLifecycleObservationV2Result = { state: "recorded"; event: EventV2 };
 
 interface LiveLifecycleObservationBaseV2 {
   coordRoot: string;
@@ -70,7 +68,6 @@ function recordObservation<T extends "lifecycle.sweep_observed" | "session.resum
       },
 ): LiveLifecycleObservationV2Result {
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state === "v1") return { state: "v1" };
   if (route.state === "blocked") throw new LiveCoordinationAuthorityV2Error(route.reason);
   input = withAttestedAdapter(input);
   const control = readEventV2ControlState(input.coordRoot);

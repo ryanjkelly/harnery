@@ -1,22 +1,11 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { Archive, ArchiveRestore, CheckCircle2, ChevronRight, Trash2, UserCog } from "lucide-react";
 import { useRouter } from "next/navigation";
-import {
-  Archive,
-  ArchiveRestore,
-  CheckCircle2,
-  ChevronRight,
-  Trash2,
-  UserCog,
-} from "lucide-react";
+import { useEffect, useState, useTransition } from "react";
 
 import { AgentChip } from "@/components/AgentChip";
-import {
-  COUNCIL_ACTION_EVENT,
-  type CouncilActionDetail,
-} from "@/components/CouncilActionTrigger";
-import { fireCouncilConfetti } from "@/lib/confetti";
+import { COUNCIL_ACTION_EVENT, type CouncilActionDetail } from "@/components/CouncilActionTrigger";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -26,15 +15,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { fireCouncilConfetti } from "@/lib/confetti";
 
-type Action =
-  | "advance"
-  | "close"
-  | "archive"
-  | "unarchive"
-  | "delete"
-  | "set-steward"
-  | null;
+type Action = "advance" | "close" | "archive" | "unarchive" | "delete" | "set-steward" | null;
 
 const AGENT_NAME_RE = /^agent-[A-Za-z][A-Za-z0-9_-]*$/;
 
@@ -94,19 +77,14 @@ export function CouncilActions({
   const [open, setOpen] = useState<Action>(null);
   const [busy, startTransition] = useTransition();
   const [forceAdvance, setForceAdvance] = useState(false);
-  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
-    null,
-  );
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const initialSelected = knownAgents.some((a) => a.name === steward)
-    ? steward
-    : null;
+  const initialSelected = knownAgents.some((a) => a.name === steward) ? steward : null;
   const [selected, setSelected] = useState<string | null>(initialSelected);
   const [clearSteward, setClearSteward] = useState(false);
   const stewardCandidate = clearSteward ? null : selected;
   const stewardValid =
-    clearSteward ||
-    (stewardCandidate !== null && AGENT_NAME_RE.test(stewardCandidate));
+    clearSteward || (stewardCandidate !== null && AGENT_NAME_RE.test(stewardCandidate));
 
   const hasPending = pending.length > 0;
   const collected = status === "active" && roundStatus === "collected";
@@ -139,14 +117,11 @@ export function CouncilActions({
             : action === "set-steward"
               ? { steward: clearSteward ? null : stewardCandidate }
               : {};
-        const res = await fetch(
-          `/api/councils/${encodeURIComponent(councilId)}/${action}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
-        );
+        const res = await fetch(`/api/councils/${encodeURIComponent(councilId)}/${action}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
         const json = (await res.json()) as {
           ok?: boolean;
           error?: string;
@@ -155,8 +130,7 @@ export function CouncilActions({
         if (!res.ok || !json.ok) {
           // Prefer the CLI's stderr: "advance_failed" alone tells the
           // operator nothing; "pending members in round 1 (incl. X)" does.
-          const detail =
-            json.stderr?.trim() || json.error || `HTTP ${res.status}`;
+          const detail = json.stderr?.trim() || json.error || `HTTP ${res.status}`;
           setFeedback({
             ok: false,
             msg: `${action} failed: ${detail}`,
@@ -192,54 +166,39 @@ export function CouncilActions({
         {closeRecommended && (
           <div className="mb-3 rounded-md border border-emerald-500/40 bg-emerald-500/[0.08] px-3 py-2 text-xs leading-relaxed space-y-1">
             <div>
-              <strong className="text-emerald-300">
-                Exit criterion met.
-              </strong>{" "}
-              The last {consecutiveAllTrivialRounds} consecutive rounds had no
-              Substantive entries. Close the council to mark deliberation
-              complete; no further rounds needed.
+              <strong className="text-emerald-300">Exit criterion met.</strong> The last{" "}
+              {consecutiveAllTrivialRounds} consecutive rounds had no Substantive entries. Close the
+              council to mark deliberation complete; no further rounds needed.
               {openIdle &&
                 ` Round ${currentRound} is open but nothing is pending in it, so closing from here is safe and ends the empty round.`}
             </div>
             <div className="text-muted-foreground">
               After Close fires, the manifest is stamped{" "}
-              <code className="font-mono text-[11px]">closed_at</code> and the
-              council stays in the active list as read-only for inspection.
-              Archive later when ready to move it to{" "}
-              <code className="font-mono text-[11px]">
-                .harnery/councils/archive/
-              </code>
-              .
+              <code className="font-mono text-[11px]">closed_at</code> and the council stays in the
+              active list as read-only for inspection. Archive later when ready to move it to{" "}
+              <code className="font-mono text-[11px]">.harnery/councils/archive/</code>.
             </div>
           </div>
         )}
         {advanceRecommended && (
           <div className="mb-3 rounded-md border border-primary/40 bg-primary/[0.06] px-3 py-2 text-xs leading-relaxed space-y-1">
             <div>
-              <strong className="text-primary">
-                Round {currentRound} complete.
-              </strong>{" "}
-              All members contributed. Advance to round {currentRound + 1} to
-              continue routing, or Close if the exit criterion has been met
-              (two consecutive all-Trivial rounds).
+              <strong className="text-primary">Round {currentRound} complete.</strong> All members
+              contributed. Advance to round {currentRound + 1} to continue routing, or Close if the
+              exit criterion has been met (two consecutive all-Trivial rounds).
             </div>
             <div className="text-muted-foreground">
               After Advance fires, the steward
               {steward ? (
                 <>
                   {" ("}
-                  <AgentChip
-                    name={steward}
-                    className="font-mono text-foreground/80"
-                  />
+                  <AgentChip name={steward} className="font-mono text-foreground/80" />
                   {")"}
                 </>
               ) : null}{" "}
               drafts the round-{currentRound + 1} routing prompts via{" "}
-              <code className="font-mono text-[11px]">
-                harn agents council prompt
-              </code>
-              . The Routing prompts card below will sit empty until they land.
+              <code className="font-mono text-[11px]">harn agents council prompt</code>. The Routing
+              prompts card below will sit empty until they land.
             </div>
           </div>
         )}
@@ -306,9 +265,7 @@ export function CouncilActions({
             size="sm"
             onClick={() => setOpen("archive")}
             disabled={status === "archived"}
-            data-attention-target={
-              (archiveRecommended && closeHandoffDone) || undefined
-            }
+            data-attention-target={(archiveRecommended && closeHandoffDone) || undefined}
             className={
               archiveRecommended
                 ? "ring-2 ring-emerald-500/60 ring-offset-1 ring-offset-background bg-emerald-600 hover:bg-emerald-700 text-emerald-50"
@@ -371,55 +328,40 @@ export function CouncilActions({
         <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
           {status === "archived" ? (
             <>
-              Council is <strong>archived</strong>. <strong>Unarchive</strong>{" "}
-              moves manifest + body dir back from{" "}
-              <code className="font-mono text-[11px]">
-                .harnery/councils/archive/
-              </code>{" "}
-              to the active list and restores its prior status. Useful for
-              testing the archive flow.
+              Council is <strong>archived</strong>. <strong>Unarchive</strong> moves manifest + body
+              dir back from{" "}
+              <code className="font-mono text-[11px]">.harnery/councils/archive/</code> to the
+              active list and restores its prior status. Useful for testing the archive flow.
             </>
           ) : status === "closed" ? (
             closeHandoffDone ? (
               <>
-                Council is <strong>closed</strong> and the steward&apos;s
-                close-out handoff is in place. <strong>Archive</strong> moves
-                manifest + body dir to{" "}
-                <code className="font-mono text-[11px]">
-                  .harnery/councils/archive/
-                </code>
-                , step 2 of 2 in the wrap-up above.
+                Council is <strong>closed</strong> and the steward&apos;s close-out handoff is in
+                place. <strong>Archive</strong> moves manifest + body dir to{" "}
+                <code className="font-mono text-[11px]">.harnery/councils/archive/</code>, step 2 of
+                2 in the wrap-up above.
               </>
             ) : (
               <>
-                Council is <strong>closed</strong>. After the steward&apos;s
-                close-out handoff (step 1 in the wrap-up above),{" "}
-                <strong>Archive</strong> moves manifest + body dir to{" "}
-                <code className="font-mono text-[11px]">
-                  .harnery/councils/archive/
-                </code>
-                .
+                Council is <strong>closed</strong>. After the steward&apos;s close-out handoff (step
+                1 in the wrap-up above), <strong>Archive</strong> moves manifest + body dir to{" "}
+                <code className="font-mono text-[11px]">.harnery/councils/archive/</code>.
               </>
             )
           ) : (
             <>
-              <strong>Advance</strong> opens round {currentRound + 1} (members
-              see round {currentRound}&apos;s transcript).{" "}
-              <strong>Close</strong> marks the council as deliberation-complete
-              but keeps it in the active list. <strong>Archive</strong> moves
+              <strong>Advance</strong> opens round {currentRound + 1} (members see round{" "}
+              {currentRound}&apos;s transcript). <strong>Close</strong> marks the council as
+              deliberation-complete but keeps it in the active list. <strong>Archive</strong> moves
               manifest + body dir to{" "}
-              <code className="font-mono text-[11px]">
-                .harnery/councils/archive/
-              </code>{" "}
-              and removes it from the active dashboard.
+              <code className="font-mono text-[11px]">.harnery/councils/archive/</code> and removes
+              it from the active dashboard.
             </>
           )}
         </p>
 
         {feedback && (
-          <p
-            className={`text-xs mt-2 ${feedback.ok ? "text-emerald-400" : "text-red-400"}`}
-          >
+          <p className={`text-xs mt-2 ${feedback.ok ? "text-emerald-400" : "text-red-400"}`}>
             {feedback.msg}
           </p>
         )}
@@ -439,23 +381,19 @@ export function CouncilActions({
         {open === "advance" && (
           <>
             <DialogHeader>
-              <DialogTitle>
-                Advance council to round {currentRound + 1}?
-              </DialogTitle>
+              <DialogTitle>Advance council to round {currentRound + 1}?</DialogTitle>
               <DialogDescription>
-                Members will see round {currentRound}&apos;s transcript once
-                the new round opens (round_visibility=next_round).
+                Members will see round {currentRound}&apos;s transcript once the new round opens
+                (round_visibility=next_round).
                 {hasPending && (
                   <span className="mt-2 block rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
                     <strong className="text-amber-300">
                       {pending.length} pending member
                       {pending.length === 1 ? "" : "s"}:
                     </strong>{" "}
-                    <code className="font-mono">{pending.join(", ")}</code>.
-                    Advance with --force will drop{" "}
-                    {pending.length === 1 ? "this member" : "these members"}{" "}
-                    from THIS round&apos;s transcript; they can rejoin the
-                    next round.
+                    <code className="font-mono">{pending.join(", ")}</code>. Advance with --force
+                    will drop {pending.length === 1 ? "this member" : "these members"} from THIS
+                    round&apos;s transcript; they can rejoin the next round.
                   </span>
                 )}
                 {hasPending && (
@@ -471,11 +409,7 @@ export function CouncilActions({
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setOpen(null)}
-                disabled={busy}
-              >
+              <Button variant="outline" onClick={() => setOpen(null)} disabled={busy}>
                 Cancel
               </Button>
               <Button
@@ -494,25 +428,16 @@ export function CouncilActions({
             <DialogHeader>
               <DialogTitle>Close this council?</DialogTitle>
               <DialogDescription>
-                Closing stamps <code className="font-mono">closed_at</code> and
-                emits the transcript to the response. Council stays in the
-                active list for inspection; use Archive separately when ready
-                to move it.
+                Closing stamps <code className="font-mono">closed_at</code> and emits the transcript
+                to the response. Council stays in the active list for inspection; use Archive
+                separately when ready to move it.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setOpen(null)}
-                disabled={busy}
-              >
+              <Button variant="outline" onClick={() => setOpen(null)} disabled={busy}>
                 Cancel
               </Button>
-              <Button
-                variant="default"
-                onClick={() => fire("close")}
-                disabled={busy}
-              >
+              <Button variant="default" onClick={() => fire("close")} disabled={busy}>
                 {busy ? "Closing…" : "Close council"}
               </Button>
             </DialogFooter>
@@ -524,26 +449,16 @@ export function CouncilActions({
             <DialogHeader>
               <DialogTitle>Archive this council?</DialogTitle>
               <DialogDescription>
-                Stamps <code className="font-mono">archived_at</code> and moves
-                manifest + body dir to{" "}
-                <code className="font-mono">.harnery/councils/archive/</code>.
-                It&apos;ll disappear from the active dashboard. You can still
-                view it via the archive section.
+                Stamps <code className="font-mono">archived_at</code> and moves manifest + body dir
+                to <code className="font-mono">.harnery/councils/archive/</code>. It&apos;ll
+                disappear from the active dashboard. You can still view it via the archive section.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setOpen(null)}
-                disabled={busy}
-              >
+              <Button variant="outline" onClick={() => setOpen(null)} disabled={busy}>
                 Cancel
               </Button>
-              <Button
-                variant="destructive"
-                onClick={() => fire("archive")}
-                disabled={busy}
-              >
+              <Button variant="destructive" onClick={() => fire("archive")} disabled={busy}>
                 {busy ? "Archiving…" : "Archive"}
               </Button>
             </DialogFooter>
@@ -555,29 +470,18 @@ export function CouncilActions({
             <DialogHeader>
               <DialogTitle>Unarchive this council?</DialogTitle>
               <DialogDescription>
-                Drops <code className="font-mono">archived_at</code> and moves
-                manifest + body dir back from{" "}
-                <code className="font-mono">.harnery/councils/archive/</code>{" "}
-                to the active councils dir. Status restores to{" "}
-                <code className="font-mono">closed</code> when{" "}
-                <code className="font-mono">closed_at</code> is set, otherwise{" "}
-                <code className="font-mono">active</code>. Useful for testing
-                the archive flow.
+                Drops <code className="font-mono">archived_at</code> and moves manifest + body dir
+                back from <code className="font-mono">.harnery/councils/archive/</code> to the
+                active councils dir. Status restores to <code className="font-mono">closed</code>{" "}
+                when <code className="font-mono">closed_at</code> is set, otherwise{" "}
+                <code className="font-mono">active</code>. Useful for testing the archive flow.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setOpen(null)}
-                disabled={busy}
-              >
+              <Button variant="outline" onClick={() => setOpen(null)} disabled={busy}>
                 Cancel
               </Button>
-              <Button
-                variant="default"
-                onClick={() => fire("unarchive")}
-                disabled={busy}
-              >
+              <Button variant="default" onClick={() => fire("unarchive")} disabled={busy}>
                 {busy ? "Unarchiving…" : "Unarchive"}
               </Button>
             </DialogFooter>
@@ -589,9 +493,7 @@ export function CouncilActions({
             <DialogHeader>
               <DialogTitle>Delete this council?</DialogTitle>
               <DialogDescription>
-                <span className="block">
-                  Permanently removes the manifest and body dir at:
-                </span>
+                <span className="block">Permanently removes the manifest and body dir at:</span>
                 <span className="mt-2 block font-mono text-[11px] rounded bg-background/80 px-2 py-1 break-all">
                   .harnery/councils/archive/{councilId}.json
                 </span>
@@ -599,29 +501,21 @@ export function CouncilActions({
                   .harnery/councils/archive/{councilId}/
                 </span>
                 <span className="mt-2 block text-xs">
-                  This cannot be undone. Delete is for clearing fixtures or
-                  genuine mistakes. If there&apos;s any chance you&apos;ll
-                  want to look at this council later, leave it archived.
+                  This cannot be undone. Delete is for clearing fixtures or genuine mistakes. If
+                  there&apos;s any chance you&apos;ll want to look at this council later, leave it
+                  archived.
                 </span>
                 <span className="block text-xs text-muted-foreground mt-1">
-                  target_doc, close_handoff_path, and session-events.ndjson
-                  are owned by separate authors and are left alone.
+                  target_doc, close_handoff_path, and the canonical event ledger are owned
+                  separately and are left alone.
                 </span>
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setOpen(null)}
-                disabled={busy}
-              >
+              <Button variant="outline" onClick={() => setOpen(null)} disabled={busy}>
                 Cancel
               </Button>
-              <Button
-                variant="destructive"
-                onClick={() => fire("delete")}
-                disabled={busy}
-              >
+              <Button variant="destructive" onClick={() => fire("delete")} disabled={busy}>
                 {busy ? "Deleting…" : "Delete permanently"}
               </Button>
             </DialogFooter>
@@ -634,21 +528,19 @@ export function CouncilActions({
               <DialogTitle>Reassign steward</DialogTitle>
               <DialogDescription>
                 <span className="block">
-                  The steward drafts per-round routing prompts. When unset,
-                  readers fall back to the convener (
-                  <code className="font-mono text-[11px]">{steward}</code>).
+                  The steward drafts per-round routing prompts. When unset, readers fall back to the
+                  convener (<code className="font-mono text-[11px]">{steward}</code>).
                 </span>
                 <span className="mt-2 block text-xs text-muted-foreground">
-                  Picker shows currently-active heartbeats plus agents whose
-                  sessions ended in the last 30 days.
+                  Picker shows currently-active heartbeats plus agents whose sessions ended in the
+                  last 30 days.
                 </span>
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2 py-2 max-h-80 overflow-y-auto">
               {knownAgents.length === 0 ? (
                 <p className="text-xs text-muted-foreground italic">
-                  No known agents. Open a Claude Code session for any agent
-                  first, then come back.
+                  No known agents. Open a Claude Code session for any agent first, then come back.
                 </p>
               ) : (
                 knownAgents.map((a) => {
@@ -681,9 +573,7 @@ export function CouncilActions({
                           <span
                             className={
                               "size-1.5 rounded-full " +
-                              (a.state === "active"
-                                ? "bg-emerald-400"
-                                : "bg-muted-foreground/50")
+                              (a.state === "active" ? "bg-emerald-400" : "bg-muted-foreground/50")
                             }
                           />
                           {a.state}
@@ -706,11 +596,7 @@ export function CouncilActions({
               </label>
             </div>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setOpen(null)}
-                disabled={busy}
-              >
+              <Button variant="outline" onClick={() => setOpen(null)} disabled={busy}>
                 Cancel
               </Button>
               <Button
@@ -718,11 +604,7 @@ export function CouncilActions({
                 onClick={() => fire("set-steward")}
                 disabled={busy || !stewardValid}
               >
-                {busy
-                  ? "Saving…"
-                  : clearSteward
-                    ? "Clear steward"
-                    : "Save steward"}
+                {busy ? "Saving…" : clearSteward ? "Clear steward" : "Save steward"}
               </Button>
             </DialogFooter>
           </>

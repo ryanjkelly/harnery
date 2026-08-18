@@ -1,16 +1,15 @@
 ---
-"harnery": minor
+"harnery": major
 ---
 
-Replace the canonical event ledger with a private V2 contract and a hard
-cutover. V2 adds one generated TypeBox and JSON Schema contract, deterministic
-canonicalization and keyed fingerprints, UUIDv7 identities, explicit spans and
-causal links, adapter capability attestations, a spool-first concurrent writer,
-strict readers, V2-only coordination authority, safe web projections, and an
-activation-bound run-quality collector.
+Replace every event-recording, coordination-authority, workflow, CLI, web, and
+downstream runtime path with the canonical V2 ledger. Harnery now initializes a
+V2 epoch automatically, validates one generated TypeBox and JSON Schema
+contract, uses deterministic canonicalization and keyed fingerprints, records
+explicit spans and causal links, and fails closed when V2 authority is missing
+or invalid.
 
-The release also adds crash-recoverable candidate, activation, and rollback
-commands. They seal V1 without rewriting it, fence stale V1 writers, snapshot
-disposable projections, archive a failed V2 epoch whole, and restore an exact V1
-continuation. Candidate canaries remain evidence-ineligible, and a separately
-approved activation event is the only boundary for a new corpus.
+This is a breaking removal of the legacy event contract, its readers, writers,
+rotators, projectors, cutover commands, rollback paths, generated mirrors, and
+compatibility tests. Historical log files are left untouched, but no shipped
+runtime opens or appends to them.

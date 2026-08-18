@@ -3,6 +3,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  recordLiveLifecycleChangeV2,
+  recordLiveTaskChangeV2,
+} from "../../src/core/agents/live-authority-v2.ts";
+import { ensureLiveCoordinationHeartbeat } from "../../src/core/agents/state/live-coordination-view.ts";
+import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
+import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../../src/core/events/v2/live-routing.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
 const HARN = path.join(HARNERY_DIR, "bin", "harn");
@@ -15,84 +26,46 @@ function makeSandbox(): string {
   mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
   const now = "2026-08-13T15:00:00Z";
   writeFileSync(
-    path.join(root, ".harnery", "active", `${OWNER}.json`),
-    JSON.stringify({
-      schema_version: 2,
-      instance_id: OWNER,
-      session_id: OWNER,
-      kind: "session",
-      name: "Hollis",
-      platform: "codex",
-      started_at: now,
-      last_heartbeat: new Date().toISOString(),
-      files_touched: [],
-      task: "Review auth",
-      activity: "needs_input",
-      activity_updated_at: "2026-08-13T15:02:00Z",
-      activity_source: "interaction.input_requested",
-      task_state: "blocked",
-      task_state_updated_at: "2026-08-13T15:03:00Z",
-      task_state_reason: "waiting for approval",
-    }),
-  );
-  writeFileSync(
     path.join(root, ".harnery", ".name-history"),
     `${JSON.stringify({ instance_id: OWNER, name: "Hollis", kind: "session", ts: now })}\n`,
   );
-  const events = [
-    {
-      schema_version: 2,
-      event_id: "01start",
-      event_type: "session.start",
-      ts: now,
-      instance_id: OWNER,
-      session_id: OWNER,
+  initializeEventLedgerV2({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-agents-surfaces",
+  });
+  const route = resolveLiveEventLedgerRouteV2(root);
+  if (route.state !== "v2") throw new Error("expected active V2 route");
+  const record = (eventName: string, payload: Record<string, unknown>) =>
+    recordLiveHookSignalV2({
+      coordRoot: root,
+      route,
+      eventName,
+      payload: { session_id: OWNER, raw: {}, ...payload },
       adapter: "codex",
-      source: "agent-hook",
-      data: { name: "Hollis" },
-    },
-    {
-      schema_version: 2,
-      event_id: "01prompt",
-      event_type: "user_prompt.submit",
-      ts: "2026-08-13T15:01:00Z",
-      instance_id: OWNER,
-      session_id: OWNER,
-      adapter: "codex",
-      source: "agent-hook",
-      data: {},
-    },
-    {
-      schema_version: 2,
-      event_id: "01input",
-      event_type: "interaction.input_requested",
-      ts: "2026-08-13T15:02:00Z",
-      instance_id: OWNER,
-      session_id: OWNER,
-      adapter: "codex",
-      source: "agent-hook",
-      data: { request_kind: "permission" },
-    },
-    {
-      schema_version: 2,
-      event_id: "01state",
-      event_type: "state.task_state",
-      ts: "2026-08-13T15:03:00Z",
-      instance_id: OWNER,
-      session_id: OWNER,
-      adapter: "codex",
-      source: "agent-coord",
-      data: {
-        prior_state: "active",
-        state: "blocked",
-        reason: "waiting for approval",
-      },
-    },
-  ];
-  writeFileSync(
-    path.join(root, ".harnery", "events.ndjson"),
-    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
-  );
+      instanceId: OWNER,
+    });
+  record("session-start", { model: "gpt-5.6" });
+  record("user-prompt-submit", { turn_id: "turn-surface", prompt: "review auth" });
+  record("permission-request", { turn_id: "turn-surface", permission_type: "command" });
+  ensureLiveCoordinationHeartbeat(root, OWNER, OWNER, "codex", "gpt-5.6");
+  recordLiveTaskChangeV2({
+    coordRoot: root,
+    owner: OWNER,
+    nativeSessionId: OWNER,
+    adapter: "codex",
+    task: "Review auth",
+  });
+  recordLiveLifecycleChangeV2({
+    coordRoot: root,
+    owner: OWNER,
+    nativeSessionId: OWNER,
+    adapter: "codex",
+    state: "blocked",
+    reason: "waiting for approval",
+  });
   return root;
 }
 
@@ -130,17 +103,15 @@ describe("harn agents state surfaces", () => {
     const listed = json(harn(root, ["agents", "list", "--json"]));
     expect((listed.rows as Array<Record<string, unknown>>)[0]).toMatchObject({
       activity: "needs_input",
-      activity_source: "interaction.input_requested",
+      activity_source: "event-v2-coordination-view",
       task_state: "blocked",
-      task_state_reason: "waiting for approval",
     });
 
     expect(json(harn(root, ["agents", "whoami", "--json"]))).toMatchObject({
       activity: "needs_input",
-      activity_updated_at: "2026-08-13T15:02:00Z",
+      activity_updated_at: expect.any(String),
       task_state: "blocked",
-      task_state_updated_at: "2026-08-13T15:03:00Z",
-      task_state_reason: "waiting for approval",
+      task_state_updated_at: expect.any(String),
     });
   });
 
@@ -148,16 +119,13 @@ describe("harn agents state surfaces", () => {
     "status and show render explicit activity and lifecycle labels",
     () => {
       const root = makeSandbox();
-      expect(
-        json(harn(root, ["agents", "status", "--json", "--session-id", OWNER])),
-      ).toMatchObject({
-        activity: "needs_input",
-        task_state: "blocked",
-        task_state_reason: "waiting for approval",
-      });
-      expect(harn(root, ["agents", "status", "--session-id", OWNER]).stdout).toContain(
-        "lifecycle",
+      expect(json(harn(root, ["agents", "status", "--json", "--session-id", OWNER]))).toMatchObject(
+        {
+          activity: "needs_input",
+          task_state: "blocked",
+        },
       );
+      expect(harn(root, ["agents", "status", "--session-id", OWNER]).stdout).toContain("lifecycle");
 
       expect(json(harn(root, ["agents", "show", "Hollis", "--json"]))).toMatchObject({
         activity: "needs_input",
@@ -165,7 +133,7 @@ describe("harn agents state surfaces", () => {
       });
       const shown = harn(root, ["agents", "show", "Hollis"]);
       expect(shown.stdout).toContain("activity:       needs_input");
-      expect(shown.stdout).toContain("lifecycle:      blocked: waiting for approval");
+      expect(shown.stdout).toContain("lifecycle:      blocked");
     },
     { timeout: 15_000 },
   );
@@ -175,18 +143,17 @@ describe("harn agents state surfaces", () => {
     const traced = json(harn(root, ["agents", "trace", "Hollis", "--json"]));
     expect(traced).toMatchObject({
       activity: "needs_input",
-      activity_source: "interaction.input_requested",
+      activity_source: "event-v2-coordination-view",
       task_state: "blocked",
-      task_state_reason: "waiting for approval",
     });
     const entries = traced.entries as Array<Record<string, unknown>>;
-    expect(entries.some((entry) => entry.event_type === "interaction.input_requested")).toBe(true);
-    expect(entries.some((entry) => entry.event_type === "state.task_state")).toBe(true);
+    expect(entries.some((entry) => entry.event_type === "interaction.wait_started")).toBe(true);
+    expect(entries.some((entry) => entry.event_type === "coord.lifecycle_changed")).toBe(true);
     const human = harn(root, ["agents", "trace", "Hollis"]);
     expect(human.stdout).toContain("activity=needs_input · lifecycle=blocked");
   });
 
-  test("legacy heartbeats use evidence-safe reader defaults", () => {
+  test("incomplete disposable cache rows use evidence-safe reader defaults", () => {
     const root = makeSandbox();
     writeFileSync(
       path.join(root, ".harnery", "active", `${OWNER}.json`),

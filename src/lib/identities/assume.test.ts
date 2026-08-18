@@ -10,8 +10,15 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
+import { ensureLiveCoordinationHeartbeat } from "../../core/agents/state/live-coordination-view.ts";
 import { resolveName } from "../../core/agents/state/names.ts";
+import { initializeEventLedgerV2 } from "../../core/events/v2/bootstrap.ts";
+import { sha256V2 } from "../../core/events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../../core/events/v2/live-routing.ts";
+import { readActiveLedgerV2 } from "../../core/events/v2/reader.ts";
 import { assumeIdentity, IdentityAssumeError } from "./assume.ts";
 
 describe("assumeIdentity", () => {
@@ -19,19 +26,9 @@ describe("assumeIdentity", () => {
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-assume-"));
-    mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    initializeLedger(root);
     seedHeartbeat(root, "session-new", "Anna");
-    writeFileSync(
-      path.join(root, ".harnery", ".name-history"),
-      `${JSON.stringify({
-        instance_id: "session-new",
-        name: "Anna",
-        kind: "session",
-        source: "pool",
-        ts: new Date().toISOString(),
-      })}\n`,
-    );
   });
 
   afterEach(() => {
@@ -60,22 +57,20 @@ describe("assumeIdentity", () => {
 
     const personaFiles = readdirSync(path.join(root, ".harnery", "identities"));
     expect(personaFiles).toEqual([`${result.agent_id}.json`]);
-    const events = readFileSync(path.join(root, ".harnery", "events.ndjson"), "utf8");
-    expect(events).toContain('"event_type":"identity.assumed"');
-    expect(events).toContain('"previous_name":"Anna"');
+    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    expect(events.some((event) => event.event_type === "coord.identity_attested")).toBe(true);
   });
 
   test("is idempotent after the session already owns the durable persona", () => {
     assumeIdentity(root, "session-new", "Yann");
-    const eventPath = path.join(root, ".harnery", "events.ndjson");
     const historyPath = path.join(root, ".harnery", ".name-history");
-    const eventsBefore = readFileSync(eventPath, "utf8");
+    const eventsBefore = readActiveLedgerV2(root).events.length;
     const historyBefore = readFileSync(historyPath, "utf8");
 
     const retry = assumeIdentity(root, "session-new", "Yann");
     expect(retry.changed).toBe(false);
     expect(retry.event_id).toBeNull();
-    expect(readFileSync(eventPath, "utf8")).toBe(eventsBefore);
+    expect(readActiveLedgerV2(root).events).toHaveLength(eventsBefore);
     expect(readFileSync(historyPath, "utf8")).toBe(historyBefore);
   });
 
@@ -110,10 +105,8 @@ describe("assumeIdentity", () => {
     expect(existsSync(path.join(root, ".harnery", "active", "session-old.json"))).toBe(false);
     expect(existsSync(path.join(root, ".harnery", "pid-map", "999999999"))).toBe(false);
 
-    const events = readFileSync(path.join(root, ".harnery", "events.ndjson"), "utf8");
-    expect(events).toContain('"event_type":"health.heartbeat_swept"');
-    expect(events).toContain('"reclaimed_by":"identity.assume"');
-    expect(events).toContain('"reclaimed_instance_id":"session-old"');
+    const events = readActiveLedgerV2(root).events.map(({ event }) => event);
+    expect(events.some((event) => event.event_type === "lifecycle.sweep_observed")).toBe(true);
   });
 
   test("reclaims a fresh namesake with no pid-map rows at all", () => {
@@ -132,21 +125,46 @@ describe("assumeIdentity", () => {
 
 function seedHeartbeat(root: string, instanceId: string, name: string, nowMs = Date.now()): void {
   const ts = new Date(nowMs).toISOString();
+  const historyPath = path.join(root, ".harnery", ".name-history");
+  const priorHistory = existsSync(historyPath) ? readFileSync(historyPath, "utf8") : "";
+  writeFileSync(
+    historyPath,
+    `${priorHistory}${JSON.stringify({ instance_id: instanceId, name, kind: "session", source: "pool", ts })}\n`,
+  );
+  const route = resolveLiveEventLedgerRouteV2(root);
+  if (route.state !== "v2") throw new Error("expected V2 route");
+  recordLiveHookSignalV2({
+    coordRoot: root,
+    route,
+    eventName: "session-start",
+    payload: { session_id: instanceId, raw: {} },
+    adapter: "codex",
+    instanceId,
+  });
+  const cache = ensureLiveCoordinationHeartbeat(root, instanceId, instanceId, "codex");
+  if (!cache) throw new Error("expected V2 cache");
   writeFileSync(
     path.join(root, ".harnery", "active", `${instanceId}.json`),
     JSON.stringify({
-      schema_version: 1,
-      instance_id: instanceId,
-      session_id: instanceId,
+      ...cache,
+      schema_version: 2,
       name,
       kind: "session",
       agent_id: instanceId,
-      platform: "codex",
       started_at: ts,
       last_heartbeat: ts,
-      files_touched: [],
     }),
   );
+}
+
+function initializeLedger(root: string): void {
+  initializeEventLedgerV2({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-identity-assume",
+  });
 }
 
 describe("assumeIdentity fork-ancestor guard", () => {
@@ -154,8 +172,8 @@ describe("assumeIdentity fork-ancestor guard", () => {
 
   beforeEach(() => {
     root = mkdtempSync(path.join(os.tmpdir(), "harn-assume-fork-"));
-    mkdirSync(path.join(root, ".harnery", "active"), { recursive: true });
     mkdirSync(path.join(root, ".harnery", "pid-map"), { recursive: true });
+    initializeLedger(root);
     seedHeartbeat(root, "fork-1", "Maya");
     // Lineage: fork-1 was branched from parent-1 (agent-Hazel), which has
     // since exited (no heartbeat), the exact hole liveness checks can't see.

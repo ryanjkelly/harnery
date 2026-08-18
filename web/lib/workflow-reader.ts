@@ -135,7 +135,7 @@ export function readWorkflowChildHeartbeats(root: string): Map<string, ChildHear
  *
  * This is the join key for run-scoped activity: child sessions write ordinary
  * `tool.pre_use` / `tool.post_use` events to the run's coord root, so filtering
- * `events.ndjson` to these session ids yields what the run actually did.
+ * the V2 ledger to these generation bindings yields what the run actually did.
  */
 export function readWorkflowChildSessions(
   root: string,

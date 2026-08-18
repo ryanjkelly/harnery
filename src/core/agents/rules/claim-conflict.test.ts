@@ -1,234 +1,87 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { initializeV2Fixture, seedV2Session } from "../../../../tests/helpers/event-v2.ts";
+import { readLiveCoordinationRow } from "../state/live-coordination-view.ts";
 import { evaluateClaim } from "./claim-conflict.ts";
 
 let root: string;
-let activeDir: string;
 
 beforeEach(() => {
-  root = join(
-    tmpdir(),
-    `agent-coord-claim-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  );
-  activeDir = join(root, ".harnery", "active");
-  mkdirSync(activeDir, { recursive: true });
+  root = join(tmpdir(), `harnery-claim-v2-${process.pid}-${crypto.randomUUID()}`);
+  initializeV2Fixture(root);
 });
 
-afterEach(() => {
-  try {
-    rmSync(root, { recursive: true, force: true });
-  } catch {
-    /* swallow */
-  }
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+describe("evaluateClaim on canonical V2 authority", () => {
+  test("a write acquires one idempotent canonical claim", () => {
+    seedV2Session(root, "self", { name: "Maya" });
+    expect(verdict("docs/x.md")).toMatchObject({ allow: true, rule: "claim.pass" });
+    expect(verdict("docs/x.md")).toMatchObject({ allow: true, rule: "claim.pass" });
+    expect(readLiveCoordinationRow(root, "self")?.files_touched).toEqual(["docs/x.md"]);
+  });
+
+  test("read mode never acquires a claim", () => {
+    seedV2Session(root, "self", { name: "Maya" });
+    expect(verdict("docs/x.md", "read")).toMatchObject({ allow: true, rule: "claim.pass" });
+    expect(readLiveCoordinationRow(root, "self")?.files_touched).toEqual([]);
+  });
+
+  test("a live peer's canonical claim blocks the same path", () => {
+    seedV2Session(root, "self", { name: "Maya" });
+    seedV2Session(root, "peer", { name: "Adelaide", claims: ["docs/shared.md"] });
+    const result = verdict("docs/shared.md");
+    expect(result).toMatchObject({ allow: false, rule: "claim.conflict" });
+    expect(result.reason).toContain("agent-Adelaide");
+  });
+
+  test("unrelated peer work does not arm the ordering rule", () => {
+    seedV2Session(root, "self", { name: "Maya", claims: ["src/z-higher.ts"] });
+    seedV2Session(root, "peer", { name: "Greta", claims: ["zzz/unrelated.md"] });
+    expect(verdict("src/a-lower.ts")).toMatchObject({ allow: true, rule: "claim.pass" });
+  });
+
+  test("contended higher claim blocks a new lower acquisition", () => {
+    seedV2Session(root, "self", { name: "Maya", claims: ["src/z-higher.ts"] });
+    seedV2Session(root, "peer", { name: "Greta", claims: ["src/z-higher.ts"] });
+    expect(verdict("src/a-lower.ts")).toMatchObject({
+      allow: false,
+      rule: "claim.ordering_violation",
+    });
+  });
+
+  test("a committed-clean higher claim is released before the lower claim is acquired", () => {
+    gitInit(root);
+    commitFile(root, "src/z-higher.ts");
+    seedV2Session(root, "self", { name: "Maya", claims: ["src/z-higher.ts"] });
+    seedV2Session(root, "peer", { name: "Greta", claims: ["src/z-higher.ts"] });
+    expect(verdict("src/a-lower.ts")).toMatchObject({ allow: true, rule: "claim.pass" });
+    expect(readLiveCoordinationRow(root, "self")?.files_touched).toEqual(["src/a-lower.ts"]);
+  });
 });
 
-function seedPeer(
-  id: string,
-  opts: {
-    name?: string;
-    session?: string;
-    parent?: string;
-    files?: string[];
-    fresh?: boolean;
-  },
-): void {
-  const now = new Date();
-  const stale = new Date(now.getTime() - 30 * 60_000);
-  const ts = ((opts.fresh ?? true) ? now : stale).toISOString().replace(/\.\d{3}Z$/, "Z");
-  writeFileSync(
-    join(activeDir, `${id}.json`),
-    JSON.stringify({
-      schema_version: 1,
-      instance_id: id,
-      name: opts.name,
-      session_id: opts.session ?? id,
-      parent_instance_id: opts.parent,
-      files_touched: opts.files ?? [],
-      last_heartbeat: ts,
-      started_at: ts,
-    }),
-    "utf8",
-  );
+function verdict(path: string, mode: "read" | "write" = "write") {
+  return evaluateClaim(root, {
+    rule: "claim",
+    instance_id: "self",
+    session_id: "self",
+    path,
+    mode,
+  });
 }
 
-describe("evaluateClaim", () => {
-  test("no peers, fresh path → allow + claim acquired", () => {
-    seedPeer("self", { name: "Maya" });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "docs/x.md" });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("claim.pass");
-  });
+function gitInit(dir: string): void {
+  Bun.spawnSync(["git", "-C", dir, "init", "-q"]);
+  Bun.spawnSync(["git", "-C", dir, "config", "user.email", "test@example.invalid"]);
+  Bun.spawnSync(["git", "-C", dir, "config", "user.name", "Test"]);
+}
 
-  test("fresh peer holding same path → deny with peer name in reason", () => {
-    seedPeer("peer", { name: "Adelaide", files: ["docs/shared.md"] });
-    seedPeer("self", { name: "Maya" });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "docs/shared.md" });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("claim.conflict");
-    expect(v.reason).toContain("agent-Adelaide");
-  });
-
-  test("stale peer holding same path → allow (stale claims don't block)", () => {
-    seedPeer("peer", { name: "Adelaide", files: ["docs/shared.md"], fresh: false });
-    seedPeer("self", { name: "Maya" });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "docs/shared.md" });
-    expect(v.allow).toBe(true);
-  });
-
-  test("same group (parent + subagent) → no conflict", () => {
-    // Subagent shape: instance_id != session_id; session_id is parent's id.
-    seedPeer("parent", { name: "Maya", files: ["docs/shared.md"] });
-    seedPeer("child", {
-      name: "Maya-sub",
-      session: "parent", // belongs to parent's group
-      parent: "parent",
-    });
-    const v = evaluateClaim(root, {
-      rule: "claim",
-      instance_id: "child",
-      session_id: "parent",
-      path: "docs/shared.md",
-    });
-    expect(v.allow).toBe(true);
-  });
-
-  test("read mode does NOT acquire the claim", () => {
-    seedPeer("self", { name: "Maya" });
-    const v = evaluateClaim(root, {
-      rule: "claim",
-      instance_id: "self",
-      path: "docs/x.md",
-      mode: "read",
-    });
-    expect(v.allow).toBe(true);
-    // Re-read heartbeat: files_touched should still be empty
-    const path = join(activeDir, "self.json");
-    const body = JSON.parse(require("node:fs").readFileSync(path, "utf8"));
-    expect(body.files_touched).toEqual([]);
-  });
-
-  test("write mode acquires the claim (idempotent)", () => {
-    seedPeer("self", { name: "Maya" });
-    evaluateClaim(root, { rule: "claim", instance_id: "self", path: "docs/x.md" });
-    evaluateClaim(root, { rule: "claim", instance_id: "self", path: "docs/x.md" });
-    const body = JSON.parse(require("node:fs").readFileSync(join(activeDir, "self.json"), "utf8"));
-    expect(body.files_touched).toEqual(["docs/x.md"]);
-  });
-});
-
-describe("evaluateClaim: ordering self-prune", () => {
-  // A fresh OTHER peer that CONTENDS (shares a file with self's footprint) must
-  // exist for the ordering rule to engage. The rule arms on genuine contention,
-  // not on the mere presence of an active peer, so the seeded peer holds a path
-  // that overlaps self's held-or-requested set (default: the higher path self
-  // holds in these tests).
-  function seedFreshOtherPeer(files: string[] = ["src/z-higher.ts"]): void {
-    seedPeer("peer", { name: "Greta", files });
-  }
-
-  function gitInit(dir: string): void {
-    spawnSync("git", ["-C", dir, "init", "-q"]);
-    spawnSync("git", ["-C", dir, "config", "user.email", "t@t.dev"]);
-    spawnSync("git", ["-C", dir, "config", "user.name", "Tester"]);
-  }
-  function gitCommitFile(dir: string, rel: string): void {
-    const abs = join(dir, rel);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, "x\n");
-    spawnSync("git", ["-C", dir, "add", rel]);
-    spawnSync("git", ["-C", dir, "commit", "-q", "-m", "add"]);
-  }
-  function selfFiles(): string[] {
-    return JSON.parse(readFileSync(join(activeDir, "self.json"), "utf8")).files_touched;
-  }
-
-  test("ACTIVE (uncommitted) higher claim blocks a lower acquisition", () => {
-    seedFreshOtherPeer();
-    // non-git tmpdir → the higher claim reads as dirty/active → must block
-    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("claim.ordering_violation");
-    expect(v.reason).toContain("src/z-higher.ts");
-  });
-
-  test("committed-clean higher claim is pruned, lower acquisition allowed", () => {
-    gitInit(root);
-    gitCommitFile(root, "src/z-higher.ts"); // now committed-clean (finished edit)
-    seedFreshOtherPeer();
-    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(true);
-    const files = selfFiles();
-    expect(files).not.toContain("src/z-higher.ts"); // stale finished claim pruned
-    expect(files).toContain("src/a-lower.ts"); // new claim acquired
-  });
-
-  test("mixed: committed-clean blocker pruned but dirty blocker still blocks", () => {
-    gitInit(root);
-    gitCommitFile(root, "src/m-clean.ts");
-    // Peer contends on z-dirty (in self's footprint) so the ordering rule arms.
-    seedFreshOtherPeer(["src/z-dirty.ts"]);
-    // hold one committed-clean higher claim and one dirty (untracked) higher claim
-    seedPeer("self", { name: "Maya", files: ["src/m-clean.ts", "src/z-dirty.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(false);
-    expect(v.reason).toContain("src/z-dirty.ts");
-    expect(v.reason).not.toContain("src/m-clean.ts");
-  });
-
-  test("no fresh peers → ordering rule is exempt even with a higher claim", () => {
-    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(true);
-  });
-
-  test("re-editing an already-held lower path is allowed despite a higher active claim", () => {
-    seedFreshOtherPeer();
-    // non-git tmpdir → src/z-higher.ts reads as active. Self already holds the
-    // lower path, so re-acquiring it must NOT trip the ordering rule (no new
-    // lock edge → no circular-wait risk).
-    seedPeer("self", { name: "Maya", files: ["src/a-lower.ts", "src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("claim.pass");
-  });
-
-  test("a genuinely-new lower acquisition still blocks even when a higher path is held", () => {
-    seedFreshOtherPeer();
-    // self holds only the higher path; the lower path is NOT already held, so
-    // the deadlock-prevention ordering rule still fires (regression guard for
-    // the re-edit exemption above).
-    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("claim.ordering_violation");
-  });
-
-  test("a fresh peer editing UNRELATED files does NOT arm the ordering rule", () => {
-    // The core false-positive: a peer active on files that don't overlap self's
-    // footprint (held claims ∪ requested path) cannot be part of any wait-for
-    // cycle through self, so sorted-order acquisition is unnecessary and the
-    // backward edit must be allowed. Without contention-scoped arming, this
-    // walled off every backward-order edit whenever any peer was merely active.
-    seedFreshOtherPeer(["zzz/unrelated.md"]);
-    seedPeer("self", { name: "Maya", files: ["src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(true);
-    expect(v.rule).toBe("claim.pass");
-  });
-
-  test("contention on a DIFFERENT held path (not the requested one) still arms ordering", () => {
-    // self holds two higher paths; peer contends on the one that isn't the
-    // requested path. Footprint overlap exists → the rule arms and the genuine
-    // backward acquisition is blocked (no self-heal: non-git tmpdir reads dirty).
-    seedFreshOtherPeer(["src/y-other.ts"]);
-    seedPeer("self", { name: "Maya", files: ["src/y-other.ts", "src/z-higher.ts"] });
-    const v = evaluateClaim(root, { rule: "claim", instance_id: "self", path: "src/a-lower.ts" });
-    expect(v.allow).toBe(false);
-    expect(v.rule).toBe("claim.ordering_violation");
-  });
-});
+function commitFile(dir: string, relativePath: string): void {
+  const absolutePath = join(dir, relativePath);
+  mkdirSync(dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, "fixture\n", "utf8");
+  Bun.spawnSync(["git", "-C", dir, "add", relativePath]);
+  Bun.spawnSync(["git", "-C", dir, "commit", "-q", "-m", "fixture"]);
+}

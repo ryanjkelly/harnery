@@ -25,7 +25,7 @@ What stays put (machine-local, by design):
 
 - `.harnery/active/`: live heartbeats
 - `.harnery/pid-map/`: ppid → owner_id lookups
-- `.harnery/events.ndjson`: append-only event stream (large + machine-specific)
+- `.harnery/ledgers/v2/`: canonical event ledger (machine-specific authority)
 - `.harnery/.last-intent.*`: per-turn intent stamps
 
 ## Subcommands

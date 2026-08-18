@@ -23,61 +23,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveLiveEventLedgerRouteV2 } from "../../events/v2/live-routing.ts";
-import { emit } from "../events/emit.ts";
 import {
   type AgentActivity,
   applySessionStateEvent,
   type SessionStateEvidenceEvent,
   type TaskState,
 } from "./session-state.ts";
-
-/** Inline adapter normalizer (mirrors canonical-emit.normalizeAdapter), kept
- * local so the writer's only cross-module dep is the in-process emit(). */
-function adapterOf(platform: string | undefined): "claude-code" | "cursor" | "codex" {
-  if (platform === "cursor") return "cursor";
-  if (platform === "codex") return "codex";
-  return "claude-code";
-}
-
-/** Preserve the canonical adapter id in heartbeat state. Mirrors
- * heartbeat-projector.adapterToPlatform so a healed heartbeat carries the same
- * platform value projection would have written. */
-function adapterToPlatform(adapter: string | undefined): string {
-  if (adapter === "cursor") return "cursor";
-  if (adapter === "codex") return "codex";
-  return "claude-code";
-}
-
-/**
- * Emit a canonical `health.*` event for an actual self-heal write. This is the
- * single source of truth for heal telemetry across BOTH the live auto-heal
- * (the pre-tool-use hook → agent-coord heal-heartbeat) and the manual `harn agents
- * heal` path. Write-only by construction (callers only invoke it after a real
- * write), so an already-correct heal records nothing.
- * Best-effort: never throws into the heal path.
- */
-function emitHealthHeal(
-  coordRoot: string,
-  type: "health.pidmap_heal" | "health.heartbeat_heal",
-  instanceId: string,
-  hb: Heartbeat | null,
-  data: Record<string, unknown>,
-): void {
-  try {
-    if (resolveLiveEventLedgerRouteV2(coordRoot).state !== "v1") return;
-    emit(coordRoot, {
-      event_type: type,
-      instance_id: instanceId,
-      session_id: hb?.session_id ?? instanceId,
-      adapter: adapterOf(hb?.platform),
-      source: "agent-coord",
-      data,
-    });
-  } catch {
-    /* telemetry only, never break a heal */
-  }
-}
 
 export interface Heartbeat {
   schema_version?: number;
@@ -120,9 +71,7 @@ export interface Heartbeat {
   current_turn_id?: string;
   parent_instance_id?: string;
   workflow_run_id?: string;
-  /** V2-only disposable-cache bindings. These fields prove that a local row
-   * belongs to the current ledger generation; rows without them are V1 and
-   * must not participate in V2 authority or rendering. */
+  /** Disposable-cache bindings that prove a row belongs to the current V2 generation. */
   v2_instance_id?: `inst_${string}`;
   v2_generation_id?: `gen_${string}`;
   v2_projection_event_id?: string;
@@ -181,6 +130,23 @@ export function stampSessionStateEvent(
   });
 }
 
+/** Persist operator-facing lifecycle prose in the generation-bound cache only. */
+export function setLifecycleCache(
+  coordRoot: string,
+  instanceId: string,
+  state: TaskState,
+  reason?: string,
+  suggestedSessionName?: string,
+): Heartbeat | null {
+  return mutate(coordRoot, instanceId, (heartbeat) => ({
+    ...heartbeat,
+    task_state: state,
+    task_state_updated_at: nowIsoSeconds(),
+    task_state_reason: state === "active" ? undefined : reason,
+    ...(suggestedSessionName ? { suggested_session_name: suggestedSessionName } : {}),
+  }));
+}
+
 function mutate(
   coordRoot: string,
   instanceId: string,
@@ -214,6 +180,21 @@ export function setTask(coordRoot: string, instanceId: string, task: string): He
       ...(built ? { suggested_session_name: built.suggestedName } : {}),
     };
   });
+}
+
+/** Update the disposable identity cache after a canonical V2 attestation. */
+export function setIdentityCache(
+  coordRoot: string,
+  instanceId: string,
+  name: string,
+  agentId: string,
+): Heartbeat | null {
+  const heartbeat = readHeartbeat(coordRoot, instanceId);
+  if (!heartbeat) return null;
+  heartbeat.name = name;
+  heartbeat.agent_id = agentId;
+  atomicWrite(heartbeatPath(coordRoot, instanceId), JSON.stringify(heartbeat, null, 2));
+  return heartbeat;
 }
 
 /**
@@ -330,7 +311,11 @@ export interface GroupUnclaimHit {
  * subagent-held claim that doesn't live on the parent's heartbeat still gets
  * pruned because the walk covers the whole group.
  */
-export function groupUnclaim(coordRoot: string, groupId: string, path: string): GroupUnclaimHit[] {
+export function findGroupClaims(
+  coordRoot: string,
+  groupId: string,
+  path: string,
+): GroupUnclaimHit[] {
   const hits: GroupUnclaimHit[] = [];
   if (!groupId || !path) return hits;
   const activeDir = join(coordRoot, ".harnery", "active");
@@ -351,21 +336,12 @@ export function groupUnclaim(coordRoot: string, groupId: string, path: string): 
       (body.session_id as string | undefined) ?? (body.instance_id as string | undefined);
     if (peerSession !== groupId) continue;
     const files = (body.files_touched as string[] | undefined) ?? [];
-    const next = files.filter((p) => norm(p) !== target);
-    if (next.length === files.length) continue;
-    body.files_touched = next;
-    try {
-      const tmp = `${hbPath}.tmp.${process.pid}`;
-      writeFileSync(tmp, JSON.stringify(body, null, 2), "utf8");
-      renameSync(tmp, hbPath);
-      hits.push({
-        instance_id: (body.instance_id as string | undefined) ?? f.replace(/\.json$/, ""),
-        session_id: body.session_id as string | undefined,
-        platform: body.platform as string | undefined,
-      });
-    } catch {
-      /* silent */
-    }
+    if (!files.some((candidate) => norm(candidate) === target)) continue;
+    hits.push({
+      instance_id: (body.instance_id as string | undefined) ?? f.replace(/\.json$/, ""),
+      session_id: body.session_id as string | undefined,
+      platform: body.platform as string | undefined,
+    });
   }
   return hits;
 }
@@ -398,146 +374,6 @@ export function healPidmap(coordRoot: string, instanceId: string, pid: number): 
   }
   if (existingOwner === instanceId) return;
   atomicWrite(pmPath, `${instanceId}\t${platform}`);
-  emitHealthHeal(coordRoot, "health.pidmap_heal", instanceId, hb, {
-    reason: existingOwner ? "stale" : "missing",
-    pid,
-    kind: "pidmap",
-    ...(existingOwner ? { prior: existingOwner.slice(0, 8) } : {}),
-  });
-}
-
-export function healHeartbeat(
-  coordRoot: string,
-  instanceId: string,
-  sessionId?: string,
-  model?: string,
-  adapter?: string,
-  opts?: { forkedFrom?: string },
-): Heartbeat | null {
-  const path = heartbeatPath(coordRoot, instanceId);
-  if (existsSync(path)) {
-    // Already alive, return it.
-    return readHeartbeat(coordRoot, instanceId);
-  }
-  const now = nowIsoSeconds();
-
-  // Recover name + kind from .name-history if present (idempotent across
-  // sweeps: same instance_id always gets the same name).
-  let name = "";
-  let kind = "session";
-  let agentId = "";
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const names = require("./names.ts") as typeof import("./names.ts");
-    const resolved = names.resolveName(coordRoot, instanceId, sessionId);
-    if (resolved) {
-      name = resolved.name;
-      kind = resolved.kind;
-      // An explicitly assumed session carries its durable persona UUID in
-      // name-history. Native subagents continue to use instance_id.
-      agentId = resolved.agent_id ?? (resolved.kind === "subagent" ? instanceId : "");
-    } else if (!sessionId || sessionId === instanceId) {
-      // A main session with NO history at all never fired session.start —
-      // the CC fork flow (SessionStart fires under the parent's id before
-      // the fork id is minted), or a partially-wired adapter. Mint its pool
-      // name here instead of leaving a nameless heartbeat, and stamp the
-      // detected fork lineage while we're at it. A sessionId that differs
-      // from instanceId is left alone: that shape is a subagent whose parent
-      // is also unknown, and guessing "session" would be wrong.
-      name = names.assignName(
-        coordRoot,
-        instanceId,
-        "session",
-        opts?.forkedFrom ? { forkedFrom: opts.forkedFrom } : undefined,
-      );
-    }
-  } catch {
-    /* names module unavailable, fall back to empty */
-  }
-
-  const hb: Heartbeat = {
-    schema_version: 1,
-    instance_id: instanceId,
-    session_id: sessionId ?? instanceId,
-    name,
-    kind,
-    agent_id: agentId,
-    model: model ?? "",
-    started_at: now,
-    last_heartbeat: now,
-    files_touched: [],
-    // Default to claude-code only when the caller can't tell us the adapter
-    // (e.g. manual `harn agents heal`). The live tool.pre_use heal threads the
-    // detected adapter so a pruned Cursor/Codex heartbeat is recreated with
-    // the correct platform instead of being mislabeled claude-code.
-    platform: adapterToPlatform(adapter),
-  };
-  atomicWrite(path, JSON.stringify(hb, null, 2));
-  // Write-only telemetry: only the actual-recreate branch reaches here (the
-  // already-alive case returned above), so this records exactly the heals that
-  // happened. Recorded fork lineage rides the event too, so derived readers
-  // rebuilding from the ledger converge with .name-history.
-  emitHealthHeal(coordRoot, "health.heartbeat_heal", instanceId, hb, {
-    reason: "missing",
-    kind: "heartbeat",
-    ...(opts?.forkedFrom ? { forked_from: opts.forkedFrom } : {}),
-  });
-  return hb;
-}
-
-/**
- * Register a workflow child in the coordination layer from the ENGINE side.
- *
- * Previously a spawned child was visible only if its adapter fired Harnery's
- * hooks, which made coordination visibility a property of the vendor CLI
- * rather than of the engine. Headless `codex exec` fires no hooks, so codex
- * children never appeared in `harn agents list` and rendered as "no live
- * session" on the run page while actively working — for the entire length of
- * a multi-minute stage.
- *
- * The engine already knows every fact a heartbeat needs at spawn time, so it
- * writes one itself. Hook-firing adapters keep enriching the same file
- * (last_tool, files_touched); non-hook adapters at least become visible and
- * attributable. Pair with `killHeartbeat` when the child ends.
- *
- * Idempotent: re-registering refreshes in place and preserves `started_at`
- * and any claims a hook already recorded.
- */
-export function registerWorkflowChild(
-  coordRoot: string,
-  opts: {
-    instanceId: string;
-    runId: string;
-    agentId: string;
-    sessionId?: string;
-    adapter?: string;
-    label?: string;
-    model?: string;
-  },
-): Heartbeat {
-  const now = nowIsoSeconds();
-  const prior = readHeartbeat(coordRoot, opts.instanceId);
-  const hb: Heartbeat = {
-    ...(prior ?? {}),
-    schema_version: 1,
-    instance_id: opts.instanceId,
-    // The reader keys children by session_id and skips any heartbeat missing
-    // one, so it must always be set even before the adapter mints a real id.
-    session_id: prior?.session_id ?? opts.sessionId ?? opts.instanceId,
-    name: opts.label || opts.agentId,
-    kind: "workflow-child",
-    agent_id: opts.agentId,
-    model: opts.model ?? prior?.model ?? "",
-    platform: adapterToPlatform(opts.adapter),
-    started_at: prior?.started_at ?? now,
-    last_heartbeat: now,
-    files_touched: prior?.files_touched ?? [],
-    task: opts.label ?? "",
-    workflow_run_id: opts.runId,
-    workflow_agent_id: opts.agentId,
-  };
-  atomicWrite(heartbeatPath(coordRoot, opts.instanceId), JSON.stringify(hb, null, 2));
-  return hb;
 }
 
 /**

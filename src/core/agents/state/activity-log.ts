@@ -2,8 +2,8 @@
  * Display-name resolution for the coord layer.
  *
  * This module once housed `coordLog`, the writer for a human-readable
- * activity log. That log has been retired; the canonical
- * `.harnery/events.ndjson` stream is the single source of truth, and the
+ * activity log. That log has been retired; the canonical V2 ledger is the
+ * single source of truth, and the
  * per-event telemetry that had consumers (heals → health.*, councils →
  * council.*, shell-mutation candidates → decision.warn) is emitted there
  * directly. `coordLog` and its call sites are gone; only `resolveShortName`

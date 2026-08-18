@@ -359,7 +359,6 @@
             "genesis_profile_digest",
             "contract_digest",
             "generated_schema_digest",
-            "v1_terminal_segment_digest",
             "canonicalizer",
             "privacy_epoch_id",
             "candidate_created_at"
@@ -378,10 +377,6 @@
               "type": "string"
             },
             "generated_schema_digest": {
-              "pattern": "^sha256:[a-f0-9]{64}$",
-              "type": "string"
-            },
-            "v1_terminal_segment_digest": {
               "pattern": "^sha256:[a-f0-9]{64}$",
               "type": "string"
             },

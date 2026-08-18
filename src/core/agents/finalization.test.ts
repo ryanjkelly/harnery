@@ -2,17 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import {
   checkGitFinalization,
   classifyWriteClaimFinalization,
   formatGitFinalizationFailure,
-  readSessionWriteClaims,
 } from "./finalization.ts";
 
 let temp: string;
-const HARN_CLI = resolve(import.meta.dir, "../../..", "src", "cli.ts");
-
 function git(cwd: string, ...args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
@@ -45,100 +42,6 @@ afterEach(() => {
 });
 
 describe("checkGitFinalization", () => {
-  test("keeps committed paths in scope through durable session claim history", () => {
-    const repo = join(temp, "repo");
-    initRepo(repo);
-    mkdirSync(join(repo, ".harnery"), { recursive: true });
-    writeFileSync(
-      join(repo, ".harnery", "events.ndjson"),
-      [
-        JSON.stringify({
-          event_type: "session.start",
-          instance_id: "owner",
-          session_id: "session",
-          data: {},
-        }),
-        JSON.stringify({
-          event_type: "claim.acquire",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "owned.txt", mode: "write" },
-        }),
-        JSON.stringify({
-          event_type: "claim.release",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "owned.txt", reason: "commit" },
-        }),
-      ].join("\n"),
-    );
-
-    expect(readSessionWriteClaims(repo, "owner", "session")).toEqual({
-      paths: ["owned.txt"],
-      complete: true,
-    });
-  });
-
-  test("guard-denied releases subtract from claim history; others stay in scope", () => {
-    const repo = join(temp, "repo-released");
-    initRepo(repo);
-    mkdirSync(join(repo, ".harnery"), { recursive: true });
-    writeFileSync(
-      join(repo, ".harnery", "events.ndjson"),
-      [
-        JSON.stringify({
-          event_type: "session.start",
-          instance_id: "owner",
-          session_id: "session",
-          data: {},
-        }),
-        JSON.stringify({
-          event_type: "claim.acquire",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "released.txt", mode: "write" },
-        }),
-        JSON.stringify({
-          event_type: "claim.release",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "released.txt", reason: "explicit" },
-        }),
-        JSON.stringify({
-          event_type: "claim.acquire",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "denied.txt", mode: "write" },
-        }),
-        // The guard releases with the raw absolute target; normalization must
-        // still subtract the canonical acquire.
-        JSON.stringify({
-          event_type: "claim.release",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: `${repo}/denied.txt`, reason: "guard_denied_finalization" },
-        }),
-        JSON.stringify({
-          event_type: "claim.acquire",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "committed.txt", mode: "write" },
-        }),
-        JSON.stringify({
-          event_type: "claim.release",
-          instance_id: "owner",
-          session_id: "session",
-          data: { path: "committed.txt", reason: "commit" },
-        }),
-      ].join("\n"),
-    );
-
-    expect(readSessionWriteClaims(repo, "owner", "session")).toEqual({
-      paths: ["released.txt", "committed.txt"],
-      complete: true,
-    });
-  });
-
   test("passes when held files are clean and the branch is pushed", () => {
     const remote = join(temp, "remote.git");
     const repo = join(temp, "repo");
@@ -464,62 +367,6 @@ describe("checkGitFinalization", () => {
       descriptor: { disposition: "git" },
     });
   });
-
-  test("a released sibling Git claim still blocks an unpushed commit", () => {
-    const coord = join(temp, "coord");
-    const sibling = join(temp, "sibling");
-    const remote = join(temp, "remote.git");
-    initRepo(coord);
-    writeFileSync(join(coord, "seed.txt"), "coord\n");
-    commitAll(coord, "coord");
-    initRepo(remote, true);
-    initRepo(sibling);
-    writeFileSync(join(sibling, "owned.txt"), "base\n");
-    commitAll(sibling, "initial");
-    git(sibling, "remote", "add", "origin", remote);
-    git(sibling, "push", "-u", "origin", "HEAD:master");
-    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
-    mkdirSync(join(coord, ".harnery"), { recursive: true });
-    writeFileSync(
-      join(coord, ".harnery", "events.ndjson"),
-      [
-        event("session.start", {}),
-        event("claim.acquire", { path: "../sibling/owned.txt", mode: "write" }),
-        event("claim.release", { path: "../sibling/owned.txt", reason: "explicit" }),
-      ].join("\n"),
-    );
-    writeFileSync(join(sibling, "owned.txt"), "done\n");
-    commitAll(sibling, "done");
-
-    const history = readSessionWriteClaims(coord, "owner", "session");
-    expect(history.paths).toEqual(["../sibling/owned.txt"]);
-    expect(checkGitFinalization(coord, history.paths)).toMatchObject({
-      ok: false,
-      unpushed_repos: ["../sibling"],
-    });
-  });
-
-  test("the command-level end-turn path passes clean sibling work and names a dirty verdict", () => {
-    const coord = join(temp, "coord");
-    const sibling = join(temp, "sibling");
-    initRepo(coord);
-    writeFileSync(join(coord, "seed.txt"), "coord\n");
-    commitAll(coord, "coord");
-    initRepo(sibling);
-    writeFileSync(join(sibling, "owned.txt"), "base\n");
-    commitAll(sibling, "initial");
-    configureFinalizationRoots(coord, [{ path: relative(coord, sibling), disposition: "git" }]);
-    seedSession(coord, "../sibling/owned.txt");
-
-    const clean = runEndTurn(coord);
-    expect(clean.status).toBe(0);
-
-    writeFileSync(join(sibling, "owned.txt"), "dirty\n");
-    const dirty = runEndTurn(coord);
-    expect(dirty.status).toBe(1);
-    expect(`${dirty.stdout}\n${dirty.stderr}`).toContain("../sibling/owned.txt");
-    expect(`${dirty.stdout}\n${dirty.stderr}`).toContain("Dirty owned paths");
-  }, 15_000);
 });
 
 function configureFinalizationRoots(
@@ -533,51 +380,5 @@ function configureFinalizationRoots(
       binName: "harn",
       agents: { requireGitFinalization: true, finalizationRoots: roots },
     }),
-  );
-}
-
-function event(eventType: string, data: Record<string, unknown>): string {
-  return JSON.stringify({
-    event_type: eventType,
-    instance_id: "owner",
-    session_id: "session",
-    data,
-  });
-}
-
-function seedSession(coord: string, heldPath: string): void {
-  mkdirSync(join(coord, ".harnery", "active"), { recursive: true });
-  writeFileSync(
-    join(coord, ".harnery", "active", "owner.json"),
-    JSON.stringify({
-      instance_id: "owner",
-      session_id: "session",
-      started_at: new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
-      files_touched: [heldPath],
-    }),
-  );
-  writeFileSync(
-    join(coord, ".harnery", "events.ndjson"),
-    [event("session.start", {}), event("claim.acquire", { path: heldPath, mode: "write" })].join(
-      "\n",
-    ),
-  );
-}
-
-function runEndTurn(coord: string): ReturnType<typeof spawnSync> {
-  return spawnSync(
-    process.execPath,
-    [HARN_CLI, "agents", "status", "--end-turn", "--session-id", "owner"],
-    {
-      cwd: coord,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        HARNERY_COORD_ROOT_OVERRIDE: coord,
-        HARNERY_OUTPUT_SESSION_TEE: "0",
-      },
-      timeout: 30_000,
-    },
   );
 }

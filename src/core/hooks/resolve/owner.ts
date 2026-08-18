@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
-import { resolveOwnerBySessionEnv } from "../../agents/coord-client.ts";
 import { checkPidToken } from "../../agents/state/proc-start.ts";
 
 /**
@@ -30,10 +29,6 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
 export function resolveOwner(opts: {
   payload: Record<string, unknown> | null;
   coordRoot: string;
-  /** V1-only fallback that joins adapter session env to `.harnery/active/`.
-   * Candidate/active V2 callers must disable it so a fenced projection can
-   * never become attribution evidence. */
-  allowHeartbeatSessionFallback?: boolean;
 }): {
   instance_id: string;
   source: "env" | "payload" | "session_env" | "pidmap-self" | "pidmap-ancestor";
@@ -51,13 +46,6 @@ export function resolveOwner(opts: {
   const env = coordEnv("AGENT_COORD_OWNER");
   if (env && env.length > 0 && !bridge) {
     return { instance_id: env, source: "env" };
-  }
-
-  if (opts.allowHeartbeatSessionFallback !== false) {
-    const bySession = resolveOwnerBySessionEnv(opts.coordRoot);
-    if (bySession) {
-      return { instance_id: bySession, source: "session_env" };
-    }
   }
 
   if (bridge) return null;

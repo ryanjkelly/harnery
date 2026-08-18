@@ -36,7 +36,7 @@ function seed(extra: Record<string, unknown> = {}): void {
   writeFileSync(
     join(activeDir, "self.json"),
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       instance_id: "self",
       name: "Maya",
       kind: "session",

@@ -1,5 +1,6 @@
 "use client";
 
+import { ArrowUp, ChevronRight, Copy, Download, Pause, Play, Regex, Search, X } from "lucide-react";
 import {
   type ChangeEvent,
   type KeyboardEvent,
@@ -10,17 +11,6 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  ArrowUp,
-  ChevronRight,
-  Copy,
-  Download,
-  Pause,
-  Play,
-  Regex,
-  Search,
-  X,
-} from "lucide-react";
 
 import { AgentChip } from "@/components/AgentChip";
 import { ColorizedJson } from "@/components/log-table/ColorizedJson";
@@ -94,16 +84,13 @@ interface Props<E> {
  * group of ≥2 adjacent rows that shared a non-null `getGroupKey` (e.g. the
  * per-line `output` events of one command, folded into one expandable block).
  */
-type RenderItem<E> =
-  | { kind: "row"; row: E }
-  | { kind: "group"; rows: E[]; groupKey: string };
+type RenderItem<E> = { kind: "row"; row: E } | { kind: "group"; rows: E[]; groupKey: string };
 
 /**
  * Generic full-width scrollable structured-event log.
  *
- * Shared shell between /events (canonical hook-event log from
- * `.harnery/events.ndjson`) and /live (session-tee stream from
- * `.harnery/session-events.ndjson`). The two pages plug in per-event-shape
+ * Shared shell between /events (canonical V2 rows) and /live (the V2 command
+ * projection). The two pages plug in per-event-shape
  * renderers via the `renderer` prop. Everything else is identical across both
  * surfaces: toolbar, search (plain + regex), agent filter, kind chips,
  * auto-scroll, table-scoped scrolling with sticky header, row expansion with
@@ -137,12 +124,8 @@ export function LogTable<E>({
   const [search, setSearch] = useState<string>("");
   const [debouncedSearch, setDebouncedSearch] = useState<string>("");
   const [regexMode, setRegexMode] = useState<boolean>(false);
-  const [agentFilter, setAgentFilter] = useState<string | null>(
-    initialAgent ?? null,
-  );
-  const [kindFilter, setKindFilter] = useState<string | null>(
-    initialKind ?? null,
-  );
+  const [agentFilter, setAgentFilter] = useState<string | null>(initialAgent ?? null);
+  const [kindFilter, setKindFilter] = useState<string | null>(initialKind ?? null);
   const [paused, setPaused] = useState<boolean>(false);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -175,10 +158,7 @@ export function LogTable<E>({
   /* ───── search debounce ───────────────────────────────────────────── */
 
   useEffect(() => {
-    const id = window.setTimeout(
-      () => setDebouncedSearch(search),
-      SEARCH_DEBOUNCE_MS,
-    );
+    const id = window.setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
   }, [search]);
 
@@ -187,7 +167,7 @@ export function LogTable<E>({
   // (refetch the snapshot) when it doesn't, e.g. through harn tunnel, which
   // buffers SSE wholesale. The hook owns the connection lifecycle, both
   // watchdogs, reconnect, and visibility handling. See useLiveSignal.
-  const streamUrl = useMemo(() => {
+  const streamUrl = (() => {
     if (!sseUrl) return "";
     const params = new URLSearchParams();
     if (sseSearchParams) {
@@ -198,7 +178,7 @@ export function LogTable<E>({
     if (agentFilter) params.set("agent", agentFilter);
     const qs = params.toString();
     return qs ? `${sseUrl}?${qs}` : sseUrl;
-  }, [sseUrl, agentFilter, JSON.stringify(sseSearchParams ?? {})]);
+  })();
 
   const events = useMemo(
     () => ({
@@ -281,9 +261,7 @@ export function LogTable<E>({
   }, [regexMode, debouncedSearch]);
 
   const { sortedRows, kindCounts } = useMemo(() => {
-    const sorted = [...rows].sort((a, b) =>
-      renderer.getTs(b).localeCompare(renderer.getTs(a)),
-    );
+    const sorted = [...rows].sort((a, b) => renderer.getTs(b).localeCompare(renderer.getTs(a)));
     const counts = new Map<string, number>();
     for (const r of sorted) {
       const k = renderer.getKind(r);
@@ -306,14 +284,7 @@ export function LogTable<E>({
       if (!matches(renderer.getSearchableText(r))) return false;
       return true;
     });
-  }, [
-    sortedRows,
-    agentFilter,
-    kindFilter,
-    debouncedSearch,
-    compiledRegex,
-    renderer,
-  ]);
+  }, [sortedRows, agentFilter, kindFilter, debouncedSearch, compiledRegex, renderer]);
 
   /* ───── fold contiguous same-group runs into block items ──────────── */
 
@@ -339,8 +310,7 @@ export function LogTable<E>({
         items.push({
           kind: "group",
           rows: run,
-          // biome-ignore lint/style/noNonNullAssertion: runKey is non-null whenever run is populated
-          groupKey: runKey!,
+          groupKey: runKey ?? "ungrouped",
         });
       }
       run = [];
@@ -433,8 +403,7 @@ export function LogTable<E>({
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-      const inField =
-        tag === "input" || tag === "textarea" || tag === "select";
+      const inField = tag === "input" || tag === "textarea" || tag === "select";
       if (e.key === "/" && !inField) {
         e.preventDefault();
         searchInputRef.current?.focus();
@@ -633,9 +602,7 @@ export function LogTable<E>({
                   <Play className="size-3" />
                   paused
                   {pausedBufferRef.current.length > 0 && (
-                    <span className="tabular-nums">
-                      ({pausedBufferRef.current.length})
-                    </span>
+                    <span className="tabular-nums">({pausedBufferRef.current.length})</span>
                   )}
                 </>
               ) : (
@@ -708,16 +675,10 @@ export function LogTable<E>({
         <div className="ml-auto flex items-center gap-3 text-muted-foreground tabular-nums">
           {liveLabel}
           <span title="Visible / total events in buffer">
-            {filteredRows.length.toLocaleString()} /{" "}
-            {sortedRows.length.toLocaleString()}
+            {filteredRows.length.toLocaleString()} / {sortedRows.length.toLocaleString()}
           </span>
-          <Tooltip
-            content="Times shown in your browser's detected timezone via Intl.DateTimeFormat. SSR falls back to UTC until hydration."
-          >
-            <Badge
-              variant="muted"
-              className="normal-case tracking-normal cursor-help"
-            >
+          <Tooltip content="Times shown in your browser's detected timezone via Intl.DateTimeFormat. SSR falls back to UTC until hydration.">
+            <Badge variant="muted" className="normal-case tracking-normal cursor-help">
               {timeZone}
             </Badge>
           </Tooltip>
@@ -728,9 +689,7 @@ export function LogTable<E>({
       <div className="flex flex-wrap gap-1 text-xs shrink-0">
         <KindChip active={!kindFilter} onClick={() => setKindFilter(null)}>
           all
-          <span className="text-muted-foreground tabular-nums ml-1">
-            {sortedRows.length}
-          </span>
+          <span className="text-muted-foreground tabular-nums ml-1">{sortedRows.length}</span>
         </KindChip>
         {visibleKinds.slice(0, 24).map((k) => (
           <KindChip
@@ -749,56 +708,70 @@ export function LogTable<E>({
 
       {/* ───── table ────────────────────────────────────────────────── */}
       <div className="relative flex-1 min-h-0 flex flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="rounded-md border border-border/60 bg-background/40 overflow-y-auto overflow-x-auto flex-1 min-h-0"
-      >
-        <table className="block w-full text-xs sm:table border-separate border-spacing-0">
-          <thead className="hidden sm:table-header-group sticky top-0 z-10 bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/80">
-            <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[14ch]">
-                time
-              </th>
-              <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[18ch]">
-                event
-              </th>
-              <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[14ch]">
-                agent
-              </th>
-              <th className="text-left font-medium py-2 px-3 border-b border-border/60">
-                summary
-              </th>
-            </tr>
-          </thead>
-          <tbody className="block sm:table-row-group">
-            {filteredRows.length === 0 ? (
-              <tr className="block sm:table-row">
-                <td
-                  colSpan={4}
-                  className="block px-3 py-12 text-center text-muted-foreground italic sm:table-cell"
-                >
-                  {sortedRows.length === 0
-                    ? (emptyStateHint ??
-                      "No events yet. The buffer is empty.")
-                    : "No events match the current filter. Clear the search/agent/kind selectors above."}
-                </td>
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="rounded-md border border-border/60 bg-background/40 overflow-y-auto overflow-x-auto flex-1 min-h-0"
+        >
+          <table className="block w-full text-xs sm:table border-separate border-spacing-0">
+            <thead className="hidden sm:table-header-group sticky top-0 z-10 bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/80">
+              <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[14ch]">
+                  time
+                </th>
+                <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[18ch]">
+                  event
+                </th>
+                <th className="text-left font-medium py-2 px-3 border-b border-border/60 w-[14ch]">
+                  agent
+                </th>
+                <th className="text-left font-medium py-2 px-3 border-b border-border/60">
+                  summary
+                </th>
               </tr>
-            ) : (
-              renderItems.map((item) => {
-                if (item.kind === "group") {
-                  // The group's identity (for key/expand/flash) is its first
-                  // row, stable across renders via the same WeakMap.
-                  const groupKey = getRowKey(item.rows[0]);
-                  const isExpanded = expandedId === groupKey;
-                  const isFlashing = item.rows.some((r) =>
-                    flashIds.has(getRowKey(r)),
-                  );
+            </thead>
+            <tbody className="block sm:table-row-group">
+              {filteredRows.length === 0 ? (
+                <tr className="block sm:table-row">
+                  <td
+                    colSpan={4}
+                    className="block px-3 py-12 text-center text-muted-foreground italic sm:table-cell"
+                  >
+                    {sortedRows.length === 0
+                      ? (emptyStateHint ?? "No events yet. The buffer is empty.")
+                      : "No events match the current filter. Clear the search/agent/kind selectors above."}
+                  </td>
+                </tr>
+              ) : (
+                renderItems.map((item) => {
+                  if (item.kind === "group") {
+                    // The group's identity (for key/expand/flash) is its first
+                    // row, stable across renders via the same WeakMap.
+                    const groupKey = getRowKey(item.rows[0]);
+                    const isExpanded = expandedId === groupKey;
+                    const isFlashing = item.rows.some((r) => flashIds.has(getRowKey(r)));
+                    return (
+                      <LogRowGroup
+                        key={groupKey}
+                        rowKey={groupKey}
+                        getRowKey={getRowKey}
+                        rows={item.rows}
+                        renderer={renderer}
+                        expanded={isExpanded}
+                        onToggle={handleToggle}
+                        timeZone={timeZone}
+                        flashing={isFlashing}
+                      />
+                    );
+                  }
+                  const rowKey = getRowKey(item.row);
+                  const isExpanded = expandedId === rowKey;
+                  const isFlashing = flashIds.has(rowKey);
                   return (
-                    <LogRowGroup
-                      key={groupKey}
-                      rowKey={groupKey}
-                      rows={item.rows}
+                    <LogRow
+                      key={rowKey}
+                      rowKey={rowKey}
+                      row={item.row}
                       renderer={renderer}
                       expanded={isExpanded}
                       onToggle={handleToggle}
@@ -806,27 +779,11 @@ export function LogTable<E>({
                       flashing={isFlashing}
                     />
                   );
-                }
-                const rowKey = getRowKey(item.row);
-                const isExpanded = expandedId === rowKey;
-                const isFlashing = flashIds.has(rowKey);
-                return (
-                  <LogRow
-                    key={rowKey}
-                    rowKey={rowKey}
-                    row={item.row}
-                    renderer={renderer}
-                    expanded={isExpanded}
-                    onToggle={handleToggle}
-                    timeZone={timeZone}
-                    flashing={isFlashing}
-                  />
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
         {!autoScroll && (
           <button
             type="button"
@@ -888,39 +845,28 @@ function LogRowInner<E>({
           // drops `flashing`; the existing `transition-colors` on the row
           // fades it back to baseline, providing the "what just landed"
           // visual cue without needing a custom keyframe.
-          flashing &&
-            "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
+          flashing && "bg-sky-500/20 hover:bg-sky-500/20 odd:bg-sky-500/20",
         )}
         onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
       >
-        <td
-          className={cn(
-            STACKED_CELL,
-            "font-mono text-muted-foreground whitespace-nowrap",
-          )}
-        >
+        <td className={cn(STACKED_CELL, "font-mono text-muted-foreground whitespace-nowrap")}>
           <LogTimestamp iso={ts} timeZone={timeZone} />
         </td>
         <td className={STACKED_CELL}>
-          <Badge
-            variant={variant}
-            className="font-mono normal-case tracking-normal"
-          >
+          <Badge variant={variant} className="font-mono normal-case tracking-normal">
             {kind}
           </Badge>
         </td>
         <td
           className={cn(STACKED_CELL, "font-mono")}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
         >
           {agentName ? (
             <AgentChip name={agentName} className="font-mono" prefix="" />
           ) : agentInstanceId ? (
-            <span
-              className="text-muted-foreground/70"
-              title={agentInstanceId}
-            >
+            <span className="text-muted-foreground/70" title={agentInstanceId}>
               {agentInstanceId.slice(0, 8)}
             </span>
           ) : (
@@ -965,6 +911,7 @@ const LogRow = memo(LogRowInner) as typeof LogRowInner;
 interface LogRowGroupProps<E> {
   /** Stable identity key (the first row's key); passed back to `onToggle`. */
   rowKey: string;
+  getRowKey: (row: E) => string;
   /** Run of ≥2 adjacent same-group rows, in display order (newest first). */
   rows: E[];
   renderer: LogRowRenderer<E>;
@@ -990,6 +937,7 @@ interface LogRowGroupProps<E> {
  */
 function LogRowGroupInner<E>({
   rowKey,
+  getRowKey,
   rows,
   renderer,
   expanded,
@@ -1022,12 +970,7 @@ function LogRowGroupInner<E>({
         onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
       >
-        <td
-          className={cn(
-            STACKED_CELL,
-            "font-mono text-muted-foreground whitespace-nowrap",
-          )}
-        >
+        <td className={cn(STACKED_CELL, "font-mono text-muted-foreground whitespace-nowrap")}>
           <LogTimestamp iso={startTs} timeZone={timeZone} />
         </td>
         <td className={STACKED_CELL}>
@@ -1038,20 +981,16 @@ function LogRowGroupInner<E>({
                 expanded && "rotate-90",
               )}
             />
-            <Badge
-              variant={variant}
-              className="font-mono normal-case tracking-normal"
-            >
+            <Badge variant={variant} className="font-mono normal-case tracking-normal">
               {kind}
             </Badge>
-            <span className="text-muted-foreground/70 tabular-nums text-[11px]">
-              {count} lines
-            </span>
+            <span className="text-muted-foreground/70 tabular-nums text-[11px]">{count} lines</span>
           </span>
         </td>
         <td
           className={cn(STACKED_CELL, "font-mono")}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
         >
           {agentName ? (
             <AgentChip name={agentName} className="font-mono" prefix="" />
@@ -1086,9 +1025,7 @@ function LogRowGroupInner<E>({
             <div className="rounded border border-border/40 bg-background/60 font-mono text-xs">
               {chrono.map((r, i) => (
                 <div
-                  // Index key is safe here: the block re-renders wholesale and
-                  // line order within one command's output is stable.
-                  key={i}
+                  key={getRowKey(r)}
                   className="flex gap-2 px-3 py-0.5 border-l-2 border-border/40 hover:bg-muted/30 whitespace-pre-wrap wrap-break-word"
                 >
                   <span className="text-muted-foreground/30 select-none tabular-nums shrink-0 w-[3ch] text-right">
@@ -1109,13 +1046,7 @@ function LogRowGroupInner<E>({
 // groups whose props are unchanged on an unrelated parent re-render.
 const LogRowGroup = memo(LogRowGroupInner) as typeof LogRowGroupInner;
 
-function ExpandedRow<E>({
-  row,
-  renderer,
-}: {
-  row: E;
-  renderer: LogRowRenderer<E>;
-}) {
+function ExpandedRow<E>({ row, renderer }: { row: E; renderer: LogRowRenderer<E> }) {
   const raw = renderer.getRaw(row);
   const json = useMemo(() => JSON.stringify(raw, null, 2), [raw]);
   const [copied, setCopied] = useState(false);
@@ -1191,11 +1122,7 @@ const VARIANT_DOT: Record<LogRowVariant, string> = {
 
 /* ────────────────────────────────────────────────────────────────────── */
 
-function kindToVariant<E>(
-  k: string,
-  renderer: LogRowRenderer<E>,
-  rows: E[],
-): LogRowVariant {
+function kindToVariant<E>(k: string, renderer: LogRowRenderer<E>, rows: E[]): LogRowVariant {
   // Probe the first row of this kind to learn its variant.
   for (const r of rows) {
     if (renderer.getKind(r) === k) return renderer.getKindVariant(r);
@@ -1216,11 +1143,7 @@ function downloadJsonl<E>(rows: E[], renderer: LogRowRenderer<E>): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  const ts = new Date()
-    .toISOString()
-    .replace(/[:.]/g, "-")
-    .replace("T", "_")
-    .replace("Z", "");
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").replace("Z", "");
   a.download = `harnery-log-${ts}.ndjson`;
   document.body.appendChild(a);
   a.click();

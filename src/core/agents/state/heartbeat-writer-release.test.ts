@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { groupUnclaim, releaseClaim } from "./heartbeat-writer.ts";
+import { findGroupClaims, releaseClaim } from "./heartbeat-writer.ts";
 
 let root: string;
 let activeDir: string;
@@ -37,7 +37,7 @@ function seedSelf(files: string[]): void {
   writeFileSync(
     join(activeDir, "self.json"),
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       instance_id: "self",
       session_id: "self",
       files_touched: files,
@@ -82,7 +82,7 @@ function seedPeer(id: string, sessionId: string, files: string[]): void {
   writeFileSync(
     join(activeDir, `${id}.json`),
     JSON.stringify({
-      schema_version: 1,
+      schema_version: 2,
       instance_id: id,
       session_id: sessionId,
       files_touched: files,
@@ -96,34 +96,34 @@ function peerFiles(id: string): string[] {
   return JSON.parse(readFileSync(join(activeDir, `${id}.json`), "utf8")).files_touched;
 }
 
-describe("groupUnclaim path-form robustness (the post-commit release path)", () => {
-  test("relative prune releases an absolute-under-coordRoot entry", () => {
+describe("findGroupClaims path-form robustness", () => {
+  test("finds an absolute-under-coordRoot entry without mutating the cache", () => {
     seedPeer("parent", "sess-1", [join(root, "docs/a.md"), "docs/b.md"]);
-    const hits = groupUnclaim(root, "sess-1", "docs/a.md");
-    expect(peerFiles("parent")).toEqual(["docs/b.md"]);
+    const hits = findGroupClaims(root, "sess-1", "docs/a.md");
+    expect(peerFiles("parent")).toEqual([join(root, "docs/a.md"), "docs/b.md"]);
     expect(hits.map((h) => h.instance_id)).toEqual(["parent"]);
   });
 
-  test("releases both absolute and repository-relative forms in one call", () => {
+  test("recognizes both absolute and repository-relative forms", () => {
     seedPeer("parent", "sess-1", [join(root, "docs/a.md"), "docs/a.md", "docs/b.md"]);
-    groupUnclaim(root, "sess-1", "docs/a.md");
-    expect(peerFiles("parent")).toEqual(["docs/b.md"]);
+    expect(findGroupClaims(root, "sess-1", "docs/a.md")).toHaveLength(1);
+    expect(peerFiles("parent")).toEqual([join(root, "docs/a.md"), "docs/a.md", "docs/b.md"]);
   });
 
   test("walks the whole session group, skips other groups, reports hits", () => {
     seedPeer("parent", "sess-1", ["docs/a.md"]);
     seedPeer("sub", "sess-1", [join(root, "docs/a.md")]);
     seedPeer("stranger", "sess-2", ["docs/a.md"]);
-    const hits = groupUnclaim(root, "sess-1", "docs/a.md");
-    expect(peerFiles("parent")).toEqual([]);
-    expect(peerFiles("sub")).toEqual([]);
+    const hits = findGroupClaims(root, "sess-1", "docs/a.md");
+    expect(peerFiles("parent")).toEqual(["docs/a.md"]);
+    expect(peerFiles("sub")).toEqual([join(root, "docs/a.md")]);
     expect(peerFiles("stranger")).toEqual(["docs/a.md"]);
     expect(hits.map((h) => h.instance_id).sort()).toEqual(["parent", "sub"]);
   });
 
   test("no holder → no hits, heartbeats untouched", () => {
     seedPeer("parent", "sess-1", ["docs/b.md"]);
-    const hits = groupUnclaim(root, "sess-1", "docs/a.md");
+    const hits = findGroupClaims(root, "sess-1", "docs/a.md");
     expect(hits).toEqual([]);
     expect(peerFiles("parent")).toEqual(["docs/b.md"]);
   });

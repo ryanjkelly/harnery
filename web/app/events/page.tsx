@@ -6,12 +6,7 @@ import {
   buildEndedAgentSummaries,
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
-import {
-  coordRoot,
-  readAgents,
-  readEvents,
-  readInstanceIdentities,
-} from "@/lib/coord-reader";
+import { coordRoot, readAgents, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -22,7 +17,7 @@ interface PageProps {
 }
 
 /**
- * /events: canonical hook-event log from `.harnery/events.ndjson`.
+ * /events: canonical V2 event-ledger view.
  *
  * Server renders the most-recent N rows for first paint, then the client
  * subscribes to `/api/events-stream` for live appends. Both pages
@@ -73,13 +68,9 @@ export default async function EventsPage({ searchParams }: PageProps) {
     ...buildAgentSummaryMap(agentNames, identities),
   };
 
-  const initialAgentName = instanceId
-    ? (instanceToName[instanceId] ?? null)
-    : null;
+  const initialAgentName = instanceId ? (instanceToName[instanceId] ?? null) : null;
 
-  const allKinds = Array.from(
-    new Set(data.rows.map((r) => r.event_type)),
-  ).sort();
+  const allKinds = Array.from(new Set(data.rows.map((r) => r.event_type))).sort();
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
@@ -88,12 +79,8 @@ export default async function EventsPage({ searchParams }: PageProps) {
         <header className="mb-4 flex items-baseline justify-between flex-wrap gap-3 shrink-0">
           <h1 className="text-xl font-semibold tracking-tight">Events</h1>
           <div className="text-xs text-muted-foreground flex items-center gap-3">
-            <span>
-              {data.meta.total_lines.toLocaleString()} events in buffer
-            </span>
-            <code className="font-mono text-muted-foreground/80">
-              .harnery/events.ndjson
-            </code>
+            <span>{data.meta.total_lines.toLocaleString()} events in buffer</span>
+            <code className="font-mono text-muted-foreground/80">.harnery/ledgers/v2</code>
           </div>
         </header>
 

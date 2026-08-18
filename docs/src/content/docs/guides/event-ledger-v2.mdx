@@ -1,0 +1,82 @@
+---
+title: Operate the V2 event ledger
+description: Initialize, inspect, back up, and advance Harnery's only supported event ledger.
+sidebar:
+  order: 2
+---
+
+Harnery records every supported adapter through one canonical V2 ledger at
+`.harnery/ledgers/v2/`. Producers and consumers fail closed when its control
+pair is missing or invalid. There is no alternate recording path.
+
+## Initialization
+
+`harn init` initializes the ledger automatically. For an existing project, or
+to repair installation state explicitly, run:
+
+```bash
+harn ledger-v2 initialize \
+  --root <project-root> \
+  --approval-record-id <durable-approval-id>
+```
+
+The initializer writes an immutable genesis manifest with the exact schema,
+build, configuration, capability, and privacy-key digests. It then activates
+that candidate. Repeating the command is idempotent while the active epoch is
+compatible.
+
+Use `harn init --check` in automation. It exits nonzero unless the V2 control
+pair is active and internally consistent.
+
+## Inspect the active epoch
+
+```bash
+harn ledger-v2 status --root <project-root>
+```
+
+The result identifies the control state, genesis and activation events, schema
+digest, approved producer builds, privacy epoch, and active ledger location.
+Writers accept only a build named by that control packet.
+
+The validating reader covers every sealed segment in `catalog.json` plus the
+active tail. Before the first rotation, an absent catalog is normal and the
+reader validates `active.ndjson` directly.
+
+## Advance to a new epoch
+
+A contract digest or approved-build change requires a new epoch:
+
+```bash
+harn ledger-v2 initialize \
+  --root <project-root> \
+  --approval-record-id <durable-approval-id> \
+  --force-new-epoch
+```
+
+The complete current V2 directory moves intact to
+`.harnery/ledgers/v2-archives/`. Harnery then creates and activates a fresh
+epoch. It never edits archived event bytes in place.
+
+Advance only after the new build passes producer conformance, consumer replay,
+privacy, terminal-race, rotation, and run-quality boundary tests. Sessions that
+started under the archived epoch remain audit evidence and do not become part
+of the new epoch retroactively.
+
+## Backup and recovery
+
+`harn backup snapshot` includes `ledgers/` by default along with durable
+coordination state. Disposable caches in `active/` and process attribution in
+`pid-map/` are rebuilt from live V2 observations and are not backup authority.
+
+If an active control pair is damaged, producers and authority-bearing commands
+stop rather than inventing state. Restore the complete V2 epoch from a verified
+backup or initialize a new epoch with an explicit approval record. Do not copy
+individual rows or synthesize missing lifecycle events.
+
+## Evidence boundary
+
+Run-quality evidence begins at the activation event of the current approved
+epoch. A generation qualifies only when it starts after that boundary, reaches
+an authoritative terminal, passes the validating reader, and carries the exact
+schema, build, configuration, capability, and privacy attestations required by
+the collector.

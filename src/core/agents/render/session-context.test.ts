@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initializeV2Fixture, seedV2Session } from "../../../../tests/helpers/event-v2.ts";
 import { checkWiring, formatPendingCouncils, renderSessionContext } from "./session-context.ts";
 
 let root: string;
@@ -12,7 +13,7 @@ beforeEach(() => {
     tmpdir(),
     `agent-coord-session-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   );
-  mkdirSync(join(root, ".harnery", "active"), { recursive: true });
+  initializeV2Fixture(root);
 });
 
 afterEach(() => {
@@ -92,22 +93,12 @@ describe("renderSessionContext", () => {
   });
 
   test("with peer present → renders peer table", () => {
-    writeFileSync(
-      join(root, ".harnery", "active", "peer.json"),
-      JSON.stringify({
-        schema_version: 1,
-        instance_id: "peer",
-        name: "Adelaide",
-        session_id: "peer",
-        files_touched: ["docs/x.md"],
-        last_heartbeat: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-        started_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-        activity: "needs_input",
-        task_state: "blocked",
-        task_state_reason: "waiting for approval",
-      }),
-      "utf8",
-    );
+    seedV2Session(root, "peer", {
+      name: "Adelaide",
+      claims: ["docs/x.md"],
+      lifecycle: "blocked",
+      lifecycleReason: "waiting for approval",
+    });
     const out = renderSessionContext({
       coordRoot: root,
       instanceId: "self",
@@ -115,7 +106,7 @@ describe("renderSessionContext", () => {
       agentName: "Maya",
     });
     expect(out).toContain("agent-Adelaide");
-    expect(out).toContain("activity=needs_input");
+    expect(out).toContain("activity=idle");
     expect(out).toContain("lifecycle=blocked: waiting for approval");
   });
 });

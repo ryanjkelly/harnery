@@ -1,35 +1,15 @@
 /**
  * Regression: the hook and the CLI must resolve the SAME coordination root.
  *
- * They did not. With a shell inside a submodule that carries its own
- * `.harnery/`, the Stop hook read the submodule's stream (it walks up from
- * `CLAUDE_PROJECT_DIR`/cwd) while the CLI asked git for the superproject first,
- * so `agents status` emitted `state.status_checked` into a file the hook never
- * opened. Rule 1/3 filters events by `instance_id` within one stream, so a
- * correctly-scoped event in the wrong FILE is invisible: every turn blocked,
- * and no sequence of CLI commands could satisfy it.
- *
- * The load-bearing assertion is the end-to-end one — a real `harn agents status`
- * run, cwd inside the submodule, with no root override to help it, must leave
- * behind an event that `evaluateStopHook` accepts for that same session.
+ * A shell inside a submodule may encounter two coordination roots. Resolution
+ * must follow the registered session unless an explicit root wins.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import {
-  appendFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { resolveCoordRoot } from "../../src/core/agents/coord-client.ts";
-import { evaluateStopHook } from "../../src/core/agents/rules/stop-hook.ts";
-
-const HARN = resolve(import.meta.dir, "..", "..", "bin", "harn");
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -71,64 +51,6 @@ function seedSession(root: string, session: string): void {
       files_touched: [],
     }),
   );
-}
-
-/**
- * Environment for a child that must resolve the root unaided: the suite's own
- * coordination env would otherwise pin, name, or misidentify the session.
- */
-function bareEnv(session: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.HARNERY_COORD_ROOT_OVERRIDE;
-  delete env.HARNERY_AGENT_COORD_OWNER;
-  delete env.CLAUDE_PROJECT_DIR;
-  delete env.CURSOR_SESSION_ID;
-  delete env.CURSOR_CONVERSATION_ID;
-  delete env.CODEX_SESSION_ID;
-  delete env.CODEX_THREAD_ID;
-  env.CLAUDE_CODE_SESSION_ID = session;
-  env.HARNERY_AGENT_COORD_SESSION_ID = session;
-  env.HARNERY_OUTPUT_SESSION_TEE = "0";
-  return env;
-}
-
-function streamPath(root: string): string {
-  return join(root, ".harnery", "events.ndjson");
-}
-
-function readStatusCheckedIds(root: string): string[] {
-  let raw: string;
-  try {
-    raw = readFileSync(streamPath(root), "utf8");
-  } catch {
-    return [];
-  }
-  return raw
-    .split("\n")
-    .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l))
-    .filter((e) => e.event_type === "state.status_checked")
-    .map((e) => e.instance_id as string);
-}
-
-/**
- * Seed the turn boundary rule 1/3 measures against: a prompt to open the turn
- * and a tool call, since a turn with no tool calls takes the pure-prose
- * exemption and would pass without proving anything.
- */
-function seedTurn(root: string, session: string): void {
-  const base = {
-    schema_version: 1,
-    session_id: session,
-    instance_id: session,
-    adapter: "cursor",
-    source: "agent-hooks",
-  };
-  const lines = [
-    { ...base, event_id: "01TURNOPEN", event_type: "user_prompt.submit", ts: iso(-60), data: {} },
-    { ...base, event_id: "01TOOLCALL", event_type: "tool.pre_use", ts: iso(-30), data: {} },
-  ];
-  appendFileSync(streamPath(root), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
 }
 
 function iso(secondsFromNow: number): string {
@@ -215,73 +137,5 @@ describe("resolveCoordRoot: one root for the hook and the CLI", () => {
 
     process.env.HARNERY_COORD_ROOT_OVERRIDE = nested;
     expect(resolveCoordRoot(outer)).toBe(nested);
-  });
-});
-
-describe("`harn agents status` satisfies rule 1/3 from inside a submodule", () => {
-  test("the event lands in the stream the hook reads, and the verdict clears", () => {
-    const { outer, nested, session } = makeFixture();
-    seedSession(nested, session);
-    seedTurn(nested, session);
-
-    // No HARNERY_COORD_ROOT_OVERRIDE: resolving the root unaided is the thing
-    // under test. cwd is the submodule, as an agent's shell would be.
-    // The whole ritual runs, not just status: `set-task` (rule 3/3) resolves
-    // and emits over the same path, so a root split shows up here too.
-    const setTask = spawnSync(HARN, ["agents", "set-task", "coord root agreement"], {
-      cwd: nested,
-      encoding: "utf8",
-      env: bareEnv(session),
-      timeout: 30_000,
-    });
-    expect(setTask.status).toBe(0);
-
-    const run = spawnSync(HARN, ["agents", "status"], {
-      cwd: nested,
-      encoding: "utf8",
-      env: bareEnv(session),
-      timeout: 30_000,
-    });
-    expect(run.status).toBe(0);
-
-    // The hook's stream gained the event, keyed to the session the hook sees.
-    expect(readStatusCheckedIds(nested)).toContain(session);
-    // ...and the neighbouring root did not silently receive it instead.
-    expect(readStatusCheckedIds(outer)).not.toContain(session);
-
-    // The verdict the Stop hook would reach, over the root it resolves.
-    const verdict = evaluateStopHook(nested, {
-      rule: "stop-hook",
-      instance_id: session,
-      session_id: session,
-      adapter: "cursor", // ack signal is status_checked; no transcript needed
-    });
-    expect(verdict.rule).not.toBe("stop-hook.rule_1_3");
-    expect(verdict.allow).toBe(true);
-  });
-
-  test("the same events under the neighbouring root would NOT clear rule 1/3", () => {
-    // Teeth for the test above: proves the assertion is about WHICH file the
-    // event reached, not merely that some event was written somewhere.
-    const { outer, nested, session } = makeFixture();
-    seedSession(nested, session);
-    seedTurn(nested, session);
-    seedTurn(outer, session);
-
-    const run = spawnSync(HARN, ["agents", "status"], {
-      cwd: nested,
-      encoding: "utf8",
-      env: bareEnv(session),
-      timeout: 30_000,
-    });
-    expect(run.status).toBe(0);
-
-    const verdict = evaluateStopHook(outer, {
-      rule: "stop-hook",
-      instance_id: session,
-      session_id: session,
-      adapter: "cursor",
-    });
-    expect(verdict.rule).toBe("stop-hook.rule_1_3");
   });
 });

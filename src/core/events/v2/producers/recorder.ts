@@ -15,8 +15,8 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
+import type { Adapter } from "../../../adapter.ts";
 import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
-import type { Adapter } from "../../../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV2 } from "../builder.ts";
@@ -123,6 +123,8 @@ export interface RecordHookSignalV2Input {
   payload: ParsedPayload;
   adapter: Adapter;
   instance_id: `inst_${string}`;
+  run_id?: `run_${string}`;
+  workflow_id?: `wf_${string}`;
   producer_id: `prd_${string}`;
   build_id: `build_${string}`;
   platform: "linux" | "windows" | "macos" | "unknown";
@@ -623,6 +625,8 @@ function processHookSignalLocked(
           adapterVersion: input.adapterVersion,
           harnessVersion: input.harnessVersion,
           root_id: rootId,
+          run_id: input.run_id,
+          workflow_id: input.workflow_id,
           instance_id: input.instance_id,
           generation_id: state.generation_id,
           attestation_id: state.attestation_id,
@@ -679,6 +683,8 @@ function processHookSignalLocked(
       adapterVersion: input.adapterVersion,
       harnessVersion: input.harnessVersion,
       root_id: rootId,
+      run_id: input.run_id,
+      workflow_id: input.workflow_id,
       // Native subagent tool hooks can carry the parent's session id while
       // resolving to a child process instance. The session-keyed producer
       // state remains the generation authority; route those signals through
@@ -870,6 +876,8 @@ function buildMidFlightSessionStart(
     adapterVersion: input.adapterVersion,
     harnessVersion: input.harnessVersion,
     root_id: rootId,
+    run_id: input.run_id,
+    workflow_id: input.workflow_id,
     instance_id: input.instance_id,
     generation_id: state.generation_id,
     attestation_id: state.attestation_id,

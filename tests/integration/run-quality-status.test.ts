@@ -3,6 +3,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { initializeEventLedgerV2 } from "../../src/core/events/v2/bootstrap.ts";
+import { sha256V2 } from "../../src/core/events/v2/canonical.ts";
+import {
+  recordLiveHookSignalV2,
+  resolveLiveEventLedgerRouteV2,
+} from "../../src/core/events/v2/live-routing.ts";
 
 const HARN = join(resolve(import.meta.dir, "../.."), "bin", "harn");
 const OWNER = "quality-fixture";
@@ -72,30 +78,42 @@ function sandbox(mode: "shadow" | "report"): string {
       files_touched: [],
     }),
   );
-  const events = [
-    event("01", "session.start", now, {}),
-    event("02", "tool.pre_use", now, { tool_name: "Read", input_hash: "same" }),
-    event("03", "tool.pre_use", now, { tool_name: "Read", input_hash: "same" }),
-  ];
-  writeFileSync(
-    join(root, ".harnery", "events.ndjson"),
-    `${events.map((value) => JSON.stringify(value)).join("\n")}\n`,
-  );
+  initializeEventLedgerV2({
+    coordRoot: root,
+    harneryBuild: "fixture",
+    hostBuild: "fixture",
+    configDigest: sha256V2("config"),
+    approvalRecordId: "test-run-quality-status",
+  });
+  const route = resolveLiveEventLedgerRouteV2(root);
+  if (route.state !== "v2") throw new Error("expected active V2 route");
+  const record = (eventName: string, payload: Record<string, unknown>) =>
+    recordLiveHookSignalV2({
+      coordRoot: root,
+      route,
+      eventName,
+      payload: { session_id: OWNER, raw: {}, ...payload },
+      adapter: "claude-code",
+      instanceId: OWNER,
+    });
+  record("session-start", {});
+  record("user-prompt-submit", { turn_id: "turn-quality", prompt: "inspect" });
+  record("pre-tool-use", {
+    tool_use_id: "tool-quality-1",
+    tool_name: "Read",
+    tool_input: { file_path: "/workspace/fixture.ts" },
+  });
+  record("post-tool-use", {
+    tool_use_id: "tool-quality-1",
+    tool_name: "Read",
+    tool_response: "ok",
+  });
+  record("pre-tool-use", {
+    tool_use_id: "tool-quality-2",
+    tool_name: "Read",
+    tool_input: { file_path: "/workspace/fixture.ts" },
+  });
   return root;
-}
-
-function event(eventId: string, eventType: string, ts: string, data: Record<string, unknown>) {
-  return {
-    schema_version: 1,
-    event_id: eventId,
-    event_type: eventType,
-    ts,
-    instance_id: OWNER,
-    session_id: OWNER,
-    adapter: "claude-code",
-    source: "agent-hooks",
-    data,
-  };
 }
 
 function harn(root: string, args: string[]) {

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import type { Adapter } from "../adapter.ts";
 import { sessionFinalizationConfig } from "../config.ts";
 import { buildEventV2 } from "../events/v2/builder.ts";
 import { normalizeNativeIdV2 } from "../events/v2/canonical.ts";
@@ -34,7 +35,6 @@ import {
 import { readActiveLedgerV2, readLedgerV2 } from "../events/v2/reader.ts";
 import { assertEventV2 } from "../events/v2/validate.ts";
 import { EVENT_V2_LEDGER_RELATIVE_ROOT, writeEventV2 } from "../events/v2/writer.ts";
-import type { Adapter } from "../hooks/events/schema.ts";
 import { fsyncParentDirectory } from "../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../workflow/workspaces/leases.ts";
 import { readCodexArchiveObservationsV2 } from "./codex-archive-v2.ts";
@@ -142,9 +142,7 @@ export interface ObserveHostDisappearedV2Input {
 
 export function endSessionExplicitV2(input: EndSessionExplicitV2Input) {
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state !== "v2") {
-    return { state: "unavailable" as const, reason: route.state === "v1" ? "v1" : route.reason };
-  }
+  if (route.state !== "v2") return { state: "unavailable" as const, reason: route.reason };
   const observedAt = input.observed_at ?? new Date().toISOString();
   try {
     closeAbandonedCommandSpansV2({
@@ -182,9 +180,7 @@ export function requestSessionEndExplicitV2(
   input: RequestSessionEndExplicitV2Input,
 ): RequestSessionEndExplicitV2Result {
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state !== "v2") {
-    return { state: "unavailable" as const, reason: route.state === "v1" ? "v1" : route.reason };
-  }
+  if (route.state !== "v2") return { state: "unavailable" as const, reason: route.reason };
   let lease: ReturnType<typeof acquireNoClobberLease>;
   try {
     lease = acquireFinalizationReconcileLease(input.coordRoot);
@@ -255,9 +251,7 @@ export function hasPendingExplicitSessionEndV2(coordRoot: string): boolean {
 /** Accept a host supervisor's observation without granting it terminal authority. */
 export function observeHostDisappearedV2(input: ObserveHostDisappearedV2Input) {
   const route = resolveLiveEventLedgerRouteV2(input.coordRoot);
-  if (route.state !== "v2") {
-    return { state: "unavailable" as const, reason: route.state === "v1" ? "v1" : route.reason };
-  }
+  if (route.state !== "v2") return { state: "unavailable" as const, reason: route.reason };
   let lease: ReturnType<typeof acquireNoClobberLease>;
   try {
     lease = acquireFinalizationReconcileLease(input.coordRoot);
@@ -304,7 +298,7 @@ export function reconcileSessionFinalizationV2(
   };
   const route = resolveLiveEventLedgerRouteV2(coordRoot);
   if (route.state !== "v2") {
-    result.diagnostics.push(route.state === "v1" ? "v1_ledger" : route.reason);
+    result.diagnostics.push(route.reason);
     return result;
   }
   let reconcileLease: ReturnType<typeof acquireNoClobberLease>;
