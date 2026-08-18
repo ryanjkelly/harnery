@@ -29,6 +29,15 @@ export {
 } from "./contract.ts";
 export { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 export {
+  EVENT_V3_LATENCY_PROJECTION_VERSION,
+  type LatencyMetricV3,
+  type LatencyProjectionDiagnosticCodeV3,
+  type LatencyProjectionDiagnosticV3,
+  type LatencyProjectionV3,
+  projectLatencyV3,
+  type TurnLatencyV3,
+} from "./latency.ts";
+export {
   type LedgerCursorV3,
   type LedgerDiagnosticCodeV3,
   type LedgerDiagnosticV3,
@@ -39,6 +48,8 @@ export {
   type ReadLedgerV3SinceResult,
   readLedgerFramesV3,
   readLedgerFramesV3Since,
+  readLedgerV3,
+  readLedgerV3Since,
   type SchemaAdvanceV3,
 } from "./reader.ts";
 export {

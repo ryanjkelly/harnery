@@ -1,10 +1,20 @@
-import { canonicalJsonV2 } from "../v2/canonical.ts";
+import { Buffer } from "node:buffer";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { canonicalJsonV2, sha256V2 } from "../v2/canonical.ts";
+import {
+  type EventV3Catalog,
+  type EventV3SegmentManifest,
+  readEventV3Catalog,
+  readEventV3SegmentManifest,
+} from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
 import { validateEventV3 } from "./validate.ts";
 
 export type LedgerDiagnosticCodeV3 =
   | "malformed_json"
+  | "partial_final_frame"
   | "unsupported_major"
   | "invalid_contract"
   | "unsupported_schema_digest"
@@ -28,7 +38,13 @@ export type LedgerDiagnosticCodeV3 =
   | "advance_boundary_invalid"
   | "advance_boundary_missed"
   | "cursor_genesis_mismatch"
-  | "cursor_position_missing";
+  | "cursor_position_missing"
+  | "catalog_invalid"
+  | "missing_segment"
+  | "segment_digest_mismatch"
+  | "manifest_digest_mismatch"
+  | "manifest_segment_mismatch"
+  | "active_replaced";
 
 export interface LedgerDiagnosticV3 {
   code: LedgerDiagnosticCodeV3;
@@ -70,6 +86,7 @@ export interface ReadLedgerV3Result {
   genesis_id?: string;
   active_schema_digest?: string;
   advances: SchemaAdvanceV3[];
+  bytes: number;
 }
 
 export interface LedgerCursorV3 {
@@ -104,6 +121,57 @@ interface EventShape {
   links: { caused_by: string[] };
   attestation_id?: string;
   payload: Record<string, unknown>;
+}
+
+interface DiscoveredFramesV3 {
+  frames: LedgerFrameV3[];
+  diagnostics: LedgerDiagnosticV3[];
+  bytes: number;
+}
+
+export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
+
+export function eventV3Paths(coordRoot: string) {
+  const root = join(resolve(coordRoot), EVENT_V3_LEDGER_RELATIVE_ROOT);
+  return {
+    root,
+    active: join(root, "active.ndjson"),
+    catalog: join(root, "catalog.json"),
+    segments: join(root, "segments"),
+  };
+}
+
+/** Read the complete V3 ledger through catalog-bound filesystem discovery. */
+export function readLedgerV3(
+  coordRoot: string,
+  options: ReadLedgerV3Options = {},
+): ReadLedgerV3Result {
+  const discovered = discoverLedgerFramesV3(coordRoot);
+  const read = readLedgerFramesV3(discovered.frames, options);
+  const diagnostics = [...discovered.diagnostics, ...read.diagnostics];
+  return {
+    ...read,
+    diagnostics,
+    complete: diagnostics.length === 0,
+    bytes: discovered.bytes,
+  };
+}
+
+export function readLedgerV3Since(
+  coordRoot: string,
+  cursor?: LedgerCursorV3,
+  options: ReadLedgerV3Options = {},
+): ReadLedgerV3SinceResult {
+  const discovered = discoverLedgerFramesV3(coordRoot);
+  const read = readLedgerFramesV3Since(discovered.frames, cursor, options);
+  const diagnostics = [...discovered.diagnostics, ...read.diagnostics];
+  return {
+    ...read,
+    events: diagnostics.length === 0 ? read.events : [],
+    diagnostics,
+    complete: diagnostics.length === 0,
+    bytes: discovered.bytes,
+  };
 }
 
 /**
@@ -283,6 +351,7 @@ export function readLedgerFramesV3(
     genesis_id: genesisId,
     active_schema_digest: activeSchemaDigest,
     advances,
+    bytes: frames.reduce((total, frame) => total + Buffer.byteLength(frame.raw, "utf8") + 1, 0),
   };
 }
 
@@ -450,4 +519,195 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function discoverLedgerFramesV3(coordRoot: string): DiscoveredFramesV3 {
+  const paths = eventV3Paths(coordRoot);
+  if (!existsSync(paths.catalog)) {
+    if (hasSealedV3Metadata(paths.segments)) {
+      return {
+        frames: [],
+        diagnostics: [storageDiagnostic("catalog_invalid", 0)],
+        bytes: 0,
+      };
+    }
+    if (!existsSync(paths.active)) return { frames: [], diagnostics: [], bytes: 0 };
+    return framesFromBytes(readFileSync(paths.active), 1, true);
+  }
+
+  let catalog: EventV3Catalog;
+  try {
+    catalog = readEventV3Catalog(paths.catalog);
+  } catch {
+    return {
+      frames: [],
+      diagnostics: [storageDiagnostic("catalog_invalid", 0)],
+      bytes: 0,
+    };
+  }
+
+  const discovered: DiscoveredFramesV3 = { frames: [], diagnostics: [], bytes: 0 };
+  for (const entry of catalog.segments) {
+    discoverSealedSegment(paths.segments, entry, discovered);
+  }
+  discoverActiveSegment(paths.active, catalog, discovered);
+  return discovered;
+}
+
+function discoverSealedSegment(
+  segmentsRoot: string,
+  entry: EventV3Catalog["segments"][number],
+  discovered: DiscoveredFramesV3,
+): void {
+  const segmentPath = join(segmentsRoot, entry.segment_file);
+  const manifestPath = join(segmentsRoot, entry.manifest_file);
+  if (!regularFile(segmentPath) || !regularFile(manifestPath)) {
+    discovered.diagnostics.push(storageDiagnostic("missing_segment", entry.ordinal));
+    return;
+  }
+  const segmentBytes = readFileSync(segmentPath);
+  const manifestBytes = readFileSync(manifestPath);
+  discovered.bytes += segmentBytes.length;
+  if (segmentBytes.length !== entry.bytes || sha256V2(segmentBytes) !== entry.segment_digest) {
+    discovered.diagnostics.push(storageDiagnostic("segment_digest_mismatch", entry.ordinal));
+    return;
+  }
+  if (sha256V2(manifestBytes) !== entry.manifest_digest) {
+    discovered.diagnostics.push(storageDiagnostic("manifest_digest_mismatch", entry.ordinal));
+    return;
+  }
+  let manifest: EventV3SegmentManifest;
+  try {
+    manifest = readEventV3SegmentManifest(manifestPath);
+  } catch {
+    discovered.diagnostics.push(storageDiagnostic("manifest_segment_mismatch", entry.ordinal));
+    return;
+  }
+  const segment = framesFromBytes(segmentBytes, entry.ordinal, false);
+  if (
+    !manifestMatchesCatalog(manifest, entry) ||
+    !manifestMatchesFrames(manifest, segment.frames)
+  ) {
+    discovered.diagnostics.push(storageDiagnostic("manifest_segment_mismatch", entry.ordinal));
+    return;
+  }
+  discovered.frames.push(...segment.frames);
+  discovered.diagnostics.push(...segment.diagnostics);
+}
+
+function discoverActiveSegment(
+  activePath: string,
+  catalog: EventV3Catalog,
+  discovered: DiscoveredFramesV3,
+): void {
+  if (!regularFile(activePath)) {
+    discovered.diagnostics.push(storageDiagnostic("active_replaced", catalog.active.ordinal));
+    return;
+  }
+  const stat = statSync(activePath);
+  const bigintStat = statSync(activePath, { bigint: true });
+  if (
+    String(stat.dev) !== catalog.active.device ||
+    String(stat.ino) !== catalog.active.inode ||
+    String(bigintStat.birthtimeNs) !== catalog.active.birthtime_ns
+  ) {
+    discovered.diagnostics.push(storageDiagnostic("active_replaced", catalog.active.ordinal));
+    return;
+  }
+  const bytes = readFileSync(activePath);
+  const active = framesFromBytes(bytes, catalog.active.ordinal, true);
+  discovered.frames.push(...active.frames);
+  discovered.diagnostics.push(...active.diagnostics);
+  discovered.bytes += bytes.length;
+}
+
+function framesFromBytes(
+  bytes: Buffer,
+  segmentOrdinal: number,
+  allowPartialFinalFrame: boolean,
+): DiscoveredFramesV3 {
+  const raw = bytes.toString("utf8");
+  const frames: LedgerFrameV3[] = [];
+  const diagnostics: LedgerDiagnosticV3[] = [];
+  const lines = raw.split("\n");
+  let byteOffset = 0;
+  for (const [index, line] of lines.entries()) {
+    const final = index === lines.length - 1;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+    if (line.length === 0) {
+      if (!final) {
+        diagnostics.push(storageDiagnostic("malformed_json", segmentOrdinal, byteOffset));
+        byteOffset += 1;
+      }
+      continue;
+    }
+    if (final && !raw.endsWith("\n")) {
+      diagnostics.push(
+        storageDiagnostic(
+          allowPartialFinalFrame ? "partial_final_frame" : "malformed_json",
+          segmentOrdinal,
+          byteOffset,
+        ),
+      );
+      break;
+    }
+    frames.push({
+      raw: line,
+      position: { segment_ordinal: segmentOrdinal, byte_offset: byteOffset },
+    });
+    byteOffset += lineBytes + 1;
+  }
+  return { frames, diagnostics, bytes: bytes.length };
+}
+
+function manifestMatchesCatalog(
+  manifest: EventV3SegmentManifest,
+  entry: EventV3Catalog["segments"][number],
+): boolean {
+  return (
+    manifest.ordinal === entry.ordinal &&
+    manifest.segment_file === entry.segment_file &&
+    manifest.segment_digest === entry.segment_digest &&
+    manifest.bytes === entry.bytes &&
+    manifest.row_count === entry.row_count
+  );
+}
+
+function manifestMatchesFrames(
+  manifest: EventV3SegmentManifest,
+  frames: readonly LedgerFrameV3[],
+): boolean {
+  if (frames.length !== manifest.row_count) return false;
+  try {
+    const records = frames.map(({ raw }) => record(JSON.parse(raw)));
+    const schemaDigests = [
+      ...new Set(records.map((event) => string(record(event.contract).schema_digest))),
+    ].sort();
+    return (
+      records[0]?.event_id === manifest.first_event_id &&
+      records.at(-1)?.event_id === manifest.last_event_id &&
+      schemaDigests.join("\0") === manifest.schema_digests.join("\0")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasSealedV3Metadata(segmentsPath: string): boolean {
+  if (!existsSync(segmentsPath)) return false;
+  return readdirSync(segmentsPath).some((name) => /^(\d{12})\.(ndjson|manifest\.json)$/.test(name));
+}
+
+function regularFile(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const stat = lstatSync(path);
+  return stat.isFile() && !stat.isSymbolicLink();
+}
+
+function storageDiagnostic(
+  code: LedgerDiagnosticCodeV3,
+  segmentOrdinal: number,
+  byteOffset = 0,
+): LedgerDiagnosticV3 {
+  return { code, segment_ordinal: segmentOrdinal, byte_offset: byteOffset };
 }

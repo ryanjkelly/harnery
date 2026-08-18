@@ -217,7 +217,7 @@
     "generate:event-v2": "bun run scripts/generate-event-v2-contract.ts",
     "check:event-v2": "bun run scripts/generate-event-v2-contract.ts --check",
     "generate:event-v3": "bun run scripts/generate-event-v3-contract.ts",
-    "check:event-v3": "bun run scripts/generate-event-v3-contract.ts --check"
+    "check:event-v3": "bun run scripts/generate-event-v3-contract.ts --check && bun run scripts/check-event-v3-reader-boundary.ts"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
