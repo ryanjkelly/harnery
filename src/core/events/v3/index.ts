@@ -70,6 +70,11 @@ export {
   type TurnLatencyV3,
 } from "./latency.ts";
 export {
+  type HookEventV3,
+  type HookProducerContextV3,
+  normalizeHookEventV3,
+} from "./producers/hook.ts";
+export {
   type LedgerCursorV3,
   type LedgerDiagnosticCodeV3,
   type LedgerDiagnosticV3,
