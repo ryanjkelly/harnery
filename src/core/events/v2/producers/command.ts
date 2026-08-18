@@ -3,10 +3,7 @@ import { type FingerprintContextV2, fingerprintV2, normalizeNativeIdV2 } from ".
 import type { EventV2 } from "../contract.ts";
 import { eventIdV2 } from "../ids.ts";
 
-export type CommandSignalV2 =
-  | "command.started"
-  | "command.output_observed"
-  | "command.completed";
+export type CommandSignalV2 = "command.started" | "command.output_observed" | "command.completed";
 
 export interface CommandProducerContextV2 {
   root_id: `root_${string}`;
@@ -22,6 +19,7 @@ export interface CommandProducerContextV2 {
   platform: "linux" | "windows" | "macos" | "unknown";
   bridge?: "codex-wsl";
   span_id: `span_${string}`;
+  parent_span_id?: `span_${string}`;
   caused_by?: `evt_${string}`[];
   event_id?: `evt_${string}`;
   observed_at?: string;
@@ -101,7 +99,11 @@ export function normalizeCommandEventV2(
     recorded_at: context.recorded_at,
     monotonic_ns: context.monotonic_ns,
     clock_id: context.clock_id,
-    links: { caused_by: context.caused_by ?? [], span_id: context.span_id },
+    links: {
+      caused_by: context.caused_by ?? [],
+      span_id: context.span_id,
+      ...(context.parent_span_id ? { parent_span_id: context.parent_span_id } : {}),
+    },
   };
 
   switch (signal) {

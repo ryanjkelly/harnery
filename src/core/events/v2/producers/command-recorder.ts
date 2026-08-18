@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
+import { selectCommandParentSpan } from "../../span-parent.ts";
 import { buildEventV2 } from "../builder.ts";
 import { normalizeNativeIdV2 } from "../canonical.ts";
 import type { EventV2 } from "../contract.ts";
@@ -66,6 +67,7 @@ interface CommandRecorderStateV2 {
   boot_id: `boot_${string}`;
   clock_id: `clk_${string}`;
   span_id: `span_${string}`;
+  parent_span_id?: `span_${string}`;
   next_sequence: number;
   last_event_id: `evt_${string}`;
   terminal: boolean;
@@ -182,6 +184,7 @@ export function recordCommandSignalV2(
       platform: input.platform,
       bridge: input.bridge,
       span_id: state.span_id,
+      parent_span_id: state.parent_span_id,
       caused_by: [state.last_event_id],
       monotonic_ns: input.monotonic_ns,
       clock_id: state.clock_id,
@@ -296,7 +299,11 @@ export function closeAbandonedCommandSpansV2(
           turn_id: state.turn_id,
         },
         attestation_id: state.attestation_id,
-        links: { caused_by: [state.last_event_id], span_id: state.span_id },
+        links: {
+          caused_by: [state.last_event_id],
+          span_id: state.span_id,
+          ...(state.parent_span_id ? { parent_span_id: state.parent_span_id } : {}),
+        },
         provenance: {
           source_event: "session-tee.recovery",
           attestation: "derived",
@@ -335,6 +342,7 @@ function newCommandState(
   hook: NonNullable<ReturnType<typeof readHookProducerStateByInstanceV2>>,
   epochId: `pep_${string}`,
 ): CommandRecorderStateV2 {
+  const parentSpanId = selectCommandParentSpan(hook.spans, hook.current_turn_id!);
   return {
     format: COMMAND_STATE_FORMAT,
     format_version: COMMAND_STATE_VERSION,
@@ -348,6 +356,7 @@ function newCommandState(
     boot_id: `boot_${randomUUID()}`,
     clock_id: clockIdV2(),
     span_id: spanIdV2(),
+    ...(parentSpanId ? { parent_span_id: parentSpanId } : {}),
     next_sequence: 1,
     last_event_id: hook.last_event_id!,
     terminal: false,
@@ -469,6 +478,7 @@ function readCommandState(path: string): CommandRecorderStateV2 {
     "last_event_id",
     "next_sequence",
     "observations",
+    "parent_span_id",
     "pending",
     "privacy_epoch_id",
     "session_id",
@@ -490,6 +500,7 @@ function readCommandState(path: string): CommandRecorderStateV2 {
     !/^boot_[a-zA-Z0-9._-]+$/.test(state.boot_id) ||
     !/^clk_[0-9a-f-]{36}$/.test(state.clock_id) ||
     !/^span_[0-9a-f-]{36}$/.test(state.span_id) ||
+    (state.parent_span_id !== undefined && !/^span_[0-9a-f-]{36}$/.test(state.parent_span_id)) ||
     !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id) ||
     !Number.isSafeInteger(state.next_sequence) ||
     state.next_sequence < 1 ||

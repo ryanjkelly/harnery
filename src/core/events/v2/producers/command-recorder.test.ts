@@ -6,6 +6,7 @@ import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { buildEventV2 } from "../builder.ts";
 import { canonicalJsonV2, sha256V2 } from "../canonical.ts";
 import { adapterCapabilityProfileDigestV2 } from "../capabilities.ts";
+import type { EventV2 } from "../contract.ts";
 import {
   type CandidateGenesisManifestV2,
   type CandidateProfileV2,
@@ -122,6 +123,53 @@ describe("event ledger V2 persistent session-tee recorder", () => {
     }
   });
 
+  test("stamps the only open tool span as the command parent", () => {
+    const root = startedTurnRoot();
+    expect(
+      recordHookSignalV2(
+        hookInput(
+          root,
+          "pre-tool-use",
+          parsed({ session_id: "native-session", tool_use_id: "shell-1", tool_name: "Bash" }),
+        ),
+      ).state,
+    ).toBe("recorded");
+    const tool = readActiveLedgerV2(root).events.find(
+      ({ event }) =>
+        event.event_type === "tool.requested" && event.producer.component === "agent-hook",
+    )?.event;
+    const command = recordCommandSignalV2(commandInput(root, "command.started"));
+    expect(command.state).toBe("recorded");
+    if (command.state === "recorded") {
+      expect(eventLinks(command.event).parent_span_id).toBe(tool && eventLinks(tool).span_id);
+    }
+  });
+
+  test("selects one shell parent among parallel tools and refuses two shells", () => {
+    const oneShell = startedTurnRoot();
+    openTool(oneShell, "read-1", "Read");
+    openTool(oneShell, "shell-1", "Bash");
+    const shellSpan = readActiveLedgerV2(oneShell).events.find(
+      ({ event }) => event.event_type === "tool.requested" && toolName(event) === "Bash",
+    )?.event;
+    const selected = recordCommandSignalV2(commandInput(oneShell, "command.started"));
+    expect(selected.state).toBe("recorded");
+    if (selected.state === "recorded") {
+      expect(eventLinks(selected.event).parent_span_id).toBe(
+        shellSpan && eventLinks(shellSpan).span_id,
+      );
+    }
+
+    const ambiguous = startedTurnRoot();
+    openTool(ambiguous, "shell-1", "Bash");
+    openTool(ambiguous, "shell-2", "Shell");
+    const unstamped = recordCommandSignalV2(commandInput(ambiguous, "command.started"));
+    expect(unstamped.state).toBe("recorded");
+    if (unstamped.state === "recorded") {
+      expect(eventLinks(unstamped.event).parent_span_id).toBeUndefined();
+    }
+  });
+
   test("replays the exact pending output event after a producer crash", () => {
     const root = startedTurnRoot();
     expect(recordCommandSignalV2(commandInput(root, "command.started")).state).toBe("recorded");
@@ -216,6 +264,27 @@ function commandGeneration(root: string): `gen_${string}` {
   )?.event;
   if (!started || !("generation_id" in started.scope)) throw new Error("command start missing");
   return started.scope.generation_id as `gen_${string}`;
+}
+
+function openTool(root: string, toolUseId: string, toolName: string): void {
+  expect(
+    recordHookSignalV2(
+      hookInput(
+        root,
+        "pre-tool-use",
+        parsed({ session_id: "native-session", tool_use_id: toolUseId, tool_name: toolName }),
+      ),
+    ).state,
+  ).toBe("recorded");
+}
+
+function eventLinks(event: EventV2): { span_id?: string; parent_span_id?: string } {
+  return event.links as { span_id?: string; parent_span_id?: string };
+}
+
+function toolName(event: EventV2): string | undefined {
+  const payload = event.payload as { tool?: { name?: unknown } };
+  return typeof payload.tool?.name === "string" ? payload.tool.name : undefined;
 }
 
 function startedTurnRoot(): string {
