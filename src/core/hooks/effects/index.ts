@@ -19,6 +19,8 @@ import { join } from "node:path";
 import { applyDetection } from "../../../lib/presence.ts";
 import { coordBinPath } from "../../agents/coord-bin.ts";
 
+export { captureImages, imageJanitor, recordImageArtifactsV3 } from "./image-capture.ts";
+
 /**
  * Play a notification sound via the cross-platform utility
  * (afplay on macOS, powershell.exe on WSL). The

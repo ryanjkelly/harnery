@@ -1,8 +1,8 @@
 /**
  * Image-feed reader for the harnery web UI.
  *
- * V3 intentionally does not retain raw image blobs. The feed reports explicit
- * unavailability until a privacy-safe artifact projection is added.
+ * V3 image observations carry only content-addressed references and safe
+ * workspace-relative paths. Raw bytes stay in the bounded local blob store.
  */
 
 import { randomUUID } from "node:crypto";
@@ -14,10 +14,13 @@ import {
   openSync,
   readdirSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { harneryDir } from "./coord-reader";
+import type { EventV3 } from "../../src/core/events/v3/contract";
+import { readLedgerV3 } from "../../src/core/events/v3/reader";
+import { coordRoot, harneryDir, readInstanceIdentities } from "./coord-reader";
 
 /** ext → HTTP content-type. Mirrors the IMAGE_EXTS set in the capture effect. */
 const CONTENT_TYPES: Record<string, string> = {
@@ -36,6 +39,7 @@ export function imagesDir(): string {
 
 /** One privacy-safe image-artifact observation, name-resolved. */
 export interface ImageTouch {
+  event_id?: string;
   instance_id: string;
   agent: string; // display name (`agent-<Name>` or raw id fallback)
   role: "viewed" | "produced";
@@ -67,31 +71,154 @@ export interface ImageCapturesResponse {
     dir: string;
     distinct: number;
     total_touches: number;
-    source: "v2";
+    source: "v3";
     authoritative: boolean;
     reason?: string;
   };
 }
 
 /**
- * Return the V3 image-artifact projection. Raw blobs are deliberately absent
- * until artifact observations carry a privacy-safe blob reference.
+ * Return the V3 image-artifact projection. Canonical artifact observations
+ * supply attribution for new captures; retained pre-V3 blobs remain visible
+ * as unattributed images instead of disappearing from the operator surface.
  */
 export function readImageCaptures(opts: { limit?: number } = {}): ImageCapturesResponse {
-  void opts;
   const dir = imagesDir();
+  const blobs = blobIndex(dir);
+  const ledger = readLedgerV3(coordRoot());
+  const identities = readInstanceIdentities();
+  const captures = projectImageCaptures(
+    ledger.complete ? ledger.events.map(({ event }) => event) : [],
+    blobs,
+    identities,
+  );
+  const limit = Math.max(1, Math.min(opts.limit ?? Math.max(captures.length, 1), 2_000));
+  const images = captures.slice(0, limit);
   return {
-    images: [],
+    images,
     meta: {
       dir,
-      distinct: 0,
-      total_touches: 0,
-      source: "v2",
-      authoritative: false,
-      reason:
-        "V3 artifact observations do not expose the content-addressed blob key and extension required by the image feed",
+      distinct: captures.length,
+      total_touches: captures.reduce((sum, image) => sum + image.touch_count, 0),
+      source: "v3",
+      authoritative: ledger.complete,
+      ...(!ledger.complete
+        ? {
+            reason:
+              "V3 artifact metadata is temporarily unavailable; retained blobs are still listed",
+          }
+        : {}),
     },
   };
+}
+
+interface BlobInfo {
+  ext: string;
+  bytes: number;
+  mtime: string;
+}
+
+interface IdentityLike {
+  name: string;
+  platform?: string | null;
+}
+
+/** Pure projection boundary, exported so blob/event joining stays fixture-testable. */
+export function projectImageCaptures(
+  events: readonly EventV3[],
+  blobs: ReadonlyMap<string, BlobInfo>,
+  identities: Readonly<Record<string, IdentityLike>>,
+): ImageCapture[] {
+  const byHash = new Map<string, ImageCapture>();
+  const eventById = new Map(events.map((event) => [event.event_id, event]));
+
+  for (const event of events) {
+    if (event.event_type !== "artifact.observed") continue;
+    const artifact = event.payload.artifact;
+    if (artifact.kind !== "image") continue;
+    const hash = artifact.artifact_id.startsWith("art_")
+      ? artifact.artifact_id.slice("art_".length)
+      : "";
+    if (!/^[a-f0-9]{64}$/.test(hash)) continue;
+    const ext = extForMediaType(artifact.media_type) ?? blobs.get(hash)?.ext;
+    if (!ext) continue;
+    const links = record(event.links);
+    const causedBy = Array.isArray(links.caused_by)
+      ? links.caused_by.filter((value): value is string => typeof value === "string")
+      : [];
+    const source = causedBy
+      .map((eventId) => eventById.get(eventId))
+      .find((candidate) =>
+        candidate
+          ? candidate.event_type === "tool.requested" || candidate.event_type === "tool.completed"
+          : false,
+      );
+    const instanceId = event.scope.instance_id;
+    const identity = identities[instanceId];
+    const tool = record(source ? record(source.payload).tool : undefined);
+    const role = event.payload.operation === "viewed" ? "viewed" : "produced";
+    const touch: ImageTouch = {
+      event_id: event.event_id,
+      instance_id: instanceId,
+      agent: identity?.name ?? instanceId,
+      role,
+      ts: event.time.observed_at,
+      source_path: artifact.workspace_path ?? "",
+      tool_name: stringValue(tool.name) ?? "unknown_tool",
+      adapter: stringValue(tool.namespace) ?? identity?.platform ?? undefined,
+    };
+    const blob = blobs.get(hash);
+    const existing = byHash.get(hash);
+    if (existing) {
+      existing.touches.push(touch);
+      existing.touch_count += 1;
+      if (!existing.agents.includes(touch.agent)) existing.agents.push(touch.agent);
+      if (!existing.roles.includes(role)) existing.roles.push(role);
+      if (touch.ts > existing.latest_ts) existing.latest_ts = touch.ts;
+      if (touch.ts < existing.first_ts) existing.first_ts = touch.ts;
+      continue;
+    }
+    byHash.set(hash, {
+      hash,
+      ext,
+      bytes: artifact.bytes || blob?.bytes || 0,
+      latest_ts: touch.ts,
+      first_ts: touch.ts,
+      touch_count: 1,
+      agents: [touch.agent],
+      roles: [role],
+      touches: [touch],
+      blob_exists: !!blob,
+    });
+  }
+
+  for (const [hash, blob] of blobs) {
+    const existing = byHash.get(hash);
+    if (existing) {
+      existing.blob_exists = true;
+      existing.ext = blob.ext;
+      existing.bytes = blob.bytes;
+      continue;
+    }
+    byHash.set(hash, {
+      hash,
+      ext: blob.ext,
+      bytes: blob.bytes,
+      latest_ts: blob.mtime,
+      first_ts: blob.mtime,
+      touch_count: 0,
+      agents: [],
+      roles: [],
+      touches: [],
+      blob_exists: true,
+    });
+  }
+
+  for (const image of byHash.values()) {
+    image.touches.sort((a, b) => b.ts.localeCompare(a.ts));
+    image.agents.sort();
+  }
+  return [...byHash.values()].sort((a, b) => b.latest_ts.localeCompare(a.latest_ts));
 }
 
 /** Allowed thumbnail widths. A small allowlist so `?w=` can't be driven to
@@ -131,7 +258,7 @@ export async function resolveThumb(hash: string, width: number): Promise<Resolve
   if (!THUMB_WIDTHS.has(width)) return null;
   const dir = imagesDir();
   if (!existsSync(dir)) return null;
-  const srcExt = blobExtIndex(dir).get(hash);
+  const srcExt = blobIndex(dir).get(hash)?.ext;
   if (!srcExt || srcExt === "svg" || srcExt === "gif") return null; // serve vector/animated whole
 
   // Crop to the grid cell's 4:3 box (not width-only). Full-page screenshots
@@ -193,8 +320,8 @@ export async function resolveThumb(hash: string, width: number): Promise<Resolve
 }
 
 /** Build a `hash → ext` index of the blobs actually present on disk. */
-function blobExtIndex(dir: string): Map<string, string> {
-  const out = new Map<string, string>();
+function blobIndex(dir: string): Map<string, BlobInfo> {
+  const out = new Map<string, BlobInfo>();
   if (!existsSync(dir)) return out;
   let names: string[];
   try {
@@ -207,9 +334,31 @@ function blobExtIndex(dir: string): Map<string, string> {
     if (dot < 0) continue;
     const hash = name.slice(0, dot);
     const ext = name.slice(dot + 1).toLowerCase();
-    if (/^[a-f0-9]{64}$/.test(hash) && CONTENT_TYPES[ext]) out.set(hash, ext);
+    if (!/^[a-f0-9]{64}$/.test(hash) || !CONTENT_TYPES[ext]) continue;
+    try {
+      const stat = statSync(path.join(dir, name));
+      if (!stat.isFile()) continue;
+      out.set(hash, { ext, bytes: stat.size, mtime: stat.mtime.toISOString() });
+    } catch {
+      // A concurrent capture or janitor pass can remove one entry mid-scan.
+    }
   }
   return out;
+}
+
+function extForMediaType(mediaType: string): string | undefined {
+  if (mediaType === "image/jpeg") return "jpg";
+  return Object.entries(CONTENT_TYPES).find(([, value]) => value === mediaType)?.[0];
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
 }
 
 export interface ResolvedBlob {
@@ -233,7 +382,7 @@ export function resolveBlob(hash: string): ResolvedBlob | null {
   if (!/^[a-f0-9]{64}$/.test(hash)) return null;
   const dir = imagesDir();
   if (!existsSync(dir)) return null;
-  const ext = blobExtIndex(dir).get(hash);
+  const ext = blobIndex(dir).get(hash)?.ext;
   if (!ext) return null;
   const full = path.join(dir, `${hash}.${ext}`);
   let fd: number;

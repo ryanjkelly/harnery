@@ -36,9 +36,7 @@ const WINDOW_LABEL: Record<WindowFilter, string> = {
 };
 
 /**
- * /images client shell for the privacy-safe V3 artifact projection. Until V3
- * exposes content-addressed blob references, it renders the server's explicit
- * unavailable state and never falls back to V1 image events.
+ * /images client shell for the privacy-safe V3 artifact projection.
  */
 export function ImageGallery({ initial: images, summaries, unavailableReason }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
@@ -132,10 +130,10 @@ export function ImageGallery({ initial: images, summaries, unavailableReason }: 
         unavailableReason={unavailableReason}
       />
 
-        <div className="flex-1 min-h-0 overflow-auto">
-          {images.length === 0 ? (
+      <div className="flex-1 min-h-0 overflow-auto">
+        {images.length === 0 ? (
           <EmptyState>
-            {unavailableReason ?? "No V3 image artifacts have been observed."}
+            {unavailableReason ?? "No image artifacts have been captured yet."}
           </EmptyState>
         ) : filtered.length === 0 ? (
           <EmptyState>
@@ -260,7 +258,7 @@ function FilterBar(props: {
             title={props.unavailableReason}
           >
             <span className="size-1.5 rounded-full bg-amber-500/80" />
-            metadata only
+            metadata partial
           </span>
         )}
       </div>
@@ -365,7 +363,11 @@ const ThumbCard = memo(function ThumbCard({
 
       <div className="flex items-center justify-between gap-2 px-2 py-1.5">
         <span className="flex min-w-0 items-center gap-1 text-[11px]">
-          <AgentChip name={img.agents[0] ?? "unknown"} className="truncate font-mono text-[11px]" />
+          {img.agents[0] ? (
+            <AgentChip name={img.agents[0]} className="truncate font-mono text-[11px]" />
+          ) : (
+            <span className="truncate font-mono text-muted-foreground">unattributed</span>
+          )}
           {more && <span className="shrink-0 text-muted-foreground">{more}</span>}
         </span>
         <FormattedDateTime
@@ -456,6 +458,9 @@ function DetailOverlay({
     <div
       className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 ${maximized ? "p-2" : "p-6"}`}
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Image details: ${filename}`}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: stops backdrop-close from firing on inner clicks; not itself an interactive control. */}
       <div
@@ -463,6 +468,7 @@ function DetailOverlay({
           maximized ? "h-[96vh] w-[97vw] max-w-none" : "max-h-[90vh] w-full max-w-4xl"
         }`}
         onClick={(e) => e.stopPropagation()}
+        role="document"
       >
         <div className="flex items-center gap-2 border-b border-border px-4 py-2">
           <span className="truncate font-mono text-sm text-foreground" title={filename}>
@@ -553,9 +559,14 @@ function DetailOverlay({
             {img.touch_count} touch{img.touch_count === 1 ? "" : "es"}
           </p>
           <ul className="flex flex-col gap-2">
-            {img.touches.map((t, i) => (
+            {img.touches.length === 0 && (
+              <li className="text-xs text-muted-foreground">
+                No V3 capture metadata is available for this retained blob.
+              </li>
+            )}
+            {img.touches.map((t) => (
               <li
-                key={`${t.instance_id}-${t.ts}-${i}`}
+                key={t.event_id ?? `${t.instance_id}-${t.ts}-${t.role}-${t.source_path}`}
                 className="flex flex-col gap-0.5 rounded border border-border/60 bg-background/40 px-2 py-1.5 text-xs"
               >
                 <div className="flex flex-wrap items-center gap-2">

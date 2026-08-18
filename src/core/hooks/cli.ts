@@ -68,11 +68,14 @@ import {
   renderCodexWslFileLinkContext,
 } from "./codex-wsl-bridge.ts";
 import {
+  captureImages,
   detectPresence,
+  imageJanitor,
   journalArchive,
   journalJanitor,
   journalRecoveryCue,
   playSound,
+  recordImageArtifactsV3,
   resetSoundCounters,
   runSessionSyncExtension,
   soundForEvent,
@@ -655,6 +658,18 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  let capturedImages: ReturnType<typeof captureImages> = [];
+  if (
+    norm.event_type === "tool.requested" ||
+    (norm.event_type === "tool.completed" && eventName === "post-tool-use")
+  ) {
+    try {
+      capturedImages = captureImages(coordRoot, norm.event_type, payload);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "image-capture" });
+    }
+  }
+
   const v3Result = recordLiveHookSignalV3({
     coordRoot,
     route: ledgerRoute,
@@ -682,6 +697,14 @@ async function main(): Promise<number> {
       : v3Result && "event_id" in v3Result
         ? v3Result.event_id
         : undefined;
+
+  if (v3Result?.state === "recorded" && capturedImages.length > 0) {
+    try {
+      recordImageArtifactsV3(coordRoot, v3Result.event, capturedImages);
+    } catch (err) {
+      logError(coordRoot, err, { phase: "image-artifact-observation" });
+    }
+  }
 
   if (
     norm.event_type === "tool.requested" &&
@@ -770,6 +793,7 @@ async function main(): Promise<number> {
     // The recovery-cue is merged into the
     // session-start additionalContext inside emitSessionStartSystemMessage.
     if (adapter === "claude-code") journalJanitor(coordRoot);
+    imageJanitor(coordRoot);
     let recovery: PreparedContextRecovery | null = null;
     if (payload?.source === "compact") {
       try {

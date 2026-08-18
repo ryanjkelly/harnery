@@ -14,9 +14,9 @@ export const revalidate = 0;
 export const metadata = { title: "Images · Harnery" };
 
 /**
- * /images: the V3 image-artifact surface. V3 currently retains metadata but
- * not the raw blob key needed for thumbnails, so the page fails closed with a
- * clear availability reason instead of consulting the retired V1 event feed.
+ * /images: canonical V3 artifact observations joined to the bounded local
+ * content-addressed blob store. Older retained blobs remain visible even when
+ * they predate V3 attribution metadata.
  */
 export default async function ImagesPage() {
   const { images, meta } = readImageCaptures({ limit: 300 });
