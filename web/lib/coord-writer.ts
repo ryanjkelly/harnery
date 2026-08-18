@@ -69,6 +69,36 @@ export function safeOwnerId(owner: string): boolean {
   return isSafeInstanceId(owner);
 }
 
+/**
+ * Resolve a canonical V3 instance ID back to the native cache owner when both
+ * records describe the same generation. Operator actions can be rendered from
+ * a projection-only `inst_*` row, while agent-coord must join the hook producer
+ * with the adapter's native owner ID.
+ */
+export function resolveOperatorMutationOwner(
+  instanceId: string,
+  root: string = coordRoot(),
+): string {
+  if (!instanceId.startsWith("inst_")) return instanceId;
+  const candidate = instanceId.slice("inst_".length);
+  if (!safeOwnerId(candidate)) return instanceId;
+  try {
+    const cache = JSON.parse(
+      readFileSync(path.join(root, ".harnery", "active", `${candidate}.json`), "utf8"),
+    ) as Record<string, unknown>;
+    if (
+      cache.instance_id === candidate &&
+      cache.v3_instance_id === instanceId &&
+      typeof cache.v3_generation_id === "string"
+    ) {
+      return candidate;
+    }
+  } catch {
+    // No validated native cache alias exists, so preserve the supplied owner.
+  }
+  return instanceId;
+}
+
 /** Force a coord-layer recovery action on an agent. Shells to harnery/bin/agent-coord. */
 export async function healAgent(owner: string, _kind: "cache"): Promise<HelperResult> {
   return runHelper(["repair-coordination-cache", owner]);
@@ -271,7 +301,11 @@ export async function releaseClaim(
       error: "invalid instance_id",
     };
   }
-  const result = await runHelper(["release-claim", instanceId, target]);
+  const result = await runHelper([
+    "release-claim",
+    resolveOperatorMutationOwner(instanceId),
+    target,
+  ]);
   if (!result.ok) {
     return {
       ok: false,
