@@ -44,6 +44,7 @@ import {
   readContextState,
   recordContextSample,
 } from "../context/index.ts";
+import { tryWriteLiveDisplayV2 } from "../events/v2/live-feed.ts";
 import {
   recordLiveHookSignalV2,
   resolveLiveEventLedgerRouteV2,
@@ -641,6 +642,23 @@ async function main(): Promise<number> {
       : v2Result && "event_id" in v2Result
         ? v2Result.event_id
         : undefined;
+
+  if (
+    norm.event_type === "tool.pre_use" &&
+    v2Result &&
+    v2Result.state === "recorded" &&
+    "generation_id" in v2Result.event.scope
+  ) {
+    const intent = typeof data.intent === "string" ? data.intent : undefined;
+    if (intent && intent !== "(no intent)") {
+      tryWriteLiveDisplayV2(coordRoot, {
+        generation_id: v2Result.event.scope.generation_id,
+        event_id: v2Result.event.event_id,
+        ...(typeof data.tool_name === "string" ? { executable: data.tool_name } : {}),
+        intent_display: intent,
+      });
+    }
+  }
 
   appendDebug(coordRoot, {
     ...debugBase,

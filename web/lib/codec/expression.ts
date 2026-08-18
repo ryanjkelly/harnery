@@ -13,12 +13,7 @@
  * and attention overlays always expire.
  */
 
-import type {
-  CodecActivity,
-  CodecAttention,
-  CodecExpression,
-  Presented,
-} from "./contracts";
+import type { CodecActivity, CodecAttention, CodecExpression, Presented } from "./contracts";
 
 export interface ExpressiveAction {
   category: "research" | "diagnostic" | "build" | "edit" | "test" | "coordinate" | "other";
@@ -27,6 +22,8 @@ export interface ExpressiveAction {
   ts: string;
   /** Bounded declared intent, present only on action starts that carried one. */
   intent?: string;
+  /** True when intent came from the local live-display overlay, not the ledger. */
+  live_overlay?: boolean;
 }
 
 export interface ExpressiveInputs {
@@ -45,7 +42,11 @@ export interface ExpressiveInputs {
 export interface ExpressiveChannels {
   expression: Presented<CodecExpression>;
   attention: Presented<CodecAttention>;
-  focus_bubble?: Presented<{ text: string; basis: "event-backed" | "inferred" }>;
+  focus_bubble?: Presented<{
+    text: string;
+    basis: "event-backed" | "inferred";
+    live_overlay?: boolean;
+  }>;
 }
 
 /* Decay windows (ms). Deterministic against the injected clock. */
@@ -89,8 +90,7 @@ export function deriveExpressiveChannels(
   // for adapters that emit no user_prompt.submit rows at all (observed on
   // this stream) — action evidence newer than the last stop. Silence after a
   // stop is a closed turn; no signal at all is no turn.
-  const promptOpens =
-    Number.isFinite(promptTs) && (!Number.isFinite(stopTs) || promptTs > stopTs);
+  const promptOpens = Number.isFinite(promptTs) && (!Number.isFinite(stopTs) || promptTs > stopTs);
   const actionOpens =
     Number.isFinite(lastActionEvidenceTs) &&
     (!Number.isFinite(stopTs) || lastActionEvidenceTs > stopTs);
@@ -98,16 +98,18 @@ export function deriveExpressiveChannels(
 
   // Actions inside the current open turn: after the prompt when we have one,
   // otherwise strictly after the last stop (or everything, absent any stop).
-  const turnStartMs = promptOpens ? promptTs : Number.isFinite(stopTs) ? stopTs : Number.NEGATIVE_INFINITY;
+  const turnStartMs = promptOpens
+    ? promptTs
+    : Number.isFinite(stopTs)
+      ? stopTs
+      : Number.NEGATIVE_INFINITY;
   const turnActions = inOpenTurn
     ? inputs.actions.filter((a) => {
         const t = ms(a.ts);
         return promptOpens ? t >= turnStartMs : t > turnStartMs;
       })
     : [];
-  const last = inputs.actions.length
-    ? inputs.actions[inputs.actions.length - 1]
-    : undefined;
+  const last = inputs.actions.length ? inputs.actions[inputs.actions.length - 1] : undefined;
   const lastTs = ms(last?.ts);
   const age = (t: number) => nowMs - t;
 
@@ -197,7 +199,10 @@ export function deriveExpressiveChannels(
       const errTs = ms(lastError.ts);
       const retry = turnActions.find((a) => ms(a.ts) > errTs && a.outcome !== "error");
       if (retry && age(ms(retry.ts)) <= RECOVERING_MS) {
-        return from("recovering", "event", "medium", retry.ts, [lastError.event_id, retry.event_id]);
+        return from("recovering", "event", "medium", retry.ts, [
+          lastError.event_id,
+          retry.event_id,
+        ]);
       }
     }
 
@@ -245,11 +250,7 @@ export function deriveExpressiveChannels(
     ) {
       return from("building", "event", "high", last.ts, [last.event_id]);
     }
-    if (
-      last?.category === "research" &&
-      Number.isFinite(lastTs) &&
-      age(lastTs) <= CURIOUS_MS
-    ) {
+    if (last?.category === "research" && Number.isFinite(lastTs) && age(lastTs) <= CURIOUS_MS) {
       return from("curious", "event", "high", last.ts, [last.event_id]);
     }
 
@@ -288,7 +289,11 @@ export function deriveExpressiveChannels(
       const words = withIntent.intent.split(/\s+/).filter(Boolean).slice(0, 4);
       if (words.length > 0) {
         focusBubble = {
-          value: { text: words.join(" "), basis: "event-backed" },
+          value: {
+            text: words.join(" "),
+            basis: "event-backed",
+            ...(withIntent.live_overlay ? { live_overlay: true } : {}),
+          },
           provenance: "event",
           confidence: "high",
           observed_at: withIntent.ts,

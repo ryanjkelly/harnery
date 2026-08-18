@@ -5,7 +5,14 @@ import { join } from "node:path";
 
 import { buildEventV2 } from "../../../src/core/events/v2/builder";
 import { attestationIdV2, eventIdV2, generationIdV2 } from "../../../src/core/events/v2/ids";
-import { readSanitizedTails } from "./scene-source";
+import type { LiveDisplayRowV2 } from "../../../src/core/events/v2/live-feed";
+import {
+  CODEC_SCHEMA_VERSION,
+  type CodecScene,
+  type CodecSourceEvidence,
+  FALLBACK_PACK,
+} from "./contracts";
+import { applyLiveFeedOverlay, readSanitizedTails, stripLiveFeedOverlay } from "./scene-source";
 
 const roots: string[] = [];
 
@@ -80,5 +87,140 @@ describe("Codec V2 ledger tail", () => {
     const rows = await readSanitizedTails([v2Path]);
     expect(rows.map((row) => row.event_id)).toEqual([eventId]);
     expect(rows.map((row) => row.event_type)).toEqual(["session.start"]);
+  });
+});
+
+describe("Codec live-display overlay", () => {
+  test("merges unexpired intent onto matching event ids and strips it for remote", () => {
+    const eventId = eventIdV2();
+    const generationId = generationIdV2();
+    const events: CodecSourceEvidence[] = [
+      {
+        schema_version: 1,
+        event_id: eventId,
+        event_type: "command.start",
+        ts: "2026-08-16T10:00:00.000Z",
+        instance_id: "inst-1",
+        generation_id: generationId,
+        category: "diagnostic",
+        outcome: "started",
+      },
+    ];
+    const overlay: LiveDisplayRowV2 = {
+      format: "harnery-event-v2-live-display",
+      format_version: 1,
+      row_id: "live_11111111-1111-4111-8111-111111111111",
+      generation_id: generationId,
+      event_id: eventId,
+      written_at: "2026-08-16T10:00:00.000Z",
+      expires_at: "2026-08-16T10:15:00.000Z",
+      intent_display: "Inspect the adapter matrix",
+    };
+    const merged = applyLiveFeedOverlay(events, [overlay]);
+    expect(merged[0]).toMatchObject({
+      intent: "Inspect the adapter matrix",
+      live_overlay: true,
+    });
+
+    const scene: CodecScene = {
+      schema_version: CODEC_SCHEMA_VERSION,
+      freshness: {
+        value: "live",
+        provenance: "projection",
+        confidence: "high",
+        observed_at: overlay.written_at,
+      },
+      panels: [
+        {
+          instance_id: "inst-1",
+          identity: { display_name: "Sara" },
+          presence: {
+            value: "online",
+            provenance: "projection",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
+          activity: {
+            value: "working",
+            provenance: "projection",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
+          lifecycle: {
+            value: "active",
+            provenance: "projection",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
+          expression: {
+            value: "focused",
+            provenance: "projection",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
+          attention: {
+            value: "none",
+            provenance: "projection",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
+          context_band: {
+            value: "unknown",
+            provenance: "unknown",
+            confidence: "low",
+            observed_at: overlay.written_at,
+          },
+          progress_rhythm: {
+            value: "unknown",
+            provenance: "unknown",
+            confidence: "low",
+            observed_at: overlay.written_at,
+          },
+          recent_actions: [],
+          focus_bubble: {
+            value: { text: "Inspect the adapter", basis: "event-backed", live_overlay: true },
+            provenance: "event",
+            confidence: "high",
+            observed_at: overlay.written_at,
+          },
+          character: { ...FALLBACK_PACK },
+          updated_at: overlay.written_at,
+        },
+      ],
+      relationships: [],
+      transients: [],
+      team_ambience: {
+        value: "calm",
+        provenance: "projection",
+        confidence: "high",
+        observed_at: overlay.written_at,
+      },
+      generated_at: overlay.written_at,
+    };
+    expect(stripLiveFeedOverlay(scene).panels[0]?.focus_bubble).toBeUndefined();
+    expect(scene.panels[0]?.focus_bubble).toBeDefined();
+  });
+
+  test("ignores overlays that do not match an evidence event id", () => {
+    const events: CodecSourceEvidence[] = [
+      {
+        schema_version: 1,
+        event_id: eventIdV2(),
+        event_type: "command.start",
+        ts: "2026-08-16T10:00:00.000Z",
+        instance_id: "inst-1",
+      },
+    ];
+    const overlay: LiveDisplayRowV2 = {
+      format: "harnery-event-v2-live-display",
+      format_version: 1,
+      row_id: "live_11111111-1111-4111-8111-111111111111",
+      generation_id: generationIdV2(),
+      event_id: eventIdV2(),
+      written_at: "2026-08-16T10:00:00.000Z",
+      expires_at: "2026-08-16T10:15:00.000Z",
+      intent_display: "Should not attach",
+    };
+    expect(applyLiveFeedOverlay(events, [overlay])[0]?.intent).toBeUndefined();
   });
 });

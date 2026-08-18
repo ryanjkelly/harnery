@@ -20,13 +20,22 @@ function hb(overrides: Partial<Heartbeat>): Heartbeat {
   };
 }
 
-function snapshot(active: Heartbeat[], stale: Heartbeat[] = []): AgentsSnapshot {
+function snapshot(
+  active: Heartbeat[],
+  stale: Heartbeat[] = [],
+  terminal: Heartbeat[] = [],
+): AgentsSnapshot {
   return {
     active,
     stale,
-    terminal: [],
+    terminal,
     claims: [],
-    meta: { scanned_dir: "/tmp", count: active.length + stale.length, invalid: [], stale_threshold_seconds: 300 },
+    meta: {
+      scanned_dir: "/tmp",
+      count: active.length + stale.length,
+      invalid: [],
+      stale_threshold_seconds: 300,
+    },
   };
 }
 
@@ -50,7 +59,9 @@ beforeEach(() => {
 describe("projectScene", () => {
   test("cold bootstrap from the snapshot alone renders evidence-safe panels", () => {
     const scene = projectScene({
-      snapshot: snapshot([hb({ task: "Ship the codec view", task_updated_at: "2026-08-16T10:00:00.000Z" })]),
+      snapshot: snapshot([
+        hb({ task: "Ship the codec view", task_updated_at: "2026-08-16T10:00:00.000Z" }),
+      ]),
       events: [],
       now: NOW,
     });
@@ -176,7 +187,10 @@ describe("projectScene", () => {
       events: [],
       now: NOW,
     });
-    expect(stamped.panels[0]?.lifecycle).toMatchObject({ value: "blocked", provenance: "projection" });
+    expect(stamped.panels[0]?.lifecycle).toMatchObject({
+      value: "blocked",
+      provenance: "projection",
+    });
 
     const fromEvent = projectScene({
       snapshot: snapshot([hb({})]),
@@ -219,7 +233,12 @@ describe("projectScene", () => {
     );
     expect(
       rhythm([
-        ev({ event_type: "tool.post_use", ts: "2026-08-16T10:04:40.000Z", category: "edit", outcome: "ok" }),
+        ev({
+          event_type: "tool.post_use",
+          ts: "2026-08-16T10:04:40.000Z",
+          category: "edit",
+          outcome: "ok",
+        }),
       ]),
     ).toBe("in-motion");
     expect(rhythm([ev({ event_type: "turn.stop", ts: "2026-08-16T10:04:55.000Z" })])).toBe(
@@ -235,11 +254,36 @@ describe("projectScene", () => {
     const scene = projectScene({
       snapshot: snapshot([hb({})]),
       events: [
-        ev({ event_type: "tool.post_use", category: "research", outcome: "ok", ts: "2026-08-16T10:01:00.000Z" }),
-        ev({ event_type: "tool.post_use", category: "edit", outcome: "ok", ts: "2026-08-16T10:02:00.000Z" }),
-        ev({ event_type: "command.end", category: "diagnostic", outcome: "error", ts: "2026-08-16T10:03:00.000Z" }),
-        ev({ event_type: "tool.post_use", category: "test", outcome: "ok", ts: "2026-08-16T10:04:00.000Z" }),
-        ev({ event_type: "tool.pre_use", category: "build", outcome: "started", ts: "2026-08-16T10:04:30.000Z" }),
+        ev({
+          event_type: "tool.post_use",
+          category: "research",
+          outcome: "ok",
+          ts: "2026-08-16T10:01:00.000Z",
+        }),
+        ev({
+          event_type: "tool.post_use",
+          category: "edit",
+          outcome: "ok",
+          ts: "2026-08-16T10:02:00.000Z",
+        }),
+        ev({
+          event_type: "command.end",
+          category: "diagnostic",
+          outcome: "error",
+          ts: "2026-08-16T10:03:00.000Z",
+        }),
+        ev({
+          event_type: "tool.post_use",
+          category: "test",
+          outcome: "ok",
+          ts: "2026-08-16T10:04:00.000Z",
+        }),
+        ev({
+          event_type: "tool.pre_use",
+          category: "build",
+          outcome: "started",
+          ts: "2026-08-16T10:04:30.000Z",
+        }),
       ],
       now: NOW,
     });
@@ -250,21 +294,48 @@ describe("projectScene", () => {
 
   test("evidence-backed panel survives a swept heartbeat; noise and stale evidence do not", () => {
     const events = [
-      ev({ event_type: "identity.assumed", identity_name: "Quentin", ts: "2026-08-16T09:00:00.000Z" }),
+      ev({
+        event_type: "identity.assumed",
+        identity_name: "Quentin",
+        ts: "2026-08-16T09:00:00.000Z",
+      }),
       ev({ event_type: "state.task_set", task: "Review fixes", ts: "2026-08-16T09:30:00.000Z" }),
-      ev({ event_type: "tool.pre_use", category: "research", outcome: "started", ts: "2026-08-16T10:03:00.000Z" }),
+      ev({
+        event_type: "tool.pre_use",
+        category: "research",
+        outcome: "started",
+        ts: "2026-08-16T10:03:00.000Z",
+      }),
       // a different instance with only incidental evidence: no panel
-      ev({ event_type: "state.heartbeat", instance_id: "inst-noise", ts: "2026-08-16T10:03:00.000Z" }),
+      ev({
+        event_type: "state.heartbeat",
+        instance_id: "inst-noise",
+        ts: "2026-08-16T10:03:00.000Z",
+      }),
       // a third instance whose evidence is far outside the window: no panel
-      ev({ event_type: "tool.pre_use", instance_id: "inst-old", category: "edit", ts: "2026-08-16T05:00:00.000Z" }),
-      ev({ event_type: "identity.assumed", instance_id: "inst-old", identity_name: "Old", ts: "2026-08-16T05:00:00.000Z" }),
+      ev({
+        event_type: "tool.pre_use",
+        instance_id: "inst-old",
+        category: "edit",
+        ts: "2026-08-16T05:00:00.000Z",
+      }),
+      ev({
+        event_type: "identity.assumed",
+        instance_id: "inst-old",
+        identity_name: "Old",
+        ts: "2026-08-16T05:00:00.000Z",
+      }),
     ];
     const scene = projectScene({ snapshot: snapshot([]), events, now: NOW });
     expect(scene.panels.map((p) => p.identity.display_name)).toEqual(["Quentin"]);
     const q = scene.panels[0];
     if (!q) throw new Error("panel missing");
     // Non-end evidence 2 minutes old: online, event-backed, medium confidence.
-    expect(q.presence).toMatchObject({ value: "online", provenance: "event", confidence: "medium" });
+    expect(q.presence).toMatchObject({
+      value: "online",
+      provenance: "event",
+      confidence: "medium",
+    });
     expect(q.activity).toMatchObject({ value: "working", provenance: "event" });
     expect(q.identity.task?.value).toBe("Review fixes");
 
@@ -299,7 +370,11 @@ describe("projectScene", () => {
     const scene = projectScene({
       snapshot: snapshot([]),
       events: [
-        ev({ event_type: "identity.assumed", identity_name: "Quentin", ts: "2026-08-16T09:50:00.000Z" }),
+        ev({
+          event_type: "identity.assumed",
+          identity_name: "Quentin",
+          ts: "2026-08-16T09:50:00.000Z",
+        }),
         ev({
           event_type: "tool.pre_use",
           category: "research",
@@ -315,7 +390,9 @@ describe("projectScene", () => {
   test("a heartbeat panel is never duplicated by evidence", () => {
     const scene = projectScene({
       snapshot: snapshot([hb({})]),
-      events: [ev({ event_type: "tool.pre_use", category: "research", ts: "2026-08-16T10:03:00.000Z" })],
+      events: [
+        ev({ event_type: "tool.pre_use", category: "research", ts: "2026-08-16T10:03:00.000Z" }),
+      ],
       now: NOW,
     });
     expect(scene.panels).toHaveLength(1);
@@ -362,5 +439,68 @@ describe("projectScene", () => {
 
     const empty = projectScene({ snapshot: snapshot([]), events: [], now: NOW });
     expect(empty.team_ambience.value).toBe("unknown");
+  });
+
+  test("joins parentage through V2 generation ids, not parent_session_id", () => {
+    const parentGen = "gen_11111111-1111-7111-8111-111111111111";
+    const childGen = "gen_22222222-2222-7222-8222-222222222222";
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({ instance_id: "inst-parent", name: "Parent", generation_id: parentGen }),
+        hb({ instance_id: "inst-child", name: "Child", generation_id: childGen }),
+      ]),
+      events: [
+        ev({
+          instance_id: "inst-child",
+          event_type: "session.start",
+          generation_id: childGen,
+          parent_generation_id: parentGen,
+        }),
+        ev({
+          instance_id: "inst-parent",
+          event_type: "subagent.start",
+          generation_id: parentGen,
+          child_generation_id: childGen,
+        }),
+      ],
+      now: NOW,
+    });
+    const child = scene.panels.find((panel) => panel.instance_id === "inst-child");
+    expect(child?.parent_instance_id?.value).toBe("inst-parent");
+  });
+
+  test("terminal ledger snapshots render offline within the evidence window", () => {
+    const scene = projectScene({
+      snapshot: snapshot(
+        [],
+        [],
+        [
+          hb({
+            instance_id: "inst-done",
+            name: "Done",
+            ledger_state: "terminal",
+            last_heartbeat: "2026-08-16T10:00:00.000Z",
+            age_seconds: 300,
+          }),
+        ],
+      ),
+      events: [],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+    expect(scene.panels[0]?.presence.value).toBe("offline");
+    expect(scene.panels[0]?.ledger_state?.value).toBe("terminal");
+  });
+
+  test("recovery-required ledger state presents as recovering", () => {
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({ ledger_state: "recovery-required", last_heartbeat: "2026-08-16T10:04:50.000Z" }),
+      ]),
+      events: [],
+      now: NOW,
+    });
+    expect(scene.panels[0]?.ledger_state?.value).toBe("recovery-required");
+    expect(scene.panels[0]?.expression.value).toBe("recovering");
   });
 });

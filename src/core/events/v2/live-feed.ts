@@ -105,6 +105,39 @@ export function writeLiveDisplayV2(
   return row;
 }
 
+/**
+ * Best-effort overlay write for producers. Never throws: the live feed is
+ * presentation-only and must not fail a durable ledger append.
+ */
+export function tryWriteLiveDisplayV2(
+  coordRoot: string,
+  input: LiveDisplayInputV2,
+  now: () => Date = () => new Date(),
+): LiveDisplayRowV2 | undefined {
+  try {
+    return writeLiveDisplayV2(coordRoot, input, now);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Return every unexpired live-display row across generations. */
+export function listLiveDisplayV2(
+  coordRoot: string,
+  now: () => Date = () => new Date(),
+): LiveDisplayRowV2[] {
+  const root = liveRoot(coordRoot);
+  if (!existsSync(root)) return [];
+  const rows: LiveDisplayRowV2[] = [];
+  for (const name of readdirSync(root)) {
+    if (!name.endsWith(".ndjson")) continue;
+    const generationId = name.slice(0, -".ndjson".length);
+    if (!GENERATION_PATTERN.test(generationId)) continue;
+    rows.push(...readLiveDisplayV2(coordRoot, generationId, now));
+  }
+  return rows;
+}
+
 /** Return only unexpired, structurally valid rows. Expiry is enforced before cleanup. */
 export function readLiveDisplayV2(
   coordRoot: string,

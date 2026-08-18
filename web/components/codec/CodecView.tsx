@@ -428,6 +428,19 @@ function CodecPanel({
             {panel.lifecycle.value}
           </Badge>
         )}
+        {panel.ledger_state?.value === "recovery-required" && (
+          <Badge
+            variant="destructive"
+            title="Ledger state: recovery-required (open spans after the turn closed)"
+          >
+            recovering
+          </Badge>
+        )}
+        {panel.ledger_state?.value === "ending" && (
+          <Badge variant="secondary" title="Ledger state: ending (finalization pending)">
+            ending
+          </Badge>
+        )}
         {offline && (
           <Badge variant="secondary" title="Presence: offline (event-backed)">
             offline
@@ -443,7 +456,11 @@ function CodecPanel({
             {panel.progress_rhythm.value}
           </Badge>
         )}
-        {panel.expression.value !== "neutral" && (
+        {panel.expression.value !== "neutral" &&
+          !(
+            panel.ledger_state?.value === "recovery-required" &&
+            panel.expression.value === "recovering"
+          ) && (
           <Badge
             variant="outline"
             title={`Expression: ${panel.expression.value} (${panel.expression.provenance}, ${panel.expression.confidence} confidence)`}

@@ -11,11 +11,17 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 
 import { coordRoot, readAgents } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 import { readWorkflowChildSessions } from "@/lib/workflow-reader";
 import { readEventV2ControlState } from "../../../src/core/events/v2/control";
+import {
+  EVENT_V2_LIVE_RELATIVE_ROOT,
+  type LiveDisplayRowV2,
+  listLiveDisplayV2,
+} from "../../../src/core/events/v2/live-feed";
 import { readLedgerV2 } from "../../../src/core/events/v2/reader";
 import { eventV2Paths } from "../../../src/core/events/v2/writer";
 
@@ -24,7 +30,7 @@ import { allocateCharacters } from "./packs";
 import { projectScene } from "./projector";
 import { deriveRelationships } from "./relationships";
 import { readRemotePanels } from "./remote-source";
-import { sanitizeLine } from "./sanitize";
+import { sanitizeEvent, sanitizeLine } from "./sanitize";
 import { applySuggestions } from "./suggestions";
 
 /** How much of the log tail to fold. ~1KB/row → a few thousand recent rows. */
@@ -72,9 +78,14 @@ export async function readSanitizedTail(filePath?: string): Promise<CodecSourceE
   const ledger = readLedgerV2(root);
   if (!ledger.complete) return [];
   const rows = ledger.events
-    .map(({ event }) => sanitizeLine(JSON.stringify(event)))
+    .map(({ event }) => sanitizeEvent(event))
     .filter((event): event is CodecSourceEvidence => event !== null);
-  return rows.slice(-Math.max(1, Math.floor(TAIL_BYTES / 1_000)));
+  const sliced = rows.slice(-Math.max(1, Math.floor(TAIL_BYTES / 1_000)));
+  try {
+    return applyLiveFeedOverlay(sliced, listLiveDisplayV2(root));
+  } catch {
+    return sliced;
+  }
 }
 
 export async function readSanitizedTails(filePaths: string[]): Promise<CodecSourceEvidence[]> {
@@ -153,10 +164,56 @@ export async function buildScene(now?: string): Promise<CodecScene> {
 }
 
 export function eventsFilePaths(): string[] {
-  const control = readEventV2ControlState(coordRoot());
+  const root = coordRoot();
+  const control = readEventV2ControlState(root);
   if (control.state === "candidate" || control.state === "active") {
-    const paths = eventV2Paths(coordRoot());
-    return [paths.active, paths.catalog];
+    const paths = eventV2Paths(root);
+    const watched = [paths.active, paths.catalog];
+    const liveRoot = path.join(root, EVENT_V2_LIVE_RELATIVE_ROOT);
+    if (fs.existsSync(liveRoot)) watched.push(liveRoot);
+    return watched;
   }
   return [];
+}
+
+const MAX_OVERLAY_CHARS = 120;
+
+function clampOverlay(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > MAX_OVERLAY_CHARS
+    ? `${trimmed.slice(0, MAX_OVERLAY_CHARS - 1)}…`
+    : trimmed;
+}
+
+/** Attach unexpired live-display intent onto matching evidence event ids. */
+export function applyLiveFeedOverlay(
+  events: readonly CodecSourceEvidence[],
+  overlays: readonly LiveDisplayRowV2[],
+): CodecSourceEvidence[] {
+  const byEvent = new Map<string, LiveDisplayRowV2>();
+  for (const row of overlays) {
+    if (!row.intent_display) continue;
+    byEvent.set(row.event_id, row);
+  }
+  if (byEvent.size === 0) return [...events];
+  return events.map((event) => {
+    const row = byEvent.get(event.event_id);
+    if (!row?.intent_display) return event;
+    const intent = clampOverlay(row.intent_display);
+    if (!intent) return event;
+    return { ...event, intent, live_overlay: true };
+  });
+}
+
+/** Drop every feed-derived display value before relay publication. */
+export function stripLiveFeedOverlay(scene: CodecScene): CodecScene {
+  return {
+    ...scene,
+    panels: scene.panels.map((panel) => {
+      if (!panel.focus_bubble?.value.live_overlay) return panel;
+      const { focus_bubble: _overlay, ...rest } = panel;
+      return rest;
+    }),
+  };
 }

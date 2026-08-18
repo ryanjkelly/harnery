@@ -20,7 +20,6 @@ import type { AgentsSnapshot, Heartbeat } from "@/lib/coord-reader";
 
 import {
   CODEC_SCHEMA_VERSION,
-  FALLBACK_PACK,
   type CodecActivity,
   type CodecContextBand,
   type CodecLifecycle,
@@ -31,6 +30,7 @@ import {
   type CodecScene,
   type CodecSourceEvidence,
   type Confidence,
+  FALLBACK_PACK,
   type Presented,
 } from "./contracts";
 import { deriveExpressiveChannels, type ExpressiveAction } from "./expression";
@@ -67,6 +67,11 @@ interface InstanceEvidence {
   identityName?: string;
   /** Envelope parent_session_id from the newest event carrying one. */
   parentEvidence?: { parent: string; event_id: string; ts: string };
+  /** V2 parent generation from the newest event that linked one. */
+  parentGeneration?: { parent: string; event_id: string; ts: string };
+  generationId?: string;
+  childGenerationId?: string;
+  recovered?: boolean;
   /** Newest accepted event of any type, for evidence-panel recency. */
   lastEventTs?: string;
   /** Activity folded from events with the session-state reducer's table, so a
@@ -87,6 +92,7 @@ const ACTION_TYPES = new Set([
   "tool.post_use_failure",
   "command.start",
   "command.end",
+  "progress.observed",
 ]);
 
 function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, InstanceEvidence> {
@@ -100,6 +106,16 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     if (ev.parent_session_id) {
       slot.parentEvidence = { parent: ev.parent_session_id, event_id: ev.event_id, ts: ev.ts };
     }
+    if (ev.parent_generation_id) {
+      slot.parentGeneration = {
+        parent: ev.parent_generation_id,
+        event_id: ev.event_id,
+        ts: ev.ts,
+      };
+    }
+    if (ev.generation_id) slot.generationId = ev.generation_id;
+    if (ev.child_generation_id) slot.childGenerationId = ev.child_generation_id;
+    if (ev.recovered) slot.recovered = true;
     slot.lastEventTs = ev.ts;
     // Mirror of applySessionStateEvent's evidence table (session-state.ts):
     // starts/stops → idle, prompts/tools → working, input requests →
@@ -118,6 +134,9 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         break;
       case "interaction.input_requested":
         setActivity("needs-input");
+        break;
+      case "interaction.wait_ended":
+        setActivity("working");
         break;
       case "command.start":
         if (
@@ -183,6 +202,7 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         event_id: ev.event_id,
         ts: ev.ts,
         ...(ev.intent ? { intent: ev.intent } : {}),
+        ...(ev.live_overlay ? { live_overlay: true } : {}),
       });
       if (slot.actionsFull.length > ACTIONS_FULL_CAP) slot.actionsFull.shift();
       // `tool.pre_use` opens an action and its post event closes it; the trail
@@ -227,16 +247,18 @@ function presence(
 ): Presented<CodecPresence> {
   // A fresh heartbeat is live evidence and outranks any recorded end: an
   // adapter that restarts without a new session.start row must not render a
-  // living agent offline.
+  // living agent offline. Terminal ledger state is the exception: the
+  // generation has already ended even if a leftover file is still "fresh."
+  if (hb.ledger_state === "terminal") {
+    return present("offline", "projection", "high", hb.last_heartbeat);
+  }
   if (isActive) return present("online", "projection", "high", hb.last_heartbeat);
   const endTs = ms(ev?.lastSessionEnd?.ts);
   const startTs = ms(ev?.lastSessionStart?.ts);
   const endedAfterLastStart =
     Number.isFinite(endTs) && (!Number.isFinite(startTs) || endTs > startTs);
   if (ev?.lastSessionEnd && endedAfterLastStart) {
-    return present("offline", "event", "high", ev.lastSessionEnd.ts, [
-      ev.lastSessionEnd.event_id,
-    ]);
+    return present("offline", "event", "high", ev.lastSessionEnd.ts, [ev.lastSessionEnd.event_id]);
   }
   // A stale heartbeat is absence of evidence, not evidence of absence.
   return present("unknown", "projection", "low", hb.last_heartbeat ?? now);
@@ -321,9 +343,7 @@ function progressRhythm(
     nowMs - stopTs <= WRAPPING_UP_WINDOW_MS &&
     (!Number.isFinite(actionTs) || actionTs <= stopTs)
   ) {
-    return present("wrapping-up", "event", "high", ev.lastTurnStop.ts, [
-      ev.lastTurnStop.event_id,
-    ]);
+    return present("wrapping-up", "event", "high", ev.lastTurnStop.ts, [ev.lastTurnStop.event_id]);
   }
   // just-started: a fresh session/prompt with no action evidence yet.
   if (
@@ -351,10 +371,7 @@ export interface ProjectSceneInputs {
   now?: string;
 }
 
-function staleHeartbeatIsRecentlyEnded(
-  ev: InstanceEvidence | undefined,
-  nowMs: number,
-): boolean {
+function staleHeartbeatIsRecentlyEnded(ev: InstanceEvidence | undefined, nowMs: number): boolean {
   const endTs = ms(ev?.lastSessionEnd?.ts);
   const startTs = ms(ev?.lastSessionStart?.ts);
   if (!ev?.lastSessionEnd || !Number.isFinite(endTs)) return false;
@@ -367,8 +384,35 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const nowMs = ms(now);
   const evidence = foldEvidence(inputs.events);
   const heartbeatName = new Map<string, string>();
-  for (const hb of [...inputs.snapshot.active, ...inputs.snapshot.stale]) {
+  const generationToInstance = new Map<string, string>();
+  const childOf = new Map<string, { parent: string; event_id: string; ts: string }>();
+  for (const hb of [
+    ...inputs.snapshot.active,
+    ...inputs.snapshot.stale,
+    ...inputs.snapshot.terminal,
+  ]) {
     heartbeatName.set(hb.instance_id, hb.name);
+    if (hb.generation_id) generationToInstance.set(hb.generation_id, hb.instance_id);
+  }
+  for (const [instanceId, slot] of evidence) {
+    if (slot.generationId) generationToInstance.set(slot.generationId, instanceId);
+    if (slot.childGenerationId) {
+      const announced = slot.actionsFull[slot.actionsFull.length - 1];
+      childOf.set(slot.childGenerationId, {
+        parent: instanceId,
+        event_id: announced?.event_id ?? `${instanceId}:child`,
+        ts: announced?.ts ?? slot.lastEventTs ?? now,
+      });
+    }
+  }
+  // Prefer the event that carried child_generation_id as the parentage proof.
+  for (const ev of inputs.events) {
+    if (!ev.child_generation_id) continue;
+    childOf.set(ev.child_generation_id, {
+      parent: ev.instance_id,
+      event_id: ev.event_id,
+      ts: ev.ts,
+    });
   }
 
   const panels: CodecPanelScene[] = [];
@@ -382,9 +426,18 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     ...inputs.snapshot.stale
       .filter((hb) => staleHeartbeatIsRecentlyEnded(evidence.get(hb.instance_id), nowMs))
       .map((hb) => ({ hb, isActive: false })),
+    ...inputs.snapshot.terminal
+      .filter((hb) => {
+        const lastTs = ms(hb.last_heartbeat);
+        return Number.isFinite(lastTs) && nowMs - lastTs <= EVIDENCE_PANEL_WINDOW_MS;
+      })
+      .map((hb) => ({ hb, isActive: false })),
   ];
 
+  const paneledFromRows = new Set<string>();
   for (const { hb, isActive } of rows) {
+    if (paneledFromRows.has(hb.instance_id)) continue;
+    paneledFromRows.add(hb.instance_id);
     const ev = evidence.get(hb.instance_id);
     const task = taskLabel(hb, ev);
     const panelActivity = activity(hb);
@@ -420,6 +473,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       character: { ...FALLBACK_PACK },
       updated_at: hb.last_heartbeat,
     };
+    applyLedgerPresentation(panel, hb, ev);
     panels.push(panel);
   }
 
@@ -433,8 +487,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     if (!Number.isFinite(lastTs) || nowMs - lastTs > EVIDENCE_PANEL_WINDOW_MS) continue;
     const hasWork = Boolean(ev.lastTaskSet || ev.lastPrompt || ev.actionsFull.length > 0);
     const endTs = ms(ev.lastSessionEnd?.ts);
-    const ended =
-      ev.lastSessionEnd !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
+    const ended = ev.lastSessionEnd !== undefined && Number.isFinite(endTs) && endTs >= lastTs;
     if (!hasWork && !ended) continue;
     // Quiet leftovers are not live Codec tiles. Non-ended evidence older than
     // the online window used to render as presence=unknown and refill the grid.
@@ -472,7 +525,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
           ])
         : undefined;
     const fallbackTs = ev.lastEventTs ?? now;
-    panels.push({
+    const evidencePanel: CodecPanelScene = {
       instance_id: instanceId,
       identity: {
         display_name: ev.identityName ?? heartbeatName.get(instanceId) ?? instanceId.slice(0, 8),
@@ -493,21 +546,23 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
       character: { ...FALLBACK_PACK },
       updated_at: fallbackTs,
-    });
+    };
+    applyLedgerPresentation(evidencePanel, undefined, ev);
+    panels.push(evidencePanel);
     paneled.add(instanceId);
   }
 
-  // Parentage (plan phase 3, "parentage first"): the envelope's
-  // parent_session_id is authoritative. The relationship is shown only when
-  // the join can be proved against another rendered panel — a parent outside
-  // the scene is omitted, never guessed. Adapter sessions carry the same id
-  // in session_id and instance_id, so panel instance ids are the join key.
+  // Parentage: join V2 generation ids first. A child's parent_generation_id
+  // or a parent's child_generation_id maps onto another rendered panel's
+  // instance. Legacy parent_session_id remains a fallback for DTO fixtures.
+  // A parent outside the scene is omitted, never guessed.
   const panelIds = new Set(panels.map((p) => p.instance_id));
   for (const panel of panels) {
-    const parentEvidence = evidence.get(panel.instance_id)?.parentEvidence;
-    if (parentEvidence && panelIds.has(parentEvidence.parent)) {
-      panel.parent_instance_id = present(parentEvidence.parent, "event", "high", parentEvidence.ts, [
-        parentEvidence.event_id,
+    const slot = evidence.get(panel.instance_id);
+    const resolved = resolveParentInstance(panel.instance_id, slot, generationToInstance, childOf);
+    if (resolved && panelIds.has(resolved.parent) && resolved.parent !== panel.instance_id) {
+      panel.parent_instance_id = present(resolved.parent, "event", "high", resolved.ts, [
+        resolved.event_id,
       ]);
     }
   }
@@ -550,9 +605,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
           ? "busy"
           : "calm";
 
-  const lastEvent = inputs.events.length
-    ? inputs.events[inputs.events.length - 1]
-    : undefined;
+  const lastEvent = inputs.events.length ? inputs.events[inputs.events.length - 1] : undefined;
 
   return {
     schema_version: CODEC_SCHEMA_VERSION,
@@ -569,4 +622,49 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
 /** Test seam: clear the presentation-only band memory between cases. */
 export function __resetContextBandMemory(): void {
   lastBandByInstance.clear();
+}
+
+function applyLedgerPresentation(
+  panel: CodecPanelScene,
+  hb: Heartbeat | undefined,
+  ev: InstanceEvidence | undefined,
+): void {
+  const state = hb?.ledger_state;
+  if (state) {
+    panel.ledger_state = present(state, "projection", "high", hb.last_heartbeat);
+  }
+  if (state === "recovery-required" || ev?.recovered) {
+    panel.expression = present(
+      "recovering",
+      state === "recovery-required" ? "projection" : "event",
+      "high",
+      hb?.last_heartbeat ?? ev?.lastEventTs ?? panel.updated_at,
+    );
+  }
+}
+
+function resolveParentInstance(
+  instanceId: string,
+  slot: InstanceEvidence | undefined,
+  generationToInstance: Map<string, string>,
+  childOf: Map<string, { parent: string; event_id: string; ts: string }>,
+): { parent: string; event_id: string; ts: string } | undefined {
+  if (slot?.parentGeneration) {
+    const parent = generationToInstance.get(slot.parentGeneration.parent);
+    if (parent && parent !== instanceId) {
+      return {
+        parent,
+        event_id: slot.parentGeneration.event_id,
+        ts: slot.parentGeneration.ts,
+      };
+    }
+  }
+  if (slot?.generationId) {
+    const fromChild = childOf.get(slot.generationId);
+    if (fromChild && fromChild.parent !== instanceId) return fromChild;
+  }
+  if (slot?.parentEvidence && slot.parentEvidence.parent !== instanceId) {
+    return slot.parentEvidence;
+  }
+  return undefined;
 }

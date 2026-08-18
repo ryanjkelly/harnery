@@ -82,6 +82,16 @@ export interface CodecSourceEvidence {
   instance_id: string;
   session_id?: string;
   parent_session_id?: string;
+  /** V2 generation that produced this row; used to join parentage. */
+  generation_id?: string;
+  /** Child's link to the parent generation; never stuffed into parent_session_id. */
+  parent_generation_id?: string;
+  /** Parent's announced child generation from agent.started / delegated. */
+  child_generation_id?: string;
+  /** True when the live-display feed supplied this row's intent overlay. */
+  live_overlay?: boolean;
+  /** True when a recovery block or lifecycle.recovered was observed. */
+  recovered?: boolean;
   /** Tool/command name only, never inputs or outputs. */
   tool_name?: string;
   /** Normalized action category when the event is an action. */
@@ -119,8 +129,15 @@ export interface CodecPanelScene {
   context_band: Presented<CodecContextBand>;
   progress_rhythm: Presented<CodecProgressRhythm>;
   recent_actions: CodecRecentAction[];
-  focus_bubble?: Presented<{ text: string; basis: "event-backed" | "inferred" }>;
+  focus_bubble?: Presented<{
+    text: string;
+    basis: "event-backed" | "inferred";
+    /** Present only when the bubble text came from the local live-display feed. */
+    live_overlay?: boolean;
+  }>;
   parent_instance_id?: Presented<string>;
+  /** V2 ledger lifecycle for this generation, when the snapshot carries it. */
+  ledger_state?: Presented<"live" | "ending" | "recovery-required" | "terminal">;
   character: { pack_id: string; pack_version: string };
   updated_at: string;
 }

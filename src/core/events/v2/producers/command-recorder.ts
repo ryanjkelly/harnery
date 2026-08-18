@@ -24,6 +24,7 @@ import type { EventV2 } from "../contract.ts";
 import { type EventV2WriteMode, readEventV2ControlState } from "../control.ts";
 import { fingerprintContextV2 } from "../fingerprint-keys.ts";
 import { clockIdV2, spanIdV2 } from "../ids.ts";
+import { tryWriteLiveDisplayV2 } from "../live-feed.ts";
 import { assertEventV2, validateEventV2 } from "../validate.ts";
 import {
   EVENT_V2_LEDGER_RELATIVE_ROOT,
@@ -139,6 +140,7 @@ export function recordCommandSignalV2(
       state.pending = undefined;
       publishCommandState(path, state);
       if (pending.source_id === sourceId) {
+        maybeWriteCommandLiveDisplay(input.coordRoot, pending.event, input.observation);
         return { state: "recorded", event: pending.event, durability, recovered: true };
       }
       recovered = true;
@@ -194,6 +196,7 @@ export function recordCommandSignalV2(
     applyCommandEvent(state, sourceId, event);
     state.pending = undefined;
     publishCommandState(path, state);
+    maybeWriteCommandLiveDisplay(input.coordRoot, event, input.observation);
     return { state: "recorded", event, durability, recovered };
   } finally {
     lease.release();
@@ -515,4 +518,21 @@ function pidIsAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
+}
+
+function maybeWriteCommandLiveDisplay(
+  coordRoot: string,
+  event: EventV2,
+  observation: CommandObservationV2,
+): void {
+  if (event.event_type !== "command.started") return;
+  if (!("generation_id" in event.scope)) return;
+  const intent = observation.intent;
+  if (typeof intent !== "string" || intent.length === 0) return;
+  tryWriteLiveDisplayV2(coordRoot, {
+    generation_id: event.scope.generation_id,
+    event_id: event.event_id,
+    executable: event.payload.executable,
+    intent_display: intent,
+  });
 }

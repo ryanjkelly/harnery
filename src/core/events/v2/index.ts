@@ -132,8 +132,10 @@ export {
   type LiveDisplayInputV2,
   type LiveDisplayJanitorResultV2,
   type LiveDisplayRowV2,
+  listLiveDisplayV2,
   readLiveDisplayV2,
   safeIntentDisplayV2,
+  tryWriteLiveDisplayV2,
   writeLiveDisplayV2,
 } from "./live-feed.ts";
 export {

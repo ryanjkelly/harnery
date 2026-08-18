@@ -15,6 +15,7 @@ import {
 } from "../control.ts";
 import { loadOrCreateFingerprintKeyStoreV2 } from "../fingerprint-keys.ts";
 import { EVENT_V2_SCHEMA_DIGEST } from "../generated.ts";
+import { listLiveDisplayV2 } from "../live-feed.ts";
 import { readActiveLedgerV2 } from "../reader.ts";
 import { eventV2Paths } from "../writer.ts";
 import { closeAbandonedCommandSpansV2, recordCommandSignalV2 } from "./command-recorder.ts";
@@ -95,6 +96,30 @@ describe("event ledger V2 persistent session-tee recorder", () => {
     expect(allPrivateAndDurable).not.toContain(secret);
     expect(allPrivateAndDurable).not.toContain("cmd-native-1");
     expect(allPrivateAndDurable).not.toContain("rendered");
+    expect(JSON.stringify(listLiveDisplayV2(root))).not.toContain(secret);
+  });
+
+  test("writes scrubbed command intent to the live-display overlay", () => {
+    const root = startedTurnRoot();
+    const start = recordCommandSignalV2({
+      ...commandInput(root, "command-start"),
+      observation: {
+        native_command_id: "cmd-native-1",
+        argv: ["rg", "ledger"],
+        intent: "Inspect current ledger activity",
+        executable: "rg",
+        intent_kind: "research",
+        sensitive_argument_count: 0,
+      },
+    });
+    expect(start.state).toBe("recorded");
+    const overlay = listLiveDisplayV2(root);
+    expect(overlay).toHaveLength(1);
+    expect(overlay[0]?.intent_display).toBe("Inspect current ledger activity");
+    expect(overlay[0]?.executable).toBe("rg");
+    if (start.state === "recorded") {
+      expect(overlay[0]?.event_id).toBe(start.event.event_id);
+    }
   });
 
   test("replays the exact pending output event after a producer crash", () => {

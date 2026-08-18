@@ -6,6 +6,7 @@ import { eventIdV2, generationIdV2 } from "./ids.ts";
 import {
   EVENT_V2_LIVE_RELATIVE_ROOT,
   janitorLiveDisplayV2,
+  listLiveDisplayV2,
   readLiveDisplayV2,
   safeIntentDisplayV2,
   writeLiveDisplayV2,
@@ -103,6 +104,35 @@ describe("event ledger V2 ephemeral live display", () => {
         ttl_ms: 60 * 60 * 1_000 + 1,
       }),
     ).toThrow("between 1 ms and 1 hour");
+  });
+
+  test("lists unexpired rows across generations and skips invalid filenames", () => {
+    const root = temporaryRoot("event-v2-live-list");
+    const first = generationIdV2();
+    const second = generationIdV2();
+    writeLiveDisplayV2(
+      root,
+      {
+        generation_id: first,
+        event_id: eventIdV2(),
+        intent_display: "Inspect first generation",
+      },
+      () => new Date("2026-08-16T12:00:00.000Z"),
+    );
+    writeLiveDisplayV2(
+      root,
+      {
+        generation_id: second,
+        event_id: eventIdV2(),
+        intent_display: "Inspect second generation",
+      },
+      () => new Date("2026-08-16T12:00:00.000Z"),
+    );
+    const listed = listLiveDisplayV2(root, () => new Date("2026-08-16T12:01:00.000Z"));
+    expect(listed.map((row) => row.intent_display).sort()).toEqual([
+      "Inspect first generation",
+      "Inspect second generation",
+    ]);
   });
 });
 

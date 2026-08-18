@@ -24,12 +24,16 @@ const BASE = {
 /** Sentinels that must never survive sanitization. */
 const SECRET_PROMPT = "SENTINEL_PROMPT_BODY";
 const SECRET_INPUT = "SENTINEL_TOOL_INPUT";
-const SECRET_OUTPUT = "SENTINEL_TOOL_OUTPUT";
-const SECRET_ERROR = "SENTINEL_ERROR_BODY";
-const SECRET_CMD = "SENTINEL_COMMAND_BODY";
 
 describe("sanitizeEvent", () => {
-  test("drops unknown event types and unsupported schema versions", () => {
+  test("drops V1 canonical rows, unknown types, and unsupported schema versions", () => {
+    expect(
+      sanitizeEvent({
+        ...BASE,
+        event_type: "tool.pre_use",
+        data: { tool_name: "Read", intent: "read the schema" },
+      }),
+    ).toBeNull();
     expect(
       sanitizeEvent({ ...BASE, event_type: "council.contribution", data: { body_summary: "x" } }),
     ).toBeNull();
@@ -38,106 +42,6 @@ describe("sanitizeEvent", () => {
     ).toBeNull();
     expect(sanitizeEvent(null)).toBeNull();
     expect(sanitizeEvent("row")).toBeNull();
-  });
-
-  test("tool events keep name/category/outcome and drop inputs and outputs", () => {
-    const pre = sanitizeEvent({
-      ...BASE,
-      event_type: "tool.pre_use",
-      data: { tool_name: "Read", tool_input: SECRET_INPUT, intent: "read the schema" },
-    });
-    expect(pre).toMatchObject({
-      tool_name: "Read",
-      category: "research",
-      outcome: "started",
-      intent: "read the schema",
-    });
-
-    const post = sanitizeEvent({
-      ...BASE,
-      event_type: "tool.post_use",
-      data: { tool_name: "Edit", output_summary: SECRET_OUTPUT, exit_status: "error" },
-    });
-    expect(post).toMatchObject({ tool_name: "Edit", category: "edit", outcome: "error" });
-
-    const failure = sanitizeEvent({
-      ...BASE,
-      event_type: "tool.post_use_failure",
-      data: { tool_name: "Bash", error: SECRET_ERROR, duration_ms: 5 },
-    });
-    expect(failure).toMatchObject({ tool_name: "Bash", category: "diagnostic", outcome: "error" });
-
-    for (const evidence of [pre, post, failure]) {
-      expect(JSON.stringify(evidence)).not.toContain("SENTINEL");
-    }
-  });
-
-  test("prompts and commands cross as envelope-only / bounded-intent evidence", () => {
-    const prompt = sanitizeEvent({
-      ...BASE,
-      event_type: "user_prompt.submit",
-      data: { prompt_text: SECRET_PROMPT },
-    });
-    expect(prompt).not.toBeNull();
-    expect(JSON.stringify(prompt)).not.toContain(SECRET_PROMPT);
-
-    const command = sanitizeEvent({
-      ...BASE,
-      event_type: "command.start",
-      data: { cmd_id: "c1", cmd: SECRET_CMD, intent: "check peers" },
-    });
-    expect(command).toMatchObject({
-      category: "diagnostic",
-      outcome: "started",
-      intent: "check peers",
-    });
-    expect(JSON.stringify(command)).not.toContain(SECRET_CMD);
-  });
-
-  test("labels are clamped to the bounded length", () => {
-    const long = "x".repeat(500);
-    const taskSet = sanitizeEvent({
-      ...BASE,
-      event_type: "state.task_set",
-      data: { task: long, cleared: false },
-    });
-    expect(taskSet?.task?.length).toBeLessThanOrEqual(120);
-  });
-
-  test("context, task state, and identity lift only their allowed scalars", () => {
-    const ctx = sanitizeEvent({
-      ...BASE,
-      event_type: "context.sampled",
-      data: { used_percent: 71, confidence: "reported", model: "m", used_tokens: 1 },
-    });
-    expect(ctx).toMatchObject({ used_percent: 71, context_confidence: "reported" });
-    expect(JSON.stringify(ctx)).not.toContain("used_tokens");
-
-    const state = sanitizeEvent({
-      ...BASE,
-      event_type: "state.task_state",
-      data: { state: "blocked", reason: "waiting on a docket ruling about credentials" },
-    });
-    expect(state).toMatchObject({ task_state: "blocked" });
-    expect(JSON.stringify(state)).not.toContain("docket ruling");
-
-    const identity = sanitizeEvent({
-      ...BASE,
-      event_type: "identity.assumed",
-      data: { name: "Sara", agent_id: "a1" },
-    });
-    expect(identity).toMatchObject({ identity_name: "Sara" });
-  });
-
-  test("state.ping lifts the recipient id and drops the message body", () => {
-    const ping = sanitizeEvent({
-      ...BASE,
-      event_type: "state.ping",
-      data: { peer_instance_id: "inst-2", peer_name: "Tony", body_summary: SECRET_PROMPT },
-    });
-    expect(ping).toMatchObject({ ping_to: "inst-2" });
-    expect(JSON.stringify(ping)).not.toContain(SECRET_PROMPT);
-    expect(JSON.stringify(ping)).not.toContain("Tony");
   });
 
   test("sanitizeLine drops malformed rows silently", () => {
@@ -222,6 +126,121 @@ describe("sanitizeEvent", () => {
     });
   });
 
+  test("does not treat command intent_kind as operator-visible intent", () => {
+    const command = sanitizeEvent(
+      v2Event(
+        "command.started",
+        {
+          executable: "rg",
+          executable_class: "cli",
+          exact_command: fixtureFingerprint("argv"),
+          intent_kind: "build",
+          intent_length: 12,
+          sensitive_argument_count: 0,
+        },
+        { tool: true },
+      ),
+    );
+    expect(command).toMatchObject({
+      event_type: "command.start",
+      category: "diagnostic",
+      outcome: "started",
+    });
+    expect(command?.intent).toBeUndefined();
+    expect(JSON.stringify(command)).not.toContain("build");
+  });
+
+  test("maps waits, recovery, subject instance, and generation parentage", () => {
+    const parentGen = generationId;
+    const childGen = generationIdV2();
+    const wait = sanitizeEvent(
+      v2Event("interaction.wait_started", { wait_id: "wait_perm", kind: "permission" }),
+    );
+    expect(wait).toMatchObject({ event_type: "interaction.input_requested" });
+
+    const waitEnded = sanitizeEvent(
+      v2Event("interaction.wait_ended", { wait_id: "wait_perm", outcome: "succeeded" }),
+    );
+    expect(waitEnded).toMatchObject({ event_type: "interaction.wait_ended" });
+
+    const progress = sanitizeEvent(
+      v2Event("progress.observed", {
+        kind: "write",
+        evidence_event_ids: [eventIdV2()],
+        reducer_build_id: "build_fixture",
+      }),
+    );
+    expect(progress).toMatchObject({
+      event_type: "progress.observed",
+      category: "edit",
+      outcome: "ok",
+    });
+
+    const childStart = sanitizeEvent(
+      v2Event("session.started", startedPayload(), {
+        instanceId: "inst_child",
+        parentGenerationId: parentGen,
+        generationId: childGen,
+      }),
+    );
+    expect(childStart).toMatchObject({
+      event_type: "session.start",
+      instance_id: "inst_child",
+      generation_id: childGen,
+      parent_generation_id: parentGen,
+    });
+    expect(childStart?.parent_session_id).toBeUndefined();
+
+    const delegated = sanitizeEvent(
+      v2Event("agent.started", {
+        delegation_id: `del_${generationIdV2().slice(4)}`,
+        child_generation_id: childGen,
+        role: "explore",
+      }),
+    );
+    expect(delegated).toMatchObject({
+      event_type: "subagent.start",
+      child_generation_id: childGen,
+    });
+
+    const recovered = sanitizeEvent(
+      v2Event("lifecycle.recovered", {
+        subject_instance_id: "inst_subject",
+        recovery_kind: "span_salvage",
+        new_digest: `sha256:${"a".repeat(64)}`,
+      }),
+    );
+    expect(recovered).toMatchObject({
+      instance_id: "inst_subject",
+      recovered: true,
+    });
+
+    const staleTerm = sanitizeEvent(
+      v2Event("session.termination_observed", {
+        observation: "stale",
+        observer_instance_id: "inst_fixture",
+        subject_instance_id: "inst_subject",
+        provisional: true,
+        reason: "idle_timeout",
+      }),
+    );
+    expect(staleTerm).toBeNull();
+
+    const killed = sanitizeEvent(
+      v2Event("session.termination_observed", {
+        observation: "killed",
+        observer_instance_id: "inst_fixture",
+        subject_instance_id: "inst_subject",
+        provisional: true,
+        reason: "host_killed",
+      }),
+    );
+    expect(killed).toMatchObject({
+      event_type: "session.end",
+      instance_id: "inst_subject",
+    });
+  });
+
   test("rejects V2 lookalikes, unknown digests, and forbidden extra payload fields", () => {
     expect(
       sanitizeEvent({
@@ -260,7 +279,22 @@ describe("categorizeTool", () => {
 const generationId = generationIdV2();
 const attestationId = attestationIdV2();
 
-function v2Event(eventType: EventTypeV2, payload: Record<string, unknown>, tool = false) {
+function v2Event(
+  eventType: EventTypeV2,
+  payload: Record<string, unknown>,
+  opts:
+    | boolean
+    | {
+        tool?: boolean;
+        instanceId?: string;
+        parentGenerationId?: string;
+        generationId?: string;
+      } = false,
+) {
+  const options = typeof opts === "boolean" ? { tool: opts } : opts;
+  const tool = options.tool === true;
+  const instanceId = options.instanceId ?? "inst_fixture";
+  const eventGenerationId = options.generationId ?? generationId;
   const eventId = eventIdV2();
   const boundPayload =
     eventType === "session.started"
@@ -268,10 +302,16 @@ function v2Event(eventType: EventTypeV2, payload: Record<string, unknown>, tool 
           ...payload,
           runtime_attestation: {
             ...(payload.runtime_attestation as Record<string, unknown>),
+            generation_id: eventGenerationId,
             declared_by_event_id: eventId,
           },
         }
       : payload;
+  const needsTurn =
+    tool ||
+    eventType.startsWith("command.") ||
+    eventType === "tool.requested" ||
+    eventType === "tool.completed";
   return buildEventV2(eventType, {
     event_id: eventId,
     producer: {
@@ -284,13 +324,17 @@ function v2Event(eventType: EventTypeV2, payload: Record<string, unknown>, tool 
     },
     scope: {
       root_id: "root_fixture",
-      instance_id: "inst_fixture",
+      instance_id: instanceId,
       session_id: `sid_${"a".repeat(64)}`,
-      generation_id: generationId,
-      ...(tool ? { turn_id: `tid_${"b".repeat(64)}` } : {}),
+      generation_id: eventGenerationId,
+      ...(needsTurn ? { turn_id: `tid_${"b".repeat(64)}` } : {}),
     },
     attestation_id: attestationId,
-    links: { caused_by: [], ...(tool ? { span_id: spanIdV2() } : {}) },
+    links: {
+      caused_by: [],
+      ...(needsTurn ? { span_id: spanIdV2() } : {}),
+      ...(options.parentGenerationId ? { parent_generation_id: options.parentGenerationId } : {}),
+    },
     provenance: {
       source_event: "fixture.codec",
       // Native mirrors production hook tool events; ADR 0078 forbids derived
@@ -300,8 +344,8 @@ function v2Event(eventType: EventTypeV2, payload: Record<string, unknown>, tool 
       attribution: {
         method: "explicit_argument",
         state: "verified",
-        observer_instance_id: "inst_fixture",
-        subject_instance_id: "inst_fixture",
+        observer_instance_id: instanceId,
+        subject_instance_id: instanceId,
       },
     },
     observed_at: "2026-08-16T10:00:00.000Z",
