@@ -52,6 +52,8 @@ describe("event ledger V3 economics projection", () => {
       },
       inference_ms: { state: "observed", value_ms: 100 },
       harness_ms: { state: "observed", value_ms: 10 },
+      slowest_hook: "stop",
+      slowest_hook_ms: 10,
       cost: { state: "observed", usd: 0.00021, pricing_key: "openai/gpt-fixture" },
     });
     expect(projection.generations).toEqual([
@@ -174,7 +176,12 @@ function setEconomics(
     method: "native_payload",
   });
   payload.inference = observed({ api_time_ms: values.inference, request_count: 1 });
-  payload.harness = observed({ hook_time_ms: values.harness, hook_count: 1 });
+  payload.harness = observed({
+    hook_time_ms: values.harness,
+    hook_count: 1,
+    slowest_hook: "stop",
+    slowest_hook_ms: values.harness,
+  });
 }
 
 function setScope(event: EventV3Fixture, generationId: string, turnId?: string): void {

@@ -19790,6 +19790,10 @@
                         "slowest_hook": {
                           "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$",
                           "type": "string"
+                        },
+                        "slowest_hook_ms": {
+                          "minimum": 0,
+                          "type": "integer"
                         }
                       }
                     },

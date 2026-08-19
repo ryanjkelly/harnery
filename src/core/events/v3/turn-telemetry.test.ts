@@ -66,12 +66,18 @@ describe("event ledger V3 turn telemetry", () => {
     const second = recordHarnessTimingV3(first, "Session Start", 30.2);
     expect(harnessObservationV3(second)).toEqual({
       state: "observed",
-      value: { hook_time_ms: 42, hook_count: 2, slowest_hook: "Session_Start" },
+      value: {
+        hook_time_ms: 42,
+        hook_count: 2,
+        slowest_hook: "Session_Start",
+        slowest_hook_ms: 30,
+      },
       attestation: "derived",
       confidence: "high",
     });
-    expect(harnessObservationV3(emptyHarnessTimingV3())).toMatchObject({
+    expect(harnessObservationV3(emptyHarnessTimingV3())).toEqual({
       state: "expected_but_missing",
+      capability: "harness_timing",
       reason: "no_hook_timing_samples",
     });
   });

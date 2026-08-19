@@ -14,7 +14,12 @@ describe("event ledger V3 latency projection", () => {
     const turnPayload = fixtureObject(turn.payload);
     turnPayload.tool_call_count = observed(2);
     turnPayload.inference = observed({ api_time_ms: 50, request_count: 1 });
-    turnPayload.harness = observed({ hook_time_ms: 20, hook_count: 4 });
+    turnPayload.harness = observed({
+      hook_time_ms: 20,
+      hook_count: 4,
+      slowest_hook: "pre-tool-use",
+      slowest_hook_ms: 9,
+    });
 
     const toolOne = terminal("tool.completed", 2, "2026-08-18T14:00:00.000Z", 600);
     const command = terminal("command.completed", 3, "2026-08-18T14:00:00.100Z", 200);
@@ -43,6 +48,8 @@ describe("event ledger V3 latency projection", () => {
       occupied_ms: { state: "observed", value_ms: 900 },
       inference_ms: { state: "observed", value_ms: 50 },
       harness_ms: { state: "observed", value_ms: 20 },
+      slowest_hook: "pre-tool-use",
+      slowest_hook_ms: 9,
       residual_ms: { state: "observed", value_ms: 30 },
       over_attributed_ms: 0,
       context_percent: 50,

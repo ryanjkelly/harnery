@@ -73,7 +73,15 @@ describe("event ledger V3 hook producer", () => {
     expect(event?.payload).toMatchObject({
       usage: { state: "observed", value: { input_tokens: 80, output_tokens: 20 } },
       inference: { state: "observed", value: { api_time_ms: 420 } },
-      harness: { state: "observed", value: { hook_time_ms: 17, hook_count: 1 } },
+      harness: {
+        state: "observed",
+        value: {
+          hook_time_ms: 17,
+          hook_count: 1,
+          slowest_hook: "Stop",
+          slowest_hook_ms: 17,
+        },
+      },
       ritual: {
         status_box_present: { state: "observed", value: true },
         status_box_present_strict: { state: "observed", value: false },

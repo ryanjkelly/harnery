@@ -337,7 +337,12 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(terminal.payload.tool_call_count).toMatchObject({ state: "observed", value: 3 });
     expect(terminal.payload.harness).toMatchObject({
       state: "observed",
-      value: { hook_time_ms: 18, hook_count: 3 },
+      value: {
+        hook_time_ms: 18,
+        hook_count: 3,
+        slowest_hook: "UserPromptSubmit",
+        slowest_hook_ms: 7,
+      },
     });
     expect(
       new Set(
@@ -646,6 +651,24 @@ describe("event ledger V3 persistent hook recorder", () => {
       hook_count: 3,
       slowest_hook: "PreToolUse",
       slowest_hook_ms: 30,
+    });
+
+    recordHookSignalV3({
+      ...baseInput(root, "stop", parsed({ session_id: nativeSession, turn_id: "turn-timing" })),
+      hook_name: "Stop",
+      hook_duration_ms: 9.2,
+    });
+    const terminal = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "turn.completed");
+    expect(terminal?.event_type === "turn.completed" && terminal.payload.harness).toMatchObject({
+      state: "observed",
+      value: {
+        hook_time_ms: 56,
+        hook_count: 4,
+        slowest_hook: "PreToolUse",
+        slowest_hook_ms: 30,
+      },
     });
   });
 

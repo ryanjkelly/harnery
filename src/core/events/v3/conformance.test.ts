@@ -106,6 +106,28 @@ describe("event ledger V3 conformance fixtures", () => {
       "/payload/span/duration_ms:clock_regression_must_be_missing",
     );
   });
+
+  test("accepts bounded slowest-hook timing and rejects contradictory durations", () => {
+    const baseline = fixtureFor("turn.completed");
+    const harness = object(object(object(baseline.payload).harness).value);
+    harness.hook_time_ms = 25_816;
+    harness.hook_count = 17;
+    harness.slowest_hook = "pre-tool-use";
+    harness.slowest_hook_ms = 4_113;
+    expect(validateEventV3(baseline).issues).toEqual([]);
+
+    const tooLarge = structuredClone(baseline);
+    object(object(object(tooLarge.payload).harness).value).slowest_hook_ms = 25_817;
+    expect(validateEventV3(tooLarge).issues).toContain(
+      "/payload/harness/value/slowest_hook_ms:must_not_exceed_hook_time",
+    );
+
+    const unnamed = structuredClone(baseline);
+    delete object(object(object(unnamed.payload).harness).value).slowest_hook;
+    expect(validateEventV3(unnamed).issues).toContain(
+      "/payload/harness/value/slowest_hook:required_with_duration",
+    );
+  });
 });
 
 type Fixture = Record<string, unknown>;

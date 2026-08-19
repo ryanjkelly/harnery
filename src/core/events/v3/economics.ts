@@ -38,6 +38,8 @@ export interface TurnEconomicsV3 {
   tokens: TokenTotalsMetricV3;
   inference_ms: LatencyMetricV3;
   harness_ms: LatencyMetricV3;
+  slowest_hook: string | null;
+  slowest_hook_ms: number | null;
   cost: CostMetricV3;
 }
 
@@ -97,6 +99,7 @@ export function projectEconomicsV3(
     if (event.event_type !== "turn.completed") continue;
     const tokens = tokensFromObservation(event.payload.usage);
     const model = generationId ? (models.get(generationId) ?? null) : null;
+    const slowestHook = slowestHookFromObservation(event.payload.harness);
     turns.push({
       generation_id: generationId ?? "",
       turn_id: event.scope.turn_id ?? "",
@@ -110,6 +113,8 @@ export function projectEconomicsV3(
         "inference_unknown",
       ),
       harness_ms: timingFromObservation(event.payload.harness, "hook_time_ms", "harness_unknown"),
+      slowest_hook: slowestHook.name,
+      slowest_hook_ms: slowestHook.duration_ms,
       cost: costForTurn(tokens, model, options.pricing),
     });
   }
@@ -250,6 +255,20 @@ function timingFromObservation(value: unknown, field: string, fallback: string):
   return observation.state === "observed" && nonnegative(fieldValue)
     ? { state: "observed", value_ms: fieldValue as number }
     : { state: "unknown", known_ms: 0, reasons: [observationReason(value) || fallback] };
+}
+
+function slowestHookFromObservation(value: unknown): {
+  name: string | null;
+  duration_ms: number | null;
+} {
+  const observation = record(value);
+  if (observation.state !== "observed") return { name: null, duration_ms: null };
+  const harness = record(observation.value);
+  const name = string(harness.slowest_hook);
+  const duration = harness.slowest_hook_ms;
+  return name && nonnegative(duration) && Number.isSafeInteger(duration)
+    ? { name, duration_ms: duration as number }
+    : { name: null, duration_ms: null };
 }
 
 function costForTurn(

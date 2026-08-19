@@ -137,7 +137,12 @@ export function harnessObservationV3(
         value: {
           hook_time_ms: accumulator.hook_time_ms,
           hook_count: accumulator.hook_count,
-          ...(accumulator.slowest_hook ? { slowest_hook: accumulator.slowest_hook } : {}),
+          ...(accumulator.slowest_hook
+            ? {
+                slowest_hook: accumulator.slowest_hook,
+                slowest_hook_ms: accumulator.slowest_hook_ms,
+              }
+            : {}),
         },
         attestation: "derived",
         confidence: "high",

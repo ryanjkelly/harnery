@@ -60,6 +60,7 @@ export const TurnHarnessV3Schema = StrictObject({
   hook_time_ms: Type.Integer({ minimum: 0 }),
   hook_count: Type.Integer({ minimum: 0 }),
   slowest_hook: Type.Optional(SafeToken),
+  slowest_hook_ms: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 
 export const WaitKindV3Schema = Type.Union([

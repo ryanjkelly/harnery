@@ -66,6 +66,22 @@ describe("event ledger V3 additive schema advances", () => {
     });
   });
 
+  test("classifies the slowest-hook duration as an additive in-place advance", () => {
+    const prior = structuredClone(EventV3Schema) as TSchema;
+    const payload = eventBranch(prior, "turn.completed").properties.payload as TObject;
+    const harness = payload.properties.harness as unknown as { anyOf: TObject[] };
+    const observed = harness.anyOf.find(({ properties }) => properties.state.const === "observed");
+    if (!observed) throw new Error("turn harness observation has no observed branch");
+    const value = observed.properties.value as TObject;
+    delete value.properties.slowest_hook_ms;
+
+    expect(validateAdditiveSchemaAdvanceV3(prior, EventV3Schema)).toEqual({
+      eligible: true,
+      strict: true,
+      issues: [],
+    });
+  });
+
   test("accepts a new complete event branch and rejects branch removal or rename", () => {
     const added = structuredClone(EventV3Schema) as TSchema;
     const addedBranches = (added as unknown as { anyOf: TObject[] }).anyOf;

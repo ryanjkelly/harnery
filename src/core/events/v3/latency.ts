@@ -26,6 +26,8 @@ export interface TurnLatencyV3 {
   occupied_ms: LatencyMetricV3;
   inference_ms: LatencyMetricV3;
   harness_ms: LatencyMetricV3;
+  slowest_hook: string | null;
+  slowest_hook_ms: number | null;
   residual_ms: LatencyMetricV3;
   over_attributed_ms: number;
   context_percent: number | null;
@@ -135,6 +137,7 @@ function projectTurn(
     "hook_time_ms",
     "harness_timing_unknown",
   );
+  const slowestHook = slowestHookFromObservation(terminal.payload.harness);
   const residual = residualMetric(wall, occupied, inference, harness);
   const overAttributed = residual.over_attributed_ms;
   if (overAttributed > 0)
@@ -168,6 +171,8 @@ function projectTurn(
     occupied_ms: occupied,
     inference_ms: inference,
     harness_ms: harness,
+    slowest_hook: slowestHook.name,
+    slowest_hook_ms: slowestHook.duration_ms,
     residual_ms: residual.metric,
     over_attributed_ms: overAttributed,
     context_percent: latestContextPercent(events),
@@ -304,6 +309,20 @@ function observedNumber(value: unknown): number | undefined {
     observation.value >= 0
     ? observation.value
     : undefined;
+}
+
+function slowestHookFromObservation(value: unknown): {
+  name: string | null;
+  duration_ms: number | null;
+} {
+  const observation = record(value);
+  if (observation.state !== "observed") return { name: null, duration_ms: null };
+  const harness = record(observation.value);
+  const name = string(harness.slowest_hook);
+  const duration = harness.slowest_hook_ms;
+  return name && typeof duration === "number" && Number.isSafeInteger(duration) && duration >= 0
+    ? { name, duration_ms: duration }
+    : { name: null, duration_ms: null };
 }
 
 function observationReason(value: unknown): string {

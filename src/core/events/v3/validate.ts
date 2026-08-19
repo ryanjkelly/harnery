@@ -98,6 +98,23 @@ function validateBaseSemantics(event: EventShape): string[] {
       issues.push("/payload/prior_attestation_id:must_change");
     }
   }
+  if (event.event_type === "turn.completed") {
+    const harnessObservation = record(event.payload.harness);
+    if (harnessObservation.state === "observed") {
+      const harness = record(harnessObservation.value);
+      const slowestHookMs = harness.slowest_hook_ms;
+      if (slowestHookMs !== undefined && typeof harness.slowest_hook !== "string") {
+        issues.push("/payload/harness/value/slowest_hook:required_with_duration");
+      }
+      if (
+        typeof slowestHookMs === "number" &&
+        typeof harness.hook_time_ms === "number" &&
+        slowestHookMs > harness.hook_time_ms
+      ) {
+        issues.push("/payload/harness/value/slowest_hook_ms:must_not_exceed_hook_time");
+      }
+    }
+  }
   if (event.links.caused_by.includes(event.event_id)) {
     issues.push("/links/caused_by:self_reference");
   }
