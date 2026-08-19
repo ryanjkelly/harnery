@@ -37,6 +37,7 @@ import {
   closeSpanStateV3,
   type OpenSpanStateV3,
   openSpanStateV3,
+  recoverSpanStateV3,
   type SpanClockV3,
 } from "../span-state.ts";
 import { type ContextMeasurementV3, extractTurnTelemetryV3 } from "../turn-telemetry.ts";
@@ -1338,12 +1339,18 @@ function buildDerivedToolCompleted(
   producerOverride?: { producer_id: `prd_${string}`; boot_id: `boot_${string}`; sequence: number },
   observedAt?: string,
 ): EventV3 {
+  const clock = signalClock(input);
+  if (observedAt !== undefined) clock.observed_at = observedAt;
   const baseConfidence =
     reason === "completion_not_observed_before_turn_end" || reason === "explicit_end_salvage"
       ? "medium"
       : "low";
   const confidence =
     span.turn_stamp === "producer_state" && baseConfidence === "medium" ? "low" : baseConfidence;
+  const terminalSpan =
+    reason === "completion_not_observed_before_turn_end" || reason === "explicit_end_salvage"
+      ? recoverSpanStateV3(span, { boot_id: state.boot_id, clock })
+      : closeSpanStateV3(span, { boot_id: state.boot_id, clock, recovery_reason: reason });
   const event = buildEventV3("tool.completed", {
     producer: {
       producer_id: producerOverride?.producer_id ?? input.producer_id,
@@ -1379,21 +1386,14 @@ function buildDerivedToolCompleted(
         subject_instance_id: state.instance_id,
       },
     },
-    observed_at: observedAt,
+    observed_at: clock.observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
     payload: {
       tool: { namespace: input.adapter, name: span.tool_name ?? "unknown_tool" },
       outcome: "unknown",
-      duration_ms: { state: "unknown", reason },
-      span: closeSpanStateV3(span, {
-        boot_id: state.boot_id,
-        clock: {
-          observed_at: observedAt ?? signalClock(input).observed_at,
-          ...(input.monotonic_ns ? { monotonic_ns: input.monotonic_ns } : {}),
-        },
-        recovery_reason: reason,
-      }),
+      duration_ms: structuredClone(terminalSpan.duration_ms),
+      span: terminalSpan,
       result: { storage: "omitted", media_type: "application/octet-stream", bytes: 0 },
       recovery: {
         reason,

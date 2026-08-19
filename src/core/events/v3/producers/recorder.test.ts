@@ -1769,18 +1769,30 @@ describe("event ledger V3 hook intake spool", () => {
   test("a stop boundary terminalizes the ending turn's stamped spans before turn.completed", () => {
     const root = candidateRoot();
     const nativeSession = "boundary-session";
-    recordHookSignalV3(baseInput(root, "session-start", parsed({ session_id: nativeSession })));
-    recordHookSignalV3(
-      baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, prompt: "go" })),
-    );
-    recordHookSignalV3(
-      baseInput(
+    recordHookSignalV3({
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
+      observed_at: "2026-08-19T21:47:15.000Z",
+      monotonic_ns: "987000000000",
+    });
+    recordHookSignalV3({
+      ...baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, prompt: "go" })),
+      observed_at: "2026-08-19T21:47:16.000Z",
+      monotonic_ns: "988000000000",
+    });
+    recordHookSignalV3({
+      ...baseInput(
         root,
         "pre-tool-use",
         parsed({ session_id: nativeSession, tool_use_id: "lost-call", tool_name: "Bash" }),
       ),
-    );
-    recordHookSignalV3(baseInput(root, "stop", parsed({ session_id: nativeSession })));
+      observed_at: "2026-08-19T21:47:16.307Z",
+      monotonic_ns: "988307000000",
+    });
+    recordHookSignalV3({
+      ...baseInput(root, "stop", parsed({ session_id: nativeSession })),
+      observed_at: "2026-08-19T21:48:27.017Z",
+      monotonic_ns: "1059017000000",
+    });
 
     const rows = readLedgerV3(root).events.map((entry) => entry.event);
     const derived = rows.find(
@@ -1793,6 +1805,13 @@ describe("event ledger V3 hook intake spool", () => {
     expect(derived.payload.outcome).toBe("unknown");
     expect(derived.payload.recovery?.reason).toBe("completion_not_observed_before_turn_end");
     expect(derived.payload.recovery?.requested_event_id).toBeDefined();
+    expect(derived.payload.duration_ms).toEqual({
+      state: "observed",
+      value: 70_710,
+      attestation: "derived",
+      confidence: "exact",
+    });
+    expect(derived.payload.span.duration_ms).toEqual(derived.payload.duration_ms);
     const turnCompleted = rows.find((event) => event.event_type === "turn.completed");
     expect(rows.indexOf(derived)).toBeLessThan(rows.indexOf(turnCompleted as never));
     expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.spans.length).toBe(0);
@@ -2037,6 +2056,11 @@ describe("pending explicit-end expiry", () => {
       throw new Error("salvage terminal missing");
     }
     expect(salvage.payload.outcome).toBe("unknown");
+    expect(salvage.payload.duration_ms).toEqual({
+      state: "unknown",
+      reason: "recovery_monotonic_clock_unavailable",
+    });
+    expect(salvage.payload.span.duration_ms).toEqual(salvage.payload.duration_ms);
     const ended = rows.find((event) => event.event_type === "session.ended");
     expect(ended).toBeDefined();
     expect(readHookProducerStateV3(root, "codex", nativeSession)?.terminal).toBeTrue();

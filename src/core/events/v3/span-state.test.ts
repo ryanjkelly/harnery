@@ -5,6 +5,7 @@ import {
   closeSpanStateV3,
   linuxUptimeNanosecondsV3,
   openSpanStateV3,
+  recoverSpanStateV3,
 } from "./span-state.ts";
 import { validateEventV3 } from "./validate.ts";
 
@@ -117,5 +118,43 @@ describe("event ledger V3 span state", () => {
         recovery_reason: "completion_not_observed_before_turn_end",
       }).duration_ms,
     ).toEqual({ state: "unknown", reason: "completion_not_observed_before_turn_end" });
+  });
+
+  test("recovers duration only from same-boot monotonic endpoints", () => {
+    const span = openSpanStateV3({
+      span_id: spanId,
+      boot_id: bootId,
+      clock: {
+        observed_at: "2026-08-19T21:47:16.307Z",
+        monotonic_ns: "100000000000",
+      },
+    });
+    expect(
+      recoverSpanStateV3(span, {
+        boot_id: bootId,
+        clock: {
+          observed_at: "2026-08-19T21:48:27.017Z",
+          monotonic_ns: "170710000000",
+        },
+      }).duration_ms,
+    ).toEqual({ state: "observed", value: 70_710, attestation: "derived", confidence: "exact" });
+    expect(
+      recoverSpanStateV3(span, {
+        boot_id: "boot_restarted",
+        clock: { observed_at: "2026-08-19T21:48:27.017Z", monotonic_ns: "170710000000" },
+      }).duration_ms,
+    ).toEqual({ state: "unknown", reason: "recovery_clock_mismatch" });
+    expect(
+      recoverSpanStateV3(span, {
+        boot_id: bootId,
+        clock: { observed_at: "2026-08-19T21:48:27.017Z" },
+      }).duration_ms,
+    ).toEqual({ state: "unknown", reason: "recovery_monotonic_clock_unavailable" });
+    expect(
+      recoverSpanStateV3(span, {
+        boot_id: bootId,
+        clock: { observed_at: "2026-08-19T21:48:27.017Z", monotonic_ns: "99999999999" },
+      }).duration_ms,
+    ).toEqual({ state: "unknown", reason: "recovery_monotonic_clock_regressed" });
   });
 });

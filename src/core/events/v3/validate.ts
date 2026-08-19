@@ -27,6 +27,8 @@ interface ObservationShape {
   state: string;
   value?: unknown;
   reason?: string;
+  attestation?: string;
+  confidence?: string;
 }
 
 interface SpanShape {
@@ -262,17 +264,30 @@ function validateRecoverySemantics(event: EventShape): string[] {
   }
   const span = spanFrom(event.payload.span);
   const duration = observationFrom(event.payload.duration_ms);
-  if (span?.duration_ms.state !== "unknown") {
-    issues.push("/payload/span/duration_ms:recovery_requires_unknown_duration");
-  }
-  if (duration?.state !== "unknown") {
-    issues.push("/payload/duration_ms:recovery_requires_unknown_duration");
-  }
-  if (span && span.duration_ms.reason !== recovery.reason) {
-    issues.push("/payload/span/duration_ms:recovery_reason_mismatch");
-  }
-  if (duration && duration.reason !== recovery.reason) {
-    issues.push("/payload/duration_ms:recovery_reason_mismatch");
+  const permitsRecoveredDuration =
+    event.event_type === "tool.completed" &&
+    (recovery.reason === "completion_not_observed_before_turn_end" ||
+      recovery.reason === "explicit_end_salvage");
+  for (const [path, candidate] of [
+    ["/payload/span/duration_ms", span?.duration_ms],
+    ["/payload/duration_ms", duration],
+  ] as const) {
+    if (!candidate) continue;
+    if (candidate.state === "observed") {
+      if (!permitsRecoveredDuration) issues.push(`${path}:recovery_requires_unknown_duration`);
+      if (candidate.attestation !== "derived" || candidate.confidence !== "exact") {
+        issues.push(`${path}:recovery_duration_requires_exact_derived_monotonic_time`);
+      }
+    } else if (candidate.state !== "unknown") {
+      issues.push(`${path}:recovery_requires_unknown_duration`);
+    } else if (
+      candidate.reason !== recovery.reason &&
+      candidate.reason !== "recovery_clock_mismatch" &&
+      candidate.reason !== "recovery_monotonic_clock_unavailable" &&
+      candidate.reason !== "recovery_monotonic_clock_regressed"
+    ) {
+      issues.push(`${path}:recovery_reason_mismatch`);
+    }
   }
   if (event.event_type === "command.completed") {
     if (recovery.reason !== "command_completion_not_observed") {

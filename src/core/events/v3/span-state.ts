@@ -29,6 +29,11 @@ export interface CloseSpanV3Input {
   recovery_reason?: string;
 }
 
+export interface RecoverSpanV3Input {
+  boot_id: `boot_${string}`;
+  clock: SpanClockV3;
+}
+
 /** Capture a cross-process, boot-anchored monotonic reading where the host exposes one. */
 export function captureSpanClockV3(
   options: { now?: Date; platform?: NodeJS.Platform; linux_uptime?: string } = {},
@@ -72,6 +77,44 @@ export function openSpanStateV3(input: OpenSpanV3Input): OpenSpanStateV3 {
  */
 export function closeSpanStateV3(span: OpenSpanStateV3, input: CloseSpanV3Input): SpanSummaryV3 {
   const duration_ms = spanDurationV3(span, input);
+  return {
+    span_id: span.span_id,
+    ...(span.parent_span_id ? { parent_span_id: span.parent_span_id } : {}),
+    opened_at: span.opened_at,
+    duration_ms,
+    ...(span.open_event_id ? { open_event_id: span.open_event_id } : {}),
+  };
+}
+
+/**
+ * Close a recovered span only when its elapsed time is proven by two
+ * same-boot monotonic readings. Recovery never falls back to wall time.
+ */
+export function recoverSpanStateV3(
+  span: OpenSpanStateV3,
+  input: RecoverSpanV3Input,
+): SpanSummaryV3 {
+  let duration_ms: SpanSummaryV3["duration_ms"];
+  if (span.boot_id !== input.boot_id) {
+    duration_ms = { state: "unknown", reason: "recovery_clock_mismatch" };
+  } else if (span.opened_monotonic_ns === undefined || input.clock.monotonic_ns === undefined) {
+    duration_ms = { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
+  } else {
+    const openedMonotonic = monotonic(span.opened_monotonic_ns);
+    const closedMonotonic = monotonic(input.clock.monotonic_ns);
+    if (openedMonotonic === undefined || closedMonotonic === undefined) {
+      duration_ms = { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
+    } else if (closedMonotonic < openedMonotonic) {
+      duration_ms = { state: "unknown", reason: "recovery_monotonic_clock_regressed" };
+    } else {
+      duration_ms = {
+        state: "observed",
+        value: Number((closedMonotonic - openedMonotonic) / 1_000_000n),
+        attestation: "derived",
+        confidence: "exact",
+      };
+    }
+  }
   return {
     span_id: span.span_id,
     ...(span.parent_span_id ? { parent_span_id: span.parent_span_id } : {}),

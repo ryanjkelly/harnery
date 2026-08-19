@@ -43,7 +43,7 @@ describe("event ledger V3 conformance fixtures", () => {
     for (const fixture of fixtures) expect(Value.Check(observation, fixture)).toBe(true);
   });
 
-  test("accepts recovered terminal shapes only with bound unknown timing", () => {
+  test("accepts recovered terminals with bound unknown or proven monotonic timing", () => {
     for (const [eventType, reason] of [
       ["tool.completed", "completion_not_observed_before_turn_end"],
       ["command.completed", "command_completion_not_observed"],
@@ -73,10 +73,31 @@ describe("event ledger V3 conformance fixtures", () => {
         confidence: "exact",
       };
       observedSpan.duration_ms = structuredClone(observedPayload.duration_ms);
-      expect(validateEventV3(observed).issues).toContain(
-        "/payload/duration_ms:recovery_requires_unknown_duration",
-      );
+      if (eventType === "tool.completed") {
+        expect(validateEventV3(observed).issues).toEqual([]);
+      } else {
+        expect(validateEventV3(observed).issues).toContain(
+          "/payload/duration_ms:recovery_requires_unknown_duration",
+        );
+      }
     }
+
+    const nextTurn = fixtureFor("tool.completed");
+    const nextPayload = object(nextTurn.payload);
+    const nextSpan = object(nextPayload.span);
+    object(nextTurn.provenance).attestation = "derived";
+    nextPayload.outcome = "unknown";
+    nextPayload.recovery = { reason: "completion_not_observed_before_next_turn" };
+    nextPayload.duration_ms = {
+      state: "observed",
+      value: 70_710,
+      attestation: "derived",
+      confidence: "exact",
+    };
+    nextSpan.duration_ms = structuredClone(nextPayload.duration_ms);
+    expect(validateEventV3(nextTurn).issues).toContain(
+      "/payload/duration_ms:recovery_requires_unknown_duration",
+    );
   });
 
   test("rejects span identity, causal, duration, and clock-regression contradictions", () => {

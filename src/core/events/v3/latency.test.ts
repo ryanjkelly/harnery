@@ -92,6 +92,31 @@ describe("event ledger V3 latency projection", () => {
     });
   });
 
+  test("attributes an evidence-shaped recovered tool duration", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-19T21:47:16.000Z", 71_017);
+    const turnPayload = fixtureObject(turn.payload);
+    turnPayload.tool_call_count = observed(1);
+    turnPayload.inference = observed({ api_time_ms: 100, request_count: 1 });
+    turnPayload.harness = observed({ hook_time_ms: 50, hook_count: 2 });
+    const tool = terminal("tool.completed", 2, "2026-08-19T21:47:16.307Z", 70_710);
+    const toolPayload = fixtureObject(tool.payload);
+    toolPayload.outcome = "unknown";
+    toolPayload.recovery = { reason: "completion_not_observed_before_turn_end" };
+    const recovered = {
+      state: "observed",
+      value: 70_710,
+      attestation: "derived",
+      confidence: "exact",
+    };
+    toolPayload.duration_ms = recovered;
+    fixtureObject(toolPayload.span).duration_ms = structuredClone(recovered);
+    alignTurn(turn, [tool]);
+
+    const result = projectLatencyV3(readOf(turn, tool)).turns[0]!;
+    expect(result.tool_ms).toEqual({ state: "observed", value_ms: 70_710 });
+    expect(result.occupied_ms).toEqual({ state: "observed", value_ms: 70_710 });
+  });
+
   test("reports over-attribution instead of emitting a negative residual", () => {
     const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
     const payload = fixtureObject(turn.payload);
