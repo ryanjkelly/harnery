@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "./docs-frontmatter.ts";
-import { managedDocsMetadataType } from "./docs-metadata-managed.ts";
+import {
+  isManagedDocsMetadataFile,
+  managedDocsMetadataType,
+} from "./docs-metadata-managed.ts";
 import {
   type DocsMetadataProfile,
   type DocsMetadataValidationIssue,
@@ -72,8 +75,8 @@ function auditFile(repoName: string, repoPath: string, path: string): DocsMetada
 
   const { data, raw } = parseFrontmatter(content);
   const displayPath = join(repoName === "(root)" ? "" : repoName, path);
+  if (!isManagedDocsMetadataFile(path, data, raw !== null)) return null;
   const expectedType = managedDocsMetadataType(path, data, raw !== null);
-  if (!expectedType) return null;
   if (isDocsMetadataV2(data)) {
     const result = validateDocsMetadataV2(data);
     return {
@@ -90,7 +93,7 @@ function auditFile(repoName: string, repoPath: string, path: string): DocsMetada
     repo: repoName,
     path: displayPath,
     state,
-    profile: docsMetadataProfileForType(expectedType),
+    profile: expectedType ? docsMetadataProfileForType(expectedType) : null,
     issues: [
       {
         severity: "error",
@@ -133,8 +136,8 @@ export async function runDocsMetadataAudit(
 export function auditDocsMetadataText(content: string, path: string): DocsMetadataAuditRow | null {
   const root = resolve("/");
   const parsed = parseFrontmatter(content);
+  if (!isManagedDocsMetadataFile(path, parsed.data, parsed.raw !== null)) return null;
   const expectedType = managedDocsMetadataType(path, parsed.data, parsed.raw !== null);
-  if (!expectedType) return null;
   if (isDocsMetadataV2(parsed.data)) {
     const result = validateDocsMetadataV2(parsed.data);
     return {
@@ -150,7 +153,7 @@ export function auditDocsMetadataText(content: string, path: string): DocsMetada
     repo: "(root)",
     path,
     state,
-    profile: docsMetadataProfileForType(expectedType),
+    profile: expectedType ? docsMetadataProfileForType(expectedType) : null,
     issues: [
       {
         severity: "error",
