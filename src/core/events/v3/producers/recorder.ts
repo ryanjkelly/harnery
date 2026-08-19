@@ -561,14 +561,17 @@ function processHookSignalLocked(
         return { state: "missing_session_start" };
       }
       state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
-      const onboarding = buildMidFlightSessionStart(input, state, rootId);
+      const cursorPromptBootstrap = isCursorPromptBootstrap(input);
+      const onboarding = buildMidFlightSessionStart(input, state, rootId, cursorPromptBootstrap);
       commitEventLocked(input, state, path, onboarding);
-      writeProducerDiagnosticV3(input.coordRoot, "mid_flight_onboarding", {
-        adapter: input.adapter,
-        instance_id: input.instance_id,
-        signal: input.signal,
-        session_hash: sessionHash,
-      });
+      if (!cursorPromptBootstrap) {
+        writeProducerDiagnosticV3(input.coordRoot, "mid_flight_onboarding", {
+          adapter: input.adapter,
+          instance_id: input.instance_id,
+          signal: input.signal,
+          session_hash: sessionHash,
+        });
+      }
     }
 
     const fingerprintContext = fingerprintContextV3(
@@ -1155,6 +1158,7 @@ function buildMidFlightSessionStart(
   input: RecordHookSignalV3Input,
   state: HookProducerStateV3,
   rootId: `root_${string}`,
+  cursorPromptBootstrap = false,
 ): EventV3 {
   const fingerprintContext = fingerprintContextV3(
     input.coordRoot,
@@ -1187,13 +1191,31 @@ function buildMidFlightSessionStart(
     clock_id: state.clock_id,
   });
   if (!event) throw new Error("mid-flight session start could not be normalized");
-  event.provenance = { ...event.provenance, attestation: "derived", confidence: "medium" };
+  event.provenance = {
+    ...event.provenance,
+    attestation: "derived",
+    confidence: cursorPromptBootstrap ? "high" : "medium",
+  };
   (event.payload as { resume?: unknown }).resume = {
     state: "unknown",
-    reason: "mid_flight_onboarding",
+    reason: cursorPromptBootstrap ? "cursor_prompt_bootstrap" : "mid_flight_onboarding",
   };
   assertEventV3(event);
   return event;
+}
+
+/**
+ * Cursor can deliver its native `beforeSubmitPrompt` signal before its
+ * `sessionStart` hook. The prompt carries both conversation and turn identity,
+ * so it is a high-confidence session boundary rather than degraded recovery.
+ */
+function isCursorPromptBootstrap(input: RecordHookSignalV3Input): boolean {
+  return (
+    input.adapter === "cursor" &&
+    input.signal === "user-prompt-submit" &&
+    (input.payload.conversation_id !== undefined || input.payload.session_id !== undefined) &&
+    input.payload.turn_id !== undefined
+  );
 }
 
 function suppressClosedSpanSignal(

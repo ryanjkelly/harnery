@@ -409,7 +409,7 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(events.every((event) => event.scope.instance_id === "inst_fixture")).toBeTrue();
   });
 
-  test("onboards Cursor when its first prompt arrives before sessionStart", () => {
+  test("bootstraps Cursor without a recovery warning when its first prompt precedes sessionStart", () => {
     const root = candidateRoot("cursor");
     const nativeSession = "cursor-prompt-first";
     const prompt = recordHookSignalV3(
@@ -439,8 +439,17 @@ describe("event ledger V3 persistent hook recorder", () => {
     const started = events.find((event) => event.event_type === "session.started");
     expect(started?.provenance).toMatchObject({
       attestation: "derived",
-      confidence: "medium",
+      confidence: "high",
     });
+    if (started?.event_type !== "session.started") {
+      throw new Error("Cursor prompt bootstrap session.started missing");
+    }
+    expect(started.payload.resume).toEqual({
+      state: "unknown",
+      reason: "cursor_prompt_bootstrap",
+    });
+    const diagnostics = join(root, ".harnery/ledgers/v3/diagnostics");
+    expect(existsSync(diagnostics) ? readdirSync(diagnostics) : []).toHaveLength(0);
   });
 
   test("deduplicates Cursor generic and shell fallback hooks and counts repeated commands", () => {
