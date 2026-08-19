@@ -64,6 +64,7 @@ const STATE_VERSION = 3 as const;
 /** ADR 0078 recovery policy constants. */
 const CLOSED_SPAN_TURN_RETENTION = 2;
 const CLOSED_SPAN_MEMORY_CAP = 512;
+const CLOSED_TURN_MEMORY_CAP = 16;
 const SPAN_SOFT_WATERMARK = 128;
 /**
  * Adapters whose turn-boundary recovery and mid-flight onboarding are enabled.
@@ -140,6 +141,7 @@ export interface HookProducerStateV3 {
   spans: SpanStateV3[];
   delegations: DelegationStateV3[];
   closed_spans: ClosedSpanV3[];
+  closed_turn_ids: `tid_${string}`[];
   waits: OpenWaitV3[];
   turn_harness: TurnHarnessTimingV3;
   turn_ordinal: number;
@@ -596,20 +598,44 @@ function processHookSignalLocked(
           input.payload.turn_id,
         ).replace(/^hid_/, "tid_") as `tid_${string}`)
       : undefined;
+    const startsDifferentNativeTurn =
+      recoveryEnabled &&
+      input.signal === "user-prompt-submit" &&
+      nativeTid !== undefined &&
+      state.current_turn_id !== undefined &&
+      state.current_turn_id !== nativeTid &&
+      state.current_turn_span !== undefined;
+    if (startsDifferentNativeTurn) {
+      closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
+      const endingTid = state.current_turn_id as `tid_${string}`;
+      sweepOpenSpans(
+        input,
+        state,
+        path,
+        rootId,
+        (candidate) => candidate.turn_id === endingTid,
+        "completion_not_observed_before_next_turn",
+      );
+      commitRecoveredTurnCompleted(input, state, path, rootId, fingerprintContext);
+    }
+
+    const staleClosedTurnTool =
+      recoveryEnabled &&
+      isToolSignal(input.signal) &&
+      nativeTid !== undefined &&
+      state.closed_turn_ids.includes(nativeTid) &&
+      state.current_turn_id !== nativeTid;
+    if (staleClosedTurnTool && !state.current_turn_id) {
+      commitRecoveredToolTurnStart(input, state, path, rootId, fingerprintContext);
+    }
+    const eventInput = staleClosedTurnTool
+      ? { ...input, payload: withoutNativeTurnId(input.payload) }
+      : input;
     const duplicateOpenTurnStart =
       input.signal === "user-prompt-submit" &&
       nativeTid !== undefined &&
       state.current_turn_id === nativeTid &&
       state.current_turn_span !== undefined;
-
-    if (input.signal === "user-prompt-submit" && !state.current_turn_span) {
-      state.current_turn_span = openSpanStateV3({
-        span_id: spanIdV3(),
-        parent_span_id: state.session_span.span_id,
-        boot_id: state.boot_id,
-        clock: signalClock(input),
-      });
-    }
 
     recordTurnHarnessTiming(state, input, !duplicateOpenTurnStart);
 
@@ -666,6 +692,19 @@ function processHookSignalLocked(
       return { state: "ignored" };
     }
 
+    // Every event derived before the native signal has now been committed.
+    // Sample once for the native event and every span it opens or closes so
+    // their self-contained timing cannot drift by a millisecond.
+    const eventClock = signalClock(input);
+    if (input.signal === "user-prompt-submit" && !state.current_turn_span) {
+      state.current_turn_span = openSpanStateV3({
+        span_id: spanIdV3(),
+        parent_span_id: state.session_span.span_id,
+        boot_id: state.boot_id,
+        clock: eventClock,
+      });
+    }
+
     let sourceId = sourceIdForSignal(input, rootFingerprintContext);
     const semanticKey = cursorShellSemanticKey(input, rootFingerprintContext);
     let span: SpanStateV3 | undefined;
@@ -702,7 +741,7 @@ function processHookSignalLocked(
           span_id: spanIdV3(),
           parent_span_id: state.current_turn_span?.span_id ?? state.session_span.span_id,
           boot_id: state.boot_id,
-          clock: signalClock(input),
+          clock: eventClock,
         });
         span = {
           source_id: sourceId,
@@ -741,7 +780,7 @@ function processHookSignalLocked(
           span_id: spanIdV3(),
           parent_span_id: state.current_turn_span?.span_id ?? state.session_span.span_id,
           boot_id: state.boot_id,
-          clock: signalClock(input),
+          clock: eventClock,
         });
         span = {
           source_id: sourceId,
@@ -750,7 +789,7 @@ function processHookSignalLocked(
           recovery_reason: "request_not_observed",
           ...(input.payload.tool_name ? { tool_name: safeRole(input.payload.tool_name) } : {}),
         };
-        const derivedRequest = normalizeHookEventV3("pre-tool-use", input.payload, {
+        const derivedRequest = normalizeHookEventV3("pre-tool-use", eventInput.payload, {
           coordRoot: input.coordRoot,
           adapter: input.adapter,
           adapterVersion: input.adapterVersion,
@@ -789,7 +828,7 @@ function processHookSignalLocked(
         commitEventLocked(input, state, path, derivedRequest);
         span.requested_event_id = derivedRequest.event_id as `evt_${string}`;
         span.open_event_id = derivedRequest.event_id as `evt_${string}`;
-        stampSpanTurn(span, derivedRequest, input, state);
+        stampSpanTurn(span, derivedRequest, eventInput, state);
       }
     }
     if (input.signal === "sub-agent-start") {
@@ -800,7 +839,7 @@ function processHookSignalLocked(
           span_id: spanIdV3(),
           parent_span_id: state.current_turn_span?.span_id ?? state.session_span.span_id,
           boot_id: state.boot_id,
-          clock: signalClock(input),
+          clock: eventClock,
         });
         delegation = {
           source_id: sourceId,
@@ -823,7 +862,7 @@ function processHookSignalLocked(
             span_id: spanIdV3(),
             parent_span_id: state.current_turn_span?.span_id ?? state.session_span.span_id,
             boot_id: state.boot_id,
-            clock: signalClock(input),
+            clock: eventClock,
           })
         : undefined;
     const openingSpan =
@@ -851,7 +890,7 @@ function processHookSignalLocked(
     const terminalSpan = closingSpan
       ? closeSpanStateV3(closingSpan, {
           boot_id: state.boot_id,
-          clock: signalClock(input),
+          clock: eventClock,
           ...(span && closingSpan === span && span.recovery_reason
             ? { recovery_reason: span.recovery_reason }
             : {}),
@@ -860,7 +899,7 @@ function processHookSignalLocked(
 
     const turnTelemetry =
       input.signal === "stop" || input.signal === "stop-failure"
-        ? extractTurnTelemetryV3(input.adapter, input.payload.raw, signalClock(input).observed_at)
+        ? extractTurnTelemetryV3(input.adapter, input.payload.raw, eventClock.observed_at)
         : undefined;
     const cursorToolChannelUnattested =
       (input.signal === "stop" || input.signal === "stop-failure") &&
@@ -869,7 +908,7 @@ function processHookSignalLocked(
     const toolCallCountScopeMismatch =
       (input.signal === "stop" || input.signal === "stop-failure") &&
       (!state.current_turn_id || state.tool_call_count_turn_id !== state.current_turn_id);
-    const event = normalizeHookEventV3(input.signal, input.payload, {
+    const event = normalizeHookEventV3(input.signal, eventInput.payload, {
       coordRoot: input.coordRoot,
       adapter: input.adapter,
       adapterVersion: input.adapterVersion,
@@ -903,7 +942,7 @@ function processHookSignalLocked(
         ...(state.last_event_id ? [state.last_event_id] : []),
         ...(terminalSpan?.open_event_id ? [terminalSpan.open_event_id] : []),
       ].filter((value, index, values) => values.indexOf(value) === index) as `evt_${string}`[],
-      observed_at: signalClock(input).observed_at,
+      observed_at: eventClock.observed_at,
       monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
       clock_id: state.clock_id,
       duration_ms: durationMilliseconds(span?.opened_monotonic_ns, input.monotonic_ns),
@@ -929,7 +968,7 @@ function processHookSignalLocked(
     if (input.signal === "pre-tool-use" && span && !span.requested_event_id) {
       span.requested_event_id = event.event_id as `evt_${string}`;
       span.open_event_id = event.event_id as `evt_${string}`;
-      stampSpanTurn(span, event, input, state);
+      stampSpanTurn(span, event, eventInput, state);
     }
     const durability = commitEventLocked(input, state, path, event, sourceId);
     if (turnTelemetry?.context) {
@@ -963,6 +1002,160 @@ function stampSpanTurn(
     span.turn_id = state.current_turn_id;
     span.turn_stamp = "producer_state";
   }
+}
+
+function isToolSignal(signal: HookSignalV3): boolean {
+  return (
+    signal === "pre-tool-use" || signal === "post-tool-use" || signal === "post-tool-use-failure"
+  );
+}
+
+function withoutNativeTurnId(payload: ParsedPayload): ParsedPayload {
+  const { turn_id: _turnId, ...rest } = payload;
+  return rest;
+}
+
+function recoveryBoundaryPayload(payload: ParsedPayload): ParsedPayload {
+  return {
+    raw: {},
+    ...(payload.session_id ? { session_id: payload.session_id } : {}),
+    ...(payload.conversation_id ? { conversation_id: payload.conversation_id } : {}),
+    ...(payload.agent_id ? { agent_id: payload.agent_id } : {}),
+  };
+}
+
+/** Close an open turn when a different native prompt proves the next boundary. */
+function commitRecoveredTurnCompleted(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+): void {
+  const turnId = state.current_turn_id;
+  const span = state.current_turn_span;
+  if (!turnId || !span) return;
+  const clock = signalClock(input);
+  const terminalSpan = closeSpanStateV3(span, {
+    boot_id: state.boot_id,
+    clock,
+    recovery_reason: "completion_not_observed_before_next_turn",
+  });
+  const toolCountAttested = state.tool_call_count_turn_id === turnId;
+  const event = normalizeHookEventV3("stop", recoveryBoundaryPayload(input.payload), {
+    coordRoot: input.coordRoot,
+    adapter: input.adapter,
+    adapterVersion: input.adapterVersion,
+    harnessVersion: input.harnessVersion,
+    root_id: rootId,
+    run_id: input.run_id,
+    workflow_id: input.workflow_id,
+    workflow_agent_id: input.workflow_agent_id,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    attestation_id: state.attestation_id,
+    producer_id: input.producer_id,
+    boot_id: state.boot_id,
+    sequence: state.next_sequence,
+    build_id: input.build_id,
+    platform: input.platform,
+    bridge: input.bridge,
+    capability_profile: state.capability_profile,
+    fingerprintContext,
+    turn_id: turnId,
+    span_id: span.span_id,
+    terminal_span: terminalSpan,
+    harness_timing: state.turn_harness,
+    caused_by: [
+      ...(state.last_event_id ? [state.last_event_id] : []),
+      ...(terminalSpan.open_event_id ? [terminalSpan.open_event_id] : []),
+    ].filter((value, index, values) => values.indexOf(value) === index) as `evt_${string}`[],
+    observed_at: clock.observed_at,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+    tool_call_count: toolCountAttested ? state.tool_call_count : undefined,
+    tool_call_count_missing_reason: toolCountAttested
+      ? undefined
+      : "tool_count_turn_scope_unattested",
+  });
+  if (event?.event_type !== "turn.completed") {
+    throw new Error("recovered turn terminal could not be normalized");
+  }
+  event.provenance = {
+    ...event.provenance,
+    source_event: `${input.adapter}.recovery`,
+    attestation: "derived",
+    confidence: "medium",
+    attribution: {
+      method: "native_payload",
+      state: "verified",
+      subject_instance_id: state.instance_id,
+    },
+  };
+  event.payload.outcome = "unknown";
+  assertEventV3(event);
+  commitEventLocked(input, state, path, event);
+}
+
+/** Open a derived turn for tools that arrive after their native turn closed. */
+function commitRecoveredToolTurnStart(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+): void {
+  const clock = signalClock(input);
+  const span = openSpanStateV3({
+    span_id: spanIdV3(),
+    parent_span_id: state.session_span.span_id,
+    boot_id: state.boot_id,
+    clock,
+  });
+  state.current_turn_span = span;
+  const event = normalizeHookEventV3("user-prompt-submit", recoveryBoundaryPayload(input.payload), {
+    coordRoot: input.coordRoot,
+    adapter: input.adapter,
+    adapterVersion: input.adapterVersion,
+    harnessVersion: input.harnessVersion,
+    root_id: rootId,
+    run_id: input.run_id,
+    workflow_id: input.workflow_id,
+    workflow_agent_id: input.workflow_agent_id,
+    instance_id: state.instance_id,
+    generation_id: state.generation_id,
+    attestation_id: state.attestation_id,
+    producer_id: input.producer_id,
+    boot_id: state.boot_id,
+    sequence: state.next_sequence,
+    build_id: input.build_id,
+    platform: input.platform,
+    bridge: input.bridge,
+    capability_profile: state.capability_profile,
+    fingerprintContext,
+    turn_native_id: `post-terminal:${state.generation_id}:${state.turn_ordinal + 1}`,
+    span_id: span.span_id,
+    caused_by: state.last_event_id ? [state.last_event_id] : [],
+    observed_at: clock.observed_at,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+  });
+  if (event?.event_type !== "turn.started") {
+    throw new Error("recovered tool turn start could not be normalized");
+  }
+  event.provenance = {
+    ...event.provenance,
+    source_event: `${input.adapter}.recovery`,
+    attestation: "derived",
+    confidence: "medium",
+    attribution: {
+      method: "session_env",
+      state: "verified",
+      subject_instance_id: state.instance_id,
+    },
+  };
+  assertEventV3(event);
+  commitEventLocked(input, state, path, event);
 }
 
 /** The single pending-publish/write/apply/publish cycle every locked event commit uses. */
@@ -1680,6 +1873,7 @@ function newProducerState(
     spans: [],
     delegations: [],
     closed_spans: [],
+    closed_turn_ids: [],
     waits: [],
     turn_harness: emptyTurnHarnessTiming(),
     turn_ordinal: 0,
@@ -1775,6 +1969,13 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
     if (openedDelegation) openedDelegation.open_event_id = event.event_id as `evt_${string}`;
   }
   if (event.event_type === "turn.completed") {
+    const completedTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
+    if (!state.closed_turn_ids.includes(completedTurnId)) {
+      state.closed_turn_ids.push(completedTurnId);
+      if (state.closed_turn_ids.length > CLOSED_TURN_MEMORY_CAP) {
+        state.closed_turn_ids = state.closed_turn_ids.slice(-CLOSED_TURN_MEMORY_CAP);
+      }
+    }
     state.current_turn_id = undefined;
     state.current_turn_span = undefined;
     state.tool_call_count = 0;
@@ -2044,6 +2245,7 @@ function readProducerState(path: string): HookProducerStateV3 {
   // Additive format-2 state: existing files predate wait tracking but remain
   // valid and acquire an empty set on their next read.
   state.waits ??= [];
+  state.closed_turn_ids ??= [];
   state.turn_harness ??= emptyTurnHarnessTiming();
   const allowedKeys = new Set([
     "adapter",
@@ -2052,6 +2254,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "capability_profile",
     "clock_id",
     "closed_spans",
+    "closed_turn_ids",
     "current_turn_id",
     "current_turn_span",
     "delegations",
@@ -2137,6 +2340,9 @@ function readProducerState(path: string): HookProducerStateV3 {
         !Number.isSafeInteger(closed.turn_ordinal) ||
         closed.turn_ordinal < 0,
     ) ||
+    !Array.isArray(state.closed_turn_ids) ||
+    state.closed_turn_ids.length > CLOSED_TURN_MEMORY_CAP ||
+    state.closed_turn_ids.some((turnId) => !/^tid_[a-f0-9]{64}$/.test(turnId)) ||
     !Array.isArray(state.waits) ||
     state.waits.length > 256 ||
     state.waits.some(

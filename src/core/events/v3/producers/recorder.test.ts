@@ -359,6 +359,130 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(`${durable}\n${diagnostics.join("\n")}`).not.toContain("private-response");
   });
 
+  test("keeps Claude post-stop tools out of the next native turn", () => {
+    const root = candidateRoot("claude-code");
+    const nativeSession = "claude-post-stop-tools";
+    const postStopRequestIds: string[] = [];
+    const recordTool = (turnId: string, toolId: string, collect = false) => {
+      const payload = parsed({
+        session_id: nativeSession,
+        turn_id: turnId,
+        tool_use_id: toolId,
+        tool_name: "Bash",
+      });
+      const request = recordHookSignalV3(baseInput(root, "pre-tool-use", payload, "claude-code"));
+      expect(request.state).toBe("recorded");
+      if (collect && request.state === "recorded") {
+        postStopRequestIds.push(request.event.event_id);
+      }
+      expect(
+        recordHookSignalV3(baseInput(root, "post-tool-use", payload, "claude-code")).state,
+      ).toBe("recorded");
+    };
+
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "claude-code"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "claude-turn-one" }),
+        "claude-code",
+      ),
+    );
+    recordTool("claude-turn-one", "first-turn-tool");
+
+    // The first Stop is lost. A different native prompt must close turn one
+    // before opening a fresh canonical span for turn two.
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "claude-turn-two" }),
+        "claude-code",
+      ),
+    );
+    recordTool("claude-turn-two", "second-turn-tool");
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: "claude-turn-two" }),
+        "claude-code",
+      ),
+    );
+
+    for (let index = 0; index < 34; index += 1) {
+      recordTool("claude-turn-two", `post-stop-${index}`, true);
+    }
+
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "claude-turn-three" }),
+        "claude-code",
+      ),
+    );
+    for (let index = 0; index < 6; index += 1) {
+      recordTool("claude-turn-three", `third-turn-${index}`);
+    }
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: "claude-turn-three" }),
+        "claude-code",
+      ),
+    );
+
+    const ledger = readLedgerV3(root);
+    const events = ledger.events.map(({ event }) => event);
+    const starts = events.filter((event) => event.event_type === "turn.started");
+    const turnTerminals = events.filter((event) => event.event_type === "turn.completed");
+    const requests = events.filter((event) => event.event_type === "tool.requested");
+    const toolTerminals = events.filter((event) => event.event_type === "tool.completed");
+    expect(starts).toHaveLength(4);
+    expect(turnTerminals).toHaveLength(4);
+    expect(requests).toHaveLength(42);
+    expect(toolTerminals).toHaveLength(42);
+
+    for (const terminal of turnTerminals) {
+      if (terminal.event_type !== "turn.completed") continue;
+      const turnId = (terminal.scope as { turn_id: string }).turn_id;
+      const start = starts.find(
+        (candidate) => (candidate.scope as { turn_id?: string }).turn_id === turnId,
+      );
+      if (start?.event_type !== "turn.started") throw new Error("turn start missing");
+      expect(terminal.payload.span.open_event_id).toBe(start.event_id);
+      expect(terminal.payload.span.opened_at).toBe(start.time.observed_at);
+    }
+
+    const exactCounts = turnTerminals.map((terminal) =>
+      terminal.event_type === "turn.completed" &&
+      terminal.payload.tool_call_count.state === "observed"
+        ? terminal.payload.tool_call_count.value
+        : undefined,
+    );
+    expect(exactCounts).toEqual([1, 1, 34, 6]);
+
+    const closedNativeTurnId = (starts[1]?.scope as { turn_id: string }).turn_id;
+    const recoveryTurnId = (starts[2]?.scope as { turn_id: string }).turn_id;
+    const postStopRequests = events.filter((event) => postStopRequestIds.includes(event.event_id));
+    expect(postStopRequests).toHaveLength(34);
+    expect(
+      new Set(postStopRequests.map((event) => (event.scope as { turn_id: string }).turn_id)),
+    ).toEqual(new Set([recoveryTurnId]));
+    expect(recoveryTurnId).not.toBe(closedNativeTurnId);
+
+    for (const turn of projectLatencyV3(ledger).turns) {
+      if (turn.tool_ms.state === "unknown") {
+        expect(turn.tool_ms.reasons).not.toContain("tool_terminal_count_mismatch");
+      }
+    }
+  }, 30_000);
+
   test("accumulates bounded hook CLI time inside the active turn", () => {
     const root = candidateRoot();
     const nativeSession = "hook-timing-session";
