@@ -27,6 +27,7 @@ import {
   adapterSignalSupportV3,
 } from "../capabilities.ts";
 import { capabilityDriftPayloadsV3 } from "../capability-drift.ts";
+import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
@@ -134,6 +135,7 @@ export interface HookProducerStateV3 {
   tool_call_count_turn_id?: `tid_${string}`;
   last_event_id?: `evt_${string}`;
   last_monotonic_ns?: string;
+  last_observed_at?: string;
   started_event_id?: `evt_${string}`;
   session_span: OpenSpanStateV3;
   current_turn_span?: OpenSpanStateV3;
@@ -1175,6 +1177,7 @@ function commitEventLocked(
   event: EventV3,
   sourceId?: `hid_${string}`,
 ): WriteEventV3Result {
+  markObservedClockRegressionV3(event, state.last_observed_at);
   assertEventV3(event);
   state.pending = { ...(sourceId ? { source_id: sourceId } : {}), event };
   publishProducerState(path, state);
@@ -1614,6 +1617,7 @@ export function recordApprovedSessionEndV3(
         },
       },
     }) as EventV3;
+    markObservedClockRegressionV3(event, state.last_observed_at);
     assertEventV3(event);
 
     state.pending = { event };
@@ -1895,6 +1899,10 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
   // (fresh boot, sequence 1) must not create gaps in the hook chain.
   if (event.producer.boot_id === state.boot_id) state.next_sequence += 1;
   if (event.time.monotonic_ns) state.last_monotonic_ns = event.time.monotonic_ns;
+  // Mirrors the reader, which tracks the last observed value per clock even
+  // when that value regressed. Holding the maximum instead would hide a
+  // second regression behind the first.
+  state.last_observed_at = event.time.observed_at;
   state.last_event_id = event.event_id as `evt_${string}`;
   if (event.event_type === "session.started") {
     state.started_event_id = event.event_id as `evt_${string}`;
@@ -2273,6 +2281,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "instance_id",
     "last_event_id",
     "last_monotonic_ns",
+    "last_observed_at",
     "next_sequence",
     "pending",
     "privacy_epoch_id",
@@ -2366,6 +2375,8 @@ function readProducerState(path: string): HookProducerStateV3 {
     (state.current_turn_id !== undefined && !/^tid_[a-f0-9]{64}$/.test(state.current_turn_id)) ||
     (state.last_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id)) ||
     (state.last_monotonic_ns !== undefined && !/^\d+$/.test(state.last_monotonic_ns)) ||
+    (state.last_observed_at !== undefined &&
+      !Number.isFinite(Date.parse(state.last_observed_at))) ||
     (state.started_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.started_event_id)) ||
     (state.pending?.source_id !== undefined &&
       !/^hid_[a-f0-9]{64}$/.test(state.pending.source_id)) ||

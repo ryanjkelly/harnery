@@ -21,6 +21,7 @@ import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { selectCommandParentSpan } from "../../span-parent.ts";
 import { buildEventV3 } from "../builder.ts";
 import { normalizeNativeIdV3 } from "../canonical.ts";
+import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
@@ -74,6 +75,7 @@ interface CommandRecorderStateV3 {
   open_event_id?: `evt_${string}`;
   next_sequence: number;
   last_event_id: `evt_${string}`;
+  last_observed_at?: string;
   terminal: boolean;
   observations: RecordedCommandObservationV3[];
   pending?: PendingCommandEventV3;
@@ -226,6 +228,7 @@ export function recordCommandSignalV3(
     });
     if (!event) return { state: "command_span_unstarted" };
 
+    markObservedClockRegressionV3(event, state.last_observed_at);
     state.pending = { source_id: sourceId, event };
     publishCommandState(path, state);
     const durability = writeEventV3(input.coordRoot, event, input.writerOptions);
@@ -375,6 +378,7 @@ export function closeAbandonedCommandSpansV3(
           recovery: { reason: "command_completion_not_observed" },
         },
       }) as EventV3;
+      markObservedClockRegressionV3(event, state.last_observed_at);
       assertEventV3(event);
       state.pending = { source_id: sourceId, event };
       publishCommandState(path, state);
@@ -421,9 +425,7 @@ function newCommandState(
     span_id: opened.span_id,
     ...(parentSpanId ? { parent_span_id: parentSpanId } : {}),
     opened_at: opened.opened_at,
-    ...(opened.opened_monotonic_ns
-      ? { opened_monotonic_ns: opened.opened_monotonic_ns }
-      : {}),
+    ...(opened.opened_monotonic_ns ? { opened_monotonic_ns: opened.opened_monotonic_ns } : {}),
     next_sequence: 1,
     last_event_id: hook.last_event_id!,
     terminal: false,
@@ -470,6 +472,7 @@ function applyCommandEvent(
   // finalizer's derived closer uses a fresh boot at sequence 1.
   if (event.producer.boot_id === state.boot_id) state.next_sequence += 1;
   state.last_event_id = event.event_id as `evt_${string}`;
+  state.last_observed_at = event.time.observed_at;
   state.observations.push({ source_id: sourceId, event_id: event.event_id as `evt_${string}` });
   if (state.observations.length > MAX_OBSERVATIONS) state.observations.shift();
   if (event.event_type === "command.started") {
@@ -546,6 +549,7 @@ function readCommandState(path: string): CommandRecorderStateV3 {
     "generation_id",
     "instance_id",
     "last_event_id",
+    "last_observed_at",
     "next_sequence",
     "observations",
     "opened_at",
@@ -578,6 +582,8 @@ function readCommandState(path: string): CommandRecorderStateV3 {
     (state.open_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.open_event_id)) ||
     (state.parent_span_id !== undefined && !/^span_[0-9a-f-]{36}$/.test(state.parent_span_id)) ||
     !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id) ||
+    (state.last_observed_at !== undefined &&
+      !Number.isFinite(Date.parse(state.last_observed_at))) ||
     !Number.isSafeInteger(state.next_sequence) ||
     state.next_sequence < 1 ||
     typeof state.terminal !== "boolean" ||

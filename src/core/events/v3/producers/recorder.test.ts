@@ -1316,6 +1316,49 @@ describe("event ledger V3 persistent hook recorder", () => {
       ),
     ).toEqual({ state: "gate_closed", reason: "signal_not_approved:post_compaction" });
   });
+
+  test("marks a regressing wall clock instead of poisoning the authority", () => {
+    const root = candidateRoot();
+    const nativeSession = "regressing-clock-session";
+    const signals: [Parameters<typeof recordHookSignalV3>[0]["signal"], ParsedPayload, string][] = [
+      ["session-start", parsed({ session_id: nativeSession }), "2026-08-19T19:39:00.000Z"],
+      [
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "regressing-turn" }),
+        "2026-08-19T19:39:10.000Z",
+      ],
+      [
+        "pre-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "tool-one", tool_name: "Read" }),
+        "2026-08-19T19:39:30.000Z",
+      ],
+      [
+        "post-tool-use",
+        parsed({ session_id: nativeSession, tool_use_id: "tool-one", tool_name: "Read" }),
+        "2026-08-19T19:39:36.078Z",
+      ],
+      // One millisecond behind the tool terminal it was caused by. The reader
+      // rejects that only when the row leaves it unmarked.
+      [
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: "regressing-turn" }),
+        "2026-08-19T19:39:36.077Z",
+      ],
+    ];
+    for (const [signal, payload, observedAt] of signals) {
+      recordHookSignalV3({ ...baseInput(root, signal, payload), observed_at: observedAt });
+    }
+
+    const ledger = readLedgerV3(root);
+    expect(ledger.diagnostics).toEqual([]);
+    expect(ledger.complete).toBe(true);
+    const events = ledger.events.map(({ event }) => event);
+    const turnTerminal = events.find((event) => event.event_type === "turn.completed");
+    const toolTerminal = events.find((event) => event.event_type === "tool.completed");
+    expect(turnTerminal?.time.skew).toBe("regressed");
+    expect(turnTerminal?.time.observed_at).toBe("2026-08-19T19:39:36.077Z");
+    expect(toolTerminal?.time.skew).toBe("unknown");
+  });
 });
 
 function candidateRoot(adapter: Adapter = "claude-code"): string {

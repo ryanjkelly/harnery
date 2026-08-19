@@ -26,15 +26,12 @@ import {
   reconcileAuthorityTransactionV3,
 } from "../authority-outbox.ts";
 import { canonicalJsonV3, normalizeNativeIdV3 } from "../canonical.ts";
+import { markObservedClockRegressionV3 } from "../clock-order.ts";
 import type { EventV3 } from "../contract.ts";
 import { type EventV3WriteMode, readEventV3ControlState } from "../control.ts";
 import { fingerprintContextV3 } from "../fingerprint-keys.ts";
 import { clockIdV3, spanIdV3 } from "../ids.ts";
-import {
-  closeSpanStateV3,
-  type OpenSpanStateV3,
-  openSpanStateV3,
-} from "../span-state.ts";
+import { closeSpanStateV3, type OpenSpanStateV3, openSpanStateV3 } from "../span-state.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
 import {
   type CoordinationAuthoritySignalV3,
@@ -75,6 +72,7 @@ interface CoordinationRecorderStateV3 {
   clock_id: `clk_${string}`;
   next_sequence: number;
   last_event_id: `evt_${string}`;
+  last_observed_at?: string;
   observations: RecordedCoordinationObservationV3[];
   open_waits: Record<string, OpenSpanStateV3>;
   pending?: PendingCoordinationTransactionV3;
@@ -285,6 +283,7 @@ export function recordCoordinationAuthorityV3<S extends CoordinationAuthoritySig
       fingerprintContext,
       attribution_method: "session_env",
     });
+    markObservedClockRegressionV3(normalized.event, state.last_observed_at);
     const transaction = buildAuthorityTransactionV3({
       transaction_id: transactionId,
       expected_prior_state_digest: input.expected_prior_state_digest,
@@ -367,6 +366,7 @@ function applyCoordinationEvent(
 ): void {
   state.next_sequence += 1;
   state.last_event_id = event.event_id as `evt_${string}`;
+  state.last_observed_at = event.time.observed_at;
   state.observations.push({
     source_id: sourceId,
     event_id: event.event_id as `evt_${string}`,
@@ -451,6 +451,7 @@ function readCoordinationState(path: string): CoordinationRecorderStateV3 {
     "format_version",
     "generation_id",
     "last_event_id",
+    "last_observed_at",
     "next_sequence",
     "observations",
     "open_waits",
@@ -477,6 +478,8 @@ function readCoordinationState(path: string): CoordinationRecorderStateV3 {
     (state.bridge !== undefined && state.bridge !== "codex-wsl") ||
     !/^clk_[0-9a-f-]{36}$/.test(state.clock_id) ||
     !/^evt_[0-9a-f-]{36}$/.test(state.last_event_id) ||
+    (state.last_observed_at !== undefined &&
+      !Number.isFinite(Date.parse(state.last_observed_at))) ||
     !Array.isArray(state.observations) ||
     !state.open_waits ||
     typeof state.open_waits !== "object" ||
