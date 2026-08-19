@@ -452,6 +452,36 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(existsSync(diagnostics) ? readdirSync(diagnostics) : []).toHaveLength(0);
   });
 
+  test("does not turn an unattested Cursor tool channel into an exact zero", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-unattested-tools";
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ conversation_id: nativeSession, turn_id: "cursor-turn" }),
+        "cursor",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ conversation_id: nativeSession, turn_id: "cursor-turn" }),
+        "cursor",
+      ),
+    );
+
+    const terminal = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "turn.completed");
+    expect(terminal?.event_type === "turn.completed" && terminal.payload.tool_call_count).toEqual({
+      state: "expected_but_missing",
+      capability: "turn_tool_call_count",
+      reason: "tool_channel_unattested",
+    });
+  });
+
   test("deduplicates Cursor generic and shell fallback hooks and counts repeated commands", () => {
     const root = candidateRoot("cursor");
     const nativeSession = "cursor-shell-fallback";

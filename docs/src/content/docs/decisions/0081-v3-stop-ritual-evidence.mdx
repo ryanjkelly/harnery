@@ -81,3 +81,12 @@ the observations without risking a destructive continuation.
 The ledger now makes ritual overhead auditable without storing reply content.
 Tool, command, and turn economics can be compared with the coordination events
 that caused extra work, including remediation turns.
+
+A later Cursor audit found one false-zero path in that comparison. The recorder
+initialized its tool aggregate to zero, then reported that value as exact when
+no tool hook arrived. Cursor's terminal payload does not carry an independent
+tool count, so silence on the hook channel cannot prove that a turn used no
+tools. Cursor now records `turn_tool_call_count` as `expected_but_missing` with
+the reason `tool_channel_unattested` in that case. Delivered tool hooks still
+produce an observed count, and the latency projection keeps unattested tool
+time unknown instead of treating it as zero.

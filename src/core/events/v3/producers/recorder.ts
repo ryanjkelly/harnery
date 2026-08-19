@@ -840,6 +840,10 @@ function processHookSignalLocked(
       input.signal === "stop" || input.signal === "stop-failure"
         ? extractTurnTelemetryV3(input.adapter, input.payload.raw, signalClock(input).observed_at)
         : undefined;
+    const cursorToolChannelUnattested =
+      (input.signal === "stop" || input.signal === "stop-failure") &&
+      input.adapter === "cursor" &&
+      state.tool_call_count === 0;
     const event = normalizeHookEventV3(input.signal, input.payload, {
       coordRoot: input.coordRoot,
       adapter: input.adapter,
@@ -878,7 +882,13 @@ function processHookSignalLocked(
       monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
       clock_id: state.clock_id,
       duration_ms: durationMilliseconds(span?.opened_monotonic_ns, input.monotonic_ns),
-      tool_call_count: state.tool_call_count,
+      // Cursor's terminal payload has no native tool aggregate. With no
+      // delivered tool hook, the recorder has no evidence that zero calls
+      // occurred; emitting an exact zero would turn hook loss into false data.
+      tool_call_count: cursorToolChannelUnattested ? undefined : state.tool_call_count,
+      tool_call_count_missing_reason: cursorToolChannelUnattested
+        ? "tool_channel_unattested"
+        : undefined,
       delegation_id: delegation?.delegation_id,
       child_generation_id: delegation?.child_generation_id,
       agent_role: delegation?.role,

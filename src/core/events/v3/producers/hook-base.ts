@@ -53,6 +53,7 @@ export interface HookProducerContextV3Base {
   clock_id?: `clk_${string}`;
   duration_ms?: number;
   tool_call_count?: number;
+  tool_call_count_missing_reason?: string;
   response_bytes?: number;
   delegation_id?: `del_${string}`;
   child_generation_id?: `gen_${string}`;
@@ -246,7 +247,7 @@ export function normalizeHookEventV3Base(
           tool_call_count: measuredOrMissing(
             context.tool_call_count,
             "turn_tool_call_count",
-            "turn_aggregate_not_supplied",
+            context.tool_call_count_missing_reason ?? "turn_aggregate_not_supplied",
           ),
           response:
             context.response_bytes === undefined

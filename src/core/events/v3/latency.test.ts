@@ -100,6 +100,30 @@ describe("event ledger V3 latency projection", () => {
     ]);
   });
 
+  test("keeps tool timing unknown when the tool channel was not attested", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
+    const payload = fixtureObject(turn.payload);
+    payload.tool_call_count = {
+      state: "expected_but_missing",
+      capability: "turn_tool_call_count",
+      reason: "tool_channel_unattested",
+    };
+    payload.inference = observed({ api_time_ms: 40, request_count: 1 });
+    payload.harness = observed({ hook_time_ms: 10, hook_count: 2 });
+
+    const projection = projectLatencyV3(readOf(turn));
+    expect(projection.turns[0]?.tool_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["tool_call_count_unknown"],
+    });
+    expect(projection.turns[0]?.residual_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["occupied_unknown"],
+    });
+  });
+
   test("refuses to project an incomplete ledger read", () => {
     const read = readOf();
     read.complete = false;
