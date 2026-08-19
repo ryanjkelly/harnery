@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventV3Fixture, fixtureObject } from "../../../../tests/helpers/event-v3.ts";
+import { initializeEventLedgerV3 } from "../../events/v3/bootstrap.ts";
 import type { EventV3 } from "../../events/v3/contract.ts";
+import { startWorkflowChildSessionV3 } from "../../workflow/live-session-v3.ts";
 import { evaluateStopHook, evaluateStopHookV3Events } from "./stop-hook.ts";
 
 const roots: string[] = [];
@@ -147,7 +149,69 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
       rule: "stop-hook.v3_evidence_unavailable",
     });
   });
+
+  test("a stamped sighting on the live row breaks the remediation block loop", () => {
+    // Remediation stops cannot land fresh turn.completed events (the first
+    // stop closed the turn span), so when the first terminal recorded
+    // present: false (flush race), in-window evidence never changes. The
+    // sighting stamp written by sessionNamePresence is the durable record
+    // that the name was shown; the rule must honor it instead of blocking
+    // every retry forever.
+    const NAME = "Agent Maya - Auth refactor";
+    const events = [
+      turnStarted(0),
+      event("tool.requested", 1),
+      status(2),
+      task(3),
+      turnCompleted(4, ritual(true, { required: true, present: false })),
+    ];
+    const request = {
+      rule: "stop-hook" as const,
+      instance_id: "operator",
+      adapter: "claude-code",
+      now_ms: START + 10_000,
+    };
+    expect(evaluateStopHookV3Events(stampedRoot(NAME, NAME), request, events)).toMatchObject({
+      allow: true,
+      rule: "stop-hook.pass",
+    });
+    // A stamp for a stale (since re-minted) name does not satisfy the rule.
+    expect(
+      evaluateStopHookV3Events(stampedRoot(NAME, "Agent Prior - Old focus"), request, events),
+    ).toMatchObject({ allow: false, rule: "stop-hook.session_name" });
+  });
 });
+
+function stampedRoot(suggestedName: string, seenFor: string): string {
+  const value = mkdtempSync(join(tmpdir(), "harn-stop-v3-"));
+  roots.push(value);
+  initializeEventLedgerV3({
+    coordRoot: value,
+    harneryBuild: "stop-hook-test",
+    hostBuild: "host-test",
+    configDigest: `sha256:${"0".repeat(64)}`,
+    approvalRecordId: "stop-hook-test",
+  });
+  startWorkflowChildSessionV3({
+    coordRoot: value,
+    instanceId: "operator",
+    runId: "stop-hook-test",
+    agentId: "operator",
+    adapter: "codex",
+  });
+  const cachePath = join(value, ".harnery", "active", "operator.json");
+  const cache = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+  writeFileSync(
+    cachePath,
+    JSON.stringify({
+      ...cache,
+      suggested_session_name: suggestedName,
+      session_name_seen_for: seenFor,
+    }),
+    "utf8",
+  );
+  return value;
+}
 
 function verdict(adapter: "claude-code" | "cursor", events: EventV3[]) {
   return evaluateStopHookV3Events(

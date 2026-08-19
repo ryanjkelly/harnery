@@ -171,7 +171,11 @@ export function evaluateStopHookV3Events(
     const naming = turnTerminals
       .map((event) => observedNaming(event.payload.ritual?.session_name))
       .filter((value): value is { required: boolean; present: boolean } => value !== undefined);
-    if (naming.some(({ required }) => required) && !naming.some(({ present }) => present)) {
+    if (
+      naming.some(({ required }) => required) &&
+      !naming.some(({ present }) => present) &&
+      !sessionNameSeenStamped(coordRoot, req.instance_id)
+    ) {
       return sessionNameBlock(coordRoot, req.instance_id);
     }
   }
@@ -286,6 +290,31 @@ function rule23Block(coordRoot?: string): VerdictResult {
     rule: "stop-hook.rule_2_3",
     reason: `End-of-turn rule (2/3): turn.completed did not observe the agent-status box in your reply text. Paste the \`${endOfTurnStatusCommand(coordRoot)}\` output verbatim as a fenced code block (the \`┌─ agent-\` prefix is the detection signal).`,
   };
+}
+
+/**
+ * A remediation stop cannot land a fresh `turn.completed`: the turn's first
+ * stop closed the turn span, continuations open no new one, so the recorder
+ * ignores their terminals. When that first terminal lost the transcript flush
+ * race and recorded `present: false`, in-window ledger evidence can never
+ * change, and the naming rule blocked every retry forever. The sighting stamp
+ * on the live coordination row is the durable record that the current
+ * suggested name WAS shown in an assistant reply (session-name-presence.ts
+ * writes it on the first sighting), so honor it before blocking. Ledger
+ * evidence stays primary; the stamp is consulted only after in-window
+ * terminals said absent.
+ */
+function sessionNameSeenStamped(coordRoot: string, instanceId: string): boolean {
+  try {
+    const row = readLiveCoordinationRow(coordRoot, instanceId);
+    return (
+      typeof row?.suggested_session_name === "string" &&
+      row.suggested_session_name.length > 0 &&
+      row.session_name_seen_for === row.suggested_session_name
+    );
+  } catch {
+    return false;
+  }
 }
 
 function sessionNameBlock(coordRoot: string, instanceId: string): VerdictResult {
