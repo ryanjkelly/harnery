@@ -68,10 +68,34 @@ of the new epoch retroactively.
 coordination state. Disposable caches in `active/` and process attribution in
 `pid-map/` are rebuilt from live V3 observations and are not backup authority.
 
-If an active control pair is damaged, producers and authority-bearing commands
-stop rather than inventing state. Restore the complete V3 epoch from a verified
-backup or initialize a new epoch with an explicit approval record. Do not copy
-individual rows or synthesize missing lifecycle events.
+If a durable frame makes the active authority invalid, producers and
+authority-bearing commands stop rather than inventing state. Recover it
+explicitly:
+
+```bash
+harn ledger-v3 recover \
+  --root <project-root> \
+  --approval-record-id <durable-approval-id> \
+  --yes
+```
+
+Recovery moves the complete failed directory into `v3-archives/` without
+editing it. A fresh epoch receives only a new genesis and activation. Events
+after the rejected frame are preserved in the archive but never copied into
+the new authority.
+
+The command writes a hash-only receipt under `v3-recoveries/`. It records the
+failed authority digest, the validated-prefix digest, the first diagnostic and
+event witness, the archive directory, and the new genesis and activation IDs.
+It does not retain event bodies. Canonical reads expose these failed-epoch
+receipts beside the readable current epoch. Repeating the command against the
+same new authority returns the existing receipt instead of creating another
+epoch.
+
+Use this operation only when `ledger-v3 status` reports
+`ledger_integrity_failure`. For other control damage, restore the complete V3
+epoch from a verified backup. Do not copy individual rows, edit timestamps, or
+synthesize missing lifecycle events.
 
 ## Evidence boundary
 

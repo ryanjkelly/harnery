@@ -7,6 +7,7 @@ import type { EmitContext, HarneryProgramContext } from "../commander.ts";
 import {
   initializeEventLedgerV3,
   readEventV3ControlState,
+  recoverInvalidEventLedgerV3,
   sha256V3,
 } from "../core/events/v3/index.ts";
 
@@ -52,6 +53,30 @@ export function registerLedgerV3Command(
         );
       } catch (error) {
         emitFailure(emit, "ledger_v3_initialize_failed", error);
+      }
+    });
+
+  command
+    .command("recover")
+    .description("Quarantine one invalid active authority and start a clean V3 epoch")
+    .option("--root <path>", "Explicit coordination root")
+    .requiredOption("--approval-record-id <id>", "Durable approval record identifier")
+    .option("--yes", "Confirm the failed authority should be quarantined")
+    .action((options: { root?: string; approvalRecordId: string; yes?: boolean }) => {
+      try {
+        if (!options.yes) throw new Error("--yes is required to recover an invalid V3 authority");
+        const root = resolve(options.root ?? coordRoot(context));
+        emit.data(
+          recoverInvalidEventLedgerV3({
+            coordRoot: root,
+            harneryBuild: repositoryBuild(resolve(import.meta.dir, "..", "..")),
+            hostBuild: repositoryBuild(root),
+            configDigest: configDigest(root),
+            approvalRecordId: options.approvalRecordId,
+          }),
+        );
+      } catch (error) {
+        emitFailure(emit, "ledger_v3_recovery_failed", error);
       }
     });
 }

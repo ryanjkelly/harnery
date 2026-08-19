@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
-import { readEventV3ControlState } from "./control.ts";
+import { EVENT_V3_ACTIVATION_MANIFEST, readEventV3ControlState } from "./control.ts";
 import { eventV3Paths } from "./writer.ts";
 
 const roots: string[] = [];
@@ -55,6 +55,24 @@ describe("universal V3 ledger initialization", () => {
 
     expect(result.archived_epoch).toBeDefined();
     expect(readFileSync(join(result.archived_epoch!, "active.ndjson"), "utf8")).toBe(incompatible);
+    expect(readEventV3ControlState(root).state).toBe("active");
+  });
+
+  test("resumes a candidate left before activation publication", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    const active = eventV3Paths(root).active;
+    const genesisRow = readFileSync(active, "utf8").split("\n")[0];
+    writeFileSync(active, `${genesisRow}\n`, "utf8");
+    unlinkSync(join(root, EVENT_V3_ACTIVATION_MANIFEST));
+    expect(readEventV3ControlState(root).state).toBe("candidate");
+
+    const resumed = initializeEventLedgerV3({
+      ...baseInput(root, "2026-08-18T12:01:00.000Z"),
+      resumeCandidate: true,
+    });
+
+    expect(resumed.control.state).toBe("active");
     expect(readEventV3ControlState(root).state).toBe("active");
   });
 });

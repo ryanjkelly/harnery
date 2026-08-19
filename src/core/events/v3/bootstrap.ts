@@ -18,6 +18,7 @@ import { ADAPTER_CAPABILITY_PROFILES_V3 } from "./capabilities.ts";
 import {
   buildActivationManifestV3,
   buildCandidateGenesisManifestV3,
+  type CandidateGenesisManifestV3,
   EVENT_V3_ACTIVATION_MANIFEST,
   EVENT_V3_GENESIS_MANIFEST,
   type EventV3ControlState,
@@ -35,6 +36,7 @@ export interface InitializeEventLedgerV3Input {
   configDigest: `sha256:${string}`;
   approvalRecordId: string;
   forceNewEpoch?: boolean;
+  resumeCandidate?: boolean;
   now?: () => Date;
 }
 
@@ -79,9 +81,15 @@ export function initializeEventLedgerV3(
   input: InitializeEventLedgerV3Input,
 ): InitializeEventLedgerV3Result {
   const root = resolve(input.coordRoot);
-  const current = readEventV3ControlState(root);
+  let current = readEventV3ControlState(root);
+  if (input.resumeCandidate && current.state === "repairable") {
+    current = repairEventV3ControlPair(root);
+  }
   if (!input.forceNewEpoch && current.state === "active") {
     return { state: "active", initialized: false, control: current };
+  }
+  if (!input.forceNewEpoch && input.resumeCandidate && current.state === "candidate") {
+    return activateCandidateEpoch(root, current.genesis, input.approvalRecordId);
   }
   if (!input.forceNewEpoch && current.state === "candidate") {
     throw new Error("event_v3_candidate_requires_explicit_activation_or_epoch_replacement");
@@ -132,16 +140,30 @@ export function initializeEventLedgerV3(
   if (candidateState.state !== "candidate") {
     throw new Error(`event_v3_candidate_initialization_failed:${candidateState.state}`);
   }
+  const activated = activateCandidateEpoch(root, candidate, input.approvalRecordId);
+  return {
+    ...activated,
+    ...(archivedEpoch ? { archived_epoch: archivedEpoch } : {}),
+  };
+}
+
+function activateCandidateEpoch(
+  root: string,
+  candidate: CandidateGenesisManifestV3,
+  approvalRecordId: string,
+): InitializeEventLedgerV3Result {
+  const producer = candidate.event.producer;
   const activation = buildActivationManifestV3({
     candidate,
-    approval_record_id: input.approvalRecordId,
-    activation_approved_at: createdAt,
+    approval_record_id: approvalRecordId,
+    activation_approved_at: candidate.profile.candidate_created_at,
     producer: {
-      producer_id: producerId,
-      boot_id: bootId,
-      sequence: 2,
-      build_id: buildId,
-      platform: livePlatformV3(),
+      producer_id: producer.producer_id as `prd_${string}`,
+      boot_id: producer.boot_id as `boot_${string}`,
+      sequence: producer.sequence + 1,
+      build_id: producer.build_id as `build_${string}`,
+      platform: producer.platform,
+      ...(producer.bridge ? { bridge: producer.bridge } : {}),
     },
   });
   publishControlFile(join(root, EVENT_V3_ACTIVATION_MANIFEST), activation);
@@ -149,12 +171,7 @@ export function initializeEventLedgerV3(
   if (active.state !== "active") {
     throw new Error(`event_v3_activation_failed:${active.state}`);
   }
-  return {
-    state: "active",
-    initialized: true,
-    ...(archivedEpoch ? { archived_epoch: archivedEpoch } : {}),
-    control: active,
-  };
+  return { state: "active", initialized: true, control: active };
 }
 
 function archiveCurrentEpoch(root: string, createdAt: string): string | undefined {

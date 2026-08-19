@@ -2,7 +2,36 @@ export {
   type SchemaAdvanceEligibilityV3,
   validateAdditiveSchemaAdvanceV3,
 } from "./advance.ts";
+export {
+  type AuthorityMutationV3,
+  type AuthorityReceiptV3,
+  type AuthorityReconcilerV3,
+  type AuthorityTransactionV3,
+  buildAuthorityTransactionV3,
+  listPendingAuthorityTransactionsV3,
+  type PrepareAuthorityTransactionV3Input,
+  prepareAuthorityTransactionV3,
+  publishAuthorityTransactionV3,
+  readAuthorityReceiptV3,
+  readAuthorityTransactionV3,
+  reconcileAuthorityTransactionV3,
+} from "./authority-outbox.ts";
+export {
+  ensureEventLedgerV3,
+  type InitializeEventLedgerV3Input,
+  type InitializeEventLedgerV3Result,
+  initializeEventLedgerV3,
+} from "./bootstrap.ts";
 export { type BuildEventV3Input, buildEventV3 } from "./builder.ts";
+export {
+  canonicalJsonV3,
+  EVENT_V3_CANONICALIZER,
+  type FingerprintContextV3,
+  type FingerprintV3,
+  fingerprintV3,
+  normalizeNativeIdV3,
+  sha256V3,
+} from "./canonical.ts";
 export {
   ADAPTER_CAPABILITY_PROFILES_V3,
   type AdapterCapabilityProfileV3,
@@ -40,117 +69,6 @@ export {
   WaitKindV3Schema,
 } from "./contract.ts";
 export {
-  type CostMetricV3,
-  type DelegationRollupDiagnosticCodeV3,
-  type DelegationRollupV3,
-  type EconomicsProjectionOptionsV3,
-  type EconomicsProjectionV3,
-  EVENT_V3_ECONOMICS_PROJECTION_VERSION,
-  type GenerationEconomicsV3,
-  type ModelPricingV3,
-  projectDelegationRollupV3,
-  projectEconomicsV3,
-  type TokenTotalsMetricV3,
-  type TokenTotalsV3,
-  type TurnEconomicsV3,
-} from "./economics.ts";
-export { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
-export {
-  activationIdV3,
-  attestationIdV3,
-  clockIdV3,
-  delegationIdV3,
-  eventIdV3,
-  generationIdV3,
-  genesisIdV3,
-  spanIdV3,
-} from "./ids.ts";
-export {
-  EVENT_V3_LATENCY_PROJECTION_VERSION,
-  type LatencyMetricV3,
-  type LatencyProjectionDiagnosticCodeV3,
-  type LatencyProjectionDiagnosticV3,
-  type LatencyProjectionV3,
-  projectLatencyV3,
-  type ToolLatencyV3,
-  type TurnLatencyV3,
-} from "./latency.ts";
-export {
-  type HookEventV3,
-  type HookProducerContextV3,
-  normalizeHookEventV3,
-  upgradeHookEventV3,
-} from "./producers/hook.ts";
-export {
-  type LedgerCursorV3,
-  type LedgerDiagnosticCodeV3,
-  type LedgerDiagnosticV3,
-  type LedgerFrameV3,
-  type PositionedEventV3,
-  type ReadLedgerV3Options,
-  type ReadLedgerV3Result,
-  type ReadLedgerV3SinceResult,
-  readLedgerFramesV3,
-  readLedgerFramesV3Since,
-  readLedgerV3,
-  readLedgerV3Since,
-  type SchemaAdvanceV3,
-} from "./reader.ts";
-export {
-  type CloseSpanV3Input,
-  captureSpanClockV3,
-  closeSpanStateV3,
-  linuxUptimeNanosecondsV3,
-  type OpenSpanStateV3,
-  type OpenSpanV3Input,
-  openSpanStateV3,
-  type SpanClockV3,
-} from "./span-state.ts";
-export {
-  type ContextMeasurementV3,
-  emptyHarnessTimingV3,
-  extractTurnTelemetryV3,
-  type HarnessTimingAccumulatorV3,
-  harnessObservationV3,
-  recordHarnessTimingV3,
-  type TelemetryObservationV3,
-  type TurnTelemetryV3,
-} from "./turn-telemetry.ts";
-export {
-  assertEventV3,
-  type EventV3ValidationResult,
-  validateEventV3,
-} from "./validate.ts";
-export {
-  type AuthorityMutationV3,
-  type AuthorityReceiptV3,
-  type AuthorityReconcilerV3,
-  type AuthorityTransactionV3,
-  buildAuthorityTransactionV3,
-  listPendingAuthorityTransactionsV3,
-  type PrepareAuthorityTransactionV3Input,
-  prepareAuthorityTransactionV3,
-  publishAuthorityTransactionV3,
-  readAuthorityReceiptV3,
-  readAuthorityTransactionV3,
-  reconcileAuthorityTransactionV3,
-} from "./authority-outbox.ts";
-export {
-  ensureEventLedgerV3,
-  type InitializeEventLedgerV3Input,
-  type InitializeEventLedgerV3Result,
-  initializeEventLedgerV3,
-} from "./bootstrap.ts";
-export {
-  canonicalJsonV3,
-  EVENT_V3_CANONICALIZER,
-  type FingerprintContextV3,
-  type FingerprintV3,
-  fingerprintV3,
-  normalizeNativeIdV3,
-  sha256V3,
-} from "./canonical.ts";
-export {
   type ActivationManifestV3,
   type BuildActivationManifestV3Input,
   type BuildCandidateGenesisManifestV3Input,
@@ -182,6 +100,21 @@ export {
   requireAuthoritySafeCoordinationViewV3,
 } from "./coordination-view.ts";
 export {
+  type CostMetricV3,
+  type DelegationRollupDiagnosticCodeV3,
+  type DelegationRollupV3,
+  type EconomicsProjectionOptionsV3,
+  type EconomicsProjectionV3,
+  EVENT_V3_ECONOMICS_PROJECTION_VERSION,
+  type GenerationEconomicsV3,
+  type ModelPricingV3,
+  projectDelegationRollupV3,
+  projectEconomicsV3,
+  type TokenTotalsMetricV3,
+  type TokenTotalsV3,
+  type TurnEconomicsV3,
+} from "./economics.ts";
+export {
   EVENT_V3_FINALIZATION_VIEW_VERSION,
   type FinalizationScopeV3,
   FinalizationScopeV3Error,
@@ -200,6 +133,27 @@ export {
   readFingerprintKeyStoreV3,
   rotateFingerprintEpochV3,
 } from "./fingerprint-keys.ts";
+export { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+export {
+  activationIdV3,
+  attestationIdV3,
+  clockIdV3,
+  delegationIdV3,
+  eventIdV3,
+  generationIdV3,
+  genesisIdV3,
+  spanIdV3,
+} from "./ids.ts";
+export {
+  EVENT_V3_LATENCY_PROJECTION_VERSION,
+  type LatencyMetricV3,
+  type LatencyProjectionDiagnosticCodeV3,
+  type LatencyProjectionDiagnosticV3,
+  type LatencyProjectionV3,
+  projectLatencyV3,
+  type ToolLatencyV3,
+  type TurnLatencyV3,
+} from "./latency.ts";
 export {
   EVENT_V3_LIVE_RELATIVE_ROOT,
   janitorLiveDisplayV3,
@@ -212,7 +166,7 @@ export {
   tryWriteLiveDisplayV3,
   writeLiveDisplayV3,
 } from "./live-feed.ts";
-export { type LiveCoordinationObservationV3 } from "./live-observation.ts";
+export type { LiveCoordinationObservationV3 } from "./live-observation.ts";
 export {
   hookSignalV3,
   LIVE_COMMAND_V3_PRODUCER_ID,
@@ -256,6 +210,12 @@ export {
   recordCoordinationAuthorityV3,
 } from "./producers/coordination-recorder.ts";
 export {
+  type HookEventV3,
+  type HookProducerContextV3,
+  normalizeHookEventV3,
+  upgradeHookEventV3,
+} from "./producers/hook.ts";
+export {
   type ApprovedSessionEndReasonV3,
   type DrainHookIntakeSpoolV3Result,
   drainHookIntakeSpoolV3,
@@ -282,6 +242,50 @@ export {
   type WaitProjectionV3,
 } from "./projection.ts";
 export {
+  digestEventV3AuthorityDirectoryV3,
+  inspectInvalidActiveAuthorityV3,
+  type LedgerCursorV3,
+  type LedgerDiagnosticCodeV3,
+  type LedgerDiagnosticV3,
+  type LedgerFrameV3,
+  type PositionedEventV3,
+  type ReadLedgerV3Options,
+  type ReadLedgerV3Result,
+  type ReadLedgerV3SinceResult,
+  readLedgerFramesV3,
+  readLedgerFramesV3Since,
+  readLedgerV3,
+  readLedgerV3Since,
+  type SchemaAdvanceV3,
+} from "./reader.ts";
+export {
+  type RecoverInvalidEventLedgerV3Input,
+  type RecoverInvalidEventLedgerV3Result,
+  recoverInvalidEventLedgerV3,
+} from "./recovery.ts";
+export {
+  type EventV3RecoveryDiagnostic,
+  type EventV3RecoveryFailure,
+  type EventV3RecoveryIntent,
+  type EventV3RecoveryReceipt,
+  eventV3RecoveryRecordsRoot,
+  listEventV3RecoveryReceipts,
+  readEventV3RecoveryIntent,
+  readEventV3RecoveryReceipt,
+  validateEventV3RecoveryIntent,
+  validateEventV3RecoveryReceipt,
+} from "./recovery-record.ts";
+export {
+  type CloseSpanV3Input,
+  captureSpanClockV3,
+  closeSpanStateV3,
+  linuxUptimeNanosecondsV3,
+  type OpenSpanStateV3,
+  type OpenSpanV3Input,
+  openSpanStateV3,
+  type SpanClockV3,
+} from "./span-state.ts";
+export {
   type DescribePathTargetV3Input,
   describePathTargetV3,
   type ExtractTargetsV3Input,
@@ -289,6 +293,21 @@ export {
   extractTargetsV3,
   type TargetDescriptorV3,
 } from "./targets.ts";
+export {
+  type ContextMeasurementV3,
+  emptyHarnessTimingV3,
+  extractTurnTelemetryV3,
+  type HarnessTimingAccumulatorV3,
+  harnessObservationV3,
+  recordHarnessTimingV3,
+  type TelemetryObservationV3,
+  type TurnTelemetryV3,
+} from "./turn-telemetry.ts";
+export {
+  assertEventV3,
+  type EventV3ValidationResult,
+  validateEventV3,
+} from "./validate.ts";
 export {
   drainReadyEventsV3,
   EVENT_V3_LEDGER_RELATIVE_ROOT,

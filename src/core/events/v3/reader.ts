@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -9,7 +10,7 @@ import {
   readSync,
   statSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import {
   type EventV3Catalog,
@@ -19,6 +20,12 @@ import {
 } from "./catalog.ts";
 import type { EventV3 } from "./contract.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "./generated.ts";
+import {
+  type EventV3RecoveryFailure,
+  type EventV3RecoveryReceipt,
+  eventV3RecoveryRecordsRoot,
+  listEventV3RecoveryReceipts,
+} from "./recovery-record.ts";
 import { validateEventV3 } from "./validate.ts";
 
 export type LedgerDiagnosticCodeV3 =
@@ -53,7 +60,8 @@ export type LedgerDiagnosticCodeV3 =
   | "segment_digest_mismatch"
   | "manifest_digest_mismatch"
   | "manifest_segment_mismatch"
-  | "active_replaced";
+  | "active_replaced"
+  | "recovery_record_invalid";
 
 export interface LedgerDiagnosticV3 {
   code: LedgerDiagnosticCodeV3;
@@ -96,6 +104,7 @@ export interface ReadLedgerV3Result {
   active_schema_digest?: string;
   advances: SchemaAdvanceV3[];
   bytes: number;
+  failed_epochs?: EventV3RecoveryReceipt[];
 }
 
 export interface LedgerCursorV3 {
@@ -108,6 +117,73 @@ export interface LedgerCursorV3 {
 export interface ReadLedgerV3SinceResult extends ReadLedgerV3Result {
   cursor?: LedgerCursorV3;
   reset_required: boolean;
+}
+
+/** Inspect one failed active authority without weakening the canonical read boundary. */
+export function inspectInvalidActiveAuthorityV3(
+  coordRoot: string,
+  controlReason: string,
+): EventV3RecoveryFailure {
+  const paths = eventV3Paths(coordRoot);
+  const ledger = readLedgerV3(coordRoot, { authority: "active" });
+  if (ledger.complete || ledger.diagnostics.length === 0) {
+    throw new Error("event_v3_recovery_requires_incomplete_ledger");
+  }
+  const diagnostic = [...ledger.diagnostics].sort(
+    (left, right) =>
+      left.segment_ordinal - right.segment_ordinal || left.byte_offset - right.byte_offset,
+  )[0]!;
+  const activeOrdinal = existsSync(paths.catalog)
+    ? readEventV3Catalog(paths.catalog).active.ordinal
+    : 1;
+  if (diagnostic.segment_ordinal !== activeOrdinal) {
+    throw new Error("event_v3_recovery_first_failure_is_not_in_active_authority");
+  }
+  const active = readFileSync(paths.active);
+  if (diagnostic.byte_offset > active.length) {
+    throw new Error("event_v3_recovery_diagnostic_offset_exceeds_active_authority");
+  }
+  return {
+    control_reason: controlReason,
+    authority_digest: digestEventV3AuthorityDirectoryV3(paths.root),
+    active_digest: sha256V3(active),
+    active_bytes: active.length,
+    validated_prefix_digest: sha256V3(active.subarray(0, diagnostic.byte_offset)),
+    validated_prefix_bytes: diagnostic.byte_offset,
+    diagnostic: {
+      code: diagnostic.code,
+      segment_ordinal: diagnostic.segment_ordinal,
+      byte_offset: diagnostic.byte_offset,
+      ...(diagnostic.event_id ? { event_id: diagnostic.event_id } : {}),
+    },
+  };
+}
+
+/** Hash one preserved V3 authority by relative path, byte count, and file digest. */
+export function digestEventV3AuthorityDirectoryV3(root: string): `sha256:${string}` {
+  const base = resolve(root);
+  if (!lstatSync(base).isDirectory()) throw new Error("V3 authority root is not a directory");
+  const files: Array<{ path: string; bytes: number; digest: `sha256:${string}` }> = [];
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error("V3 authority contains a symbolic link");
+      if (entry.isDirectory()) {
+        visit(path);
+        continue;
+      }
+      if (!entry.isFile()) throw new Error("V3 authority contains a non-regular file");
+      const bytes = readFileSync(path);
+      files.push({
+        path: relative(base, path).replaceAll("\\", "/"),
+        bytes: bytes.length,
+        digest: sha256V3(bytes),
+      });
+    }
+  };
+  visit(base);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return `sha256:${createHash("sha256").update(canonicalJsonV3(files)).digest("hex")}`;
 }
 
 interface PendingAdvance {
@@ -217,12 +293,18 @@ export function readLedgerV3(
 
   const discovered = discoverLedgerFramesV3(coordRoot);
   const validated = validateLedgerFramesV3(discovered.frames, options);
-  const diagnostics = [...discovered.diagnostics, ...validated.result.diagnostics];
+  const recovery = discoverRecoveryReceiptsV3(coordRoot);
+  const diagnostics = [
+    ...discovered.diagnostics,
+    ...validated.result.diagnostics,
+    ...recovery.diagnostics,
+  ];
   const result = {
     ...validated.result,
     diagnostics,
     complete: diagnostics.length === 0,
     bytes: discovered.bytes,
+    failed_epochs: recovery.receipts,
   };
   rememberLedgerReadV3(cacheKey, {
     storage,
@@ -250,14 +332,30 @@ export function readLedgerV3Since(
 ): ReadLedgerV3SinceResult {
   const discovered = discoverLedgerFramesV3(coordRoot);
   const read = readLedgerFramesV3Since(discovered.frames, cursor, options);
-  const diagnostics = [...discovered.diagnostics, ...read.diagnostics];
+  const recovery = discoverRecoveryReceiptsV3(coordRoot);
+  const diagnostics = [...discovered.diagnostics, ...read.diagnostics, ...recovery.diagnostics];
   return {
     ...read,
     events: diagnostics.length === 0 ? read.events : [],
     diagnostics,
     complete: diagnostics.length === 0,
     bytes: discovered.bytes,
+    failed_epochs: recovery.receipts,
   };
+}
+
+function discoverRecoveryReceiptsV3(coordRoot: string): {
+  receipts: EventV3RecoveryReceipt[];
+  diagnostics: LedgerDiagnosticV3[];
+} {
+  try {
+    return { receipts: listEventV3RecoveryReceipts(coordRoot), diagnostics: [] };
+  } catch {
+    return {
+      receipts: [],
+      diagnostics: [storageDiagnostic("recovery_record_invalid", 0)],
+    };
+  }
 }
 
 /**
@@ -477,6 +575,7 @@ function finishLedgerValidationV3(
     active_schema_digest: state.active_schema_digest,
     advances: state.advances,
     bytes,
+    failed_epochs: [],
   };
 }
 
@@ -703,6 +802,7 @@ function resumeCachedLedgerReadV3(
       ...validated,
       diagnostics,
       complete: diagnostics.length === 0,
+      failed_epochs: cached.result.failed_epochs,
     },
   };
 }
@@ -769,6 +869,25 @@ function ledgerStorageVersionV3(coordRoot: string): LedgerStorageVersionV3 {
   }
   for (const name of names) {
     const part = `segment:${name}:${pathStorageVersionV3(join(paths.segments, name)).fingerprint}`;
+    parts.push(part);
+    stableParts.push(part);
+  }
+  const recoveryRoot = eventV3RecoveryRecordsRoot(coordRoot);
+  let recoveryNames: string[] = [];
+  try {
+    recoveryNames = readdirSync(recoveryRoot)
+      .filter((name) => name.endsWith(".committed.json"))
+      .sort();
+  } catch (error) {
+    const code = filesystemErrorCode(error);
+    if (code !== "ENOENT") {
+      const part = `recoveries:${code}`;
+      parts.push(part);
+      stableParts.push(part);
+    }
+  }
+  for (const name of recoveryNames) {
+    const part = `recovery:${name}:${pathStorageVersionV3(join(recoveryRoot, name)).fingerprint}`;
     parts.push(part);
     stableParts.push(part);
   }
