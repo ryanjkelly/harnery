@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { coordRoot, readAgents } from "@/lib/coord-reader";
+import { type AgentsSnapshot, coordRoot, readAgents } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 import { readWorkflowChildSessions } from "@/lib/workflow-reader";
 import { readEventV3ControlState } from "../../../src/core/events/v3/control";
@@ -102,8 +102,17 @@ export async function readSanitizedTails(filePaths: string[]): Promise<CodecSour
   });
 }
 
-export async function buildScene(now?: string): Promise<CodecScene> {
-  const [snapshot, events] = [readAgents(), await readSanitizedTail()];
+export interface CodecSceneSource {
+  snapshot: AgentsSnapshot;
+  events: CodecSourceEvidence[];
+}
+
+export async function readSceneSource(): Promise<CodecSceneSource> {
+  return { snapshot: readAgents(), events: await readSanitizedTail() };
+}
+
+export async function buildScene(now?: string, source?: CodecSceneSource): Promise<CodecScene> {
+  const { snapshot, events } = source ?? (await readSceneSource());
   const scene = projectScene({ snapshot, events, ...(now ? { now } : {}) });
   // Optional styler suggestions: read-only merge of validated, expiring
   // low-confidence styling into fallback-valued channels. Failure = no

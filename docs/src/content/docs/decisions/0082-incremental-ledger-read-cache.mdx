@@ -1,0 +1,76 @@
+---
+title: "0082: Cache validated V3 ledger snapshots incrementally"
+description: "ADR: make repeated V3 reads constant-time and validate only appended active-ledger frames without weakening storage or event authority checks."
+---
+
+**Status:** accepted (2026-08-19) · **Scope:** product tier (`core/events/v3`)
+
+## Context
+
+Every coordination projection reads the canonical V3 ledger. One dashboard
+request can invoke several projections, and each call used to rediscover every
+frame and repeat JSON parsing, canonicalization, schema validation, event ID
+deduplication, producer sequence checks, clock checks, and causal-link checks.
+
+On a 17.6 MB active ledger with 9,027 events, one full read took 593 ms. The
+same process paid that cost on every call. A request with several projections
+therefore slowed down as the active generation grew, even though each
+projection needed the same snapshot.
+
+## Alternatives
+
+**Use React or Next.js request memoization.** Rejected because the canonical
+reader also serves the CLI, guard, Codec, and host applications. A web-only
+cache would leave the shared defect in place and would not help the next
+request after an append.
+
+**Cache by size and modification time, then fully validate after every
+append.** Rejected because normal event traffic changes both values. Unchanged
+reads would be fast, but the first read after every event would still scale
+with the full generation.
+
+**Skip authority checks for web callers.** Rejected because every consumer
+must receive the same canonical result. A faster untrusted projection would
+split the reader contract established by ADR 0080.
+
+## Decision
+
+`readLedgerV3` keeps up to four validated snapshots in a process-local
+least-recently-used cache. The cache key includes the resolved coordination
+root and all validation options. Its storage fingerprint covers the catalog,
+the active file's device, inode, birth time, size, modification time, and
+change time, plus every sealed segment and manifest.
+
+An exact fingerprint hit returns the existing snapshot. When only the active
+file grew and its stable identity plus all catalog and sealed-segment metadata
+remain unchanged, the reader opens the byte range from the prior size to the
+new size. It resumes the same validator state used for a full read: seen event
+IDs and raw frames, producer sequences, attestations, clocks, schema advances,
+genesis state, and the active schema digest. The returned result contains the
+full event history, but only new frames are parsed and validated.
+
+A shrink, same-size rewrite, inode replacement, catalog change, segment
+change, prior diagnostic, or failed range read falls back to full discovery
+and validation. There is no time-based freshness window. An append changes
+the storage fingerprint immediately, so the next poll reads it.
+
+`readLedgerV3Since` keeps its existing cursor contract. The cache changes the
+complete-snapshot reader only.
+
+## Result
+
+Repeated reads of the 17.6 MB production ledger fell from 593 ms to between
+0.01 and 0.11 ms. A one-row append took 0.39 ms after 5.0 MB of valid history
+and 0.52 ms after 15.0 MB. The earlier positioned event objects were reused in
+both cases, proving that the reader resumed instead of replaying history.
+
+The dashboard, Codec, and events routes answered in 0.50, 1.27, and 0.86
+seconds respectively on the same ledger. Tests also append a corrupt frame,
+rewrite a cached frame without changing its size, tamper with a sealed segment,
+and replace the active inode. Each case still emits the existing authority
+diagnostic.
+
+A regression test builds a 12 MB valid ledger and requires a full read below
+three seconds and a one-frame append below 100 ms. On the loaded development
+host, the complete `agents status` path recorded its canonical status event in
+3.13 seconds without increasing the child process's 15-second safety budget.

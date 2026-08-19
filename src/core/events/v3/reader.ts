@@ -1,5 +1,14 @@
 import { Buffer } from "node:buffer";
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 import {
@@ -127,7 +136,47 @@ interface DiscoveredFramesV3 {
   frames: LedgerFrameV3[];
   diagnostics: LedgerDiagnosticV3[];
   bytes: number;
+  active?: {
+    bytes: number;
+    path: string;
+    segment_ordinal: number;
+  };
 }
+
+interface LedgerStorageVersionV3 {
+  fingerprint: string;
+  stable_fingerprint: string;
+  active?: {
+    path: string;
+    size: number;
+  };
+}
+
+interface LedgerValidationStateV3 {
+  diagnostics: LedgerDiagnosticV3[];
+  events: PositionedEventV3[];
+  advances: SchemaAdvanceV3[];
+  accepted: Set<string>;
+  reader_build: string;
+  seen_ids: Map<string, string>;
+  producer_sequences: Map<string, number>;
+  attestations: Set<string>;
+  clocks: Map<string, { observed_at_ms: number; monotonic_ns?: bigint }>;
+  first_position?: LedgerFrameV3["position"];
+  genesis_id?: string;
+  active_schema_digest?: string;
+  pending?: PendingAdvance;
+}
+
+interface CachedLedgerReadV3 {
+  storage: LedgerStorageVersionV3;
+  active?: DiscoveredFramesV3["active"];
+  validation_state: LedgerValidationStateV3;
+  result: ReadLedgerV3Result;
+}
+
+const MAX_CACHED_LEDGER_READS = 4;
+const ledgerReadCacheV3 = new Map<string, CachedLedgerReadV3>();
 
 export const EVENT_V3_LEDGER_RELATIVE_ROOT = ".harnery/ledgers/v3" as const;
 
@@ -151,15 +200,47 @@ export function readLedgerV3(
   coordRoot: string,
   options: ReadLedgerV3Options = {},
 ): ReadLedgerV3Result {
+  const cacheKey = ledgerReadCacheKeyV3(coordRoot, options);
+  const storage = ledgerStorageVersionV3(coordRoot);
+  const cached = ledgerReadCacheV3.get(cacheKey);
+  if (cached?.storage.fingerprint === storage.fingerprint) {
+    ledgerReadCacheV3.delete(cacheKey);
+    ledgerReadCacheV3.set(cacheKey, cached);
+    return cached.result;
+  }
+
+  const resumed = cached ? resumeCachedLedgerReadV3(cached, storage, options) : undefined;
+  if (resumed) {
+    rememberLedgerReadV3(cacheKey, resumed);
+    return resumed.result;
+  }
+
   const discovered = discoverLedgerFramesV3(coordRoot);
-  const read = readLedgerFramesV3(discovered.frames, options);
-  const diagnostics = [...discovered.diagnostics, ...read.diagnostics];
-  return {
-    ...read,
+  const validated = validateLedgerFramesV3(discovered.frames, options);
+  const diagnostics = [...discovered.diagnostics, ...validated.result.diagnostics];
+  const result = {
+    ...validated.result,
     diagnostics,
     complete: diagnostics.length === 0,
     bytes: discovered.bytes,
   };
+  rememberLedgerReadV3(cacheKey, {
+    storage,
+    active: discovered.active,
+    validation_state: isolateValidationStateV3(validated.state),
+    result,
+  });
+  return result;
+}
+
+function rememberLedgerReadV3(cacheKey: string, cached: CachedLedgerReadV3): void {
+  ledgerReadCacheV3.delete(cacheKey);
+  ledgerReadCacheV3.set(cacheKey, cached);
+  while (ledgerReadCacheV3.size > MAX_CACHED_LEDGER_READS) {
+    const oldestKey = ledgerReadCacheV3.keys().next().value;
+    if (oldestKey === undefined) break;
+    ledgerReadCacheV3.delete(oldestKey);
+  }
 }
 
 export function readLedgerV3Since(
@@ -188,28 +269,54 @@ export function readLedgerFramesV3(
   frames: readonly LedgerFrameV3[],
   options: ReadLedgerV3Options = {},
 ): ReadLedgerV3Result {
-  const diagnostics: LedgerDiagnosticV3[] = [];
-  const events: PositionedEventV3[] = [];
-  const advances: SchemaAdvanceV3[] = [];
-  const accepted = new Set(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST]);
-  const readerBuild = options.reader_build ?? "build_harnery-v3";
-  const seenIds = new Map<string, string>();
-  const producerSequences = new Map<string, number>();
-  const attestations = new Set<string>();
-  const clocks = new Map<string, { observed_at_ms: number; monotonic_ns?: bigint }>();
-  let genesisId: string | undefined;
-  let activeSchemaDigest: string | undefined;
-  let pending: PendingAdvance | undefined;
+  return validateLedgerFramesV3(frames, options).result;
+}
+
+function validateLedgerFramesV3(
+  frames: readonly LedgerFrameV3[],
+  options: ReadLedgerV3Options,
+): { result: ReadLedgerV3Result; state: LedgerValidationStateV3 } {
+  const state: LedgerValidationStateV3 = {
+    diagnostics: [],
+    events: [],
+    advances: [],
+    accepted: new Set(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST]),
+    reader_build: options.reader_build ?? "build_harnery-v3",
+    seen_ids: new Map(),
+    producer_sequences: new Map(),
+    attestations: new Set(),
+    clocks: new Map(),
+  };
+  validateLedgerFramesIntoStateV3(frames, state);
+  return { result: finishLedgerValidationV3(state, options, ledgerFramesBytesV3(frames)), state };
+}
+
+function validateLedgerFramesIntoStateV3(
+  frames: readonly LedgerFrameV3[],
+  state: LedgerValidationStateV3,
+): void {
+  state.first_position ??= frames[0]?.position;
+  const {
+    diagnostics,
+    events,
+    advances,
+    accepted,
+    reader_build: readerBuild,
+    seen_ids: seenIds,
+    producer_sequences: producerSequences,
+    attestations,
+    clocks,
+  } = state;
 
   for (const frame of frames) {
-    if (pending) {
-      const comparison = comparePosition(frame.position, pending.position);
+    if (state.pending) {
+      const comparison = comparePosition(frame.position, state.pending.position);
       if (comparison === 0) {
-        activeSchemaDigest = pending.next_schema_digest;
-        pending = undefined;
+        state.active_schema_digest = state.pending.next_schema_digest;
+        state.pending = undefined;
       } else if (comparison > 0) {
-        diagnostics.push(diagnostic("advance_boundary_missed", frame, pending.event_id));
-        pending = undefined;
+        diagnostics.push(diagnostic("advance_boundary_missed", frame, state.pending.event_id));
+        state.pending = undefined;
       }
     }
 
@@ -247,26 +354,29 @@ export function readLedgerFramesV3(
     seenIds.set(shape.event_id, frame.raw);
 
     if (shape.event_type === "ledger.genesis") {
-      if (genesisId !== undefined) {
+      if (state.genesis_id !== undefined) {
         diagnostics.push(diagnostic("multiple_genesis", frame, shape.event_id));
         continue;
       }
       if (events.length !== 0)
         diagnostics.push(diagnostic("genesis_not_first", frame, shape.event_id));
       const payload = shape.payload;
-      genesisId = string(payload.genesis_id);
-      activeSchemaDigest = string(payload.generated_schema_digest);
-      if (activeSchemaDigest !== shape.contract.schema_digest) {
+      state.genesis_id = string(payload.genesis_id);
+      state.active_schema_digest = string(payload.generated_schema_digest);
+      if (state.active_schema_digest !== shape.contract.schema_digest) {
         diagnostics.push(diagnostic("genesis_digest_mismatch", frame, shape.event_id));
       }
-    } else if (genesisId === undefined) {
+    } else if (state.genesis_id === undefined) {
       diagnostics.push(diagnostic("missing_genesis", frame, shape.event_id));
     }
 
     if (!accepted.has(shape.contract.schema_digest)) {
       diagnostics.push(diagnostic("unsupported_schema_digest", frame, shape.event_id));
     }
-    if (activeSchemaDigest !== undefined && shape.contract.schema_digest !== activeSchemaDigest) {
+    if (
+      state.active_schema_digest !== undefined &&
+      shape.contract.schema_digest !== state.active_schema_digest
+    ) {
       diagnostics.push(diagnostic("unexpected_schema_digest", frame, shape.event_id));
     }
 
@@ -288,7 +398,7 @@ export function readLedgerFramesV3(
         segment_ordinal: number(payload.effective_segment_ordinal),
         byte_offset: number(payload.effective_byte_offset),
       };
-      if (priorDigest !== activeSchemaDigest) {
+      if (priorDigest !== state.active_schema_digest) {
         diagnostics.push(diagnostic("advance_prior_mismatch", frame, shape.event_id));
       }
       if (!accepted.has(nextDigest)) {
@@ -298,10 +408,10 @@ export function readLedgerFramesV3(
       if (!compatibleBuilds.includes(readerBuild)) {
         diagnostics.push(diagnostic("advance_reader_incompatible", frame, shape.event_id));
       }
-      if (comparePosition(effectivePosition, frame.position) <= 0 || pending) {
+      if (comparePosition(effectivePosition, frame.position) <= 0 || state.pending) {
         diagnostics.push(diagnostic("advance_boundary_invalid", frame, shape.event_id));
       } else {
-        pending = {
+        state.pending = {
           event_id: shape.event_id,
           next_schema_digest: nextDigest,
           position: effectivePosition,
@@ -317,16 +427,26 @@ export function readLedgerFramesV3(
 
     events.push({ event, position: frame.position });
   }
+}
 
-  if (genesisId === undefined && !diagnostics.some(({ code }) => code === "missing_genesis")) {
+function finishLedgerValidationV3(
+  state: LedgerValidationStateV3,
+  options: ReadLedgerV3Options,
+  bytes: number,
+): ReadLedgerV3Result {
+  const diagnostics = [...state.diagnostics];
+  if (
+    state.genesis_id === undefined &&
+    !diagnostics.some(({ code }) => code === "missing_genesis")
+  ) {
     diagnostics.push({
       code: "missing_genesis",
-      segment_ordinal: frames[0]?.position.segment_ordinal ?? 0,
-      byte_offset: frames[0]?.position.byte_offset ?? 0,
+      segment_ordinal: state.first_position?.segment_ordinal ?? 0,
+      byte_offset: state.first_position?.byte_offset ?? 0,
     });
   }
-  if (options.authority === "active" && genesisId !== undefined) {
-    const activations = events.filter(
+  if (options.authority === "active" && state.genesis_id !== undefined) {
+    const activations = state.events.filter(
       ({ event }) => (event as unknown as EventShape).event_type === "ledger.activated",
     );
     if (activations.length === 0) {
@@ -334,7 +454,7 @@ export function readLedgerFramesV3(
     } else {
       const activation = activations.at(-1)!;
       const payload = (activation.event as unknown as EventShape).payload;
-      if (payload.genesis_id !== genesisId) {
+      if (payload.genesis_id !== state.genesis_id) {
         diagnostics.push(
           diagnostic(
             "activation_genesis_mismatch",
@@ -350,14 +470,18 @@ export function readLedgerFramesV3(
   }
 
   return {
-    events,
+    events: state.events,
     diagnostics,
     complete: diagnostics.length === 0,
-    genesis_id: genesisId,
-    active_schema_digest: activeSchemaDigest,
-    advances,
-    bytes: frames.reduce((total, frame) => total + Buffer.byteLength(frame.raw, "utf8") + 1, 0),
+    genesis_id: state.genesis_id,
+    active_schema_digest: state.active_schema_digest,
+    advances: state.advances,
+    bytes,
   };
+}
+
+function ledgerFramesBytesV3(frames: readonly LedgerFrameV3[]): number {
+  return frames.reduce((total, frame) => total + Buffer.byteLength(frame.raw, "utf8") + 1, 0);
 }
 
 export function readLedgerFramesV3Since(
@@ -526,6 +650,162 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
+function ledgerReadCacheKeyV3(coordRoot: string, options: ReadLedgerV3Options): string {
+  const accepted = [...new Set(options.accepted_schema_digests ?? [EVENT_V3_SCHEMA_DIGEST])].sort();
+  return JSON.stringify([
+    resolve(coordRoot),
+    options.authority ?? "",
+    options.reader_build ?? "",
+    accepted,
+  ]);
+}
+
+function resumeCachedLedgerReadV3(
+  cached: CachedLedgerReadV3,
+  storage: LedgerStorageVersionV3,
+  options: ReadLedgerV3Options,
+): CachedLedgerReadV3 | undefined {
+  if (
+    !cached.result.complete ||
+    !cached.active ||
+    !storage.active ||
+    cached.storage.stable_fingerprint !== storage.stable_fingerprint ||
+    cached.active.path !== storage.active.path ||
+    storage.active.size <= cached.active.bytes
+  ) {
+    return undefined;
+  }
+  const appended = readActiveRangeV3(
+    storage.active.path,
+    cached.active.bytes,
+    storage.active.size,
+    cached.active.segment_ordinal,
+  );
+  if (!appended) return undefined;
+
+  const state: LedgerValidationStateV3 = {
+    ...cached.validation_state,
+    diagnostics: [],
+    events: [...cached.validation_state.events],
+    advances: [...cached.validation_state.advances],
+  };
+  validateLedgerFramesIntoStateV3(appended.frames, state);
+  const validated = finishLedgerValidationV3(state, options, cached.result.bytes + appended.bytes);
+  const diagnostics = [...appended.diagnostics, ...validated.diagnostics];
+  return {
+    storage,
+    active: {
+      ...cached.active,
+      bytes: storage.active.size,
+    },
+    validation_state: isolateValidationStateV3(state),
+    result: {
+      ...validated,
+      diagnostics,
+      complete: diagnostics.length === 0,
+    },
+  };
+}
+
+function isolateValidationStateV3(state: LedgerValidationStateV3): LedgerValidationStateV3 {
+  return {
+    ...state,
+    diagnostics: [...state.diagnostics],
+    events: [...state.events],
+    advances: [...state.advances],
+  };
+}
+
+function readActiveRangeV3(
+  path: string,
+  start: number,
+  end: number,
+  segmentOrdinal: number,
+): DiscoveredFramesV3 | undefined {
+  const length = end - start;
+  const bytes = Buffer.alloc(length);
+  let offset = 0;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    while (offset < length) {
+      const read = readSync(fd, bytes, offset, length - offset, start + offset);
+      if (read === 0) return undefined;
+      offset += read;
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return framesFromBytes(bytes, segmentOrdinal, true, start);
+}
+
+/**
+ * Cheap identity for every filesystem object that can change discovery.
+ * Capture it before reading: a concurrent append then changes the next call's
+ * fingerprint, so a read that raced the writer is never retained as current.
+ */
+function ledgerStorageVersionV3(coordRoot: string): LedgerStorageVersionV3 {
+  const paths = eventV3Paths(coordRoot);
+  const catalog = pathStorageVersionV3(paths.catalog);
+  const active = pathStorageVersionV3(paths.active);
+  const parts = [`catalog:${catalog.fingerprint}`];
+  const stableParts = [`catalog:${catalog.fingerprint}`, `active:${active.stable_fingerprint}`];
+  let names: string[];
+  try {
+    names = readdirSync(paths.segments)
+      .filter((name) => /^(\d{12})\.(ndjson|manifest\.json)$/.test(name))
+      .sort();
+  } catch (error) {
+    const segmentError = `segments:${filesystemErrorCode(error)}`;
+    parts.push(segmentError);
+    stableParts.push(segmentError);
+    return {
+      fingerprint: [...parts, `active:${active.fingerprint}`].join("|"),
+      stable_fingerprint: stableParts.join("|"),
+      ...(active.regular ? { active: { path: paths.active, size: active.size } } : {}),
+    };
+  }
+  for (const name of names) {
+    const part = `segment:${name}:${pathStorageVersionV3(join(paths.segments, name)).fingerprint}`;
+    parts.push(part);
+    stableParts.push(part);
+  }
+  return {
+    fingerprint: [...parts, `active:${active.fingerprint}`].join("|"),
+    stable_fingerprint: stableParts.join("|"),
+    ...(active.regular ? { active: { path: paths.active, size: active.size } } : {}),
+  };
+}
+
+function pathStorageVersionV3(path: string): {
+  fingerprint: string;
+  stable_fingerprint: string;
+  regular: boolean;
+  size: number;
+} {
+  try {
+    const stat = lstatSync(path, { bigint: true });
+    const stableFingerprint = [stat.mode, stat.dev, stat.ino, stat.birthtimeNs].join(":");
+    return {
+      fingerprint: [stableFingerprint, stat.size, stat.mtimeNs, stat.ctimeNs].join(":"),
+      stable_fingerprint: stableFingerprint,
+      regular: stat.isFile() && !stat.isSymbolicLink(),
+      size: Number(stat.size),
+    };
+  } catch (error) {
+    const code = filesystemErrorCode(error);
+    return { fingerprint: code, stable_fingerprint: code, regular: false, size: 0 };
+  }
+}
+
+function filesystemErrorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : "unavailable";
+}
+
 function discoverLedgerFramesV3(coordRoot: string): DiscoveredFramesV3 {
   const paths = eventV3Paths(coordRoot);
   if (!existsSync(paths.catalog)) {
@@ -537,7 +817,11 @@ function discoverLedgerFramesV3(coordRoot: string): DiscoveredFramesV3 {
       };
     }
     if (!existsSync(paths.active)) return { frames: [], diagnostics: [], bytes: 0 };
-    return framesFromBytes(readFileSync(paths.active), 1, true);
+    const bytes = readFileSync(paths.active);
+    return {
+      ...framesFromBytes(bytes, 1, true),
+      active: { bytes: bytes.length, path: paths.active, segment_ordinal: 1 },
+    };
   }
 
   let catalog: EventV3Catalog;
@@ -624,18 +908,24 @@ function discoverActiveSegment(
   discovered.frames.push(...active.frames);
   discovered.diagnostics.push(...active.diagnostics);
   discovered.bytes += bytes.length;
+  discovered.active = {
+    bytes: bytes.length,
+    path: activePath,
+    segment_ordinal: catalog.active.ordinal,
+  };
 }
 
 function framesFromBytes(
   bytes: Buffer,
   segmentOrdinal: number,
   allowPartialFinalFrame: boolean,
+  initialByteOffset = 0,
 ): DiscoveredFramesV3 {
   const raw = bytes.toString("utf8");
   const frames: LedgerFrameV3[] = [];
   const diagnostics: LedgerDiagnosticV3[] = [];
   const lines = raw.split("\n");
-  let byteOffset = 0;
+  let byteOffset = initialByteOffset;
   for (const [index, line] of lines.entries()) {
     const final = index === lines.length - 1;
     const lineBytes = Buffer.byteLength(line, "utf8");

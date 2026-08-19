@@ -5,15 +5,15 @@
  * Soft-fails: never throws into the caller. A failed emit logs to stderr
  * (visible to operators in their terminal) but never breaks the CLI flow.
  *
- * Synchronous spawn: the projector runs before the CLI returns. ~20ms
- * latency budget per call.
+ * Synchronous spawn: the projector runs before the CLI returns. The child has
+ * a 15-second safety budget; loaded-host checks normally finish in a few
+ * seconds and record the observation before the parent command exits.
  */
 
 import { spawnSync } from "node:child_process";
+import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 import { coordBinPath } from "./coord-bin.ts";
 import { resolveCoordRoot } from "./coord-client.ts";
-
-import type { LiveCoordinationObservationV3 } from "../events/v3/live-observation.ts";
 
 export type EventV3EmitObservation =
   | LiveCoordinationObservationV3
