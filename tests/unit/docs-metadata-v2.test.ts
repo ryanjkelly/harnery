@@ -136,6 +136,7 @@ describe("validateDocsMetadataV2", () => {
     const result = validateDocsMetadataV2({
       ...base,
       type: "entity",
+      summary: "A reference page about cinnamon.",
       title: "Cinnamon",
       category: "supplement",
       aliases: ["cassia"],
@@ -150,6 +151,7 @@ describe("validateDocsMetadataV2", () => {
     const result = validateDocsMetadataV2({
       ...base,
       type: "synced-page",
+      summary: "A synchronized about page.",
       source: "shopify",
       source_updated_at: "2026-08-19T18:00:00Z",
       handle: "about-us",

@@ -71,7 +71,9 @@ describe("parseDocsAgeLog", () => {
 
 describe("runSweep YAML status read", () => {
   test("recognizes an in-progress plan from YAML frontmatter", async () => {
-    const root = makeOldPlanRepo("---\nstatus: in_progress\n---\n# Old plan\n");
+    const root = makeOldPlanRepo(
+      "---\nschema: harnery-doc/v2\ntype: plan\nstatus: in-progress\nstatus_changed_at: 2020-01-01T00:00:00Z\ncreated_at: 2020-01-01T00:00:00Z\nupdated_at: 2020-01-01T00:00:00Z\nowner: test-owner\nsummary: Old plan.\n---\n# Old plan\n",
+    );
     initDocsContext({ repoRoot: root, submodules: [] });
 
     const items = await runSweep({ repo: "." });

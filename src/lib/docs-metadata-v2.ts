@@ -1,19 +1,34 @@
 export const DOCS_METADATA_SCHEMA_V2 = "harnery-doc/v2";
 
-export type DocsMetadataType =
-  | "plan"
-  | "issue"
-  | "handoff"
-  | "runbook"
-  | "topic"
-  | "audit"
-  | "book"
-  | "entity"
-  | "concept"
-  | "query"
-  | "synced-page";
+export const DOCS_METADATA_TYPES = [
+  "plan",
+  "issue",
+  "handoff",
+  "runbook",
+  "topic",
+  "audit",
+  "book",
+  "entity",
+  "concept",
+  "query",
+  "page",
+  "inquiry",
+  "quote-sheet",
+  "weekly-post",
+  "synced-page",
+] as const;
 
-export type DocsMetadataProfile = "lifecycle" | "runbook" | "wiki" | "synced" | "general";
+export type DocsMetadataType = (typeof DOCS_METADATA_TYPES)[number];
+
+export type DocsMetadataProfile =
+  | "lifecycle"
+  | "runbook"
+  | "wiki"
+  | "synced"
+  | "quote-sheet"
+  | "weekly-post"
+  | "inquiry"
+  | "general";
 
 export interface DocsMetadataValidationIssue {
   severity: "error" | "warning";
@@ -37,7 +52,8 @@ const ISSUE_STATUSES = new Set(["open", "resolved", "wontfix"]);
 const HANDOFF_STATUSES = new Set(["open", "resolved", "abandoned"]);
 const ISSUE_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
 const LIFECYCLE_TYPES = new Set<DocsMetadataType>(["plan", "issue", "handoff"]);
-const WIKI_TYPES = new Set<DocsMetadataType>(["book", "entity", "concept", "query"]);
+const WIKI_TYPES = new Set<DocsMetadataType>(["book", "entity", "concept", "query", "page"]);
+const SUPPORTED_TYPES = new Set<DocsMetadataType>(DOCS_METADATA_TYPES);
 
 const BASE_FIELDS = new Set([
   "schema",
@@ -62,9 +78,59 @@ const PROFILE_FIELDS: Record<DocsMetadataProfile, ReadonlySet<string>> = {
     "affected",
     "resolution",
   ]),
-  runbook: new Set([...BASE_FIELDS, "reviewed_at", "review_due_at"]),
-  wiki: new Set([...BASE_FIELDS, "title", "category", "aliases", "source_count", "provenance"]),
-  synced: new Set([...BASE_FIELDS, "title", "handle", "published", "source", "source_updated_at"]),
+  runbook: new Set([...BASE_FIELDS, "title", "audience", "source", "reviewed_at", "review_due_at"]),
+  wiki: new Set([
+    ...BASE_FIELDS,
+    "title",
+    "category",
+    "aliases",
+    "source_count",
+    "provenance",
+    "primary_entity",
+    "source_pages",
+    "source_tokens",
+    "top_entities",
+  ]),
+  synced: new Set([
+    ...BASE_FIELDS,
+    "title",
+    "handle",
+    "published",
+    "source",
+    "source_updated_at",
+    "source_id",
+    "source_template",
+  ]),
+  "quote-sheet": new Set([
+    ...BASE_FIELDS,
+    "title",
+    "status",
+    "product",
+    "variant",
+    "sku",
+    "manufacturer",
+    "customer",
+    "bid_id",
+    "drive_file_id",
+    "drive_title",
+    "quote_date",
+    "revision",
+    "batch_size",
+    "order_size",
+    "price",
+    "source_pdf",
+    "claims",
+  ]),
+  "weekly-post": new Set([...BASE_FIELDS, "title", "status", "week", "coverage"]),
+  inquiry: new Set([
+    ...BASE_FIELDS,
+    "title",
+    "status",
+    "status_changed_at",
+    "resolved_at",
+    "severity",
+    "affected",
+  ]),
   general: BASE_FIELDS,
 };
 
@@ -96,12 +162,19 @@ function add(
   issues.push({ severity, code, field, message });
 }
 
-function profileFor(type: DocsMetadataType): DocsMetadataProfile {
+export function docsMetadataProfileForType(type: DocsMetadataType): DocsMetadataProfile {
   if (LIFECYCLE_TYPES.has(type)) return "lifecycle";
   if (type === "runbook") return "runbook";
   if (WIKI_TYPES.has(type)) return "wiki";
   if (type === "synced-page") return "synced";
+  if (type === "quote-sheet") return "quote-sheet";
+  if (type === "weekly-post") return "weekly-post";
+  if (type === "inquiry") return "inquiry";
   return "general";
+}
+
+export function isDocsMetadataType(value: unknown): value is DocsMetadataType {
+  return typeof value === "string" && SUPPORTED_TYPES.has(value as DocsMetadataType);
 }
 
 function requireString(
@@ -211,7 +284,7 @@ function validateRelations(
     add(issues, "error", "invalid_relations", "relations", "relations must be a YAML mapping");
     return;
   }
-  const allowed = new Set(["depends_on", "supersedes", "continues"]);
+  const allowed = new Set(["depends_on", "supersedes", "superseded_by", "continues", "related"]);
   for (const [key, value] of Object.entries(data.relations)) {
     if (!allowed.has(key)) {
       add(issues, "error", "unknown_relation", `relations.${key}`, `unknown relation '${key}'`);
@@ -308,6 +381,24 @@ function validateLifecycle(
         "resolved_at is only valid when status is resolved",
       );
     }
+    if (createdAt !== null && resolvedAt !== null && resolvedAt < createdAt) {
+      add(
+        issues,
+        "error",
+        "timestamp_order",
+        "resolved_at",
+        "resolved_at cannot precede created_at",
+      );
+    }
+    if (updatedAt !== null && resolvedAt !== null && resolvedAt > updatedAt) {
+      add(
+        issues,
+        "error",
+        "timestamp_order",
+        "resolved_at",
+        "resolved_at cannot be later than updated_at",
+      );
+    }
   }
 
   if (type === "handoff") {
@@ -352,6 +443,9 @@ function validateRunbook(
   updatedAt: number | null,
   issues: DocsMetadataValidationIssue[],
 ): void {
+  validateOptionalString(data, "title", issues);
+  validateOptionalString(data, "audience", issues);
+  validateOptionalString(data, "source", issues);
   const reviewedAt = validateTimestamp(data, "reviewed_at", issues);
   const reviewDueAt = validateTimestamp(data, "review_due_at", issues);
   if (reviewedAt !== null && reviewDueAt !== null && reviewDueAt <= reviewedAt) {
@@ -398,6 +492,91 @@ function validateWiki(data: Record<string, unknown>, issues: DocsMetadataValidat
   }
 }
 
+function validateSynced(
+  data: Record<string, unknown>,
+  issues: DocsMetadataValidationIssue[],
+): void {
+  requireString(data, "title", issues);
+  requireString(data, "handle", issues);
+  requireString(data, "source", issues);
+  validateTimestamp(data, "source_updated_at", issues);
+  if (typeof data.published !== "boolean") {
+    add(issues, "error", "invalid_boolean", "published", "published must be a boolean");
+  }
+  validateOptionalString(data, "source_id", issues);
+  validateOptionalString(data, "source_template", issues);
+}
+
+function validateQuoteSheet(
+  data: Record<string, unknown>,
+  issues: DocsMetadataValidationIssue[],
+): void {
+  for (const field of ["title", "status", "product", "manufacturer", "quote_date", "source_pdf"]) {
+    requireString(data, field, issues);
+  }
+  if (
+    typeof data.status === "string" &&
+    !new Set(["not-final", "unsigned", "signed", "final"]).has(data.status)
+  ) {
+    add(
+      issues,
+      "error",
+      "invalid_status",
+      "status",
+      "quote-sheet status must be not-final, unsigned, signed, or final",
+    );
+  }
+}
+
+function validateWeeklyPost(
+  data: Record<string, unknown>,
+  issues: DocsMetadataValidationIssue[],
+): void {
+  for (const field of ["title", "status", "week", "coverage"]) requireString(data, field, issues);
+}
+
+function validateInquiry(
+  data: Record<string, unknown>,
+  createdAt: number | null,
+  updatedAt: number | null,
+  issues: DocsMetadataValidationIssue[],
+): void {
+  requireString(data, "title", issues);
+  const status = requireString(data, "status", issues);
+  if (status && !new Set(["open", "resolved", "abandoned"]).has(status)) {
+    add(issues, "error", "invalid_status", "status", `inquiry status '${status}' is invalid`);
+  }
+  const changedAt = validateTimestamp(data, "status_changed_at", issues);
+  if (createdAt !== null && changedAt !== null && changedAt < createdAt) {
+    add(
+      issues,
+      "error",
+      "timestamp_order",
+      "status_changed_at",
+      "status_changed_at cannot precede created_at",
+    );
+  }
+  if (updatedAt !== null && changedAt !== null && changedAt > updatedAt) {
+    add(
+      issues,
+      "error",
+      "timestamp_order",
+      "status_changed_at",
+      "status_changed_at cannot be later than updated_at",
+    );
+  }
+  const resolvedAt = validateTimestamp(data, "resolved_at", issues, status === "resolved");
+  if (status !== "resolved" && resolvedAt !== null) {
+    add(
+      issues,
+      "error",
+      "unexpected_resolved_at",
+      "resolved_at",
+      "resolved_at is only valid when status is resolved",
+    );
+  }
+}
+
 /** Validate one parsed YAML frontmatter mapping against the harnery-doc/v2 contract. */
 export function validateDocsMetadataV2(
   data: Record<string, unknown>,
@@ -408,25 +587,11 @@ export function validateDocsMetadataV2(
   }
 
   const rawType = requireString(data, "type", issues);
-  const supported = new Set<DocsMetadataType>([
-    "plan",
-    "issue",
-    "handoff",
-    "runbook",
-    "topic",
-    "audit",
-    "book",
-    "entity",
-    "concept",
-    "query",
-    "synced-page",
-  ]);
-  const type =
-    rawType && supported.has(rawType as DocsMetadataType) ? (rawType as DocsMetadataType) : null;
+  const type = rawType && isDocsMetadataType(rawType) ? rawType : null;
   if (rawType && !type) {
     add(issues, "error", "invalid_type", "type", `unsupported document type '${rawType}'`);
   }
-  const profile = type ? profileFor(type) : null;
+  const profile = type ? docsMetadataProfileForType(type) : null;
 
   const createdAt = validateTimestamp(data, "created_at", issues);
   const updatedAt = validateTimestamp(data, "updated_at", issues);
@@ -436,8 +601,8 @@ export function validateDocsMetadataV2(
 
   if (data.tags !== undefined) validateStringList(data.tags, "tags", issues, SLUG);
   const lifecycleType = type !== null && LIFECYCLE_TYPES.has(type);
-  validateOwner(data, issues, lifecycleType);
-  validateSummary(data, issues, lifecycleType || type === "topic" || type === "audit");
+  validateOwner(data, issues, lifecycleType || type === "runbook" || type === "inquiry");
+  validateSummary(data, issues, type !== null);
   validateRelations(data, issues);
   validateAccess(data, issues);
 
@@ -460,13 +625,13 @@ export function validateDocsMetadataV2(
   } else if (type && WIKI_TYPES.has(type)) {
     validateWiki(data, issues);
   } else if (type === "synced-page") {
-    validateTimestamp(data, "source_updated_at", issues);
-    requireString(data, "source", issues);
-    validateOptionalString(data, "title", issues);
-    validateOptionalString(data, "handle", issues);
-    if (data.published !== undefined && typeof data.published !== "boolean") {
-      add(issues, "error", "invalid_boolean", "published", "published must be a boolean");
-    }
+    validateSynced(data, issues);
+  } else if (type === "quote-sheet") {
+    validateQuoteSheet(data, issues);
+  } else if (type === "weekly-post") {
+    validateWeeklyPost(data, issues);
+  } else if (type === "inquiry") {
+    validateInquiry(data, createdAt, updatedAt, issues);
   }
 
   return {

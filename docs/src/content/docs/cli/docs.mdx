@@ -8,8 +8,9 @@ sidebar:
 ```bash
 harn docs
 harn docs meta <path> [key] [--json]
-harn docs metadata validate [--repo <name>] [--require-v2]
-harn docs frontmatter-migrate [--repo <name>] [--yes]
+harn docs metadata validate [--repo <name>]
+harn docs metadata sync [files...] [--repo <name>] [--check] [--reviewed]
+harn docs new <type> <path> --summary <text> --owner <id> [--status <status>] [--severity <severity>]
 harn docs lint [--fast] [--repo <name>]
 harn docs links [--repo <name>] [--no-fragments] [--strict] [--check-escapes] [--fail]
 harn docs sweep [--repo <name>]
@@ -39,41 +40,39 @@ terminal; piped output and `--json` use JSON.
 
 ## Validate versioned metadata
 
-`docs metadata validate` checks every file marked `schema: harnery-doc/v2`. It also
-finds lifecycle documents and runbooks that have not moved to v2 yet:
+`docs metadata validate` checks every managed document. Managed files must use
+`schema: harnery-doc/v2`; legacy or missing metadata is an error:
 
 ```bash
 harn docs metadata validate --repo .
-harn docs metadata validate --repo . --require-v2
 ```
 
-The report separates valid, invalid, legacy, and missing files. V2 validation
+The report separates valid, invalid, legacy, and missing files. Validation
 checks canonical UTC timestamps, timestamp order, document types, lifecycle
 status, owner ids, summaries, tags, relationships, access grants, and the
 fields required by each profile.
 
-During the migration, legacy files are warnings. `--require-v2` promotes them
-to errors so a repository can prove it is ready for cutover. That option is a
-transition tool, not a permanent second mode. Once every managed repository is
-on v2, the command will require v2 unconditionally and the option will be
-removed.
+## Keep timestamps current
 
-## Migrate lifecycle files
-
-`docs frontmatter-migrate` converts recognized opening bold fields in
-`docs/plans`, `docs/issues`, and `docs/handoffs` into leading YAML frontmatter.
-It scans archives too. The default is a dry-run:
+`docs metadata sync` updates timestamps for staged Markdown changes, or for the
+explicit files passed on the command line:
 
 ```bash
-harn docs frontmatter-migrate --repo .
-harn docs frontmatter-migrate --repo . --yes
+harn docs metadata sync
+harn docs metadata sync docs/runbook.md --reviewed
+harn docs metadata sync --check
 ```
 
-The converter leaves narrative bold labels and body examples alone, merges into
-existing frontmatter that has no `status`, and skips files that already carry
-YAML `status:`. Unsupported status values and conflicting fields are errors; the
-command exits nonzero without guessing or writing any file. `--yes` is the only
-mode that writes, and the apply is all-or-nothing for the selected repository set.
+It advances `updated_at` for semantic metadata or body changes and advances
+`status_changed_at` only when `status` changes. `created_at` is immutable.
+`--reviewed` records a runbook review and sets its next review 180 days later.
+Use `--check` in hooks or CI to reject timestamp drift without writing.
+
+## Create a managed document
+
+`docs new` scaffolds valid v2 metadata for a plan, issue, handoff, runbook, or
+topic. It refuses to overwrite an existing file and validates the requested
+type, status, owner, and severity before writing.
 
 ## Check internal links
 
@@ -143,6 +142,5 @@ there is at least one error finding.
 - `docs index` rebuilds marker-delimited audit and issue index tables.
 - Bare `docs` reports markdown freshness from Git history.
 
-Lint, sweep, and index read lifecycle `status:` only from leading YAML
-frontmatter. Legacy `**Status:**` lines are accepted only as input to the
-explicit `docs frontmatter-migrate` conversion command.
+Lint, sweep, and index read lifecycle `status:` only from strict
+`harnery-doc/v2` frontmatter. Legacy metadata is not read or normalized.

@@ -27,7 +27,10 @@ function makeLintRepo(): string {
   mkdirSync(join(root, "docs", "plans", "archive"), { recursive: true });
   mkdirSync(join(root, "docs", "issues"), { recursive: true });
   mkdirSync(join(root, "docs", "handoffs", "2026-07"), { recursive: true });
-  writeFileSync(join(root, "docs", "plans", "yaml.md"), "---\nstatus: proposed\n---\n# YAML\n");
+  writeFileSync(
+    join(root, "docs", "plans", "yaml.md"),
+    "---\nschema: harnery-doc/v2\ntype: plan\nstatus: proposed\ncreated_at: 2026-07-13T00:00:00Z\nupdated_at: 2026-07-13T00:00:00Z\nstatus_changed_at: 2026-07-13T00:00:00Z\nowner: test-owner\nsummary: YAML plan.\n---\n# YAML\n",
+  );
   writeFileSync(join(root, "docs", "plans", "legacy.md"), "# Legacy\n\n**Status:** proposed\n");
   writeFileSync(
     join(root, "docs", "plans", "archive", "archived.md"),
@@ -63,8 +66,8 @@ describe("docs status consumers", () => {
     expect(hasStatusHeader(writeDoc("# Plan\n\n**Status:** proposed\n"))).toBe(false);
   });
 
-  test("issue index prefers and normalizes YAML status", () => {
-    const content = "---\nstatus: done\n---\n# Issue\n\n**Status:** open\n";
+  test("issue index reads an exact canonical v2 status", () => {
+    const content = "---\nschema: harnery-doc/v2\ntype: issue\nstatus: resolved\n---\n# Issue\n";
     expect(extractStatus(content)).toBe("resolved");
   });
 
@@ -76,8 +79,8 @@ describe("docs status consumers", () => {
     const root = makeLintRepo();
     initDocsContext({ repoRoot: root, submodules: [] });
 
-    const violations = (await runLint({ fast: false, repo: "." })).filter(
-      (violation) => violation.rule === "missing-status-header",
+    const violations = (await runLint({ fast: false, repo: "." })).filter((violation) =>
+      violation.rule.startsWith("metadata-v2:"),
     );
 
     expect(violations.map((violation) => violation.path).sort()).toEqual(

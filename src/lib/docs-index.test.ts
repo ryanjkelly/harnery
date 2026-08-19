@@ -24,13 +24,13 @@ function makeRepo(): string {
 
   mkdirSync(join(root, "docs", "issues"), { recursive: true });
   writeFileSync(join(root, "docs", "issues", "README.md"), markedReadme("issues"));
-  writeFileSync(join(root, "docs", "issues", "2026-08-01_root-issue.md"), "---\nstatus: open\n---\n# Root issue\n");
+  writeFileSync(join(root, "docs", "issues", "2026-08-01_root-issue.md"), "---\nschema: harnery-doc/v2\ntype: issue\nstatus: open\n---\n# Root issue\n");
 
   mkdirSync(join(root, "in-tree", "docs", "issues"), { recursive: true });
   writeFileSync(join(root, "in-tree", "docs", "issues", "README.md"), markedReadme("issues"));
   writeFileSync(
     join(root, "in-tree", "docs", "issues", "2026-08-18_nested-issue.md"),
-    "---\nstatus: resolved\n---\n# Nested issue\n",
+    "---\nschema: harnery-doc/v2\ntype: issue\nstatus: resolved\n---\n# Nested issue\n",
   );
 
   mkdirSync(join(root, "submod", "docs", "issues"), { recursive: true });
@@ -38,7 +38,7 @@ function makeRepo(): string {
   writeFileSync(join(root, "submod", "docs", "issues", "README.md"), markedReadme("issues"));
   writeFileSync(
     join(root, "submod", "docs", "issues", "2026-08-02_sub-issue.md"),
-    "---\nstatus: open\n---\n# Sub issue\n",
+    "---\nschema: harnery-doc/v2\ntype: issue\nstatus: open\n---\n# Sub issue\n",
   );
 
   return root;

@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "./docs-frontmatter.ts";
+import { managedDocsMetadataType } from "./docs-metadata-managed.ts";
 import {
   type DocsMetadataProfile,
   type DocsMetadataValidationIssue,
+  docsMetadataProfileForType,
   isDocsMetadataV2,
   validateDocsMetadataV2,
 } from "./docs-metadata-v2.ts";
@@ -22,7 +24,6 @@ export function initDocsMetadataAuditContext(opts: {
 
 export interface DocsMetadataAuditOpts {
   repo?: string;
-  requireV2?: boolean;
 }
 
 export type DocsMetadataAuditState = "valid" | "invalid" | "legacy" | "missing";
@@ -39,18 +40,6 @@ function isInitializedRepo(path: string): boolean {
   return existsSync(join(path, ".git"));
 }
 
-function isLifecyclePath(path: string): boolean {
-  return (
-    path.startsWith("docs/plans/") ||
-    path.startsWith("docs/issues/") ||
-    path.startsWith("docs/handoffs/")
-  );
-}
-
-function isRequiredMetadataPath(path: string): boolean {
-  return isLifecyclePath(path) || path === "docs/runbook.md";
-}
-
 async function trackedMarkdownFiles(repoPath: string): Promise<string[]> {
   const result = await sh('git ls-files --cached "**/*.md" "*.md"', { cwd: repoPath });
   if (result.exitCode !== 0 || !result.stdout.trim()) return [];
@@ -60,12 +49,7 @@ async function trackedMarkdownFiles(repoPath: string): Promise<string[]> {
     .filter((path) => path.endsWith(".md"));
 }
 
-function auditFile(
-  repoName: string,
-  repoPath: string,
-  path: string,
-  requireV2: boolean,
-): DocsMetadataAuditRow | null {
+function auditFile(repoName: string, repoPath: string, path: string): DocsMetadataAuditRow | null {
   let content: string;
   try {
     content = readFileSync(join(repoPath, path), "utf8");
@@ -88,6 +72,8 @@ function auditFile(
 
   const { data, raw } = parseFrontmatter(content);
   const displayPath = join(repoName === "(root)" ? "" : repoName, path);
+  const expectedType = managedDocsMetadataType(path, data, raw !== null);
+  if (!expectedType) return null;
   if (isDocsMetadataV2(data)) {
     const result = validateDocsMetadataV2(data);
     return {
@@ -99,16 +85,15 @@ function auditFile(
     };
   }
 
-  if (!isRequiredMetadataPath(path)) return null;
   const state: DocsMetadataAuditState = raw === null ? "missing" : "legacy";
   return {
     repo: repoName,
     path: displayPath,
     state,
-    profile: isLifecyclePath(path) ? "lifecycle" : "runbook",
+    profile: docsMetadataProfileForType(expectedType),
     issues: [
       {
-        severity: requireV2 ? "error" : "warning",
+        severity: "error",
         code: state === "missing" ? "missing_metadata" : "legacy_schema",
         field: "schema",
         message:
@@ -137,7 +122,7 @@ export async function runDocsMetadataAudit(
   for (const target of selected) {
     const files = await trackedMarkdownFiles(target.path);
     for (const path of files) {
-      const row = auditFile(target.name, target.path, path, !!opts.requireV2);
+      const row = auditFile(target.name, target.path, path);
       if (row) rows.push(row);
     }
   }
@@ -145,13 +130,11 @@ export async function runDocsMetadataAudit(
   return rows.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export function auditDocsMetadataText(
-  content: string,
-  path: string,
-  requireV2 = false,
-): DocsMetadataAuditRow | null {
+export function auditDocsMetadataText(content: string, path: string): DocsMetadataAuditRow | null {
   const root = resolve("/");
   const parsed = parseFrontmatter(content);
+  const expectedType = managedDocsMetadataType(path, parsed.data, parsed.raw !== null);
+  if (!expectedType) return null;
   if (isDocsMetadataV2(parsed.data)) {
     const result = validateDocsMetadataV2(parsed.data);
     return {
@@ -162,16 +145,15 @@ export function auditDocsMetadataText(
       issues: result.issues,
     };
   }
-  if (!isRequiredMetadataPath(path)) return null;
   const state = parsed.raw === null ? "missing" : "legacy";
   return {
     repo: "(root)",
     path,
     state,
-    profile: isLifecyclePath(path) ? "lifecycle" : "runbook",
+    profile: docsMetadataProfileForType(expectedType),
     issues: [
       {
-        severity: requireV2 ? "error" : "warning",
+        severity: "error",
         code: state === "missing" ? "missing_metadata" : "legacy_schema",
         field: "schema",
         message:

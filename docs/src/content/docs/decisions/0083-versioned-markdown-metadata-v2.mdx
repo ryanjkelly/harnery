@@ -61,20 +61,19 @@ owner ids, summaries, normalized tags, typed relationships, and list-based
 access grants. Profile validators enforce their enums and cross-field rules.
 Unknown keys fail unless they use the temporary `x_` namespace.
 
-The `docs` CLI owns four operations:
+The `docs` CLI owns three permanent operations:
 
-1. `metadata validate` reports valid, invalid, legacy, and missing metadata.
-2. `metadata migrate-v2` performs a dry-run-first, atomic repository migration
-   using rename-aware Git history for timestamp evidence.
-3. `metadata sync` updates semantic timestamps and provides a staged check for
+1. `metadata validate` requires v2 for every managed document and reports
+   valid, invalid, legacy, and missing metadata.
+2. `metadata sync` updates semantic timestamps and provides a staged check for
    hooks and CI.
-4. `docs new` creates valid documents with current timestamps and required
+3. `docs new` creates valid documents with current timestamps and required
    profile fields.
 
-Consumers may read v1 during the bounded migration. After every managed host
-passes the v2-only audit, Harnery removes the dual readers, legacy aliases,
-fallback freshness rules, strict-mode transition flag, and both one-shot
-migrators. Migration code is not a permanent compatibility surface.
+The dry-run-first migrator used Git history only for the bounded corpus rewrite.
+It was deleted at cutover along with the dual readers, legacy aliases, fallback
+freshness rules, strict-mode transition flag, and the older bold-header
+migrator. Migration code is not a permanent compatibility surface.
 
 ## Consequences
 
@@ -90,3 +89,16 @@ triage, but it avoids manufacturing history or ownership.
 Compatibility removal is the last feature phase. The cutover proof includes a
 strict audit of every managed repository, a search for legacy field names and
 transition markers, and tests that reject v1 metadata through normal readers.
+
+## Result
+
+The 2026-08-19 host cutover migrated 598 existing documents. The final strict
+audit covered 599 documents across the host and its tracked repositories. It
+reported 599 valid documents and zero invalid, legacy, missing, warning, or
+error results.
+
+Harnery now rejects v1 metadata unconditionally. The `--require-v2` flag, bold
+header migrator, v1-to-v2 migrator, status aliases, and dual-read branches are
+gone. The committed JSON Schema and generated reference tables share the type
+enum with the runtime validator, and `check:docs-metadata-v2` catches generated
+artifact drift.

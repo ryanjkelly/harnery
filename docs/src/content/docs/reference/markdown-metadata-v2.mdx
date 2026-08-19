@@ -1,0 +1,79 @@
+---
+title: Markdown metadata v2
+description: Generated field and profile reference for the harnery-doc/v2 contract.
+sidebar:
+  order: 8
+---
+
+This reference is generated from the JSON Schema. Edit the TypeScript schema
+source and run `bun run generate:docs-metadata-v2` instead of editing this page.
+
+## Fields
+
+| Field | Shape |
+|---|---|
+| `schema` | literal `harnery-doc/v2` |
+| `type` | `plan`, `issue`, `handoff`, `runbook`, `topic`, `audit`, `book`, `entity`, `concept`, `query`, `page`, `inquiry`, `quote-sheet`, `weekly-post`, `synced-page` |
+| `created_at` | string |
+| `updated_at` | string |
+| `owner` | string |
+| `summary` | string |
+| `tags` | array |
+| `relations` | object |
+| `access` | object |
+| `status` | string |
+| `status_changed_at` | string |
+| `status_note` | string |
+| `severity` | `low`, `medium`, `high`, `critical` |
+| `resolved_at` | string |
+| `affected` | array |
+| `resolution` | object |
+| `title` | string |
+| `audience` | string |
+| `source` | string |
+| `reviewed_at` | string |
+| `review_due_at` | string |
+| `category` | string |
+| `aliases` | array |
+| `source_count` | integer |
+| `provenance` | object |
+| `primary_entity` | string |
+| `source_pages` | profile-specific |
+| `source_tokens` | profile-specific |
+| `top_entities` | array |
+| `handle` | string |
+| `published` | boolean |
+| `source_updated_at` | string |
+| `source_id` | string |
+| `source_template` | string |
+| `product` | profile-specific |
+| `variant` | profile-specific |
+| `sku` | profile-specific |
+| `manufacturer` | profile-specific |
+| `customer` | profile-specific |
+| `bid_id` | profile-specific |
+| `drive_file_id` | profile-specific |
+| `drive_title` | profile-specific |
+| `quote_date` | profile-specific |
+| `revision` | profile-specific |
+| `batch_size` | profile-specific |
+| `order_size` | profile-specific |
+| `price` | profile-specific |
+| `source_pdf` | profile-specific |
+| `claims` | profile-specific |
+| `week` | profile-specific |
+| `coverage` | profile-specific |
+
+## Profile requirements
+
+Every document requires `schema`, `type`, `created_at`, `updated_at`, and
+`summary`. These profiles add required fields:
+
+| Types | Additional required fields |
+|---|---|
+| `plan` | `status`, `status_changed_at`, `owner` |
+| `issue` | `status`, `status_changed_at`, `owner`, `severity` |
+| `handoff` | `status`, `status_changed_at`, `owner` |
+| `runbook` | `owner`, `reviewed_at`, `review_due_at` |
+| `book`, `entity`, `concept`, `query`, `page` | `title`, `category`, `source_count`, `provenance` |
+| `synced-page` | `title`, `handle`, `published`, `source`, `source_updated_at` |

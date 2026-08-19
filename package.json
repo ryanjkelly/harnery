@@ -210,7 +210,9 @@
     "verify:contracts": "bun run scripts/sync-verified-contracts.ts",
     "verify:contracts:check": "bun run scripts/sync-verified-contracts.ts --check",
     "generate:event-v3": "bun run scripts/generate-event-v3-contract.ts",
-    "check:event-v3": "bun run scripts/generate-event-v3-contract.ts --check && bun run scripts/check-event-v3-reader-boundary.ts"
+    "check:event-v3": "bun run scripts/generate-event-v3-contract.ts --check && bun run scripts/check-event-v3-reader-boundary.ts",
+    "generate:docs-metadata-v2": "bun run scripts/generate-docs-metadata-v2-schema.ts",
+    "check:docs-metadata-v2": "bun run scripts/generate-docs-metadata-v2-schema.ts --check"
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",

@@ -24,8 +24,14 @@ Once the initial host corpus had been migrated, keeping the fallback would leave
 
 `readDocStatusFromText` and `hasYamlStatus` read only a leading YAML `status:` field. `docs lint` treats missing YAML status as an error for plans, issues, handoffs, and archived plans. `docs sweep` and `docs index` use the same YAML-only reader.
 
-The legacy bold parser survives only inside `docs frontmatter-migrate`, where it is needed to convert an unmigrated host explicitly. It is not a runtime compatibility path.
+The legacy bold parser was retained temporarily inside
+`docs frontmatter-migrate`. ADR 0083 superseded that transition: the command
+and its parser were deleted after the host completed the `harnery-doc/v2`
+cutover.
 
 ## Consequences
 
-The initial host migration completed with zero remaining updates or errors from `harn docs frontmatter-migrate`. Harnery's focused and full test suites pass, with fixtures proving that bold-only lifecycle files fail lint while YAML-backed files pass. Leading YAML frontmatter is now the single lifecycle-metadata contract; a host that has not migrated must run `docs frontmatter-migrate` before its plans and issues will lint clean.
+The initial host migration completed with zero remaining updates or errors from
+the one-shot command. The later v2 cutover removed that command. Current
+fixtures prove that bold-only and unversioned lifecycle files fail lint; hosts
+must write `harnery-doc/v2` metadata directly.

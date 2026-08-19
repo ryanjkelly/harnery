@@ -1,6 +1,7 @@
 import { existsSync as __existsSyncForDocs } from "node:fs";
 import { resolve as __resolveForDocs } from "node:path";
 import { hasYamlStatus } from "./docs-frontmatter.ts";
+import { initDocsMetadataAuditContext, runDocsMetadataAudit } from "./docs-metadata-audit.ts";
 import { sh } from "./exec.ts";
 
 // Module-level docs context, initialized by initDocsContext() before any
@@ -22,6 +23,7 @@ export function initDocsContext(opts: {
   SUBMODULES = opts.submodules;
   EXTRA_EXCLUDED_PREFIXES = opts.extraExcludedPrefixes ?? [];
   DOCS_ROOT_ALLOWLIST = opts.docsRootAllowlist ?? [];
+  initDocsMetadataAuditContext({ repoRoot: opts.repoRoot, submodules: opts.submodules });
 }
 
 function submodulePath(name: string): string {
@@ -380,34 +382,6 @@ function checkChangelogNames(repoName: string, _repoPath: string, files: string[
   return violations;
 }
 
-/** Plans, issues, and handoffs must carry YAML lifecycle status (content check, slow). */
-function checkStatusHeaders(repoName: string, repoPath: string, files: string[]): Violation[] {
-  const violations: Violation[] = [];
-  const targetDirs = ["docs/plans/", "docs/issues/", "docs/handoffs/"];
-  for (const rel of files) {
-    const dirMatch = targetDirs.some((d) => rel.startsWith(d));
-    if (!dirMatch) continue;
-    const name = basename(rel);
-    if (name === "README.md") continue;
-    const full = join(repoPath, rel);
-    if (!hasStatusHeader(full)) {
-      const kind = rel.startsWith("docs/plans/")
-        ? "plan"
-        : rel.startsWith("docs/issues/")
-          ? "issue"
-          : "handoff";
-      violations.push({
-        severity: "error",
-        repo: repoName,
-        path: join(repoName === "(root)" ? "" : repoName, rel),
-        rule: "missing-status-header",
-        message: `${kind} missing status in leading YAML frontmatter`,
-      });
-    }
-  }
-  return violations;
-}
-
 /** Intentional monoliths >30KB need a declaration banner */
 function checkMonolithDeclaration(
   repoName: string,
@@ -462,8 +436,20 @@ export async function runLint(opts: LintOpts): Promise<Violation[]> {
     violations.push(...checkChangelogNames(name, path, files));
 
     if (!opts.fast) {
-      violations.push(...checkStatusHeaders(name, path, files));
       violations.push(...checkMonolithDeclaration(name, path, files));
+    }
+  }
+
+  const metadataRows = await runDocsMetadataAudit({ repo: opts.repo });
+  for (const row of metadataRows) {
+    for (const issue of row.issues.filter((entry) => entry.severity === "error")) {
+      violations.push({
+        severity: "error",
+        repo: row.repo,
+        path: row.path,
+        rule: `metadata-v2:${issue.code}`,
+        message: issue.field ? `${issue.field}: ${issue.message}` : issue.message,
+      });
     }
   }
 

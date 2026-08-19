@@ -45,85 +45,12 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
   return { data, body: text.slice(m[0].length), raw: m[1]! };
 }
 
-/**
- * Kind-independent token normalization (spacing / casing / punctuation
- * variants). Kind-specific collapses (done -> shipped vs resolved) are applied
- * in `normalizeStatus`.
- */
-const GENERIC_NORMALIZE: Record<string, string> = {
-  in_progress: "in-progress",
-  inprogress: "in-progress",
-  "in progress": "in-progress",
-  "in-progress": "in-progress",
-  wip: "in-progress",
-  "wont-fix": "wontfix",
-  wontfix: "wontfix",
-  proposed: "proposed",
-  abandoned: "abandoned",
-  open: "open",
-  resolved: "resolved",
-  shipped: "shipped",
-};
-
-// "done"-family tokens collapse to different canonical values per kind.
-const DONE_FAMILY = new Set(["done", "complete", "completed", "finished"]);
-const KIND_NORMALIZE: Record<DocKind, Record<string, string>> = {
-  plan: {
-    planning: "proposed",
-    draft: "proposed",
-    approved: "proposed",
-    plan: "proposed",
-    open: "proposed",
-    deferred: "proposed",
-    implemented: "shipped",
-    resolved: "shipped",
-    fixed: "shipped",
-    archived: "shipped",
-    shelved: "abandoned",
-  },
-  issue: {
-    "in progress": "open",
-    in_progress: "open",
-    "in-progress": "open",
-    blocked: "open",
-    mitigated: "open",
-    fixed: "resolved",
-    shipped: "resolved",
-  },
-  handoff: {
-    "in progress": "open",
-    in_progress: "open",
-    "in-progress": "open",
-    blocked: "open",
-    fixed: "resolved",
-    shipped: "resolved",
-  },
-};
 const ALLOWED_BY_KIND: Record<DocKind, ReadonlySet<string>> = {
   plan: new Set(["proposed", "in-progress", "shipped", "abandoned"]),
   issue: new Set(["open", "resolved", "wontfix"]),
   handoff: new Set(["open", "resolved", "abandoned"]),
 };
-const ALL_CANONICAL = new Set(Object.values(ALLOWED_BY_KIND).flatMap((values) => [...values]));
-
-/**
- * Normalize a raw status token to the canonical enum for its kind.
- * Returns null when the token can't be mapped (caller may fail loud).
- */
-export function normalizeStatus(raw: string, kind?: DocKind): string | null {
-  const t = raw.trim().toLowerCase();
-  if (!t) return null;
-  if (DONE_FAMILY.has(t)) {
-    // plans ship; issues/handoffs resolve. Default to "shipped" when unknown.
-    return kind === "issue" || kind === "handoff" ? "resolved" : "shipped";
-  }
-  const normalized = (kind ? KIND_NORMALIZE[kind][t] : undefined) ?? GENERIC_NORMALIZE[t];
-  if (!normalized) return null;
-  const allowed = kind ? ALLOWED_BY_KIND[kind] : ALL_CANONICAL;
-  return allowed.has(normalized) ? normalized : null;
-}
-
-/** Read and normalize a doc's YAML lifecycle status, or null when absent/invalid. */
+/** Read a canonical v2 lifecycle status, or null when absent or invalid. */
 export function readDocStatus(filePath: string, kind?: DocKind): string | null {
   let content: string;
   try {
@@ -137,11 +64,13 @@ export function readDocStatus(filePath: string, kind?: DocKind): string | null {
 /** Same as {@link readDocStatus} but from an in-memory string (testable). */
 export function readDocStatusFromText(content: string, kind?: DocKind): string | null {
   const { data } = parseFrontmatter(content);
-  const yamlStatus = data.status;
-  if (typeof yamlStatus === "string" && yamlStatus.trim()) {
-    return normalizeStatus(yamlStatus, kind);
-  }
-  return null;
+  if (data.schema !== "harnery-doc/v2") return null;
+  if (kind && data.type !== kind) return null;
+  if (typeof data.status !== "string") return null;
+  if (kind) return ALLOWED_BY_KIND[kind].has(data.status) ? data.status : null;
+  return Object.values(ALLOWED_BY_KIND).some((allowed) => allowed.has(data.status as string))
+    ? data.status
+    : null;
 }
 
 /** Whether a doc carries a non-empty status in leading YAML frontmatter. */
