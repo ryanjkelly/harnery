@@ -237,6 +237,126 @@ describe("event ledger V3 persistent hook recorder", () => {
         expect(turn.tool_ms.reasons).not.toContain("tool_terminal_count_mismatch");
       }
     }
+  }, 10_000);
+
+  test("keeps one canonical start when Codex repeats a prompt inside an open turn", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-repeated-prompt";
+    const nativeTurn = "native-turn";
+    const recordTool = (toolId: string, opened: string, closed: string) => {
+      const payload = parsed({
+        session_id: nativeSession,
+        turn_id: nativeTurn,
+        tool_use_id: toolId,
+        tool_name: "Bash",
+        tool_input: { command: `private-${toolId}` },
+      });
+      recordHookSignalV3({
+        ...baseInput(root, "pre-tool-use", payload, "codex"),
+        monotonic_ns: opened,
+      });
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "post-tool-use",
+          parsed({ ...payload, tool_response: `private-response-${toolId}` }),
+          "codex",
+        ),
+        monotonic_ns: closed,
+      });
+    };
+
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    const firstObservedAt = new Date().toISOString();
+    const firstStart = recordHookSignalV3({
+      ...baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, prompt: "private prompt one" }),
+        "codex",
+      ),
+      observed_at: firstObservedAt,
+      monotonic_ns: "1000000000",
+      hook_name: "UserPromptSubmit",
+      hook_duration_ms: 5,
+    });
+    recordTool("tool-one", "2000000000", "3000000000");
+    const secondStart = recordHookSignalV3({
+      ...baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, prompt: "private prompt two" }),
+        "codex",
+      ),
+      monotonic_ns: "4000000000",
+      hook_name: "UserPromptSubmit",
+      hook_duration_ms: 6,
+    });
+    recordTool("tool-two", "5000000000", "6000000000");
+    const thirdStart = recordHookSignalV3({
+      ...baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, prompt: "private prompt three" }),
+        "codex",
+      ),
+      monotonic_ns: "7000000000",
+      hook_name: "UserPromptSubmit",
+      hook_duration_ms: 7,
+    });
+    recordTool("tool-three", "8000000000", "9000000000");
+    recordHookSignalV3({
+      ...baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+      monotonic_ns: "10000000000",
+    });
+
+    expect(firstStart.state).toBe("recorded");
+    expect(secondStart).toEqual({ state: "ignored" });
+    expect(thirdStart).toEqual({ state: "ignored" });
+    const ledger = readLedgerV3(root);
+    const events = ledger.events.map(({ event }) => event);
+    const starts = events.filter((event) => event.event_type === "turn.started");
+    const requests = events.filter((event) => event.event_type === "tool.requested");
+    const toolTerminals = events.filter((event) => event.event_type === "tool.completed");
+    const terminal = events.find((event) => event.event_type === "turn.completed");
+    expect(starts).toHaveLength(1);
+    expect(requests).toHaveLength(3);
+    expect(toolTerminals).toHaveLength(3);
+    if (starts[0]?.event_type !== "turn.started" || terminal?.event_type !== "turn.completed") {
+      throw new Error("turn boundary fixture did not close");
+    }
+    expect(terminal.payload.span.open_event_id).toBe(starts[0].event_id);
+    expect(terminal.payload.span.opened_at).toBe(starts[0].time.observed_at);
+    expect(terminal.payload.tool_call_count).toMatchObject({ state: "observed", value: 3 });
+    expect(terminal.payload.harness).toMatchObject({
+      state: "observed",
+      value: { hook_time_ms: 18, hook_count: 3 },
+    });
+    expect(
+      new Set(
+        [...requests, ...toolTerminals, terminal].map(
+          (event) => (event.scope as { turn_id: string }).turn_id,
+        ),
+      ).size,
+    ).toBe(1);
+    expect(readHookProducerStateV3(root, "codex", nativeSession)?.turn_ordinal).toBe(1);
+
+    const diagnosticsDir = join(root, ".harnery/ledgers/v3/diagnostics");
+    const diagnostics = readdirSync(diagnosticsDir)
+      .filter((name) => name.startsWith("duplicate_turn_start_suppressed-"))
+      .map((name) => readFileSync(join(diagnosticsDir, name), "utf8"));
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.join("\n")).not.toContain("private prompt");
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(`${durable}\n${diagnostics.join("\n")}`).not.toContain("private-tool");
+    expect(`${durable}\n${diagnostics.join("\n")}`).not.toContain("private-response");
   });
 
   test("accumulates bounded hook CLI time inside the active turn", () => {

@@ -596,6 +596,11 @@ function processHookSignalLocked(
           input.payload.turn_id,
         ).replace(/^hid_/, "tid_") as `tid_${string}`)
       : undefined;
+    const duplicateOpenTurnStart =
+      input.signal === "user-prompt-submit" &&
+      nativeTid !== undefined &&
+      state.current_turn_id === nativeTid &&
+      state.current_turn_span !== undefined;
 
     if (input.signal === "user-prompt-submit" && !state.current_turn_span) {
       state.current_turn_span = openSpanStateV3({
@@ -606,7 +611,7 @@ function processHookSignalLocked(
       });
     }
 
-    recordTurnHarnessTiming(state, input);
+    recordTurnHarnessTiming(state, input, !duplicateOpenTurnStart);
 
     closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
     if (input.signal === "permission-request") {
@@ -643,6 +648,22 @@ function processHookSignalLocked(
           (nativeTid === undefined || candidate.turn_id !== nativeTid),
         "completion_not_observed_before_next_turn",
       );
+    }
+
+    if (duplicateOpenTurnStart) {
+      writeProducerDiagnosticV3(input.coordRoot, "duplicate_turn_start_suppressed", {
+        adapter: input.adapter,
+        signal: input.signal,
+        reason: "native_turn_already_open",
+        instance_id: input.instance_id,
+        session_hash: sessionHash,
+        generation_id: state.generation_id,
+        turn_id: nativeTid,
+        span_id: state.current_turn_span?.span_id,
+        payload: input.payload,
+      });
+      publishProducerState(path, state);
+      return { state: "ignored" };
     }
 
     let sourceId = sourceIdForSignal(input, rootFingerprintContext);
@@ -2140,8 +2161,14 @@ function readProducerState(path: string): HookProducerStateV3 {
   return state;
 }
 
-function recordTurnHarnessTiming(state: HookProducerStateV3, input: RecordHookSignalV3Input): void {
-  if (input.signal === "user-prompt-submit") state.turn_harness = emptyTurnHarnessTiming();
+function recordTurnHarnessTiming(
+  state: HookProducerStateV3,
+  input: RecordHookSignalV3Input,
+  resetForTurnStart = true,
+): void {
+  if (input.signal === "user-prompt-submit" && resetForTurnStart) {
+    state.turn_harness = emptyTurnHarnessTiming();
+  }
   if (
     input.hook_duration_ms === undefined ||
     (!state.current_turn_id && input.signal !== "user-prompt-submit")
