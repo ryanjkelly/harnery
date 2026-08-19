@@ -66,7 +66,11 @@ export function emitEventV3(input: EventV3EmitInput): boolean {
       encoding: "utf8",
       stdio: ["pipe", "ignore", "pipe"],
       input: JSON.stringify(input.observation),
-      timeout: 3000,
+      // Budget the append generously. Under multi-agent contention a single
+      // `agent-coord emit-event` has been measured at 3.4-4.1s on a loaded
+      // host, so a 3s cap timed out every emit and blocked end-of-turn checks
+      // -- exactly the failure this module's doc warns about.
+      timeout: 15000,
       cwd: root,
       env: { ...process.env, HARNERY_COORD_ROOT_OVERRIDE: root },
     });
