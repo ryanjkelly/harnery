@@ -34,6 +34,7 @@ import {
 } from "../control.ts";
 import { loadOrCreateFingerprintKeyStoreV3 } from "../fingerprint-keys.ts";
 import { EVENT_V3_SCHEMA_DIGEST } from "../generated.ts";
+import { projectLatencyV3 } from "../latency.ts";
 import { readLedgerV3 } from "../reader.ts";
 import { eventV3Paths } from "../writer.ts";
 import {
@@ -139,6 +140,103 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(`${durable}${JSON.stringify(state)}`).not.toContain("API_SECRET_123");
     expect(`${durable}${JSON.stringify(state)}`).not.toContain("private output");
     expect(`${durable}${JSON.stringify(state)}`).not.toContain(nativeSession);
+  });
+
+  test("keeps mid-flight tool counts in their original turn scope", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-mid-flight-tool-scope";
+    const recordTool = (turnId: string, toolId: string) => {
+      const payload = parsed({
+        session_id: nativeSession,
+        turn_id: turnId,
+        tool_use_id: toolId,
+        tool_name: "Bash",
+      });
+      expect(recordHookSignalV3(baseInput(root, "pre-tool-use", payload, "codex")).state).toBe(
+        "recorded",
+      );
+      expect(recordHookSignalV3(baseInput(root, "post-tool-use", payload, "codex")).state).toBe(
+        "recorded",
+      );
+    };
+
+    for (let index = 0; index < 9; index += 1) {
+      recordTool("pre-boundary", `pre-boundary-${index}`);
+    }
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "native-turn-one" }),
+        "codex",
+      ),
+    );
+    for (let index = 0; index < 4; index += 1) {
+      recordTool("native-turn-one", `native-one-${index}`);
+    }
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: "native-turn-one" }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "native-turn-two" }),
+        "codex",
+      ),
+    );
+    for (let index = 0; index < 2; index += 1) {
+      recordTool("native-turn-two", `native-two-${index}`);
+    }
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: "native-turn-two" }),
+        "codex",
+      ),
+    );
+
+    const ledger = readLedgerV3(root);
+    const events = ledger.events.map(({ event }) => event);
+    const requests = events.filter((event) => event.event_type === "tool.requested");
+    const toolTerminals = events.filter((event) => event.event_type === "tool.completed");
+    const turnTerminals = events.filter((event) => event.event_type === "turn.completed");
+    expect(requests).toHaveLength(15);
+    expect(toolTerminals).toHaveLength(15);
+    expect(turnTerminals).toHaveLength(2);
+
+    for (const terminal of turnTerminals) {
+      if (terminal.event_type !== "turn.completed") continue;
+      const turnId = (terminal.scope as { turn_id: string }).turn_id;
+      const scopedRequests = requests.filter(
+        (event) => (event.scope as { turn_id?: string }).turn_id === turnId,
+      );
+      expect(terminal.payload.tool_call_count).toEqual({
+        state: "observed",
+        value: scopedRequests.length,
+        attestation: "derived",
+        confidence: "exact",
+      });
+    }
+    expect(
+      turnTerminals.map((terminal) =>
+        terminal.event_type === "turn.completed" &&
+        terminal.payload.tool_call_count.state === "observed"
+          ? terminal.payload.tool_call_count.value
+          : undefined,
+      ),
+    ).toEqual([4, 2]);
+    for (const turn of projectLatencyV3(ledger).turns) {
+      if (turn.tool_ms.state === "unknown") {
+        expect(turn.tool_ms.reasons).not.toContain("tool_terminal_count_mismatch");
+      }
+    }
   });
 
   test("accumulates bounded hook CLI time inside the active turn", () => {

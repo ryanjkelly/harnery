@@ -130,6 +130,7 @@ export interface HookProducerStateV3 {
   next_sequence: number;
   current_turn_id?: `tid_${string}`;
   tool_call_count: number;
+  tool_call_count_turn_id?: `tid_${string}`;
   last_event_id?: `evt_${string}`;
   last_monotonic_ns?: string;
   started_event_id?: `evt_${string}`;
@@ -844,6 +845,9 @@ function processHookSignalLocked(
       (input.signal === "stop" || input.signal === "stop-failure") &&
       input.adapter === "cursor" &&
       state.tool_call_count === 0;
+    const toolCallCountScopeMismatch =
+      (input.signal === "stop" || input.signal === "stop-failure") &&
+      (!state.current_turn_id || state.tool_call_count_turn_id !== state.current_turn_id);
     const event = normalizeHookEventV3(input.signal, input.payload, {
       coordRoot: input.coordRoot,
       adapter: input.adapter,
@@ -885,10 +889,15 @@ function processHookSignalLocked(
       // Cursor's terminal payload has no native tool aggregate. With no
       // delivered tool hook, the recorder has no evidence that zero calls
       // occurred; emitting an exact zero would turn hook loss into false data.
-      tool_call_count: cursorToolChannelUnattested ? undefined : state.tool_call_count,
+      tool_call_count:
+        cursorToolChannelUnattested || toolCallCountScopeMismatch
+          ? undefined
+          : state.tool_call_count,
       tool_call_count_missing_reason: cursorToolChannelUnattested
         ? "tool_channel_unattested"
-        : undefined,
+        : toolCallCountScopeMismatch
+          ? "tool_count_turn_scope_unattested"
+          : undefined,
       delegation_id: delegation?.delegation_id,
       child_generation_id: delegation?.child_generation_id,
       agent_role: delegation?.role,
@@ -1668,7 +1677,12 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
     state.session_span.open_event_id = event.event_id as `evt_${string}`;
   }
   if (event.event_type === "turn.started") {
-    state.current_turn_id = (event.scope as { turn_id: `tid_${string}` }).turn_id;
+    const nextTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
+    state.current_turn_id = nextTurnId;
+    if (state.tool_call_count_turn_id !== nextTurnId) {
+      state.tool_call_count = 0;
+      state.tool_call_count_turn_id = nextTurnId;
+    }
     if (state.current_turn_span) {
       state.current_turn_span.open_event_id = event.event_id as `evt_${string}`;
     }
@@ -1677,7 +1691,14 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
       (closed) => closed.turn_ordinal >= state.turn_ordinal - CLOSED_SPAN_TURN_RETENTION,
     );
   }
-  if (event.event_type === "tool.requested") state.tool_call_count += 1;
+  if (event.event_type === "tool.requested") {
+    const requestTurnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
+    if (state.tool_call_count_turn_id !== requestTurnId) {
+      state.tool_call_count = 0;
+      state.tool_call_count_turn_id = requestTurnId;
+    }
+    state.tool_call_count += 1;
+  }
   if (event.event_type === "wait.started") {
     const waitId = (event.payload as { wait_id: `hid_${string}` }).wait_id;
     const turnId = (event.scope as { turn_id: `tid_${string}` }).turn_id;
@@ -1736,6 +1757,7 @@ function applyCommittedEvent(state: HookProducerStateV3, event: EventV3): void {
     state.current_turn_id = undefined;
     state.current_turn_span = undefined;
     state.tool_call_count = 0;
+    state.tool_call_count_turn_id = undefined;
     state.turn_harness = emptyTurnHarnessTiming();
   }
   if (event.event_type === "session.ended") state.terminal = true;
@@ -2027,6 +2049,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "started_event_id",
     "terminal",
     "tool_call_count",
+    "tool_call_count_turn_id",
     "turn_harness",
     "turn_ordinal",
     "waits",
@@ -2048,6 +2071,8 @@ function readProducerState(path: string): HookProducerStateV3 {
     state.next_sequence < 1 ||
     !Number.isSafeInteger(state.tool_call_count) ||
     state.tool_call_count < 0 ||
+    (state.tool_call_count_turn_id !== undefined &&
+      !/^tid_[a-f0-9]{64}$/.test(state.tool_call_count_turn_id)) ||
     !validTurnHarnessTiming(state.turn_harness) ||
     !validOpenSpanState(state.session_span) ||
     (state.current_turn_span !== undefined && !validOpenSpanState(state.current_turn_span)) ||
