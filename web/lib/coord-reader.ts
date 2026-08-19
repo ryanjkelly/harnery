@@ -19,9 +19,15 @@ import { readEventV3ControlState } from "../../src/core/events/v3/control";
 import {
   type CoordinationGenerationViewV3,
   projectCoordinationViewV3,
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
 } from "../../src/core/events/v3/coordination-view";
 import { type LiveDisplayRowV3, listLiveDisplayV3 } from "../../src/core/events/v3/live-feed";
-import { liveInstanceIdV3, nativeInstanceIdV3 } from "../../src/core/events/v3/live-routing";
+import {
+  liveInstanceIdV3,
+  nativeInstanceIdV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../src/core/events/v3/live-routing";
 import { listHookProducerStateRecordsV3 } from "../../src/core/events/v3/producers/recorder";
 import { readLedgerV3 } from "../../src/core/events/v3/reader";
 import { eventV3Paths } from "../../src/core/events/v3/writer";
@@ -127,6 +133,15 @@ export interface InvalidHeartbeat {
   issue: string;
 }
 
+/**
+ * Why the row list is empty. `readLiveCoordinationRows` answers a blocked
+ * ledger route and an unsafe authority view the same way it answers a genuinely
+ * idle repo — with no rows — so an empty dashboard alone cannot tell "nobody is
+ * working" from "this build cannot read the ledger". Only computed when there
+ * are no rows to explain.
+ */
+export type LedgerReadState = { ok: true } | { ok: false; reason: string };
+
 export interface AgentsSnapshot {
   active: Heartbeat[];
   stale: Heartbeat[];
@@ -137,6 +152,7 @@ export interface AgentsSnapshot {
     count: number;
     invalid: InvalidHeartbeat[];
     stale_threshold_seconds: number;
+    read_state: LedgerReadState;
   };
 }
 
@@ -194,6 +210,24 @@ function readCacheDiagnostics(): { invalid: InvalidHeartbeat[]; dir: string } {
     }
   }
   return { invalid, dir };
+}
+
+/**
+ * Reproduce the two silent bail-outs in `readLiveCoordinationRows` so an empty
+ * list can name its cause. Repeats that function's reads, so call it only when
+ * the list is already empty.
+ */
+function probeLedgerReadState(root: string): LedgerReadState {
+  const route = resolveLiveEventLedgerRouteV3(root);
+  if (route.state === "blocked") {
+    return { ok: false, reason: `ledger route blocked: ${route.reason}` };
+  }
+  try {
+    requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(root));
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message };
+  }
+  return { ok: true };
 }
 
 export function readAgents(): AgentsSnapshot {
@@ -257,6 +291,7 @@ export function readAgents(): AgentsSnapshot {
       count: all.length,
       invalid,
       stale_threshold_seconds: STALE_AGE_SECONDS,
+      read_state: all.length === 0 ? probeLedgerReadState(root) : { ok: true },
     },
   };
 }

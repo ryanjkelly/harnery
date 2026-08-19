@@ -74,6 +74,17 @@ export default function HomePage() {
           />
         </div>
 
+        {!snap.meta.read_state.ok && (
+          <div className="card p-3 mb-6 border-red-900 bg-red-950/40 text-red-200 text-sm">
+            <strong>Cannot read the coordination ledger</strong>
+            <p className="mt-1 font-mono text-xs">{snap.meta.read_state.reason}</p>
+            <p className="mt-1 text-xs text-red-300/80">
+              Agents may be running even though none are listed. A web build older than the ledger
+              is the usual cause; rebuild and restart this server.
+            </p>
+          </div>
+        )}
+
         {snap.meta.invalid.length > 0 && (
           <div className="card p-3 mb-6 border-yellow-900 bg-yellow-950/40 text-yellow-200 text-sm">
             <strong>{snap.meta.invalid.length} invalid heartbeat(s) skipped</strong>

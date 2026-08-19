@@ -35,6 +35,7 @@ function snapshot(
       count: active.length + stale.length,
       invalid: [],
       stale_threshold_seconds: 300,
+      read_state: { ok: true },
     },
   };
 }
