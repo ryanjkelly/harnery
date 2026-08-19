@@ -1,19 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   listSessionFinalizationRequestsV3,
   requestSessionEndExplicitV3,
 } from "../agents/session-finalizer-v3.ts";
+import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../events/v3/capabilities.ts";
 import {
@@ -25,7 +19,6 @@ import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
-import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
@@ -41,7 +34,9 @@ describe("agent-hook V3 hard cut", () => {
     const owner = "candidate-owner";
     const outputs: string[] = [];
     const hook = (event: string, payload: Record<string, unknown>) => {
-      const result = run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+      const result = run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
       expect(result.status).toBe(0);
       outputs.push(result.stdout, result.stderr);
     };
@@ -108,14 +103,62 @@ describe("agent-hook V3 hard cut", () => {
       .find((event) => event.event_type === "tool.completed" && event.payload.tool.name === "Bash");
     if (completedTool?.event_type !== "tool.completed") throw new Error("tool terminal missing");
     expect(completedTool.payload.duration_ms.state).toBe("observed");
+    const completedTurn = ledger.events
+      .map(({ event }) => event)
+      .find((event) => event.event_type === "turn.completed");
+    expect(
+      completedTurn?.event_type === "turn.completed" && completedTurn.payload.ritual,
+    ).toMatchObject({
+      status_box_present: { state: "observed", value: false },
+      session_name: { state: "observed", value: { required: false, present: false } },
+    });
     expect(ledger.events.length).toBeGreaterThan(2);
+  }, 10_000);
+
+  test("Claude Code Stop enforcement blocks from structural V3 ritual evidence", () => {
+    const root = candidateRoot();
+    const owner = "stop-enforcement-owner";
+    const hook = (event: string, payload: Record<string, unknown>) => {
+      const result = run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+      expect(result.status).toBe(0);
+    };
+
+    hook("session-start", { session_id: owner, cwd: root, source: "startup" });
+    hook("user-prompt-submit", {
+      session_id: owner,
+      cwd: root,
+      prompt: "answer without tools",
+    });
+    const stop = run(
+      AGENT_HOOK,
+      ["stop", "--adapter", "claude-code"],
+      {
+        session_id: owner,
+        cwd: root,
+        last_assistant_message: "done",
+      },
+      root,
+    );
+
+    expect(stop.status).toBe(2);
+    expect(stop.stdout).toBe("");
+    expect(stop.stderr).toContain("End-of-turn rule (2/3)");
+    expect(stop.stderr).toContain("rule=stop-hook.rule_2_3");
+    const terminal = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "turn.completed");
+    expect(terminal?.event_type === "turn.completed" && terminal.payload.ritual).toMatchObject({
+      status_box_present: { state: "observed", value: false },
+    });
   });
 
   test("stop hook completes an explicit end queued by its own open tool span", () => {
     const root = candidateRoot();
     const owner = "deferred-end-owner";
     const hook = (event: string, payload: Record<string, unknown>) => {
-      const result = run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root);
+      const result = run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
       expect(result.status).toBe(0);
     };
     hook("session-start", { session_id: owner, cwd: root, source: "startup" });
@@ -165,7 +208,9 @@ describe("agent-hook V3 hard cut", () => {
     const owner = "cursor-current-owner";
     const staleAgent = "cursor-stale-agent";
     const hook = (event: string, payload: Record<string, unknown>) => {
-      const result = run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root);
+      const result = run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
       expect(result.status).toBe(0);
       expect(`${result.stdout}\n${result.stderr}`).not.toContain("error");
     };
@@ -225,7 +270,9 @@ describe("agent-hook V3 hard cut", () => {
     expect(events.filter((event) => event.event_type === "tool.completed")).toHaveLength(1);
     expect(
       events
-        .filter((event) => event.event_type === "turn.started" || event.event_type === "turn.completed")
+        .filter(
+          (event) => event.event_type === "turn.started" || event.event_type === "turn.completed",
+        )
         .map((event) => ("turn_id" in event.scope ? event.scope.turn_id : undefined)),
     ).toEqual([state.current_turn_id, state.current_turn_id]);
     expect(JSON.stringify(events)).not.toContain(staleAgent);

@@ -64,12 +64,11 @@ export function recordLiveTaskChangeV3(
     task: undefined,
     v3_task_state: cleared ? ("cleared" as const) : ("set" as const),
   };
-  if (cleared && authorityStateDigest(before) === authorityStateDigest(desired)) {
-    if (!setTask(input.coordRoot, input.subject ?? input.owner, input.task)) {
-      throw new LiveCoordinationAuthorityV3Error("task_materialization_failed");
-    }
-    return { state: "unchanged" };
-  }
+  // A task declaration is also per-turn ritual evidence. Record repeated
+  // declarations, including cleared -> cleared, even when the disposable view
+  // does not change. Otherwise a conversational Cursor remediation turn can
+  // run `set-task ""` exactly as instructed and still loop forever because no
+  // coord.task_changed event reaches the verdict window.
   return recordLiveAuthority(
     input,
     "task-changed",

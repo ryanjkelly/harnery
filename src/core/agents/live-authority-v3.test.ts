@@ -232,9 +232,13 @@ describe("live V3 coordination", () => {
       suggested_session_name: "Agent unknown - First focus",
     });
     expect(readHeartbeat(root, "operator")?.task).toBeUndefined();
+    expect(recordLiveTaskChangeV3(liveInput(root, { task: "" })).state).toBe("recorded");
     const ledger = JSON.stringify(readLedgerV3(root).events);
     expect(ledger).not.toContain("First focus");
     expect(ledger).not.toContain("Second focus");
+    expect(
+      readLedgerV3(root).events.filter(({ event }) => event.event_type === "coord.task_changed"),
+    ).toHaveLength(4);
   });
 
   test("bootstraps Codex authority from runtime attestation when no cache exists", () => {

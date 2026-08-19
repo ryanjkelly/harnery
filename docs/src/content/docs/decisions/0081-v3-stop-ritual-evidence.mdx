@@ -1,0 +1,83 @@
+---
+title: "0081: Restore Stop enforcement from V3 ritual evidence"
+description: "ADR: record privacy-safe ritual observations in V3 so Claude Code and Cursor can enforce end-of-turn coordination without retaining reply text."
+---
+
+**Status:** accepted (2026-08-18) · **Scope:** product tier (`core/events/v3`, hooks, agents)
+
+## Context
+
+The V3 migration removed reply bodies from the canonical event ledger. That was
+the right privacy boundary, but the migration also made the Stop verdict fail
+open for every adapter. Claude Code and Cursor stopped enforcing the
+end-of-turn coordination ritual even though both adapters still had safe block
+channels and the hooks still computed the relevant facts.
+
+The missing evidence was small. Task declarations already produce
+`coord.task_changed`, status checks already produce `coord.status_observed`, and
+tool use already produces `tool.requested`. The ledger lacked only two
+structural facts: whether a completed reply showed the required status and
+session-name cues, and whether Cursor's next turn came from Harnery's own Stop
+remediation message.
+
+Restoring transcript storage would solve the wrong problem. The verdict needs
+booleans, not prose. Reading the disposable heartbeat as authority would also
+be wrong because that cache can be deleted or rebuilt.
+
+## Alternatives
+
+**Keep every adapter fail-open.** Rejected because it silently weakens a
+documented coordination guarantee and makes missed task/status rituals
+indistinguishable from an intentional policy choice.
+
+**Restore reply text in the ledger.** Rejected because it would retain operator
+and model prose merely to answer three yes-or-no questions.
+
+**Use the heartbeat cache as verdict authority.** Rejected because the cache is
+a projection, not durable evidence, and it cannot reconstruct Cursor's
+cross-turn remediation window.
+
+**Make Codex enforce the ritual too.** Rejected by ADR 0051. A Codex Stop
+continuation can replace the answer the operator was meant to receive.
+
+## Decision
+
+Add two optional, privacy-safe fields to V3:
+
+- `turn.started.payload.stop_remediation` records that the prompt begins with
+  Harnery's machine remediation marker.
+- `turn.completed.payload.ritual` records observation-wrapped status-box and
+  session-name results. It contains booleans only. Cursor reports the
+  reply-text observations as unsupported because its Stop payload does not
+  expose assistant text.
+
+The fields are optional so the contract change is structurally additive. A
+current producer writes them on every applicable event. A current Claude Code
+terminal without observed ritual evidence fails open instead of inventing an
+answer.
+
+The Stop evaluator reads the validated V3 stream through the canonical reader.
+It scopes evidence to the current owner and generation, then walks backward
+over consecutive `stop_remediation` turns so Cursor repairs accumulate within
+the last human-authored turn. `coord.task_changed`, `coord.status_observed`, and
+`tool.requested` supply the other ritual facts.
+
+Every `set-task` call records `coord.task_changed`, even when an empty task was
+already clear. The command is both a state mutation and a per-turn declaration.
+Deduplicating the second role would make `set-task ""` unable to repair a
+conversational Cursor turn.
+
+Claude Code keeps exit-2 enforcement. Cursor keeps its bounded
+`followup_message` enforcement and asks for both repair commands in one pass.
+Codex remains observe-only, and workflow children remain exempt.
+
+## Result
+
+Claude Code and Cursor once again enforce the same end-of-turn policy they had
+before V3. Cursor remediation remains monotonic, so running one missing command
+does not discard evidence from the turn it repairs. Codex continues to record
+the observations without risking a destructive continuation.
+
+The ledger now makes ritual overhead auditable without storing reply content.
+Tool, command, and turn economics can be compared with the coordination events
+that caused extra work, including remediation turns.

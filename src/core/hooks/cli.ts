@@ -30,7 +30,7 @@ import {
   classifyWriteClaimFinalization,
   formatWriteClaimFinalizationDenial,
 } from "../agents/finalization.ts";
-import { evaluateStopHook } from "../agents/rules/stop-hook.ts";
+import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-hook.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
@@ -655,6 +655,19 @@ async function main(): Promise<number> {
     instanceId: owner.instance_id,
     eventName,
   });
+  const turnRitual =
+    norm.event_type === "turn.completed"
+      ? {
+          status_box_present: data.status_box_present === true,
+          status_box_present_strict: data.status_box_present_strict === true,
+          session_name_required: typeof data.session_name_present_for === "string",
+          session_name_present: data.session_name_present === true,
+        }
+      : undefined;
+  const stopRemediation =
+    norm.event_type === "turn.started" &&
+    typeof data.prompt_text === "string" &&
+    data.prompt_text.includes(STOP_REMEDIATION_MARKER);
 
   if (ledgerRoute.state === "blocked") {
     appendDebug(coordRoot, {
@@ -699,6 +712,8 @@ async function main(): Promise<number> {
     hook_name: eventName,
     hook_duration_ms: Math.max(0, Math.floor(performance.now() - hookStartedAt)),
     monotonic_ns: hookClock.monotonic_ns,
+    ...(stopRemediation ? { stop_remediation: true } : {}),
+    ...(turnRitual ? { turn_ritual: turnRitual } : {}),
   });
   const v3EventId =
     v3Result && "event" in v3Result
@@ -971,9 +986,9 @@ async function main(): Promise<number> {
       runSessionSyncExtension(coordRoot, false);
     }
 
-    // Stop verdict (status-box + set-task gate). Direct in-process call: the
-    // rule lives in harnery. agent-hook already emitted this turn.completed (with
-    // status_box_present) above, so the evidence is in the stream.
+    // Stop verdict (V3 ritual + task/status gate). Direct in-process call: the
+    // rule lives in Harnery. agent-hook already emitted this turn.completed
+    // with privacy-safe ritual observations, so the evidence is in the stream.
     const verdict = evaluateStopHook(coordRoot, {
       rule: "stop-hook",
       instance_id: owner.instance_id,
@@ -983,10 +998,10 @@ async function main(): Promise<number> {
       workflow_child: coordEnv("WORKFLOW_CHILD") === "1",
     });
     if (!verdict.allow) {
-      // Adapter-aware enforcement channel: Claude Code / Codex honor exit-2 +
-      // stderr as a turn block; Cursor ignores exit codes (fail-open) and
-      // re-prompts only via a `followup_message` it auto-submits. emitStopBlock
-      // writes the right shape and returns the exit code to use.
+      // Adapter-aware enforcement channel: Claude Code honors exit-2 + stderr
+      // as a turn block; Cursor ignores exit codes and re-prompts only via a
+      // `followup_message` it auto-submits. Codex returned observe-only above.
+      // emitStopBlock writes the right shape and returns the exit code to use.
       const { emitStopBlock } = await import("./adapter/output.ts");
       return emitStopBlock(adapter, verdict, coordRoot);
     }

@@ -57,7 +57,20 @@ export interface HookProducerContextV3Base {
   delegation_id?: `del_${string}`;
   child_generation_id?: `gen_${string}`;
   agent_role?: string;
+  stop_remediation?: boolean;
+  turn_ritual?: TurnRitualEvidenceV3;
 }
+
+export interface TurnRitualEvidenceV3 {
+  status_box_present: boolean;
+  status_box_present_strict: boolean;
+  session_name_required: boolean;
+  session_name_present: boolean;
+}
+
+type TurnRitualObservationV3 = NonNullable<
+  Extract<EventV3Base, { event_type: "turn.completed" }>["payload"]["ritual"]
+>;
 
 /** Normalize one already-parsed hook payload directly into V3Base without retaining its raw fields. */
 export function normalizeHookEventV3Base(
@@ -83,10 +96,14 @@ export function normalizeHookEventV3Base(
   const turnId = terminalTurnId
     ? terminalTurnId
     : payload.turn_id
-    ? asTurnId(
-        normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, payload.turn_id),
-      )
-    : (context.turn_id ??
+      ? asTurnId(
+          normalizeNativeIdV3(
+            context.fingerprintContext,
+            `${context.adapter}.turn`,
+            payload.turn_id,
+          ),
+        )
+      : (context.turn_id ??
         asTurnId(
           normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
         ));
@@ -209,6 +226,7 @@ export function normalizeHookEventV3Base(
             fingerprint: fingerprintV3(context.fingerprintContext, "user-prompt", prompt),
           },
           intent_kind: "unknown",
+          ...(context.stop_remediation ? { stop_remediation: true } : {}),
         },
       }) as EventV3Base;
     }
@@ -243,6 +261,9 @@ export function normalizeHookEventV3Base(
                   attestation: "derived",
                   confidence: "exact",
                 },
+          ...(context.turn_ritual
+            ? { ritual: turnRitualObservation(context.adapter, context.turn_ritual) }
+            : {}),
         },
       }) as EventV3Base;
     case "pre-tool-use": {
@@ -391,6 +412,34 @@ export function normalizeHookEventV3Base(
         },
       }) as EventV3Base;
   }
+}
+
+function turnRitualObservation(
+  adapter: Adapter,
+  evidence: TurnRitualEvidenceV3,
+): TurnRitualObservationV3 {
+  if (adapter === "cursor") {
+    const unsupported = { state: "unsupported" as const, capability: "assistant_reply_text" };
+    return {
+      status_box_present: unsupported,
+      status_box_present_strict: unsupported,
+      session_name: unsupported,
+    };
+  }
+  const observed = <T>(value: T) => ({
+    state: "observed" as const,
+    value,
+    attestation: "derived" as const,
+    confidence: "exact" as const,
+  });
+  return {
+    status_box_present: observed(evidence.status_box_present),
+    status_box_present_strict: observed(evidence.status_box_present_strict),
+    session_name: observed({
+      required: evidence.session_name_required,
+      present: evidence.session_name_present,
+    }),
+  };
 }
 
 function inputContextMeasurement(payload: ParsedPayload, phase: "before" | "after") {

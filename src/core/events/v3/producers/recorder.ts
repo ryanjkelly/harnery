@@ -47,6 +47,7 @@ import {
   writeEventV3,
 } from "../writer.ts";
 import { type HookSignalV3, normalizeHookEventV3 } from "./hook.ts";
+import type { TurnRitualEvidenceV3 } from "./hook-base.ts";
 import {
   appendHookIntakeRecordV3,
   type HookIntakeRecordV3,
@@ -164,6 +165,8 @@ export interface RecordHookSignalV3Input {
   observed_at?: string;
   hook_name?: string;
   hook_duration_ms?: number;
+  stop_remediation?: boolean;
+  turn_ritual?: TurnRitualEvidenceV3;
   writerOptions?: WriteEventV3Options;
 }
 
@@ -341,6 +344,8 @@ function intakeRecord(input: RecordHookSignalV3Input): HookIntakeRecordV3 {
     ...(input.hook_duration_ms !== undefined
       ? { hook_duration_ms: Math.max(0, Math.floor(input.hook_duration_ms)) }
       : {}),
+    ...(input.stop_remediation !== undefined ? { stop_remediation: input.stop_remediation } : {}),
+    ...(input.turn_ritual ? { turn_ritual: input.turn_ritual } : {}),
   };
 }
 
@@ -365,6 +370,8 @@ function inputForIntakeRecord(
     ...(record.observed_at ? { observed_at: record.observed_at } : {}),
     ...(record.hook_name ? { hook_name: record.hook_name } : {}),
     ...(record.hook_duration_ms !== undefined ? { hook_duration_ms: record.hook_duration_ms } : {}),
+    ...(record.stop_remediation !== undefined ? { stop_remediation: record.stop_remediation } : {}),
+    ...(record.turn_ritual ? { turn_ritual: record.turn_ritual } : {}),
   };
 }
 
@@ -875,6 +882,8 @@ function processHookSignalLocked(
       delegation_id: delegation?.delegation_id,
       child_generation_id: delegation?.child_generation_id,
       agent_role: delegation?.role,
+      stop_remediation: input.stop_remediation,
+      turn_ritual: input.turn_ritual,
     });
     if (!event) return { state: "ignored" };
     if (input.signal === "pre-tool-use" && span && !span.requested_event_id) {

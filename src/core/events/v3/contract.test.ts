@@ -62,6 +62,21 @@ describe("event ledger V3 contract", () => {
     );
   });
 
+  test("adds privacy-safe Stop evidence without making old V3 frames invalid", () => {
+    const started = eventBranch("turn.started").properties.payload as unknown as {
+      required?: string[];
+      properties: Record<string, unknown>;
+    };
+    const completed = eventBranch("turn.completed").properties.payload as unknown as {
+      required?: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(started.required).not.toContain("stop_remediation");
+    expect(started.properties.stop_remediation).toBeDefined();
+    expect(completed.required).not.toContain("ritual");
+    expect(completed.properties.ritual).toBeDefined();
+  });
+
   test("makes delegation starts explicit child spans", () => {
     const links = eventBranch("agent.started").properties.links as {
       required?: string[];

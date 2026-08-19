@@ -305,9 +305,21 @@ export const TurnStartedV3BaseSchema = eventSchema(
       Type.Literal("coordinate"),
       Type.Literal("unknown"),
     ]),
+    stop_remediation: Type.Optional(Type.Boolean()),
   }),
   "turn",
 );
+
+export const TurnRitualV3BaseSchema = StrictObject({
+  status_box_present: ObservationV3BaseSchema(Type.Boolean()),
+  status_box_present_strict: ObservationV3BaseSchema(Type.Boolean()),
+  session_name: ObservationV3BaseSchema(
+    StrictObject({
+      required: Type.Boolean(),
+      present: Type.Boolean(),
+    }),
+  ),
+});
 
 export const TurnCompletedV3BaseSchema = eventSchema(
   "turn.completed",
@@ -316,6 +328,7 @@ export const TurnCompletedV3BaseSchema = eventSchema(
     duration_ms: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
     tool_call_count: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
     response: ObservationV3BaseSchema(ContentDescriptorV3BaseSchema),
+    ritual: Type.Optional(TurnRitualV3BaseSchema),
   }),
   "turn",
 );

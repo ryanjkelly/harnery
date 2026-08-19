@@ -19,6 +19,7 @@ import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import type { EventV3WriteMode } from "../control.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../writer.ts";
 import type { HookSignalV3 } from "./hook.ts";
+import type { TurnRitualEvidenceV3 } from "./hook-base.ts";
 
 /**
  * Durable intake spool for hook signals, plus the producer diagnostics spool.
@@ -92,6 +93,8 @@ export interface HookIntakeRecordV3 {
   observed_at?: string;
   hook_name?: string;
   hook_duration_ms?: number;
+  stop_remediation?: boolean;
+  turn_ritual?: TurnRitualEvidenceV3;
 }
 
 export interface HookIntakeGroupV3 {
@@ -240,11 +243,26 @@ function readIntakeRecord(path: string): HookIntakeRecordV3 | undefined {
     (record.hook_name !== undefined &&
       !/^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(record.hook_name)) ||
     (record.hook_duration_ms !== undefined &&
-      (!Number.isSafeInteger(record.hook_duration_ms) || record.hook_duration_ms < 0))
+      (!Number.isSafeInteger(record.hook_duration_ms) || record.hook_duration_ms < 0)) ||
+    (record.stop_remediation !== undefined && typeof record.stop_remediation !== "boolean") ||
+    !validTurnRitual(record.turn_ritual)
   ) {
     return undefined;
   }
   return record;
+}
+
+function validTurnRitual(value: TurnRitualEvidenceV3 | undefined): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (
+    keys.join(",") !==
+    "session_name_present,session_name_required,status_box_present,status_box_present_strict"
+  ) {
+    return false;
+  }
+  return keys.every((key) => typeof value[key as keyof TurnRitualEvidenceV3] === "boolean");
 }
 
 /**

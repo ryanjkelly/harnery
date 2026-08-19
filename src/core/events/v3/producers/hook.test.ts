@@ -60,6 +60,12 @@ describe("event ledger V3 hook producer", () => {
         ...producerContext(),
         terminal_span: terminalSpan(spanIdV3()),
         harness_timing: timing,
+        turn_ritual: {
+          status_box_present: true,
+          status_box_present_strict: false,
+          session_name_required: true,
+          session_name_present: false,
+        },
       },
     );
 
@@ -68,6 +74,43 @@ describe("event ledger V3 hook producer", () => {
       usage: { state: "observed", value: { input_tokens: 80, output_tokens: 20 } },
       inference: { state: "observed", value: { api_time_ms: 420 } },
       harness: { state: "observed", value: { hook_time_ms: 17, hook_count: 1 } },
+      ritual: {
+        status_box_present: { state: "observed", value: true },
+        status_box_present_strict: { state: "observed", value: false },
+        session_name: { state: "observed", value: { required: true, present: false } },
+      },
+    });
+  });
+
+  test("records Cursor remediation structurally and marks reply-text rituals unsupported", () => {
+    const prompt = normalizeHookEventV3(
+      "user-prompt-submit",
+      parsed({ session_id: "native-session", prompt: "private remediation prompt" }),
+      { ...producerContext(), adapter: "cursor", stop_remediation: true },
+    );
+    const terminal = normalizeHookEventV3("stop", parsed({ session_id: "native-session" }), {
+      ...producerContext(),
+      adapter: "cursor",
+      terminal_span: terminalSpan(spanIdV3()),
+      turn_ritual: {
+        status_box_present: false,
+        status_box_present_strict: false,
+        session_name_required: false,
+        session_name_present: false,
+      },
+    });
+
+    expect(prompt?.payload).toMatchObject({ stop_remediation: true });
+    expect(JSON.stringify(prompt)).not.toContain("private remediation prompt");
+    expect(terminal?.payload).toMatchObject({
+      ritual: {
+        status_box_present: { state: "unsupported", capability: "assistant_reply_text" },
+        status_box_present_strict: {
+          state: "unsupported",
+          capability: "assistant_reply_text",
+        },
+        session_name: { state: "unsupported", capability: "assistant_reply_text" },
+      },
     });
   });
 

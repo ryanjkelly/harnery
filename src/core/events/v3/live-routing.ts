@@ -7,6 +7,7 @@ import {
   repairEventV3ControlPair,
 } from "./control.ts";
 import type { HookSignalV3 } from "./producers/hook.ts";
+import type { TurnRitualEvidenceV3 } from "./producers/hook-base.ts";
 import { type RecordHookSignalV3Result, recordHookSignalV3 } from "./producers/recorder.ts";
 
 export const LIVE_HOOK_V3_PRODUCER_ID = "prd_agent-hook" as const;
@@ -87,6 +88,8 @@ export function recordLiveHookSignalV3(input: {
   monotonic_ns?: string;
   hook_name?: string;
   hook_duration_ms?: number;
+  stop_remediation?: boolean;
+  turn_ritual?: TurnRitualEvidenceV3;
 }): RecordHookSignalV3Result | { state: "ignored" } {
   const signal = hookSignalV3(input.eventName);
   if (!signal) return { state: "ignored" };
@@ -107,6 +110,8 @@ export function recordLiveHookSignalV3(input: {
     monotonic_ns: input.monotonic_ns,
     hook_name: input.hook_name,
     hook_duration_ms: input.hook_duration_ms,
+    stop_remediation: input.stop_remediation,
+    turn_ritual: input.turn_ritual,
   });
 }
 
