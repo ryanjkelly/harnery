@@ -14,7 +14,11 @@ import {
   readCoordinationViewV3,
   requireAuthoritySafeCoordinationViewV3,
 } from "../../events/v3/coordination-view.ts";
-import { liveInstanceIdV3, resolveLiveEventLedgerRouteV3 } from "../../events/v3/live-routing.ts";
+import {
+  liveInstanceIdV3,
+  nativeInstanceIdV3,
+  resolveLiveEventLedgerRouteV3,
+} from "../../events/v3/live-routing.ts";
 import { type Heartbeat, readHeartbeat } from "./heartbeat-writer.ts";
 import { resolveName } from "./names.ts";
 
@@ -205,7 +209,7 @@ function projectHeartbeatV3(
   const adapter = observedAdapter(generation) ?? cache?.platform ?? "unknown";
   const model = observedModel(generation) ?? cache?.model ?? "";
   const instanceId =
-    nativeInstanceId ?? cache?.instance_id ?? displayInstanceId(generation.instance_id);
+    nativeInstanceId ?? cache?.instance_id ?? nativeInstanceIdV3(generation.instance_id);
   const durableIdentity = resolveName(
     coordRoot,
     instanceId,
@@ -248,7 +252,7 @@ function projectHeartbeatV3(
     session_name_seen_for: cache?.session_name_seen_for,
     workflow_run_id: generation.run_id,
     workflow_agent_id: generation.workflow_agent_id,
-    parent_instance_id: parent ? displayInstanceId(parent.instance_id) : undefined,
+    parent_instance_id: parent ? nativeInstanceIdV3(parent.instance_id) : undefined,
     v3_instance_id: generation.instance_id as `inst_${string}`,
     v3_generation_id: generation.generation_id as `gen_${string}`,
     v3_projection_event_id: generation.last_event_id,
@@ -272,10 +276,6 @@ function observedModel(generation: CoordinationGenerationViewV3): string | undef
 
 function isLifecycleState(value: string | undefined): value is "active" | "blocked" | "done" {
   return value === "active" || value === "blocked" || value === "done";
-}
-
-function displayInstanceId(instanceId: string): string {
-  return instanceId.startsWith("inst_") ? instanceId.slice("inst_".length) : instanceId;
 }
 
 function writeHeartbeatCache(coordRoot: string, instanceId: string, heartbeat: Heartbeat): void {

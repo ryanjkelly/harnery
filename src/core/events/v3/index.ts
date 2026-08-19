@@ -221,6 +221,7 @@ export {
   liveEventV3BuildId,
   liveInstanceIdV3,
   livePlatformV3,
+  nativeInstanceIdV3,
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "./live-routing.ts";

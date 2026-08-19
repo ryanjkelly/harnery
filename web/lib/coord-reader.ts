@@ -21,7 +21,7 @@ import {
   projectCoordinationViewV3,
 } from "../../src/core/events/v3/coordination-view";
 import { type LiveDisplayRowV3, listLiveDisplayV3 } from "../../src/core/events/v3/live-feed";
-import { liveInstanceIdV3 } from "../../src/core/events/v3/live-routing";
+import { liveInstanceIdV3, nativeInstanceIdV3 } from "../../src/core/events/v3/live-routing";
 import { listHookProducerStateRecordsV3 } from "../../src/core/events/v3/producers/recorder";
 import { readLedgerV3 } from "../../src/core/events/v3/reader";
 import { eventV3Paths } from "../../src/core/events/v3/writer";
@@ -84,6 +84,12 @@ export function eventsPath(): string {
 
 export interface Heartbeat {
   instance_id: string;
+  /**
+   * The canonical `inst_*` id for this generation, when the row also has an
+   * adapter-native owner id in `instance_id`. Ledger evidence is always keyed
+   * canonically, so this is the join key against event-derived state.
+   */
+  v3_instance_id?: string;
   name: string;
   kind?: string;
   platform?: string | null;
@@ -429,7 +435,7 @@ function nameForLedgerInstance(instanceId: string): string {
       }
     }
   }
-  return instanceId.slice(0, 8);
+  return nativeInstanceIdV3(instanceId).slice(0, 8);
 }
 
 function normalizeTaskState(value: string | undefined): TaskState {

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { AgentsSnapshot, Heartbeat } from "@/lib/coord-reader";
 
 import type { CodecSourceEvidence } from "./contracts";
-import { __resetContextBandMemory, projectScene } from "./projector";
+import { __resetContextBandMemory, alignEventInstanceIds, projectScene } from "./projector";
 
 const NOW = "2026-08-16T10:05:00.000Z";
 
@@ -518,5 +518,109 @@ describe("projectScene", () => {
     });
     expect(scene.panels[0]?.ledger_state?.value).toBe("recovery-required");
     expect(scene.panels[0]?.expression.value).toBe("recovering");
+  });
+});
+
+// Heartbeat rows and ledger evidence key the same session differently: a row
+// with an adapter-native owner id reports it as `instance_id` and carries the
+// canonical `inst_*` id in `v3_instance_id`, while ledger evidence is always
+// canonical. These cover the join, and the fixtures above deliberately do not:
+// they use one id for both sides, which is exactly why an unaligned projection
+// looked correct in tests while duplicating every named panel in production.
+describe("canonical and native instance ids", () => {
+  const NATIVE = "d70c0519-5824-457f-8d27-3672b653e20b";
+  const CANONICAL = `inst_${NATIVE}`;
+
+  test("evidence keyed canonically lands on the aliased row's own panel", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({ instance_id: NATIVE, v3_instance_id: CANONICAL, name: "Yvonne" })]),
+      events: [
+        ev({
+          event_type: "coord.task_changed",
+          instance_id: CANONICAL,
+          task: "Fix the codec panels",
+          ts: "2026-08-16T10:04:30.000Z",
+        }),
+        ev({
+          event_type: "tool.completed",
+          instance_id: CANONICAL,
+          tool_name: "Edit",
+          category: "edit",
+          outcome: "ok",
+          ts: "2026-08-16T10:04:40.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    // One panel, not the heartbeat panel plus a truncated-id duplicate.
+    expect(scene.panels).toHaveLength(1);
+    const panel = scene.panels[0];
+    if (!panel) throw new Error("panel missing");
+    expect(panel.instance_id).toBe(NATIVE);
+    expect(panel.identity.display_name).toBe("Yvonne");
+    // The evidence attached rather than folding under a second key.
+    expect(panel.identity.task?.value).toBe("Fix the codec panels");
+    expect(panel.recent_actions.length).toBeGreaterThan(0);
+  });
+
+  test("ping endpoints join through the alias", () => {
+    const peerNative = "52e6e328-c3a0-4379-b011-eb7358b604d4";
+    const scene = projectScene({
+      snapshot: snapshot([
+        hb({ instance_id: NATIVE, v3_instance_id: CANONICAL, name: "Yvonne" }),
+        hb({ instance_id: peerNative, v3_instance_id: `inst_${peerNative}`, name: "Winifred" }),
+      ]),
+      events: [
+        ev({
+          event_type: "coord.message_observed",
+          instance_id: CANONICAL,
+          ping_to: `inst_${peerNative}`,
+          ts: "2026-08-16T10:04:55.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.transients).toHaveLength(1);
+    expect(scene.transients[0]).toMatchObject({
+      from_instance_id: NATIVE,
+      to_instance_id: peerNative,
+    });
+  });
+
+  test("a canonical id with no attested row keeps its own panel and a native stub name", () => {
+    const orphan = "inst_ab12cd34-0000-0000-0000-000000000000";
+    const scene = projectScene({
+      snapshot: snapshot([]),
+      events: [
+        ev({
+          event_type: "turn.started",
+          instance_id: orphan,
+          ts: "2026-08-16T10:04:45.000Z",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels).toHaveLength(1);
+    const panel = scene.panels[0];
+    if (!panel) throw new Error("panel missing");
+    expect(panel.instance_id).toBe(orphan);
+    // The stub shows the native id, never eight characters of the `inst_` prefix.
+    expect(panel.identity.display_name).toBe("ab12cd34");
+  });
+
+  test("aligning aligned events changes nothing", () => {
+    const snap = snapshot([hb({ instance_id: NATIVE, v3_instance_id: CANONICAL, name: "Yvonne" })]);
+    const events = [ev({ instance_id: CANONICAL, ts: "2026-08-16T10:04:30.000Z" })];
+    const once = alignEventInstanceIds(events, snap);
+    const twice = alignEventInstanceIds(once, snap);
+    expect(once.map((e) => e.instance_id)).toEqual([NATIVE]);
+    expect(twice).toEqual(once);
+  });
+
+  test("a row without an alias is left alone", () => {
+    const events = [ev({ instance_id: CANONICAL })];
+    expect(alignEventInstanceIds(events, snapshot([hb({ instance_id: "unrelated" })]))).toEqual(
+      events,
+    );
   });
 });

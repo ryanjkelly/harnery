@@ -49,6 +49,16 @@ export function liveInstanceIdV3(instanceId: string): `inst_${string}` {
   return `inst_${createHash("sha256").update(instanceId.normalize("NFC")).digest("hex")}`;
 }
 
+/**
+ * The adapter-native id a canonical `inst_*` id carries, for display and for
+ * joins against native-keyed records. Only the direct prefix form round-trips:
+ * a hashed id has no recoverable native form and is returned unchanged, so
+ * never treat this as a guaranteed inverse of `liveInstanceIdV3`.
+ */
+export function nativeInstanceIdV3(instanceId: string): string {
+  return instanceId.startsWith("inst_") ? instanceId.slice("inst_".length) : instanceId;
+}
+
 export function hookSignalV3(eventName: string): HookSignalV3 | undefined {
   switch (eventName) {
     case "session-start":

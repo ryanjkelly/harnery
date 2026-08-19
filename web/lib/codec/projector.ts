@@ -18,6 +18,8 @@
 
 import type { AgentsSnapshot, Heartbeat } from "@/lib/coord-reader";
 
+import { nativeInstanceIdV3 } from "../../../src/core/events/v3/live-routing";
+
 import {
   CODEC_SCHEMA_VERSION,
   type CodecActivity,
@@ -391,10 +393,50 @@ function staleHeartbeatIsRecentlyEnded(ev: InstanceEvidence | undefined, nowMs: 
   return nowMs - endTs <= EVIDENCE_PANEL_WINDOW_MS;
 }
 
+/**
+ * Re-key sanitized evidence into the id space the panels use.
+ *
+ * The two sources disagree on how they name a session. Ledger evidence is
+ * always keyed by the canonical `inst_*` id. A heartbeat row keyed by an
+ * adapter-native owner id reports that id as `instance_id` and carries the
+ * canonical one alongside in `v3_instance_id`; a projection-only row has no
+ * native alias and reports the canonical id directly. Left unaligned, every
+ * session with a native alias folds under a second key: its heartbeat panel
+ * loses all event evidence and a duplicate panel appears beside it under a
+ * truncated id, and parentage and ping edges never join.
+ *
+ * Only an alias the coordination view itself attested is honored, so an
+ * `inst_*` id with no matching row keeps its own key and still earns an
+ * evidence-backed panel. Idempotent: aligning aligned events is a no-op.
+ */
+export function alignEventInstanceIds(
+  events: readonly CodecSourceEvidence[],
+  snapshot: AgentsSnapshot,
+): readonly CodecSourceEvidence[] {
+  const nativeByCanonical = new Map<string, string>();
+  for (const hb of [...snapshot.active, ...snapshot.stale, ...snapshot.terminal]) {
+    if (hb.v3_instance_id && hb.v3_instance_id !== hb.instance_id) {
+      nativeByCanonical.set(hb.v3_instance_id, hb.instance_id);
+    }
+  }
+  if (nativeByCanonical.size === 0) return events;
+  return events.map((event) => {
+    const instanceId = nativeByCanonical.get(event.instance_id);
+    const pingTo = event.ping_to ? nativeByCanonical.get(event.ping_to) : undefined;
+    if (!instanceId && !pingTo) return event;
+    return {
+      ...event,
+      ...(instanceId ? { instance_id: instanceId } : {}),
+      ...(pingTo ? { ping_to: pingTo } : {}),
+    };
+  });
+}
+
 export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const now = inputs.now ?? new Date().toISOString();
   const nowMs = ms(now);
-  const evidence = foldEvidence(inputs.events);
+  const events = alignEventInstanceIds(inputs.events, inputs.snapshot);
+  const evidence = foldEvidence(events);
   const heartbeatName = new Map<string, string>();
   const generationToInstance = new Map<string, string>();
   const childOf = new Map<string, { parent: string; event_id: string; ts: string }>();
@@ -418,7 +460,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     }
   }
   // Prefer the event that carried child_generation_id as the parentage proof.
-  for (const ev of inputs.events) {
+  for (const ev of events) {
     if (!ev.child_generation_id) continue;
     childOf.set(ev.child_generation_id, {
       parent: ev.instance_id,
@@ -561,7 +603,10 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
     const evidencePanel: CodecPanelScene = {
       instance_id: instanceId,
       identity: {
-        display_name: ev.identityName ?? heartbeatName.get(instanceId) ?? instanceId.slice(0, 8),
+        display_name:
+          ev.identityName ??
+          heartbeatName.get(instanceId) ??
+          nativeInstanceIdV3(instanceId).slice(0, 8),
         ...(task ? { task } : {}),
       },
       presence: evPresence,
@@ -607,7 +652,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   // suppressed, never guessed.
   const transients: CodecScene["transients"] = [];
   const paneledIds = new Set(panels.map((p) => p.instance_id));
-  for (const ev of inputs.events) {
+  for (const ev of events) {
     if (ev.event_type !== "coord.message_observed" || !ev.ping_to) continue;
     const occurredMs = ms(ev.ts);
     if (!Number.isFinite(occurredMs)) continue;
@@ -639,7 +684,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
           ? "busy"
           : "calm";
 
-  const lastEvent = inputs.events.length ? inputs.events[inputs.events.length - 1] : undefined;
+  const lastEvent = events.length ? events[events.length - 1] : undefined;
 
   return {
     schema_version: CODEC_SCHEMA_VERSION,
