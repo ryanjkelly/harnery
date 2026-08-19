@@ -73,17 +73,23 @@ export function normalizeHookEventV3Base(
   );
   const turnNative =
     payload.turn_id ?? context.turn_native_id ?? `${sessionNative}:${context.sequence}`;
-  // A native payload turn id outranks the producer-state stamp: a lost or late
-  // user-prompt-submit hook must not mis-attribute this event to a stale turn
-  // (ADR 0078 turn attribution).
-  const turnId = payload.turn_id
+  // A native payload turn id normally outranks the producer-state stamp: a
+  // lost or late user-prompt-submit hook must not mis-attribute this event to
+  // a stale turn (ADR 0078 turn attribution). Turn terminals are different:
+  // Cursor can mint a new generation_id for Stop, so the producer's open turn
+  // is the authoritative correlation target when one exists.
+  const terminalTurnId =
+    signal === "stop" || signal === "stop-failure" ? context.turn_id : undefined;
+  const turnId = terminalTurnId
+    ? terminalTurnId
+    : payload.turn_id
     ? asTurnId(
         normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, payload.turn_id),
       )
     : (context.turn_id ??
-      asTurnId(
-        normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
-      ));
+        asTurnId(
+          normalizeNativeIdV3(context.fingerprintContext, `${context.adapter}.turn`, turnNative),
+        ));
   const generationScope = {
     root_id: context.root_id,
     instance_id: context.instance_id,

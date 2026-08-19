@@ -46,8 +46,9 @@ describe("event-ledger health counters", () => {
     const nativeSession = "native-health-session";
     const adapter = "cursor" as const;
 
-    // session-start + turn + pre-tool-use (opens a span) + stop (closes the
-    // turn, leaving the span open with no open turn: the orphan signature).
+    // session-start + pre-tool-use before any turn (opens an unstamped span) +
+    // turn + stop (closes the turn while the unowned span remains: the orphan
+    // signature). A span stamped to the open turn is now correctly swept.
     expect(
       recordHookSignalV3(
         baseInput(root, "session-start", parsed({ session_id: nativeSession }), adapter),
@@ -57,8 +58,8 @@ describe("event-ledger health counters", () => {
       recordHookSignalV3(
         baseInput(
           root,
-          "user-prompt-submit",
-          parsed({ session_id: nativeSession, turn_id: "turn-1", prompt: "go" }),
+          "pre-tool-use",
+          parsed({ session_id: nativeSession, tool_use_id: "tool-1", tool_name: "Read" }),
           adapter,
         ),
       ).state,
@@ -67,8 +68,8 @@ describe("event-ledger health counters", () => {
       recordHookSignalV3(
         baseInput(
           root,
-          "pre-tool-use",
-          parsed({ session_id: nativeSession, tool_use_id: "tool-1", tool_name: "Read" }),
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: "turn-1", prompt: "go" }),
           adapter,
         ),
       ).state,

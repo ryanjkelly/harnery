@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -18,6 +25,7 @@ import { loadOrCreateFingerprintKeyStoreV3 } from "../events/v3/fingerprint-keys
 import { EVENT_V3_SCHEMA_DIGEST } from "../events/v3/generated.ts";
 import { readHookProducerStateV3 } from "../events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../events/v3/reader.ts";
+import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 
 const HARNERY_DIR = resolve(import.meta.dir, "../../..");
 const AGENT_HOOK = join(HARNERY_DIR, "bin", "agent-hook");
@@ -152,6 +160,83 @@ describe("agent-hook V3 hard cut", () => {
     ).toHaveLength(1);
   });
 
+  test("Cursor prompt bootstrap names, routes, and ends one authoritative session", () => {
+    const root = candidateRoot("cursor");
+    const owner = "cursor-current-owner";
+    const staleAgent = "cursor-stale-agent";
+    const hook = (event: string, payload: Record<string, unknown>) => {
+      const result = run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root);
+      expect(result.status).toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("error");
+    };
+
+    hook("user-prompt-submit", {
+      conversation_id: owner,
+      generation_id: "cursor-prompt-generation",
+      prompt: "run two commands and end",
+      hook_event_name: "beforeSubmitPrompt",
+    });
+    hook("pre-tool-use", {
+      agent_id: staleAgent,
+      conversation_id: owner,
+      generation_id: "cursor-tool-generation",
+      tool_name: "Shell",
+      tool_use_id: "cursor-end-tool",
+      tool_input: { command: "harn agents status --end-turn --end-session" },
+      hook_event_name: "preToolUse",
+    });
+
+    const state = readHookProducerStateV3(root, "cursor", owner);
+    if (!state) throw new Error("Cursor producer state missing");
+    expect(readLiveCoordinationRows(root)[0]?.name).toMatch(/^[A-Z][a-z]+$/);
+    expect(
+      requestSessionEndExplicitV3({
+        coordRoot: root,
+        instance_id: state.instance_id,
+        generation_id: state.generation_id,
+        coordination_finalized: true,
+      }).state,
+    ).toBe("queued");
+
+    hook("post-tool-use", {
+      agent_id: staleAgent,
+      conversation_id: owner,
+      generation_id: "cursor-tool-generation",
+      tool_name: "Shell",
+      tool_use_id: "cursor-end-tool",
+      tool_input: { command: "harn agents status --end-turn --end-session" },
+      tool_response: "queued",
+      hook_event_name: "postToolUse",
+    });
+    hook("stop", {
+      conversation_id: owner,
+      generation_id: "cursor-stop-generation",
+      last_assistant_message: "done",
+      hook_event_name: "stop",
+    });
+
+    expect(readHookProducerStateV3(root, "cursor", owner)?.terminal).toBeTrue();
+    expect(listSessionFinalizationRequestsV3(root)[0]).toMatchObject({
+      trigger: "explicit_end",
+      status: "completed",
+    });
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    expect(events.filter((event) => event.event_type === "tool.requested")).toHaveLength(1);
+    expect(events.filter((event) => event.event_type === "tool.completed")).toHaveLength(1);
+    expect(
+      events
+        .filter((event) => event.event_type === "turn.started" || event.event_type === "turn.completed")
+        .map((event) => ("turn_id" in event.scope ? event.scope.turn_id : undefined)),
+    ).toEqual([state.current_turn_id, state.current_turn_id]);
+    expect(JSON.stringify(events)).not.toContain(staleAgent);
+
+    const history = readFileSync(join(root, ".harnery", ".name-history"), "utf8");
+    expect(history).toContain(owner);
+    expect(readLiveCoordinationRows(root)).toHaveLength(0);
+    const terminalName = JSON.parse(history.trim().split("\n").at(-1)!) as { name?: string };
+    expect(terminalName.name).toMatch(/^[A-Z][a-z]+$/);
+  });
+
   test("a claude-code dispatch carrying a Cursor payload records nothing", () => {
     const root = candidateRoot();
     // Cursor's dual dispatch pipes its own payload (top-level cursor_version
@@ -177,7 +262,7 @@ describe("agent-hook V3 hard cut", () => {
   });
 });
 
-function candidateRoot(): string {
+function candidateRoot(adapter: "claude-code" | "cursor" = "claude-code"): string {
   const root = mkdtempSync(join(tmpdir(), "harn-hook-v3-route-"));
   roots.push(root);
   mkdirSync(join(root, ".harnery", "active"), { recursive: true });
@@ -202,7 +287,7 @@ function candidateRoot(): string {
       host_repository_commit: "fixture",
       producer_build_ids: ["build_fixture"],
       adapter_capability_profile_digests: [
-        `sha256:${adapterCapabilityProfileDigestV3("claude-code").slice(4)}`,
+        `sha256:${adapterCapabilityProfileDigestV3(adapter).slice(4)}`,
       ],
       config_digest: sha256V3("config"),
       canonicalizer_version: "harnery-jcs-nfc-v1",

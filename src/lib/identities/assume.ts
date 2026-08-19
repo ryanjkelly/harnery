@@ -87,11 +87,17 @@ export function findIdentityConflict(
   instanceId: string,
   name: string,
   nowMs = Date.now(),
+  excludedInstanceIds: ReadonlySet<string> = new Set(),
 ): IdentityConflict | null {
   const wanted = name.toLowerCase();
   const cutoffMs = nowMs - coordFreshnessSeconds(coordRoot) * 1000;
   for (const row of readLiveCoordinationRows(coordRoot)) {
-    if (row.instance_id === instanceId || !heartbeatIsFresh(row, cutoffMs)) continue;
+    if (
+      row.instance_id === instanceId ||
+      excludedInstanceIds.has(row.instance_id) ||
+      !heartbeatIsFresh(row, cutoffMs)
+    )
+      continue;
     if ((row.name ?? "").toLowerCase() === wanted) {
       return { instance_id: row.instance_id, name: row.name ?? name, scope: "local" };
     }
@@ -283,7 +289,16 @@ export function assumeIdentity(
     let conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
     if (conflict && reclaimAbandonedLocalConflict(coordRoot, conflict)) {
       reclaimedInstanceId = conflict.instance_id;
-      conflict = findIdentityConflict(coordRoot, instanceId, targetIdentity.name);
+      // The V3 sweep is intentionally provisional, so the generation remains
+      // replay-visible after its disposable cache is removed. Ignore that one
+      // reclaimed holder while still checking for any additional namesake.
+      conflict = findIdentityConflict(
+        coordRoot,
+        instanceId,
+        targetIdentity.name,
+        Date.now(),
+        new Set([reclaimedInstanceId]),
+      );
     }
     if (conflict) {
       const where = conflict.scope === "remote" ? ` on ${conflict.machine}` : "";

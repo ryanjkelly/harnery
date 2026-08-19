@@ -611,7 +611,9 @@ function processHookSignalLocked(
     // Turn-boundary recovery (ADR 0078): a turn terminal is authoritative for
     // the spans it owns. Derived terminals land BEFORE the native turn event.
     if (recoveryEnabled && (input.signal === "stop" || input.signal === "stop-failure")) {
-      const endingTid = nativeTid ?? state.current_turn_id;
+      // The open producer turn is authoritative for a terminal. Cursor may
+      // report a different generation_id on Stop than beforeSubmitPrompt.
+      const endingTid = state.current_turn_id ?? nativeTid;
       if (endingTid) {
         sweepOpenSpans(
           input,

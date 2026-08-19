@@ -50,7 +50,13 @@ export function readLiveCoordinationRows(coordRoot: string): V3HeartbeatMaterial
       const parent = generation.parent_generation_id
         ? byGeneration.get(generation.parent_generation_id)
         : undefined;
-      return projectHeartbeatV3(generation, matchingCache(caches, generation), undefined, parent);
+      return projectHeartbeatV3(
+        coordRoot,
+        generation,
+        matchingCache(caches, generation),
+        undefined,
+        parent,
+      );
     });
 }
 
@@ -72,6 +78,7 @@ export function readLiveCoordinationRow(
         )
       : undefined;
     return projectHeartbeatV3(
+      coordRoot,
       generation,
       isCurrentCache(cache, generation) ? cache : undefined,
       nativeInstanceId,
@@ -129,7 +136,7 @@ export function ensureLiveCoordinationHeartbeat(
   if (isCurrentCache(current, generation) && current.platform === generationAdapter) return current;
 
   const resolved = resolveName(coordRoot, nativeInstanceId, nativeSessionId);
-  const projected = projectHeartbeatV3(generation, undefined, nativeInstanceId);
+  const projected = projectHeartbeatV3(coordRoot, generation, undefined, nativeInstanceId);
   const materialized: V3HeartbeatMaterialization = {
     ...projected,
     schema_version: 2,
@@ -189,6 +196,7 @@ function isCurrentCache(
 }
 
 function projectHeartbeatV3(
+  coordRoot: string,
   generation: CoordinationGenerationViewV3,
   cache: Heartbeat | undefined,
   nativeInstanceId: string | undefined,
@@ -196,25 +204,32 @@ function projectHeartbeatV3(
 ): V3HeartbeatMaterialization {
   const adapter = observedAdapter(generation) ?? cache?.platform ?? "unknown";
   const model = observedModel(generation) ?? cache?.model ?? "";
+  const instanceId =
+    nativeInstanceId ?? cache?.instance_id ?? displayInstanceId(generation.instance_id);
+  const durableIdentity = resolveName(
+    coordRoot,
+    instanceId,
+    cache?.session_id ?? generation.session_id,
+  );
   const taskIsSet = generation.task_state === "set";
   const lifecycle = isLifecycleState(generation.lifecycle_state)
     ? generation.lifecycle_state
     : "active";
   return {
     schema_version: 2,
-    instance_id:
-      nativeInstanceId ?? cache?.instance_id ?? displayInstanceId(generation.instance_id),
+    instance_id: instanceId,
     session_id: parent?.session_id ?? generation.session_id,
     native_session_id: cache?.session_id,
-    name: cache?.name,
+    name: cache?.name || durableIdentity?.name,
     kind:
       cache?.kind ??
+      durableIdentity?.kind ??
       (generation.parent_generation_id || generation.delegation_id
         ? "subagent"
         : generation.workflow_id
           ? "workflow-child"
           : "session"),
-    agent_id: cache?.agent_id,
+    agent_id: cache?.agent_id ?? durableIdentity?.agent_id,
     model,
     platform: adapter,
     started_at: generation.started_at,

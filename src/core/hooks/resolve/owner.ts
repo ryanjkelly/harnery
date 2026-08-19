@@ -10,9 +10,11 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
  *
  * Precedence:
  *
- *   1. Hook payload fields, in order: `agent_id` → `subagent_id` →
- *      `session_id` → `conversation_id`. agent_id wins for CC subagent
- *      events; session_id is the parent-shape default.
+ *   1. Hook payload fields. Current live V3 authority breaks ties: a live
+ *      child wins when it belongs to the payload session, otherwise the live
+ *      session/conversation wins over a stale adapter `agent_id`. With no live
+ *      evidence, the legacy `agent_id` → `subagent_id` → `session_id` →
+ *      `conversation_id` order remains the startup fallback.
  *   2. `HARNERY_AGENT_COORD_OWNER` outside bridge mode. Bridge-marked children
  *      ignore this unvalidated override.
  *   3. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
@@ -34,11 +36,24 @@ export function resolveOwner(opts: {
   source: "env" | "payload" | "session_env" | "pidmap-self" | "pidmap-ancestor";
 } | null {
   if (opts.payload) {
+    const value = (key: "agent_id" | "subagent_id" | "session_id" | "conversation_id") => {
+      const candidate = opts.payload?.[key];
+      return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+    };
+    const childId = value("subagent_id") ?? value("agent_id");
+    const sessionId = value("session_id") ?? value("conversation_id");
+    const child = childId ? readLiveCoordinationRow(opts.coordRoot, childId) : null;
+    const session = sessionId ? readLiveCoordinationRow(opts.coordRoot, sessionId) : null;
+
+    if (child && sessionId && (child.kind === "subagent" || child.session_id === sessionId)) {
+      return { instance_id: childId!, source: "payload" };
+    }
+    if (session) return { instance_id: sessionId!, source: "payload" };
+    if (child) return { instance_id: childId!, source: "payload" };
+
     for (const key of ["agent_id", "subagent_id", "session_id", "conversation_id"] as const) {
-      const v = opts.payload[key];
-      if (typeof v === "string" && v.length > 0) {
-        return { instance_id: v, source: "payload" };
-      }
+      const candidate = value(key);
+      if (candidate) return { instance_id: candidate, source: "payload" };
     }
   }
 

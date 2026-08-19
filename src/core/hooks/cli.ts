@@ -345,6 +345,15 @@ function buildEventData(
       };
 
     case "turn.started": {
+      // Cursor can deliver beforeSubmitPrompt before sessionStart. Ensure that
+      // high-confidence prompt bootstrap also mints durable display identity;
+      // a later SessionStart remains idempotent.
+      if (
+        ctx.adapter === "cursor" &&
+        !readLiveCoordinationRow(ctx.coordRoot, ctx.instanceId)?.name
+      ) {
+        assignNameViaAgentCoord(ctx.coordRoot, ctx.instanceId, "session");
+      }
       const prompt = p?.prompt ?? "";
       const { value, truncated } = clampString(prompt, 4000);
       return { prompt_text: value, ...(truncated ? { truncated: true } : {}) };
