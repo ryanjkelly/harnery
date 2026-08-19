@@ -99,6 +99,18 @@ error results.
 
 Harnery now rejects v1 metadata unconditionally. The `--require-v2` flag, bold
 header migrator, v1-to-v2 migrator, status aliases, and dual-read branches are
-gone. The committed JSON Schema and generated reference tables share the type
+gone.
+
+A review of that cutover found the discovery rules themselves were too narrow,
+so the 600-document pass had measured an incomplete corpus. Audits carried a
+declared type and a validation profile but no path rule, issue records outside
+`docs/issues/` matched nothing, and the rules allowed a single directory segment
+before `docs/`, which hid every document in a repository nested deeper than
+that. A file carrying the v2 marker with an unknown `type` was also dropped from
+the audit rather than reported as invalid, so a typo silently exempted a
+document. Discovery now anchors on `docs/<kind>/` at any depth, covers audits,
+and validates any v2-marked file regardless of its type. That brought 69 more
+documents into scope; the strict audit covers 670 documents and all 670 are
+valid. The committed JSON Schema and generated reference tables share the type
 enum with the runtime validator, and `check:docs-metadata-v2` catches generated
 artifact drift.
