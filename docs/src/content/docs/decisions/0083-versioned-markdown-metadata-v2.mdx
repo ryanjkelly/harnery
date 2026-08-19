@@ -1,0 +1,92 @@
+---
+title: "0083: Version markdown metadata and delete the transition"
+description: "ADR: Harnery validates one typed harnery-doc/v2 contract, supplies migration and maintenance commands, and deletes every v1 compatibility path after the corpus moves."
+sidebar:
+  order: 83
+---
+
+**Status:** accepted (2026-08-19) · **Scope:** product tier (`docs` CLI and
+host documentation metadata)
+
+## Context
+
+ADR 0013 made leading YAML frontmatter the only lifecycle-status source. The
+rest of the frontmatter stayed loosely typed. Most host documents use a
+date-only `last_updated`, `date` has more than one meaning, and freshness
+commands still use Git edit age. Wiki pages, runbooks, and synchronized pages
+have related fields but no shared timestamp semantics.
+
+The host approved a v2 contract with real creation and update timestamps plus
+profile-specific fields for lifecycle state, runbook reviews, wiki provenance,
+and upstream sources. Those fields need executable maintenance rules. A larger
+header that depends on authors remembering every timestamp would become stale
+quickly.
+
+## Alternatives considered
+
+### Add only `created_at` and rename `last_updated`
+
+This would fix names and precision but leave status changes, runbook reviews,
+and upstream timestamps mixed into one update field. Sweeps would still answer
+the wrong question after an unrelated edit.
+
+### Derive all timestamps from Git and store none
+
+Git is useful for migration and repair, but a rendered wiki snapshot does not
+always have repository history. Git also cannot distinguish a spelling fix
+from a status transition or procedure review.
+
+### Keep permanent v1 and v2 readers
+
+This would repeat the ambiguity removed by ADR 0013. Every consumer would keep
+two field names and two meanings, and newly written v1 files could survive
+indefinitely.
+
+### Use a versioned schema with temporary migration support
+
+This gives the transition a measurable end. Validation and maintenance can
+land before the bulk rewrite, while the final gate proves that compatibility
+is safe to delete.
+
+## Decision
+
+Harnery defines `schema: harnery-doc/v2` with quoted RFC 3339 UTC timestamps.
+`created_at` is immutable and `updated_at` records substantive document
+changes. Lifecycle documents also carry `status_changed_at`; runbooks carry
+`reviewed_at` and `review_due_at`; resolved issues carry `resolved_at`; synced
+pages keep upstream time in `source_updated_at`.
+
+Document `type` selects a validation profile. The shared fields cover stable
+owner ids, summaries, normalized tags, typed relationships, and list-based
+access grants. Profile validators enforce their enums and cross-field rules.
+Unknown keys fail unless they use the temporary `x_` namespace.
+
+The `docs` CLI owns four operations:
+
+1. `metadata validate` reports valid, invalid, legacy, and missing metadata.
+2. `metadata migrate-v2` performs a dry-run-first, atomic repository migration
+   using rename-aware Git history for timestamp evidence.
+3. `metadata sync` updates semantic timestamps and provides a staged check for
+   hooks and CI.
+4. `docs new` creates valid documents with current timestamps and required
+   profile fields.
+
+Consumers may read v1 during the bounded migration. After every managed host
+passes the v2-only audit, Harnery removes the dual readers, legacy aliases,
+fallback freshness rules, strict-mode transition flag, and both one-shot
+migrators. Migration code is not a permanent compatibility surface.
+
+## Consequences
+
+Freshness checks can measure status age and review age directly instead of
+using the latest Git edit as a proxy. Wiki and synchronized content can carry
+timestamps outside a Git checkout without confusing document updates with
+source-system updates.
+
+The migration will stop on missing owners, ambiguous summaries, conflicting
+dates, or uncertain source timestamp semantics. That creates some manual
+triage, but it avoids manufacturing history or ownership.
+
+Compatibility removal is the last feature phase. The cutover proof includes a
+strict audit of every managed repository, a search for legacy field names and
+transition markers, and tests that reject v1 metadata through normal readers.

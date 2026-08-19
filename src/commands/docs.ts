@@ -9,6 +9,7 @@ import { initDocsContext as initDocsIndex, runIndex } from "../lib/docs-index.ts
 import { initDocsContext as initDocsLinks, runLinks } from "../lib/docs-links.ts";
 import { initDocsContext as initDocsLint, runLint } from "../lib/docs-lint.ts";
 import { readDocsMetadata, readDocsMetadataKey } from "../lib/docs-meta.ts";
+import { initDocsMetadataAuditContext, runDocsMetadataAudit } from "../lib/docs-metadata-audit.ts";
 import {
   countColdHandoffs,
   initDocsContext as initDocsSweep,
@@ -29,6 +30,7 @@ function ensureContext(context: HarneryProgramContext | undefined): void {
     docsRootAllowlist: context.docsRootAllowlist,
   });
   initDocsLinks({ ...opts, extraExcludedPrefixes: context.extraDocsExcludedPrefixes });
+  initDocsMetadataAuditContext(opts);
   initDocsSweep(opts);
 }
 
@@ -78,6 +80,46 @@ export function registerDocsCommand(
       try {
         ensureContext(context);
         handleMeta(context!.repoRoot!, path, key, opts);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        emit.error({ code: "docs_error", message: msg });
+      }
+    });
+
+  const metadata = docs
+    .command("metadata")
+    .description("Validate and maintain the versioned markdown metadata contract");
+
+  metadata
+    .command("validate")
+    .description("Validate harnery-doc/v2 files and report lifecycle documents still on v1")
+    .option("--repo <name>", "Limit to one submodule or '.' for parent")
+    .option("--require-v2", "Treat legacy lifecycle and runbook metadata as errors during cutover")
+    .action(async (opts: { repo?: string; requireV2?: boolean }) => {
+      try {
+        ensureContext(context);
+        const rows = await runDocsMetadataAudit(opts);
+        const errors = rows
+          .flatMap((row) => row.issues)
+          .filter((issue) => issue.severity === "error");
+        const warnings = rows
+          .flatMap((row) => row.issues)
+          .filter((issue) => issue.severity === "warning");
+        emit.data({
+          repo: opts.repo ?? null,
+          require_v2: !!opts.requireV2,
+          counts: {
+            files: rows.length,
+            valid: rows.filter((row) => row.state === "valid").length,
+            invalid: rows.filter((row) => row.state === "invalid").length,
+            legacy: rows.filter((row) => row.state === "legacy").length,
+            missing: rows.filter((row) => row.state === "missing").length,
+            errors: errors.length,
+            warnings: warnings.length,
+          },
+          rows,
+        });
+        if (errors.length > 0) emit.setExitCode(1);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         emit.error({ code: "docs_error", message: msg });

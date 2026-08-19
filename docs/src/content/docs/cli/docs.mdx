@@ -8,6 +8,7 @@ sidebar:
 ```bash
 harn docs
 harn docs meta <path> [key] [--json]
+harn docs metadata validate [--repo <name>] [--require-v2]
 harn docs frontmatter-migrate [--repo <name>] [--yes]
 harn docs lint [--fast] [--repo <name>]
 harn docs links [--repo <name>] [--no-fragments] [--strict] [--check-escapes] [--fail]
@@ -35,6 +36,27 @@ Relative paths resolve from the configured repository root. Absolute paths also
 work. The command exits nonzero when the file, frontmatter block, or requested
 top-level key is missing. A requested scalar prints plainly in an interactive
 terminal; piped output and `--json` use JSON.
+
+## Validate versioned metadata
+
+`docs metadata validate` checks every file marked `schema: harnery-doc/v2`. It also
+finds lifecycle documents and runbooks that have not moved to v2 yet:
+
+```bash
+harn docs metadata validate --repo .
+harn docs metadata validate --repo . --require-v2
+```
+
+The report separates valid, invalid, legacy, and missing files. V2 validation
+checks canonical UTC timestamps, timestamp order, document types, lifecycle
+status, owner ids, summaries, tags, relationships, access grants, and the
+fields required by each profile.
+
+During the migration, legacy files are warnings. `--require-v2` promotes them
+to errors so a repository can prove it is ready for cutover. That option is a
+transition tool, not a permanent second mode. Once every managed repository is
+on v2, the command will require v2 unconditionally and the option will be
+removed.
 
 ## Migrate lifecycle files
 
