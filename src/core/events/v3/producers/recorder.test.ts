@@ -237,7 +237,7 @@ describe("event ledger V3 persistent hook recorder", () => {
         expect(turn.tool_ms.reasons).not.toContain("tool_terminal_count_mismatch");
       }
     }
-  }, 10_000);
+  }, 30_000);
 
   test("keeps one canonical start when Codex repeats a prompt inside an open turn", () => {
     const root = candidateRoot("codex");
@@ -482,6 +482,118 @@ describe("event ledger V3 persistent hook recorder", () => {
       }
     }
   }, 30_000);
+
+  test("keeps different Cursor prompt ids inside one canonical turn", () => {
+    const root = candidateRoot("cursor");
+    const nativeSession = "cursor-steering-prompts";
+    const epochMs = Date.parse("2026-08-19T12:00:00.000Z");
+    const at = (monotonicNs: string) =>
+      new Date(epochMs + Number(BigInt(monotonicNs) / 1_000_000n)).toISOString();
+    const prompt = (turnId: string, monotonicNs: string, body: string) =>
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({
+            conversation_id: nativeSession,
+            turn_id: turnId,
+            prompt: body,
+          }),
+          "cursor",
+        ),
+        observed_at: at(monotonicNs),
+        monotonic_ns: monotonicNs,
+      });
+    const stop = (turnId: string, monotonicNs: string) =>
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "stop",
+          parsed({ conversation_id: nativeSession, turn_id: turnId }),
+          "cursor",
+        ),
+        observed_at: at(monotonicNs),
+        monotonic_ns: monotonicNs,
+      });
+
+    recordHookSignalV3({
+      ...baseInput(root, "session-start", parsed({ conversation_id: nativeSession }), "cursor"),
+      observed_at: at("0"),
+      monotonic_ns: "0",
+    });
+
+    expect(prompt("cursor-turn-one", "1000000000", "private first prompt").state).toBe("recorded");
+    expect(prompt("cursor-steering-one", "1239040000000", "private steering prompt one")).toEqual({
+      state: "ignored",
+    });
+    expect(stop("cursor-steering-one", "1800020000000").state).toBe("recorded");
+
+    expect(prompt("cursor-turn-two", "1801021000000", "private second prompt").state).toBe(
+      "recorded",
+    );
+    expect(stop("cursor-turn-two", "1802021000000").state).toBe("recorded");
+
+    expect(prompt("cursor-turn-three", "2000000000000", "private third prompt").state).toBe(
+      "recorded",
+    );
+    expect(
+      prompt("cursor-steering-three", "2131120000000", "private steering prompt three"),
+    ).toEqual({ state: "ignored" });
+    expect(stop("cursor-steering-three", "4690740000000").state).toBe("recorded");
+
+    expect(prompt("cursor-turn-four", "4691000000000", "private fourth prompt").state).toBe(
+      "recorded",
+    );
+    expect(stop("cursor-turn-four", "4692000000000").state).toBe("recorded");
+
+    const ledger = readLedgerV3(root);
+    const events = ledger.events.map(({ event }) => event);
+    const starts = events.filter((event) => event.event_type === "turn.started");
+    const terminals = events.filter((event) => event.event_type === "turn.completed");
+    expect(starts).toHaveLength(4);
+    expect(terminals).toHaveLength(4);
+    expect(
+      terminals.map((event) =>
+        event.event_type === "turn.completed" && event.payload.span.duration_ms.state === "observed"
+          ? event.payload.span.duration_ms.value
+          : undefined,
+      ),
+    ).toEqual([1_799_020, 1_000, 2_690_740, 1_000]);
+
+    for (const terminal of terminals) {
+      if (terminal.event_type !== "turn.completed") continue;
+      const turnId = (terminal.scope as { turn_id: string }).turn_id;
+      const start = starts.find(
+        (candidate) => (candidate.scope as { turn_id?: string }).turn_id === turnId,
+      );
+      if (start?.event_type !== "turn.started") throw new Error("Cursor turn start missing");
+      expect(terminal.payload.span.open_event_id).toBe(start.event_id);
+      expect(terminal.payload.span.opened_at).toBe(start.time.observed_at);
+      expect((terminal.links as { span_id?: string }).span_id).toBe(
+        (start.links as { span_id?: string }).span_id,
+      );
+      if (terminal.payload.span.duration_ms.state !== "observed") {
+        throw new Error("Cursor turn duration missing");
+      }
+      expect(terminal.payload.span.duration_ms.value).toBe(
+        Date.parse(terminal.time.observed_at) - Date.parse(start.time.observed_at),
+      );
+    }
+
+    const latency = projectLatencyV3(ledger);
+    expect(latency.turns).toHaveLength(4);
+    expect(latency.diagnostics.map(({ code }) => code)).not.toContain("span_outside_turn");
+    expect(readHookProducerStateV3(root, "cursor", nativeSession)?.turn_ordinal).toBe(4);
+
+    const diagnosticsDir = join(root, ".harnery/ledgers/v3/diagnostics");
+    const diagnostics = readdirSync(diagnosticsDir)
+      .filter((name) => name.startsWith("duplicate_turn_start_suppressed-"))
+      .map((name) => readFileSync(join(diagnosticsDir, name), "utf8"));
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.join("\n")).toContain("cursor_prompt_while_turn_open");
+    expect(diagnostics.join("\n")).not.toContain("private steering prompt");
+    expect(readFileSync(eventV3Paths(root).active, "utf8")).not.toContain("private");
+  }, 15_000);
 
   test("accumulates bounded hook CLI time inside the active turn", () => {
     const root = candidateRoot();

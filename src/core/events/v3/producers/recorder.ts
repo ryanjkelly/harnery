@@ -598,9 +598,15 @@ function processHookSignalLocked(
           input.payload.turn_id,
         ).replace(/^hid_/, "tid_") as `tid_${string}`)
       : undefined;
+    const cursorPromptWithinOpenTurn =
+      input.adapter === "cursor" &&
+      input.signal === "user-prompt-submit" &&
+      state.current_turn_id !== undefined &&
+      state.current_turn_span !== undefined;
     const startsDifferentNativeTurn =
       recoveryEnabled &&
       input.signal === "user-prompt-submit" &&
+      !cursorPromptWithinOpenTurn &&
       nativeTid !== undefined &&
       state.current_turn_id !== undefined &&
       state.current_turn_id !== nativeTid &&
@@ -633,9 +639,9 @@ function processHookSignalLocked(
       : input;
     const duplicateOpenTurnStart =
       input.signal === "user-prompt-submit" &&
-      nativeTid !== undefined &&
-      state.current_turn_id === nativeTid &&
-      state.current_turn_span !== undefined;
+      state.current_turn_span !== undefined &&
+      (cursorPromptWithinOpenTurn ||
+        (nativeTid !== undefined && state.current_turn_id === nativeTid));
 
     recordTurnHarnessTiming(state, input, !duplicateOpenTurnStart);
 
@@ -680,11 +686,13 @@ function processHookSignalLocked(
       writeProducerDiagnosticV3(input.coordRoot, "duplicate_turn_start_suppressed", {
         adapter: input.adapter,
         signal: input.signal,
-        reason: "native_turn_already_open",
+        reason: cursorPromptWithinOpenTurn
+          ? "cursor_prompt_while_turn_open"
+          : "native_turn_already_open",
         instance_id: input.instance_id,
         session_hash: sessionHash,
         generation_id: state.generation_id,
-        turn_id: nativeTid,
+        turn_id: state.current_turn_id ?? nativeTid,
         span_id: state.current_turn_span?.span_id,
         payload: input.payload,
       });
@@ -812,6 +820,7 @@ function processHookSignalLocked(
           turn_id: state.current_turn_id,
           span_id: span.span_id,
           caused_by: state.last_event_id ? [state.last_event_id] : [],
+          observed_at: eventClock.observed_at,
           monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
           clock_id: state.clock_id,
         });
