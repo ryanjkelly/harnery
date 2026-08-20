@@ -25,6 +25,8 @@ import {
   type AdapterSignalV3,
   adapterCapabilityProfileDigestV3,
   adapterSignalSupportV3,
+  type CursorExecutionModeV3,
+  cursorToolChannelSupportV3,
 } from "../capabilities.ts";
 import { capabilityDriftPayloadsV3 } from "../capability-drift.ts";
 import { markObservedClockRegressionV3 } from "../clock-order.ts";
@@ -127,6 +129,7 @@ export interface HookProducerStateV3 {
   generation_id: `gen_${string}`;
   attestation_id: `att_${string}`;
   capability_profile: `cap_${string}`;
+  cursor_mode?: CursorExecutionModeV3;
   privacy_epoch_id: `pep_${string}`;
   boot_id: `boot_${string}`;
   clock_id: `clk_${string}`;
@@ -527,6 +530,17 @@ function processHookSignalLocked(
     ) {
       throw new Error("V3 producer state authority does not match the active boundary");
     }
+    if (
+      state?.adapter === "cursor" &&
+      input.payload.cursor_mode &&
+      input.payload.cursor_mode !== "unknown"
+    ) {
+      if (!state.cursor_mode || state.cursor_mode === "unknown") {
+        state.cursor_mode = input.payload.cursor_mode;
+      } else if (state.cursor_mode !== input.payload.cursor_mode) {
+        throw new Error("Cursor execution mode changed within one V3 generation");
+      }
+    }
     let recovered: RecordHookSignalV3Result | undefined;
     if (state?.pending) {
       const pendingSource = state.pending.source_id;
@@ -913,9 +927,14 @@ function processHookSignalLocked(
       input.signal === "stop" || input.signal === "stop-failure"
         ? extractTurnTelemetryV3(input.adapter, input.payload.raw, eventClock.observed_at)
         : undefined;
+    const cursorToolChannelSupport =
+      input.adapter === "cursor"
+        ? cursorToolChannelSupportV3(state.cursor_mode ?? "unknown")
+        : undefined;
     const cursorToolChannelUnattested =
       (input.signal === "stop" || input.signal === "stop-failure") &&
       input.adapter === "cursor" &&
+      cursorToolChannelSupport !== "unsupported" &&
       state.tool_call_count === 0;
     const toolCallCountScopeMismatch =
       (input.signal === "stop" || input.signal === "stop-failure") &&
@@ -962,9 +981,12 @@ function processHookSignalLocked(
       // delivered tool hook, the recorder has no evidence that zero calls
       // occurred; emitting an exact zero would turn hook loss into false data.
       tool_call_count:
-        cursorToolChannelUnattested || toolCallCountScopeMismatch
+        cursorToolChannelSupport === "unsupported" ||
+        cursorToolChannelUnattested ||
+        toolCallCountScopeMismatch
           ? undefined
           : state.tool_call_count,
+      tool_call_count_support: cursorToolChannelSupport,
       tool_call_count_missing_reason: cursorToolChannelUnattested
         ? "tool_channel_unattested"
         : toolCallCountScopeMismatch
@@ -1877,6 +1899,7 @@ function newProducerState(
     generation_id: generationIdV3(),
     attestation_id: attestationIdV3(),
     capability_profile: adapterCapabilityProfileDigestV3(input.adapter),
+    cursor_mode: input.adapter === "cursor" ? (input.payload.cursor_mode ?? "unknown") : undefined,
     privacy_epoch_id: epochId,
     boot_id: bootId,
     clock_id: clockIdV3(),
@@ -2270,6 +2293,7 @@ function readProducerState(path: string): HookProducerStateV3 {
   state.waits ??= [];
   state.closed_turn_ids ??= [];
   state.turn_harness ??= emptyTurnHarnessTiming();
+  if (state.adapter === "cursor") state.cursor_mode ??= "unknown";
   const allowedKeys = new Set([
     "adapter",
     "attestation_id",
@@ -2280,6 +2304,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "closed_turn_ids",
     "current_turn_id",
     "current_turn_span",
+    "cursor_mode",
     "delegations",
     "format",
     "format_version",
@@ -2307,6 +2332,8 @@ function readProducerState(path: string): HookProducerStateV3 {
     state.format !== STATE_FORMAT ||
     state.format_version !== STATE_VERSION ||
     !["claude-code", "codex", "cursor"].includes(state.adapter) ||
+    (state.cursor_mode !== undefined &&
+      !["local", "cloud", "unknown"].includes(state.cursor_mode)) ||
     !/^inst_[a-zA-Z0-9._-]{1,128}$/.test(state.instance_id) ||
     !/^sid_[a-f0-9]{64}$/.test(state.session_id) ||
     !/^gen_[0-9a-f-]{36}$/.test(state.generation_id) ||

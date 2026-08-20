@@ -20,7 +20,7 @@ import {
   reconcileSessionFinalizationV3,
   requestSessionEndExplicitV3,
 } from "../../../agents/session-finalizer-v3.ts";
-import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import { type ParsedPayload, parsePayload } from "../../../hooks/adapter/parse.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
 import { canonicalJsonV3, sha256V3 } from "../canonical.ts";
@@ -957,6 +957,145 @@ describe("event ledger V3 persistent hook recorder", () => {
       capability: "turn_tool_call_count",
       reason: "tool_channel_unattested",
     });
+  });
+
+  test("records paired local Cursor tools with an exact terminal count and no bodies", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dir,
+          "../../../../../tests/fixtures/adapters/cursor/local-tool-hooks.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      mode: "local";
+      events: Array<{
+        signal: Parameters<typeof recordHookSignalV3>[0]["signal"];
+        observed_at: string;
+        monotonic_ns: string;
+        payload: Record<string, unknown>;
+      }>;
+    };
+    const root = candidateRoot("cursor");
+
+    for (const item of fixture.events) {
+      const payload = parsePayload(JSON.stringify(item.payload), "cursor");
+      if (!payload) throw new Error("Cursor local fixture did not parse");
+      expect(payload.cursor_mode).toBe(fixture.mode);
+      expect(
+        recordHookSignalV3({
+          ...baseInput(root, item.signal, payload, "cursor"),
+          observed_at: item.observed_at,
+          monotonic_ns: item.monotonic_ns,
+        }).state,
+      ).toBe("recorded");
+    }
+
+    const ledger = readLedgerV3(root);
+    const events = ledger.events.map(({ event }) => event);
+    expect(events.filter(({ event_type }) => event_type === "tool.requested")).toHaveLength(1);
+    const tool = events.find(({ event_type }) => event_type === "tool.completed");
+    expect(tool?.event_type === "tool.completed" && tool.payload.duration_ms).toMatchObject({
+      state: "observed",
+      value: 15_684,
+    });
+    const terminal = events.find(({ event_type }) => event_type === "turn.completed");
+    expect(
+      terminal?.event_type === "turn.completed" && terminal.payload.tool_call_count,
+    ).toMatchObject({ state: "observed", value: 1 });
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    expect(durable).not.toContain("PRIVATE_PROMPT_BODY");
+    expect(durable).not.toContain("PRIVATE_COMMAND_BODY");
+    expect(durable).not.toContain("PRIVATE_RESULT_BODY");
+  });
+
+  test("marks the evidence-shaped seven-turn Cursor cloud channel unsupported", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dir,
+          "../../../../../tests/fixtures/adapters/cursor/cloud-private-worker.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      mode: "cloud";
+      cases: Array<{ conversation_id: string; completed_turn_ms: number[] }>;
+    };
+    let totalTurns = 0;
+    let totalWallMs = 0;
+
+    for (const [caseIndex, fixtureCase] of fixture.cases.entries()) {
+      const root = candidateRoot("cursor");
+      const baseEpochMs = Date.parse(`2026-08-19T${String(caseIndex).padStart(2, "0")}:00:00.000Z`);
+      let elapsedMs = 0;
+      for (const [turnIndex, durationMs] of fixtureCase.completed_turn_ms.entries()) {
+        const nativeTurn = `cloud-turn-${caseIndex}-${turnIndex}`;
+        const prompt = parsePayload(
+          JSON.stringify({
+            conversation_id: fixtureCase.conversation_id,
+            generation_id: nativeTurn,
+            hook_event_name: "beforeSubmitPrompt",
+            prompt: "PRIVATE_PROMPT_BODY",
+          }),
+          "cursor",
+        );
+        const stop = parsePayload(
+          JSON.stringify({
+            conversation_id: fixtureCase.conversation_id,
+            generation_id: nativeTurn,
+            hook_event_name: "stop",
+            status: "completed",
+          }),
+          "cursor",
+        );
+        if (!prompt || !stop) throw new Error("Cursor cloud fixture did not parse");
+        expect(prompt.cursor_mode).toBe(fixture.mode);
+        const promptNs = BigInt(elapsedMs) * 1_000_000n;
+        expect(
+          recordHookSignalV3({
+            ...baseInput(root, "user-prompt-submit", prompt, "cursor"),
+            observed_at: new Date(baseEpochMs + elapsedMs).toISOString(),
+            monotonic_ns: promptNs.toString(),
+          }).state,
+        ).toBe("recorded");
+        elapsedMs += durationMs;
+        expect(
+          recordHookSignalV3({
+            ...baseInput(root, "stop", stop, "cursor"),
+            observed_at: new Date(baseEpochMs + elapsedMs).toISOString(),
+            monotonic_ns: (BigInt(elapsedMs) * 1_000_000n).toString(),
+          }).state,
+        ).toBe("recorded");
+        elapsedMs += 1;
+      }
+
+      const ledger = readLedgerV3(root);
+      const terminals = ledger.events
+        .map(({ event }) => event)
+        .filter(({ event_type }) => event_type === "turn.completed");
+      expect(terminals).toHaveLength(fixtureCase.completed_turn_ms.length);
+      for (const terminal of terminals) {
+        expect(
+          terminal.event_type === "turn.completed" && terminal.payload.tool_call_count,
+        ).toEqual({ state: "unsupported", capability: "turn_tool_call_count" });
+      }
+      for (const turn of projectLatencyV3(ledger).turns) {
+        expect(turn.tool_ms).toEqual({
+          state: "unknown",
+          known_ms: 0,
+          reasons: ["tool_call_count_unsupported"],
+        });
+      }
+      const durable = readFileSync(eventV3Paths(root).active, "utf8");
+      expect(durable).not.toContain("PRIVATE_PROMPT_BODY");
+      totalTurns += terminals.length;
+      totalWallMs += fixtureCase.completed_turn_ms.reduce((sum, value) => sum + value, 0);
+    }
+
+    expect(totalTurns).toBe(7);
+    expect(totalWallMs).toBe(5_669_140);
   });
 
   test("deduplicates Cursor generic and shell fallback hooks and counts repeated commands", () => {

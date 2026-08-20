@@ -190,12 +190,36 @@ describe("event ledger V3 latency projection", () => {
     expect(projection.turns[0]?.tool_ms).toEqual({
       state: "unknown",
       known_ms: 0,
-      reasons: ["tool_call_count_unknown"],
+      reasons: ["tool_channel_unattested"],
     });
     expect(projection.turns[0]?.residual_ms).toEqual({
       state: "unknown",
       known_ms: 0,
       reasons: ["occupied_unknown"],
+    });
+    expect(projection.diagnostics).toContainEqual({
+      code: "tool_channel_unattested",
+      event_id: turn.event_id as string,
+    });
+  });
+
+  test("distinguishes attested zero from unsupported Cursor tool coverage", () => {
+    const complete = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
+    fixtureObject(complete.payload).tool_call_count = observed(0);
+    expect(projectLatencyV3(readOf(complete)).turns[0]?.tool_ms).toEqual({
+      state: "observed",
+      value_ms: 0,
+    });
+
+    const unsupported = terminal("turn.completed", 2, "2026-08-18T14:01:00.000Z", 100);
+    fixtureObject(unsupported.payload).tool_call_count = {
+      state: "unsupported",
+      capability: "turn_tool_call_count",
+    };
+    expect(projectLatencyV3(readOf(unsupported)).turns[0]?.tool_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["tool_call_count_unsupported"],
     });
   });
 

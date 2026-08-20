@@ -53,6 +53,7 @@ export interface HookProducerContextV3Base {
   clock_id?: `clk_${string}`;
   duration_ms?: number;
   tool_call_count?: number;
+  tool_call_count_support?: "native" | "derived" | "conditional" | "unsupported";
   tool_call_count_missing_reason?: string;
   response_bytes?: number;
   delegation_id?: `del_${string}`;
@@ -244,11 +245,14 @@ export function normalizeHookEventV3Base(
             "turn_duration",
             "turn_timing_not_supplied",
           ),
-          tool_call_count: measuredOrMissing(
-            context.tool_call_count,
-            "turn_tool_call_count",
-            context.tool_call_count_missing_reason ?? "turn_aggregate_not_supplied",
-          ),
+          tool_call_count:
+            context.tool_call_count_support === "unsupported"
+              ? { state: "unsupported", capability: "turn_tool_call_count" }
+              : measuredOrMissing(
+                  context.tool_call_count,
+                  "turn_tool_call_count",
+                  context.tool_call_count_missing_reason ?? "turn_aggregate_not_supplied",
+                ),
           wait_count:
             adapterTurnWaitCountSupportV3(context.adapter) === "unsupported"
               ? { state: "unsupported", capability: "turn_wait_count" }

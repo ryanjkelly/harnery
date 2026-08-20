@@ -5,6 +5,7 @@ import {
   adapterSignalSupportV3,
   adapterTurnWaitCountSupportV3,
   adapterWaitKindSupportV3,
+  cursorToolChannelSupportV3,
 } from "./capabilities.ts";
 
 describe("event ledger V3 adapter capabilities", () => {
@@ -32,6 +33,22 @@ describe("event ledger V3 adapter capabilities", () => {
   test("admits the current native lifecycle hooks", () => {
     expect(adapterSignalSupportV3("codex", "session_end")).toBe("native");
     expect(adapterSignalSupportV3("cursor", "pre_compaction")).toBe("native");
+  });
+
+  test("declares Cursor tool coverage conditional and resolves it by execution mode", () => {
+    for (const signal of [
+      "tool_request",
+      "tool_result",
+      "tool_failure",
+      "tool_call_id",
+      "tool_duration",
+      "shell",
+    ] as const) {
+      expect(adapterSignalSupportV3("cursor", signal)).toBe("conditional");
+    }
+    expect(cursorToolChannelSupportV3("local")).toBe("native");
+    expect(cursorToolChannelSupportV3("cloud")).toBe("unsupported");
+    expect(cursorToolChannelSupportV3("unknown")).toBe("conditional");
   });
 
   test("produces stable V3 capability digests", () => {

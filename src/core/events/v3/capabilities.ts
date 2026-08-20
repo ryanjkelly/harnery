@@ -3,6 +3,8 @@ import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 
 export type CapabilitySupportV3 = "native" | "derived" | "conditional" | "unsupported";
 
+export type CursorExecutionModeV3 = "local" | "cloud" | "unknown";
+
 export type AdapterWaitKindV3 =
   | "permission"
   | "needs_input"
@@ -80,6 +82,12 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     ...SHARED_SIGNAL_SUPPORT,
     session_end: "native",
     turn_id: "unsupported",
+    tool_request: "conditional",
+    tool_result: "conditional",
+    tool_failure: "conditional",
+    tool_call_id: "conditional",
+    tool_duration: "conditional",
+    shell: "conditional",
     permission: "conditional",
     post_compaction: "unsupported",
   },
@@ -147,4 +155,15 @@ export function adapterWaitKindSupportV3(
 /** No current adapter supplies an independent completed-turn wait aggregate. */
 export function adapterTurnWaitCountSupportV3(_adapter: Adapter): CapabilitySupportV3 {
   return "unsupported";
+}
+
+/**
+ * Local Cursor sessions expose the generic tool channel. Cloud/private-worker
+ * sessions cannot guarantee whole-turn delivery because hooks may start only
+ * after the execution environment becomes writable.
+ */
+export function cursorToolChannelSupportV3(mode: CursorExecutionModeV3): CapabilitySupportV3 {
+  if (mode === "local") return "native";
+  if (mode === "cloud") return "unsupported";
+  return "conditional";
 }

@@ -90,3 +90,13 @@ tools. Cursor now records `turn_tool_call_count` as `expected_but_missing` with
 the reason `tool_channel_unattested` in that case. Delivered tool hooks still
 produce an observed count, and the latency projection keeps unattested tool
 time unknown instead of treating it as zero.
+
+A later audit localized the remaining variation to Cursor execution modes.
+Local Agent Chat uses the generic tool hooks and can report an exact aggregate.
+Cloud and private-worker conversations carry a native `bc-` identifier, but
+their hooks can begin after an exploratory read-only phase. They cannot prove
+whole-turn tool completeness. Cursor's profile therefore declares tool signals
+conditional. A local turn with delivered hooks reports an observed count, a
+local turn with a missing hook remains `expected_but_missing`, and a `bc-` turn
+reports the aggregate as `unsupported`. The producer retains only the mode
+classification, not the prompt, command, tool input, result, or transcript.

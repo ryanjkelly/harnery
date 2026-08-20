@@ -39,6 +39,7 @@ export interface TurnLatencyV3 {
 
 export type LatencyProjectionDiagnosticCodeV3 =
   | "duplicate_turn_terminal"
+  | "tool_channel_unattested"
   | "span_outside_turn"
   | "recovery_bound_exceeds_turn_wall"
   | "over_attributed";
@@ -117,9 +118,16 @@ function projectTurn(
   const waits = intervalSet(waitEvents, wallInterval, diagnostics);
   const endedWaitIds = new Set(waitEvents.map(({ payload }) => string(record(payload).wait_id)));
 
-  const expectedToolCount = observedNumber(terminal.payload.tool_call_count);
-  if (expectedToolCount === undefined) tools.reasons.push("tool_call_count_unknown");
-  else if (expectedToolCount !== toolEvents.length)
+  const toolCount = record(terminal.payload.tool_call_count);
+  const expectedToolCount = observedNumber(toolCount);
+  if (toolCount.state === "unsupported") tools.reasons.push("tool_call_count_unsupported");
+  else if (expectedToolCount === undefined) {
+    const reason = string(toolCount.reason);
+    tools.reasons.push(reason === "tool_channel_unattested" ? reason : "tool_call_count_unknown");
+    if (reason === "tool_channel_unattested") {
+      diagnostics.push({ code: "tool_channel_unattested", event_id: terminal.event_id });
+    }
+  } else if (expectedToolCount !== toolEvents.length)
     tools.reasons.push("tool_terminal_count_mismatch");
 
   const waitCount = record(terminal.payload.wait_count);

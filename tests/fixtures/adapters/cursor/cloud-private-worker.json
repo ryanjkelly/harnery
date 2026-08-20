@@ -1,0 +1,13 @@
+{
+  "mode": "cloud",
+  "cases": [
+    {
+      "conversation_id": "bc-cursor-cloud-fixture-a",
+      "completed_turn_ms": [730090, 66460, 126220]
+    },
+    {
+      "conversation_id": "bc-cursor-cloud-fixture-b",
+      "completed_turn_ms": [1799020, 213610, 2690740, 43000]
+    }
+  ]
+}

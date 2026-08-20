@@ -27,6 +27,17 @@ describe("parsePayload session ids", () => {
     });
   });
 
+  test("classifies Cursor local and cloud execution surfaces without retaining mode text", () => {
+    const local = parsePayload(
+      JSON.stringify({ session_id: "local-session", is_background_agent: false }),
+      "cursor",
+    );
+    const cloud = parsePayload(JSON.stringify({ conversation_id: "bc-cloud-session" }), "cursor");
+
+    expect(local).toMatchObject({ session_id: "local-session", cursor_mode: "local" });
+    expect(cloud).toMatchObject({ conversation_id: "cloud-session", cursor_mode: "cloud" });
+  });
+
   test("does not rewrite bc- ids from other adapters", () => {
     const payload = parsePayload(
       JSON.stringify({ session_id: "bc-session-one", conversation_id: "bc-session-one" }),

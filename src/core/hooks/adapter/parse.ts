@@ -35,6 +35,8 @@ export interface ParsedPayload {
   clean_exit?: boolean; // SessionEnd
   exit_status?: string; // SubagentStop
   reason?: string; // SubagentStop / StopFailure
+  /** Privacy-safe Cursor execution surface, derived from native lifecycle metadata. */
+  cursor_mode?: "local" | "cloud" | "unknown";
   /** original parsed object, preserved for callers that need a field we didn't pluck. */
   raw: Record<string, unknown>;
 }
@@ -52,8 +54,10 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     return null;
   }
 
-  const sessionId = normalizeSessionId(adapter, pickStr(json, "session_id"));
-  const conversationId = normalizeSessionId(adapter, pickStr(json, "conversation_id"));
+  const rawSessionId = pickStr(json, "session_id");
+  const rawConversationId = pickStr(json, "conversation_id");
+  const sessionId = normalizeSessionId(adapter, rawSessionId);
+  const conversationId = normalizeSessionId(adapter, rawConversationId);
   const parentSessionId = normalizeSessionId(adapter, pickStr(json, "parent_session_id"));
   const hookEventName = pickStr(json, "hook_event_name");
   const cursorGenerationId = adapter === "cursor" ? pickStr(json, "generation_id") : undefined;
@@ -97,8 +101,29 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     clean_exit: pickBool(json, "clean_exit"),
     exit_status: pickStr(json, "exit_status"),
     reason: pickStr(json, "reason"),
+    cursor_mode: cursorMode(json, adapter, rawSessionId, rawConversationId),
     raw: normalizedRaw,
   };
+}
+
+/**
+ * Cursor prefixes cloud/private-worker conversations with `bc-`. Current
+ * sessionStart payloads also expose `is_background_agent`; either native
+ * signal is enough to classify the execution surface without retaining text.
+ */
+function cursorMode(
+  json: Record<string, unknown>,
+  adapter: Adapter,
+  sessionId: string | undefined,
+  conversationId: string | undefined,
+): ParsedPayload["cursor_mode"] {
+  if (adapter !== "cursor") return undefined;
+  const background = pickBool(json, "is_background_agent");
+  if (background === true) return "cloud";
+  if (background === false) return "local";
+  const nativeId = conversationId ?? sessionId;
+  if (!nativeId) return "unknown";
+  return nativeId.startsWith("bc-") ? "cloud" : "local";
 }
 
 /** Cursor can serialize generic tool_input as a JSON string instead of an object. */
