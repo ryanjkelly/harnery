@@ -92,7 +92,7 @@ describe("event ledger V3 latency projection", () => {
     });
   });
 
-  test("attributes an evidence-shaped recovered tool duration", () => {
+  test("reports an evidence-shaped recovered interval only as an upper bound", () => {
     const turn = terminal("turn.completed", 1, "2026-08-19T21:47:16.000Z", 71_017);
     const turnPayload = fixtureObject(turn.payload);
     turnPayload.tool_call_count = observed(1);
@@ -102,19 +102,61 @@ describe("event ledger V3 latency projection", () => {
     const toolPayload = fixtureObject(tool.payload);
     toolPayload.outcome = "unknown";
     toolPayload.recovery = { reason: "completion_not_observed_before_turn_end" };
-    const recovered = {
+    const recovered = { state: "unknown", reason: "completion_not_observed_before_turn_end" };
+    toolPayload.duration_ms = recovered;
+    fixtureObject(toolPayload.span).duration_ms = structuredClone(recovered);
+    fixtureObject(toolPayload.recovery).elapsed_upper_bound_ms = {
       state: "observed",
       value: 70_710,
       attestation: "derived",
       confidence: "exact",
     };
-    toolPayload.duration_ms = recovered;
-    fixtureObject(toolPayload.span).duration_ms = structuredClone(recovered);
     alignTurn(turn, [tool]);
 
     const result = projectLatencyV3(readOf(turn, tool)).turns[0]!;
-    expect(result.tool_ms).toEqual({ state: "observed", value_ms: 70_710 });
-    expect(result.occupied_ms).toEqual({ state: "observed", value_ms: 70_710 });
+    expect(result.tool_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      upper_bound_ms: 70_710,
+      reasons: ["unknown:completion_not_observed_before_turn_end"],
+    });
+    expect(result.tool_bound_coverage_percent).toBe(99.6);
+    expect(result.tool_ranking_eligible).toBeFalse();
+  });
+
+  test("declines ranking when a recovery bound crosses the turn wall", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-19T21:00:00.000Z", 60_000);
+    fixtureObject(turn.payload).tool_call_count = observed(1);
+    const tool = eventV3Fixture("tool.completed", 2);
+    const payload = fixtureObject(tool.payload);
+    payload.duration_ms = { state: "unknown", reason: "completion_not_observed_before_next_turn" };
+    const span = fixtureObject(payload.span);
+    span.opened_at = "2026-08-19T21:00:10.000Z";
+    span.duration_ms = structuredClone(payload.duration_ms);
+    payload.recovery = {
+      reason: "completion_not_observed_before_next_turn",
+      elapsed_upper_bound_ms: {
+        state: "observed",
+        value: 120_000,
+        attestation: "derived",
+        confidence: "exact",
+      },
+    };
+    alignTurn(turn, [tool]);
+
+    const projection = projectLatencyV3(readOf(turn, tool));
+    expect(projection.turns[0]?.tool_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      upper_bound_ms: 50_000,
+      reasons: ["unknown:completion_not_observed_before_next_turn"],
+    });
+    expect(projection.turns[0]?.tool_bound_coverage_percent).toBe(83.3);
+    expect(projection.turns[0]?.tool_ranking_eligible).toBeFalse();
+    expect(projection.diagnostics).toContainEqual({
+      code: "recovery_bound_exceeds_turn_wall",
+      event_id: tool.event_id as string,
+    });
   });
 
   test("reports over-attribution instead of emitting a negative residual", () => {

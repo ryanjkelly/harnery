@@ -2,4 +2,4 @@
 "harnery": patch
 ---
 
-Preserve exact same-boot monotonic duration when finalization recovers an open V3 tool span.
+Expose same-boot recovery intervals as tool-time upper bounds while keeping swept V3 durations unknown.

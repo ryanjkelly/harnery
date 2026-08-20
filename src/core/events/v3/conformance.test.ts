@@ -43,7 +43,7 @@ describe("event ledger V3 conformance fixtures", () => {
     for (const fixture of fixtures) expect(Value.Check(observation, fixture)).toBe(true);
   });
 
-  test("accepts recovered terminals with bound unknown or proven monotonic timing", () => {
+  test("keeps recovered duration unknown and accepts a proven elapsed upper bound", () => {
     for (const [eventType, reason] of [
       ["tool.completed", "completion_not_observed_before_turn_end"],
       ["command.completed", "command_completion_not_observed"],
@@ -73,12 +73,17 @@ describe("event ledger V3 conformance fixtures", () => {
         confidence: "exact",
       };
       observedSpan.duration_ms = structuredClone(observedPayload.duration_ms);
+      expect(validateEventV3(observed).issues).toContain(
+        "/payload/duration_ms:recovery_requires_unknown_duration",
+      );
       if (eventType === "tool.completed") {
-        expect(validateEventV3(observed).issues).toEqual([]);
-      } else {
-        expect(validateEventV3(observed).issues).toContain(
-          "/payload/duration_ms:recovery_requires_unknown_duration",
-        );
+        object(payload.recovery).elapsed_upper_bound_ms = {
+          state: "observed",
+          value: 70_710,
+          attestation: "derived",
+          confidence: "exact",
+        };
+        expect(validateEventV3(event).issues).toEqual([]);
       }
     }
 

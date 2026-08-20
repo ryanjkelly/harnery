@@ -4,7 +4,7 @@ export const EVENT_V3_LATENCY_PROJECTION_VERSION = "event-v3-latency-v1" as cons
 
 export type LatencyMetricV3 =
   | { state: "observed"; value_ms: number }
-  | { state: "unknown"; known_ms: number; reasons: string[] };
+  | { state: "unknown"; known_ms: number; upper_bound_ms?: number; reasons: string[] };
 
 export interface ToolLatencyV3 {
   namespace: string;
@@ -20,6 +20,8 @@ export interface TurnLatencyV3 {
   outcome: string;
   wall_ms: LatencyMetricV3;
   tool_ms: LatencyMetricV3;
+  tool_bound_coverage_percent: number | null;
+  tool_ranking_eligible: boolean;
   command_ms: LatencyMetricV3;
   command_exclusive_ms: LatencyMetricV3;
   wait_ms: LatencyMetricV3;
@@ -38,6 +40,7 @@ export interface TurnLatencyV3 {
 export type LatencyProjectionDiagnosticCodeV3 =
   | "duplicate_turn_terminal"
   | "span_outside_turn"
+  | "recovery_bound_exceeds_turn_wall"
   | "over_attributed";
 
 export interface LatencyProjectionDiagnosticV3 {
@@ -66,6 +69,7 @@ interface Interval {
 
 interface IntervalSet {
   intervals: Interval[];
+  upperBounds: Interval[];
   reasons: string[];
 }
 
@@ -121,10 +125,12 @@ function projectTurn(
   const wait = metricFromIntervals(waits);
   const commandExclusive = metricFromIntervals({
     intervals: subtractIntervals(commands.intervals, tools.intervals),
+    upperBounds: [...commands.upperBounds, ...tools.upperBounds],
     reasons: [...commands.reasons, ...tools.reasons],
   });
   const occupied = metricFromIntervals({
     intervals: [...tools.intervals, ...commands.intervals, ...waits.intervals],
+    upperBounds: [...tools.upperBounds, ...commands.upperBounds, ...waits.upperBounds],
     reasons: [...tools.reasons, ...commands.reasons, ...waits.reasons],
   });
   const inference = metricFromNestedObservation(
@@ -165,6 +171,8 @@ function projectTurn(
     outcome: string(terminal.payload.outcome),
     wall_ms: wall,
     tool_ms: tool,
+    tool_bound_coverage_percent: boundCoveragePercent(tool, wall),
+    tool_ranking_eligible: tool.state === "observed",
     command_ms: command,
     command_exclusive_ms: commandExclusive,
     wait_ms: wait,
@@ -203,11 +211,29 @@ function intervalSet(
   diagnostics: LatencyProjectionDiagnosticV3[],
 ): IntervalSet {
   const intervals: Interval[] = [];
+  const upperBounds: Interval[] = [];
   const reasons: string[] = [];
   for (const event of events) {
     const interval = intervalFromSpan(event);
     if (!interval) {
       reasons.push(observationReason(record(event.payload.span).duration_ms));
+      const upperBound = upperBoundInterval(event);
+      if (upperBound) {
+        if (wall && (upperBound.start < wall.start || upperBound.end > wall.end)) {
+          diagnostics.push({
+            code: "recovery_bound_exceeds_turn_wall",
+            event_id: event.event_id,
+          });
+        }
+        const clipped = wall
+          ? {
+              ...upperBound,
+              start: Math.max(upperBound.start, wall.start),
+              end: Math.min(upperBound.end, wall.end),
+            }
+          : upperBound;
+        if (clipped.end > clipped.start) upperBounds.push(clipped);
+      }
       continue;
     }
     if (!wall) {
@@ -224,7 +250,7 @@ function intervalSet(
     };
     if (clipped.end > clipped.start) intervals.push(clipped);
   }
-  return { intervals, reasons: unique(reasons) };
+  return { intervals, upperBounds, reasons: unique(reasons) };
 }
 
 function intervalFromSpan(event: EventShape): Interval | undefined {
@@ -235,11 +261,32 @@ function intervalFromSpan(event: EventShape): Interval | undefined {
   return { start, end: start + duration, event_id: event.event_id };
 }
 
+function upperBoundInterval(event: EventShape): Interval | undefined {
+  const span = record(event.payload.span);
+  const recovery = record(event.payload.recovery);
+  const upperBound = observedNumber(recovery.elapsed_upper_bound_ms);
+  const start = Date.parse(string(span.opened_at));
+  if (upperBound === undefined || !Number.isFinite(start)) return undefined;
+  return { start, end: start + upperBound, event_id: event.event_id };
+}
+
 function metricFromIntervals(set: IntervalSet): LatencyMetricV3 {
   const known = unionLength(set.intervals);
+  const upperBound = unionLength([...set.intervals, ...set.upperBounds]);
   return set.reasons.length === 0
     ? { state: "observed", value_ms: known }
-    : { state: "unknown", known_ms: known, reasons: unique(set.reasons) };
+    : {
+        state: "unknown",
+        known_ms: known,
+        ...(set.upperBounds.length > 0 ? { upper_bound_ms: upperBound } : {}),
+        reasons: unique(set.reasons),
+      };
+}
+
+function boundCoveragePercent(metric: LatencyMetricV3, wall: LatencyMetricV3): number | null {
+  if (metric.state !== "unknown" || metric.upper_bound_ms === undefined) return null;
+  if (wall.state !== "observed" || wall.value_ms <= 0) return null;
+  return Math.round((metric.upper_bound_ms / wall.value_ms) * 1_000) / 10;
 }
 
 function metricFromObservation(value: unknown, fallback: string): LatencyMetricV3 {

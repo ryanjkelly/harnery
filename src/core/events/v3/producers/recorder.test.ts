@@ -1806,6 +1806,10 @@ describe("event ledger V3 hook intake spool", () => {
     expect(derived.payload.recovery?.reason).toBe("completion_not_observed_before_turn_end");
     expect(derived.payload.recovery?.requested_event_id).toBeDefined();
     expect(derived.payload.duration_ms).toEqual({
+      state: "unknown",
+      reason: "completion_not_observed_before_turn_end",
+    });
+    expect(derived.payload.recovery?.elapsed_upper_bound_ms).toEqual({
       state: "observed",
       value: 70_710,
       attestation: "derived",
@@ -1815,6 +1819,73 @@ describe("event ledger V3 hook intake spool", () => {
     const turnCompleted = rows.find((event) => event.event_type === "turn.completed");
     expect(rows.indexOf(derived)).toBeLessThan(rows.indexOf(turnCompleted as never));
     expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.spans.length).toBe(0);
+  });
+
+  test("a boundary burst labels long orphan intervals as upper bounds", () => {
+    const root = candidateRoot();
+    const nativeSession = "boundary-burst-session";
+    recordHookSignalV3({
+      ...baseInput(root, "session-start", parsed({ session_id: nativeSession })),
+      observed_at: "2026-08-19T21:29:59.000Z",
+      monotonic_ns: "999000000000",
+    });
+    recordHookSignalV3({
+      ...baseInput(root, "user-prompt-submit", parsed({ session_id: nativeSession, prompt: "go" })),
+      observed_at: "2026-08-19T21:30:00.000Z",
+      monotonic_ns: "1000000000000",
+    });
+    for (const [index, observed_at, monotonic_ns] of [
+      [1, "2026-08-19T21:30:02.000Z", "1002000000000"],
+      [2, "2026-08-19T21:35:02.000Z", "1302000000000"],
+      [3, "2026-08-19T21:39:02.000Z", "1542000000000"],
+    ] as const) {
+      recordHookSignalV3({
+        ...baseInput(
+          root,
+          "pre-tool-use",
+          parsed({
+            session_id: nativeSession,
+            tool_use_id: `lost-call-${index}`,
+            tool_name: "Bash",
+          }),
+        ),
+        observed_at,
+        monotonic_ns,
+      });
+    }
+    recordHookSignalV3({
+      ...baseInput(root, "stop", parsed({ session_id: nativeSession })),
+      observed_at: "2026-08-19T21:40:02.000Z",
+      monotonic_ns: "1602000000000",
+    });
+
+    const recovered = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter(
+        (event) =>
+          event.event_type === "tool.completed" &&
+          event.payload.recovery?.reason === "completion_not_observed_before_turn_end",
+      );
+    expect(recovered).toHaveLength(3);
+    expect(
+      recovered.map((event) =>
+        event.event_type === "tool.completed"
+          ? event.payload.recovery?.elapsed_upper_bound_ms
+          : undefined,
+      ),
+    ).toEqual([
+      { state: "observed", value: 600_000, attestation: "derived", confidence: "exact" },
+      { state: "observed", value: 300_000, attestation: "derived", confidence: "exact" },
+      { state: "observed", value: 60_000, attestation: "derived", confidence: "exact" },
+    ]);
+    for (const event of recovered) {
+      if (event.event_type !== "tool.completed") throw new Error("recovered terminal missing");
+      expect(event.payload.duration_ms).toEqual({
+        state: "unknown",
+        reason: "completion_not_observed_before_turn_end",
+      });
+      expect(event.payload.outcome).toBe("unknown");
+    }
   });
 
   test("a lost stop is recovered at the next turn start", () => {
@@ -2058,9 +2129,13 @@ describe("pending explicit-end expiry", () => {
     expect(salvage.payload.outcome).toBe("unknown");
     expect(salvage.payload.duration_ms).toEqual({
       state: "unknown",
-      reason: "recovery_monotonic_clock_unavailable",
+      reason: "explicit_end_salvage",
     });
     expect(salvage.payload.span.duration_ms).toEqual(salvage.payload.duration_ms);
+    expect(salvage.payload.recovery?.elapsed_upper_bound_ms).toEqual({
+      state: "unknown",
+      reason: "recovery_monotonic_clock_unavailable",
+    });
     const ended = rows.find((event) => event.event_type === "session.ended");
     expect(ended).toBeDefined();
     expect(readHookProducerStateV3(root, "codex", nativeSession)?.terminal).toBeTrue();

@@ -37,7 +37,7 @@ import {
   closeSpanStateV3,
   type OpenSpanStateV3,
   openSpanStateV3,
-  recoverSpanStateV3,
+  recoverSpanUpperBoundV3,
   type SpanClockV3,
 } from "../span-state.ts";
 import { type ContextMeasurementV3, extractTurnTelemetryV3 } from "../turn-telemetry.ts";
@@ -1347,10 +1347,15 @@ function buildDerivedToolCompleted(
       : "low";
   const confidence =
     span.turn_stamp === "producer_state" && baseConfidence === "medium" ? "low" : baseConfidence;
-  const terminalSpan =
-    reason === "completion_not_observed_before_turn_end" || reason === "explicit_end_salvage"
-      ? recoverSpanStateV3(span, { boot_id: state.boot_id, clock })
-      : closeSpanStateV3(span, { boot_id: state.boot_id, clock, recovery_reason: reason });
+  const terminalSpan = closeSpanStateV3(span, {
+    boot_id: state.boot_id,
+    clock,
+    recovery_reason: reason,
+  });
+  const elapsedUpperBound = recoverSpanUpperBoundV3(span, {
+    boot_id: state.boot_id,
+    clock,
+  });
   const event = buildEventV3("tool.completed", {
     producer: {
       producer_id: producerOverride?.producer_id ?? input.producer_id,
@@ -1398,6 +1403,7 @@ function buildDerivedToolCompleted(
       recovery: {
         reason,
         ...(span.requested_event_id ? { requested_event_id: span.requested_event_id } : {}),
+        elapsed_upper_bound_ms: elapsedUpperBound,
       },
     },
   }) as EventV3;

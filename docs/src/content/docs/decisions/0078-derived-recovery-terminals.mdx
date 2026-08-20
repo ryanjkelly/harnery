@@ -39,6 +39,7 @@ recovery: {
     | "explicit_end_salvage"
     | "command_completion_not_observed";
   requested_event_id?: EventId;
+  elapsed_upper_bound_ms?: Observation<number>;
 }
 ```
 
@@ -48,8 +49,15 @@ derived terminal back to the span's original request event when the producer
 state still holds it.
 
 Recovery records what Harnery observed. It never claims the adapter supplied a
-missing result: a recovered terminal always carries `outcome: "unknown"`, no
-duration, no exit code, and no content. Unknown stays unknown.
+missing result: a recovered terminal always carries `outcome: "unknown"`, an
+unknown duration, no exit code, and no content. Unknown stays unknown.
+
+`elapsed_upper_bound_ms` is the request-to-sweep interval, not tool execution
+time. The recorder emits an exact derived bound only when the opening and
+closing samples share one boot-relative monotonic clock. Cross-boot, missing,
+invalid, and regressing samples remain unknown with a specific clock-proof
+reason. Consumers may use the field to bound unknown tool time, but never as an
+observed duration.
 
 ### Validator rules
 
@@ -67,6 +75,9 @@ The validators enforce the contract bidirectionally where history allows it:
    `tool.requested` (and such an event never carries `requested_event_id`,
    because it is the request); `command_completion_not_observed` appears only
    on `command.completed`; the remaining four appear only on `tool.completed`.
+5. Recovered completion durations remain unknown and match the recovery reason.
+   An observed `elapsed_upper_bound_ms` requires exact derived attestation and
+   is forbidden on `tool.requested` and `command.completed`.
 
 ### Reason codes and pinned confidence
 
@@ -146,6 +157,15 @@ event or command-pairing gap does not, unless a later, separately approved
 policy admits a specific recovery class. Recovery exists for coordination
 honesty, not to launder incomplete telemetry into training evidence.
 
+### Latency receipt bounds
+
+The latency projection unions recovery bounds separately from observed span
+intervals. Unknown tool metrics may expose `upper_bound_ms`, while `known_ms`
+remains the union of observed terminals. The turn receipt reports the bound's
+share of turn wall and marks the tool channel ineligible for ranking until its
+duration is observed. A bound crossing the turn wall is clipped for the
+percentage calculation and emits `recovery_bound_exceeds_turn_wall`.
+
 ## Consequences
 
 Every span now reaches one of exactly three states: natively closed, recovered
@@ -154,6 +174,12 @@ salvage. Explicit ends stop wedging behind unclosable spans. The span cap
 stops being a slow-motion brick. Corpus consumers can distinguish native
 completion from recovery at a glance, per event, with a validator behind the
 distinction.
+
+An earlier implementation treated the same-clock request-to-sweep interval as
+an exact recovered duration. Batch 07 showed boundary bursts containing spans
+orphaned for up to 30 minutes, so the clock relation proved only when Harnery
+swept the span. This revision keeps duration unknown and labels that interval
+as an upper bound.
 
 The cost is an epoch boundary: pre-advance events live in an archived ledger
 the new build cannot append to, and every machine with an active ledger must

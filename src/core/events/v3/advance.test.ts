@@ -82,6 +82,21 @@ describe("event ledger V3 additive schema advances", () => {
     });
   });
 
+  test("classifies the recovery upper bound as an additive in-place advance", () => {
+    const prior = structuredClone(EventV3Schema) as TSchema;
+    for (const eventType of ["tool.requested", "tool.completed", "command.completed"]) {
+      const payload = eventBranch(prior, eventType).properties.payload as TObject;
+      const recovery = payload.properties.recovery as TObject;
+      delete recovery.properties.elapsed_upper_bound_ms;
+    }
+
+    expect(validateAdditiveSchemaAdvanceV3(prior, EventV3Schema)).toEqual({
+      eligible: true,
+      strict: true,
+      issues: [],
+    });
+  });
+
   test("accepts a new complete event branch and rejects branch removal or rename", () => {
     const added = structuredClone(EventV3Schema) as TSchema;
     const addedBranches = (added as unknown as { anyOf: TObject[] }).anyOf;

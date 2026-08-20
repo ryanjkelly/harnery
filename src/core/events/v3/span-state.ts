@@ -29,7 +29,7 @@ export interface CloseSpanV3Input {
   recovery_reason?: string;
 }
 
-export interface RecoverSpanV3Input {
+export interface RecoverSpanUpperBoundV3Input {
   boot_id: `boot_${string}`;
   clock: SpanClockV3;
 }
@@ -87,40 +87,36 @@ export function closeSpanStateV3(span: OpenSpanStateV3, input: CloseSpanV3Input)
 }
 
 /**
- * Close a recovered span only when its elapsed time is proven by two
- * same-boot monotonic readings. Recovery never falls back to wall time.
+ * Bound a recovered span's elapsed interval only when two same-boot monotonic
+ * readings prove it. The interval is not evidence of tool execution time.
  */
-export function recoverSpanStateV3(
+export function recoverSpanUpperBoundV3(
   span: OpenSpanStateV3,
-  input: RecoverSpanV3Input,
-): SpanSummaryV3 {
-  let duration_ms: SpanSummaryV3["duration_ms"];
+  input: RecoverSpanUpperBoundV3Input,
+): SpanSummaryV3["duration_ms"] {
   if (span.boot_id !== input.boot_id) {
-    duration_ms = { state: "unknown", reason: "recovery_clock_mismatch" };
-  } else if (span.opened_monotonic_ns === undefined || input.clock.monotonic_ns === undefined) {
-    duration_ms = { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
-  } else {
-    const openedMonotonic = monotonic(span.opened_monotonic_ns);
-    const closedMonotonic = monotonic(input.clock.monotonic_ns);
-    if (openedMonotonic === undefined || closedMonotonic === undefined) {
-      duration_ms = { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
-    } else if (closedMonotonic < openedMonotonic) {
-      duration_ms = { state: "unknown", reason: "recovery_monotonic_clock_regressed" };
-    } else {
-      duration_ms = {
-        state: "observed",
-        value: Number((closedMonotonic - openedMonotonic) / 1_000_000n),
-        attestation: "derived",
-        confidence: "exact",
-      };
-    }
+    return { state: "unknown", reason: "recovery_clock_mismatch" };
+  }
+  if (span.opened_monotonic_ns === undefined || input.clock.monotonic_ns === undefined) {
+    return { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
+  }
+  const openedMonotonic = monotonic(span.opened_monotonic_ns);
+  const closedMonotonic = monotonic(input.clock.monotonic_ns);
+  if (openedMonotonic === undefined || closedMonotonic === undefined) {
+    return { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
+  }
+  if (closedMonotonic < openedMonotonic) {
+    return { state: "unknown", reason: "recovery_monotonic_clock_regressed" };
+  }
+  const milliseconds = Number((closedMonotonic - openedMonotonic) / 1_000_000n);
+  if (!Number.isSafeInteger(milliseconds)) {
+    return { state: "unknown", reason: "recovery_monotonic_clock_unavailable" };
   }
   return {
-    span_id: span.span_id,
-    ...(span.parent_span_id ? { parent_span_id: span.parent_span_id } : {}),
-    opened_at: span.opened_at,
-    duration_ms,
-    ...(span.open_event_id ? { open_event_id: span.open_event_id } : {}),
+    state: "observed",
+    value: milliseconds,
+    attestation: "derived",
+    confidence: "exact",
   };
 }
 

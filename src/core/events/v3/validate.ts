@@ -42,6 +42,7 @@ interface SpanShape {
 interface RecoveryShape {
   reason: string;
   requested_event_id?: string;
+  elapsed_upper_bound_ms?: ObservationShape;
 }
 
 export function validateEventV3(value: unknown): EventV3ValidationResult {
@@ -257,6 +258,9 @@ function validateRecoverySemantics(event: EventShape): string[] {
     if (recovery.requested_event_id !== undefined) {
       issues.push("/payload/recovery/requested_event_id:forbidden_on_derived_request");
     }
+    if (recovery.elapsed_upper_bound_ms !== undefined) {
+      issues.push("/payload/recovery/elapsed_upper_bound_ms:forbidden_on_tool_requested");
+    }
     return issues;
   }
   if (event.payload.outcome !== "unknown") {
@@ -264,30 +268,30 @@ function validateRecoverySemantics(event: EventShape): string[] {
   }
   const span = spanFrom(event.payload.span);
   const duration = observationFrom(event.payload.duration_ms);
-  const permitsRecoveredDuration =
-    event.event_type === "tool.completed" &&
-    (recovery.reason === "completion_not_observed_before_turn_end" ||
-      recovery.reason === "explicit_end_salvage");
   for (const [path, candidate] of [
     ["/payload/span/duration_ms", span?.duration_ms],
     ["/payload/duration_ms", duration],
   ] as const) {
     if (!candidate) continue;
-    if (candidate.state === "observed") {
-      if (!permitsRecoveredDuration) issues.push(`${path}:recovery_requires_unknown_duration`);
-      if (candidate.attestation !== "derived" || candidate.confidence !== "exact") {
-        issues.push(`${path}:recovery_duration_requires_exact_derived_monotonic_time`);
-      }
-    } else if (candidate.state !== "unknown") {
+    if (candidate.state !== "unknown") {
       issues.push(`${path}:recovery_requires_unknown_duration`);
-    } else if (
-      candidate.reason !== recovery.reason &&
-      candidate.reason !== "recovery_clock_mismatch" &&
-      candidate.reason !== "recovery_monotonic_clock_unavailable" &&
-      candidate.reason !== "recovery_monotonic_clock_regressed"
-    ) {
+    } else if (candidate.reason !== recovery.reason) {
       issues.push(`${path}:recovery_reason_mismatch`);
     }
+  }
+  const upperBound = recovery.elapsed_upper_bound_ms;
+  if (upperBound?.state === "observed") {
+    if (upperBound.attestation !== "derived" || upperBound.confidence !== "exact") {
+      issues.push("/payload/recovery/elapsed_upper_bound_ms:requires_exact_derived_monotonic_time");
+    }
+  } else if (
+    upperBound &&
+    (upperBound.state !== "unknown" ||
+      (upperBound.reason !== "recovery_clock_mismatch" &&
+        upperBound.reason !== "recovery_monotonic_clock_unavailable" &&
+        upperBound.reason !== "recovery_monotonic_clock_regressed"))
+  ) {
+    issues.push("/payload/recovery/elapsed_upper_bound_ms:invalid_clock_proof");
   }
   if (event.event_type === "command.completed") {
     if (recovery.reason !== "command_completion_not_observed") {
@@ -295,6 +299,9 @@ function validateRecoverySemantics(event: EventShape): string[] {
     }
     if (event.payload.exit_code !== undefined) {
       issues.push("/payload/exit_code:forbidden_on_recovered_command");
+    }
+    if (recovery.elapsed_upper_bound_ms !== undefined) {
+      issues.push("/payload/recovery/elapsed_upper_bound_ms:forbidden_on_command_completed");
     }
     return issues;
   }

@@ -51,6 +51,7 @@ export const RecoveryReasonV3BaseSchema = Type.Union([
 export const RecoveryV3BaseSchema = StrictObject({
   reason: RecoveryReasonV3BaseSchema,
   requested_event_id: Type.Optional(EventId),
+  elapsed_upper_bound_ms: Type.Optional(ObservationV3BaseSchema(Type.Integer({ minimum: 0 }))),
 });
 
 export const FingerprintV3BaseSchema = StrictObject({
