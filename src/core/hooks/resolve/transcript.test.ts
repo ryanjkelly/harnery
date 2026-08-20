@@ -3,7 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { detectForkParent, scanAssistantTextIncludes, scanTranscriptModel } from "./transcript.ts";
+import { assistantTextStartsWithSessionNameBlock } from "../../agents/session-name-display.ts";
+import {
+  detectForkParent,
+  scanAssistantTextIncludes,
+  scanLatestAssistantText,
+  scanSessionNameDisplayedImmediately,
+  scanTranscriptModel,
+} from "./transcript.ts";
 
 describe("scanAssistantTextIncludes", () => {
   let dir: string;
@@ -88,6 +95,114 @@ describe("scanAssistantTextIncludes", () => {
       { type: "assistant", message: { content: [{ type: "text", text: NAME }] } },
     ]);
     expect(scanAssistantTextIncludes(p, "")).toBe(false);
+  });
+});
+
+describe("ordered session-name transcript scans", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "harn-transcript-name-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const NAME = "Agent Maya - Auth refactor";
+  const BLOCK = `\`\`\`\n${NAME}\n\`\`\``;
+
+  function writeTranscript(lines: object[]): string {
+    const p = join(dir, "transcript.jsonl");
+    writeFileSync(p, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+    return p;
+  }
+
+  test("reads the latest Claude Code and Codex assistant text", () => {
+    const claude = writeTranscript([
+      { type: "assistant", message: { content: [{ type: "text", text: "earlier" }] } },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(scanLatestAssistantText(claude)).toBe(BLOCK);
+
+    const codex = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+    ]);
+    expect(scanLatestAssistantText(codex)).toBe(BLOCK);
+  });
+
+  test("skips Claude Code's current tool-use-only row and finds the preceding block", () => {
+    const p = writeTranscript([
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", input: { command: "harn agents status" } }] },
+      },
+    ]);
+    expect(scanLatestAssistantText(p)).toBe(BLOCK);
+  });
+
+  test("accepts the exact first assistant block after a Claude Code mint result", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(true);
+  });
+
+  test("accepts the exact first assistant block after a Codex mint result", () => {
+    const p = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(true);
+  });
+
+  test("rejects an end-of-task block when substantive assistant text came first", () => {
+    const p = writeTranscript([
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", content: `suggested_session_name=${NAME}` }] },
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: "Working on it." }] } },
+      { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },
+    ]);
+    expect(
+      scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toBe(false);
   });
 });
 

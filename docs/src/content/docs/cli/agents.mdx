@@ -146,7 +146,7 @@ the operator to set as their adapter's session/tab title:
 ```json
 { "task": "Auth Refactor", "first_of_session": true,
   "suggested_session_name": "Agent Hollis - Auth Refactor",
-  "note": "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title." }
+  "note": "Next, before any prose or another tool call, send suggested_session_name verbatim by itself in a fenced code block." }
 ```
 
 `first_of_session: true` means exactly "this call produced the session name" —
@@ -155,24 +155,32 @@ not consume the naming window; the next non-empty declaration still names the
 session. The `--session-id` path names the session like any other call.
 Subagents and workflow children are never named.
 
-With hooks installed, Harnery injects a reminder on every prompt in Claude
-Code, Cursor, and Codex until the session has produced its name; it skips
-subagents and workflow children. The single focus declaration feeds both the
-peer-visible task and the tab name, so there's one source of truth. Reproduce
-`suggested_session_name` inside a fenced code block in your reply. Chat UIs add
-a one-click Copy button to code blocks, so the operator grabs the exact string
-without hand-selecting. Every later `set-task` returns
-`first_of_session: false` and a null name.
+With hooks installed, Harnery treats the suggestion as pending until the exact
+copyable block has been displayed. PostToolUse asks for that block as the next
+assistant text. PreToolUse rejects another tool while the name is pending:
+Claude Code and Codex verify transcript text, while Cursor verifies its native
+`agent_message`. The block must be the first non-whitespace content and contain
+only `suggested_session_name`. Chat UIs add a one-click Copy button, so the
+operator gets the exact title without hand-selecting.
+
+The gate always allows a single `agents set-task` or `agents status` command.
+Those are the ritual's repair and turn-closing paths, so the naming check must
+not block them. Shell control syntax disqualifies the exemption.
+
+The same pending comparison drives every prompt reminder, including a
+lifecycle name that has been re-minted. Subagents and workflow children are
+skipped. Every later ordinary `set-task` returns `first_of_session: false` and
+a null name.
 
 `set-task` never changes task lifecycle. If task text changes while the session
 is `blocked` or `done`, the command returns a warning to reopen the lifecycle
 explicitly. The new task text is still recorded.
 
-On Claude Code, the Stop hook additionally enforces the naming turn
-(`stop-hook.session_name`): the turn whose `set-task` produced the name must
-show it in the reply text. Cursor's Stop payload carries neither a transcript
-nor the assistant message, so the fence is undetectable there and the reminder
-stays soft; Codex Stop remains observe-only.
+The Stop-time fallback accepts only the first assistant message after the tool
+result that minted the name. A plain-text mention or a block printed after
+substantial work does not count. Claude Code can enforce that fallback;
+Cursor's Stop payload has no reply text, and Codex Stop remains observe-only.
+PreToolUse handles the check before those adapter differences matter.
 
 ### lifecycle
 

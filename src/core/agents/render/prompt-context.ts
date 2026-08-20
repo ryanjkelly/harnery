@@ -12,9 +12,9 @@
  *      + sorted(files_touched) + platform, sorted by instance_id).
  *   2. Council pending: pending open-council IDs hashed; re-emits when the
  *      ID set changes.
- *   3. Focus nudge. Until the session has produced its suggested name (first
- *      non-empty set-task), tells every adapter — on every prompt, undeduped —
- *      to reproduce set-task's suggested session name in a fenced code block.
+ *   3. Focus nudge. Until the session has displayed its current suggested
+ *      name, tells every adapter on every prompt to send the exact fenced block
+ *      before prose or another tool call.
  *      Cursor/Codex additionally get the existing unset/stale-task reminder
  *      because their Stop hooks do not enforce task declarations as reliably
  *      as Claude Code's.
@@ -45,6 +45,7 @@ import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
 import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 import { type RemoteMachine, readRemoteMachines } from "../../presence/index.ts";
+import { sessionNameDisplayBlock, sessionNameDisplayPending } from "../session-name-display.ts";
 import {
   readLiveCoordinationRow,
   readLiveCoordinationRows,
@@ -218,20 +219,16 @@ function computeFocusNudgeIfChanged(
   let message = "";
   let nudgeKind = "";
 
-  if (
-    opts.sessionNameNudge &&
-    (!hb.suggested_session_name ||
-      (hb.session_name_seen_for !== undefined &&
-        hb.suggested_session_name !== hb.session_name_seen_for))
-  ) {
+  const pendingSessionName = sessionNameDisplayPending(hb);
+  if (opts.sessionNameNudge && (!hb.suggested_session_name || pendingSessionName)) {
     // Keyed on "a name was ever produced", not task_updated_at: a bare clear
     // as the first declaration must not end the naming window.
     needsNudge = true;
     nudgeKind = "session-name";
-    message = hb.suggested_session_name
-      ? `This session's lifecycle changed its suggested name. Reproduce this value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title: ${hb.suggested_session_name}`
+    message = pendingSessionName
+      ? `This session name is still pending display. Before any prose or another tool call, send this exact block as your next assistant text:\n\n${sessionNameDisplayBlock(pendingSessionName)}`
       : `This session has no name yet: run \`${bin} agents set-task "<2-5 word session topic>"\` as your first tool call. ` +
-        "When it returns `first_of_session: true`, reproduce its `suggested_session_name` value by itself inside a fenced code block at the very top of your reply so the operator can one-click-copy it as the session/tab title. " +
+        "When it returns `first_of_session: true`, send its `suggested_session_name` as the exact fenced block requested by the PostToolUse instruction before any prose or another tool call. " +
         "Then continue with the task; that `set-task` also satisfies this turn's focus declaration.";
   } else if (opts.taskNudge && !taskValue) {
     needsNudge = true;

@@ -2,11 +2,10 @@
  * Session-name presence for `turn.completed`.
  *
  * While the current V3 coordination row carries a `suggested_session_name`, report whether the
- * naming ritual is satisfied: either this turn's reply shows the name, or an
- * earlier reply already did. Scanning covers assistant text blocks only (the
- * raw transcript tail also carries the name inside the set-task tool_result,
- * which must not count) plus the adapter-supplied last assistant message, for
- * stops that arrive without a transcript.
+ * naming ritual is satisfied: either the immediate post-mint assistant text
+ * showed the exact block, or an earlier PreToolUse already stamped it. The
+ * transcript callback must enforce ordering and block shape; a late final
+ * answer or a tool result must not count.
  *
  * Two properties the stop-hook naming rule depends on:
  *
@@ -34,7 +33,6 @@ export interface SessionNamePresence {
 export function sessionNamePresence(
   coordRoot: string,
   instanceId: string,
-  lastAssistantMessage: string,
   scanAssistantText: (name: string) => boolean,
 ): SessionNamePresence {
   try {
@@ -44,7 +42,7 @@ export function sessionNamePresence(
     if (row?.session_name_seen_for === name) {
       return { session_name_present: true, session_name_present_for: name };
     }
-    const present = scanAssistantText(name) || lastAssistantMessage.includes(name);
+    const present = scanAssistantText(name);
     if (present) stampSessionNameSeen(coordRoot, instanceId, name);
     return { session_name_present: present, session_name_present_for: name };
   } catch {

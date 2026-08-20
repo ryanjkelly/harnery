@@ -71,6 +71,102 @@ export function scanAssistantTextIncludes(
   return false;
 }
 
+/** Most recent user-visible assistant text across Claude Code and Codex JSONL. */
+export function scanLatestAssistantText(transcriptPath: string | undefined): string | undefined {
+  if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
+  const text = tailText(transcriptPath);
+  if (!text) return undefined;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const row = parseTranscriptRow(lines[i]);
+    if (!row) continue;
+    const assistantText = assistantTextFromRow(row);
+    // Claude Code appends the current tool_use-only assistant row before
+    // PreToolUse fires. Skip rows with no user-visible text so the immediately
+    // preceding fenced block remains discoverable.
+    if (assistantText !== null && assistantText.trim().length > 0) return assistantText;
+  }
+  return undefined;
+}
+
+/**
+ * Verify that the first assistant message after the set-task result begins
+ * with the exact session-name block. This is the Stop-time fallback for a
+ * correctly displayed name followed by no further tool call. A name printed
+ * after later work does not pass.
+ */
+export function scanSessionNameDisplayedImmediately(
+  transcriptPath: string | undefined,
+  name: string,
+  startsWithBlock: (text: string, expectedName: string) => boolean,
+): boolean {
+  if (!transcriptPath || !name || !existsSync(transcriptPath)) return false;
+  const text = tailText(transcriptPath);
+  if (!text) return false;
+  let sawMintResult = false;
+  for (const line of text.split("\n")) {
+    if (!sawMintResult) {
+      if (line.includes(name) && line.includes("suggested_session_name")) sawMintResult = true;
+      continue;
+    }
+    const row = parseTranscriptRow(line);
+    if (!row) continue;
+    const assistantText = assistantTextFromRow(row);
+    if (assistantText !== null) return startsWithBlock(assistantText, name);
+  }
+  return false;
+}
+
+function parseTranscriptRow(line: string | undefined): Record<string, unknown> | null {
+  if (!line?.trim()) return null;
+  try {
+    const row = JSON.parse(line) as unknown;
+    return typeof row === "object" && row !== null ? (row as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** null means this row is not an assistant message; an empty string is one with no text. */
+function assistantTextFromRow(row: Record<string, unknown>): string | null {
+  if (row.type === "assistant") {
+    const message = objectValue(row.message);
+    return textFromContent(message?.content);
+  }
+
+  if (row.type === "response_item") {
+    const payload = objectValue(row.payload);
+    if (payload?.type !== "message" || payload.role !== "assistant") return null;
+    return textFromContent(payload.content);
+  }
+
+  if (row.type === "event_msg") {
+    const payload = objectValue(row.payload);
+    if (payload?.type !== "agent_message") return null;
+    return typeof payload.message === "string" ? payload.message : "";
+  }
+
+  return null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    const value = objectValue(block);
+    if (!value) continue;
+    if ((value.type === "text" || value.type === "output_text") && typeof value.text === "string") {
+      parts.push(value.text);
+    }
+  }
+  return parts.join("\n");
+}
+
 /**
  * Resolve the agent's model from a CC-style JSONL transcript by reading the
  * most-recent assistant message's `message.model`. Claude Code's SessionStart

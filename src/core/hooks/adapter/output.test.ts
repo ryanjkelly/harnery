@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
-import { emitStopBlock } from "./output.ts";
+import { emitContext, emitStopBlock } from "./output.ts";
 
 let outChunks: string[] = [];
 let errChunks: string[] = [];
@@ -38,6 +38,28 @@ const verdict = {
   reason: "End-of-turn rule (1/3): run `harn agents status`.",
   rule: "stop-hook.rule_1_3",
 };
+
+describe("emitContext PostToolUse", () => {
+  test("uses the documented model-context shape for all three adapters", () => {
+    for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+      capture();
+      emitContext(adapter, "PostToolUse", "display the session name now");
+      process.stdout.write = realOut;
+      process.stderr.write = realErr;
+      const payload = JSON.parse(outChunks.join("").trim()) as Record<string, unknown>;
+      if (adapter === "cursor") {
+        expect(payload).toEqual({ additional_context: "display the session name now" });
+      } else {
+        expect(payload).toEqual({
+          hookSpecificOutput: {
+            hookEventName: "PostToolUse",
+            additionalContext: "display the session name now",
+          },
+        });
+      }
+    }
+  });
+});
 
 describe("emitStopBlock", () => {
   test("cursor → followup_message on stdout, exit 0, nothing on stderr", () => {

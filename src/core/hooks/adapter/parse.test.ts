@@ -99,6 +99,18 @@ describe("Cursor shell hook payloads", () => {
       ),
     ).toMatchObject({ tool_input: { command: "harn doctor" } });
   });
+
+  test("preserves PreToolUse agent_message for the display latch", () => {
+    expect(
+      parsePayload(
+        JSON.stringify({
+          hook_event_name: "preToolUse",
+          agent_message: "```\nAgent Maya - Auth refactor\n```",
+        }),
+        "cursor",
+      ),
+    ).toMatchObject({ agent_message: "```\nAgent Maya - Auth refactor\n```" });
+  });
 });
 
 describe("Codex PermissionRequest contract fixture", () => {

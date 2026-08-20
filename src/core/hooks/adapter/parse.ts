@@ -27,6 +27,7 @@ export interface ParsedPayload {
   model?: string;
   source?: string; // SessionStart: "startup" | "resume" | …
   prompt?: string; // UserPromptSubmit / beforeSubmitPrompt
+  agent_message?: string; // Cursor PreToolUse: user-visible assistant text before the tool
   tool_name?: string; // Pre/PostToolUse
   tool_input?: unknown; // Pre/PostToolUse: the model's call arguments
   tool_response?: unknown; // PostToolUse: the tool's output (string or object)
@@ -93,6 +94,7 @@ export function parsePayload(raw: string, adapter: Adapter): ParsedPayload | nul
     model: pickStr(json, "model"),
     source: pickStr(json, "source"),
     prompt: pickStr(json, "prompt"),
+    agent_message: pickStr(json, "agent_message"),
     tool_name: cursorShellHook ? "Shell" : pickStr(json, "tool_name"),
     tool_input: cursorCommand ? { command: cursorCommand } : normalizedToolInput,
     tool_response: hookEventName === "afterShellExecution" ? json.output : json.tool_response,

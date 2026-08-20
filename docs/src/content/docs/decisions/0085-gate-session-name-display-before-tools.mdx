@@ -1,0 +1,92 @@
+---
+title: "0085: Gate session-name display before later tools"
+description: "ADR: treat a suggested session name as a pending display latch and satisfy it only when the next assistant text starts with the exact copyable block."
+---
+
+**Status:** accepted (2026-08-20) · **Scope:** product tier (`core/agents`, `core/hooks`)
+
+## Context
+
+The first non-empty `agents set-task` mints a copyable session name. The
+command previously returned prose asking the agent to put that name at the top
+of its reply. That timing is ambiguous in clients that separate commentary,
+tool calls, and the final answer.
+
+Presence detection also accepted the name as a substring anywhere in assistant
+text. A session could complete all of its work, print the block in its final
+answer, and permanently satisfy the ritual. If the name was never printed,
+the prompt nudge stopped once a suggestion existed but
+`session_name_seen_for` was still unset.
+
+Stop enforcement cannot provide one portable enforcement point. Claude Code can continue
+the same turn, Cursor does not expose reply text in its Stop payload, and
+[ADR 0051](./0051-codex-stop-checks-are-observe-only) keeps Codex Stop checks
+observe-only because a continuation can replace the completed answer.
+
+## Alternatives
+
+**Keep the prompt-only reminder.** Rejected because an ignored tool-result note
+allows the entire task to run before the next reminder.
+
+**Enforce the block at Stop on every adapter.** Rejected because the adapters
+do not share a safe Stop contract, and Stop is too late to guarantee early
+display.
+
+**Add a separate pending-name file.** Rejected because the coordination row
+already carries both the current suggestion and the suggestion last observed.
+A second durable latch could disagree with that projection.
+
+**Rename client tabs directly.** Rejected as the portable contract. The three
+clients do not expose one common title mutation hook, while each can show a
+copyable fenced block.
+
+## Decision
+
+Treat the existing fields as a three-state display protocol:
+
+```ts
+unminted = !suggested_session_name
+pending = suggested_session_name !== session_name_seen_for
+shown = suggested_session_name === session_name_seen_for
+```
+
+When PostToolUse observes a pending name, it injects an adapter-shaped
+instruction that requires the exact fenced block as the next assistant text,
+before prose or another tool call.
+
+Every later PreToolUse checks the latch before other tool guards. Claude Code
+and Codex read the latest assistant message from their JSONL transcripts.
+Cursor reads its native `agent_message` field. The tool is denied until the
+message begins with a block containing only the current suggested name. A
+successful check stamps `session_name_seen_for` and lets the tool continue.
+
+`agents set-task` and `agents status` are narrow escape hatches. The latch
+allows either as a single command even while display is pending, because they
+are the commands used to repair and close the coordination ritual. Commands
+with shell control syntax do not qualify for the exemption. This prevents a
+failed display check from blocking its own remediation path.
+
+When PreToolUse fires after a tool-use-only assistant row has been appended,
+the transcript resolver skips that empty user-facing row and checks the prior
+assistant text. This covers a displayed block followed by a status command
+without weakening the first-content rule.
+
+The Stop-time transcript fallback accepts only the first assistant message
+after the tool result that minted the suggestion. Plain-text mentions, leading
+commentary, tool-result echoes, and end-of-task blocks do not count. Codex Stop
+remains observe-only under ADR 0051.
+
+UserPromptSubmit now nudges on the direct pending comparison. It therefore
+recovers both a never-displayed initial name and a lifecycle name that was
+re-minted but not displayed.
+
+## Result
+
+Substantive tool work cannot begin while the current name is pending. Claude
+Code, Codex, and Cursor use the same state transition and block rule without
+adding durable state or pretending their Stop hooks behave alike.
+
+If an adapter ends immediately after displaying the block and exposes no
+transcript at Stop, the operator still sees the correct title. The latch may
+remain pending until a later tool or prompt provides verifiable text; it never
+false-passes a late block.

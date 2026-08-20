@@ -78,6 +78,37 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     expect(renderPromptContext(opts)).toBe("");
   });
 
+  test("session-name nudges cover unminted, pending, shown, and re-minted states", () => {
+    const cachePath = join(root, ".harnery", "active", "self.json");
+    const updateSelf = (fields: Record<string, unknown>) => {
+      const row = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(fields)) {
+        if (value === undefined) delete row[key];
+        else row[key] = value;
+      }
+      writeFileSync(cachePath, JSON.stringify(row), "utf8");
+    };
+
+    updateSelf({ suggested_session_name: undefined, session_name_seen_for: undefined });
+    const unminted = render({ sessionNameNudge: true });
+    expect(unminted).toContain("has no name yet");
+    expect(render({ sessionNameNudge: true })).toContain("has no name yet");
+
+    const name = "Agent Maya - Current focus";
+    updateSelf({ suggested_session_name: name });
+    const pending = render({ sessionNameNudge: true });
+    expect(pending).toContain("still pending display");
+    expect(pending).toContain(`\`\`\`\n${name}\n\`\`\``);
+    expect(render({ sessionNameNudge: true })).toContain("still pending display");
+
+    updateSelf({ session_name_seen_for: name });
+    expect(render({ sessionNameNudge: true })).toBe("");
+
+    const reminted = "[BLOCKED] - Agent Maya - Current focus";
+    updateSelf({ suggested_session_name: reminted });
+    expect(render({ sessionNameNudge: true })).toContain(reminted);
+  });
+
   test("the peer hash retains no rendered identities", () => {
     seedV3Session(root, "peer", { name: "Adelaide", claims: ["docs/x.md"] });
     render();

@@ -51,6 +51,7 @@ import {
   requestSessionEndExplicitV3,
   type SessionFinalizationRequestV3,
 } from "../core/agents/session-finalizer-v3.ts";
+import { SESSION_NAME_DISPLAY_NOTE } from "../core/agents/session-name-display.ts";
 import {
   buildLifecycleSuggestedName,
   buildSuggestedName,
@@ -1864,7 +1865,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     // exists; this result is the moment the model holds the string.
     ...(suggestedName
       ? {
-          note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
+          note: SESSION_NAME_DISPLAY_NOTE,
         }
       : {}),
   });
@@ -2006,7 +2007,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     git_finalization_checked: finalization !== null,
     ...(nameReminted
       ? {
-          note: "Reproduce suggested_session_name verbatim, by itself, in a fenced code block at the top of your reply — the operator copies it as the session/tab title.",
+          note: SESSION_NAME_DISPLAY_NOTE,
         }
       : {}),
   });

@@ -31,6 +31,13 @@ import {
   formatWriteClaimFinalizationDenial,
 } from "../agents/finalization.ts";
 import { evaluateStopHook, STOP_REMEDIATION_MARKER } from "../agents/rules/stop-hook.ts";
+import {
+  assistantTextStartsWithSessionNameBlock,
+  isSessionNameRemediationCommand,
+  sessionNameDisplayInstruction,
+  sessionNameDisplayPending,
+} from "../agents/session-name-display.ts";
+import { stampSessionNameSeen } from "../agents/state/heartbeat-writer.ts";
 import { readLiveCoordinationRow } from "../agents/state/live-coordination-view.ts";
 import { writePidmapRow } from "../agents/state/pidmap.ts";
 import { agentsRequireGitFinalization, resolveBinName } from "../config.ts";
@@ -88,6 +95,8 @@ import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
 import {
   scanAssistantTextIncludes,
+  scanLatestAssistantText,
+  scanSessionNameDisplayedImmediately,
   scanStatusBoxPresent,
   scanTranscriptModel,
 } from "./resolve/transcript.ts";
@@ -400,8 +409,12 @@ function buildEventData(
         // and which name that refers to. Reported on every stop while a name
         // exists (the stop-hook.session_name verdict reads it per turn); the
         // transcript scan itself stops once the name has been sighted.
-        ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, lastAssistantMessage, (name) =>
-          scanAssistantTextIncludes(p?.transcript_path, name),
+        ...sessionNamePresence(ctx.coordRoot, ctx.instanceId, (name) =>
+          scanSessionNameDisplayedImmediately(
+            p?.transcript_path,
+            name,
+            assistantTextStartsWithSessionNameBlock,
+          ),
         ),
         ...(fileLinkTelemetry ?? {}),
         stop_hook_active: p?.stop_hook_active,
@@ -1045,6 +1058,22 @@ async function main(): Promise<number> {
       logError(coordRoot, err, { phase: "pre-tool-use-heal" });
     }
 
+    // The suggested name is a pending display latch. The set-task call itself
+    // runs before a name exists; every later tool waits until the exact block
+    // is the latest assistant text. Cursor supplies agent_message directly;
+    // Claude Code and Codex are resolved from their JSONL transcripts.
+    try {
+      const displayAllowed = await enforcePendingSessionNameDisplay(
+        coordRoot,
+        owner.instance_id,
+        adapter,
+        payload,
+      );
+      if (!displayAllowed) return 0;
+    } catch (err) {
+      logError(coordRoot, err, { phase: "pre-tool-use-session-name" });
+    }
+
     // Windows-native Codex + WSL UNC only: block the one cross-shell shape
     // proven to corrupt argument boundaries. Normal WSL argv calls, literal
     // bash -s scripts, native Linux/macOS sessions, and every other adapter
@@ -1085,7 +1114,18 @@ async function main(): Promise<number> {
   }
 
   if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
-    // V3 tool observations update the generation projection directly.
+    // A successful set-task or lifecycle command can mint a new display name.
+    // Inject at the tool boundary, while "next assistant text" is unambiguous
+    // in Claude Code, Codex, and Cursor.
+    try {
+      const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, owner.instance_id));
+      if (name) {
+        const { emitContext } = await import("./adapter/output.ts");
+        emitContext(adapter, "PostToolUse", sessionNameDisplayInstruction(name));
+      }
+    } catch (err) {
+      logError(coordRoot, err, { phase: "post-tool-use-session-name" });
+    }
   }
 
   // Phase 7: PostToolUseFailure: release claim on failed Edit (the file
@@ -1099,6 +1139,29 @@ async function main(): Promise<number> {
   }
 
   return 0;
+}
+
+async function enforcePendingSessionNameDisplay(
+  coordRoot: string,
+  instanceId: string,
+  adapter: Adapter,
+  payload: ParsedPayload | null,
+): Promise<boolean> {
+  const name = sessionNameDisplayPending(readLiveCoordinationRow(coordRoot, instanceId));
+  if (!name) return true;
+
+  const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
+  if (isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) return true;
+
+  const assistantText = payload?.agent_message ?? scanLatestAssistantText(payload?.transcript_path);
+  if (assistantText && assistantTextStartsWithSessionNameBlock(assistantText, name)) {
+    stampSessionNameSeen(coordRoot, instanceId, name);
+    return true;
+  }
+
+  const { emitDeny } = await import("./adapter/output.ts");
+  emitDeny(adapter, sessionNameDisplayInstruction(name));
+  return false;
 }
 
 async function runPreToolUseGuard(

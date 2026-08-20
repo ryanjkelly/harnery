@@ -44,25 +44,25 @@ const noScan = () => false;
 describe("sessionNamePresence", () => {
   test("reports nothing when no name has been suggested", () => {
     const root = rootWith({});
-    expect(sessionNamePresence(root, "self", "any reply", noScan)).toEqual({});
+    expect(sessionNamePresence(root, "self", noScan)).toEqual({});
   });
 
   test("reports false, with the name, when the reply omits it", () => {
     const root = rootWith({ suggested_session_name: NAME });
-    expect(sessionNamePresence(root, "self", "no name here", noScan)).toEqual({
+    expect(sessionNamePresence(root, "self", noScan)).toEqual({
       session_name_present: false,
       session_name_present_for: NAME,
     });
   });
 
-  test("reports true from the last assistant message and stamps the sighting", () => {
+  test("reports true from the strict transcript scan and stamps the sighting", () => {
     const root = rootWith({ suggested_session_name: NAME });
-    expect(sessionNamePresence(root, "self", `\`\`\`\n${NAME}\n\`\`\``, noScan)).toEqual({
+    expect(sessionNamePresence(root, "self", () => true)).toEqual({
       session_name_present: true,
       session_name_present_for: NAME,
     });
     // Stamped, so the next call takes the already-satisfied path below.
-    expect(sessionNamePresence(root, "self", "unrelated reply", noScan)).toEqual({
+    expect(sessionNamePresence(root, "self", noScan)).toEqual({
       session_name_present: true,
       session_name_present_for: NAME,
     });
@@ -75,7 +75,7 @@ describe("sessionNamePresence", () => {
       session_name_seen_at: "2026-06-04T00:00:02Z",
       session_name_seen_for: NAME,
     });
-    expect(sessionNamePresence(root, "self", "a reply about something else", noScan)).toEqual({
+    expect(sessionNamePresence(root, "self", noScan)).toEqual({
       session_name_present: true,
       session_name_present_for: NAME,
     });
@@ -87,7 +87,7 @@ describe("sessionNamePresence", () => {
       session_name_seen_at: "2026-06-04T00:00:02Z",
       session_name_seen_for: "Agent Maya - Earlier focus",
     });
-    expect(sessionNamePresence(root, "self", "no name here", noScan)).toEqual({
+    expect(sessionNamePresence(root, "self", noScan)).toEqual({
       session_name_present: false,
       session_name_present_for: NAME,
     });
@@ -96,7 +96,7 @@ describe("sessionNamePresence", () => {
   test("reports true from the transcript scan, which is asked for the current name", () => {
     const root = rootWith({ suggested_session_name: NAME });
     const scanned: string[] = [];
-    const res = sessionNamePresence(root, "self", "a reply without the name", (name) => {
+    const res = sessionNamePresence(root, "self", (name) => {
       scanned.push(name);
       return true;
     });
@@ -105,6 +105,6 @@ describe("sessionNamePresence", () => {
   });
 
   test("never throws on an unreadable coordination root", () => {
-    expect(sessionNamePresence("/nonexistent/coord/root", "self", NAME, noScan)).toEqual({});
+    expect(sessionNamePresence("/nonexistent/coord/root", "self", noScan)).toEqual({});
   });
 });

@@ -7,7 +7,10 @@ import {
   listSessionFinalizationRequestsV3,
   requestSessionEndExplicitV3,
 } from "../agents/session-finalizer-v3.ts";
-import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
+import {
+  readLiveCoordinationRow,
+  readLiveCoordinationRows,
+} from "../agents/state/live-coordination-view.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import { adapterCapabilityProfileDigestV3 } from "../events/v3/capabilities.ts";
 import {
@@ -29,6 +32,129 @@ afterEach(() => {
 });
 
 describe("agent-hook V3 hard cut", () => {
+  test("PostToolUse injects and PreToolUse enforces the pending session-name display", () => {
+    const root = candidateRoot();
+    const owner = "session-name-latch-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "claude-code"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", { session_id: owner, cwd: root, source: "startup" }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("session owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+      }),
+      "utf8",
+    );
+
+    const post = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "set-task-tool",
+      tool_response: "ok",
+    });
+    expect(post.status).toBe(0);
+    expect(post.stdout).toContain('"hookEventName":"PostToolUse"');
+    expect(post.stdout).toContain(name);
+
+    const remediation = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "status-remediation",
+      tool_input: { command: "harn agents status --end-turn" },
+    });
+    expect(remediation.status).toBe(0);
+    expect(remediation.stdout).not.toContain('"permissionDecision":"deny"');
+
+    const denied = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "too-soon",
+      tool_input: { command: "echo too-soon" },
+    });
+    expect(denied.status).toBe(0);
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+
+    const transcript = join(root, "transcript.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
+      })}\n`,
+    );
+    const allowed = runHook("pre-tool-use", {
+      session_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "after-display",
+      tool_input: { command: "echo allowed" },
+    });
+    expect(allowed.status).toBe(0);
+    expect(allowed.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+  });
+
+  test("Cursor satisfies the same latch from native PreToolUse agent_message", () => {
+    const root = candidateRoot("cursor");
+    const owner = "cursor-session-name-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "cursor"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", {
+        conversation_id: owner,
+        generation_id: "cursor-name-start",
+        hook_event_name: "sessionStart",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Cursor owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+      }),
+      "utf8",
+    );
+
+    const allowed = runHook("pre-tool-use", {
+      conversation_id: owner,
+      generation_id: "cursor-name-tool",
+      hook_event_name: "preToolUse",
+      agent_message: `\`\`\`\n${name}\n\`\`\``,
+      tool_name: "Shell",
+      tool_use_id: "cursor-after-display",
+      tool_input: { command: "echo allowed" },
+    });
+    expect(allowed.status).toBe(0);
+    expect(allowed.stdout).not.toContain('"permission":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+  });
+
   test("candidate hooks record a complete canonical V3 lifecycle", () => {
     const root = candidateRoot();
     const owner = "candidate-owner";
