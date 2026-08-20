@@ -118,7 +118,7 @@ export default function HomePage() {
             <h2 className="text-sm font-semibold mb-3 text-muted-foreground uppercase tracking-wider">
               Stale (≥ {snap.meta.stale_threshold_seconds / 60}m since last heartbeat)
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 opacity-60">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {snap.stale.map((hb) => (
                 <AgentCard key={hb.instance_id} hb={hb} stale={true} />
               ))}

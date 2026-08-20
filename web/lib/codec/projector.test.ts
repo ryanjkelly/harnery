@@ -127,6 +127,16 @@ describe("projectScene", () => {
     expect(restarted.panels[0]?.presence.value).toBe("online");
   });
 
+  test("an authority-live generation remains visible when its presence grows stale", () => {
+    const staleLive = hb({ age_seconds: 900, ledger_state: "live" });
+    const scene = projectScene({ snapshot: snapshot([], [staleLive]), events: [], now: NOW });
+
+    expect(scene.panels).toHaveLength(1);
+    expect(scene.panels[0]?.instance_id).toBe(staleLive.instance_id);
+    expect(scene.panels[0]?.presence.value).toBe("unknown");
+    expect(scene.panels[0]?.ledger_state?.value).toBe("live");
+  });
+
   test("stale leftover heartbeats do not fill the live scene or make it busy", () => {
     const leftovers = Array.from({ length: 20 }, (_, i) =>
       hb({

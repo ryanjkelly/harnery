@@ -89,9 +89,9 @@ export function ActivityTimeline({ initialEvents, instanceToName, windowMinutes 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-baseline justify-between gap-2">
+        <CardTitle className="flex flex-col items-start gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-2">
           <span>Activity timeline ({windowMinutes}m)</span>
-          <span className="text-[10px] text-muted-foreground font-mono">
+          <span className="self-end whitespace-nowrap text-[10px] font-mono text-muted-foreground sm:self-auto">
             {mounted ? (
               <>
                 {formatRangeBound(windowStart, userTz, prefs.timestamp.template)} →{" "}

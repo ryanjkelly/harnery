@@ -470,15 +470,22 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   }
 
   const panels: CodecPanelScene[] = [];
-  // Live heartbeats always render. Stale heartbeat files are leftovers unless
-  // a recent session.ended puts them in Recently ended — otherwise they drowned
-  // the live grid (dozens of unknown/idle tiles with no task). Recent work
-  // without a fresh heartbeat still surfaces through the evidence-backed
-  // path below, so a mid-work agent cannot vanish.
+  // Live heartbeats always render. A V3 authority-live generation remains an
+  // authoritative session when its observation grows stale. Keep it as presence
+  // unknown instead of making the panel disappear. Unbound stale cache files
+  // are leftovers unless a recent session.ended puts them in Recently ended.
+  // Recent work without a fresh heartbeat still surfaces through the
+  // evidence-backed path below.
   const rows: Array<{ hb: Heartbeat; isActive: boolean }> = [
     ...inputs.snapshot.active.map((hb) => ({ hb, isActive: true })),
     ...inputs.snapshot.stale
-      .filter((hb) => staleHeartbeatIsRecentlyEnded(evidence.get(hb.instance_id), nowMs))
+      .filter(
+        (hb) =>
+          hb.ledger_state === "live" ||
+          hb.ledger_state === "ending" ||
+          hb.ledger_state === "recovery-required" ||
+          staleHeartbeatIsRecentlyEnded(evidence.get(hb.instance_id), nowMs),
+      )
       .map((hb) => ({ hb, isActive: false })),
     ...inputs.snapshot.terminal
       .filter((hb) => {
