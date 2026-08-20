@@ -3,7 +3,7 @@ import type { ParsedPayload } from "../../../hooks/adapter/parse.ts";
 import { buildEventV3Base } from "../base-builder.ts";
 import type { EventV3Base, RuntimeAttestationV3Base } from "../base-contract.ts";
 import { type FingerprintContextV3, fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
-import { adapterSignalSupportV3 } from "../capabilities.ts";
+import { adapterSignalSupportV3, adapterTurnWaitCountSupportV3 } from "../capabilities.ts";
 import { eventIdV3 } from "../ids.ts";
 import { exactToolInputFingerprintV3, extractTargetsV3 } from "../targets.ts";
 
@@ -249,6 +249,10 @@ export function normalizeHookEventV3Base(
             "turn_tool_call_count",
             context.tool_call_count_missing_reason ?? "turn_aggregate_not_supplied",
           ),
+          wait_count:
+            adapterTurnWaitCountSupportV3(context.adapter) === "unsupported"
+              ? { state: "unsupported", capability: "turn_wait_count" }
+              : measuredOrMissing(undefined, "turn_wait_count", "turn_wait_aggregate_not_supplied"),
           response:
             context.response_bytes === undefined
               ? { state: "unsupported", capability: "turn_response_descriptor" }

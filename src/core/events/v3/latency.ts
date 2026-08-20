@@ -110,15 +110,32 @@ function projectTurn(
   const wallInterval = intervalFromSpan(terminal);
   const toolEvents = events.filter(({ event_type }) => event_type === "tool.completed");
   const commandEvents = events.filter(({ event_type }) => event_type === "command.completed");
+  const waitStartEvents = events.filter(({ event_type }) => event_type === "wait.started");
   const waitEvents = events.filter(({ event_type }) => event_type === "wait.ended");
   const tools = intervalSet(toolEvents, wallInterval, diagnostics);
   const commands = intervalSet(commandEvents, wallInterval, diagnostics);
   const waits = intervalSet(waitEvents, wallInterval, diagnostics);
+  const endedWaitIds = new Set(waitEvents.map(({ payload }) => string(record(payload).wait_id)));
 
   const expectedToolCount = observedNumber(terminal.payload.tool_call_count);
   if (expectedToolCount === undefined) tools.reasons.push("tool_call_count_unknown");
   else if (expectedToolCount !== toolEvents.length)
     tools.reasons.push("tool_terminal_count_mismatch");
+
+  const waitCount = record(terminal.payload.wait_count);
+  const expectedWaitCount = observedNumber(waitCount);
+  if (waitCount.state === "unsupported") waits.reasons.push("wait_count_unsupported");
+  else if (expectedWaitCount === undefined) {
+    waits.reasons.push(
+      Object.keys(waitCount).length === 0 ? "wait_count_unattested" : "wait_count_unknown",
+    );
+  }
+  if (
+    waitStartEvents.some(({ payload }) => !endedWaitIds.has(string(record(payload).wait_id))) ||
+    (expectedWaitCount !== undefined && expectedWaitCount !== endedWaitIds.size)
+  ) {
+    waits.reasons.push("wait_terminal_count_mismatch");
+  }
 
   const tool = metricFromIntervals(tools);
   const command = metricFromIntervals(commands);

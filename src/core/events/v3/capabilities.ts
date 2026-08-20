@@ -3,6 +3,15 @@ import { canonicalJsonV3, sha256V3 } from "./canonical.ts";
 
 export type CapabilitySupportV3 = "native" | "derived" | "conditional" | "unsupported";
 
+export type AdapterWaitKindV3 =
+  | "permission"
+  | "needs_input"
+  | "decision"
+  | "approval"
+  | "scheduled"
+  | "rate_limit"
+  | "unknown";
+
 export type BaseAdapterSignalV3 =
   | "session_start"
   | "session_end"
@@ -121,4 +130,21 @@ export function adapterSignalSupportV3(
   signal: AdapterSignalV3,
 ): CapabilitySupportV3 {
   return adapterCapabilityProfileV3(adapter).signals[signal];
+}
+
+/**
+ * Adapter hooks only expose permission waits today. Other wait kinds can be
+ * authored by coordination producers, but they are not observable from an
+ * adapter's native turn channel.
+ */
+export function adapterWaitKindSupportV3(
+  adapter: Adapter,
+  kind: AdapterWaitKindV3,
+): CapabilitySupportV3 {
+  return kind === "permission" ? adapterSignalSupportV3(adapter, "permission") : "unsupported";
+}
+
+/** No current adapter supplies an independent completed-turn wait aggregate. */
+export function adapterTurnWaitCountSupportV3(_adapter: Adapter): CapabilitySupportV3 {
+  return "unsupported";
 }

@@ -73,6 +73,7 @@ describe("event ledger V3 hook producer", () => {
     expect(event?.payload).toMatchObject({
       usage: { state: "observed", value: { input_tokens: 80, output_tokens: 20 } },
       inference: { state: "observed", value: { api_time_ms: 420 } },
+      wait_count: { state: "unsupported", capability: "turn_wait_count" },
       harness: {
         state: "observed",
         value: {

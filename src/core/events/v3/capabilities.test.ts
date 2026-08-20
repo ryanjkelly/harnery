@@ -3,6 +3,8 @@ import {
   ADAPTER_CAPABILITY_PROFILES_V3,
   adapterCapabilityProfileDigestV3,
   adapterSignalSupportV3,
+  adapterTurnWaitCountSupportV3,
+  adapterWaitKindSupportV3,
 } from "./capabilities.ts";
 
 describe("event ledger V3 adapter capabilities", () => {
@@ -38,5 +40,15 @@ describe("event ledger V3 adapter capabilities", () => {
       expect(first).toMatch(/^cap_[a-f0-9]{64}$/);
       expect(adapterCapabilityProfileDigestV3(adapter)).toBe(first);
     }
+  });
+
+  test("separates observable permission waits from unattested turn completeness", () => {
+    expect(adapterWaitKindSupportV3("claude-code", "permission")).toBe("native");
+    expect(adapterWaitKindSupportV3("codex", "permission")).toBe("native");
+    expect(adapterWaitKindSupportV3("cursor", "permission")).toBe("conditional");
+    expect(adapterWaitKindSupportV3("claude-code", "scheduled")).toBe("unsupported");
+    expect(adapterTurnWaitCountSupportV3("claude-code")).toBe("unsupported");
+    expect(adapterTurnWaitCountSupportV3("codex")).toBe("unsupported");
+    expect(adapterTurnWaitCountSupportV3("cursor")).toBe("unsupported");
   });
 });

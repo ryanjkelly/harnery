@@ -328,6 +328,7 @@ export const TurnCompletedV3BaseSchema = eventSchema(
     outcome: OutcomeV3BaseSchema,
     duration_ms: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
     tool_call_count: ObservationV3BaseSchema(Type.Integer({ minimum: 0 })),
+    wait_count: Type.Optional(ObservationV3BaseSchema(Type.Integer({ minimum: 0 }))),
     response: ObservationV3BaseSchema(ContentDescriptorV3BaseSchema),
     ritual: Type.Optional(TurnRitualV3BaseSchema),
   }),

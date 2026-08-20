@@ -13,6 +13,7 @@ describe("event ledger V3 latency projection", () => {
     const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 1000);
     const turnPayload = fixtureObject(turn.payload);
     turnPayload.tool_call_count = observed(2);
+    turnPayload.wait_count = observed(1);
     turnPayload.inference = observed({ api_time_ms: 50, request_count: 1 });
     turnPayload.harness = observed({
       hook_time_ms: 20,
@@ -198,6 +199,78 @@ describe("event ledger V3 latency projection", () => {
     });
   });
 
+  test("keeps an evidence-shaped long empty wait set unattested", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-19T14:00:00.000Z", 3_568_960);
+    delete fixtureObject(turn.payload).wait_count;
+
+    expect(projectLatencyV3(readOf(turn)).turns[0]?.wait_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["wait_count_unattested"],
+    });
+  });
+
+  test("distinguishes attested zero from unsupported wait coverage", () => {
+    const complete = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
+    fixtureObject(complete.payload).wait_count = observed(0);
+    expect(projectLatencyV3(readOf(complete)).turns[0]?.wait_ms).toEqual({
+      state: "observed",
+      value_ms: 0,
+    });
+
+    const unsupported = terminal("turn.completed", 2, "2026-08-18T14:01:00.000Z", 100);
+    fixtureObject(unsupported.payload).wait_count = {
+      state: "unsupported",
+      capability: "turn_wait_count",
+    };
+    expect(projectLatencyV3(readOf(unsupported)).turns[0]?.wait_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["wait_count_unsupported"],
+    });
+  });
+
+  test("reports a start without a terminal as a wait-count mismatch", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
+    fixtureObject(turn.payload).wait_count = observed(1);
+    const started = eventV3Fixture("wait.started", 2);
+    alignTurn(turn, [started]);
+
+    expect(projectLatencyV3(readOf(turn, started)).turns[0]?.wait_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["wait_terminal_count_mismatch"],
+    });
+  });
+
+  test("retains one closed wait as a lower bound when another terminal is missing", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 500);
+    fixtureObject(turn.payload).wait_count = observed(2);
+    const wait = terminal("wait.ended", 2, "2026-08-18T14:00:00.100Z", 100);
+    alignTurn(turn, [wait]);
+
+    expect(projectLatencyV3(readOf(turn, wait)).turns[0]?.wait_ms).toEqual({
+      state: "unknown",
+      known_ms: 100,
+      reasons: ["wait_terminal_count_mismatch"],
+    });
+  });
+
+  test("unions overlapping waits when terminal coverage is complete", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 1000);
+    fixtureObject(turn.payload).wait_count = observed(2);
+    const first = terminal("wait.ended", 2, "2026-08-18T14:00:00.000Z", 600);
+    const second = terminal("wait.ended", 3, "2026-08-18T14:00:00.400Z", 400);
+    fixtureObject(first.payload).wait_id = "wait-first";
+    fixtureObject(second.payload).wait_id = "wait-second";
+    alignTurn(turn, [first, second]);
+
+    expect(projectLatencyV3(readOf(turn, first, second)).turns[0]?.wait_ms).toEqual({
+      state: "observed",
+      value_ms: 800,
+    });
+  });
+
   test("refuses to project an incomplete ledger read", () => {
     const read = readOf();
     read.complete = false;
@@ -218,6 +291,7 @@ function terminal(
   const span = fixtureObject(payload.span);
   span.opened_at = openedAt;
   span.duration_ms = structuredClone(duration);
+  if (eventType === "turn.completed") payload.wait_count = observed(0);
   return event;
 }
 

@@ -78,6 +78,16 @@ replaced by `wait.started` and `wait.ended`. Active wait kinds are
 `permission | needs_input | decision | approval | scheduled | rate_limit |
 unknown`. `none` exists only in projections to mean that no wait is open.
 
+Adapter hooks can report permission waits when their native permission signal
+is available, but no current adapter supplies an independent completed-turn
+wait aggregate. `turn.completed.payload.wait_count` therefore carries an
+Observation when a producer can attest completeness and is `unsupported` for
+the current hook adapters. The latency projection may return an observed zero
+only from an observed count of zero. Otherwise it preserves the unioned closed
+wait duration as a lower bound and names unsupported, missing, or mismatched
+coverage. Counting delivered starts is not a completeness attestation because
+a missing start would be invisible to that derivation.
+
 The recovery marker introduced by ADR 0078 is present from V3 genesis.
 Recovered tool and command terminals require an unknown outcome and unknown
 duration. A recovered command cannot claim an exit code.
