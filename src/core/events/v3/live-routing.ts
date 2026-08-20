@@ -100,6 +100,7 @@ export function recordLiveHookSignalV3(input: {
   hook_duration_ms?: number;
   stop_remediation?: boolean;
   turn_ritual?: TurnRitualEvidenceV3;
+  defer_drain?: boolean;
 }): RecordHookSignalV3Result | { state: "ignored" } {
   const signal = hookSignalV3(input.eventName);
   if (!signal) return { state: "ignored" };
@@ -122,6 +123,7 @@ export function recordLiveHookSignalV3(input: {
     hook_duration_ms: input.hook_duration_ms,
     stop_remediation: input.stop_remediation,
     turn_ritual: input.turn_ritual,
+    ...(input.defer_drain ? { writerOptions: { deferDrain: true } } : {}),
   });
 }
 

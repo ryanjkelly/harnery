@@ -714,6 +714,7 @@ async function main(): Promise<number> {
     monotonic_ns: hookClock.monotonic_ns,
     ...(stopRemediation ? { stop_remediation: true } : {}),
     ...(turnRitual ? { turn_ritual: turnRitual } : {}),
+    ...(coordEnv("EXPERIMENT_DEFER_V3_DRAIN") === "1" ? { defer_drain: true } : {}),
   });
   const v3EventId =
     v3Result && "event" in v3Result

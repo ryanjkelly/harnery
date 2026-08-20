@@ -43,6 +43,13 @@ export interface WriteEventV3Result {
 
 export interface WriteEventV3Options {
   leaseMs?: number;
+  /**
+   * Leave the durable row in the ready WAL instead of draining it into the
+   * active authority during this call. A later `drainReadyEventsV3` commits
+   * the batch under one append lease. Production writers default to false;
+   * the option exists for matched harness-cost experiments.
+   */
+  deferDrain?: boolean;
   now?: () => number;
   onStep?: (step: EventV3WriteStep, eventId?: string) => void;
 }
@@ -82,6 +89,15 @@ export function writeEventV3(
   const readyName = `${String(event.producer.sequence).padStart(16, "0")}-${event.event_id}-${rowDigest.slice(7)}.ready`;
   const readyPath = join(paths.spool, readyName);
   writeReadyRecord(paths.spool, readyPath, row, event.event_id, options.onStep);
+
+  if (options.deferDrain) {
+    return {
+      state: "ready",
+      event_id: event.event_id,
+      row_digest: rowDigest,
+      ready_path: readyPath,
+    };
+  }
 
   try {
     drainReadyEventsV3(coordRoot, options);

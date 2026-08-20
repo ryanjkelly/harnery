@@ -23,6 +23,27 @@ afterEach(() => {
 });
 
 describe("event ledger V3 causal append ordering", () => {
+  test("defers ready rows and drains the complete causal batch later", () => {
+    const root = temporaryRoot();
+    const parent = fixture("tool.requested", 1, "prd_hook", 1);
+    const child = fixture("command.started", 2, "prd_command", 1);
+    fixtureObject(child.links).caused_by = [parent.event_id];
+
+    expect(writeEventV3(root, parent as unknown as EventV3, { deferDrain: true }).state).toBe(
+      "ready",
+    );
+    expect(writeEventV3(root, child as unknown as EventV3, { deferDrain: true }).state).toBe(
+      "ready",
+    );
+    expect(activeEvents(root)).toEqual([]);
+
+    expect(drainReadyEventsV3(root)).toBe(2);
+    expect(activeEvents(root).map(({ event_id }) => event_id)).toEqual([
+      parent.event_id,
+      child.event_id,
+    ]);
+  });
+
   test("commits a ready causal parent before its child across producers", () => {
     const root = temporaryRoot();
     const parent = fixture("tool.requested", 3, "prd_hook", 99);
@@ -106,8 +127,9 @@ function fixture(
 }
 
 function activeEvents(root: string): EventV3Fixture[] {
-  return readFileSync(eventV3Paths(root).active, "utf8")
-    .trim()
+  const raw = readFileSync(eventV3Paths(root).active, "utf8").trim();
+  if (!raw) return [];
+  return raw
     .split("\n")
     .filter(Boolean)
     .map((row) => JSON.parse(row) as EventV3Fixture);
