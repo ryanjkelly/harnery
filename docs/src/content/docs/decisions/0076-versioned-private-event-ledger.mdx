@@ -74,6 +74,14 @@ Recovery removes only an unterminated final frame and replays the exact ready
 bytes. A repeated event ID with the same bytes deduplicates; the same identity
 with different bytes is an integrity failure.
 
+The lease holder orders ready records by causal dependency before append.
+Producer sequence numbers are local to one producer and never define a global
+order. If a ready event names another ready event as a cause, the writer flushes
+the parent first. Unrelated rows keep deterministic filename order. A causal
+cycle remains in the spool and fails the drain without changing the active
+segment. Causes absent from the spool are treated as previously committed, so a
+genuinely missing parent still reaches the reader and fails closed.
+
 Authority-bearing coordination uses a separate durable transaction outbox
 before it mutates task, lifecycle, claim, wait, approval, identity, or terminal
 state. Ordinary evidence failures stay report-only and cannot change tool or

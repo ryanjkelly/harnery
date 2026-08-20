@@ -150,12 +150,22 @@ export function drainReadyEventsUnderLeaseV3(
     .filter((name) => name.endsWith(".ready"))
     .sort();
   if (readyNames.length === 0) return 0;
+  const readyRows = causallyOrderedReadyRows(
+    readyNames.map((readyName) => {
+      const readyPath = join(paths.spool, readyName);
+      const row = readAndValidateReadyRow(readyPath);
+      return {
+        readyName,
+        readyPath,
+        row,
+        event: JSON.parse(row) as EventV3,
+      };
+    }),
+  );
   const activeFd = openSync(paths.active, "a", 0o600);
   let committed = 0;
   try {
-    for (const readyName of readyNames) {
-      const readyPath = join(paths.spool, readyName);
-      const row = readAndValidateReadyRow(readyPath);
+    for (const { readyName, readyPath, row } of readyRows) {
       const eventId = eventIdFromReadyName(readyName);
       writeSync(activeFd, row, undefined, "utf8");
       options.onStep?.("active_row_appended", eventId);
@@ -174,6 +184,33 @@ export function drainReadyEventsUnderLeaseV3(
     closeSync(activeFd);
   }
   return committed;
+}
+
+interface ReadyEventRowV3 {
+  readyName: string;
+  readyPath: string;
+  row: string;
+  event: EventV3;
+}
+
+/**
+ * Keep the spool's deterministic filename order except where a ready event
+ * names another ready event as a cause. Those dependencies are committed
+ * first; a cycle stays in the WAL and never poisons the active authority.
+ */
+function causallyOrderedReadyRows(rows: ReadyEventRowV3[]): ReadyEventRowV3[] {
+  const pending = new Map(rows.map((row) => [row.event.event_id, row]));
+  const ordered: ReadyEventRowV3[] = [];
+  while (pending.size > 0) {
+    const next = rows.find(({ event }) => {
+      const causes = (event.links as { caused_by: string[] }).caused_by;
+      return pending.has(event.event_id) && causes.every((eventId) => !pending.has(eventId));
+    });
+    if (!next) throw new Error("ready V3 events contain a causal dependency cycle");
+    pending.delete(next.event.event_id);
+    ordered.push(next);
+  }
+  return ordered;
 }
 
 /**
@@ -364,4 +401,3 @@ function assertSupportedPath(coordRoot: string): void {
     throw new Error("V3 writer refuses direct UNC or cross-boundary coordination roots");
   }
 }
-
