@@ -4232,6 +4232,7 @@ function runAdapterProbe(
     replayExitCode = result.exitCode;
     data.samples = samples;
     data.samples_summary = result.summary;
+    if (result.note) data.samples_note = result.note;
   }
 
   emit.data(data);
@@ -4251,7 +4252,9 @@ function runAdapterProbe(
         | undefined;
       lines.push("");
       if (samples.length === 0) {
-        lines.push(`  Sample replay: no .json fixtures found under ${sampleDir}`);
+        lines.push(
+          `  Sample replay: ${String(data.samples_note ?? `no .json fixtures found under ${sampleDir}`)}`,
+        );
       } else {
         lines.push(
           `  Sample replay (${samples.length} fixture${samples.length === 1 ? "" : "s"}):`,
@@ -4308,6 +4311,7 @@ function replayAdapterSamples(
   samples: SampleReplayResult[];
   exitCode: number;
   summary: { total: number; pass: number; fail: number; skipped: number };
+  note?: string;
 } {
   const sampleDir = resolve(root, relativeSampleDir);
   if (!existsSync(sampleDir)) {
@@ -4315,6 +4319,7 @@ function replayAdapterSamples(
       samples: [],
       exitCode: 0,
       summary: { total: 0, pass: 0, fail: 0, skipped: 0 },
+      note: `sample directory not found: ${relativeSampleDir} — replay verified nothing`,
     };
   }
 
@@ -4328,6 +4333,7 @@ function replayAdapterSamples(
       samples: [],
       exitCode: 0,
       summary: { total: 0, pass: 0, fail: 0, skipped: 0 },
+      note: `no .json fixtures under ${relativeSampleDir} — replay verified nothing`,
     };
   }
 
