@@ -31,19 +31,23 @@ describe("buildSuggestedName", () => {
 });
 
 describe("buildLifecycleSuggestedName", () => {
-  test("projects active, blocked, and done titles from the same task", () => {
-    expect(buildLifecycleSuggestedName("Hollis", "Auth Refactor", "active")).toBe(
-      "Agent Hollis - Auth Refactor",
-    );
-    expect(buildLifecycleSuggestedName("Hollis", "Auth Refactor", "blocked")).toBe(
-      "[BLOCKED] - Agent Hollis - Auth Refactor",
-    );
-    expect(buildLifecycleSuggestedName("Hollis", "Auth Refactor", "done")).toBe(
-      "[DONE] - Agent Hollis - Auth Refactor",
-    );
+  test("projects only the done title from the original session name", () => {
+    const name = "Agent Hollis - Auth Refactor";
+    expect(buildLifecycleSuggestedName(name, "active")).toBeNull();
+    expect(buildLifecycleSuggestedName(name, "blocked")).toBeNull();
+    expect(buildLifecycleSuggestedName(name, "done")).toBe("[DONE] Agent Hollis - Auth Refactor");
   });
 
-  test("returns null when the session has no task to project", () => {
-    expect(buildLifecycleSuggestedName("Hollis", undefined, "blocked")).toBeNull();
+  test("returns null when the session has no current name", () => {
+    expect(buildLifecycleSuggestedName(undefined, "done")).toBeNull();
+  });
+
+  test("is idempotent and normalizes legacy lifecycle prefixes", () => {
+    expect(buildLifecycleSuggestedName("[DONE] Agent Hollis - Auth Refactor", "done")).toBe(
+      "[DONE] Agent Hollis - Auth Refactor",
+    );
+    expect(buildLifecycleSuggestedName("[BLOCKED] - Agent Hollis - Auth Refactor", "done")).toBe(
+      "[DONE] Agent Hollis - Auth Refactor",
+    );
   });
 });

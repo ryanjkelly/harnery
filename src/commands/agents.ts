@@ -1974,7 +1974,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     }
   }
 
-  const suggestedName = buildLifecycleSuggestedName(hb.name ?? "unknown", hb.task, state);
+  const suggestedName = buildLifecycleSuggestedName(hb.suggested_session_name, state);
   const nameReminted = suggestedName !== null && suggestedName !== hb.suggested_session_name;
   const emitted = emitEventV3({
     owner: myOwner,

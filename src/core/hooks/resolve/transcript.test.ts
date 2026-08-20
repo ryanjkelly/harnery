@@ -10,6 +10,7 @@ import {
   scanLatestAssistantText,
   scanSessionNameDisplayedImmediately,
   scanTranscriptModel,
+  transcriptPathCandidates,
 } from "./transcript.ts";
 
 describe("scanAssistantTextIncludes", () => {
@@ -110,6 +111,17 @@ describe("ordered session-name transcript scans", () => {
 
   const NAME = "Agent Maya - Auth refactor";
   const BLOCK = `\`\`\`\n${NAME}\n\`\`\``;
+
+  test("maps a Windows Codex rollout path to its WSL mount candidate", () => {
+    expect(
+      transcriptPathCandidates(
+        "C:\\Users\\maya\\.codex\\sessions\\2026\\08\\20\\rollout-session.jsonl",
+      ),
+    ).toEqual([
+      "C:\\Users\\maya\\.codex\\sessions\\2026\\08\\20\\rollout-session.jsonl",
+      "/mnt/c/Users/maya/.codex/sessions/2026/08/20/rollout-session.jsonl",
+    ]);
+  });
 
   function writeTranscript(lines: object[]): string {
     const p = join(dir, "transcript.jsonl");

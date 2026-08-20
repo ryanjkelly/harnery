@@ -3,7 +3,7 @@ title: "0085: Gate session-name display before later tools"
 description: "ADR: treat a suggested session name as a pending display latch and satisfy it only when the next assistant text starts with the exact copyable block."
 ---
 
-**Status:** accepted (2026-08-20) · **Scope:** product tier (`core/agents`, `core/hooks`)
+**Status:** accepted (2026-08-20); lifecycle re-mint scope narrowed by [ADR 0086](./0086-limit-session-name-changes-to-start-and-done) · **Scope:** product tier (`core/agents`, `core/hooks`)
 
 ## Context
 
@@ -90,3 +90,8 @@ If an adapter ends immediately after displaying the block and exposes no
 transcript at Stop, the operator still sees the correct title. The latch may
 remain pending until a later tool or prompt provides verifiable text; it never
 false-passes a late block.
+
+Windows-native Codex can pass a `C:\...` rollout path to a hook running inside
+WSL. Transcript resolution checks that path's `/mnt/<drive>/...` equivalent
+before treating it as unreadable. This keeps visible commentary blocks from
+falling into a repeated deny loop at the host boundary.

@@ -13,8 +13,9 @@ import { basename, dirname, join } from "node:path";
  * and Phase 5 verdict path catches the race via a single retry.
  */
 export function scanStatusBoxPresent(transcriptPath: string | undefined): boolean {
-  if (!transcriptPath || !existsSync(transcriptPath)) return false;
-  const text = tailText(transcriptPath);
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return false;
+  const text = tailText(readablePath);
   if (text === undefined) return false;
   // The box is rendered as a text content block by the assistant; we look
   // for the prefix on any line of the trailing window.
@@ -39,8 +40,10 @@ export function scanAssistantTextIncludes(
   transcriptPath: string | undefined,
   needle: string,
 ): boolean {
-  if (!transcriptPath || !needle || !existsSync(transcriptPath)) return false;
-  const text = tailText(transcriptPath);
+  if (!needle) return false;
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return false;
+  const text = tailText(readablePath);
   if (!text) return false;
   for (const line of text.split("\n")) {
     // Cheap gate before parsing: most lines don't contain the needle at all.
@@ -73,8 +76,9 @@ export function scanAssistantTextIncludes(
 
 /** Most recent user-visible assistant text across Claude Code and Codex JSONL. */
 export function scanLatestAssistantText(transcriptPath: string | undefined): string | undefined {
-  if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
-  const text = tailText(transcriptPath);
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return undefined;
+  const text = tailText(readablePath);
   if (!text) return undefined;
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -100,8 +104,10 @@ export function scanSessionNameDisplayedImmediately(
   name: string,
   startsWithBlock: (text: string, expectedName: string) => boolean,
 ): boolean {
-  if (!transcriptPath || !name || !existsSync(transcriptPath)) return false;
-  const text = tailText(transcriptPath);
+  if (!name) return false;
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return false;
+  const text = tailText(readablePath);
   if (!text) return false;
   let sawMintResult = false;
   for (const line of text.split("\n")) {
@@ -115,6 +121,27 @@ export function scanSessionNameDisplayedImmediately(
     if (assistantText !== null) return startsWithBlock(assistantText, name);
   }
   return false;
+}
+
+/**
+ * Resolve a transcript path at the adapter boundary. Windows-native Codex can
+ * send `C:\...` while the managed hook executes inside WSL, where the same
+ * file is mounted at `/mnt/c/...`.
+ */
+export function transcriptPathCandidates(transcriptPath: string | undefined): string[] {
+  if (!transcriptPath) return [];
+  const candidates = [transcriptPath];
+  const windowsDrive = /^([A-Za-z]):[\\/](.*)$/.exec(transcriptPath);
+  if (windowsDrive) {
+    candidates.push(
+      `/mnt/${windowsDrive[1]!.toLowerCase()}/${windowsDrive[2]!.replaceAll("\\", "/")}`,
+    );
+  }
+  return [...new Set(candidates)];
+}
+
+function resolveTranscriptPath(transcriptPath: string | undefined): string | undefined {
+  return transcriptPathCandidates(transcriptPath).find((candidate) => existsSync(candidate));
 }
 
 function parseTranscriptRow(line: string | undefined): Record<string, unknown> | null {
@@ -180,8 +207,9 @@ function textFromContent(content: unknown): string {
  * transcript is missing/empty (e.g. a fresh session's first SessionStart).
  */
 export function scanTranscriptModel(transcriptPath: string | undefined): string | undefined {
-  if (!transcriptPath || !existsSync(transcriptPath)) return undefined;
-  const text = tailText(transcriptPath);
+  const readablePath = resolveTranscriptPath(transcriptPath);
+  if (!readablePath) return undefined;
+  const text = tailText(readablePath);
   if (!text) return undefined;
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -242,15 +270,17 @@ export function detectForkParent(
   sessionId: string,
 ): string | undefined {
   try {
-    if (!transcriptPath || !sessionId || !existsSync(transcriptPath)) return undefined;
-    if (statSync(transcriptPath).size > FORK_SCAN_MAX_BYTES) return undefined;
-    const own = readFileSync(transcriptPath, "utf8");
+    if (!sessionId) return undefined;
+    const readablePath = resolveTranscriptPath(transcriptPath);
+    if (!readablePath) return undefined;
+    if (statSync(readablePath).size > FORK_SCAN_MAX_BYTES) return undefined;
+    const own = readFileSync(readablePath, "utf8");
     const uuids = messageUuids(own);
     if (uuids.length === 0) return undefined;
     const sample = sampleEvenly(uuids, FORK_SAMPLE_SIZE);
 
-    const dir = dirname(transcriptPath);
-    const ownFile = basename(transcriptPath);
+    const dir = dirname(readablePath);
+    const ownFile = basename(readablePath);
     let best: { id: string; score: number; rows: number; mtimeMs: number } | null = null;
     for (const file of readdirSync(dir)) {
       if (file === ownFile || !SESSION_FILE_RE.test(file)) continue;

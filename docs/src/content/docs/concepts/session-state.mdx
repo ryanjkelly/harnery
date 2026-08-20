@@ -100,19 +100,19 @@ review before corpus admission.
 
 ## Session-name projection
 
-A lifecycle change can re-mint the human-facing session name:
+A lifecycle change is title-silent unless it marks the session done:
 
 | Lifecycle | Suggested name |
 | --- | --- |
-| `active` | `Agent <name> - <task>` |
-| `blocked` | `[BLOCKED] - Agent <name> - <task>` |
-| `done` | `[DONE] - Agent <name> - <task>` |
+| `active` | No title change |
+| `blocked` | No title change |
+| `done` | `[DONE] Agent <name> - <task>` |
 
-The `coord.lifecycle_changed` event carries `suggested_session_name` and
-`name_reminted: true` when the name changes. Prompt context keeps reminding the
-agent until the new name is observed, and the Claude Code Stop rule treats the
-re-mint like the first session name. The title is still a projection. Editing
-it does not mutate lifecycle.
+The `coord.lifecycle_changed` event carries `suggested_session_name` only for
+the `done` projection. Prompt context keeps reminding the agent until that name
+is observed, and the display latch treats it like the first session name.
+Reopening does not print another title. The title is still a projection;
+editing it does not mutate lifecycle.
 
 Claude Desktop cleanup uses the same one-way projection. `harn claude-desktop
 tidy` maps a sidebar entry to its Harnery session and checks the latest durable

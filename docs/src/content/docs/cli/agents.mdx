@@ -167,10 +167,10 @@ The gate always allows a single `agents set-task` or `agents status` command.
 Those are the ritual's repair and turn-closing paths, so the naming check must
 not block them. Shell control syntax disqualifies the exemption.
 
-The same pending comparison drives every prompt reminder, including a
-lifecycle name that has been re-minted. Subagents and workflow children are
-skipped. Every later ordinary `set-task` returns `first_of_session: false` and
-a null name.
+The same pending comparison drives every prompt reminder, including the one
+terminal name re-mint when lifecycle becomes `done`. Subagents and workflow
+children are skipped. Every later ordinary `set-task` returns
+`first_of_session: false` and a null name.
 
 `set-task` never changes task lifecycle. If task text changes while the session
 is `blocked` or `done`, the command returns a warning to reopen the lifecycle
@@ -206,19 +206,20 @@ no-op, with no duplicate event. Moving away from `blocked` clears the old
 blocker reason. Subagents, transient processes, and workflow children cannot
 declare operator-facing lifecycle state.
 
-Each title-changing transition also returns a re-minted
-`suggested_session_name`:
+Lifecycle changes do not rename the session except when it becomes `done`.
+That transition returns the original session name with `[DONE] ` prepended:
 
 ```text
-active  -> Agent Hollis - Auth Refactor
-blocked -> [BLOCKED] - Agent Hollis - Auth Refactor
-done    -> [DONE] - Agent Hollis - Auth Refactor
+active  -> no title change
+blocked -> no title change
+done    -> [DONE] Agent Hollis - Auth Refactor
 ```
 
-The per-prompt reminder and Claude Code Stop rule remain active until the new
-name is observed. Titles are projections for people; editing a title never
-changes the underlying lifecycle. Pass `--session-id <id>` when the calling
-process cannot resolve its session anchor.
+The per-prompt reminder and display latch remain active until that terminal
+name is observed. Reopening a done session does not ask the agent to print or
+restore another title. Titles are projections for people; editing a title
+never changes the underlying lifecycle. Pass `--session-id <id>` when the
+calling process cannot resolve its session anchor.
 
 ### end and reconcile
 

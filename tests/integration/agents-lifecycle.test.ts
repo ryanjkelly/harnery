@@ -108,7 +108,7 @@ afterEach(() => {
 });
 
 describe("harn agents lifecycle on the V3 ledger", () => {
-  test("blocks, re-mints the title, and records one canonical lifecycle event", () => {
+  test("blocks without changing the title and records one canonical lifecycle event", () => {
     const root = makeSandbox();
     const result = harn(root, [
       "agents",
@@ -124,13 +124,14 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       task_state: "blocked",
       prior_state: "active",
       changed: true,
-      name_reminted: true,
+      name_reminted: false,
+      suggested_session_name: null,
     });
     expect(heartbeat(root)).toMatchObject({
       schema_version: 2,
       task_state: "blocked",
       task_state_reason: "waiting for access",
-      suggested_session_name: "[BLOCKED] - Agent Hollis - Auth Refactor",
+      suggested_session_name: "Agent Hollis - Auth Refactor",
     });
     expect(lifecycleEvents(root)).toHaveLength(1);
     expect(lifecycleEvents(root)[0]?.payload).toMatchObject({
@@ -165,6 +166,13 @@ describe("harn agents lifecycle on the V3 ledger", () => {
 
   test("done refuses dirty owned work, then succeeds after Git finalization", () => {
     const root = makeSandbox();
+    expect(
+      harn(root, ["agents", "set-task", "Final verification", "--session-id", OWNER]).status,
+    ).toBe(0);
+    expect(heartbeat(root)).toMatchObject({
+      task: "Final verification",
+      suggested_session_name: "Agent Hollis - Auth Refactor",
+    });
     writeFileSync(path.join(root, "owned.txt"), "dirty\n");
     recordLiveClaimChangeV3({
       coordRoot: root,
@@ -192,9 +200,13 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       OWNER,
     ]);
     expect(completed.status).toBe(0);
+    expect(outputObject(completed)).toMatchObject({
+      name_reminted: true,
+      suggested_session_name: "[DONE] Agent Hollis - Auth Refactor",
+    });
     expect(heartbeat(root)).toMatchObject({
       task_state: "done",
-      suggested_session_name: "[DONE] - Agent Hollis - Auth Refactor",
+      suggested_session_name: "[DONE] Agent Hollis - Auth Refactor",
     });
     expect(lifecycleEvents(root)[0]?.payload).toMatchObject({ new_state: "done" });
   });

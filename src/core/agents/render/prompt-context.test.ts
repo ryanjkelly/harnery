@@ -104,7 +104,7 @@ describe("renderPromptContext on the V3 coordination projection", () => {
     updateSelf({ session_name_seen_for: name });
     expect(render({ sessionNameNudge: true })).toBe("");
 
-    const reminted = "[BLOCKED] - Agent Maya - Current focus";
+    const reminted = "[DONE] Agent Maya - Current focus";
     updateSelf({ suggested_session_name: reminted });
     expect(render({ sessionNameNudge: true })).toContain(reminted);
   });

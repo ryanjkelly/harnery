@@ -180,17 +180,17 @@ export function buildSuggestedName(
   return { suggestedName: `Agent ${name} - ${description}`, description };
 }
 
-/** Build the operator-facing title projected from an explicit task lifecycle. */
+/** Build the sole lifecycle-driven title: the terminal done projection. */
 export function buildLifecycleSuggestedName(
-  agentName: string,
-  task: string | undefined,
+  currentSessionName: string | undefined,
   state: TaskState,
 ): string | null {
-  const built = buildSuggestedName(agentName, task ? [task] : []);
-  if (!built) return null;
-  if (state === "blocked") return `[BLOCKED] - ${built.suggestedName}`;
-  if (state === "done") return `[DONE] - ${built.suggestedName}`;
-  return built.suggestedName;
+  if (state !== "done" || !currentSessionName?.trim()) return null;
+  const baseName = currentSessionName
+    .trim()
+    .replace(/^\[DONE\]\s+/, "")
+    .replace(/^\[BLOCKED\]\s*-\s*/, "");
+  return baseName ? `[DONE] ${baseName}` : null;
 }
 
 /** Stamp the sighting once the suggested name has been observed in assistant
