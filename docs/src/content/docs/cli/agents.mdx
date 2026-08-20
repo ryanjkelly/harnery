@@ -163,6 +163,12 @@ Claude Code and Codex verify transcript text, while Cursor verifies its native
 only `suggested_session_name`. Chat UIs add a one-click Copy button, so the
 operator gets the exact title without hand-selecting.
 
+For transcript-backed adapters, the evidence boundary is the first assistant
+message after the mint result. Later commentary or a user prompt does not erase
+an exact display. If the adapter transcript is unavailable or has not flushed
+yet, Harnery reports the check as pending and allows the tool. A readable
+missing or malformed display is still denied.
+
 The gate always allows a single `agents set-task` or `agents status` command.
 Those are the ritual's repair and turn-closing paths, so the naming check must
 not block them. Shell control syntax disqualifies the exemption.

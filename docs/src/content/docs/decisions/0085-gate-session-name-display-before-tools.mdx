@@ -55,10 +55,11 @@ instruction that requires the exact fenced block as the next assistant text,
 before prose or another tool call.
 
 Every later PreToolUse checks the latch before other tool guards. Claude Code
-and Codex read the latest assistant message from their JSONL transcripts.
-Cursor reads its native `agent_message` field. The tool is denied until the
-message begins with a block containing only the current suggested name. A
-successful check stamps `session_name_seen_for` and lets the tool continue.
+and Codex read the first assistant message after the mint result from their
+JSONL transcripts. Cursor reads its native `agent_message` field. The tool is
+denied until the message begins with a block containing only the current
+suggested name. A successful check stamps `session_name_seen_for` and lets the
+tool continue.
 
 `agents set-task` and `agents status` are narrow escape hatches. The latch
 allows either as a single command even while display is pending, because they
@@ -82,9 +83,10 @@ re-minted but not displayed.
 
 ## Result
 
-Substantive tool work cannot begin while the current name is pending. Claude
-Code, Codex, and Cursor use the same state transition and block rule without
-adding durable state or pretending their Stop hooks behave alike.
+Substantive tool work cannot begin while the current name is pending and reply
+text is observable. Claude Code, Codex, and Cursor use the same state
+transition and block rule without adding durable state or pretending their
+Stop hooks behave alike.
 
 If an adapter ends immediately after displaying the block and exposes no
 transcript at Stop, the operator still sees the correct title. The latch may
@@ -95,3 +97,11 @@ Windows-native Codex can pass a `C:\...` rollout path to a hook running inside
 WSL. Transcript resolution checks that path's `/mnt/<drive>/...` equivalent
 before treating it as unreadable. This keeps visible commentary blocks from
 falling into a repeated deny loop at the host boundary.
+
+A Codex Desktop sequence exposed a second boundary after this decision shipped.
+The exact block was recorded first, then ordinary commentary became the latest
+assistant message before the next tool. The gate now evaluates the ordered
+post-mint message, so later commentary cannot erase valid evidence. A readable
+malformed or missing block still denies the tool. If the transcript is
+unavailable or not flushed, the hook reports that verification is pending and
+allows the tool.

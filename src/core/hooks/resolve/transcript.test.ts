@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { assistantTextStartsWithSessionNameBlock } from "../../agents/session-name-display.ts";
 import {
   detectForkParent,
+  inspectSessionNameDisplayImmediately,
   scanAssistantTextIncludes,
   scanLatestAssistantText,
   scanSessionNameDisplayedImmediately,
@@ -201,6 +202,73 @@ describe("ordered session-name transcript scans", () => {
     expect(
       scanSessionNameDisplayedImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
     ).toBe(true);
+  });
+
+  test("keeps a recorded Codex display valid after later commentary and a new turn", () => {
+    const p = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+        },
+      },
+      { type: "event_msg", payload: { type: "agent_message", message: BLOCK } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Continuing with the repository review." }],
+        },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "Continue." } },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "present" });
+  });
+
+  test("distinguishes malformed display evidence from an unavailable transcript", () => {
+    const malformed = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `Starting now.\n${BLOCK}` }],
+        },
+      },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(
+        malformed,
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "absent" });
+    expect(
+      inspectSessionNameDisplayImmediately(
+        join(dir, "missing.jsonl"),
+        NAME,
+        assistantTextStartsWithSessionNameBlock,
+      ),
+    ).toEqual({ state: "unavailable", reason: "missing_transcript" });
   });
 
   test("rejects an end-of-task block when substantive assistant text came first", () => {

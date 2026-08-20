@@ -94,8 +94,8 @@ import { findCoordRoot } from "./resolve/coord-root.ts";
 import { extractIntentComment, resolveIntent } from "./resolve/intent.ts";
 import { resolveOwner } from "./resolve/owner.ts";
 import {
+  inspectSessionNameDisplayImmediately,
   scanAssistantTextIncludes,
-  scanLatestAssistantText,
   scanSessionNameDisplayedImmediately,
   scanStatusBoxPresent,
   scanTranscriptModel,
@@ -1060,8 +1060,10 @@ async function main(): Promise<number> {
 
     // The suggested name is a pending display latch. The set-task call itself
     // runs before a name exists; every later tool waits until the exact block
-    // is the latest assistant text. Cursor supplies agent_message directly;
-    // Claude Code and Codex are resolved from their JSONL transcripts.
+    // is the first assistant text after the mint result. Cursor supplies
+    // agent_message directly; Claude Code and Codex are resolved from their
+    // JSONL transcripts. Later commentary must not erase an already-correct
+    // display, and an unreadable transcript must not deadlock every tool.
     try {
       const displayAllowed = await enforcePendingSessionNameDisplay(
         coordRoot,
@@ -1153,9 +1155,30 @@ async function enforcePendingSessionNameDisplay(
   const command = extractBashCommand(payload?.tool_name, payload?.tool_input);
   if (isSessionNameRemediationCommand(command, resolveBinName(coordRoot))) return true;
 
-  const assistantText = payload?.agent_message ?? scanLatestAssistantText(payload?.transcript_path);
-  if (assistantText && assistantTextStartsWithSessionNameBlock(assistantText, name)) {
+  const inspection =
+    payload?.agent_message !== undefined
+      ? {
+          state: assistantTextStartsWithSessionNameBlock(payload.agent_message, name)
+            ? ("present" as const)
+            : ("absent" as const),
+        }
+      : inspectSessionNameDisplayImmediately(
+          payload?.transcript_path,
+          name,
+          assistantTextStartsWithSessionNameBlock,
+        );
+  if (inspection.state === "present") {
     stampSessionNameSeen(coordRoot, instanceId, name);
+    return true;
+  }
+
+  if (inspection.state === "unavailable") {
+    const { emitContext } = await import("./adapter/output.ts");
+    emitContext(
+      adapter,
+      "PreToolUse",
+      "Harnery could not verify the pending session-name display because the adapter transcript is unavailable or not flushed yet. This tool is allowed so the session cannot deadlock; display the requested block before later work. Verification remains pending.",
+    );
     return true;
   }
 

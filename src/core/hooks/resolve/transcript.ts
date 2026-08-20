@@ -104,11 +104,32 @@ export function scanSessionNameDisplayedImmediately(
   name: string,
   startsWithBlock: (text: string, expectedName: string) => boolean,
 ): boolean {
-  if (!name) return false;
+  return (
+    inspectSessionNameDisplayImmediately(transcriptPath, name, startsWithBlock).state === "present"
+  );
+}
+
+export type SessionNameDisplayInspection =
+  | { state: "present" }
+  | { state: "absent" }
+  | { state: "unavailable"; reason: "missing_transcript" | "transcript_not_ready" };
+
+/**
+ * Inspect the ordered post-mint reply without conflating a malformed display
+ * with an unreadable transcript. PreToolUse can enforce the former, while the
+ * latter must remain an honest unsupported observation instead of deadlocking
+ * every tool behind evidence the adapter has not persisted yet.
+ */
+export function inspectSessionNameDisplayImmediately(
+  transcriptPath: string | undefined,
+  name: string,
+  startsWithBlock: (text: string, expectedName: string) => boolean,
+): SessionNameDisplayInspection {
+  if (!name) return { state: "absent" };
   const readablePath = resolveTranscriptPath(transcriptPath);
-  if (!readablePath) return false;
+  if (!readablePath) return { state: "unavailable", reason: "missing_transcript" };
   const text = tailText(readablePath);
-  if (!text) return false;
+  if (!text) return { state: "unavailable", reason: "transcript_not_ready" };
   let sawMintResult = false;
   for (const line of text.split("\n")) {
     if (!sawMintResult) {
@@ -118,9 +139,13 @@ export function scanSessionNameDisplayedImmediately(
     const row = parseTranscriptRow(line);
     if (!row) continue;
     const assistantText = assistantTextFromRow(row);
-    if (assistantText !== null) return startsWithBlock(assistantText, name);
+    if (assistantText !== null) {
+      return { state: startsWithBlock(assistantText, name) ? "present" : "absent" };
+    }
   }
-  return false;
+  return sawMintResult
+    ? { state: "unavailable", reason: "transcript_not_ready" }
+    : { state: "absent" };
 }
 
 /**

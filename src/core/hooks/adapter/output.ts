@@ -22,7 +22,12 @@ import type { Adapter } from "../../adapter.ts";
 import { STOP_REMEDIATION_MARKER } from "../../agents/rules/stop-hook.ts";
 import { endOfTurnStatusCommand, resolveBinName } from "../../config.ts";
 
-export type SystemEvent = "SessionStart" | "UserPromptSubmit" | "SubagentStart" | "PostToolUse";
+export type SystemEvent =
+  | "SessionStart"
+  | "UserPromptSubmit"
+  | "SubagentStart"
+  | "PreToolUse"
+  | "PostToolUse";
 
 /** Emit a context-injection (peer table, wiring check, council pending, …). */
 export function emitContext(adapter: Adapter, event: SystemEvent, text: string): void {

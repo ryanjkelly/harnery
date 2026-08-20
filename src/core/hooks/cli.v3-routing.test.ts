@@ -79,9 +79,29 @@ describe("agent-hook V3 hard cut", () => {
     expect(remediation.status).toBe(0);
     expect(remediation.stdout).not.toContain('"permissionDecision":"deny"');
 
+    const transcript = join(root, "transcript.jsonl");
+    const mintResult = {
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            content: JSON.stringify({ suggested_session_name: name }),
+          },
+        ],
+      },
+    };
+    writeFileSync(
+      transcript,
+      `${JSON.stringify(mintResult)}\n${JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Starting before the title." }] },
+      })}\n`,
+    );
     const denied = runHook("pre-tool-use", {
       session_id: owner,
       cwd: root,
+      transcript_path: transcript,
       tool_name: "Bash",
       tool_use_id: "too-soon",
       tool_input: { command: "echo too-soon" },
@@ -90,10 +110,9 @@ describe("agent-hook V3 hard cut", () => {
     expect(denied.stdout).toContain('"permissionDecision":"deny"');
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
 
-    const transcript = join(root, "transcript.jsonl");
     writeFileSync(
       transcript,
-      `${JSON.stringify({
+      `${JSON.stringify(mintResult)}\n${JSON.stringify({
         type: "assistant",
         message: { content: [{ type: "text", text: `\`\`\`\n${name}\n\`\`\`` }] },
       })}\n`,
@@ -153,6 +172,177 @@ describe("agent-hook V3 hard cut", () => {
     expect(allowed.status).toBe(0);
     expect(allowed.stdout).not.toContain('"permission":"deny"');
     expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+  });
+
+  test("Codex preserves the ordered display and cannot deadlock on an unavailable transcript", () => {
+    const root = candidateRoot("codex");
+    const owner = "codex-session-name-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "codex"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+
+    expect(
+      runHook("session-start", {
+        session_id: owner,
+        thread_id: owner,
+        cwd: root,
+        source: "startup",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Codex owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+      }),
+      "utf8",
+    );
+
+    const unavailable = runHook("pre-tool-use", {
+      session_id: owner,
+      thread_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "codex-unflushed-display",
+      tool_input: { command: "echo allowed-with-pending-verification" },
+    });
+    expect(unavailable.status).toBe(0);
+    expect(unavailable.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(unavailable.stdout).toContain("transcript is unavailable or not flushed yet");
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
+
+    const transcript = join(root, "codex-rollout.jsonl");
+    const block = `\`\`\`\n${name}\n\`\`\``;
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call_output",
+            output: [
+              { type: "input_text", text: JSON.stringify({ suggested_session_name: name }) },
+            ],
+          },
+        },
+        { type: "event_msg", payload: { type: "agent_message", message: block } },
+        {
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: block }],
+          },
+        },
+        {
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Continuing with the repository review." }],
+          },
+        },
+        { type: "event_msg", payload: { type: "user_message", message: "Continue." } },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    const allowed = runHook("pre-tool-use", {
+      session_id: owner,
+      thread_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "codex-after-display",
+      tool_input: { command: "echo allowed" },
+    });
+    expect(allowed.status).toBe(0);
+    expect(allowed.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBe(name);
+
+    const repeated = runHook("pre-tool-use", {
+      session_id: owner,
+      thread_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "codex-after-stamp",
+      tool_input: { command: "echo still-allowed" },
+    });
+    expect(repeated.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(repeated.stdout).not.toContain("transcript is unavailable or not flushed yet");
+  });
+
+  test("Codex still denies a readable malformed session-name display", () => {
+    const root = candidateRoot("codex");
+    const owner = "codex-malformed-session-name-owner";
+    const name = "Agent Maya - Auth refactor";
+    const runHook = (event: string, payload: Record<string, unknown>) =>
+      run(AGENT_HOOK, [event, "--adapter", "codex"], payload, root, {
+        HARNERY_AGENT_COORD_BYPASS_STOP: "1",
+      });
+    expect(
+      runHook("session-start", {
+        session_id: owner,
+        thread_id: owner,
+        cwd: root,
+        source: "startup",
+      }).status,
+    ).toBe(0);
+    const instanceId = readLiveCoordinationRows(root)[0]?.instance_id;
+    if (!instanceId) throw new Error("Codex owner was not projected");
+    const cachePath = join(root, ".harnery", "active", `${instanceId}.json`);
+    writeFileSync(
+      cachePath,
+      JSON.stringify({
+        ...readLiveCoordinationRow(root, instanceId),
+        instance_id: instanceId,
+        suggested_session_name: name,
+      }),
+      "utf8",
+    );
+    const transcript = join(root, "codex-malformed-rollout.jsonl");
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call_output",
+            output: [
+              { type: "input_text", text: JSON.stringify({ suggested_session_name: name }) },
+            ],
+          },
+        },
+        {
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: `Starting now.\n\`\`\`\n${name}\n\`\`\`` }],
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+    const denied = runHook("pre-tool-use", {
+      session_id: owner,
+      thread_id: owner,
+      cwd: root,
+      transcript_path: transcript,
+      tool_name: "Bash",
+      tool_use_id: "codex-malformed-display",
+      tool_input: { command: "echo denied" },
+    });
+    expect(denied.stdout).toContain('"permissionDecision":"deny"');
+    expect(readLiveCoordinationRow(root, instanceId)?.session_name_seen_for).toBeUndefined();
   });
 
   test("candidate hooks record a complete canonical V3 lifecycle", () => {
@@ -435,7 +625,7 @@ describe("agent-hook V3 hard cut", () => {
   });
 });
 
-function candidateRoot(adapter: "claude-code" | "cursor" = "claude-code"): string {
+function candidateRoot(adapter: "claude-code" | "codex" | "cursor" = "claude-code"): string {
   const root = mkdtempSync(join(tmpdir(), "harn-hook-v3-route-"));
   roots.push(root);
   mkdirSync(join(root, ".harnery", "active"), { recursive: true });
