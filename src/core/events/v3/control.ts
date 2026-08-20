@@ -458,8 +458,13 @@ function parseCandidateProfile(value: unknown): ParseResult<CandidateProfileV3> 
   ];
   if (!exactKeys(value, keys)) return fail("genesis_profile_shape_invalid");
   if (
+    isSha256(value.initial_schema_digest) &&
+    value.initial_schema_digest !== EVENT_V3_SCHEMA_DIGEST
+  ) {
+    return fail("genesis_schema_digest_incompatible");
+  }
+  if (
     !isSha256(value.initial_schema_digest) ||
-    value.initial_schema_digest !== EVENT_V3_SCHEMA_DIGEST ||
     !isSha256(value.contract_source_digest) ||
     !isSha256(value.config_digest) ||
     value.canonicalizer_version !== "harnery-jcs-nfc-v1" ||

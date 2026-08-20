@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initializeEventLedgerV3 } from "./bootstrap.ts";
 import { sha256V3 } from "./canonical.ts";
-import { EVENT_V3_ACTIVATION_MANIFEST, readEventV3ControlState } from "./control.ts";
+import {
+  EVENT_V3_ACTIVATION_MANIFEST,
+  EVENT_V3_GENESIS_MANIFEST,
+  readEventV3ControlState,
+} from "./control.ts";
 import { eventV3Paths } from "./writer.ts";
 
 const roots: string[] = [];
@@ -56,6 +60,31 @@ describe("universal V3 ledger initialization", () => {
     expect(result.archived_epoch).toBeDefined();
     expect(readFileSync(join(result.archived_epoch!, "active.ndjson"), "utf8")).toBe(incompatible);
     expect(readEventV3ControlState(root).state).toBe("active");
+  });
+
+  test("names a prior schema digest and rotates it through init without recovery", () => {
+    const root = freshRoot();
+    initialize(root, "2026-08-18T12:00:00.000Z");
+    const genesisPath = join(root, EVENT_V3_GENESIS_MANIFEST);
+    const genesis = JSON.parse(readFileSync(genesisPath, "utf8")) as {
+      profile: { initial_schema_digest: string };
+    };
+    genesis.profile.initial_schema_digest = `sha256:${"a".repeat(64)}`;
+    writeFileSync(genesisPath, `${JSON.stringify(genesis)}\n`, "utf8");
+
+    expect(readEventV3ControlState(root)).toEqual({
+      state: "invalid",
+      reason: "genesis_schema_digest_incompatible",
+    });
+
+    const replaced = initialize(root, "2026-08-18T12:03:00.000Z");
+
+    expect(replaced.archived_epoch).toBeDefined();
+    expect(readEventV3ControlState(root).state).toBe("active");
+    const archivedGenesis = JSON.parse(
+      readFileSync(join(replaced.archived_epoch!, "genesis.json"), "utf8"),
+    ) as { profile: { initial_schema_digest: string } };
+    expect(archivedGenesis.profile.initial_schema_digest).toBe(`sha256:${"a".repeat(64)}`);
   });
 
   test("resumes a candidate left before activation publication", () => {
