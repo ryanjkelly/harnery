@@ -1,5 +1,11 @@
 {
   "mode": "local",
+  "terminal_keys": [
+    "conversation_id",
+    "generation_id",
+    "hook_event_name",
+    "status"
+  ],
   "events": [
     {
       "signal": "session-start",

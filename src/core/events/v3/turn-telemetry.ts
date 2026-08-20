@@ -22,11 +22,14 @@ export interface ContextMeasurementV3 {
 export interface TurnTelemetryV3 {
   usage: TelemetryObservationV3<TurnUsageV3>;
   inference: TelemetryObservationV3<TurnInferenceV3>;
-  context: ContextMeasurementV3 | null;
+  context: TelemetryObservationV3<ContextMeasurementV3>;
 }
 
 export type TurnTelemetryCapabilitySupportV3 = Partial<
-  Pick<Record<AdapterSignalV3, CapabilitySupportV3>, "model_usage" | "inference_timing">
+  Pick<
+    Record<AdapterSignalV3, CapabilitySupportV3>,
+    "model_usage" | "inference_timing" | "context_usage"
+  >
 >;
 
 export interface HarnessTimingAccumulatorV3 {
@@ -103,18 +106,53 @@ export function extractTurnTelemetryV3(
     number(context?.window_tokens) ??
     number(payload.context_window_size) ??
     (typeof payload.context_window === "number" ? number(payload.context_window) : undefined);
-  const contextMeasurement =
-    usedTokens !== undefined && limitTokens !== undefined && limitTokens > 0
-      ? {
-          used_tokens: usedTokens,
-          limit_tokens: limitTokens,
-          remaining_tokens: Math.max(0, limitTokens - usedTokens),
-          measured_at: observedAt,
-          method: `${adapter.replaceAll("-", "_")}_hook`,
-        }
-      : null;
+  const contextMeasurement = contextObservation(
+    adapter,
+    usedTokens,
+    limitTokens,
+    observedAt,
+    support.context_usage,
+  );
 
   return { usage: usageObservation, inference: inferenceObservation, context: contextMeasurement };
+}
+
+function contextObservation(
+  adapter: Adapter,
+  usedTokens: number | undefined,
+  limitTokens: number | undefined,
+  observedAt: string,
+  override: CapabilitySupportV3 | undefined,
+): TelemetryObservationV3<ContextMeasurementV3> {
+  if (usedTokens !== undefined && limitTokens !== undefined && limitTokens > 0) {
+    return {
+      state: "observed",
+      value: {
+        used_tokens: usedTokens,
+        limit_tokens: limitTokens,
+        remaining_tokens: Math.max(0, limitTokens - usedTokens),
+        measured_at: observedAt,
+        method: `${adapter.replaceAll("-", "_")}_hook`,
+      },
+      attestation: "native",
+      confidence: "exact",
+    };
+  }
+
+  if (usedTokens !== undefined || limitTokens !== undefined) {
+    return {
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason:
+        usedTokens === undefined
+          ? "context_used_tokens_not_reported"
+          : limitTokens === undefined
+            ? "context_limit_tokens_not_reported"
+            : "context_limit_tokens_invalid",
+    };
+  }
+
+  return missing(adapter, "context_usage", override);
 }
 
 export function emptyHarnessTimingV3(): HarnessTimingAccumulatorV3 {
@@ -165,7 +203,7 @@ export function harnessObservationV3(
 
 function missing(
   adapter: Adapter,
-  signal: "model_usage" | "inference_timing",
+  signal: "model_usage" | "inference_timing" | "context_usage",
   override: CapabilitySupportV3 | undefined,
 ) {
   const declared = override ?? adapterSignalSupportV3(adapter, signal);

@@ -41,11 +41,16 @@ describe("event ledger V3 turn telemetry", () => {
         confidence: "exact",
       },
       context: {
-        used_tokens: 600,
-        limit_tokens: 1_000,
-        remaining_tokens: 400,
-        measured_at: "2026-08-18T14:00:00.000Z",
-        method: "claude_code_hook",
+        state: "observed",
+        value: {
+          used_tokens: 600,
+          limit_tokens: 1_000,
+          remaining_tokens: 400,
+          measured_at: "2026-08-18T14:00:00.000Z",
+          method: "claude_code_hook",
+        },
+        attestation: "native",
+        confidence: "exact",
       },
     });
   });
@@ -62,6 +67,36 @@ describe("event ledger V3 turn telemetry", () => {
     expect(extractTurnTelemetryV3("cursor", {})).toMatchObject({
       usage: { state: "unsupported", capability: "model_usage" },
       inference: { state: "unsupported", capability: "inference_timing" },
+      context: { state: "unsupported", capability: "context_usage" },
+    });
+  });
+
+  test("distinguishes observed, partial, unsupported, and promised context coverage", () => {
+    expect(
+      extractTurnTelemetryV3("codex", {
+        context_window: { used_tokens: 768, context_window_size: 1_024 },
+      }).context,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 768, limit_tokens: 1_024, remaining_tokens: 256 },
+    });
+    expect(
+      extractTurnTelemetryV3("codex", { context_window: { used_tokens: 768 } }).context,
+    ).toEqual({
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "context_limit_tokens_not_reported",
+    });
+    expect(extractTurnTelemetryV3("codex", {}).context).toEqual({
+      state: "unsupported",
+      capability: "context_usage",
+    });
+    expect(
+      extractTurnTelemetryV3("codex", {}, undefined, { context_usage: "native" }).context,
+    ).toEqual({
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "promised_signal_not_reported",
     });
   });
 

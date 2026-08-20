@@ -42,7 +42,11 @@ import {
   recoverSpanUpperBoundV3,
   type SpanClockV3,
 } from "../span-state.ts";
-import { type ContextMeasurementV3, extractTurnTelemetryV3 } from "../turn-telemetry.ts";
+import {
+  type ContextMeasurementV3,
+  extractTurnTelemetryV3,
+  type TelemetryObservationV3,
+} from "../turn-telemetry.ts";
 import { assertEventV3, validateEventV3 } from "../validate.ts";
 import {
   EVENT_V3_LEDGER_RELATIVE_ROOT,
@@ -1005,7 +1009,7 @@ function processHookSignalLocked(
       stampSpanTurn(span, event, eventInput, state);
     }
     const durability = commitEventLocked(input, state, path, event, sourceId);
-    if (turnTelemetry?.context) {
+    if (turnTelemetry) {
       commitTurnContextObservation(input, state, path, rootId, event, turnTelemetry.context);
     }
     if (event.event_type === "session.ended") {
@@ -1217,7 +1221,7 @@ function commitTurnContextObservation(
   path: string,
   rootId: `root_${string}`,
   turnTerminal: EventV3,
-  measurement: ContextMeasurementV3,
+  measurement: TelemetryObservationV3<ContextMeasurementV3>,
 ): void {
   if (turnTerminal.event_type !== "turn.completed") return;
   const event = buildEventV3("context.observed", {
@@ -1252,16 +1256,14 @@ function commitTurnContextObservation(
         subject_instance_id: state.instance_id,
       },
     },
-    observed_at: measurement.measured_at,
+    observed_at:
+      measurement.state === "observed"
+        ? measurement.value.measured_at
+        : turnTerminal.time.observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
     payload: {
-      measurement: {
-        state: "observed",
-        value: measurement,
-        attestation: "native",
-        confidence: "exact",
-      },
+      measurement,
     },
   }) as EventV3;
   commitEventLocked(input, state, path, event);

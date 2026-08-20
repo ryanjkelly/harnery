@@ -1019,6 +1019,13 @@ describe("event ledger V3 persistent hook recorder", () => {
         state: "unsupported",
         capability: "inference_timing",
       });
+      const context = readLedgerV3(root)
+        .events.map(({ event }) => event)
+        .find((event) => event.event_type === "context.observed");
+      expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+        state: "unsupported",
+        capability: "context_usage",
+      });
       const durable = readFileSync(eventV3Paths(root).active, "utf8");
       expect(durable).not.toContain("PRIVATE_ASSISTANT_BODY");
       expect(durable).not.toContain("PRIVATE_PROMPT_BODY");
@@ -1037,6 +1044,7 @@ describe("event ledger V3 persistent hook recorder", () => {
       ),
     ) as {
       mode: "local";
+      terminal_keys: string[];
       events: Array<{
         signal: Parameters<typeof recordHookSignalV3>[0]["signal"];
         observed_at: string;
@@ -1045,6 +1053,11 @@ describe("event ledger V3 persistent hook recorder", () => {
       }>;
     };
     const root = candidateRoot("cursor");
+
+    const terminalFixture = fixture.events.find(({ signal }) => signal === "stop");
+    expect(Object.keys(terminalFixture?.payload ?? {}).sort()).toEqual(
+      [...fixture.terminal_keys].sort(),
+    );
 
     for (const item of fixture.events) {
       const payload = parsePayload(JSON.stringify(item.payload), "cursor");
@@ -1071,6 +1084,11 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(
       terminal?.event_type === "turn.completed" && terminal.payload.tool_call_count,
     ).toMatchObject({ state: "observed", value: 1 });
+    const context = events.find(({ event_type }) => event_type === "context.observed");
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+      state: "unsupported",
+      capability: "context_usage",
+    });
     const durable = readFileSync(eventV3Paths(root).active, "utf8");
     expect(durable).not.toContain("PRIVATE_PROMPT_BODY");
     expect(durable).not.toContain("PRIVATE_COMMAND_BODY");

@@ -59,7 +59,6 @@ const SHARED_SIGNAL_SUPPORT = {
   subagent: "native",
   shell: "native",
   pre_compaction: "native",
-  context_usage: "native",
   model_identity: "conditional",
 } as const;
 
@@ -70,6 +69,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     turn_id: "conditional",
     permission: "native",
     post_compaction: "native",
+    context_usage: "unsupported",
   },
   codex: {
     ...SHARED_SIGNAL_SUPPORT,
@@ -77,6 +77,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     turn_id: "native",
     permission: "native",
     post_compaction: "native",
+    context_usage: "unsupported",
   },
   cursor: {
     ...SHARED_SIGNAL_SUPPORT,
@@ -90,6 +91,7 @@ const BASE_SIGNAL_SUPPORT: Record<Adapter, Record<BaseAdapterSignalV3, Capabilit
     shell: "conditional",
     permission: "conditional",
     post_compaction: "unsupported",
+    context_usage: "unsupported",
   },
 };
 

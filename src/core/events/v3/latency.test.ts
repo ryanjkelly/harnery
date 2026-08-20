@@ -54,6 +54,11 @@ describe("event ledger V3 latency projection", () => {
       residual_ms: { state: "observed", value_ms: 30 },
       over_attributed_ms: 0,
       context_percent: 50,
+      context_coverage: {
+        state: "observed",
+        event_id: "evt_00000000-0000-7000-8000-000000000006",
+        reason: null,
+      },
       span_counts: { tool: 2, command: 1, wait: 1 },
       tool_breakdown: [
         {
@@ -63,6 +68,60 @@ describe("event ledger V3 latency projection", () => {
           duration_ms: { state: "observed", value_ms: 800 },
         },
       ],
+    });
+  });
+
+  test("preserves context coverage reasons without inventing a percentage", () => {
+    const cases = [
+      {
+        measurement: { state: "unsupported", capability: "context_usage" },
+        expected: {
+          state: "unsupported",
+          event_id: "evt_00000000-0000-7000-8000-000000000002",
+          reason: "context_usage_unsupported",
+        },
+      },
+      {
+        measurement: {
+          state: "expected_but_missing",
+          capability: "context_usage",
+          reason: "context_limit_tokens_not_reported",
+        },
+        expected: {
+          state: "partial",
+          event_id: "evt_00000000-0000-7000-8000-000000000002",
+          reason: "context_limit_tokens_not_reported",
+        },
+      },
+      {
+        measurement: {
+          state: "expected_but_missing",
+          capability: "context_usage",
+          reason: "promised_signal_not_reported",
+        },
+        expected: {
+          state: "expected_but_missing",
+          event_id: "evt_00000000-0000-7000-8000-000000000002",
+          reason: "promised_signal_not_reported",
+        },
+      },
+    ] as const;
+
+    for (const fixture of cases) {
+      const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
+      const context = eventV3Fixture("context.observed", 2);
+      fixtureObject(context.payload).measurement = structuredClone(fixture.measurement);
+      alignTurn(turn, [context]);
+      const result = projectLatencyV3(readOf(turn, context)).turns[0]!;
+      expect(result.context_percent).toBeNull();
+      expect(result.context_coverage).toEqual(fixture.expected);
+    }
+
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 100);
+    expect(projectLatencyV3(readOf(turn)).turns[0]?.context_coverage).toEqual({
+      state: "expected_but_missing",
+      event_id: null,
+      reason: "context_observation_missing",
     });
   });
 

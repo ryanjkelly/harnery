@@ -13,6 +13,18 @@ export interface ToolLatencyV3 {
   duration_ms: LatencyMetricV3;
 }
 
+export type ContextCoverageStateV3 =
+  | "observed"
+  | "partial"
+  | "unsupported"
+  | "expected_but_missing";
+
+export interface ContextCoverageV3 {
+  state: ContextCoverageStateV3;
+  event_id: string | null;
+  reason: string | null;
+}
+
 export interface TurnLatencyV3 {
   generation_id: string;
   turn_id: string;
@@ -33,6 +45,7 @@ export interface TurnLatencyV3 {
   residual_ms: LatencyMetricV3;
   over_attributed_ms: number;
   context_percent: number | null;
+  context_coverage: ContextCoverageV3;
   span_counts: { tool: number; command: number; wait: number };
   tool_breakdown: ToolLatencyV3[];
 }
@@ -175,6 +188,7 @@ function projectTurn(
     diagnostics.push({ code: "over_attributed", event_id: terminal.event_id });
 
   const scope = terminal.scope;
+  const context = latestContext(events);
   const toolBreakdown = [...groupByTool(toolEvents).entries()]
     .map(([key, groupedEvents]) => {
       const [namespace, name] = key.split("\0");
@@ -208,7 +222,8 @@ function projectTurn(
     slowest_hook_ms: slowestHook.duration_ms,
     residual_ms: residual.metric,
     over_attributed_ms: overAttributed,
-    context_percent: latestContextPercent(events),
+    context_percent: context.percent,
+    context_coverage: context.coverage,
     span_counts: {
       tool: toolEvents.length,
       command: commandEvents.length,
@@ -361,17 +376,70 @@ function residualMetric(
   };
 }
 
-function latestContextPercent(events: EventShape[]): number | null {
+function latestContext(events: EventShape[]): {
+  percent: number | null;
+  coverage: ContextCoverageV3;
+} {
   const observed = events.filter(({ event_type }) => event_type === "context.observed").at(-1);
-  if (!observed) return null;
+  if (!observed) {
+    return {
+      percent: null,
+      coverage: {
+        state: "expected_but_missing",
+        event_id: null,
+        reason: "context_observation_missing",
+      },
+    };
+  }
   const measurement = record(observed.payload.measurement);
-  if (measurement.state !== "observed") return null;
+  if (measurement.state === "unsupported") {
+    return {
+      percent: null,
+      coverage: {
+        state: "unsupported",
+        event_id: observed.event_id,
+        reason: "context_usage_unsupported",
+      },
+    };
+  }
+  if (measurement.state === "expected_but_missing") {
+    const reason = string(measurement.reason) || "context_measurement_missing";
+    return {
+      percent: null,
+      coverage: {
+        state: reason.startsWith("context_") ? "partial" : "expected_but_missing",
+        event_id: observed.event_id,
+        reason,
+      },
+    };
+  }
+  if (measurement.state !== "observed") {
+    return {
+      percent: null,
+      coverage: {
+        state: "expected_but_missing",
+        event_id: observed.event_id,
+        reason: "context_measurement_invalid",
+      },
+    };
+  }
   const value = record(measurement.value);
   const used = value.used_tokens;
   const limit = value.limit_tokens;
-  return typeof used === "number" && typeof limit === "number" && limit > 0
-    ? (used / limit) * 100
-    : null;
+  if (typeof used !== "number" || typeof limit !== "number" || limit <= 0) {
+    return {
+      percent: null,
+      coverage: {
+        state: "expected_but_missing",
+        event_id: observed.event_id,
+        reason: "context_measurement_invalid",
+      },
+    };
+  }
+  return {
+    percent: (used / limit) * 100,
+    coverage: { state: "observed", event_id: observed.event_id, reason: null },
+  };
 }
 
 function observedNumber(value: unknown): number | undefined {

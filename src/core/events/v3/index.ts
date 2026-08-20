@@ -145,6 +145,8 @@ export {
   spanIdV3,
 } from "./ids.ts";
 export {
+  type ContextCoverageStateV3,
+  type ContextCoverageV3,
   EVENT_V3_LATENCY_PROJECTION_VERSION,
   type LatencyMetricV3,
   type LatencyProjectionDiagnosticCodeV3,

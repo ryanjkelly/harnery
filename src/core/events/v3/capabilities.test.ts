@@ -30,6 +30,12 @@ describe("event ledger V3 adapter capabilities", () => {
     expect(adapterSignalSupportV3("cursor", "inference_timing")).toBe("unsupported");
   });
 
+  test("does not promise context usage absent from current terminal hooks", () => {
+    for (const adapter of ["claude-code", "codex", "cursor"] as const) {
+      expect(adapterSignalSupportV3(adapter, "context_usage")).toBe("unsupported");
+    }
+  });
+
   test("admits the current native lifecycle hooks", () => {
     expect(adapterSignalSupportV3("codex", "session_end")).toBe("native");
     expect(adapterSignalSupportV3("cursor", "pre_compaction")).toBe("native");

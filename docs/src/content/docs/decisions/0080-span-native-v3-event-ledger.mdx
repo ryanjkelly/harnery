@@ -170,3 +170,13 @@ Existing predecessor bytes on disk are ignored.
 Git history and ADR 0079 are the historical record of the short-lived V2
 runtime. This ADR supersedes ADR 0079's contract-major and schema-evolution
 rules.
+
+On 2026-08-20, current terminal-hook key inventories confirmed that Claude
+Code, Codex, and Cursor do not natively report a complete used-token and
+context-limit pair. Their `context_usage` profiles now say `unsupported`.
+Every new completed turn still records a privacy-safe `context.observed`
+event: a complete pair is observed, one supplied endpoint is partial, an
+unfulfilled override is expected but missing, and the current native hooks are
+unsupported. Latency projections carry that state and its reason alongside
+the optional percentage. Existing authorities are not rewritten, so older
+turns without a context event remain expected but missing.
