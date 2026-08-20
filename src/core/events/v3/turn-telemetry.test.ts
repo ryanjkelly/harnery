@@ -50,14 +50,35 @@ describe("event ledger V3 turn telemetry", () => {
     });
   });
 
-  test("keeps partial Codex telemetry missing and marks Cursor economics unsupported", () => {
+  test("marks current native-hook inference timing unsupported", () => {
     expect(extractTurnTelemetryV3("codex", { usage: { input_tokens: 10 } })).toMatchObject({
       usage: { state: "expected_but_missing", capability: "model_usage" },
-      inference: { state: "expected_but_missing", capability: "inference_timing" },
+      inference: { state: "unsupported", capability: "inference_timing" },
+    });
+    expect(extractTurnTelemetryV3("claude-code", {}).inference).toEqual({
+      state: "unsupported",
+      capability: "inference_timing",
     });
     expect(extractTurnTelemetryV3("cursor", {})).toMatchObject({
       usage: { state: "unsupported", capability: "model_usage" },
       inference: { state: "unsupported", capability: "inference_timing" },
+    });
+  });
+
+  test("distinguishes conditional absence from a broken native promise", () => {
+    expect(
+      extractTurnTelemetryV3("codex", {}, undefined, { inference_timing: "conditional" }).inference,
+    ).toEqual({
+      state: "expected_but_missing",
+      capability: "inference_timing",
+      reason: "conditional_signal_not_reported",
+    });
+    expect(
+      extractTurnTelemetryV3("codex", {}, undefined, { inference_timing: "native" }).inference,
+    ).toEqual({
+      state: "expected_but_missing",
+      capability: "inference_timing",
+      reason: "promised_signal_not_reported",
     });
   });
 

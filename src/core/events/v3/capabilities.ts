@@ -113,11 +113,11 @@ function profile(
 export const ADAPTER_CAPABILITY_PROFILES_V3: Record<Adapter, AdapterCapabilityProfileV3> = {
   "claude-code": profile("claude-code", {
     model_usage: "conditional",
-    inference_timing: "conditional",
+    inference_timing: "unsupported",
   }),
   codex: profile("codex", {
     model_usage: "conditional",
-    inference_timing: "conditional",
+    inference_timing: "unsupported",
   }),
   cursor: profile("cursor", {
     model_usage: "unsupported",

@@ -117,3 +117,22 @@ never performed.
   the default mode and marks `contract` as `skipped`.
 - The existing bench, CLI, and doctor tests pass unchanged apart from the added
   field.
+
+## V3 inference-timing refinement
+
+The same rule applies to event-ledger capability profiles. A parser that knows
+how to read a hypothetical timing field does not prove that a native hook emits
+it. Claude Code 2.1.233 and Codex 0.144.5 Stop schemas contain lifecycle fields,
+model identity, and private reply or transcript references, but no inference
+duration. The source contracts are Claude Code's
+[Stop input reference](https://code.claude.com/docs/en/hooks#stop) and Codex's
+[generated Stop schema](https://github.com/openai/codex/blob/main/codex-rs/hooks/schema/generated/stop.command.input.schema.json).
+Their V3 profiles therefore report `inference_timing` as `unsupported`. Cursor
+remains unsupported as well.
+
+The telemetry extractor still accepts an explicit native timing field if a
+later runtime adds one. Until that runtime contract is checked and the profile
+is updated, absence is unsupported rather than missing. Tests keep separate
+states for a conditional field that does not arrive and a native promise that
+is broken, so a future capability change cannot collapse either case into the
+current unsupported result.

@@ -959,6 +959,73 @@ describe("event ledger V3 persistent hook recorder", () => {
     });
   });
 
+  test("records current Claude and Codex Stop schemas with unsupported inference", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dir,
+          "../../../../../tests/fixtures/adapters/inference/current-stop-hooks.json",
+        ),
+        "utf8",
+      ),
+    ) as {
+      cases: Array<{
+        adapter: "claude-code" | "codex";
+        version: string;
+        terminal_keys: string[];
+        payload: Record<string, unknown>;
+      }>;
+    };
+
+    for (const item of fixture.cases) {
+      expect(Object.keys(item.payload).sort()).toEqual([...item.terminal_keys].sort());
+      const terminalPayload = parsePayload(JSON.stringify(item.payload), item.adapter);
+      if (!terminalPayload?.session_id) throw new Error("current Stop fixture did not parse");
+      const root = candidateRoot(item.adapter);
+      const turnId = terminalPayload.turn_id ?? `${item.adapter}-turn`;
+      const version = item.version.match(/\d+\.\d+\.\d+(?:[-.][a-zA-Z0-9.]+)?/)?.[0];
+      if (!version) throw new Error("current Stop fixture version did not parse");
+      const versioned = (
+        signal: Parameters<typeof recordHookSignalV3>[0]["signal"],
+        payload: ParsedPayload,
+      ) => ({ ...baseInput(root, signal, payload, item.adapter), adapterVersion: version });
+
+      expect(
+        recordHookSignalV3(
+          versioned(
+            "session-start",
+            parsed({ session_id: terminalPayload.session_id, model: "fixture-model" }),
+          ),
+        ).state,
+      ).toBe("recorded");
+      expect(
+        recordHookSignalV3(
+          versioned(
+            "user-prompt-submit",
+            parsed({
+              session_id: terminalPayload.session_id,
+              turn_id: turnId,
+              prompt: "PRIVATE_PROMPT_BODY",
+            }),
+          ),
+        ).state,
+      ).toBe("recorded");
+      expect(recordHookSignalV3(versioned("stop", terminalPayload)).state).toBe("recorded");
+
+      const terminal = readLedgerV3(root)
+        .events.map(({ event }) => event)
+        .find((event) => event.event_type === "turn.completed");
+      expect(terminal?.event_type === "turn.completed" && terminal.payload.inference).toEqual({
+        state: "unsupported",
+        capability: "inference_timing",
+      });
+      const durable = readFileSync(eventV3Paths(root).active, "utf8");
+      expect(durable).not.toContain("PRIVATE_ASSISTANT_BODY");
+      expect(durable).not.toContain("PRIVATE_PROMPT_BODY");
+      expect(durable).not.toContain("/private/");
+    }
+  });
+
   test("records paired local Cursor tools with an exact terminal count and no bodies", () => {
     const fixture = JSON.parse(
       readFileSync(

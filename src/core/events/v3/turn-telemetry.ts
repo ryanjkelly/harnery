@@ -1,5 +1,9 @@
 import type { Adapter } from "../../adapter.ts";
-import { adapterSignalSupportV3 } from "./capabilities.ts";
+import {
+  type AdapterSignalV3,
+  adapterSignalSupportV3,
+  type CapabilitySupportV3,
+} from "./capabilities.ts";
 import type { TurnHarnessV3, TurnInferenceV3, TurnUsageV3 } from "./contract.ts";
 
 export type TelemetryObservationV3<T> =
@@ -21,6 +25,10 @@ export interface TurnTelemetryV3 {
   context: ContextMeasurementV3 | null;
 }
 
+export type TurnTelemetryCapabilitySupportV3 = Partial<
+  Pick<Record<AdapterSignalV3, CapabilitySupportV3>, "model_usage" | "inference_timing">
+>;
+
 export interface HarnessTimingAccumulatorV3 {
   hook_time_ms: number;
   hook_count: number;
@@ -33,6 +41,7 @@ export function extractTurnTelemetryV3(
   adapter: Adapter,
   payload: Record<string, unknown>,
   observedAt = new Date().toISOString(),
+  support: TurnTelemetryCapabilitySupportV3 = {},
 ): TurnTelemetryV3 {
   const context = record(payload.context_window);
   const usage =
@@ -59,7 +68,7 @@ export function extractTurnTelemetryV3(
           attestation: "native",
           confidence: "exact",
         } as const)
-      : missing(adapter, "model_usage");
+      : missing(adapter, "model_usage", support.model_usage);
 
   const inferenceMs =
     number(payload.api_time_ms) ??
@@ -76,7 +85,7 @@ export function extractTurnTelemetryV3(
           attestation: "native",
           confidence: "exact",
         } as const)
-      : missing(adapter, "inference_timing");
+      : missing(adapter, "inference_timing", support.inference_timing);
 
   const usedTokens =
     number(context?.used_tokens) ??
@@ -154,10 +163,23 @@ export function harnessObservationV3(
       };
 }
 
-function missing(adapter: Adapter, signal: "model_usage" | "inference_timing") {
-  return adapterSignalSupportV3(adapter, signal) === "unsupported"
-    ? ({ state: "unsupported", capability: signal } as const)
-    : ({ state: "expected_but_missing", capability: signal, reason: "not_reported" } as const);
+function missing(
+  adapter: Adapter,
+  signal: "model_usage" | "inference_timing",
+  override: CapabilitySupportV3 | undefined,
+) {
+  const declared = override ?? adapterSignalSupportV3(adapter, signal);
+  if (declared === "unsupported") return { state: "unsupported", capability: signal } as const;
+  return {
+    state: "expected_but_missing",
+    capability: signal,
+    reason:
+      signal === "model_usage"
+        ? "not_reported"
+        : declared === "conditional"
+          ? "conditional_signal_not_reported"
+          : "promised_signal_not_reported",
+  } as const;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

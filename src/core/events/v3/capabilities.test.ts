@@ -21,10 +21,10 @@ describe("event ledger V3 adapter capabilities", () => {
     }
   });
 
-  test("makes provider economics conditional and Cursor economics unsupported", () => {
+  test("keeps usage conditional but marks native hook inference timing unsupported", () => {
     for (const adapter of ["claude-code", "codex"] as const) {
       expect(adapterSignalSupportV3(adapter, "model_usage")).toBe("conditional");
-      expect(adapterSignalSupportV3(adapter, "inference_timing")).toBe("conditional");
+      expect(adapterSignalSupportV3(adapter, "inference_timing")).toBe("unsupported");
     }
     expect(adapterSignalSupportV3("cursor", "model_usage")).toBe("unsupported");
     expect(adapterSignalSupportV3("cursor", "inference_timing")).toBe("unsupported");

@@ -93,6 +93,27 @@ describe("event ledger V3 latency projection", () => {
     });
   });
 
+  test("keeps the Batch 01 residual unknown when current hook inference is unsupported", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-19T14:00:00.000Z", 332_310);
+    const payload = fixtureObject(turn.payload);
+    payload.tool_call_count = observed(0);
+    payload.wait_count = observed(0);
+    payload.inference = { state: "unsupported", capability: "inference_timing" };
+    payload.harness = observed({ hook_time_ms: 5_547, hook_count: 4 });
+
+    const result = projectLatencyV3(readOf(turn)).turns[0]!;
+    expect(result.inference_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["unsupported"],
+    });
+    expect(result.residual_ms).toEqual({
+      state: "unknown",
+      known_ms: 0,
+      reasons: ["inference_unknown"],
+    });
+  });
+
   test("reports an evidence-shaped recovered interval only as an upper bound", () => {
     const turn = terminal("turn.completed", 1, "2026-08-19T21:47:16.000Z", 71_017);
     const turnPayload = fixtureObject(turn.payload);
