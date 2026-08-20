@@ -509,7 +509,7 @@ describe("codex-wsl bridge owner parity", () => {
     );
   }
 
-  test("validated bridge command identity does not grant payload-free hook identity", () => {
+  test("a refreshed bridge process tree resolves the same live owner across both resolvers", () => {
     writeHeartbeat("codex-owner", "codex-thread");
     writeHeartbeat("foreign-owner", "foreign-session");
     writePidmapRow(root, process.pid, "foreign-owner", "claude-code");
@@ -521,7 +521,10 @@ describe("codex-wsl bridge owner parity", () => {
       owner: "codex-owner",
       source: "session_env",
     });
-    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toEqual({
+      instance_id: "codex-owner",
+      source: "session_env",
+    });
   });
 
   test("invalid bridge session fails closed across both resolvers", () => {
@@ -535,10 +538,59 @@ describe("codex-wsl bridge owner parity", () => {
     expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
   });
 
+  test("a stale cache and old pid map cannot stand in for a live bridge generation", () => {
+    mkdirSync(activeDir, { recursive: true });
+    writeFileSync(
+      path.join(activeDir, "stale-owner.json"),
+      JSON.stringify({
+        schema_version: 2,
+        instance_id: "stale-owner",
+        session_id: "stale-thread",
+        platform: "codex",
+        last_heartbeat: "2026-08-19T00:00:00.000Z",
+        v3_instance_id: "inst_stale-owner",
+        v3_generation_id: "gen_stale",
+        v3_projection_event_id: "evt_stale",
+        v3_task_state: "set",
+      }),
+    );
+    writePidmapRow(root, process.pid, "stale-owner", "codex");
+    process.env.HARNERY_AGENT_COORD_OWNER = "stale-owner";
+    process.env.HARNERY_AGENT_COORD_SESSION_ID = "stale-thread";
+    process.env.CODEX_THREAD_ID = "stale-thread";
+
+    expect(resolveOwnerWithSource()).toEqual({ owner: null, source: "none" });
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
+  });
+
   test("hook payload remains authoritative in bridge mode", () => {
     expect(resolveHookOwner({ payload: { session_id: "payload-owner" }, coordRoot: root })).toEqual(
       { instance_id: "payload-owner", source: "payload" },
     );
+  });
+
+  test("an ended bridge generation is rejected even when its old pid map remains", () => {
+    seedV3Session(root, "ended-owner", {
+      sessionId: "ended-thread",
+      adapter: "codex",
+      lifecycle: "done",
+    });
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    recordLiveHookSignalV3({
+      coordRoot: root,
+      route,
+      eventName: "session-end",
+      payload: { session_id: "ended-thread", raw: {} },
+      adapter: "codex",
+      instanceId: "ended-owner",
+    });
+    writePidmapRow(root, process.pid, "ended-owner", "codex");
+    process.env.HARNERY_AGENT_COORD_SESSION_ID = "ended-thread";
+    process.env.CODEX_THREAD_ID = "ended-thread";
+
+    expect(resolveOwnerWithSource()).toEqual({ owner: null, source: "none" });
+    expect(resolveHookOwner({ payload: null, coordRoot: root })).toBeNull();
   });
 });
 

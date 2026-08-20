@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { coordEnv } from "../../../lib/env.ts";
+import { resolveOwnerBySessionEnv } from "../../agents/coord-client.ts";
 import { readLiveCoordinationRow } from "../../agents/state/live-coordination-view.ts";
 import { checkPidToken } from "../../agents/state/proc-start.ts";
 
@@ -17,7 +18,9 @@ import { checkPidToken } from "../../agents/state/proc-start.ts";
  *      `conversation_id` order remains the startup fallback.
  *   2. `HARNERY_AGENT_COORD_OWNER` outside bridge mode. Bridge-marked children
  *      ignore this unvalidated override.
- *   3. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
+ *   3. Adapter-exported session identity matched to one live V3 generation.
+ *      This is the only payload-free identity accepted in bridge mode.
+ *   4. PID-map lookup at `.harnery/pid-map/<pid>` for our own pid, then ppid
  *      chain (up to 20 hops).
  *
  * Bridge-marked children fail closed after tier 3. A connector crosses a
@@ -62,6 +65,14 @@ export function resolveOwner(opts: {
   if (env && env.length > 0 && !bridge) {
     return { instance_id: env, source: "env" };
   }
+
+  // A Windows-hosted Codex task can replace its WSL process tree during a
+  // repository refresh. The forwarded native thread id survives that boundary
+  // and is safe only after joining to exactly one nonterminal V3 producer.
+  // Resolve it before the bridge fail-closed branch; never fall through to the
+  // old pid map when the join fails.
+  const sessionOwner = resolveOwnerBySessionEnv(opts.coordRoot);
+  if (sessionOwner) return { instance_id: sessionOwner, source: "session_env" };
 
   if (bridge) return null;
 

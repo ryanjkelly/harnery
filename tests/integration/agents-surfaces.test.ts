@@ -272,4 +272,51 @@ describe("codex-wsl bridge ping attribution", () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain("no_pidmap_entry");
     expect(existsSync(path.join(root, ".harnery", "journal", `${TARGET}.md`))).toBe(false);
   });
+
+  test(
+    "refreshed bridge commands keep one identity through lifecycle and Harn End",
+    () => {
+      const root = makeSandbox();
+      addTarget(root);
+      const bridgeEnv = {
+        HARNERY_AGENT_COORD_BRIDGE: "codex-wsl",
+        HARNERY_AGENT_COORD_PLATFORM: "codex",
+        HARNERY_AGENT_COORD_SESSION_ID: OWNER,
+        CODEX_THREAD_ID: OWNER,
+        HARNERY_AGENT_COORD_OWNER: TARGET,
+      };
+
+      const whoami = json(harn(root, ["agents", "whoami", "--json"], bridgeEnv));
+      expect(whoami).toMatchObject({
+        instance_id: OWNER,
+        resolution_source: "session_env",
+      });
+      expect(whoami.session_id).toMatch(/^sid_/);
+      const status = json(harn(root, ["agents", "status", "--json"], bridgeEnv));
+      expect(status).toMatchObject({
+        instance_id: OWNER,
+      });
+      expect(harn(root, ["agents", "lifecycle", "done"], bridgeEnv).status).toBe(0);
+      const shown = json(harn(root, ["agents", "show", "Hollis", "--json"], bridgeEnv));
+      expect(shown).toMatchObject({
+        instance_id: OWNER,
+        session_id: whoami.session_id,
+        task_state: "done",
+      });
+
+      const ended = harn(
+        root,
+        ["agents", "status", "--end-turn", "--end-session", "--json"],
+        bridgeEnv,
+      );
+      expect(ended.status).toBe(0);
+      expect(json(ended)).toMatchObject({
+        instance_id: OWNER,
+        session_end: { state: "queued", request_id: expect.any(String) },
+      });
+      expect(readHookProducerStateV3(root, "codex", OWNER)?.terminal).toBe(false);
+      expect(readHookProducerStateV3(root, "claude-code", TARGET)?.terminal).toBe(false);
+    },
+    { timeout: 30_000 },
+  );
 });
