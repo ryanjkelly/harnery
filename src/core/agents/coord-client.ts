@@ -74,7 +74,7 @@ export function monorepoRoot(): string | null {
  * THE coordination-root resolution. Every surface — the hooks, the CLI's reads,
  * and the CLI's canonical emits — resolves through this one function, because a
  * root the two layers disagree about is a root that silently breaks the
- * end-of-turn rules: the hook evaluates `state.status_checked` from the stream
+ * end-of-turn rules: the hook evaluates `coord.status_observed` from the stream
  * it reads, so an emit into a different V3 ledger root is invisible
  * and rule 1/3 blocks a turn that did run `agents status`, with no sequence of
  * CLI commands able to satisfy it.
