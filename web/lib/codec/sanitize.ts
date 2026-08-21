@@ -67,7 +67,7 @@ const PROGRESS_CATEGORIES: Record<string, CodecActionCategory> = {
   deploy: "build",
   publication: "build",
   review: "coordinate",
-  artifact: "other",
+  artifact: "build",
 };
 
 function clampLabel(value: unknown): string | undefined {

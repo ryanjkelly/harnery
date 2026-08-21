@@ -210,5 +210,6 @@ function progressCategory(kind: string): PresenceCodecCategory {
   if (kind === "test") return "test";
   if (kind === "commit" || kind === "deploy" || kind === "publication") return "build";
   if (kind === "review") return "coordinate";
+  if (kind === "artifact") return "build";
   return "other";
 }

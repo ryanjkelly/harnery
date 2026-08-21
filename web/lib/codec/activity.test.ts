@@ -30,6 +30,25 @@ function fingerprint(seed: string): CodecComparableFingerprint {
 }
 
 describe("projectActivityChannels", () => {
+  test("uses the typed wait kind for the operation label", () => {
+    const channels = projectActivityChannels(
+      [
+        event({
+          event_type: "wait.started",
+          wait_id: "wait-dependency",
+          wait_kind: "dependency",
+          category: "coordinate",
+        }),
+      ],
+      NOW,
+    ).get("inst-a");
+
+    expect(channels?.operation?.value).toMatchObject({
+      label: "Waiting on a dependency",
+      state: "active",
+    });
+  });
+
   test("shows the newest open leaf and a short output-flow pulse", () => {
     const channels = projectActivityChannels(
       [
@@ -101,6 +120,7 @@ describe("projectActivityChannels", () => {
       evidence_event_ids: [started.event_id],
     });
     expect(active?.telemetry.value).toBe("degraded");
+    expect(active?.telemetry_reason?.value).toBe("context-observation-missing");
 
     const completed = event({
       event_type: "context.compaction_completed",
@@ -232,6 +252,7 @@ describe("projectActivityChannels", () => {
 
     expect(channels?.operation?.value).toMatchObject({ label: "Editing files", category: "edit" });
     expect(channels?.telemetry.value).toBe("degraded");
+    expect(channels?.telemetry_reason?.value).toBe("clock-regressed");
   });
 
   test("clock-regressed starts do not create retries or repetition friction", () => {
@@ -312,6 +333,8 @@ describe("projectActivityChannels", () => {
       NOW,
     ).get("inst-a");
     expect(established?.operation?.value.state).toBe("long-running");
+    expect(established?.operation?.value.duration_sample_count).toBe(8);
+    expect(established?.operation?.value.long_running_threshold_ms).toBe(30_000);
 
     const otherAdapter = projectActivityChannels(
       [
@@ -509,6 +532,8 @@ describe("projectActivityChannels", () => {
     ).get("inst-a");
     expect(fresh?.artifact_cue?.value).toEqual({ kind: "report", operation: "published" });
     expect(fresh?.telemetry?.value).toBe("degraded");
+    expect(fresh?.telemetry_reason?.value).toBe("clock-regressed");
+    expect(fresh?.telemetry_reason?.expires_at).toBe(fresh?.telemetry?.expires_at);
 
     const expired = projectActivityChannels(
       [
@@ -524,6 +549,7 @@ describe("projectActivityChannels", () => {
     ).get("inst-a");
     expect(expired?.artifact_cue).toBeUndefined();
     expect(expired?.telemetry?.value).toBe("unknown");
+    expect(expired?.telemetry_reason).toBeUndefined();
   });
 
   test("denied and overlapping write claims surface target contention without paths", () => {

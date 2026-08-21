@@ -824,6 +824,107 @@ describe("event ledger V3 persistent hook recorder", () => {
     expect(progress?.provenance).toMatchObject({ attestation: "derived", confidence: "high" });
   });
 
+  test("accepts explicit native typed waits without reading tool input", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-typed-waits";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-waits" }),
+        "codex",
+      ),
+    );
+    const kinds = ["rate_limit", "approval", "scheduled"] as const;
+    for (const [index, kind] of kinds.entries()) {
+      const common = {
+        session_id: nativeSession,
+        turn_id: "turn-waits",
+        tool_use_id: `wait-${index}`,
+        tool_name: "native_wait",
+      };
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "pre-tool-use",
+          parsed({
+            ...common,
+            tool_input: { wait_kind: "must-not-be-read" },
+            raw: {
+              harnery_wait_kind: kind,
+              harnery_wake_at: "2026-08-22T10:00:00.000Z",
+              harnery_authority_reference: "decision:fixture",
+            },
+          }),
+          "codex",
+        ),
+      );
+      recordHookSignalV3(baseInput(root, "post-tool-use", parsed(common), "codex"));
+    }
+
+    const waits = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "wait.started");
+    expect(waits.map((event) => event.payload.kind)).toEqual([...kinds]);
+    expect(waits.every((event) => event.payload.wake_at === "2026-08-22T10:00:00.000Z")).toBe(true);
+    expect(waits.every((event) => event.payload.authority_reference === "decision:fixture")).toBe(
+      true,
+    );
+  });
+
+  test("maps exact structured tools and explicit native fields to semantic progress", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-progress-kinds";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-progress" }),
+        "codex",
+      ),
+    );
+    const cases = [
+      ["run_tests", "test"],
+      ["build", "artifact"],
+      ["publish", "publication"],
+      ["deploy", "deploy"],
+      ["git_commit", "commit"],
+    ] as const;
+    for (const [index, [tool_name]] of cases.entries()) {
+      const payload = parsed({
+        session_id: nativeSession,
+        turn_id: "turn-progress",
+        tool_use_id: `progress-${index}`,
+        tool_name,
+      });
+      recordHookSignalV3(baseInput(root, "pre-tool-use", payload, "codex"));
+      recordHookSignalV3(baseInput(root, "post-tool-use", payload, "codex"));
+    }
+    const explicitPayload = parsed({
+      session_id: nativeSession,
+      turn_id: "turn-progress",
+      tool_use_id: "progress-explicit",
+      tool_name: "adapter_native_action",
+      raw: { harnery_progress_kind: "deploy" },
+    });
+    recordHookSignalV3(baseInput(root, "pre-tool-use", explicitPayload, "codex"));
+    recordHookSignalV3(baseInput(root, "post-tool-use", explicitPayload, "codex"));
+
+    const progress = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .filter((event) => event.event_type === "progress.observed");
+    expect(progress.map((event) => event.payload.kind)).toEqual([
+      ...cases.map(([, kind]) => kind),
+      "deploy",
+    ]);
+  }, 15_000);
+
   test("routes child-process tool hooks through the native session owner", () => {
     const root = candidateRoot();
     const nativeSession = "shared-parent-session";

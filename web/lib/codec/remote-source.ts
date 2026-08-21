@@ -34,7 +34,10 @@ import {
 
 /** Blob ages: fresh blobs light presence; older ones degrade; oldest drop. */
 const BLOB_FRESH_MS = 120_000;
+const BLOB_STALE_MS = 5 * 60_000;
 const BLOB_DROP_MS = 10 * 60_000;
+const DIGEST_FRESH_MS = 2 * 60_000;
+const DIGEST_AGING_MS = 5 * 60_000;
 /** Per-agent heartbeat freshness inside a fresh blob (mirrors local active). */
 const AGENT_FRESH_MS = 5 * 60_000;
 const MAX_LABEL = 120;
@@ -87,6 +90,7 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
     const publishedMs = Date.parse(String(blob.published_at ?? ""));
     if (!Number.isFinite(publishedMs) || nowMs - publishedMs > BLOB_DROP_MS) continue;
     const blobFresh = nowMs - publishedMs <= BLOB_FRESH_MS;
+    const relayAgeMs = Math.max(0, nowMs - publishedMs);
     const machine = clampLabel(blob.machine) ?? "remote";
     const publishedAt = new Date(publishedMs).toISOString();
 
@@ -117,6 +121,10 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
       const task = clampLabel(raw.task);
       const codec = record(raw.codec);
       const codecValid = codec?.schema_version === 1;
+      const codecObservedAt = codecValid ? iso(codec.observed_at) : undefined;
+      const codecAgeMs = codecObservedAt
+        ? Math.max(0, nowMs - Date.parse(codecObservedAt))
+        : undefined;
       const operationRaw = codecValid ? record(codec.operation) : undefined;
       const operationCategory = actionCategory(operationRaw?.category);
       const operationLabel = clampLabel(operationRaw?.label);
@@ -139,6 +147,40 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
           ...(task ? { task: present(task, "projection", "medium", publishedAt) } : {}),
         },
         machine,
+        remote_source: {
+          relay: present(
+            {
+              state:
+                relayAgeMs <= BLOB_FRESH_MS
+                  ? "fresh"
+                  : relayAgeMs <= BLOB_STALE_MS
+                    ? "aging"
+                    : "stale",
+              age_ms: relayAgeMs,
+            },
+            "projection",
+            blobFresh ? "high" : "medium",
+            publishedAt,
+          ),
+          ...(codecObservedAt && codecAgeMs !== undefined
+            ? {
+                digest: present(
+                  {
+                    state:
+                      codecAgeMs <= DIGEST_FRESH_MS
+                        ? "fresh"
+                        : codecAgeMs <= DIGEST_AGING_MS
+                          ? "aging"
+                          : "stale",
+                    age_ms: codecAgeMs,
+                  },
+                  "projection",
+                  codecAgeMs <= DIGEST_FRESH_MS ? "high" : "medium",
+                  codecObservedAt,
+                ),
+              }
+            : {}),
+        },
         presence: online
           ? present("online", "projection", "medium", publishedAt)
           : present("unknown", "projection", "low", publishedAt),

@@ -73,6 +73,18 @@ export type CodecOperationState = "active" | "output-flow" | "retrying" | "long-
 export type CodecArtifactOperation = "created" | "updated" | "viewed" | "published";
 export type CodecFriction = "recent-error" | "repeating-operation" | "target-contention";
 export type CodecTelemetry = "healthy" | "degraded" | "unknown";
+export type CodecTelemetryReason =
+  | "clock-regressed"
+  | "attribution-conflict"
+  | "capability-drift"
+  | "context-observation-missing";
+
+export type CodecRemoteFreshness = "fresh" | "aging" | "stale";
+
+export interface CodecRemoteFreshnessValue {
+  state: CodecRemoteFreshness;
+  age_ms: number;
+}
 
 export interface CodecOperationValue {
   category: CodecActionCategory;
@@ -80,6 +92,10 @@ export interface CodecOperationValue {
   label: string;
   state: CodecOperationState;
   elapsed_ms?: number;
+  /** Successful same-adapter/tool durations available to the baseline. */
+  duration_sample_count?: number;
+  /** Omitted until the minimum history requirement is met. */
+  long_running_threshold_ms?: number;
 }
 
 export interface CodecArtifactValue {
@@ -141,6 +157,7 @@ export interface CodecSourceEvidence {
     | "needs_input"
     | "decision"
     | "approval"
+    | "dependency"
     | "scheduled"
     | "rate_limit"
     | "unknown";
@@ -215,6 +232,13 @@ export interface CodecPanelScene {
   friction?: Presented<CodecFriction>;
   /** Only defects are asserted; absence of quality evidence remains unknown. */
   telemetry?: Presented<CodecTelemetry>;
+  /** Bounded explanation for a degraded observer cue. */
+  telemetry_reason?: Presented<CodecTelemetryReason>;
+  /** Present only on panels read from another machine's presence relay. */
+  remote_source?: {
+    relay: Presented<CodecRemoteFreshnessValue>;
+    digest?: Presented<CodecRemoteFreshnessValue>;
+  };
   parent_instance_id?: Presented<string>;
   /** V3 ledger lifecycle for this generation, when the snapshot carries it. */
   ledger_state?: Presented<"live" | "ending" | "recovery-required" | "terminal">;

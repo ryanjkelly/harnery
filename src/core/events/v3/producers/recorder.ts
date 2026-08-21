@@ -1038,14 +1038,15 @@ function processHookSignalLocked(
       stampSpanTurn(span, event, eventInput, state);
     }
     const durability = commitEventLocked(input, state, path, event, sourceId);
-    if (
-      event.event_type === "tool.requested" &&
-      input.payload.tool_name === "request_user_input" &&
-      sourceId
-    ) {
-      commitOperatorInputWait(input, state, path, rootId, sourceId);
+    if (event.event_type === "tool.requested" && sourceId) {
+      const explicitWait = explicitNativeWait(input);
+      if (explicitWait) {
+        commitNativeWait(input, state, path, rootId, sourceId, explicitWait);
+      } else if (input.payload.tool_name === "request_user_input") {
+        commitNativeWait(input, state, path, rootId, sourceId, { kind: "needs_input" });
+      }
     }
-    const progressKind = progressKindForCompletedTool(event);
+    const progressKind = progressKindForCompletedTool(event, input);
     if (progressKind) {
       commitProgressObservation(input, state, path, rootId, event, progressKind);
     }
@@ -1095,12 +1096,28 @@ function commitAgentDelegated(
   commitEventLocked(input, state, path, event);
 }
 
-function commitOperatorInputWait(
+type NativeWaitKind =
+  | "permission"
+  | "needs_input"
+  | "decision"
+  | "approval"
+  | "scheduled"
+  | "rate_limit"
+  | "unknown";
+
+interface NativeWaitObservation {
+  kind: NativeWaitKind;
+  wake_at?: string;
+  authority_reference?: string;
+}
+
+function commitNativeWait(
   input: RecordHookSignalV3Input,
   state: HookProducerStateV3,
   path: string,
   rootId: `root_${string}`,
   waitId: `hid_${string}`,
+  observation: NativeWaitObservation,
 ): void {
   if (!state.current_turn_id || state.waits.some((wait) => wait.wait_id === waitId)) return;
   const span = openSpanStateV3({
@@ -1118,20 +1135,51 @@ function commitOperatorInputWait(
       ...(span.parent_span_id ? { parent_span_id: span.parent_span_id } : {}),
       caused_by: state.last_event_id ? [state.last_event_id] : [],
     },
-    provenance: derivedProvenance(input, state, "operator-input-wait"),
+    provenance: derivedProvenance(input, state, "native-typed-wait"),
     observed_at: signalClock(input).observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
-    payload: { wait_id: waitId, kind: "needs_input" },
+    payload: {
+      wait_id: waitId,
+      kind: observation.kind,
+      ...(observation.wake_at ? { wake_at: observation.wake_at } : {}),
+      ...(observation.authority_reference
+        ? { authority_reference: observation.authority_reference }
+        : {}),
+    },
   }) as EventV3;
   commitEventLocked(input, state, path, event);
 }
 
-function progressKindForCompletedTool(event: EventV3): "write" | "review" | "artifact" | undefined {
+type SemanticProgressKind =
+  | "write"
+  | "test"
+  | "commit"
+  | "deploy"
+  | "publication"
+  | "review"
+  | "artifact";
+
+function progressKindForCompletedTool(
+  event: EventV3,
+  input: RecordHookSignalV3Input,
+): SemanticProgressKind | undefined {
   if (event.event_type !== "tool.completed" || event.payload.outcome !== "succeeded") return;
+  const explicit = explicitNativeProgress(input);
+  if (explicit) return explicit;
   const name = event.payload.tool.name;
   if (["apply_patch", "Edit", "Write", "MultiEdit", "NotebookEdit"].includes(name)) return "write";
   if (name === "view_image") return "review";
+  const leaf =
+    name
+      .split(/__|[/:]/)
+      .at(-1)
+      ?.toLowerCase() ?? name.toLowerCase();
+  if (["run_tests", "test", "vitest", "jest", "playwright_test"].includes(leaf)) return "test";
+  if (["git_commit", "commit"].includes(leaf)) return "commit";
+  if (["deploy", "deploy_app", "deploy_service"].includes(leaf)) return "deploy";
+  if (["publish", "wiki_publish", "publish_page"].includes(leaf)) return "publication";
+  if (["build", "compile", "bundle"].includes(leaf)) return "artifact";
   if (/imagegen|create_document|create_spreadsheet|create_presentation/i.test(name)) {
     return "artifact";
   }
@@ -1144,7 +1192,7 @@ function commitProgressObservation(
   path: string,
   rootId: `root_${string}`,
   terminal: EventV3,
-  kind: "write" | "review" | "artifact",
+  kind: SemanticProgressKind,
 ): void {
   const event = buildEventV3("progress.observed", {
     producer: producerForDerivedEvent(input, state),
@@ -1162,6 +1210,50 @@ function commitProgressObservation(
     },
   }) as EventV3;
   commitEventLocked(input, state, path, event);
+}
+
+function explicitNativeProgress(input: RecordHookSignalV3Input): SemanticProgressKind | undefined {
+  const value = input.payload.raw.harnery_progress_kind ?? input.payload.raw.progress_kind;
+  return value === "write" ||
+    value === "test" ||
+    value === "commit" ||
+    value === "deploy" ||
+    value === "publication" ||
+    value === "review" ||
+    value === "artifact"
+    ? value
+    : undefined;
+}
+
+function explicitNativeWait(input: RecordHookSignalV3Input): NativeWaitObservation | undefined {
+  if (input.signal !== "pre-tool-use") return undefined;
+  const raw = input.payload.raw;
+  const value = raw.harnery_wait_kind ?? raw.wait_kind;
+  const kind =
+    value === "permission" ||
+    value === "needs_input" ||
+    value === "decision" ||
+    value === "approval" ||
+    value === "scheduled" ||
+    value === "rate_limit" ||
+    value === "unknown"
+      ? value
+      : undefined;
+  if (!kind) return undefined;
+  const wakeCandidate = raw.harnery_wake_at ?? raw.wake_at;
+  const wake_at =
+    typeof wakeCandidate === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(wakeCandidate) &&
+    Number.isFinite(Date.parse(wakeCandidate))
+      ? wakeCandidate
+      : undefined;
+  const authorityCandidate = raw.harnery_authority_reference ?? raw.authority_reference;
+  const authority_reference = safeTokenOrUndefined(authorityCandidate);
+  return {
+    kind,
+    ...(wake_at ? { wake_at } : {}),
+    ...(authority_reference ? { authority_reference } : {}),
+  };
 }
 
 function producerForDerivedEvent(input: RecordHookSignalV3Input, state: HookProducerStateV3) {
@@ -2417,6 +2509,12 @@ function safeRole(value: unknown): string {
     .replace(/[^a-zA-Z0-9._:/+-]/g, "_")
     .slice(0, 128);
   return /^[a-zA-Z0-9]/.test(normalized) ? normalized : "agent";
+}
+
+function safeTokenOrUndefined(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.normalize("NFC");
+  return /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(normalized) ? normalized : undefined;
 }
 
 function producerStatePath(

@@ -68,11 +68,34 @@ Extract the live-signal transport into a dependency-injected controller while
 keeping the React hook API unchanged. Direct tests cover local SSE delivery,
 silent-open tunnel polling, retry exhaustion, and hidden-tab recovery.
 
+Expose transport mode and last-signal age in the page rather than collapsing
+SSE and fallback polling into one connected state. Remote panels derive relay
+and digest freshness from timestamps already present in the encrypted presence
+record. This does not add a relay field or widen the digest.
+
 Event producers may add high-confidence semantic events only when the native
 signal is unambiguous. Native subagent start produces `agent.delegated` before
 `agent.started`. The `request_user_input` tool produces a bounded input wait.
 Successful explicit edit and review tools produce `progress.observed` with the
 terminal event as evidence. Shell text is not parsed to guess progress.
+
+Accept additional semantic progress only from exact structured tool identities
+or an explicit top-level native progress field. The admitted kinds are test,
+build, publication, deploy, and commit. Explicit top-level native wait fields
+may produce approval, scheduled, and rate-limit waits. Nested tool input is not
+read for either purpose. Dependency waits remain unavailable until the
+canonical V3 wait schema admits that kind.
+
+Keep cards stable within their authoritative presence section. Local cards sort
+before remote cards, followed by remote machine, display name, and instance ID.
+Activity and heartbeat timestamps are deliberately excluded. Cards move only
+when presence, durable identity, or machine placement changes.
+
+Group the evidence receipt into state, activity, and source sections with a
+sticky header and bounded keyboard-scrollable body. Show safe observer reason
+codes, cue expiry, operation elapsed time, baseline sample count, and the
+learned long-running threshold when available. None of those fields permits a
+raw payload into the scene.
 
 ## Result
 
@@ -80,6 +103,16 @@ Remote panels can show a bounded operation, measured context band, and recent
 actions without sharing raw ledger content. Operators can inspect why any
 visible panel cue exists. Timing labels now use adapter-specific observed
 history, and the transport fallback has direct deterministic coverage.
+
+The page now says whether its live source is SSE, polling, reconnecting, or
+connecting and reports the age of the latest signal. Remote panels report relay
+and digest age independently. Degraded observer state carries a safe reason,
+and the receipt exposes the evidence and calibration details behind visible
+cues.
+
+Routine activity no longer reshuffles cards. Stable identity ordering keeps the
+grid readable while the existing online, stale, and ended sections continue to
+reflect authoritative presence changes.
 
 Missing evidence remains quiet. The optional presence extension is backward
 compatible, and every new browser value still crosses the existing sanitized

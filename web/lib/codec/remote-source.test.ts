@@ -44,6 +44,10 @@ describe("readRemotePanels", () => {
     const p = panels[0];
     if (!p) throw new Error("panel missing");
     expect(p.machine).toBe("rk-machine");
+    expect(p.remote_source?.relay).toMatchObject({
+      value: { state: "fresh", age_ms: 20_000 },
+      provenance: "projection",
+    });
     expect(p.identity.display_name).toBe("Quentin");
     expect(p.presence).toMatchObject({
       value: "online",
@@ -98,6 +102,10 @@ describe("readRemotePanels", () => {
       evidence_event_ids: ["evt_remote_open"],
     });
     expect(panel?.context_band.value).toBe("low");
+    expect(panel?.remote_source?.digest).toMatchObject({
+      value: { state: "fresh", age_ms: 25_000 },
+      observed_at: "2026-08-16T11:59:35.000Z",
+    });
     expect(panel?.recent_actions).toEqual([
       {
         category: "edit",
@@ -124,6 +132,7 @@ describe("readRemotePanels", () => {
     const panels = readRemotePanels(NOW, root);
     expect(panels.map((p) => p.instance_id)).toEqual(["remote-2"]);
     expect(panels[0]?.presence.value).toBe("unknown");
+    expect(panels[0]?.remote_source?.relay.value.state).toBe("aging");
   });
 
   test("a stale per-agent heartbeat inside a fresh blob is not online", () => {

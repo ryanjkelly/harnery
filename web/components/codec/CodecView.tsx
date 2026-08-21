@@ -37,6 +37,7 @@ import {
   type CodecScene,
 } from "@/lib/codec/contracts";
 import { codecEvidenceReceiptRows } from "@/lib/codec/evidence-receipt";
+import { stableCodecPanelOrder } from "@/lib/codec/panel-order";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import styles from "./codec.module.css";
 
@@ -64,10 +65,18 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
   const [scene, setScene] = useState<CodecScene>(initialScene);
   const [glowing, setGlowing] = useState<Record<string, boolean>>({});
   const [announcement, setAnnouncement] = useState("");
+  const [lastSignalAt, setLastSignalAt] = useState(initialScene.generated_at);
+  const [clockNow, setClockNow] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   // The server-rendered scene counts as a snapshot: its cues never animate.
   const seenCues = useRef<Set<string>>(new Set(initialScene.transients.map((t) => t.cue_id)));
   const glowTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    setClockNow(Date.now());
+    const timer = setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const animatePing = useCallback((fromId: string, toId: string, next: CodecScene) => {
     const nameOf = (id: string) =>
@@ -140,6 +149,7 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         seenCues.current = new Set([...seenCues.current].slice(-250));
       }
       setScene(next);
+      setLastSignalAt(new Date().toISOString());
     },
     [animatePing],
   );
@@ -176,17 +186,29 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         const next = parseScene(ev);
         if (next) ingestScene(next, true);
       },
-      heartbeat: () => {},
-      stale: () => {},
+      heartbeat: () => setLastSignalAt(new Date().toISOString()),
+      stale: () => setLastSignalAt(new Date().toISOString()),
     },
     onFallbackChange: refetch,
     fetchOnFallbackStart: false, // the page server-renders a complete scene
   });
 
   const degraded = status === "reconnecting" || status === "polling";
-  const current = scene.panels.filter((p) => p.presence.value === "online");
-  const stale = scene.panels.filter((p) => p.presence.value === "unknown");
-  const ended = scene.panels.filter((p) => p.presence.value === "offline");
+  const current = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "online"));
+  const stale = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "unknown"));
+  const ended = stableCodecPanelOrder(scene.panels.filter((p) => p.presence.value === "offline"));
+  const transportLabel =
+    status === "live"
+      ? "SSE live"
+      : status === "polling"
+        ? "polling"
+        : status === "reconnecting"
+          ? "reconnecting"
+          : "connecting";
+  const signalAge =
+    clockNow === null
+      ? "waiting for signal"
+      : `${formatElapsed(Math.max(0, clockNow - Date.parse(lastSignalAt)))} ago`;
   const parentNameFor = (panel: CodecPanelScene) =>
     panel.parent_instance_id
       ? scene.panels.find((p) => p.instance_id === panel.parent_instance_id?.value)?.identity
@@ -198,10 +220,15 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
       <p aria-live="polite" className="sr-only">
         {announcement}
       </p>
-      <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
-        <Badge variant={degraded ? "secondary" : "outline"} title={`Feed: ${status}`}>
-          {degraded ? "feed degraded — showing last known state" : `feed ${status}`}
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Badge
+          data-codec-feed-status
+          variant={degraded ? "secondary" : "outline"}
+          title={`Transport: ${transportLabel}; last signal ${signalAge}`}
+        >
+          feed {transportLabel} · {signalAge}
         </Badge>
+        {degraded && <span>showing the last known scene</span>}
         <Badge variant="outline" title={`Team ambience: ${scene.team_ambience.value}`}>
           ambience {scene.team_ambience.value}
         </Badge>
@@ -538,9 +565,14 @@ function CodecPanel({
           <Badge
             variant="outline"
             className="border-dashed border-muted-foreground/60 text-foreground/80"
-            title="Observer telemetry is degraded; order-sensitive animation is suppressed"
+            title={`Observer telemetry is degraded${panel.telemetry_reason ? `: ${humanizeCueToken(panel.telemetry_reason.value)}` : ""}; order-sensitive animation is suppressed`}
           >
             observer degraded
+            {panel.telemetry_reason && (
+              <span className="ml-1 opacity-75">
+                · {humanizeCueToken(panel.telemetry_reason.value)}
+              </span>
+            )}
           </Badge>
         )}
         {parentName && (
@@ -555,6 +587,26 @@ function CodecPanel({
         )}
       </div>
 
+      {panel.remote_source && (
+        <p
+          data-codec-remote-source
+          className="mt-2 text-[11px] text-muted-foreground"
+          title="Remote source freshness is measured from the encrypted presence relay and its bounded Codec digest"
+        >
+          relay {panel.remote_source.relay.value.state} ·{" "}
+          {formatElapsed(panel.remote_source.relay.value.age_ms)} old
+          {panel.remote_source.digest ? (
+            <>
+              {" "}
+              · digest {panel.remote_source.digest.value.state} ·{" "}
+              {formatElapsed(panel.remote_source.digest.value.age_ms)} old
+            </>
+          ) : (
+            <> · digest unavailable</>
+          )}
+        </p>
+      )}
+
       <ActionTrail actions={panel.recent_actions} />
       <EvidenceReceipt panel={panel} />
     </section>
@@ -563,42 +615,68 @@ function CodecPanel({
 
 function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
   const rows = codecEvidenceReceiptRows(panel);
+  const groups = ["state", "activity", "source"] as const;
   return (
     <details data-codec-evidence-receipt className="mt-2 border-t pt-2 text-xs">
       <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         Evidence receipt · {rows.length} signals
       </summary>
-      <div className="mt-2 max-h-56 overflow-auto rounded-md border bg-muted/20">
+      <section
+        className="mt-2 max-h-64 overflow-auto overscroll-contain rounded-md border bg-muted/20 shadow-inner"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: this bounded table is a keyboard-scrollable region
+        tabIndex={0}
+        aria-label={`Evidence signals for ${panel.identity.display_name}; scroll for more`}
+      >
         <table className="w-full border-collapse text-left">
-          <thead className="sr-only">
+          <thead className="sticky top-0 z-10 border-b bg-background/95 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur-sm">
             <tr>
-              <th>Signal</th>
-              <th>Evidence</th>
+              <th className="w-24 px-2 py-1.5">Signal</th>
+              <th className="px-2 py-1.5">Evidence</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr
-                key={`${row.channel}-${row.observed_at}-${row.evidence_event_ids.join("-")}`}
-                className="border-b last:border-0"
-              >
-                <th className="w-24 px-2 py-1.5 align-top font-medium">{row.channel}</th>
-                <td className="px-2 py-1.5 text-muted-foreground">
-                  <span className="text-foreground">{row.value}</span>
-                  <span className="block text-foreground/75">
-                    {row.provenance} · {row.confidence} · {formatReceiptTime(row.observed_at)}
-                  </span>
-                  {row.evidence_event_ids.length > 0 && (
-                    <code className="block break-all rounded border bg-background/60 px-1 text-[10px] text-foreground/80">
-                      {row.evidence_event_ids.join(" · ")}
-                    </code>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {groups.map((group) => {
+              const groupedRows = rows.filter((row) => row.group === group);
+              if (groupedRows.length === 0) return null;
+              return [
+                <tr key={`${group}-heading`} className="border-b bg-muted/45">
+                  <th
+                    colSpan={2}
+                    className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+                  >
+                    {group}
+                  </th>
+                </tr>,
+                ...groupedRows.map((row) => (
+                  <tr
+                    key={`${row.channel}-${row.observed_at}-${row.evidence_event_ids.join("-")}`}
+                    className="border-b last:border-0"
+                  >
+                    <th className="w-24 px-2 py-1.5 align-top font-medium">{row.channel}</th>
+                    <td className="px-2 py-1.5 text-muted-foreground">
+                      <span className="text-foreground">{row.value}</span>
+                      {row.detail && <span className="block text-foreground/80">{row.detail}</span>}
+                      <span className="block text-foreground/75">
+                        {row.provenance} · {row.confidence} · {formatReceiptTime(row.observed_at)}
+                      </span>
+                      {row.expires_at && (
+                        <span className="block text-foreground/75">
+                          expires {formatReceiptTime(row.expires_at)}
+                        </span>
+                      )}
+                      {row.evidence_event_ids.length > 0 && (
+                        <code className="block break-all rounded border bg-background/60 px-1 text-[10px] text-foreground/80">
+                          {row.evidence_event_ids.join(" · ")}
+                        </code>
+                      )}
+                    </td>
+                  </tr>
+                )),
+              ];
+            })}
           </tbody>
         </table>
-      </div>
+      </section>
     </details>
   );
 }
@@ -667,7 +745,7 @@ function FocusBubble({ panel }: { panel: CodecPanelScene }) {
       )}
       title={`Focus (${bubble.value.basis}): ${bubble.value.text}`}
     >
-      <span className="truncate">{bubble.value.text}</span>
+      <span className="min-w-0 break-words">{bubble.value.text}</span>
       {inferred && <span className="flex-none opacity-70">· inferred</span>}
     </p>
   );

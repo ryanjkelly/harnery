@@ -17,6 +17,7 @@ import type {
   CodecPanelScene,
   CodecSourceEvidence,
   CodecTelemetry,
+  CodecTelemetryReason,
   Presented,
 } from "./contracts";
 
@@ -78,7 +79,7 @@ interface InstanceActivityState {
   lastTargetFingerprint?: string;
   artifact?: { value: CodecArtifactValue; ts: string; eventId: string };
   friction?: FrictionRecord;
-  telemetry?: { ts: string; eventId: string };
+  telemetry?: { ts: string; eventId: string; reason: CodecTelemetryReason };
   activeWriteClaims: Map<string, { ts: string; eventId: string }>;
 }
 
@@ -87,6 +88,7 @@ export interface CodecActivityChannels {
   artifact_cue?: Presented<CodecArtifactValue>;
   friction?: Presented<CodecFriction>;
   telemetry: Presented<CodecTelemetry>;
+  telemetry_reason?: Presented<CodecTelemetryReason>;
 }
 
 function state(): InstanceActivityState {
@@ -156,6 +158,7 @@ function operationLabel(event: CodecSourceEvidence): string {
       needs_input: "Waiting for input",
       decision: "Waiting for a decision",
       approval: "Waiting for approval",
+      dependency: "Waiting on a dependency",
       scheduled: "Scheduled wait",
       rate_limit: "Rate-limit wait",
       unknown: "Waiting",
@@ -396,10 +399,14 @@ export function projectActivityChannels(
     seenEventIds.add(event.event_id);
     const slot = get(event.instance_id);
     if (event.telemetry_issue) {
-      slot.telemetry = { ts: event.ts, eventId: event.event_id };
+      slot.telemetry = { ts: event.ts, eventId: event.event_id, reason: event.telemetry_issue };
     }
     if (event.context_observation_state === "expected_but_missing") {
-      slot.telemetry = { ts: event.ts, eventId: event.event_id };
+      slot.telemetry = {
+        ts: event.ts,
+        eventId: event.event_id,
+        reason: "context-observation-missing",
+      };
     }
     switch (event.event_type) {
       case "tool.requested":
@@ -529,10 +536,8 @@ export function projectActivityChannels(
         ? Math.max(0, nowMs - millis(open.ts))
         : undefined;
       const samples = durationBaselines.get(open.baselineKey) ?? [];
-      const longRunning =
-        open.orderReliable &&
-        elapsedMs !== undefined &&
-        elapsedMs > longRunningThresholdMs(samples);
+      const thresholdMs = longRunningThresholdMs(samples);
+      const longRunning = open.orderReliable && elapsedMs !== undefined && elapsedMs > thresholdMs;
       const state = open.retryEvidenceIds
         ? "retrying"
         : outputFresh && (open.outputBytes > 0 || open.outputCount >= 2)
@@ -556,6 +561,8 @@ export function projectActivityChannels(
           label: open.label,
           state,
           ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
+          duration_sample_count: samples.length,
+          ...(Number.isFinite(thresholdMs) ? { long_running_threshold_ms: thresholdMs } : {}),
         },
         "event",
         "high",
@@ -628,6 +635,18 @@ export function projectActivityChannels(
             expiry(telemetryFresh.ts, TELEMETRY_TTL_MS),
           )
         : present("unknown", "unknown", "low", now),
+      ...(telemetryFresh
+        ? {
+            telemetry_reason: present(
+              telemetryFresh.reason,
+              "event",
+              "high",
+              telemetryFresh.ts,
+              [telemetryFresh.eventId],
+              expiry(telemetryFresh.ts, TELEMETRY_TTL_MS),
+            ),
+          }
+        : {}),
     });
   }
   return projected;
