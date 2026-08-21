@@ -34,6 +34,11 @@ canonical events, and stay visible to peers, so a workflow child editing a file
 is subject to the same claim/guard protections as any other agent. Design
 record: decision 0015.
 
+Before making a workflow durable, read [Author reliable
+workflows](/guides/workflow-authoring/). It covers frozen script hashes, the
+five-minute agent timeout, response-schema failure costs, and child sandbox
+verification.
+
 Spawn adapters: `claude-code` (default), `codex` (`codex exec
 --output-last-message`), and `cursor` (`cursor-agent -p --output-format json
 --trust`, since headless cursor refuses untrusted workspaces without the flag).

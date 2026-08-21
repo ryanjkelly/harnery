@@ -9,6 +9,10 @@ Harnery records every supported adapter through one canonical V3 ledger at
 `.harnery/ledgers/v3/`. Producers and consumers fail closed when its control
 pair is missing or invalid. There is no alternate recording path.
 
+For the command-purpose evidence attached to tool activity, see [Declare tool
+intent](/guides/tool-intent/). That guide explains capture precedence and why
+the durable ledger keeps fingerprints rather than literal intent prose.
+
 ## Initialization
 
 `harn init` initializes the ledger automatically. For an existing project, or

@@ -1,0 +1,84 @@
+---
+title: Author reliable workflows
+description: Avoid four expensive workflow failures around frozen scripts, timeouts, schemas, and child sandboxes.
+sidebar:
+  order: 4
+---
+
+Harnery workflows are ordinary JavaScript, but a durable run has stricter
+boundaries than an interactive shell. Four mistakes tend to surface after the
+expensive work has already happened. Design around them before dispatching a
+team.
+
+## Test the script before creating durable work
+
+`harn work create` freezes the workflow's absolute path and SHA-256. A later
+edit changes the execution contract, so `harn work run` and `harn work retry`
+refuse the changed script and tell you to create a new work item.
+
+Iterate with a throwaway `harn run` until routing, schemas, and evidence calls
+behave as intended. Create durable work only after the script is ready to pin.
+If the script must change afterward, create a new item instead of trying to
+rewrite the old item's history.
+
+See [`harn work`](/cli/work/) for the durable objective model and [`harn
+run`](/cli/run/) for the workflow API.
+
+## Set realistic agent timeouts
+
+Each `agent()` call defaults to `timeoutMs: 300000`, or five minutes. That is
+enough for classification and many focused reads, but it is often too short for
+a child that must inspect a large tree, edit code, and run tests.
+
+Set `timeoutMs` explicitly on substantive calls:
+
+```js
+await agent(implementationPrompt, {
+  specialist: "implementer",
+  timeoutMs: 20 * 60 * 1000,
+  maxTurns: 35,
+});
+```
+
+`maxTurns` defaults to 25 for adapters that support a turn limit. Codex and
+Cursor currently ignore that option, so the timeout remains the portable wall
+clock bound.
+
+## Use schema limits only when the contract needs them
+
+A response schema is checked after the child has done its work. If a field has
+an arbitrary `maxLength` and the answer exceeds it, Harnery retries the model
+with the validation error. After `maxAttempts` (default 2), the call throws.
+That can discard an otherwise complete, expensive result.
+
+Use enums, required fields, and structural constraints to make routing
+deterministic. Add size caps only when a downstream consumer truly requires
+them, and leave enough room for the largest legitimate answer. A schema should
+make the result parseable, not force it to be terse.
+
+## Reproduce failures outside the child sandbox
+
+A workflow child runs through the selected adapter CLI and its projected
+workspace policy. Its filesystem, process, network, browser, and Git
+administrative access can be narrower than the parent shell's access. A test
+failure may therefore describe the child environment rather than the code.
+
+Before recording a product failure, rerun the smallest failing check in the
+intended host environment. Inspect the bound workspace and the repository
+status too. A child may have finished useful edits but been unable to commit
+because its Git administrative path was read-only or outside the projected
+writable roots.
+
+Do not weaken the sandbox to make a red check disappear. Reproduce the check,
+classify the boundary, and either fix the workflow policy or carry the child's
+verified work forward through an authorized host action. See [Isolated
+workspaces](/concepts/isolated-workspaces/) for the binding and integration
+model.
+
+## Preflight checklist
+
+- Run the script once before `harn work create` freezes it.
+- Set a timeout that matches the slowest legitimate child assignment.
+- Keep schema bounds tied to real consumers rather than writing-style goals.
+- Treat child failures and uncommitted output as evidence to inspect, not a
+  verdict to repeat without reproduction.

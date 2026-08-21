@@ -1,0 +1,72 @@
+---
+title: Declare tool intent
+description: Give shell commands a short reason that survives adapter differences without putting private prose in the V3 ledger.
+sidebar:
+  order: 3
+---
+
+Tool intent answers a small but important question: why did the agent run this
+command? Without it, the command can still execute, but coordination views and
+later audits lose the reason that separated an inspection from a mutation or a
+verification step.
+
+## The portable form
+
+Put a comment on the first line of a shell command:
+
+```bash
+# intent: inspect the current V3 reader boundary before editing
+rg -n "reader boundary" src docs
+```
+
+This form works across Claude Code, Cursor, and Codex. The shell ignores the
+comment, while Harnery reads the text after `intent:`. Keep it short and state
+the purpose, not a paraphrase of the command.
+
+## Capture sources and precedence
+
+Harnery can resolve intent from three sources. The first non-empty value wins:
+
+1. A `# intent: ...` comment on the command's first line.
+2. The tool input's `description` field, when the adapter provides one. Claude
+   Code supplies this field; Cursor and Codex do not expose the same contract.
+3. The most recent `<intent>...</intent>` tag stamped from assistant prose.
+
+The prose tag is a fallback. It depends on transcript timing, so do not use it
+as the only source when a first-line comment or tool description is available.
+You do not need to repeat the same reason in all three channels. Use the
+first-line comment for portable scripts and rely on a direct tool description
+when the host already supplies one reliably.
+
+Resolved values are limited to 200 characters. When no source is available,
+the resolver returns `(no intent)` rather than guessing from the command.
+
+## What Event Ledger V3 retains
+
+The canonical `command.started` event does not store the command arguments or
+intent text. It retains bounded evidence instead:
+
+- the executable and executable class;
+- a fingerprint of the exact argument vector;
+- an intent kind, byte length, and optional fingerprint; and
+- the count of arguments classified as sensitive.
+
+The literal intent can appear in the local, disposable live-display overlay so
+an operator can understand current activity. That overlay is not Event Ledger
+authority and is not used to reconstruct private prose during recovery.
+
+This split keeps the durable ledger useful for attribution and comparison
+without turning it into a transcript. See [Operate the V3 event
+ledger](/guides/event-ledger-v3/) for the authority and recovery boundary.
+
+## Troubleshooting
+
+If an activity view reports `(no intent)`, check the command's first line
+first. A comment later in a multiline command does not count. Then check whether
+the adapter actually provides a tool description. Treat a prose tag as a weak
+fallback because the transcript writer may not have flushed it before the tool
+hook runs.
+
+Do not put secrets, credentials, customer data, or raw file content in an
+intent. A reason such as "verify the payment export totals" is more useful than
+copying the sensitive value being checked.
