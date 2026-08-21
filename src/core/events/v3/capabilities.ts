@@ -14,6 +14,21 @@ export type AdapterWaitKindV3 =
   | "rate_limit"
   | "unknown";
 
+export const ADAPTER_WAIT_KINDS_V3: readonly AdapterWaitKindV3[] = [
+  "permission",
+  "needs_input",
+  "decision",
+  "approval",
+  "scheduled",
+  "rate_limit",
+  "unknown",
+] as const;
+
+export interface WaitKindCapabilityV3 {
+  span_delivery: CapabilitySupportV3;
+  turn_completeness: CapabilitySupportV3;
+}
+
 export type BaseAdapterSignalV3 =
   | "session_start"
   | "session_end"
@@ -157,6 +172,25 @@ export function adapterWaitKindSupportV3(
 /** No current adapter supplies an independent completed-turn wait aggregate. */
 export function adapterTurnWaitCountSupportV3(_adapter: Adapter): CapabilitySupportV3 {
   return "unsupported";
+}
+
+/**
+ * Per-kind wait matrix for native adapter turns. Span delivery and independent
+ * completed-turn completeness are deliberately separate: observing a span
+ * never proves that an absent span means zero.
+ */
+export function adapterWaitCoverageMatrixV3(
+  adapter: Adapter,
+): Record<AdapterWaitKindV3, WaitKindCapabilityV3> {
+  return Object.fromEntries(
+    ADAPTER_WAIT_KINDS_V3.map((kind) => [
+      kind,
+      {
+        span_delivery: adapterWaitKindSupportV3(adapter, kind),
+        turn_completeness: adapterTurnWaitCountSupportV3(adapter),
+      },
+    ]),
+  ) as Record<AdapterWaitKindV3, WaitKindCapabilityV3>;
 }
 
 /**

@@ -1177,6 +1177,160 @@ describe("event ledger V3 persistent hook recorder", () => {
     }
   });
 
+  test("enriches a completed Codex turn from an attributable bounded rollout sample", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-runtime-context-session";
+    const nativeTurn = "codex-runtime-context-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${[
+        {
+          timestamp: "2026-08-21T20:24:00.000Z",
+          ordinal: 1,
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: nativeTurn },
+        },
+        {
+          timestamp: "2026-08-21T20:24:14.000Z",
+          ordinal: 2,
+          type: "response_item",
+          payload: {
+            type: "message",
+            prompt: "PRIVATE_CONTEXT_PROMPT",
+            reasoning: "PRIVATE_CONTEXT_REASONING",
+            command: "PRIVATE_CONTEXT_COMMAND",
+            result: "PRIVATE_CONTEXT_RESULT",
+          },
+        },
+        {
+          timestamp: "2026-08-21T20:24:14.100Z",
+          ordinal: 3,
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              last_token_usage: { input_tokens: 120_000 },
+              model_context_window: 258_400,
+            },
+          },
+        },
+        {
+          timestamp: "2026-08-21T20:24:15.200Z",
+          ordinal: 4,
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: nativeTurn },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n")}\n`,
+    );
+
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, prompt: "PRIVATE_PROMPT" }),
+        "codex",
+      ),
+    );
+    const stopPayload = parsed({
+      session_id: nativeSession,
+      turn_id: nativeTurn,
+      transcript_path: transcript,
+    });
+    stopPayload.raw.last_assistant_message = "PRIVATE_ASSISTANT_BODY";
+    recordHookSignalV3({
+      ...baseInput(root, "stop", stopPayload, "codex"),
+      adapterVersion: "0.149.0-alpha.4.1",
+    });
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const terminal = events.find((event) => event.event_type === "turn.completed");
+    const context = events.find((event) => event.event_type === "context.observed");
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+      state: "observed",
+      value: {
+        used_tokens: 120_000,
+        limit_tokens: 258_400,
+        remaining_tokens: 138_400,
+        measured_at: "2026-08-21T20:24:14.100Z",
+        method: "codex_transcript_token_count",
+      },
+      attestation: "derived",
+      confidence: "exact",
+    });
+    expect(context?.provenance).toMatchObject({
+      source_event: "codex.rollout_token_count.0.149.0-alpha.4.1",
+      attestation: "derived",
+      confidence: "exact",
+      source_record_id: expect.stringMatching(/^hid_[a-f0-9]{64}$/),
+    });
+    expect(context?.time.observed_at).toBe(terminal?.time.observed_at);
+    const projection = projectLatencyV3(readLedgerV3(root)).turns[0];
+    expect(projection?.context_percent).toBeCloseTo((120_000 / 258_400) * 100);
+    expect(projection?.context_coverage.state).toBe("observed");
+    const durable = readFileSync(eventV3Paths(root).active, "utf8");
+    for (const sentinel of [
+      "PRIVATE_CONTEXT_PROMPT",
+      "PRIVATE_CONTEXT_REASONING",
+      "PRIVATE_CONTEXT_COMMAND",
+      "PRIVATE_CONTEXT_RESULT",
+      "PRIVATE_ASSISTANT_BODY",
+      transcript,
+    ]) {
+      expect(durable).not.toContain(sentinel);
+    }
+  });
+
+  test("keeps an unflushed Codex rollout partial without blocking turn completion", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-unflushed-context-session";
+    const nativeTurn = "codex-unflushed-context-turn";
+    const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({
+        timestamp: "2026-08-21T20:24:00.000Z",
+        ordinal: 1,
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: nativeTurn },
+      })}\n`,
+    );
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+        "codex",
+      ),
+    );
+    expect(
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "stop",
+          parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+          "codex",
+        ),
+      ).state,
+    ).toBe("recorded");
+    const context = readLedgerV3(root)
+      .events.map(({ event }) => event)
+      .find((event) => event.event_type === "context.observed");
+    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
+      state: "expected_but_missing",
+      capability: "context_usage",
+      reason: "codex_transcript_turn_not_terminal",
+    });
+  });
+
   test("records paired local Cursor tools with an exact terminal count and no bodies", () => {
     const fixture = JSON.parse(
       readFileSync(

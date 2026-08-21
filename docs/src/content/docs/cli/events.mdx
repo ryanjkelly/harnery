@@ -9,7 +9,10 @@ sidebar:
 harn events latency [--root <path>] [--candidate] [--by-tool | --by-generation] [--json]
 ```
 
-Read the canonical V3 ledger and project turn wall time, inclusive tool time, exclusive command time, waits, inference, harness overhead, residual time, context use, and token economics. The command fails closed when the validating reader reports an incomplete ledger.
+Read the canonical V3 ledger and project turn wall time, inclusive tool time,
+exclusive command time, per-kind waits, response latency, inference, harness
+overhead, residual time, context use, and token economics. The command fails
+closed when the validating reader reports an incomplete ledger.
 
 ## Views
 
@@ -43,4 +46,23 @@ harn events latency --json
 
 ## Output
 
-Observed durations render as milliseconds. Partial observations render with a question mark and preserve known lower bounds. JSON output includes the selected root and authority, the chosen view, per-turn latency, and token economics.
+Observed durations render as milliseconds. Partial observations render with a
+question mark and preserve known lower bounds. `ACTION` is the mixed interval
+from turn start to the first tool request, or to the terminal response for an
+attested no-tool turn. `POST-TOOL` is the interval from the last complete tool
+terminal to turn completion. Neither field is provider inference.
+
+JSON output includes the selected root and authority, the chosen view,
+per-turn latency, and token economics. Each turn includes:
+
+- `response_latency`, with first-action, first-tool, no-tool-terminal, and
+  post-tool intervals;
+- `wait_coverage_by_kind` for permission, needs-input, decision, approval,
+  scheduled, rate-limit, and unknown waits; and
+- `context_coverage`, which distinguishes exact, partial, unsupported, and
+  missing measurements.
+
+Harnery reports a zero wait duration only when the completed turn independently
+attests completeness. Delivered wait spans remain lower bounds without that
+attestation. `inference_ms` stays unknown unless a native runtime field reports
+provider inference duration.

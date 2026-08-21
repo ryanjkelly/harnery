@@ -23,6 +23,16 @@ export interface TurnTelemetryV3 {
   usage: TelemetryObservationV3<TurnUsageV3>;
   inference: TelemetryObservationV3<TurnInferenceV3>;
   context: TelemetryObservationV3<ContextMeasurementV3>;
+  /** Private producer metadata; the context event persists only its safe fields. */
+  context_provenance?: ContextTelemetryProvenanceV3;
+}
+
+export interface ContextTelemetryProvenanceV3 {
+  source_event: string;
+  source_witness?: string;
+  runtime_version?: string;
+  attestation: "native" | "derived";
+  confidence: "exact" | "high";
 }
 
 export type TurnTelemetryCapabilitySupportV3 = Partial<

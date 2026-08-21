@@ -39,9 +39,9 @@ describe("events latency command", () => {
     await run(root, [], turn.emit);
     expect(turn.text().trimEnd().split("\n")).toMatchInlineSnapshot(`
       [
-        "GENERATION                                TURN                                                                  WALL    TOOL   COMMAND  WAIT  INFERENCE  HARNESS  RESIDUAL  CONTEXT",
-        "----------------------------------------  --------------------------------------------------------------------  ------  -----  -------  ----  ---------  -------  --------  -------",
-        "gen_00000000-0000-7000-8000-000000000001  sid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  1000ms  300ms  0ms      ?     50ms       20ms     ?         ?",
+        "GENERATION                                TURN                                                                  WALL    TOOL   COMMAND  WAIT  ACTION  POST-TOOL  INFERENCE  HARNESS  RESIDUAL  CONTEXT",
+        "----------------------------------------  --------------------------------------------------------------------  ------  -----  -------  ----  ------  ---------  ---------  -------  --------  -------",
+        "gen_00000000-0000-7000-8000-000000000001  sid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  1000ms  300ms  0ms      ?     ?       700ms      50ms       20ms     ?         ?",
       ]
     `);
 
@@ -49,9 +49,9 @@ describe("events latency command", () => {
     await run(root, ["--by-generation"], generation.emit);
     expect(generation.text().trimEnd().split("\n")).toMatchInlineSnapshot(`
       [
-        "GENERATION                                TURNS  WALL    TOOL   COMMAND  WAIT  INFERENCE  HARNESS  RESIDUAL",
-        "----------------------------------------  -----  ------  -----  -------  ----  ---------  -------  --------",
-        "gen_00000000-0000-7000-8000-000000000001  1      1000ms  300ms  0ms      ?     50ms       20ms     ?",
+        "GENERATION                                TURNS  WALL    TOOL   COMMAND  WAIT  ACTION  INFERENCE  HARNESS  RESIDUAL",
+        "----------------------------------------  -----  ------  -----  -------  ----  ------  ---------  -------  --------",
+        "gen_00000000-0000-7000-8000-000000000001  1      1000ms  300ms  0ms      ?     ?       50ms       20ms     ?",
       ]
     `);
 

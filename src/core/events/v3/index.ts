@@ -34,12 +34,17 @@ export {
 } from "./canonical.ts";
 export {
   ADAPTER_CAPABILITY_PROFILES_V3,
+  ADAPTER_WAIT_KINDS_V3,
   type AdapterCapabilityProfileV3,
   type AdapterSignalV3,
+  type AdapterWaitKindV3,
   adapterCapabilityProfileDigestV3,
   adapterCapabilityProfileV3,
   adapterSignalSupportV3,
+  adapterWaitCoverageMatrixV3,
+  adapterWaitKindSupportV3,
   type CapabilitySupportV3,
+  type WaitKindCapabilityV3,
 } from "./capabilities.ts";
 export {
   type CapabilityDeliveryV3,
@@ -153,8 +158,11 @@ export {
   type LatencyProjectionDiagnosticV3,
   type LatencyProjectionV3,
   projectLatencyV3,
+  type ResponseLatencyV3,
   type ToolLatencyV3,
   type TurnLatencyV3,
+  type WaitKindCompletenessV3,
+  type WaitKindCoverageV3,
 } from "./latency.ts";
 export {
   EVENT_V3_LIVE_RELATIVE_ROOT,

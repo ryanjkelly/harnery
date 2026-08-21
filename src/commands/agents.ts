@@ -21,7 +21,6 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -89,6 +88,7 @@ import { readLedgerV3 } from "../core/events/v3/reader.ts";
 import { EVENT_V3_LEDGER_RELATIVE_ROOT } from "../core/events/v3/writer.ts";
 import type { RunQualitySnapshot, RunQualityStatus } from "../core/guard/index.ts";
 import { evaluateRunQualityIfDue } from "../core/guard/index.ts";
+import { readRuntimeContextUsage } from "../core/hooks/adapter/runtime-telemetry.ts";
 import { type RemoteMachine, readRemoteMachines } from "../core/presence/index.ts";
 import { registerContextCommand } from "./context.ts";
 
@@ -2536,9 +2536,9 @@ function readContextUsage(
   // Cursor doesn't surface token counts in its transcript JSONL but DOES
   // store `contextUsagePercent` per composer in workspaceStorage's state.vscdb;
   // readCursorContextUsage reads that via bun:sqlite (percent-only).
-  if (platform === "codex") return readCodexContextUsage(sessionId);
+  if (platform === "codex") return readRuntimeContextUsage("codex", sessionId);
   if (platform === "cursor") return readCursorContextUsage(sessionId);
-  return readClaudeContextUsage(sessionId);
+  return readRuntimeContextUsage("claude-code", sessionId);
 }
 
 function readCursorContextUsage(
@@ -2604,126 +2604,6 @@ function readCursorContextUsage(
       } catch {
         // ignore: DB locked, schema drift, etc. Move on to the next workspace.
       }
-    }
-  }
-  return null;
-}
-
-function readClaudeContextUsage(sessionId: string): { used: number; window: number } | null {
-  const root = monorepoRoot();
-  if (!root) return null;
-  // Claude Code's project dir scheme: prepend "-", replace "/" → "-".
-  const encoded = `-${root.replace(/^\//, "").replace(/\//g, "-")}`;
-  const transcriptPath = resolve(homedir(), ".claude", "projects", encoded, `${sessionId}.jsonl`);
-  if (!existsSync(transcriptPath)) return null;
-  let raw: string;
-  try {
-    raw = readFileSync(transcriptPath, "utf8");
-  } catch {
-    return null;
-  }
-  const lines = raw.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line);
-      const usage = entry?.message?.usage;
-      if (entry?.type === "assistant" && usage) {
-        const used =
-          (usage.input_tokens ?? 0) +
-          (usage.cache_creation_input_tokens ?? 0) +
-          (usage.cache_read_input_tokens ?? 0);
-        // Window: hardcode 1M for Opus 4.7 1M (current default). Refine to
-        // model-aware lookup when other models become routine.
-        return { used, window: 1000000 };
-      }
-    } catch {
-      // skip malformed line
-    }
-  }
-  return null;
-}
-
-function readCodexContextUsage(sessionId: string): { used: number; window: number } | null {
-  // Codex transcripts: ~/.codex/sessions/YYYY/MM/DD/rollout-<TS>-<sessionId>.jsonl
-  // On WSL the active install often lives on the Windows side under
-  // /mnt/c/Users/<user>/.codex/sessions/; both are searched.
-  const path = findCodexTranscript(sessionId);
-  if (!path) return null;
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch {
-    return null;
-  }
-  const lines = raw.split("\n");
-  // Walk backwards: most recent token_count event wins.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry?.type === "event_msg" && entry?.payload?.type === "token_count") {
-        const info = entry.payload.info;
-        const used = info?.last_token_usage?.input_tokens;
-        const window = info?.model_context_window;
-        if (typeof used === "number" && typeof window === "number" && window > 0) {
-          return { used, window };
-        }
-      }
-    } catch {
-      // skip malformed line
-    }
-  }
-  return null;
-}
-
-function findCodexTranscript(sessionId: string): string | null {
-  // Candidate roots in priority order.
-  const homeRoot = resolve(homedir(), ".codex", "sessions");
-  const wslRoots: string[] = [];
-  try {
-    if (existsSync("/mnt/c/Users")) {
-      for (const entry of readdirSync("/mnt/c/Users")) {
-        wslRoots.push(`/mnt/c/Users/${entry}/.codex/sessions`);
-      }
-    }
-  } catch {
-    // ignore
-  }
-  const roots = [homeRoot, ...wslRoots];
-  const suffix = `-${sessionId}.jsonl`;
-  for (const root of roots) {
-    if (!existsSync(root)) continue;
-    try {
-      // Recursive scan: sessions are partitioned by YYYY/MM/DD/, so depth
-      // is bounded at 3 + one file per session. Cheap enough at status time.
-      const stack: string[] = [root];
-      while (stack.length) {
-        const dir = stack.pop()!;
-        let entries: string[];
-        try {
-          entries = readdirSync(dir);
-        } catch {
-          continue;
-        }
-        for (const name of entries) {
-          const full = `${dir}/${name}`;
-          try {
-            const stat = statSync(full);
-            if (stat.isDirectory()) {
-              stack.push(full);
-            } else if (name.endsWith(suffix)) {
-              return full;
-            }
-          } catch {
-            // ignore
-          }
-        }
-      }
-    } catch {
-      // ignore root scan failures
     }
   }
   return null;

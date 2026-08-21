@@ -25,6 +25,7 @@ interface GenerationLatencyRow {
   tool_ms: LatencyMetricV3;
   command_ms: LatencyMetricV3;
   wait_ms: LatencyMetricV3;
+  agent_action_ms: LatencyMetricV3;
   inference_ms: LatencyMetricV3;
   harness_ms: LatencyMetricV3;
   residual_ms: LatencyMetricV3;
@@ -112,6 +113,9 @@ function summarizeByGeneration(turns: TurnLatencyV3[]): GenerationLatencyRow[] {
       tool_ms: sumMetrics(group.map(({ tool_ms }) => tool_ms)),
       command_ms: sumMetrics(group.map(({ command_exclusive_ms }) => command_exclusive_ms)),
       wait_ms: sumMetrics(group.map(({ wait_ms }) => wait_ms)),
+      agent_action_ms: sumMetrics(
+        group.map(({ response_latency }) => response_latency.agent_action_ms),
+      ),
       inference_ms: sumMetrics(group.map(({ inference_ms }) => inference_ms)),
       harness_ms: sumMetrics(group.map(({ harness_ms }) => harness_ms)),
       residual_ms: sumMetrics(group.map(({ residual_ms }) => residual_ms)),
@@ -180,6 +184,8 @@ function renderTurns(turns: TurnLatencyV3[]): string {
       "TOOL",
       "COMMAND",
       "WAIT",
+      "ACTION",
+      "POST-TOOL",
       "INFERENCE",
       "HARNESS",
       "RESIDUAL",
@@ -192,6 +198,8 @@ function renderTurns(turns: TurnLatencyV3[]): string {
       formatMetric(turn.tool_ms),
       formatMetric(turn.command_exclusive_ms),
       formatMetric(turn.wait_ms),
+      formatMetric(turn.response_latency.agent_action_ms),
+      formatMetric(turn.response_latency.post_tool_response_ms),
       formatMetric(turn.inference_ms),
       formatMetric(turn.harness_ms),
       formatMetric(turn.residual_ms),
@@ -202,7 +210,18 @@ function renderTurns(turns: TurnLatencyV3[]): string {
 
 function renderGenerations(rows: GenerationLatencyRow[]): string {
   return renderTable(
-    ["GENERATION", "TURNS", "WALL", "TOOL", "COMMAND", "WAIT", "INFERENCE", "HARNESS", "RESIDUAL"],
+    [
+      "GENERATION",
+      "TURNS",
+      "WALL",
+      "TOOL",
+      "COMMAND",
+      "WAIT",
+      "ACTION",
+      "INFERENCE",
+      "HARNESS",
+      "RESIDUAL",
+    ],
     rows.map((row) => [
       row.generation_id,
       String(row.turns),
@@ -210,6 +229,7 @@ function renderGenerations(rows: GenerationLatencyRow[]): string {
       formatMetric(row.tool_ms),
       formatMetric(row.command_ms),
       formatMetric(row.wait_ms),
+      formatMetric(row.agent_action_ms),
       formatMetric(row.inference_ms),
       formatMetric(row.harness_ms),
       formatMetric(row.residual_ms),

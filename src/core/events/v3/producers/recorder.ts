@@ -17,6 +17,10 @@ import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Adapter } from "../../../adapter.ts";
 import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/parse.ts";
+import {
+  type RuntimeContextTelemetry,
+  readRuntimeContextTelemetry,
+} from "../../../hooks/adapter/runtime-telemetry.ts";
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
@@ -44,8 +48,10 @@ import {
 } from "../span-state.ts";
 import {
   type ContextMeasurementV3,
+  type ContextTelemetryProvenanceV3,
   extractTurnTelemetryV3,
   type TelemetryObservationV3,
+  type TurnTelemetryV3,
 } from "../turn-telemetry.ts";
 import { assertEventV3, validateEventV3 } from "../validate.ts";
 import {
@@ -933,7 +939,7 @@ function processHookSignalLocked(
 
     const turnTelemetry =
       input.signal === "stop" || input.signal === "stop-failure"
-        ? extractTurnTelemetryV3(input.adapter, input.payload.raw, eventClock.observed_at)
+        ? turnTelemetryForTerminal(input, state, eventClock.observed_at)
         : undefined;
     const cursorToolChannelSupport =
       input.adapter === "cursor"
@@ -1051,7 +1057,16 @@ function processHookSignalLocked(
       commitProgressObservation(input, state, path, rootId, event, progressKind);
     }
     if (turnTelemetry) {
-      commitTurnContextObservation(input, state, path, rootId, event, turnTelemetry.context);
+      commitTurnContextObservation(
+        input,
+        state,
+        path,
+        rootId,
+        fingerprintContext,
+        event,
+        turnTelemetry.context,
+        turnTelemetry.context_provenance,
+      );
     }
     if (event.event_type === "session.ended") {
       commitCapabilityDriftEvents(input, state, path, rootId);
@@ -1501,8 +1516,10 @@ function commitTurnContextObservation(
   state: HookProducerStateV3,
   path: string,
   rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
   turnTerminal: EventV3,
   measurement: TelemetryObservationV3<ContextMeasurementV3>,
+  contextProvenance?: ContextTelemetryProvenanceV3,
 ): void {
   if (turnTerminal.event_type !== "turn.completed") return;
   const event = buildEventV3("context.observed", {
@@ -1528,19 +1545,35 @@ function commitTurnContextObservation(
     attestation_id: state.attestation_id,
     links: { caused_by: [turnTerminal.event_id] },
     provenance: {
-      source_event: `${input.adapter}.turn-context`,
-      attestation: "native",
-      confidence: "exact",
+      source_event: safeRole(
+        [
+          contextProvenance?.source_event ?? `${input.adapter}.turn-context`,
+          contextProvenance?.runtime_version,
+        ]
+          .filter(Boolean)
+          .join("."),
+      ),
+      attestation: contextProvenance?.attestation ?? "native",
+      confidence: contextProvenance?.confidence ?? "exact",
+      ...(contextProvenance?.source_witness
+        ? {
+            source_record_id: normalizeNativeIdV3(
+              fingerprintContext,
+              `${input.adapter}.runtime-context`,
+              contextProvenance.source_witness,
+            ),
+          }
+        : {}),
       attribution: {
         method: "native_payload",
         state: "verified",
         subject_instance_id: state.instance_id,
       },
     },
-    observed_at:
-      measurement.state === "observed"
-        ? measurement.value.measured_at
-        : turnTerminal.time.observed_at,
+    // The source sample may precede native task completion. The event itself
+    // is committed after turn.completed, while measurement.measured_at keeps
+    // the sample clock without creating a causal wall-clock regression.
+    observed_at: turnTerminal.time.observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
     payload: {
@@ -1548,6 +1581,75 @@ function commitTurnContextObservation(
     },
   }) as EventV3;
   commitEventLocked(input, state, path, event);
+}
+
+function turnTelemetryForTerminal(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  observedAt: string,
+): TurnTelemetryV3 {
+  const native = extractTurnTelemetryV3(input.adapter, input.payload.raw, observedAt);
+  if (native.context.state === "observed" || input.adapter === "cursor") return native;
+
+  const runtime = readRuntimeContextTelemetry({
+    adapter: input.adapter,
+    session_id: input.payload.session_id ?? input.payload.conversation_id,
+    turn_id: input.payload.turn_id,
+    transcript_path: input.payload.transcript_path,
+    mode: "turn",
+  });
+  if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+  if (runtime.state === "unsupported") return native;
+  return {
+    ...native,
+    context: runtimeContextObservation(runtime),
+    context_provenance: {
+      source_event:
+        runtime.state === "observed" ? runtime.source_event : `${input.adapter}.runtime_context`,
+      ...(runtime.state === "observed" ? { source_witness: runtime.source_witness } : {}),
+      ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
+      attestation: "derived",
+      confidence: runtime.state === "observed" ? "exact" : "high",
+    },
+  };
+}
+
+function runtimeContextObservation(
+  runtime: RuntimeContextTelemetry,
+): TelemetryObservationV3<ContextMeasurementV3> {
+  if (runtime.state === "observed") {
+    return {
+      state: "observed",
+      value: {
+        used_tokens: runtime.used_tokens,
+        limit_tokens: runtime.limit_tokens,
+        remaining_tokens: Math.max(0, runtime.limit_tokens - runtime.used_tokens),
+        measured_at: runtime.measured_at,
+        method: runtime.method,
+      },
+      attestation: "derived",
+      confidence: "exact",
+    };
+  }
+  return {
+    state: "expected_but_missing",
+    capability: "context_usage",
+    reason: runtime.reason,
+  };
+}
+
+function recordRuntimeTelemetryTiming(state: HookProducerStateV3, durationMs: number): void {
+  const duration = Math.max(0, Math.ceil(durationMs));
+  if (!Number.isSafeInteger(duration)) return;
+  state.turn_harness = {
+    hook_time_ms: state.turn_harness.hook_time_ms + duration,
+    hook_count: state.turn_harness.hook_count + 1,
+    slowest_hook:
+      duration >= state.turn_harness.slowest_hook_ms
+        ? "runtime-context"
+        : state.turn_harness.slowest_hook,
+    slowest_hook_ms: Math.max(duration, state.turn_harness.slowest_hook_ms),
+  };
 }
 
 function commitCapabilityDriftEvents(

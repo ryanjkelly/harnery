@@ -375,6 +375,155 @@ describe("event ledger V3 latency projection", () => {
     });
   });
 
+  test("projects mixed response latency without populating inference", () => {
+    const noTool = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 1_000);
+    fixtureObject(noTool.payload).tool_call_count = observed(0);
+    fixtureObject(noTool.payload).inference = {
+      state: "unsupported",
+      capability: "inference_timing",
+    };
+    const noToolProjection = projectLatencyV3(readOf(noTool)).turns[0]!;
+    expect(noToolProjection.response_latency).toEqual({
+      agent_action_ms: { state: "observed", value_ms: 1_000 },
+      first_tool_request_ms: { state: "unknown", known_ms: 0, reasons: ["no_tool_request"] },
+      post_tool_response_ms: {
+        state: "unknown",
+        known_ms: 0,
+        reasons: ["no_tool_completion"],
+      },
+      no_tool_terminal_response_ms: { state: "observed", value_ms: 1_000 },
+      method: "canonical_event_timestamps_v1",
+    });
+    expect(noToolProjection.inference_ms.state).toBe("unknown");
+
+    const parallel = terminal("turn.completed", 2, "2026-08-18T15:00:00.000Z", 1_000);
+    fixtureObject(parallel.payload).tool_call_count = observed(2);
+    fixtureObject(parallel.payload).inference = {
+      state: "unsupported",
+      capability: "inference_timing",
+    };
+    const firstRequest = eventV3Fixture("tool.requested", 3);
+    const secondRequest = eventV3Fixture("tool.requested", 4);
+    fixtureObject(firstRequest.time).observed_at = "2026-08-18T15:00:00.100Z";
+    fixtureObject(secondRequest.time).observed_at = "2026-08-18T15:00:00.200Z";
+    const firstTerminal = terminal("tool.completed", 5, "2026-08-18T15:00:00.100Z", 400);
+    const secondTerminal = terminal("tool.completed", 6, "2026-08-18T15:00:00.200Z", 600);
+    alignTurn(parallel, [firstRequest, secondRequest, firstTerminal, secondTerminal]);
+    const parallelProjection = projectLatencyV3(
+      readOf(parallel, firstRequest, secondRequest, firstTerminal, secondTerminal),
+    ).turns[0]!;
+    expect(parallelProjection.response_latency).toMatchObject({
+      agent_action_ms: { state: "observed", value_ms: 100 },
+      first_tool_request_ms: { state: "observed", value_ms: 100 },
+      post_tool_response_ms: { state: "observed", value_ms: 200 },
+      no_tool_terminal_response_ms: {
+        state: "unknown",
+        reasons: ["turn_contains_tools"],
+      },
+    });
+    expect(parallelProjection.inference_ms.state).toBe("unknown");
+  });
+
+  test("keeps response latency unknown when action or terminal boundaries are missing", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 1_000);
+    fixtureObject(turn.payload).tool_call_count = observed(1);
+    const recovered = eventV3Fixture("tool.completed", 2);
+    const recoveredPayload = fixtureObject(recovered.payload);
+    recoveredPayload.duration_ms = {
+      state: "unknown",
+      reason: "completion_not_observed_before_turn_end",
+    };
+    fixtureObject(recoveredPayload.span).duration_ms = structuredClone(
+      recoveredPayload.duration_ms,
+    );
+    alignTurn(turn, [recovered]);
+
+    expect(projectLatencyV3(readOf(turn, recovered)).turns[0]?.response_latency).toMatchObject({
+      agent_action_ms: {
+        state: "unknown",
+        reasons: ["tool_request_unobserved"],
+      },
+      post_tool_response_ms: {
+        state: "unknown",
+        reasons: ["final_tool_completion_unknown"],
+      },
+    });
+  });
+
+  test("reports per-kind wait completeness only from an attested aggregate", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 1_000);
+    fixtureObject(turn.payload).wait_count = observed(2);
+    const permissionStart = eventV3Fixture("wait.started", 2);
+    const approvalStart = eventV3Fixture("wait.started", 3);
+    const permissionEnd = terminal("wait.ended", 4, "2026-08-18T14:00:00.100Z", 100);
+    const approvalEnd = terminal("wait.ended", 5, "2026-08-18T14:00:00.300Z", 200);
+    for (const [event, id, kind] of [
+      [permissionStart, "permission-1", "permission"],
+      [permissionEnd, "permission-1", "permission"],
+      [approvalStart, "approval-1", "approval"],
+      [approvalEnd, "approval-1", "approval"],
+    ] as const) {
+      fixtureObject(event.payload).wait_id = id;
+      fixtureObject(event.payload).kind = kind;
+    }
+    alignTurn(turn, [permissionStart, approvalStart, permissionEnd, approvalEnd]);
+    const coverage = projectLatencyV3(
+      readOf(turn, permissionStart, approvalStart, permissionEnd, approvalEnd),
+    ).turns[0]!.wait_coverage_by_kind;
+    expect(coverage.permission).toMatchObject({
+      started_count: 1,
+      ended_count: 1,
+      open_count: 0,
+      completeness: "complete",
+      reason: null,
+      duration_ms: { state: "observed", value_ms: 100 },
+    });
+    expect(coverage.approval).toMatchObject({
+      completeness: "complete",
+      duration_ms: { state: "observed", value_ms: 200 },
+    });
+    expect(coverage.scheduled).toMatchObject({
+      started_count: 0,
+      ended_count: 0,
+      completeness: "complete",
+      duration_ms: { state: "observed", value_ms: 0 },
+    });
+  });
+
+  test("keeps observed wait kinds as lower bounds when completeness is unsupported", () => {
+    const turn = terminal("turn.completed", 1, "2026-08-18T14:00:00.000Z", 500);
+    fixtureObject(turn.payload).wait_count = {
+      state: "unsupported",
+      capability: "turn_wait_count",
+    };
+    const started = eventV3Fixture("wait.started", 2);
+    const ended = terminal("wait.ended", 3, "2026-08-18T14:00:00.100Z", 100);
+    for (const event of [started, ended]) {
+      fixtureObject(event.payload).wait_id = "needs-input-1";
+      fixtureObject(event.payload).kind = "needs_input";
+    }
+    alignTurn(turn, [started, ended]);
+    const coverage = projectLatencyV3(readOf(turn, started, ended)).turns[0]!.wait_coverage_by_kind;
+    expect(coverage.needs_input).toMatchObject({
+      completeness: "lower_bound",
+      reason: "turn_wait_count_unsupported",
+      duration_ms: {
+        state: "unknown",
+        known_ms: 100,
+        reasons: ["wait_kind_completeness_unattested"],
+      },
+    });
+    expect(coverage.permission).toMatchObject({
+      completeness: "unsupported",
+      reason: "turn_wait_count_unsupported",
+      duration_ms: {
+        state: "unknown",
+        known_ms: 0,
+        reasons: ["wait_kind_completeness_unattested"],
+      },
+    });
+  });
+
   test("refuses to project an incomplete ledger read", () => {
     const read = readOf();
     read.complete = false;

@@ -1,0 +1,96 @@
+---
+title: "0095: Enrich turns from bounded native runtime telemetry"
+description: "ADR: join privacy-safe local runtime metadata to completed turns, keep unobservable channels unknown, and name response latency separately from inference."
+---
+
+**Status:** accepted (2026-08-21) · **Scope:** product tier (`core/hooks`, `core/events/v3`, `harn events`)
+
+## Context
+
+Current terminal hooks do not always carry context usage, wait completeness,
+or provider inference duration. The V3 contract correctly reports those
+signals as unsupported or unknown, but local runtime transcripts can expose a
+privacy-safe context sample after the runtime has closed a native turn.
+
+The status renderer already read the latest Codex token sample by scanning a
+whole rollout. That reader could not safely serve canonical turn telemetry. It
+reread a growing file, selected the latest sample without proving turn
+lineage, and returned no evidence about transcript flush ordering.
+
+## Alternatives
+
+**Reuse the status reader in the Stop hook.** Rejected because whole-file reads
+grow with the session and the newest token sample can belong to another turn.
+
+**Treat missing telemetry as zero.** Rejected because absence of a delivered
+event does not prove that a context measurement, wait, or tool call did not
+occur.
+
+**Call prompt-to-tool or residual wall time inference.** Rejected because those
+intervals can include queueing, streaming, adapter work, and unmodeled waits.
+
+**Persist transcript paths or bodies for later joins.** Rejected because the
+numeric metadata and opaque event witness are sufficient. Paths and content
+would expand the privacy boundary without improving attribution.
+
+## Decision
+
+Add a private runtime telemetry source at
+`core/hooks/adapter/runtime-telemetry.ts`. It returns only typed numeric
+measurements, timestamps, bounded I/O counters, explicit missing reasons, and
+a privacy-safe witness. Prompt text, responses, reasoning, commands, results,
+and source paths cannot cross the interface.
+
+Codex turn context is attributable only when all of these conditions hold:
+
+1. the Stop payload supplies a native session ID, turn ID, and transcript path;
+2. a bounded 256 KB tail contains `task_complete` for that exact turn;
+3. the last `token_count` before that terminal occurs after the previous task
+   boundary; and
+4. the sample timestamp is no more than 30 seconds before completion.
+
+The recorder writes the exact used-token and limit-token values as
+`context.observed` after `turn.completed`. It marks the observation
+`derived/exact` because Harnery performs the join, even though both numbers
+come from a native runtime event. The context event keeps commit order by using
+the turn terminal time; `measurement.measured_at` retains the source sample
+time. `provenance.source_record_id` is an epoch-keyed opaque fingerprint of the
+privacy-safe witness, not transcript bytes.
+
+The hot turn path never recursively searches runtime homes. A missing Stop
+path remains unsupported, and a present but unreadable, unflushed, stale,
+ambiguous, or mismatched source records a specific partial reason without
+blocking completion. Status may use cached fallback discovery because it is
+not a terminal hook.
+
+Claude Code usage remains partial when the transcript supplies used tokens but
+no model-authoritative context limit. The prior hardcoded status window is not
+ledger evidence and is no longer used.
+
+Wait reporting exposes all seven kinds separately. A kind is complete only
+when the completed turn independently attests the aggregate and every observed
+wait terminal is accounted for. Otherwise closed spans remain lower bounds,
+including when native permission delivery is supported.
+
+The latency projection adds `response_latency` with
+`agent_action_ms`, `first_tool_request_ms`, `post_tool_response_ms`, and
+`no_tool_terminal_response_ms`. These fields derive from canonical event
+timestamps and never populate `inference_ms` or residual time.
+
+## Result
+
+Twelve completed Codex turns on runtime `0.149.0-alpha.4.1` placed the final
+token sample immediately before matching task completion, 699 to 1,492 ms
+earlier. This ordering supports the native terminal plus preceding token rule;
+the implementation still fails partial when the evidence differs.
+
+On 20 share-safe reads, a 44.1 MB rollout averaged 11.085 ms for a whole-file
+read and 0.134 ms for the 256 KB tail. A 223 KB rollout averaged 1.518 ms and
+0.610 ms respectively. The bridge duration is added to turn harness telemetry
+only when bytes were read, so regressions remain visible without inventing a
+sample for unsupported environments.
+
+The fixture suite covers attributable, missing, stale, ambiguous, cross-turn,
+unflushed, and unreadable states. It also checks Windows-to-WSL path
+candidates, bounded I/O, privacy sentinels, partial Claude usage, per-kind wait
+completeness, response latency, and recovered or missing boundaries.

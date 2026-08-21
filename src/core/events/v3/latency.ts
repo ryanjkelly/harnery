@@ -1,6 +1,7 @@
+import { ADAPTER_WAIT_KINDS_V3, type AdapterWaitKindV3 } from "./capabilities.ts";
 import type { ReadLedgerV3Result } from "./reader.ts";
 
-export const EVENT_V3_LATENCY_PROJECTION_VERSION = "event-v3-latency-v1" as const;
+export const EVENT_V3_LATENCY_PROJECTION_VERSION = "event-v3-latency-v2" as const;
 
 export type LatencyMetricV3 =
   | { state: "observed"; value_ms: number }
@@ -25,6 +26,30 @@ export interface ContextCoverageV3 {
   reason: string | null;
 }
 
+export interface ResponseLatencyV3 {
+  /** Turn start to first tool request, or terminal response for an attested no-tool turn. */
+  agent_action_ms: LatencyMetricV3;
+  /** Turn start to first tool request; unknown with `no_tool_request` for no-tool turns. */
+  first_tool_request_ms: LatencyMetricV3;
+  /** Last complete tool terminal to the turn terminal. */
+  post_tool_response_ms: LatencyMetricV3;
+  /** Turn start to terminal response, only when an attested turn used no tools. */
+  no_tool_terminal_response_ms: LatencyMetricV3;
+  method: "canonical_event_timestamps_v1";
+}
+
+export type WaitKindCompletenessV3 = "complete" | "lower_bound" | "unknown" | "unsupported";
+
+export interface WaitKindCoverageV3 {
+  kind: AdapterWaitKindV3;
+  started_count: number;
+  ended_count: number;
+  open_count: number;
+  duration_ms: LatencyMetricV3;
+  completeness: WaitKindCompletenessV3;
+  reason: string | null;
+}
+
 export interface TurnLatencyV3 {
   generation_id: string;
   turn_id: string;
@@ -39,6 +64,7 @@ export interface TurnLatencyV3 {
   wait_ms: LatencyMetricV3;
   occupied_ms: LatencyMetricV3;
   inference_ms: LatencyMetricV3;
+  response_latency: ResponseLatencyV3;
   harness_ms: LatencyMetricV3;
   slowest_hook: string | null;
   slowest_hook_ms: number | null;
@@ -46,6 +72,7 @@ export interface TurnLatencyV3 {
   over_attributed_ms: number;
   context_percent: number | null;
   context_coverage: ContextCoverageV3;
+  wait_coverage_by_kind: Record<AdapterWaitKindV3, WaitKindCoverageV3>;
   span_counts: { tool: number; command: number; wait: number };
   tool_breakdown: ToolLatencyV3[];
 }
@@ -72,6 +99,7 @@ interface EventShape {
   event_id: string;
   event_type: string;
   scope: { generation_id?: string; turn_id?: string };
+  time: { observed_at?: string };
   payload: Record<string, unknown>;
 }
 
@@ -157,6 +185,10 @@ function projectTurn(
   ) {
     waits.reasons.push("wait_terminal_count_mismatch");
   }
+  const waitCoverageComplete =
+    expectedWaitCount !== undefined &&
+    expectedWaitCount === endedWaitIds.size &&
+    !waitStartEvents.some(({ payload }) => !endedWaitIds.has(string(record(payload).wait_id)));
 
   const tool = metricFromIntervals(tools);
   const command = metricFromIntervals(commands);
@@ -176,6 +208,7 @@ function projectTurn(
     "api_time_ms",
     "inference_timing_unknown",
   );
+  const responseLatency = projectResponseLatency(terminal, events, wall, tools, expectedToolCount);
   const harness = metricFromNestedObservation(
     terminal.payload.harness,
     "hook_time_ms",
@@ -217,6 +250,7 @@ function projectTurn(
     wait_ms: wait,
     occupied_ms: occupied,
     inference_ms: inference,
+    response_latency: responseLatency,
     harness_ms: harness,
     slowest_hook: slowestHook.name,
     slowest_hook_ms: slowestHook.duration_ms,
@@ -224,6 +258,14 @@ function projectTurn(
     over_attributed_ms: overAttributed,
     context_percent: context.percent,
     context_coverage: context.coverage,
+    wait_coverage_by_kind: projectWaitCoverageByKind(
+      waitStartEvents,
+      waitEvents,
+      wallInterval,
+      waitCoverageComplete,
+      waitCount,
+      diagnostics,
+    ),
     span_counts: {
       tool: toolEvents.length,
       command: commandEvents.length,
@@ -231,6 +273,133 @@ function projectTurn(
     },
     tool_breakdown: toolBreakdown,
   };
+}
+
+function projectResponseLatency(
+  terminal: EventShape,
+  events: EventShape[],
+  wall: LatencyMetricV3,
+  tools: IntervalSet,
+  expectedToolCount: number | undefined,
+): ResponseLatencyV3 {
+  const turnStart = Date.parse(string(record(terminal.payload.span).opened_at));
+  const turnEnd =
+    Number.isFinite(turnStart) && wall.state === "observed" ? turnStart + wall.value_ms : undefined;
+  const requests = events
+    .filter(({ event_type }) => event_type === "tool.requested")
+    .map(({ time }) => Date.parse(string(time.observed_at)))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const firstRequest = requests[0];
+  const firstTool =
+    Number.isFinite(turnStart) && firstRequest !== undefined
+      ? observedLatency(firstRequest - turnStart)
+      : unknownLatency(expectedToolCount === 0 ? "no_tool_request" : "tool_request_unobserved");
+  const noToolTerminal =
+    expectedToolCount === 0
+      ? wall
+      : unknownLatency(
+          expectedToolCount === undefined ? "tool_channel_unattested" : "turn_contains_tools",
+        );
+  const agentAction =
+    firstRequest !== undefined
+      ? firstTool
+      : expectedToolCount === 0
+        ? noToolTerminal
+        : unknownLatency(
+            expectedToolCount === undefined ? "tool_channel_unattested" : "tool_request_unobserved",
+          );
+
+  let postTool = unknownLatency(
+    expectedToolCount === 0
+      ? "no_tool_completion"
+      : expectedToolCount === undefined
+        ? "tool_channel_unattested"
+        : "final_tool_completion_unknown",
+  );
+  if (
+    turnEnd !== undefined &&
+    expectedToolCount !== undefined &&
+    expectedToolCount > 0 &&
+    tools.reasons.length === 0 &&
+    tools.intervals.length === expectedToolCount
+  ) {
+    postTool = observedLatency(turnEnd - Math.max(...tools.intervals.map(({ end }) => end)));
+  }
+
+  return {
+    agent_action_ms: agentAction,
+    first_tool_request_ms: firstTool,
+    post_tool_response_ms: postTool,
+    no_tool_terminal_response_ms: noToolTerminal,
+    method: "canonical_event_timestamps_v1",
+  };
+}
+
+function projectWaitCoverageByKind(
+  starts: EventShape[],
+  ends: EventShape[],
+  wall: Interval | undefined,
+  complete: boolean,
+  waitCount: Record<string, unknown>,
+  diagnostics: LatencyProjectionDiagnosticV3[],
+): Record<AdapterWaitKindV3, WaitKindCoverageV3> {
+  const endedIds = new Set(ends.map(({ payload }) => string(record(payload).wait_id)));
+  const unsupported = waitCount.state === "unsupported";
+  return Object.fromEntries(
+    ADAPTER_WAIT_KINDS_V3.map((kind) => {
+      const kindStarts = starts.filter(({ payload }) => waitKind(payload) === kind);
+      const kindEnds = ends.filter(({ payload }) => waitKind(payload) === kind);
+      const openCount = kindStarts.filter(
+        ({ payload }) => !endedIds.has(string(record(payload).wait_id)),
+      ).length;
+      const set = intervalSet(kindEnds, wall, diagnostics);
+      if (!complete) set.reasons.push("wait_kind_completeness_unattested");
+      const completeness: WaitKindCompletenessV3 = complete
+        ? "complete"
+        : unsupported
+          ? kindStarts.length > 0 || kindEnds.length > 0
+            ? "lower_bound"
+            : "unsupported"
+          : kindStarts.length > 0 || kindEnds.length > 0
+            ? "lower_bound"
+            : "unknown";
+      const reason = complete
+        ? null
+        : unsupported
+          ? "turn_wait_count_unsupported"
+          : "turn_wait_count_unattested";
+      return [
+        kind,
+        {
+          kind,
+          started_count: kindStarts.length,
+          ended_count: kindEnds.length,
+          open_count: openCount,
+          duration_ms: metricFromIntervals(set),
+          completeness,
+          reason,
+        },
+      ];
+    }),
+  ) as Record<AdapterWaitKindV3, WaitKindCoverageV3>;
+}
+
+function waitKind(payload: Record<string, unknown>): AdapterWaitKindV3 {
+  const value = string(record(payload).kind);
+  return ADAPTER_WAIT_KINDS_V3.includes(value as AdapterWaitKindV3)
+    ? (value as AdapterWaitKindV3)
+    : "unknown";
+}
+
+function observedLatency(value: number): LatencyMetricV3 {
+  return Number.isFinite(value) && value >= 0
+    ? { state: "observed", value_ms: Math.floor(value) }
+    : unknownLatency("event_time_order_invalid");
+}
+
+function unknownLatency(reason: string): LatencyMetricV3 {
+  return { state: "unknown", known_ms: 0, reasons: [reason] };
 }
 
 function groupByTool(events: EventShape[]): Map<string, EventShape[]> {
