@@ -67,6 +67,12 @@ describe("evaluateStopHook on the universal V3 ledger", () => {
       rule: "stop-hook.rule_2_3",
     });
 
+    const toolResultOnly = [turnStarted(0), turnCompleted(1, ritual(false, undefined, true))];
+    expect(verdict("claude-code", toolResultOnly)).toMatchObject({
+      allow: false,
+      rule: "stop-hook.rule_2_3",
+    });
+
     const present = [turnStarted(0), turnCompleted(1, ritual(true))];
     expect(verdict("claude-code", present)).toMatchObject({
       allow: true,
@@ -271,9 +277,10 @@ function task(second: number): EventV3 {
 function ritual(
   statusBoxPresent: boolean,
   sessionName: { required: boolean; present: boolean } = { required: false, present: false },
+  looseStatusBoxPresent = statusBoxPresent,
 ): Record<string, unknown> {
   return {
-    status_box_present: observed(statusBoxPresent),
+    status_box_present: observed(looseStatusBoxPresent),
     status_box_present_strict: observed(statusBoxPresent),
     session_name: observed(sessionName),
   };

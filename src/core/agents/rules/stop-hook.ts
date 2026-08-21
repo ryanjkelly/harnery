@@ -138,10 +138,10 @@ export function evaluateStopHookV3Events(
       event.event_type === "turn.completed",
   );
   const latestTerminal = turnTerminals.at(-1);
-  const latestBox = observedBoolean(latestTerminal?.payload.ritual?.status_box_present);
+  const latestBox = observedBoolean(latestTerminal?.payload.ritual?.status_box_present_strict);
   if (req.adapter !== "cursor" && latestBox === undefined) {
     return evidenceUnavailable(
-      "turn.completed has no observed V3 status-box result; Stop remains fail-open",
+      "turn.completed has no observed V3 assistant-text status-box result; Stop remains fail-open",
     );
   }
 
