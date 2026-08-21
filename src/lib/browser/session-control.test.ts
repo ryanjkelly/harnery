@@ -134,7 +134,9 @@ afterEach(async () => {
 });
 
 function privateDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "harnery-browser-session-"));
+  // Keep the macOS /var/folders prefix plus the random socket suffix below
+  // the Unix-domain socket path limit enforced by session-control.
+  const dir = mkdtempSync(join(tmpdir(), "hbs-"));
   chmodSync(dir, 0o700);
   return dir;
 }

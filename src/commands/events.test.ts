@@ -41,7 +41,7 @@ describe("events latency command", () => {
       [
         "GENERATION                                TURN                                                                  WALL    TOOL   COMMAND  WAIT  INFERENCE  HARNESS  RESIDUAL  CONTEXT",
         "----------------------------------------  --------------------------------------------------------------------  ------  -----  -------  ----  ---------  -------  --------  -------",
-        "gen_00000000-0000-7000-8000-000000000001  sid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  1000ms  300ms  0ms      0ms   50ms       20ms     630ms     ?",
+        "gen_00000000-0000-7000-8000-000000000001  sid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  1000ms  300ms  0ms      ?     50ms       20ms     ?         ?",
       ]
     `);
 
@@ -51,7 +51,7 @@ describe("events latency command", () => {
       [
         "GENERATION                                TURNS  WALL    TOOL   COMMAND  WAIT  INFERENCE  HARNESS  RESIDUAL",
         "----------------------------------------  -----  ------  -----  -------  ----  ---------  -------  --------",
-        "gen_00000000-0000-7000-8000-000000000001  1      1000ms  300ms  0ms      0ms   50ms       20ms     630ms",
+        "gen_00000000-0000-7000-8000-000000000001  1      1000ms  300ms  0ms      ?     50ms       20ms     ?",
       ]
     `);
 

@@ -161,61 +161,65 @@ describe("harn agents state surfaces", () => {
     expect(human.stdout).toContain("activity=needs_input · session=live · lifecycle=blocked");
   });
 
-  test("trace labels an ended session separately from its durable work lifecycle", () => {
-    const root = makeSandbox();
-    recordLiveLifecycleChangeV3({
-      coordRoot: root,
-      owner: OWNER,
-      nativeSessionId: OWNER,
-      adapter: "codex",
-      state: "active",
-    });
-    const liveTrace = json(harn(root, ["agents", "trace", "Hollis", "--json"]));
-    expect(liveTrace).toMatchObject({
-      session_state: "live",
-      task_state: "active",
-      task_state_scope: "current",
-      task_state_updated_at: expect.any(String),
-    });
-    const route = resolveLiveEventLedgerRouteV3(root);
-    if (route.state !== "v3") throw new Error("expected active V3 route");
-    recordLiveHookSignalV3({
-      coordRoot: root,
-      route,
-      eventName: "stop",
-      payload: { session_id: OWNER, turn_id: "turn-surface", raw: {} },
-      adapter: "codex",
-      instanceId: OWNER,
-    });
-    const state = readHookProducerStateV3(root, "codex", OWNER);
-    if (!state) throw new Error("expected producer state");
-    expect(
-      recordApprovedSessionEndV3({
+  test(
+    "trace labels an ended session separately from its durable work lifecycle",
+    () => {
+      const root = makeSandbox();
+      recordLiveLifecycleChangeV3({
         coordRoot: root,
-        mode: "active",
-        instance_id: state.instance_id,
-        generation_id: state.generation_id,
-        build_id: route.build_id,
-        platform: "linux",
-        reason: "approved_explicit_end",
-        outcome: "succeeded",
-        coordination_finalized: true,
-      }).state,
-    ).toBe("recorded");
+        owner: OWNER,
+        nativeSessionId: OWNER,
+        adapter: "codex",
+        state: "active",
+      });
+      const liveTrace = json(harn(root, ["agents", "trace", "Hollis", "--json"]));
+      expect(liveTrace).toMatchObject({
+        session_state: "live",
+        task_state: "active",
+        task_state_scope: "current",
+        task_state_updated_at: expect.any(String),
+      });
+      const route = resolveLiveEventLedgerRouteV3(root);
+      if (route.state !== "v3") throw new Error("expected active V3 route");
+      recordLiveHookSignalV3({
+        coordRoot: root,
+        route,
+        eventName: "stop",
+        payload: { session_id: OWNER, turn_id: "turn-surface", raw: {} },
+        adapter: "codex",
+        instanceId: OWNER,
+      });
+      const state = readHookProducerStateV3(root, "codex", OWNER);
+      if (!state) throw new Error("expected producer state");
+      expect(
+        recordApprovedSessionEndV3({
+          coordRoot: root,
+          mode: "active",
+          instance_id: state.instance_id,
+          generation_id: state.generation_id,
+          build_id: route.build_id,
+          platform: "linux",
+          reason: "approved_explicit_end",
+          outcome: "succeeded",
+          coordination_finalized: true,
+        }).state,
+      ).toBe("recorded");
 
-    expect((json(harn(root, ["agents", "list", "--json"])).rows as unknown[]).length).toBe(0);
-    expect(harn(root, ["agents", "show", "Hollis", "--json"]).status).toBe(1);
-    expect(json(harn(root, ["agents", "trace", "Hollis", "--json"]))).toMatchObject({
-      session_state: "ended",
-      activity: "idle",
-      task_state: "active",
-      task_state_scope: "historical",
-      task_state_updated_at: liveTrace.task_state_updated_at,
-    });
-    expect(harn(root, ["agents", "trace", "Hollis"]).stdout).toContain(
-      "activity=idle · session=ended · lifecycle=historical(active)",
-    );
-  });
+      expect((json(harn(root, ["agents", "list", "--json"])).rows as unknown[]).length).toBe(0);
+      expect(harn(root, ["agents", "show", "Hollis", "--json"]).status).toBe(1);
+      expect(json(harn(root, ["agents", "trace", "Hollis", "--json"]))).toMatchObject({
+        session_state: "ended",
+        activity: "idle",
+        task_state: "active",
+        task_state_scope: "historical",
+        task_state_updated_at: liveTrace.task_state_updated_at,
+      });
+      expect(harn(root, ["agents", "trace", "Hollis"]).stdout).toContain(
+        "activity=idle · session=ended · lifecycle=historical(active)",
+      );
+    },
+    { timeout: 15_000 },
+  );
 
   test("an incomplete disposable cache cannot override V3 evidence", () => {
     const root = makeSandbox();

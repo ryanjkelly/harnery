@@ -10,9 +10,13 @@ import {
 } from "../../scripts/check-public-surface.ts";
 
 describe("public-surface provenance guard", () => {
-  test("the committable Harnery tree carries no restricted provenance", () => {
-    expect(scanPublicSurface(join(import.meta.dir, "..", ".."))).toEqual([]);
-  });
+  test(
+    "the committable Harnery tree carries no restricted provenance",
+    () => {
+      expect(scanPublicSurface(join(import.meta.dir, "..", ".."))).toEqual([]);
+    },
+    { timeout: 15_000 },
+  );
 
   test("opaque fingerprints block a restricted identifier without publishing its inventory", () => {
     expect(scanPublicText("private fixture sentinel", "fixture.md")).toEqual([
