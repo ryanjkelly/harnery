@@ -5,7 +5,7 @@ sidebar:
   order: 89
 ---
 
-**Status:** accepted (2026-08-20) · **Scope:** product tier (`core/events/v3`)
+**Status:** superseded by ADR 0091 (2026-08-21) · **Scope:** product tier (`core/events/v3`)
 
 ## Context
 
@@ -49,3 +49,6 @@ The cutover regression starts with the recorded V2 envelope shape and confirms
 that the on-disk result differs only by its format marker. A second regression
 adds an unsupported field and confirms that the bytes remain unchanged after
 the refusal.
+
+This migration was used for the known host cutovers. ADR 0091 removed the
+recognizer after every known store carried the V3 envelope.

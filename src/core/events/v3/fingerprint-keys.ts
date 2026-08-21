@@ -39,13 +39,6 @@ export interface FingerprintKeyStoreV3 {
   epochs: FingerprintKeyEpochV3[];
 }
 
-type FingerprintKeyStoreFormat = "harnery-v2-fingerprint-keys" | "harnery-v3-fingerprint-keys";
-
-type CompatibleFingerprintKeyStore<F extends FingerprintKeyStoreFormat> = Omit<
-  FingerprintKeyStoreV3,
-  "format"
-> & { format: F };
-
 export interface RotateFingerprintEpochV3Options {
   activeGenerationCount: number;
   now?: () => Date;
@@ -62,14 +55,10 @@ export function loadOrCreateFingerprintKeyStoreV3(
 ): FingerprintKeyStoreV3 {
   const path = fingerprintKeyStorePathV3(coordRoot);
   if (existsSync(path)) {
-    const value = readKeyStoreValue(path);
-    if (keyStoreFormat(value) === "harnery-v3-fingerprint-keys") {
-      return validateKeyStore(value, "harnery-v3-fingerprint-keys");
-    }
-    return withKeyStoreLock(coordRoot, () => migrateExistingKeyStore(path));
+    return readFingerprintKeyStoreV3(coordRoot);
   }
   return withKeyStoreLock(coordRoot, () => {
-    if (existsSync(path)) return migrateExistingKeyStore(path);
+    if (existsSync(path)) return readFingerprintKeyStoreV3(coordRoot);
     const epoch = createEpoch(now);
     const store: FingerprintKeyStoreV3 = {
       format: "harnery-v3-fingerprint-keys",
@@ -84,7 +73,7 @@ export function loadOrCreateFingerprintKeyStoreV3(
 
 export function readFingerprintKeyStoreV3(coordRoot: string): FingerprintKeyStoreV3 {
   const path = fingerprintKeyStorePathV3(coordRoot);
-  return validateKeyStore(readKeyStoreValue(path), "harnery-v3-fingerprint-keys");
+  return validateKeyStore(readKeyStoreValue(path));
 }
 
 function readKeyStoreValue(path: string): unknown {
@@ -99,26 +88,6 @@ function readKeyStoreValue(path: string): unknown {
     throw new Error("fingerprint key store is unreadable or malformed");
   }
   return parsed;
-}
-
-function migrateExistingKeyStore(path: string): FingerprintKeyStoreV3 {
-  const value = readKeyStoreValue(path);
-  if (keyStoreFormat(value) === "harnery-v3-fingerprint-keys") {
-    return validateKeyStore(value, "harnery-v3-fingerprint-keys");
-  }
-  const legacy = validateKeyStore(value, "harnery-v2-fingerprint-keys");
-  const migrated: FingerprintKeyStoreV3 = {
-    ...legacy,
-    format: "harnery-v3-fingerprint-keys",
-  };
-  publishKeyStore(path, migrated, true);
-  return migrated;
-}
-
-function keyStoreFormat(value: unknown): unknown {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>).format
-    : undefined;
 }
 
 /** Start a new comparison epoch only when no generation can still emit under the prior key. */
@@ -232,10 +201,7 @@ function createEpoch(now: () => Date): FingerprintKeyEpochV3 {
   };
 }
 
-function validateKeyStore<F extends FingerprintKeyStoreFormat>(
-  value: unknown,
-  expectedFormat: F,
-): CompatibleFingerprintKeyStore<F> {
+function validateKeyStore(value: unknown): FingerprintKeyStoreV3 {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("fingerprint key store has an invalid envelope");
   }
@@ -244,7 +210,7 @@ function validateKeyStore<F extends FingerprintKeyStoreFormat>(
   if (keys.join("\0") !== "active_epoch_id\0epochs\0format\0format_version") {
     throw new Error("fingerprint key store has unsupported fields");
   }
-  if (record.format !== expectedFormat || record.format_version !== 1) {
+  if (record.format !== "harnery-v3-fingerprint-keys" || record.format_version !== 1) {
     throw new Error("fingerprint key store format is unsupported");
   }
   if (
@@ -286,7 +252,7 @@ function validateKeyStore<F extends FingerprintKeyStoreFormat>(
     throw new Error("fingerprint key store active epoch is missing");
   }
   return {
-    format: expectedFormat,
+    format: "harnery-v3-fingerprint-keys",
     format_version: 1,
     active_epoch_id: record.active_epoch_id as `pep_${string}`,
     epochs,
