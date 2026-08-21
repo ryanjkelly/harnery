@@ -530,6 +530,82 @@ describe("projectScene", () => {
     expect(scene.panels[0]?.ledger_state?.value).toBe("recovery-required");
     expect(scene.panels[0]?.expression.value).toBe("recovering");
   });
+
+  test("projects open span activity without replacing declared task", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({ task: "Ship Codec activity" })]),
+      events: [
+        ev({
+          event_type: "tool.requested",
+          ts: "2026-08-16T10:04:30.000Z",
+          span_id: "span-open",
+          tool_namespace: "functions",
+          tool_name: "apply_patch",
+          category: "edit",
+          outcome: "started",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels[0]?.identity.task?.value).toBe("Ship Codec activity");
+    expect(scene.panels[0]?.operation?.value).toMatchObject({
+      label: "Editing files",
+      category: "edit",
+      state: "active",
+      elapsed_ms: 30_000,
+    });
+    expect(scene.panels[0]?.telemetry?.value).toBe("unknown");
+  });
+
+  test("typed waits ask for operator attention only when the wait kind does", () => {
+    const permission = projectScene({
+      snapshot: snapshot([]),
+      events: [
+        ev({ event_type: "turn.started", ts: "2026-08-16T10:03:00.000Z" }),
+        ev({
+          event_type: "wait.started",
+          ts: "2026-08-16T10:04:00.000Z",
+          wait_id: "permission-1",
+          wait_kind: "permission",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(permission.panels[0]?.activity.value).toBe("needs-input");
+    expect(permission.panels[0]?.operation?.value.label).toBe("Waiting for permission");
+
+    const scheduled = projectScene({
+      snapshot: snapshot([]),
+      events: [
+        ev({ event_type: "turn.started", ts: "2026-08-16T10:03:00.000Z" }),
+        ev({
+          event_type: "wait.started",
+          ts: "2026-08-16T10:04:00.000Z",
+          wait_id: "schedule-1",
+          wait_kind: "scheduled",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scheduled.panels[0]?.activity.value).toBe("idle");
+    expect(scheduled.panels[0]?.operation?.value.label).toBe("Scheduled wait");
+  });
+
+  test("a historical recovery event is not a sticky recovering expression", () => {
+    const scene = projectScene({
+      snapshot: snapshot([hb({ activity: "idle" })]),
+      events: [
+        ev({
+          event_type: "lifecycle.recovered",
+          ts: "2026-08-16T09:00:00.000Z",
+          recovered: true,
+          recovery_reason: "span_salvage",
+        }),
+      ],
+      now: NOW,
+    });
+    expect(scene.panels[0]?.expression.value).toBe("neutral");
+  });
 });
 
 // Heartbeat rows and ledger evidence key the same session differently: a row

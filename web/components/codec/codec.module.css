@@ -118,3 +118,23 @@
 .ambAlert {
   background: radial-gradient(80% 60% at 50% 0%, rgba(245, 158, 11, 0.08), transparent 70%);
 }
+
+/* Output flow is a short evidence-backed pulse. Reduced-motion readers keep
+ * the same static label and color without animation. */
+.outputFlow {
+  color: rgb(2 132 199);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .outputFlow {
+    animation: codec-output-flow 1.4s ease-in-out infinite;
+  }
+  @keyframes codec-output-flow {
+    0%,
+    100% {
+      opacity: 0.65;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}

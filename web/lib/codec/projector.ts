@@ -19,7 +19,7 @@
 import type { AgentsSnapshot, Heartbeat } from "@/lib/coord-reader";
 
 import { nativeInstanceIdV3 } from "../../../src/core/events/v3/live-routing";
-
+import { projectActivityChannels, unknownActivityChannels } from "./activity";
 import {
   CODEC_SCHEMA_VERSION,
   type CodecActivity,
@@ -73,7 +73,6 @@ interface InstanceEvidence {
   parentGeneration?: { parent: string; event_id: string; ts: string };
   generationId?: string;
   childGenerationId?: string;
-  recovered?: boolean;
   /** Newest accepted event of any type, for evidence-panel recency. */
   lastEventTs?: string;
   /** Activity folded from events with the session-state reducer's table, so a
@@ -116,7 +115,6 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
     }
     if (ev.generation_id) slot.generationId = ev.generation_id;
     if (ev.child_generation_id) slot.childGenerationId = ev.child_generation_id;
-    if (ev.recovered) slot.recovered = true;
     slot.lastEventTs = ev.ts;
     // V3 activity evidence: session boundaries are idle, turns and tools are
     // working, waits need input, and commands preserve an already-open turn.
@@ -135,7 +133,14 @@ function foldEvidence(events: readonly CodecSourceEvidence[]): Map<string, Insta
         setActivity("working");
         break;
       case "wait.started":
-        setActivity("needs-input");
+        setActivity(
+          ev.wait_kind === "permission" ||
+            ev.wait_kind === "needs_input" ||
+            ev.wait_kind === "decision" ||
+            ev.wait_kind === "approval"
+            ? "needs-input"
+            : "idle",
+        );
         break;
       case "wait.ended":
         setActivity("working");
@@ -307,7 +312,7 @@ function lifecycle(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<C
 }
 
 function taskLabel(hb: Heartbeat, ev: InstanceEvidence | undefined): Presented<string> | undefined {
-  if (hb.task && hb.task.trim()) {
+  if (hb.task?.trim()) {
     return present(hb.task.trim(), "projection", "high", hb.task_updated_at ?? hb.last_heartbeat);
   }
   if (ev?.lastTaskChanged?.task && !ev.lastTaskChanged.task_cleared) {
@@ -437,6 +442,7 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
   const nowMs = ms(now);
   const events = alignEventInstanceIds(inputs.events, inputs.snapshot);
   const evidence = foldEvidence(events);
+  const activityChannels = projectActivityChannels(events, now);
   const heartbeatName = new Map<string, string>();
   const generationToInstance = new Map<string, string>();
   const childOf = new Map<string, { parent: string; event_id: string; ts: string }>();
@@ -538,10 +544,11 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       progress_rhythm: progressRhythm(ev, nowMs, hb.last_heartbeat),
       recent_actions: ev?.recentActions ?? [],
       ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
+      ...(activityChannels.get(hb.instance_id) ?? unknownActivityChannels(now)),
       character: { ...FALLBACK_PACK },
       updated_at: hb.last_heartbeat,
     };
-    applyLedgerPresentation(panel, hb, ev);
+    applyLedgerPresentation(panel, hb);
     panels.push(panel);
   }
 
@@ -629,10 +636,11 @@ export function projectScene(inputs: ProjectSceneInputs): CodecScene {
       progress_rhythm: progressRhythm(ev, nowMs, fallbackTs),
       recent_actions: ev.recentActions,
       ...(channels.focus_bubble ? { focus_bubble: channels.focus_bubble } : {}),
+      ...(activityChannels.get(instanceId) ?? unknownActivityChannels(now)),
       character: { ...FALLBACK_PACK },
       updated_at: fallbackTs,
     };
-    applyLedgerPresentation(evidencePanel, undefined, ev);
+    applyLedgerPresentation(evidencePanel, undefined);
     panels.push(evidencePanel);
     paneled.add(instanceId);
   }
@@ -710,21 +718,17 @@ export function __resetContextBandMemory(): void {
   lastBandByInstance.clear();
 }
 
-function applyLedgerPresentation(
-  panel: CodecPanelScene,
-  hb: Heartbeat | undefined,
-  ev: InstanceEvidence | undefined,
-): void {
+function applyLedgerPresentation(panel: CodecPanelScene, hb: Heartbeat | undefined): void {
   const state = hb?.ledger_state;
   if (state) {
     panel.ledger_state = present(state, "projection", "high", hb.last_heartbeat);
   }
-  if (state === "recovery-required" || ev?.recovered) {
+  if (state === "recovery-required") {
     panel.expression = present(
       "recovering",
-      state === "recovery-required" ? "projection" : "event",
+      "projection",
       "high",
-      hb?.last_heartbeat ?? ev?.lastEventTs ?? panel.updated_at,
+      hb?.last_heartbeat ?? panel.updated_at,
     );
   }
 }

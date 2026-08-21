@@ -15,7 +15,17 @@
  * so a missed interval is never replayed.
  */
 
-import { CircleDashed, Hammer, Network, Pencil, Search, TestTube, Wrench } from "lucide-react";
+import {
+  CircleDashed,
+  Hammer,
+  Network,
+  PackageCheck,
+  Pencil,
+  Search,
+  TestTube,
+  TriangleAlert,
+  Wrench,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentChip } from "@/components/AgentChip";
 import { Badge } from "@/components/ui/badge";
@@ -114,7 +124,15 @@ export function CodecView({ initialScene }: { initialScene: CodecScene }) {
         if (seenCues.current.has(cue.cue_id)) continue;
         seenCues.current.add(cue.cue_id);
         if (animate && cue.kind === "message" && cue.from_instance_id && cue.to_instance_id) {
-          animatePing(cue.from_instance_id, cue.to_instance_id, next);
+          const sourceDegraded = next.panels.find(
+            (panel) => panel.instance_id === cue.from_instance_id,
+          )?.telemetry?.value;
+          const targetDegraded = next.panels.find(
+            (panel) => panel.instance_id === cue.to_instance_id,
+          )?.telemetry?.value;
+          if (sourceDegraded !== "degraded" && targetDegraded !== "degraded") {
+            animatePing(cue.from_instance_id, cue.to_instance_id, next);
+          }
         }
       }
       if (seenCues.current.size > 500) {
@@ -338,6 +356,7 @@ function RelationshipLines({
         className="pointer-events-none absolute inset-0 h-full w-full"
         style={{ zIndex: 1 }}
       >
+        <title>Agent relationships</title>
         {lines.map((line) => (
           <line
             key={line.id}
@@ -389,6 +408,7 @@ function CodecPanel({
       className={cn(
         "relative z-[2] rounded-lg border bg-card p-3 text-card-foreground",
         ATTENTION_RING[panel.attention.value],
+        panel.friction && "ring-1 ring-amber-400/50",
         panel.attention.value === "error" && styles.errorFlash,
         glowing ? styles.pingArrive : styles.pingArriveFade,
         offline && "opacity-60",
@@ -401,7 +421,10 @@ function CodecPanel({
           <div className="truncate">
             <AgentChip name={panel.identity.display_name} />
           </div>
-          <p className="truncate text-xs text-muted-foreground" title={panel.identity.task?.value}>
+          <p
+            className="break-words text-xs text-muted-foreground"
+            title={panel.identity.task?.value}
+          >
             {panel.identity.task?.value ?? "no declared task"}
           </p>
         </div>
@@ -409,8 +432,9 @@ function CodecPanel({
       </div>
 
       <FocusBubble panel={panel} />
+      <OperationCue panel={panel} />
 
-      <div className="mt-3 flex flex-wrap items-center gap-1">
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <Badge
           variant={panel.activity.value === "needs-input" ? "default" : "outline"}
           title={`Activity: ${panel.activity.value} (${panel.activity.provenance})`}
@@ -480,6 +504,34 @@ function CodecPanel({
             {panel.attention.value}
           </Badge>
         )}
+        {panel.artifact_cue && (
+          <Badge
+            variant="secondary"
+            title={`Artifact: ${panel.artifact_cue.value.operation} ${panel.artifact_cue.value.kind} (${panel.artifact_cue.provenance})`}
+          >
+            <PackageCheck className="mr-1 size-3" aria-hidden />
+            {panel.artifact_cue.value.operation} {humanizeCueToken(panel.artifact_cue.value.kind)}
+          </Badge>
+        )}
+        {panel.friction && (
+          <Badge
+            variant="secondary"
+            className="border-amber-400/50 text-amber-700 dark:text-amber-300"
+            title={`Friction: ${panel.friction.value} (${panel.friction.provenance}, ${panel.friction.confidence} confidence)`}
+          >
+            <TriangleAlert className="mr-1 size-3" aria-hidden />
+            {humanizeCueToken(panel.friction.value)}
+          </Badge>
+        )}
+        {panel.telemetry?.value === "degraded" && (
+          <Badge
+            variant="outline"
+            className="border-dashed text-muted-foreground"
+            title="Observer telemetry is degraded; order-sensitive animation is suppressed"
+          >
+            observer degraded
+          </Badge>
+        )}
         {parentName && (
           <Badge variant="outline" title={`Delegated by ${parentName} (event-backed parentage)`}>
             ↳ {parentName}
@@ -495,6 +547,49 @@ function CodecPanel({
       <ActionTrail actions={panel.recent_actions} />
     </section>
   );
+}
+
+/** Current operation is a span-derived fact, separate from declared task and
+ * expressive styling. Its state names observable flow, never cognition. */
+function OperationCue({ panel }: { panel: CodecPanelScene }) {
+  const operation = panel.operation;
+  if (!operation) return null;
+  const Icon = CATEGORY_ICONS[operation.value.category] ?? CircleDashed;
+  const stateLabel = humanizeCueToken(operation.value.state);
+  return (
+    <div
+      role="status"
+      className="mt-2 flex min-w-0 items-center gap-2 rounded-md border bg-muted/35 px-2.5 py-1.5 text-xs"
+      aria-label={`Current operation: ${operation.value.label}, ${stateLabel}`}
+      title={`Current operation (${operation.provenance}): ${operation.value.label} · ${stateLabel}`}
+    >
+      <Icon className="size-3.5 flex-none text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1 truncate font-medium">{operation.value.label}</span>
+      <span
+        className={cn(
+          "flex-none text-muted-foreground",
+          operation.value.state === "output-flow" &&
+            panel.telemetry?.value !== "degraded" &&
+            styles.outputFlow,
+        )}
+      >
+        {stateLabel}
+        {operation.value.elapsed_ms !== undefined &&
+          ` · ${formatElapsed(operation.value.elapsed_ms)}`}
+      </span>
+    </div>
+  );
+}
+
+function humanizeCueToken(value: string): string {
+  return value.replace(/[_-]+/g, " ");
+}
+
+function formatElapsed(value: number): string {
+  const seconds = Math.max(0, Math.floor(value / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
 /** Intent capsule: solid treatment for event-backed focus, dotted + labeled
@@ -529,6 +624,7 @@ function Portrait({ panel }: { panel: CodecPanelScene }) {
   return (
     <span className={cn(styles.portraitFrame, !online && styles.portraitStatic)} aria-hidden>
       {usePack ? (
+        // biome-ignore lint/performance/noImgElement: local 48px WebP pack assets should not be re-encoded
         <img
           src={`/api/codec-pack/${panel.character.pack_id}/${panel.expression.value}?v=${panel.character.pack_version}`}
           alt=""
@@ -582,11 +678,11 @@ function ContextGauge({ panel }: { panel: CodecPanelScene }) {
 function ActionTrail({ actions }: { actions: CodecRecentAction[] }) {
   if (actions.length === 0) return null;
   return (
-    <div className="mt-2 flex items-center gap-1.5" aria-label="Recent actions">
+    <ul className="mt-2 flex items-center gap-1.5" aria-label="Recent actions">
       {actions.map((action) => {
         const Icon = CATEGORY_ICONS[action.category] ?? CircleDashed;
         return (
-          <span
+          <li
             key={action.event_id}
             className={cn(
               "grid size-6 place-items-center rounded border",
@@ -600,9 +696,9 @@ function ActionTrail({ actions }: { actions: CodecRecentAction[] }) {
             <span className="sr-only">
               {action.category} {action.outcome}
             </span>
-          </span>
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 }

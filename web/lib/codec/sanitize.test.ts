@@ -154,6 +154,93 @@ describe("sanitizeEvent", () => {
     expect(JSON.stringify(command)).not.toContain("build");
   });
 
+  test("lifts only privacy-safe span, output, target, artifact, and telemetry scalars", () => {
+    const requested = sanitizeEvent(
+      v3Event(
+        "tool.requested",
+        {
+          tool: { namespace: "functions", name: "apply_patch" },
+          input: { storage: "omitted", media_type: "application/json", bytes: 900 },
+          exact_input: fixtureFingerprint("private patch body"),
+          targets: [
+            {
+              kind: "workspace_path",
+              access: "write",
+              display: SECRET_INPUT,
+              fingerprint: fixtureFingerprint("private target path"),
+              extractor_version: "fixture",
+            },
+          ],
+        },
+        true,
+      ),
+    );
+    expect(requested).toMatchObject({
+      event_type: "tool.requested",
+      tool_namespace: "functions",
+      tool_name: "apply_patch",
+      category: "edit",
+      target_kind: "workspace_path",
+      target_access: "write",
+    });
+    expect(requested?.span_id).toMatch(/^span_/);
+    expect(requested?.operation_fingerprint?.digest).toMatch(/^sha256:/);
+    expect(requested?.target_fingerprint?.digest).toMatch(/^sha256:/);
+    expect(JSON.stringify(requested)).not.toContain(SECRET_INPUT);
+    expect(JSON.stringify(requested)).not.toContain("private patch body");
+    expect(JSON.stringify(requested)).not.toContain("private target path");
+
+    const output = sanitizeEvent(
+      v3Event(
+        "command.output_observed",
+        {
+          stream: "combined",
+          bytes: 512,
+          lines: 12,
+          content_fingerprint: fixtureFingerprint(SECRET_INPUT),
+        },
+        { tool: true },
+      ),
+    );
+    expect(output).toMatchObject({
+      event_type: "command.output_observed",
+      output_stream: "combined",
+      output_bytes: 512,
+      output_lines: 12,
+    });
+    expect(JSON.stringify(output)).not.toContain(SECRET_INPUT);
+
+    const artifact = sanitizeEvent(
+      v3Event("artifact.observed", {
+        artifact: {
+          artifact_id: "art_fixture",
+          kind: "report",
+          media_type: "text/markdown",
+          bytes: 2048,
+          retention_class: "workspace",
+          workspace_path: SECRET_INPUT,
+        },
+        operation: "published",
+      }),
+    );
+    expect(artifact).toMatchObject({
+      artifact_kind: "report",
+      artifact_operation: "published",
+    });
+    expect(JSON.stringify(artifact)).not.toContain(SECRET_INPUT);
+
+    const drift = sanitizeEvent(
+      v3Event("health.capability_drift", {
+        signal: "tool_spans",
+        promised: "native",
+        expected_count: 3,
+        observed_count: 2,
+        generation_ended: true,
+      }),
+    );
+    expect(drift?.telemetry_issue).toBe("capability-drift");
+  });
+
   test("maps waits, recovery, subject instance, and generation parentage", () => {
     const parentGen = generationId;
     const childGen = generationIdV3();

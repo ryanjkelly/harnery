@@ -63,6 +63,31 @@ export type CodecActionCategory =
 
 export type CodecActionOutcome = "started" | "ok" | "error" | "unknown";
 
+export type CodecOperationState = "active" | "output-flow" | "retrying" | "long-running";
+export type CodecArtifactOperation = "created" | "updated" | "viewed" | "published";
+export type CodecFriction = "recent-error" | "repeating-operation" | "target-contention";
+export type CodecTelemetry = "healthy" | "degraded" | "unknown";
+
+export interface CodecOperationValue {
+  category: CodecActionCategory;
+  /** Public-safe operation label derived from namespace/name, never arguments. */
+  label: string;
+  state: CodecOperationState;
+  elapsed_ms?: number;
+}
+
+export interface CodecArtifactValue {
+  operation: CodecArtifactOperation;
+  /** Contract-safe artifact kind token; paths and artifact contents never cross. */
+  kind: string;
+}
+
+export interface CodecComparableFingerprint {
+  digest: string;
+  scope: "generation" | "root";
+  key_epoch: string;
+}
+
 export interface CodecRecentAction {
   category: CodecActionCategory;
   outcome: CodecActionOutcome;
@@ -83,6 +108,8 @@ export interface CodecSourceEvidence {
   ts: string;
   instance_id: string;
   session_id?: string;
+  /** Turn scope for bounded retry/repetition windows. */
+  turn_id?: string;
   parent_session_id?: string;
   /** V3 generation that produced this row; used to join parentage. */
   generation_id?: string;
@@ -94,8 +121,39 @@ export interface CodecSourceEvidence {
   live_overlay?: boolean;
   /** True when a recovery block or lifecycle.recovered was observed. */
   recovered?: boolean;
+  recovery_reason?: string;
+  /** Span correlation only; no content is embedded in either identifier. */
+  span_id?: string;
+  parent_span_id?: string;
+  wait_id?: string;
+  wait_kind?:
+    | "permission"
+    | "needs_input"
+    | "decision"
+    | "approval"
+    | "scheduled"
+    | "rate_limit"
+    | "unknown";
+  wake_at?: string;
+  /** Tool namespace and name are contract SafeTokens, never tool inputs. */
+  tool_namespace?: string;
   /** Tool/command name only, never inputs or outputs. */
   tool_name?: string;
+  operation_fingerprint?: CodecComparableFingerprint;
+  target_kind?: string;
+  target_access?: string;
+  target_fingerprint?: CodecComparableFingerprint;
+  duration_ms?: number;
+  duration_state?: "observed" | "unsupported" | "expected_but_missing" | "unknown";
+  output_stream?: "stdout" | "stderr" | "combined";
+  output_bytes?: number;
+  output_lines?: number;
+  artifact_kind?: string;
+  artifact_operation?: CodecArtifactOperation;
+  claim_operation?: "acquired" | "released" | "denied";
+  claim_access?: "read" | "write";
+  /** Observation-quality defect, not an agent error. */
+  telemetry_issue?: "clock-regressed" | "attribution-conflict" | "capability-drift";
   /** Normalized action category when the event is an action. */
   category?: CodecActionCategory;
   /** Action outcome when the event closes an action. */
@@ -137,6 +195,14 @@ export interface CodecPanelScene {
     /** Present only when the bubble text came from the local live-display feed. */
     live_overlay?: boolean;
   }>;
+  /** Newest open leaf operation derived from paired V3 spans/waits. */
+  operation?: Presented<CodecOperationValue>;
+  /** Most recent bounded artifact operation; omitted after its decay window. */
+  artifact_cue?: Presented<CodecArtifactValue>;
+  /** Conservative friction vocabulary; never claims cognition or percent complete. */
+  friction?: Presented<CodecFriction>;
+  /** Only defects are asserted; absence of quality evidence remains unknown. */
+  telemetry?: Presented<CodecTelemetry>;
   parent_instance_id?: Presented<string>;
   /** V3 ledger lifecycle for this generation, when the snapshot carries it. */
   ledger_state?: Presented<"live" | "ending" | "recovery-required" | "terminal">;

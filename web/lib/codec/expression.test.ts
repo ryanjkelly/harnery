@@ -181,7 +181,7 @@ describe("deriveExpressiveChannels", () => {
       }),
       NOW,
     );
-    expect(c.focus_bubble?.value.text).toBe("sync vendor mirror after");
+    expect(c.focus_bubble?.value.text).toBe("sync vendor mirror after…");
     expect(c.focus_bubble?.value.basis).toBe("event-backed");
     expect(c.focus_bubble?.expires_at).toBeDefined();
     expect(c.focus_bubble?.evidence_event_ids).toHaveLength(1);

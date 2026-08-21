@@ -183,7 +183,7 @@ export function deriveExpressiveChannels(
       provenance,
       confidence,
       observed_at: observedAt,
-      ...(ids && ids.length ? { evidence_event_ids: ids } : {}),
+      ...(ids?.length ? { evidence_event_ids: ids } : {}),
     });
 
     // waiting: authoritative needs-input holds until forward progress.
@@ -286,11 +286,12 @@ export function deriveExpressiveChannels(
     const withIntent = [...turnActions].reverse().find((a) => a.intent);
     const intentTs = ms(withIntent?.ts);
     if (withIntent?.intent && Number.isFinite(intentTs) && age(intentTs) <= BUBBLE_MS) {
-      const words = withIntent.intent.split(/\s+/).filter(Boolean).slice(0, 4);
+      const allWords = withIntent.intent.split(/\s+/).filter(Boolean);
+      const words = allWords.slice(0, 4);
       if (words.length > 0) {
         focusBubble = {
           value: {
-            text: words.join(" "),
+            text: `${words.join(" ")}${allWords.length > words.length ? "…" : ""}`,
             basis: "event-backed",
             ...(withIntent.live_overlay ? { live_overlay: true } : {}),
           },
