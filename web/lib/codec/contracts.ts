@@ -122,6 +122,8 @@ export interface CodecSourceEvidence {
   /** True when a recovery block or lifecycle.recovered was observed. */
   recovered?: boolean;
   recovery_reason?: string;
+  /** Original request linked by a machinery-minted recovery terminal. */
+  recovery_requested_event_id?: string;
   /** Span correlation only; no content is embedded in either identifier. */
   span_id?: string;
   parent_span_id?: string;

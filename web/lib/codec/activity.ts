@@ -32,6 +32,7 @@ const COMPARISON_CAP = 48;
 interface OpenOperation {
   key: string;
   spanId?: string;
+  parentSpanId?: string;
   waitId?: string;
   eventId: string;
   ts: string;
@@ -45,6 +46,7 @@ interface OpenOperation {
   outputBytes: number;
   lastOutputTs?: string;
   retryEvidenceIds?: string[];
+  orderReliable: boolean;
 }
 
 interface TerminalAttempt {
@@ -63,6 +65,8 @@ interface FrictionRecord {
 
 interface InstanceActivityState {
   open: Map<string, OpenOperation>;
+  pendingTerminals: Map<string, CodecSourceEvidence>;
+  closedTurns: Map<string, true>;
   lastTerminalByFingerprint: Map<string, TerminalAttempt>;
   startsByTurnFingerprint: Map<string, { count: number; eventIds: string[]; ts: string }>;
   lastTargetFingerprint?: string;
@@ -83,6 +87,8 @@ export interface CodecActivityChannels {
 function state(): InstanceActivityState {
   return {
     open: new Map(),
+    pendingTerminals: new Map(),
+    closedTurns: new Map(),
     lastTerminalByFingerprint: new Map(),
     startsByTurnFingerprint: new Map(),
     activeWriteClaims: new Map(),
@@ -198,12 +204,17 @@ function openKey(event: CodecSourceEvidence): string | undefined {
   return undefined;
 }
 
+function recoveryRequestKey(eventId: string | undefined): string | undefined {
+  return eventId ? `request:${eventId}` : undefined;
+}
+
 function clearForwardProgress(slot: InstanceActivityState): void {
   if (slot.friction?.value === "repeating-operation") slot.friction = undefined;
   slot.startsByTurnFingerprint.clear();
 }
 
 function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): void {
+  if (event.turn_id && slot.closedTurns.has(event.turn_id)) return;
   const key = openKey(event);
   if (!key) return;
   const operationFingerprint = fingerprintKey(event.operation_fingerprint);
@@ -220,6 +231,7 @@ function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): v
   const operation: OpenOperation = {
     key,
     ...(event.span_id ? { spanId: event.span_id } : {}),
+    ...(event.parent_span_id ? { parentSpanId: event.parent_span_id } : {}),
     ...(event.wait_id ? { waitId: event.wait_id } : {}),
     eventId: event.event_id,
     ts: event.ts,
@@ -231,9 +243,10 @@ function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): v
     ...(targetFingerprint ? { targetFingerprint } : {}),
     outputCount: 0,
     outputBytes: 0,
+    orderReliable: event.telemetry_issue === undefined,
   };
 
-  if (operationFingerprint) {
+  if (operationFingerprint && operation.orderReliable) {
     const prior = slot.lastTerminalByFingerprint.get(operationFingerprint);
     if (
       prior &&
@@ -263,13 +276,38 @@ function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): v
   }
   slot.open.set(key, operation);
   trimMap(slot.open, OPEN_SPAN_CAP);
+
+  const pending =
+    slot.pendingTerminals.get(key) ??
+    slot.pendingTerminals.get(recoveryRequestKey(event.event_id) ?? "");
+  if (pending) recordTerminal(slot, pending, key);
 }
 
-function recordTerminal(slot: InstanceActivityState, event: CodecSourceEvidence): void {
-  const key = openKey(event);
+function recordTerminal(
+  slot: InstanceActivityState,
+  event: CodecSourceEvidence,
+  matchedKey?: string,
+): void {
+  const directKey = openKey(event);
+  const requestKey = recoveryRequestKey(event.recovery_requested_event_id);
+  const requestMatchedKey = requestKey
+    ? [...slot.open.entries()].find(
+        ([, operation]) => requestKey === recoveryRequestKey(operation.eventId),
+      )?.[0]
+    : undefined;
+  const key = matchedKey ?? (directKey && slot.open.has(directKey) ? directKey : requestMatchedKey);
   const open = key ? slot.open.get(key) : undefined;
   if (key) slot.open.delete(key);
+  if (open) {
+    if (directKey) slot.pendingTerminals.delete(directKey);
+    if (requestKey) slot.pendingTerminals.delete(requestKey);
+  }
   if (!open?.fingerprint) {
+    if (!open) {
+      if (directKey) slot.pendingTerminals.set(directKey, event);
+      if (requestKey) slot.pendingTerminals.set(requestKey, event);
+      trimMap(slot.pendingTerminals, COMPARISON_CAP);
+    }
     if (event.outcome === "error") {
       slot.friction = {
         value: "recent-error",
@@ -286,9 +324,11 @@ function recordTerminal(slot: InstanceActivityState, event: CodecSourceEvidence)
     ts: event.ts,
     ...(open.turnId ? { turnId: open.turnId } : {}),
   };
-  slot.lastTerminalByFingerprint.delete(open.fingerprint);
-  slot.lastTerminalByFingerprint.set(open.fingerprint, terminal);
-  trimMap(slot.lastTerminalByFingerprint, COMPARISON_CAP);
+  if (open.orderReliable && event.telemetry_issue === undefined) {
+    slot.lastTerminalByFingerprint.delete(open.fingerprint);
+    slot.lastTerminalByFingerprint.set(open.fingerprint, terminal);
+    trimMap(slot.lastTerminalByFingerprint, COMPARISON_CAP);
+  }
   if (terminal.outcome === "ok" && event.duration_ms !== undefined) {
     const samples = slot.durationsByOperation.get(open.baselineKey) ?? [];
     samples.push(event.duration_ms);
@@ -309,7 +349,20 @@ function recordTerminal(slot: InstanceActivityState, event: CodecSourceEvidence)
 }
 
 function newestOpen(slot: InstanceActivityState): OpenOperation | undefined {
-  return [...slot.open.values()].sort((a, b) => millis(b.ts) - millis(a.ts))[0];
+  const operations = [...slot.open.values()];
+  const parentSpanIds = new Set(
+    operations
+      .map((operation) => operation.parentSpanId)
+      .filter((spanId): spanId is string => spanId !== undefined),
+  );
+  const leaves = operations.filter(
+    (operation) => !operation.spanId || !parentSpanIds.has(operation.spanId),
+  );
+  const candidates = leaves.length > 0 ? leaves : operations;
+  if (candidates.every((operation) => operation.orderReliable)) {
+    return candidates.sort((a, b) => millis(b.ts) - millis(a.ts))[0];
+  }
+  return candidates.at(-1);
 }
 
 /** Fold V3-safe evidence into per-panel activity channels. */
@@ -318,6 +371,7 @@ export function projectActivityChannels(
   now: string,
 ): Map<string, CodecActivityChannels> {
   const states = new Map<string, InstanceActivityState>();
+  const seenEventIds = new Set<string>();
   const get = (instanceId: string) => {
     let slot = states.get(instanceId);
     if (!slot) {
@@ -328,6 +382,8 @@ export function projectActivityChannels(
   };
 
   for (const event of events) {
+    if (seenEventIds.has(event.event_id)) continue;
+    seenEventIds.add(event.event_id);
     const slot = get(event.instance_id);
     if (event.telemetry_issue) {
       slot.telemetry = { ts: event.ts, eventId: event.event_id };
@@ -341,7 +397,7 @@ export function projectActivityChannels(
       case "command.output_observed": {
         const key = openKey(event);
         const open = key ? slot.open.get(key) : undefined;
-        if (open) {
+        if (open && event.telemetry_issue === undefined) {
           open.outputCount += 1;
           open.outputBytes += event.output_bytes ?? 0;
           open.lastOutputTs = event.ts;
@@ -386,12 +442,20 @@ export function projectActivityChannels(
       }
       case "turn.completed":
         slot.open.clear();
+        if (event.turn_id) {
+          slot.closedTurns.set(event.turn_id, true);
+          trimMap(slot.closedTurns, COMPARISON_CAP);
+          for (const [key, pending] of slot.pendingTerminals) {
+            if (pending.turn_id === event.turn_id) slot.pendingTerminals.delete(key);
+          }
+        }
         slot.startsByTurnFingerprint.clear();
         if (slot.friction?.value === "repeating-operation") slot.friction = undefined;
         break;
       case "session.ended":
       case "agent.completed":
         slot.open.clear();
+        slot.pendingTerminals.clear();
         slot.activeWriteClaims.clear();
         break;
       default:
@@ -440,6 +504,7 @@ export function projectActivityChannels(
         : undefined;
       const samples = slot.durationsByOperation.get(open.baselineKey) ?? [];
       const longRunning =
+        open.orderReliable &&
         elapsedMs !== undefined &&
         samples.length >= 5 &&
         elapsedMs > Math.max(30_000, percentile(samples, 0.9) * 1.5);

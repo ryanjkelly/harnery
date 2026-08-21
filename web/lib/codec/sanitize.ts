@@ -92,10 +92,18 @@ export function categorizeOperation(
   if (direct !== "other") return direct;
   const key = `${namespace ?? ""}/${toolName ?? ""}`.toLowerCase();
   if (/collaboration|agent|message|plan|workflow|council|decide/.test(key)) return "coordinate";
-  if (/apply.?patch|edit|write|notebookedit/.test(key)) return "edit";
+  if (
+    /apply.?patch|edit|write|notebookedit|str.?replace|search.?replace|delete|create.?file/.test(
+      key,
+    )
+  ) {
+    return "edit";
+  }
   if (/test|playwright|vitest|jest/.test(key)) return "test";
   if (/image.?gen|document|spreadsheet|presentation|publish|deploy/.test(key)) return "build";
-  if (/web|search|read|grep|glob|view.?image|browser/.test(key)) return "research";
+  if (/web|search|read|grep|glob|view.?image|browser|list.?dir|find.?file/.test(key)) {
+    return "research";
+  }
   if (/exec|command|shell|bash|terminal/.test(key)) return "diagnostic";
   if (targetAccess === "write" || targetAccess === "delete") return "edit";
   if (targetAccess === "publish") return "build";
@@ -144,6 +152,9 @@ function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
   if ("recovery" in event.payload && event.payload.recovery) {
     base.recovered = true;
     base.recovery_reason = event.payload.recovery.reason;
+    if (event.payload.recovery.requested_event_id) {
+      base.recovery_requested_event_id = event.payload.recovery.requested_event_id;
+    }
   }
 
   switch (event.event_type) {

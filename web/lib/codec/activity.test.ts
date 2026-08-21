@@ -87,6 +87,153 @@ describe("projectActivityChannels", () => {
     expect(channels?.operation).toBeUndefined();
   });
 
+  test("duplicate event ids are idempotent and do not manufacture repetition", () => {
+    const start = event({
+      event_type: "tool.requested",
+      span_id: "span-duplicate",
+      turn_id: "turn-duplicate",
+      tool_name: "Read",
+      category: "research",
+      operation_fingerprint: fingerprint("duplicate"),
+    });
+    const channels = projectActivityChannels([start, start, start], NOW).get("inst-a");
+
+    expect(channels?.operation?.value.state).toBe("active");
+    expect(channels?.operation?.evidence_event_ids).toEqual([start.event_id]);
+    expect(channels?.friction).toBeUndefined();
+  });
+
+  test("a terminal observed before its request still closes the matching span", () => {
+    const requested = event({
+      event_type: "tool.requested",
+      ts: at(30),
+      span_id: "span-inverted",
+      turn_id: "turn-inverted",
+      operation_fingerprint: fingerprint("inverted"),
+    });
+    const terminal = event({
+      event_type: "tool.completed",
+      ts: at(20),
+      span_id: "span-inverted",
+      turn_id: "turn-inverted",
+      outcome: "ok",
+    });
+    const channels = projectActivityChannels([terminal, requested], NOW).get("inst-a");
+
+    expect(channels?.operation).toBeUndefined();
+  });
+
+  test("a completed turn suppresses a late start from that closed scope", () => {
+    const channels = projectActivityChannels(
+      [
+        event({ event_type: "turn.completed", turn_id: "turn-closed", outcome: "ok" }),
+        event({
+          event_type: "tool.requested",
+          span_id: "span-late",
+          turn_id: "turn-closed",
+          operation_fingerprint: fingerprint("late"),
+        }),
+      ],
+      NOW,
+    ).get("inst-a");
+
+    expect(channels?.operation).toBeUndefined();
+  });
+
+  test("a recovered terminal can close and seed a retry through requested event linkage", () => {
+    const exact = fingerprint("recovered");
+    const requested = event({
+      event_type: "tool.requested",
+      ts: at(40),
+      span_id: "span-native",
+      turn_id: "turn-recovered",
+      operation_fingerprint: exact,
+    });
+    const recovered = event({
+      event_type: "tool.completed",
+      ts: at(30),
+      span_id: "span-recovered-terminal",
+      turn_id: "turn-recovered",
+      outcome: "unknown",
+      recovered: true,
+      recovery_requested_event_id: requested.event_id,
+    });
+    const retry = event({
+      event_type: "tool.requested",
+      ts: at(10),
+      span_id: "span-retry",
+      turn_id: "turn-recovered",
+      operation_fingerprint: exact,
+    });
+    const channels = projectActivityChannels([requested, recovered, retry], NOW).get("inst-a");
+
+    expect(channels?.operation?.value.state).toBe("retrying");
+    expect(channels?.operation?.evidence_event_ids).toEqual([recovered.event_id, retry.event_id]);
+  });
+
+  test("an open child span remains the leaf when its clock regresses", () => {
+    const channels = projectActivityChannels(
+      [
+        event({
+          event_type: "tool.requested",
+          ts: at(20),
+          span_id: "span-parent",
+          tool_name: "Read",
+          category: "research",
+        }),
+        event({
+          event_type: "tool.requested",
+          ts: at(30),
+          span_id: "span-child",
+          parent_span_id: "span-parent",
+          tool_name: "Edit",
+          category: "edit",
+          telemetry_issue: "clock-regressed",
+        }),
+      ],
+      NOW,
+    ).get("inst-a");
+
+    expect(channels?.operation?.value).toMatchObject({ label: "Editing files", category: "edit" });
+    expect(channels?.telemetry.value).toBe("degraded");
+  });
+
+  test("clock-regressed starts do not create retries or repetition friction", () => {
+    const exact = fingerprint("regressed");
+    const failedStart = event({
+      event_type: "tool.requested",
+      ts: at(50),
+      span_id: "span-failed",
+      turn_id: "turn-regressed",
+      operation_fingerprint: exact,
+    });
+    const failedTerminal = event({
+      event_type: "tool.completed",
+      ts: at(40),
+      span_id: "span-failed",
+      turn_id: "turn-regressed",
+      outcome: "error",
+    });
+    const regressedStarts = ["one", "two", "three"].map((suffix, index) =>
+      event({
+        event_type: "tool.requested",
+        ts: at(45 + index),
+        span_id: `span-regressed-${suffix}`,
+        turn_id: "turn-regressed",
+        operation_fingerprint: exact,
+        telemetry_issue: "clock-regressed",
+      }),
+    );
+    const channels = projectActivityChannels(
+      [failedStart, failedTerminal, ...regressedStarts],
+      NOW,
+    ).get("inst-a");
+
+    expect(channels?.operation?.value.state).toBe("active");
+    expect(channels?.friction?.value).toBe("recent-error");
+    expect(channels?.telemetry.value).toBe("degraded");
+  });
+
   test("calls an operation long-running only after a same-operation baseline exists", () => {
     const exact = fingerprint("baseline");
     const history = Array.from({ length: 5 }, (_, index) => {
@@ -206,6 +353,61 @@ describe("projectActivityChannels", () => {
       NOW,
     ).get("inst-a");
     expect(different?.operation?.value.state).toBe("active");
+
+    const differentEpoch = { ...same, key_epoch: "pep-next" };
+    const incomparable = projectActivityChannels(
+      [
+        event({
+          event_type: "tool.requested",
+          ts: at(50),
+          span_id: "span-epoch-1",
+          turn_id: "turn-epoch",
+          operation_fingerprint: same,
+        }),
+        event({
+          event_type: "tool.completed",
+          ts: at(40),
+          span_id: "span-epoch-1",
+          turn_id: "turn-epoch",
+          outcome: "error",
+        }),
+        event({
+          event_type: "tool.requested",
+          ts: at(10),
+          span_id: "span-epoch-2",
+          turn_id: "turn-epoch",
+          operation_fingerprint: differentEpoch,
+        }),
+      ],
+      NOW,
+    ).get("inst-a");
+    expect(incomparable?.operation?.value.state).toBe("active");
+  });
+
+  test("stderr bytes prove output flow but do not imply failure", () => {
+    const channels = projectActivityChannels(
+      [
+        event({
+          event_type: "command.started",
+          ts: at(20),
+          span_id: "span-stderr",
+          tool_namespace: "command",
+          tool_name: "build",
+          operation_fingerprint: fingerprint("stderr"),
+        }),
+        event({
+          event_type: "command.output_observed",
+          ts: at(2),
+          span_id: "span-stderr",
+          output_stream: "stderr",
+          output_bytes: 12,
+        }),
+      ],
+      NOW,
+    ).get("inst-a");
+
+    expect(channels?.operation?.value.state).toBe("output-flow");
+    expect(channels?.friction).toBeUndefined();
   });
 
   test("three exact starts produce bounded repetition friction until progress", () => {
@@ -290,6 +492,35 @@ describe("projectActivityChannels", () => {
     expect(overlap.get("inst-a")?.friction?.value).toBe("target-contention");
     expect(overlap.get("inst-b")?.friction?.value).toBe("target-contention");
     expect(JSON.stringify(overlap.get("inst-a"))).not.toContain("workspace_path");
+
+    const released = projectActivityChannels(
+      [
+        event({
+          instance_id: "inst-a",
+          event_type: "coord.claim_changed",
+          claim_operation: "acquired",
+          claim_access: "write",
+          target_fingerprint: target,
+        }),
+        event({
+          instance_id: "inst-b",
+          event_type: "coord.claim_changed",
+          claim_operation: "acquired",
+          claim_access: "write",
+          target_fingerprint: target,
+        }),
+        event({
+          instance_id: "inst-b",
+          event_type: "coord.claim_changed",
+          claim_operation: "released",
+          claim_access: "write",
+          target_fingerprint: target,
+        }),
+      ],
+      NOW,
+    );
+    expect(released.get("inst-a")?.friction).toBeUndefined();
+    expect(released.get("inst-b")?.friction).toBeUndefined();
 
     const denied = projectActivityChannels(
       [

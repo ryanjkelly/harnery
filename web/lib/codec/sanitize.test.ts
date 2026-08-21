@@ -9,7 +9,7 @@ import {
   generationIdV3,
   spanIdV3,
 } from "../../../src/core/events/v3/ids";
-import { categorizeTool, sanitizeEvent, sanitizeLine } from "./sanitize";
+import { categorizeOperation, categorizeTool, sanitizeEvent, sanitizeLine } from "./sanitize";
 
 const BASE = {
   schema_version: 1,
@@ -315,6 +315,36 @@ describe("sanitizeEvent", () => {
       recovered: true,
     });
 
+    const requestedEventId = eventIdV3();
+    const recoveredTerminal = sanitizeEvent(
+      v3Event(
+        "tool.completed",
+        {
+          tool: { namespace: "codex", name: "apply_patch" },
+          outcome: "unknown",
+          duration_ms: {
+            state: "unknown",
+            reason: "completion_not_observed_before_turn_end",
+          },
+          span: fixtureSpan({
+            state: "unknown",
+            reason: "completion_not_observed_before_turn_end",
+          }),
+          result: { storage: "omitted", media_type: "application/json", bytes: 0 },
+          recovery: {
+            reason: "completion_not_observed_before_turn_end",
+            requested_event_id: requestedEventId,
+          },
+        },
+        { tool: true, attestation: "derived" },
+      ),
+    );
+    expect(recoveredTerminal).toMatchObject({
+      recovered: true,
+      recovery_reason: "completion_not_observed_before_turn_end",
+      recovery_requested_event_id: requestedEventId,
+    });
+
     const staleTerm = sanitizeEvent(
       v3Event("session.termination_observed", {
         observation: "stale",
@@ -376,6 +406,43 @@ describe("categorizeTool", () => {
   });
 });
 
+describe("categorizeOperation", () => {
+  test("classifies representative Claude Code, Codex, and Cursor V3 rows", () => {
+    const fixtures = [
+      { adapter: "claude-code", name: "Read", expected: "research" },
+      { adapter: "claude-code", name: "Edit", expected: "edit" },
+      { adapter: "claude-code", name: "Bash", expected: "diagnostic" },
+      { adapter: "codex", name: "apply_patch", expected: "edit" },
+      { adapter: "codex", name: "exec_command", expected: "diagnostic" },
+      { adapter: "codex", name: "view_image", expected: "research" },
+      { adapter: "cursor", name: "Write", expected: "edit" },
+      { adapter: "cursor", name: "StrReplace", expected: "edit" },
+      { adapter: "cursor", name: "Shell", expected: "diagnostic" },
+      { adapter: "cursor", name: "list_dir", expected: "research" },
+    ] as const;
+
+    for (const fixture of fixtures) {
+      const sanitized = sanitizeEvent(
+        v3Event(
+          "tool.requested",
+          {
+            tool: { namespace: fixture.adapter, name: fixture.name },
+            input: { storage: "omitted", media_type: "application/json", bytes: 0 },
+            exact_input: fixtureFingerprint(`${fixture.adapter}:${fixture.name}`),
+            targets: [],
+          },
+          true,
+        ),
+      );
+      expect(sanitized?.category).toBe(fixture.expected);
+      expect(sanitized?.tool_namespace).toBe(fixture.adapter);
+      expect(sanitized?.tool_name).toBe(fixture.name);
+    }
+
+    expect(categorizeOperation("cursor", "unknown_future_tool")).toBe("other");
+  });
+});
+
 const generationId = generationIdV3();
 const attestationId = attestationIdV3();
 
@@ -386,6 +453,7 @@ function v3Event(
     | boolean
     | {
         tool?: boolean;
+        attestation?: "native" | "derived";
         instanceId?: string;
         parentGenerationId?: string;
         generationId?: string;
@@ -447,7 +515,7 @@ function v3Event(
       source_event: "fixture.codec",
       // Native mirrors production hook tool events; ADR 0078 forbids derived
       // tool events that carry no recovery block.
-      attestation: "native",
+      attestation: options.attestation ?? "native",
       confidence: "exact",
       attribution: {
         method: "explicit_argument",
