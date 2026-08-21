@@ -1,5 +1,5 @@
 ---
-"harnery": major
+"harnery": minor
 ---
 
 Replace every event-recording, coordination-authority, workflow, CLI, web, and
