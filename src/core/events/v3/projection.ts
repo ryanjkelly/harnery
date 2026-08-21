@@ -1,7 +1,7 @@
 import type { EventV3 } from "./contract.ts";
 import type { PositionedEventV3, ReadLedgerV3Result } from "./reader.ts";
 
-export const EVENT_V3_SAFETY_REDUCER_BUILD = "event-v3-safety-reducer-v1" as const;
+export const EVENT_V3_SAFETY_REDUCER_BUILD = "event-v3-safety-reducer-v2" as const;
 const MAX_PROJECTION_DIAGNOSTICS = 256;
 
 interface GenerationScopeViewV3 {
@@ -58,8 +58,11 @@ export interface GenerationSafetyStateV3 {
   last_segment_ordinal: number;
   last_byte_offset: number;
   task_state?: string;
+  task_state_updated_at?: string;
   lifecycle_state?: string;
+  lifecycle_state_updated_at?: string;
   presence_state?: string;
+  presence_state_updated_at?: string;
   provisional_termination?: {
     observation: string;
     event_id: string;
@@ -433,6 +436,9 @@ function applySubjectTransition(
     return;
   }
   state[field] = event.payload.new_state;
+  if (field === "task_state") state.task_state_updated_at = event.time.observed_at;
+  if (field === "lifecycle_state") state.lifecycle_state_updated_at = event.time.observed_at;
+  if (field === "presence_state") state.presence_state_updated_at = event.time.observed_at;
   touch(state, positioned);
 }
 

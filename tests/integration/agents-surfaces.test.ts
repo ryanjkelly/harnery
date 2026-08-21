@@ -109,12 +109,14 @@ describe("harn agents state surfaces", () => {
       activity: "needs_input",
       activity_source: "event-v3-coordination-view",
       task_state: "blocked",
+      task_state_scope: "current",
     });
 
     expect(json(harn(root, ["agents", "whoami", "--json"]))).toMatchObject({
       activity: "needs_input",
       activity_updated_at: expect.any(String),
       task_state: "blocked",
+      task_state_scope: "current",
       task_state_updated_at: expect.any(String),
     });
   });
@@ -134,6 +136,7 @@ describe("harn agents state surfaces", () => {
       expect(json(harn(root, ["agents", "show", "Hollis", "--json"]))).toMatchObject({
         activity: "needs_input",
         task_state: "blocked",
+        task_state_scope: "current",
       });
       const shown = harn(root, ["agents", "show", "Hollis"]);
       expect(shown.stdout).toContain("activity:       needs_input");
@@ -149,6 +152,7 @@ describe("harn agents state surfaces", () => {
       activity: "needs_input",
       activity_source: "event-v3-coordination-view",
       task_state: "blocked",
+      task_state_scope: "current",
     });
     const entries = traced.entries as Array<Record<string, unknown>>;
     expect(entries.some((entry) => entry.event_type === "wait.started")).toBe(true);
@@ -159,6 +163,20 @@ describe("harn agents state surfaces", () => {
 
   test("trace labels an ended session separately from its durable work lifecycle", () => {
     const root = makeSandbox();
+    recordLiveLifecycleChangeV3({
+      coordRoot: root,
+      owner: OWNER,
+      nativeSessionId: OWNER,
+      adapter: "codex",
+      state: "active",
+    });
+    const liveTrace = json(harn(root, ["agents", "trace", "Hollis", "--json"]));
+    expect(liveTrace).toMatchObject({
+      session_state: "live",
+      task_state: "active",
+      task_state_scope: "current",
+      task_state_updated_at: expect.any(String),
+    });
     const route = resolveLiveEventLedgerRouteV3(root);
     if (route.state !== "v3") throw new Error("expected active V3 route");
     recordLiveHookSignalV3({
@@ -185,13 +203,17 @@ describe("harn agents state surfaces", () => {
       }).state,
     ).toBe("recorded");
 
+    expect((json(harn(root, ["agents", "list", "--json"])).rows as unknown[]).length).toBe(0);
+    expect(harn(root, ["agents", "show", "Hollis", "--json"]).status).toBe(1);
     expect(json(harn(root, ["agents", "trace", "Hollis", "--json"]))).toMatchObject({
       session_state: "ended",
       activity: "idle",
-      task_state: "blocked",
+      task_state: "active",
+      task_state_scope: "historical",
+      task_state_updated_at: liveTrace.task_state_updated_at,
     });
     expect(harn(root, ["agents", "trace", "Hollis"]).stdout).toContain(
-      "activity=idle · session=ended · lifecycle=blocked",
+      "activity=idle · session=ended · lifecycle=historical(active)",
     );
   });
 

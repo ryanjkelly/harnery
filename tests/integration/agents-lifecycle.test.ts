@@ -14,6 +14,10 @@ import {
   recordLiveHookSignalV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../src/core/events/v3/live-routing.ts";
+import {
+  readHookProducerStateV3,
+  recordApprovedSessionEndV3,
+} from "../../src/core/events/v3/producers/recorder.ts";
 import { readLedgerV3 } from "../../src/core/events/v3/reader.ts";
 
 const HARNERY_DIR = path.resolve(import.meta.dir, "../..");
@@ -209,6 +213,78 @@ describe("harn agents lifecycle on the V3 ledger", () => {
       suggested_session_name: "[DONE] Agent Hollis - Auth Refactor",
     });
     expect(lifecycleEvents(root)[0]?.payload).toMatchObject({ new_state: "done" });
+  });
+
+  test("active opens a fresh derived generation after an authoritative terminal", () => {
+    const root = makeSandbox();
+    expect(harn(root, ["agents", "lifecycle", "done", "--session-id", OWNER]).status).toBe(0);
+    const route = resolveLiveEventLedgerRouteV3(root);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    const terminalState = readHookProducerStateV3(root, "codex", OWNER);
+    if (!terminalState) throw new Error("expected hook producer state");
+    const priorGenerationId = terminalState.generation_id;
+    expect(
+      recordApprovedSessionEndV3({
+        coordRoot: root,
+        mode: route.mode,
+        instance_id: terminalState.instance_id,
+        generation_id: priorGenerationId,
+        build_id: route.build_id,
+        platform: "linux",
+        reason: "approved_explicit_end",
+        outcome: "succeeded",
+        coordination_finalized: true,
+      }).state,
+    ).toBe("recorded");
+
+    const reopened = harn(root, ["agents", "lifecycle", "active", "--session-id", OWNER]);
+    expect(reopened.status).toBe(0);
+    expect(outputObject(reopened)).toMatchObject({
+      task_state: "active",
+      prior_state: null,
+      changed: true,
+      generation_reopened: true,
+      prior_generation_id: priorGenerationId,
+      generation_id: expect.stringMatching(/^gen_/),
+      name_reminted: false,
+    });
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const starts = events.filter((event) => event.event_type === "session.started");
+    const terminals = events.filter((event) => event.event_type === "session.ended");
+    expect(starts).toHaveLength(2);
+    expect(terminals).toHaveLength(1);
+    const latestStart = starts.at(-1);
+    if (latestStart?.event_type !== "session.started") {
+      throw new Error("expected reopened session start");
+    }
+    const priorTerminal = terminals[0];
+    if (priorTerminal?.event_type !== "session.ended") {
+      throw new Error("expected prior session terminal");
+    }
+    if (!("generation_id" in latestStart.scope) || !("generation_id" in priorTerminal.scope)) {
+      throw new Error("expected generation-scoped session events");
+    }
+    const reopenedGenerationId = latestStart.scope.generation_id;
+    expect(latestStart).toMatchObject({
+      provenance: {
+        attestation: "derived",
+        confidence: "high",
+        attribution: { method: "session_env", state: "verified" },
+      },
+      payload: {
+        resume: { state: "unknown", reason: "approved_lifecycle_reopen" },
+      },
+    });
+    expect(reopenedGenerationId).not.toBe(priorGenerationId);
+    expect(priorTerminal.scope.generation_id).toBe(priorGenerationId);
+    expect(heartbeat(root)).toMatchObject({
+      task_state: "active",
+      v3_generation_id: reopenedGenerationId,
+    });
+    expect(
+      harn(root, ["agents", "set-task", "Follow-up review", "--session-id", OWNER]).status,
+    ).toBe(0);
   });
 
   test("validates blocked reasons and rejects non-human-facing caches", () => {

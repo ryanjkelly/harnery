@@ -245,7 +245,7 @@ function projectHeartbeatV3(
     activity_updated_at: generation.last_observed_at,
     activity_source: "event-v3-coordination-view",
     task_state: lifecycle,
-    task_state_updated_at: generation.last_observed_at,
+    task_state_updated_at: generation.lifecycle_state_updated_at,
     task_state_reason: lifecycle === "blocked" ? cache?.task_state_reason : undefined,
     suggested_session_name: cache?.suggested_session_name,
     session_name_seen_at: cache?.session_name_seen_at,

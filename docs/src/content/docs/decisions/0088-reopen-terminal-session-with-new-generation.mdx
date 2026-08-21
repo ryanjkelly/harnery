@@ -1,0 +1,70 @@
+---
+title: "0088: Reopen a terminal session with a new generation"
+description: "ADR: let an explicit lifecycle-active command recover a continuing human session by starting a derived generation, without changing its terminal predecessor."
+sidebar:
+  order: 88
+---
+
+**Status:** accepted (2026-08-20) · **Scope:** product tier (`core/agents`, `core/events/v3`, `commands/agents`)
+
+## Context
+
+An operator can return to the same conversation after its task lifecycle was
+marked done and its V3 generation ended. The next prompt proves that the human
+session is executing again, but some adapters do not deliver another native
+session-start callback for that conversation.
+
+The documented recovery command was `harn agents lifecycle active`. It still
+required an authority-safe live generation, so it refused the exact state it
+was meant to recover. Task and Git work remained intact, but all coordination
+writes stayed unavailable for the rest of the conversation.
+
+V3 terminal authority is immutable. Recovery cannot remove `session.ended`,
+change its outcome, append new work to its generation, or call the old
+generation live again.
+
+## Alternatives considered
+
+**Resurrect the terminal generation.** Rejected because events after a terminal
+make authority ambiguous and violate V3's single terminal boundary.
+
+**Treat the lifecycle command as a native session-start callback.** Rejected
+because the adapter did not supply that signal. Native provenance would claim
+evidence that Harnery does not have.
+
+**Exempt the conversation from the end-turn ritual.** Rejected because it hides
+the coordination failure and leaves task, claim, status, and identity writes
+unavailable.
+
+**Require a new client conversation.** Rejected because a follow-up prompt in
+the existing conversation is normal operator behavior and already proves live
+execution.
+
+## Decision
+
+When `agents lifecycle active` resolves a human-facing identity with no live
+generation, it may open a fresh generation only if all of these checks pass:
+
+- the native session identity matches exactly one terminal private producer;
+- the terminal producer matches an authoritative terminal generation;
+- the prior generation is not delegated, a workflow child, or a subagent; and
+- the V3 route and coordination view remain authority-safe.
+
+The new `session.started` event has derived/high-confidence provenance,
+verified `session_env` attribution, and
+`resume.reason: "approved_lifecycle_reopen"`. The prior terminal remains
+unchanged. The new generation begins with the compatibility lifecycle default
+of active and no inherited task text; a following `set-task` declares the new
+focus normally.
+
+The command reports both generation IDs and `generation_reopened: true`.
+States other than active still fail when no live generation exists, and the
+error names the active recovery command.
+
+## Result
+
+The lifecycle regression marks a task done, records an approved session end,
+and runs `agents lifecycle active` against the retired identity. The ledger
+then contains two session starts, one unchanged terminal for the first
+generation, and a live second generation. A subsequent task declaration
+succeeds through normal V3 coordination authority.

@@ -44,6 +44,7 @@ import {
   resolveOwnerWithSource,
   sessionIdentityFromEnv,
 } from "../core/agents/index.ts";
+import { reopenLiveCoordinationGenerationV3 } from "../core/agents/live-authority-v3.ts";
 import {
   listSessionFinalizationRequestsV3,
   observeHostDisappearedV3,
@@ -230,6 +231,7 @@ interface Row {
   activity_updated_at?: string | null;
   activity_source?: string | null;
   task_state: TaskState;
+  task_state_scope: "current" | "historical";
   task_state_updated_at?: string | null;
   task_state_reason?: string | null;
   platform?: string | null;
@@ -1256,6 +1258,7 @@ function runWhoami(opts: { json?: boolean }): void {
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
     task_state: taskStateOf(hb),
+    task_state_scope: "current",
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
     platform: hb.platform ?? "claude-code",
@@ -1337,6 +1340,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         activity_updated_at: h.activity_updated_at ?? null,
         activity_source: h.activity_source ?? null,
         task_state: taskStateOf(h),
+        task_state_scope: "current",
         task_state_updated_at: h.task_state_updated_at ?? null,
         task_state_reason: h.task_state_reason ?? null,
         platform: h.platform ?? "claude-code",
@@ -1364,6 +1368,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
       activity_updated_at: h.activity_updated_at ?? null,
       activity_source: h.activity_source ?? null,
       task_state: taskStateOf(h),
+      task_state_scope: "current",
       task_state_updated_at: h.task_state_updated_at ?? null,
       task_state_reason: h.task_state_reason ?? null,
       platform: h.platform ?? "claude-code",
@@ -1393,6 +1398,7 @@ function runList(opts: { all?: boolean; stale?: boolean; json?: boolean }): void
         activity_updated_at: null,
         activity_source: null,
         task_state: a.task_state ?? "active",
+        task_state_scope: "current",
         task_state_updated_at: null,
         task_state_reason: a.task_state_reason ?? null,
         platform: a.platform ?? "claude-code",
@@ -1610,6 +1616,7 @@ async function runShow(name: string, opts: { json?: boolean }): Promise<void> {
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
     task_state: taskStateOf(hb),
+    task_state_scope: "current" as const,
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
     title: report?.title ?? null,
@@ -1892,7 +1899,7 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     return;
   }
   if (!opts.sessionId) ensureCursorSession(root);
-  const myOwner = opts.sessionId ?? resolveOwner();
+  const myOwner = opts.sessionId ?? resolveOwner() ?? sessionIdentityFromEnv();
   if (!myOwner) {
     emit.error({
       code: "no_pidmap_entry",
@@ -1903,11 +1910,40 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
     return;
   }
 
-  const hb = readCurrentCoordinationRow(myOwner);
+  let hb = readCurrentCoordinationRow(myOwner);
+  let reopenedGeneration: ReturnType<typeof reopenLiveCoordinationGenerationV3> | undefined;
   if (!hb) {
-    emit.error({ code: "no_live_generation", message: noLiveGenerationMessage(myOwner) });
-    process.exitCode = 1;
-    return;
+    if (state !== "active") {
+      emit.error({
+        code: "no_live_generation",
+        message: `${noLiveGenerationMessage(myOwner)}; run \`${resolveBinName(root)} agents lifecycle active\` to open a fresh generation`,
+      });
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      reopenedGeneration = reopenLiveCoordinationGenerationV3({
+        coordRoot: root,
+        owner: myOwner,
+        nativeSessionId: nativeSessionIdentity(readHeartbeatCache(root, myOwner), myOwner),
+      });
+    } catch (error) {
+      emit.error({
+        code: "lifecycle_reopen_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      process.exitCode = 1;
+      return;
+    }
+    hb = readCurrentCoordinationRow(myOwner);
+    if (!hb) {
+      emit.error({
+        code: "lifecycle_reopen_failed",
+        message: "the fresh generation was recorded but did not project as live",
+      });
+      process.exitCode = 1;
+      return;
+    }
   }
   if (hb.kind === "subagent" || hb.kind === "transient" || hb.workflow_run_id) {
     emit.error({
@@ -1938,6 +1974,22 @@ function runLifecycle(rawState: string, opts: { reason?: string; sessionId?: str
 
   const priorState: TaskState = hb.task_state ?? "active";
   const priorReason = hb.task_state_reason || undefined;
+  if (reopenedGeneration) {
+    emit.data({
+      instance_id: myOwner,
+      task_state: "active",
+      prior_state: null,
+      reason: null,
+      changed: true,
+      generation_reopened: true,
+      prior_generation_id: reopenedGeneration.prior_generation_id,
+      generation_id: reopenedGeneration.generation_id,
+      name_reminted: false,
+      suggested_session_name: null,
+      git_finalization_checked: false,
+    });
+    return;
+  }
   if (priorState === state && priorReason === reason) {
     emit.data({
       instance_id: myOwner,
@@ -2261,6 +2313,7 @@ function runStatus(opts: {
     activity_updated_at: hb.activity_updated_at ?? null,
     activity_source: hb.activity_source ?? null,
     task_state: taskStateOf(hb),
+    task_state_scope: "current" as const,
     task_state_updated_at: hb.task_state_updated_at ?? null,
     task_state_reason: hb.task_state_reason ?? null,
     files_held: filesHeld,
@@ -3620,7 +3673,7 @@ function runTrace(
             lifecycleState === "active" || lifecycleState === "blocked" || lifecycleState === "done"
               ? lifecycleState
               : "active",
-          task_state_updated_at: generation.last_observed_at,
+          task_state_updated_at: generation.lifecycle_state_updated_at,
         };
       }
     } catch {
@@ -3674,6 +3727,7 @@ function runTrace(
     activity_updated_at: state.activity_updated_at ?? null,
     activity_source: state.activity_source ?? null,
     task_state: state.task_state,
+    task_state_scope: sessionState === "ended" ? "historical" : "current",
     task_state_updated_at: state.task_state_updated_at ?? null,
     task_state_reason: state.task_state_reason ?? null,
     shown: shown.length,
@@ -3688,7 +3742,7 @@ function runTrace(
   const header = `Trace: agent-${displayName}  (${resolvedId.slice(0, 8)}…)  ${events.length} events${result.other_instances.length ? ` · ${result.other_instances.length} older instance(s) of this name` : ""}`;
   process.stdout.write(`${header}\n`); // lint-ok-emission: human trace view
   process.stdout.write(
-    `  activity=${state.activity} · session=${sessionState} · lifecycle=${state.task_state}${state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
+    `  activity=${state.activity} · session=${sessionState} · lifecycle=${sessionState === "ended" ? `historical(${state.task_state})` : state.task_state}${sessionState !== "ended" && state.task_state === "blocked" && state.task_state_reason ? `: ${state.task_state_reason}` : ""}\n`,
   ); // lint-ok-emission: human trace view
   if (!diagnosticRead.authoritative) {
     process.stdout.write(`  unavailable: ${diagnosticRead.reason ?? "event source incomplete"}\n`); // lint-ok-emission: explicit no-fallback diagnostic

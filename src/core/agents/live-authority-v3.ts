@@ -4,6 +4,11 @@ import type { AuthorityMutationV3 } from "../events/v3/authority-outbox.ts";
 import { canonicalJsonV3, sha256V3 } from "../events/v3/canonical.ts";
 import type { EventV3WriteMode } from "../events/v3/control.ts";
 import {
+  readCoordinationViewV3,
+  requireAuthoritySafeCoordinationViewV3,
+} from "../events/v3/coordination-view.ts";
+import {
+  LIVE_HOOK_V3_PRODUCER_ID,
   liveInstanceIdV3,
   livePlatformV3,
   resolveLiveEventLedgerRouteV3,
@@ -16,6 +21,10 @@ import {
   type RecordCoordinationAuthorityV3Result,
   recordCoordinationAuthorityV3,
 } from "../events/v3/producers/coordination-recorder.ts";
+import {
+  readTerminalHookProducerStateV3,
+  recordHookSignalV3,
+} from "../events/v3/producers/recorder.ts";
 import {
   acquireClaim,
   type Heartbeat,
@@ -44,6 +53,13 @@ export type LiveCoordinationAuthorityV3Result =
   | { state: "unchanged" }
   | { state: "recorded"; result: RecordCoordinationAuthorityV3Result };
 
+export interface ReopenedLiveCoordinationGenerationV3 {
+  state: "reopened";
+  adapter: Adapter;
+  prior_generation_id: `gen_${string}`;
+  generation_id: `gen_${string}`;
+}
+
 interface LiveAuthorityBaseV3 {
   coordRoot: string;
   owner: string;
@@ -51,6 +67,67 @@ interface LiveAuthorityBaseV3 {
   nativeSessionId: string;
   adapter: Adapter;
   observationId?: string;
+}
+
+/**
+ * Open a fresh derived generation for a human-facing session that is executing
+ * again after an authoritative terminal. The terminal generation is never
+ * changed or reused.
+ */
+export function reopenLiveCoordinationGenerationV3(input: {
+  coordRoot: string;
+  owner: string;
+  nativeSessionId: string;
+}): ReopenedLiveCoordinationGenerationV3 {
+  const route = resolveLiveEventLedgerRouteV3(input.coordRoot);
+  if (route.state === "blocked") throw new LiveCoordinationAuthorityV3Error(route.reason);
+  const instanceId = liveInstanceIdV3(input.owner);
+  const terminal = readTerminalHookProducerStateV3(
+    input.coordRoot,
+    input.nativeSessionId,
+    instanceId,
+  );
+  if (!terminal) {
+    throw new LiveCoordinationAuthorityV3Error("terminal_generation_identity_missing");
+  }
+  const view = requireAuthoritySafeCoordinationViewV3(readCoordinationViewV3(input.coordRoot));
+  const terminalView = view.terminal_generations[terminal.generation_id];
+  if (!terminalView || terminalView.instance_id !== instanceId) {
+    throw new LiveCoordinationAuthorityV3Error("terminal_generation_authority_missing");
+  }
+  if (terminalView.parent_generation_id || terminalView.delegation_id || terminalView.workflow_id) {
+    throw new LiveCoordinationAuthorityV3Error("lifecycle_not_human_facing");
+  }
+  const reopened = recordHookSignalV3({
+    coordRoot: input.coordRoot,
+    mode: route.mode,
+    signal: "session-start",
+    payload: { raw: {}, session_id: input.nativeSessionId },
+    adapter: terminal.adapter,
+    instance_id: instanceId,
+    producer_id: LIVE_HOOK_V3_PRODUCER_ID,
+    build_id: route.build_id,
+    platform: livePlatformV3(),
+    session_start_derivation: "approved_lifecycle_reopen",
+  });
+  if (reopened.state !== "recorded" && reopened.state !== "already_started") {
+    throw new LiveCoordinationAuthorityV3Error(`generation_reopen_failed:${reopened.state}`);
+  }
+  const heartbeat = ensureLiveCoordinationHeartbeat(
+    input.coordRoot,
+    input.owner,
+    input.nativeSessionId,
+    terminal.adapter,
+  );
+  if (!heartbeat) {
+    throw new LiveCoordinationAuthorityV3Error("reopened_generation_materialization_failed");
+  }
+  return {
+    state: "reopened",
+    adapter: terminal.adapter,
+    prior_generation_id: terminal.generation_id,
+    generation_id: heartbeat.v3_generation_id as `gen_${string}`,
+  };
 }
 
 export function recordLiveTaskChangeV3(

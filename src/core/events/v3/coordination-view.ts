@@ -28,8 +28,11 @@ export interface CoordinationGenerationViewV3 {
   phase: "live" | "terminal";
   activity: "working" | "needs_input" | "idle" | "terminal";
   task_state?: string;
+  task_state_updated_at?: string;
   lifecycle_state?: string;
+  lifecycle_state_updated_at?: string;
   presence_state?: string;
+  presence_state_updated_at?: string;
   started_at: string;
   last_observed_at: string;
   last_event_id: string;
@@ -136,8 +139,11 @@ export function projectCoordinationViewV3(read: ReadLedgerV3Result): Coordinatio
       phase: state.phase,
       activity: state.activity,
       task_state: state.task_state,
+      task_state_updated_at: state.task_state_updated_at,
       lifecycle_state: state.lifecycle_state,
+      lifecycle_state_updated_at: state.lifecycle_state_updated_at,
       presence_state: state.presence_state,
+      presence_state_updated_at: state.presence_state_updated_at,
       started_at: state.started_at,
       last_observed_at: state.last_observed_at,
       last_event_id: state.last_event_id,
@@ -185,4 +191,3 @@ export function requireAuthoritySafeCoordinationViewV3(
   if (!view.authority_safe) throw new CoordinationViewV3Error(view.diagnostics);
   return view;
 }
-

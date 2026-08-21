@@ -180,6 +180,7 @@ export interface RecordHookSignalV3Input {
   hook_duration_ms?: number;
   stop_remediation?: boolean;
   turn_ritual?: TurnRitualEvidenceV3;
+  session_start_derivation?: "approved_lifecycle_reopen";
   writerOptions?: WriteEventV3Options;
 }
 
@@ -563,6 +564,9 @@ function processHookSignalLocked(
     if (input.signal === "session-start") {
       if (state && !state.terminal && state.started_event_id) {
         return { state: "already_started", event_id: state.started_event_id };
+      }
+      if (input.session_start_derivation && !state?.terminal) {
+        return { state: "missing_session_start" };
       }
       state = newProducerState(input, sessionId, epochId, boundaryEventId as `evt_${string}`);
     } else if (!state || state.terminal) {
@@ -1003,6 +1007,28 @@ function processHookSignalLocked(
       turn_ritual: input.turn_ritual,
     });
     if (!event) return { state: "ignored" };
+    if (
+      input.signal === "session-start" &&
+      input.session_start_derivation === "approved_lifecycle_reopen" &&
+      event.event_type === "session.started"
+    ) {
+      event.provenance = {
+        ...event.provenance,
+        source_event: `${input.adapter}.approved-lifecycle-reopen`,
+        attestation: "derived",
+        confidence: "high",
+        attribution: {
+          method: "session_env",
+          state: "verified",
+          subject_instance_id: state.instance_id,
+        },
+      };
+      event.payload.resume = {
+        state: "unknown",
+        reason: "approved_lifecycle_reopen",
+      };
+      assertEventV3(event);
+    }
     if (input.signal === "pre-tool-use" && span && !span.requested_event_id) {
       span.requested_event_id = event.event_id as `evt_${string}`;
       span.open_event_id = event.event_id as `evt_${string}`;
@@ -1857,6 +1883,21 @@ export function readHookProducerStateV3(
   const sessionHash = normalizeNativeIdV3(context, `${adapter}.session`, nativeSessionId);
   const path = producerStatePath(coordRoot, adapter, sessionHash);
   return existsSync(path) ? readProducerState(path) : undefined;
+}
+
+/** Resolve one terminal producer only when native session and instance identity agree. */
+export function readTerminalHookProducerStateV3(
+  coordRoot: string,
+  nativeSessionId: string,
+  instanceId: `inst_${string}`,
+): HookProducerStateV3 | undefined {
+  const matches = (["claude-code", "codex", "cursor"] as const)
+    .map((adapter) => readHookProducerStateV3(coordRoot, adapter, nativeSessionId))
+    .filter(
+      (state): state is HookProducerStateV3 =>
+        state?.terminal === true && state.instance_id === instanceId,
+    );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function readHookProducerStateByInstanceV3(
