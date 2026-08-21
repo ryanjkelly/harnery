@@ -84,6 +84,23 @@ describe("agent-hook V3 hard cut", () => {
     expect(post.stdout).toContain('"hookEventName":"PostToolUse"');
     expect(post.stdout).toContain(name);
 
+    const retryPost = runHook("post-tool-use", {
+      session_id: owner,
+      cwd: root,
+      tool_name: "Bash",
+      tool_use_id: "set-task-retry-tool",
+      tool_response: {
+        output: JSON.stringify({
+          suggested_session_name: name,
+          first_of_session: false,
+          session_name_retry: true,
+        }),
+      },
+    });
+    expect(retryPost.status).toBe(0);
+    expect(retryPost.stdout).toContain('"hookEventName":"PostToolUse"');
+    expect(retryPost.stdout).toContain(name);
+
     const remediation = runHook("pre-tool-use", {
       session_id: owner,
       cwd: root,
@@ -101,7 +118,7 @@ describe("agent-hook V3 hard cut", () => {
         content: [
           {
             type: "tool_result",
-            content: JSON.stringify({ suggested_session_name: name }),
+            content: JSON.stringify({ first_of_session: true, suggested_session_name: name }),
           },
         ],
       },
@@ -243,7 +260,10 @@ describe("agent-hook V3 hard cut", () => {
           payload: {
             type: "custom_tool_call_output",
             output: [
-              { type: "input_text", text: JSON.stringify({ suggested_session_name: name }) },
+              {
+                type: "input_text",
+                text: JSON.stringify({ first_of_session: true, suggested_session_name: name }),
+              },
             ],
           },
         },
@@ -331,7 +351,10 @@ describe("agent-hook V3 hard cut", () => {
           payload: {
             type: "custom_tool_call_output",
             output: [
-              { type: "input_text", text: JSON.stringify({ suggested_session_name: name }) },
+              {
+                type: "input_text",
+                text: JSON.stringify({ first_of_session: true, suggested_session_name: name }),
+              },
             ],
           },
         },

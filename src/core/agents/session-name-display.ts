@@ -38,7 +38,7 @@ export function sessionNameDisplayInstruction(name: string): string {
 
 /**
  * A PostToolUse result should announce the display protocol only when that
- * exact tool call minted the current suggestion. The coordination row keeps
+ * exact tool call minted or retried the current suggestion. The coordination row keeps
  * the suggestion pending until transcript evidence catches up, so checking
  * the row alone would re-announce the same name after every later tool.
  *
@@ -89,7 +89,7 @@ function responseContainsSessionNameMint(
   const row = value as Record<string, unknown>;
   if (
     row.suggested_session_name === name &&
-    (row.first_of_session === true || row.name_reminted === true)
+    (row.first_of_session === true || row.name_reminted === true || row.session_name_retry === true)
   ) {
     return true;
   }

@@ -1854,11 +1854,27 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
   // the first time. `first_of_session: true` means exactly "this call produced
   // the session name" — it is never true with a null name (an empty first
   // declaration or a `--session-id` relay both keep the window open instead).
-  const suggestedName =
+  const firstSuggestedName =
     !priorHb?.suggested_session_name && hb?.suggested_session_name
       ? hb.suggested_session_name
       : null;
-  const firstOfSession = suggestedName !== null;
+
+  // A readable but misclassified first display would otherwise leave the
+  // session permanently latched: set-task is allowed through the gate, but a
+  // normal repeat used to return no name and therefore could not establish a
+  // fresh ordered transcript boundary. Re-emit the unchanged pending name as
+  // an explicit retry. This does not rename the session or claim that the
+  // display was seen; it only gives the next exact block new mint evidence.
+  const retriedSuggestedName =
+    !firstSuggestedName &&
+    priorHb?.suggested_session_name &&
+    priorHb.session_name_seen_for !== priorHb.suggested_session_name &&
+    hb?.suggested_session_name === priorHb.suggested_session_name
+      ? hb.suggested_session_name
+      : null;
+  const suggestedName = firstSuggestedName ?? retriedSuggestedName;
+  const firstOfSession = firstSuggestedName !== null;
+  const sessionNameRetry = retriedSuggestedName !== null;
 
   emit.data({
     instance_id: myOwner,
@@ -1866,6 +1882,7 @@ function runSetTask(task: string, opts?: { sessionId?: string }): void {
     task: hb?.task ?? null,
     cleared: !task || task.length === 0,
     first_of_session: firstOfSession,
+    session_name_retry: sessionNameRetry,
     suggested_session_name: suggestedName,
     ...(lifecycleWarning ? { warning: lifecycleWarning } : {}),
     // Right-time instruction: the UserPromptSubmit nudge fires before the name

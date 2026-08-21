@@ -171,12 +171,18 @@ missing or malformed display is still denied.
 
 The gate always allows a single `agents set-task` or `agents status` command.
 Those are the ritual's repair and turn-closing paths, so the naming check must
-not block them. Shell control syntax disqualifies the exemption.
+not block them. If the current name is still pending, repeating `set-task`
+returns that unchanged name with `session_name_retry: true`. The retry result
+creates a fresh evidence boundary, so displaying its exact block can recover
+from an earlier transcript misclassification. Shell control syntax disqualifies
+the exemption.
 
 The same pending comparison drives every prompt reminder, including the one
 terminal name re-mint when lifecycle becomes `done`. Subagents and workflow
 children are skipped. Every later ordinary `set-task` returns
-`first_of_session: false` and a null name.
+`first_of_session: false`. It returns a null name after the current suggestion
+has been seen; while the suggestion is pending, it returns the same name with
+`session_name_retry: true` for recovery.
 
 `set-task` never changes task lifecycle. If task text changes while the session
 is `blocked` or `done`, the command returns a warning to reopen the lifecycle
