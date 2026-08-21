@@ -97,7 +97,7 @@ describe("session name display latch", () => {
     );
   });
 
-  test("recognizes only start and done mint responses for the current name", () => {
+  test("recognizes only start, done, and retry mint responses for the current name", () => {
     expect(
       toolResponseMintedSessionName({ suggested_session_name: NAME, first_of_session: true }, NAME),
     ).toBe(true);
@@ -110,6 +110,16 @@ describe("session name display latch", () => {
           })}`,
         },
         `[DONE] ${NAME}`,
+      ),
+    ).toBe(true);
+    expect(
+      toolResponseMintedSessionName(
+        {
+          suggested_session_name: NAME,
+          first_of_session: false,
+          session_name_retry: true,
+        },
+        NAME,
       ),
     ).toBe(true);
     expect(toolResponseMintedSessionName({ suggested_session_name: NAME }, NAME)).toBe(false);

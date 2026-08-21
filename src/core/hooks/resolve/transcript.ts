@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
+import { toolResponseMintedSessionName } from "../../agents/session-name-display.ts";
+
 /**
  * Scan a CC-style JSONL transcript for the `┌─ agent-` status-box prefix in
  * the most-recent assistant turn. Used by `turn.completed` events to populate
@@ -131,19 +133,23 @@ export function inspectSessionNameDisplayImmediately(
   const text = tailText(readablePath);
   if (!text) return { state: "unavailable", reason: "transcript_not_ready" };
   let sawMintResult = false;
+  let awaitingReply = false;
   for (const line of text.split("\n")) {
-    if (!sawMintResult) {
-      if (line.includes(name) && line.includes("suggested_session_name")) sawMintResult = true;
-      continue;
-    }
     const row = parseTranscriptRow(line);
     if (!row) continue;
+    if (toolResponseMintedSessionName(row, name)) {
+      sawMintResult = true;
+      awaitingReply = true;
+      continue;
+    }
+    if (!awaitingReply) continue;
     const assistantText = assistantTextFromRow(row);
     if (assistantText !== null) {
-      return { state: startsWithBlock(assistantText, name) ? "present" : "absent" };
+      if (startsWithBlock(assistantText, name)) return { state: "present" };
+      awaitingReply = false;
     }
   }
-  return sawMintResult
+  return sawMintResult && awaitingReply
     ? { state: "unavailable", reason: "transcript_not_ready" }
     : { state: "absent" };
 }

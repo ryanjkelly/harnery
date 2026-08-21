@@ -169,7 +169,10 @@ describe("ordered session-name transcript scans", () => {
           content: [
             {
               type: "tool_result",
-              content: JSON.stringify({ suggested_session_name: NAME }),
+              content: JSON.stringify({
+                first_of_session: true,
+                suggested_session_name: NAME,
+              }),
             },
           ],
         },
@@ -187,7 +190,12 @@ describe("ordered session-name transcript scans", () => {
         type: "response_item",
         payload: {
           type: "custom_tool_call_output",
-          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+          output: [
+            {
+              type: "input_text",
+              text: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
         },
       },
       {
@@ -210,7 +218,12 @@ describe("ordered session-name transcript scans", () => {
         type: "response_item",
         payload: {
           type: "custom_tool_call_output",
-          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+          output: [
+            {
+              type: "input_text",
+              text: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
         },
       },
       { type: "event_msg", payload: { type: "agent_message", message: BLOCK } },
@@ -243,7 +256,12 @@ describe("ordered session-name transcript scans", () => {
         type: "response_item",
         payload: {
           type: "custom_tool_call_output",
-          output: [{ type: "input_text", text: JSON.stringify({ suggested_session_name: NAME }) }],
+          output: [
+            {
+              type: "input_text",
+              text: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
         },
       },
       {
@@ -271,11 +289,70 @@ describe("ordered session-name transcript scans", () => {
     ).toEqual({ state: "unavailable", reason: "missing_transcript" });
   });
 
+  test("accepts an exact display after an explicit pending-name retry", () => {
+    const p = writeTranscript([
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [
+            {
+              type: "input_text",
+              text: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `Starting now.\n${BLOCK}` }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call_output",
+          output: [
+            {
+              type: "input_text",
+              text: JSON.stringify({
+                first_of_session: false,
+                session_name_retry: true,
+                suggested_session_name: NAME,
+              }),
+            },
+          ],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: BLOCK }],
+        },
+      },
+    ]);
+    expect(
+      inspectSessionNameDisplayImmediately(p, NAME, assistantTextStartsWithSessionNameBlock),
+    ).toEqual({ state: "present" });
+  });
+
   test("rejects an end-of-task block when substantive assistant text came first", () => {
     const p = writeTranscript([
       {
         type: "user",
-        message: { content: [{ type: "tool_result", content: `suggested_session_name=${NAME}` }] },
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              content: JSON.stringify({ first_of_session: true, suggested_session_name: NAME }),
+            },
+          ],
+        },
       },
       { type: "assistant", message: { content: [{ type: "text", text: "Working on it." }] } },
       { type: "assistant", message: { content: [{ type: "text", text: BLOCK }] } },

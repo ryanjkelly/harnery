@@ -1117,8 +1117,9 @@ async function main(): Promise<number> {
   }
 
   if (norm.event_type === "tool.completed" && eventName === "post-tool-use") {
-    // Inject only at the successful tool boundary that actually minted a name:
-    // the first non-empty set-task or the transition to lifecycle done. The
+    // Inject only at the successful tool boundary that actually minted or
+    // retried a name: the first non-empty set-task, a pending-name set-task
+    // retry, or the transition to lifecycle done. The
     // coordination row intentionally remains pending until transcript evidence
     // catches up; reading that latch alone here would re-inject after every
     // later tool and make the agent print the same block repeatedly.
