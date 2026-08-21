@@ -773,12 +773,55 @@ describe("event ledger V3 persistent hook recorder", () => {
     ).toBe("recorded");
 
     const events = readLedgerV3(root).events.map(({ event }) => event);
+    const delegated = events.find((event) => event.event_type === "agent.delegated");
     const started = events.find((event) => event.event_type === "agent.started");
     const completed = events.find((event) => event.event_type === "agent.completed");
+    expect(delegated?.payload.delegation_id).toBe(started?.payload.delegation_id);
+    expect(delegated?.payload.child_generation_id).toBe(started?.payload.child_generation_id);
     expect(started?.payload.delegation_id).toBe(completed?.payload.delegation_id);
     expect(started?.payload.child_generation_id).toBe(completed?.payload.child_generation_id);
     expect(readHookProducerStateV3(root, "claude-code", nativeSession)?.delegations).toEqual([]);
     expect(readFileSync(eventV3Paths(root).active, "utf8")).not.toContain(nativeChild);
+  });
+
+  test("derives operator-input waits and high-confidence semantic progress", () => {
+    const root = candidateRoot("codex");
+    const nativeSession = "codex-semantic-events";
+    recordHookSignalV3(
+      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "user-prompt-submit",
+        parsed({ session_id: nativeSession, turn_id: "turn-semantic" }),
+        "codex",
+      ),
+    );
+    const tool = (tool_use_id: string, tool_name: string) =>
+      parsed({ session_id: nativeSession, turn_id: "turn-semantic", tool_use_id, tool_name });
+    recordHookSignalV3(
+      baseInput(root, "pre-tool-use", tool("ask-1", "request_user_input"), "codex"),
+    );
+    recordHookSignalV3(
+      baseInput(root, "post-tool-use", tool("ask-1", "request_user_input"), "codex"),
+    );
+    recordHookSignalV3(baseInput(root, "pre-tool-use", tool("write-1", "apply_patch"), "codex"));
+    recordHookSignalV3(baseInput(root, "post-tool-use", tool("write-1", "apply_patch"), "codex"));
+
+    const events = readLedgerV3(root).events.map(({ event }) => event);
+    const waitStarted = events.find((event) => event.event_type === "wait.started");
+    const waitEnded = events.find((event) => event.event_type === "wait.ended");
+    expect(waitStarted?.payload.kind).toBe("needs_input");
+    expect(waitStarted?.payload.wait_id).toBe(waitEnded?.payload.wait_id);
+    const progress = events.find((event) => event.event_type === "progress.observed");
+    const writeTerminal = events.find(
+      (event) => event.event_type === "tool.completed" && event.payload.tool.name === "apply_patch",
+    );
+    if (!writeTerminal) throw new Error("write terminal missing");
+    expect(progress?.payload.kind).toBe("write");
+    expect(progress?.payload.evidence_event_ids).toEqual([writeTerminal.event_id]);
+    expect(progress?.provenance).toMatchObject({ attestation: "derived", confidence: "high" });
   });
 
   test("routes child-process tool hooks through the native session owner", () => {

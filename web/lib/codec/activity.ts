@@ -28,6 +28,10 @@ const CONTENTION_TTL_MS = 60_000;
 const TELEMETRY_TTL_MS = 5 * 60_000;
 const OPEN_SPAN_CAP = 24;
 const COMPARISON_CAP = 48;
+const DURATION_SAMPLE_CAP = 128;
+const MIN_DURATION_SAMPLES = 8;
+const LONG_RUNNING_MULTIPLIER = 1.5;
+const LONG_RUNNING_FLOOR_MS = 30_000;
 
 interface OpenOperation {
   key: string;
@@ -76,7 +80,6 @@ interface InstanceActivityState {
   friction?: FrictionRecord;
   telemetry?: { ts: string; eventId: string };
   activeWriteClaims: Map<string, { ts: string; eventId: string }>;
-  durationsByOperation: Map<string, number[]>;
 }
 
 export interface CodecActivityChannels {
@@ -94,7 +97,6 @@ function state(): InstanceActivityState {
     lastTerminalByFingerprint: new Map(),
     startsByTurnFingerprint: new Map(),
     activeWriteClaims: new Map(),
-    durationsByOperation: new Map(),
   };
 }
 
@@ -215,7 +217,11 @@ function clearForwardProgress(slot: InstanceActivityState): void {
   slot.startsByTurnFingerprint.clear();
 }
 
-function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): void {
+function recordStart(
+  slot: InstanceActivityState,
+  event: CodecSourceEvidence,
+  durationBaselines: Map<string, number[]>,
+): void {
   if (event.turn_id && slot.closedTurns.has(event.turn_id)) return;
   const key = openKey(event);
   if (!key) return;
@@ -240,7 +246,7 @@ function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): v
     ...(event.turn_id ? { turnId: event.turn_id } : {}),
     category: event.category ?? "coordinate",
     label: operationLabel(event),
-    baselineKey: `${event.tool_namespace ?? "wait"}/${event.tool_name ?? event.wait_kind ?? "unknown"}`,
+    baselineKey: `${event.adapter ?? "unknown"}/${event.tool_namespace ?? "wait"}/${event.tool_name ?? event.wait_kind ?? "unknown"}`,
     ...(operationFingerprint ? { fingerprint: operationFingerprint } : {}),
     ...(targetFingerprint ? { targetFingerprint } : {}),
     outputCount: 0,
@@ -282,12 +288,13 @@ function recordStart(slot: InstanceActivityState, event: CodecSourceEvidence): v
   const pending =
     slot.pendingTerminals.get(key) ??
     slot.pendingTerminals.get(recoveryRequestKey(event.event_id) ?? "");
-  if (pending) recordTerminal(slot, pending, key);
+  if (pending) recordTerminal(slot, pending, durationBaselines, key);
 }
 
 function recordTerminal(
   slot: InstanceActivityState,
   event: CodecSourceEvidence,
+  durationBaselines: Map<string, number[]>,
   matchedKey?: string,
 ): void {
   const directKey = openKey(event);
@@ -332,11 +339,11 @@ function recordTerminal(
     trimMap(slot.lastTerminalByFingerprint, COMPARISON_CAP);
   }
   if (terminal.outcome === "ok" && event.duration_ms !== undefined) {
-    const samples = slot.durationsByOperation.get(open.baselineKey) ?? [];
+    const samples = durationBaselines.get(open.baselineKey) ?? [];
     samples.push(event.duration_ms);
-    if (samples.length > 20) samples.shift();
-    slot.durationsByOperation.set(open.baselineKey, samples);
-    trimMap(slot.durationsByOperation, COMPARISON_CAP);
+    if (samples.length > DURATION_SAMPLE_CAP) samples.shift();
+    durationBaselines.set(open.baselineKey, samples);
+    trimMap(durationBaselines, COMPARISON_CAP);
   }
   if (terminal.outcome === "ok") {
     if (slot.friction?.value === "repeating-operation") slot.friction = undefined;
@@ -374,6 +381,7 @@ export function projectActivityChannels(
 ): Map<string, CodecActivityChannels> {
   const states = new Map<string, InstanceActivityState>();
   const seenEventIds = new Set<string>();
+  const durationBaselines = new Map<string, number[]>();
   const get = (instanceId: string) => {
     let slot = states.get(instanceId);
     if (!slot) {
@@ -397,7 +405,7 @@ export function projectActivityChannels(
       case "tool.requested":
       case "command.started":
       case "wait.started":
-        recordStart(slot, event);
+        recordStart(slot, event, durationBaselines);
         break;
       case "command.output_observed": {
         const key = openKey(event);
@@ -412,7 +420,7 @@ export function projectActivityChannels(
       case "tool.completed":
       case "command.completed":
       case "wait.ended":
-        recordTerminal(slot, event);
+        recordTerminal(slot, event, durationBaselines);
         break;
       case "artifact.observed":
         if (event.artifact_kind && event.artifact_operation) {
@@ -520,12 +528,11 @@ export function projectActivityChannels(
       const elapsedMs = Number.isFinite(millis(open.ts))
         ? Math.max(0, nowMs - millis(open.ts))
         : undefined;
-      const samples = slot.durationsByOperation.get(open.baselineKey) ?? [];
+      const samples = durationBaselines.get(open.baselineKey) ?? [];
       const longRunning =
         open.orderReliable &&
         elapsedMs !== undefined &&
-        samples.length >= 5 &&
-        elapsedMs > Math.max(30_000, percentile(samples, 0.9) * 1.5);
+        elapsedMs > longRunningThresholdMs(samples);
       const state = open.retryEvidenceIds
         ? "retrying"
         : outputFresh && (open.outputBytes > 0 || open.outputCount >= 2)
@@ -631,6 +638,12 @@ function percentile(values: readonly number[], quantile: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1));
   return sorted[index] ?? Number.POSITIVE_INFINITY;
+}
+
+/** Conservative threshold learned from successful adapter/tool history. */
+export function longRunningThresholdMs(samples: readonly number[]): number {
+  if (samples.length < MIN_DURATION_SAMPLES) return Number.POSITIVE_INFINITY;
+  return Math.max(LONG_RUNNING_FLOOR_MS, percentile(samples, 0.9) * LONG_RUNNING_MULTIPLIER);
 }
 
 export function unknownActivityChannels(now: string): Pick<CodecPanelScene, "telemetry"> {

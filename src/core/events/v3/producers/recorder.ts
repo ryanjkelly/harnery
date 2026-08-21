@@ -20,7 +20,7 @@ import { extractBashCommand, type ParsedPayload } from "../../../hooks/adapter/p
 import { fsyncParentDirectory } from "../../../workflow/durable-record.ts";
 import { acquireNoClobberLease } from "../../../workflow/workspaces/leases.ts";
 import { buildEventV3 } from "../builder.ts";
-import { normalizeNativeIdV3 } from "../canonical.ts";
+import { fingerprintV3, normalizeNativeIdV3 } from "../canonical.ts";
 import {
   type AdapterSignalV3,
   adapterCapabilityProfileDigestV3,
@@ -944,6 +944,9 @@ function processHookSignalLocked(
       input.adapter === "cursor" &&
       cursorToolChannelSupport !== "unsupported" &&
       state.tool_call_count === 0;
+    if (input.signal === "sub-agent-start" && delegation && !delegation.open_event_id) {
+      commitAgentDelegated(input, state, path, rootId, fingerprintContext, delegation);
+    }
     const toolCallCountScopeMismatch =
       (input.signal === "stop" || input.signal === "stop-failure") &&
       (!state.current_turn_id || state.tool_call_count_turn_id !== state.current_turn_id);
@@ -1035,6 +1038,17 @@ function processHookSignalLocked(
       stampSpanTurn(span, event, eventInput, state);
     }
     const durability = commitEventLocked(input, state, path, event, sourceId);
+    if (
+      event.event_type === "tool.requested" &&
+      input.payload.tool_name === "request_user_input" &&
+      sourceId
+    ) {
+      commitOperatorInputWait(input, state, path, rootId, sourceId);
+    }
+    const progressKind = progressKindForCompletedTool(event);
+    if (progressKind) {
+      commitProgressObservation(input, state, path, rootId, event, progressKind);
+    }
     if (turnTelemetry) {
       commitTurnContextObservation(input, state, path, rootId, event, turnTelemetry.context);
     }
@@ -1045,6 +1059,155 @@ function processHookSignalLocked(
   } finally {
     // The session's state lease is held by the draining caller.
   }
+}
+
+function commitAgentDelegated(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+  delegation: DelegationStateV3,
+): void {
+  const event = buildEventV3("agent.delegated", {
+    producer: producerForDerivedEvent(input, state),
+    scope: scopeForDerivedEvent(input, state, rootId),
+    attestation_id: state.attestation_id,
+    links: {
+      span_id: delegation.span_id,
+      ...(delegation.parent_span_id ? { parent_span_id: delegation.parent_span_id } : {}),
+      caused_by: state.last_event_id ? [state.last_event_id] : [],
+    },
+    provenance: derivedProvenance(input, state, "subagent-delegated"),
+    observed_at: signalClock(input).observed_at,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+    payload: {
+      delegation_id: delegation.delegation_id,
+      child_generation_id: delegation.child_generation_id,
+      role: delegation.role,
+      ownership_fingerprint: fingerprintV3(fingerprintContext, "delegation-ownership", {
+        role: delegation.role,
+        source_id: delegation.source_id,
+      }),
+    },
+  }) as EventV3;
+  commitEventLocked(input, state, path, event);
+}
+
+function commitOperatorInputWait(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  waitId: `hid_${string}`,
+): void {
+  if (!state.current_turn_id || state.waits.some((wait) => wait.wait_id === waitId)) return;
+  const span = openSpanStateV3({
+    span_id: spanIdV3(),
+    parent_span_id: state.current_turn_span?.span_id ?? state.session_span.span_id,
+    boot_id: state.boot_id,
+    clock: signalClock(input),
+  });
+  const event = buildEventV3("wait.started", {
+    producer: producerForDerivedEvent(input, state),
+    scope: scopeForDerivedEvent(input, state, rootId),
+    attestation_id: state.attestation_id,
+    links: {
+      span_id: span.span_id,
+      ...(span.parent_span_id ? { parent_span_id: span.parent_span_id } : {}),
+      caused_by: state.last_event_id ? [state.last_event_id] : [],
+    },
+    provenance: derivedProvenance(input, state, "operator-input-wait"),
+    observed_at: signalClock(input).observed_at,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+    payload: { wait_id: waitId, kind: "needs_input" },
+  }) as EventV3;
+  commitEventLocked(input, state, path, event);
+}
+
+function progressKindForCompletedTool(event: EventV3): "write" | "review" | "artifact" | undefined {
+  if (event.event_type !== "tool.completed" || event.payload.outcome !== "succeeded") return;
+  const name = event.payload.tool.name;
+  if (["apply_patch", "Edit", "Write", "MultiEdit", "NotebookEdit"].includes(name)) return "write";
+  if (name === "view_image") return "review";
+  if (/imagegen|create_document|create_spreadsheet|create_presentation/i.test(name)) {
+    return "artifact";
+  }
+  return undefined;
+}
+
+function commitProgressObservation(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  terminal: EventV3,
+  kind: "write" | "review" | "artifact",
+): void {
+  const event = buildEventV3("progress.observed", {
+    producer: producerForDerivedEvent(input, state),
+    scope: scopeForDerivedEvent(input, state, rootId),
+    attestation_id: state.attestation_id,
+    links: { caused_by: [terminal.event_id] },
+    provenance: derivedProvenance(input, state, "semantic-progress"),
+    observed_at: terminal.time.observed_at,
+    monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
+    clock_id: state.clock_id,
+    payload: {
+      kind,
+      evidence_event_ids: [terminal.event_id],
+      reducer_build_id: input.build_id,
+    },
+  }) as EventV3;
+  commitEventLocked(input, state, path, event);
+}
+
+function producerForDerivedEvent(input: RecordHookSignalV3Input, state: HookProducerStateV3) {
+  return {
+    producer_id: input.producer_id,
+    boot_id: state.boot_id,
+    sequence: state.next_sequence,
+    component: "agent-hook" as const,
+    build_id: input.build_id,
+    platform: input.platform,
+    ...(input.bridge ? { bridge: input.bridge } : {}),
+  };
+}
+
+function scopeForDerivedEvent(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  rootId: `root_${string}`,
+) {
+  return {
+    root_id: rootId,
+    instance_id: state.instance_id,
+    session_id: state.session_id,
+    generation_id: state.generation_id,
+    ...(state.current_turn_id ? { turn_id: state.current_turn_id } : {}),
+    ...(input.run_id ? { run_id: input.run_id } : {}),
+    ...(input.workflow_id ? { workflow_id: input.workflow_id } : {}),
+    ...(input.workflow_agent_id ? { workflow_agent_id: input.workflow_agent_id } : {}),
+  };
+}
+
+function derivedProvenance(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  signal: string,
+) {
+  return {
+    source_event: `${input.adapter}.${signal}`,
+    attestation: "derived" as const,
+    confidence: "high" as const,
+    attribution: {
+      method: "session_env" as const,
+      state: "verified" as const,
+      subject_instance_id: state.instance_id,
+    },
+  };
 }
 
 /**

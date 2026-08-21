@@ -109,6 +109,8 @@ export interface CodecRecentAction {
  */
 export interface CodecSourceEvidence {
   schema_version: 2;
+  /** Adapter family inferred from the canonical producer source token. */
+  adapter?: "claude-code" | "codex" | "cursor" | "unknown";
   event_id: string;
   event_type: EventTypeV3;
   ts: string;

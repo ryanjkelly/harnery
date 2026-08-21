@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { resolveMachineLabel } from "../../lib/machine.ts";
 import { readLiveCoordinationRows } from "../agents/state/live-coordination-view.ts";
 import type { AgentActivity, TaskState } from "../agents/state/session-state.ts";
+import { buildPresenceCodecDigests, type PresenceCodecDigest } from "./codec-digest.ts";
 
 /** Mirror of the local heartbeat freshness window (commands/agents.ts). */
 const FRESHNESS_SECS = 600;
@@ -30,6 +31,8 @@ export interface PresenceAgent {
   files_touched?: string[];
   started_at?: string;
   last_heartbeat?: string;
+  /** Strict content-free activity evidence for remote Codec panels. */
+  codec?: PresenceCodecDigest;
 }
 
 export interface PresenceBlob {
@@ -56,6 +59,7 @@ export interface BuiltBlob {
 export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): BuiltBlob {
   const machine = resolveMachineLabel();
   const agents: PresenceAgent[] = [];
+  const codecDigests = buildPresenceCodecDigests(coordRoot);
   const cutoffMs = now.getTime() - FRESHNESS_SECS * 1000;
 
   for (const row of readLiveCoordinationRows(coordRoot)) {
@@ -75,6 +79,11 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
       files_touched: row.files_touched.slice(0, MAX_FILES_PER_AGENT),
       started_at: strOr(row.started_at),
       last_heartbeat: row.last_heartbeat,
+      codec:
+        codecDigests.get(row.instance_id) ??
+        codecDigests.get(
+          row.instance_id.startsWith("inst_") ? row.instance_id : `inst_${row.instance_id}`,
+        ),
     });
   }
 
@@ -100,6 +109,7 @@ export function buildPresenceBlob(coordRoot: string, now: Date = new Date()): Bu
     l: a.task_state,
     r: a.task_state_reason ?? null,
     f: [...(a.files_touched ?? [])].sort(),
+    c: codecBasis(a.codec),
   }));
   const basisHash = createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 16);
 
@@ -121,4 +131,20 @@ function taskStateOrActive(v: unknown): TaskState {
 function clamp(v: string | undefined, max: number): string | undefined {
   if (!v) return undefined;
   return v.length > max ? v.slice(0, max) : v;
+}
+
+function codecBasis(codec: PresenceCodecDigest | undefined): unknown {
+  if (!codec) return null;
+  return {
+    o: codec.operation
+      ? { category: codec.operation.category, label: codec.operation.label }
+      : null,
+    c: codec.context
+      ? { used_percent: codec.context.used_percent, confidence: codec.context.confidence }
+      : null,
+    a: codec.recent_actions.map((action) => ({
+      category: action.category,
+      outcome: action.outcome,
+    })),
+  };
 }

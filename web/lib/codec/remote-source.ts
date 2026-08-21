@@ -22,6 +22,8 @@ import path from "node:path";
 import { harneryDir } from "@/lib/coord-reader";
 
 import {
+  type CodecActionCategory,
+  type CodecActionOutcome,
   type CodecActivity,
   type CodecLifecycle,
   type CodecPanelScene,
@@ -42,8 +44,15 @@ function present<T>(
   provenance: Presented<T>["provenance"],
   confidence: Confidence,
   observedAt: string,
+  evidenceEventIds?: string[],
 ): Presented<T> {
-  return { value, provenance, confidence, observed_at: observedAt };
+  return {
+    value,
+    provenance,
+    confidence,
+    observed_at: observedAt,
+    ...(evidenceEventIds?.length ? { evidence_event_ids: evidenceEventIds.slice(-3) } : {}),
+  };
 }
 
 function clampLabel(v: unknown): string | undefined {
@@ -106,6 +115,23 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
           : "unknown";
 
       const task = clampLabel(raw.task);
+      const codec = record(raw.codec);
+      const codecValid = codec?.schema_version === 1;
+      const operationRaw = codecValid ? record(codec.operation) : undefined;
+      const operationCategory = actionCategory(operationRaw?.category);
+      const operationLabel = clampLabel(operationRaw?.label);
+      const operationEventId = eventId(operationRaw?.event_id);
+      const operationObservedAt = iso(operationRaw?.observed_at) ?? publishedAt;
+      const contextRaw = codecValid ? record(codec.context) : undefined;
+      const contextPercent = boundedPercent(contextRaw?.used_percent);
+      const contextEventId = eventId(contextRaw?.event_id);
+      const contextObservedAt = iso(contextRaw?.observed_at) ?? publishedAt;
+      const recentActions = codecValid
+        ? (Array.isArray(codec.recent_actions) ? codec.recent_actions : [])
+            .map((action) => remoteAction(action))
+            .filter((action): action is NonNullable<typeof action> => action !== undefined)
+            .slice(-3)
+        : [];
       panels.push({
         instance_id: instanceId,
         identity: {
@@ -128,13 +154,90 @@ export function readRemotePanels(now = new Date(), root = harneryDir()): CodecPa
         lifecycle: present(lifecycle, "projection", "medium", publishedAt),
         expression: present("neutral", "projection", "high", publishedAt),
         attention: present("none", "projection", "high", publishedAt),
-        context_band: present("unknown", "unknown", "low", publishedAt),
+        context_band:
+          contextPercent === undefined
+            ? present("unknown", "unknown", "low", publishedAt)
+            : present(
+                contextPercent >= 85 ? "low" : contextPercent >= 65 ? "reduced" : "ample",
+                "projection",
+                contextRaw?.confidence === "exact" ? "high" : "medium",
+                contextObservedAt,
+                contextEventId ? [contextEventId] : undefined,
+              ),
         progress_rhythm: present("unknown", "unknown", "low", publishedAt),
-        recent_actions: [],
+        recent_actions: recentActions,
+        ...(operationRaw && operationCategory && operationLabel && operationEventId
+          ? {
+              operation: present(
+                { category: operationCategory, label: operationLabel, state: "active" as const },
+                "projection",
+                "medium",
+                operationObservedAt,
+                [operationEventId],
+              ),
+            }
+          : {}),
         character: { ...FALLBACK_PACK }, // pack assets are machine-local
         updated_at: publishedAt,
       });
     }
   }
   return panels;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function eventId(value: unknown): string | undefined {
+  return typeof value === "string" && /^evt_[a-zA-Z0-9_-]+$/.test(value) ? value : undefined;
+}
+
+function iso(value: unknown): string | undefined {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return undefined;
+  return new Date(value).toISOString();
+}
+
+function boundedPercent(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
+    ? value
+    : undefined;
+}
+
+function actionCategory(value: unknown): CodecActionCategory | undefined {
+  return value === "research" ||
+    value === "diagnostic" ||
+    value === "build" ||
+    value === "edit" ||
+    value === "test" ||
+    value === "coordinate" ||
+    value === "other"
+    ? value
+    : undefined;
+}
+
+function remoteAction(value: unknown):
+  | {
+      category: CodecActionCategory;
+      outcome: CodecActionOutcome;
+      event_id: string;
+      observed_at: string;
+    }
+  | undefined {
+  const action = record(value);
+  const category = actionCategory(action?.category);
+  const outcome = action?.outcome;
+  const id = eventId(action?.event_id);
+  const observedAt = iso(action?.observed_at);
+  if (
+    !category ||
+    (outcome !== "ok" && outcome !== "error" && outcome !== "unknown") ||
+    !id ||
+    !observedAt
+  ) {
+    return undefined;
+  }
+  return { category, outcome, event_id: id, observed_at: observedAt };
 }

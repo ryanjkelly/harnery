@@ -100,6 +100,26 @@ describe("event ledger V3 turn telemetry", () => {
     });
   });
 
+  test("accepts explicit native context aliases without estimating missing values", () => {
+    expect(
+      extractTurnTelemetryV3("codex", {
+        model_context_window: { total_tokens: 90_000, max_tokens: 128_000 },
+      }).context,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 90_000, limit_tokens: 128_000, remaining_tokens: 38_000 },
+    });
+    expect(
+      extractTurnTelemetryV3("codex", {
+        token_usage: { prompt_tokens: 42_000 },
+        context_window_tokens: 64_000,
+      }).context,
+    ).toMatchObject({
+      state: "observed",
+      value: { used_tokens: 42_000, limit_tokens: 64_000 },
+    });
+  });
+
   test("distinguishes conditional absence from a broken native promise", () => {
     expect(
       extractTurnTelemetryV3("codex", {}, undefined, { inference_timing: "conditional" }).inference,

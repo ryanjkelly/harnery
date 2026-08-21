@@ -132,6 +132,7 @@ function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
   };
   const base: CodecSourceEvidence = {
     schema_version: 2,
+    adapter: adapterFromSourceEvent(event.provenance.source_event),
     event_id: event.event_id,
     event_type: event.event_type,
     ts: event.time.observed_at,
@@ -278,6 +279,15 @@ function sanitizeEventV3(raw: unknown): CodecSourceEvidence | null {
     default:
       return null;
   }
+}
+
+function adapterFromSourceEvent(
+  sourceEvent: string,
+): "claude-code" | "codex" | "cursor" | "unknown" {
+  if (sourceEvent.startsWith("claude-code.")) return "claude-code";
+  if (sourceEvent.startsWith("codex.")) return "codex";
+  if (sourceEvent.startsWith("cursor.")) return "cursor";
+  return "unknown";
 }
 
 function liftFingerprint(fingerprint: {

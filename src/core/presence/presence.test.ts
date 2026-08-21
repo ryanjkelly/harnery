@@ -167,6 +167,48 @@ describe("buildPresenceBlob", () => {
     expect(blob.agents[0]).toMatchObject({ activity: "idle", task_state: "active" });
   });
 
+  test("adds a bounded Codec digest without tool inputs or outputs", () => {
+    process.env.HARNERY_MACHINE = "machine-a";
+    seedHeartbeat(cloneA, "live-1");
+    const route = resolveLiveEventLedgerRouteV3(cloneA);
+    if (route.state !== "v3") throw new Error("expected V3 route");
+    recordLiveHookSignalV3({
+      coordRoot: cloneA,
+      route,
+      eventName: "pre-tool-use",
+      payload: {
+        session_id: "live-1",
+        tool_use_id: "tool-1",
+        tool_name: "Read",
+        tool_input: { path: "/private/SENTINEL_INPUT" },
+        raw: {},
+      },
+      adapter: "claude-code",
+      instanceId: "live-1",
+    });
+    recordLiveHookSignalV3({
+      coordRoot: cloneA,
+      route,
+      eventName: "post-tool-use",
+      payload: {
+        session_id: "live-1",
+        tool_use_id: "tool-1",
+        tool_name: "Read",
+        tool_response: "SENTINEL_OUTPUT",
+        raw: {},
+      },
+      adapter: "claude-code",
+      instanceId: "live-1",
+    });
+
+    const built = buildPresenceBlob(cloneA);
+    expect(built.blob.agents[0]?.codec?.recent_actions).toHaveLength(1);
+    expect(built.blob.agents[0]?.codec?.recent_actions[0]?.category).toBe("research");
+    expect(built.json).not.toContain("SENTINEL_INPUT");
+    expect(built.json).not.toContain("SENTINEL_OUTPUT");
+    expect(built.json).not.toContain("/private/");
+  });
+
   test("basis hash changes on task change, not on heartbeat churn", () => {
     process.env.HARNERY_MACHINE = "machine-a";
     seedHeartbeat(cloneA, "live-1");

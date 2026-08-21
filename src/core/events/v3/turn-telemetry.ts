@@ -46,7 +46,10 @@ export function extractTurnTelemetryV3(
   observedAt = new Date().toISOString(),
   support: TurnTelemetryCapabilitySupportV3 = {},
 ): TurnTelemetryV3 {
-  const context = record(payload.context_window);
+  const context =
+    record(payload.context_window) ??
+    record(payload.model_context_window) ??
+    record(payload.context_usage);
   const usage =
     record(payload.usage) ??
     record(payload.token_usage) ??
@@ -93,7 +96,11 @@ export function extractTurnTelemetryV3(
   const usedTokens =
     number(context?.used_tokens) ??
     number(context?.input_tokens) ??
+    number(context?.total_tokens) ??
     number(payload.used_tokens) ??
+    number(payload.total_input_tokens) ??
+    number(usage?.total_tokens) ??
+    number(usage?.prompt_tokens) ??
     (usage
       ? sumDefined([
           number(usage.input_tokens),
@@ -104,7 +111,10 @@ export function extractTurnTelemetryV3(
   const limitTokens =
     number(context?.context_window_size) ??
     number(context?.window_tokens) ??
+    number(context?.context_window_tokens) ??
+    number(context?.max_tokens) ??
     number(payload.context_window_size) ??
+    number(payload.context_window_tokens) ??
     (typeof payload.context_window === "number" ? number(payload.context_window) : undefined);
   const contextMeasurement = contextObservation(
     adapter,

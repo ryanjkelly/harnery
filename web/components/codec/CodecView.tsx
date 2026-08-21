@@ -36,6 +36,7 @@ import {
   type CodecRecentAction,
   type CodecScene,
 } from "@/lib/codec/contracts";
+import { codecEvidenceReceiptRows } from "@/lib/codec/evidence-receipt";
 import { useLiveSignal } from "@/lib/useLiveSignal";
 import styles from "./codec.module.css";
 
@@ -555,8 +556,58 @@ function CodecPanel({
       </div>
 
       <ActionTrail actions={panel.recent_actions} />
+      <EvidenceReceipt panel={panel} />
     </section>
   );
+}
+
+function EvidenceReceipt({ panel }: { panel: CodecPanelScene }) {
+  const rows = codecEvidenceReceiptRows(panel);
+  return (
+    <details data-codec-evidence-receipt className="mt-2 border-t pt-2 text-xs">
+      <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        Evidence receipt · {rows.length} signals
+      </summary>
+      <div className="mt-2 max-h-56 overflow-auto rounded-md border bg-muted/20">
+        <table className="w-full border-collapse text-left">
+          <thead className="sr-only">
+            <tr>
+              <th>Signal</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={`${row.channel}-${row.observed_at}-${row.evidence_event_ids.join("-")}`}
+                className="border-b last:border-0"
+              >
+                <th className="w-24 px-2 py-1.5 align-top font-medium">{row.channel}</th>
+                <td className="px-2 py-1.5 text-muted-foreground">
+                  <span className="text-foreground">{row.value}</span>
+                  <span className="block text-foreground/75">
+                    {row.provenance} · {row.confidence} · {formatReceiptTime(row.observed_at)}
+                  </span>
+                  {row.evidence_event_ids.length > 0 && (
+                    <code className="block break-all rounded border bg-background/60 px-1 text-[10px] text-foreground/80">
+                      {row.evidence_event_ids.join(" · ")}
+                    </code>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function formatReceiptTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
+    : "unknown time";
 }
 
 /** Current operation is a span-derived fact, separate from declared task and

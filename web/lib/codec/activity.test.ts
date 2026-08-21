@@ -272,7 +272,7 @@ describe("projectActivityChannels", () => {
 
   test("calls an operation long-running only after a same-operation baseline exists", () => {
     const exact = fingerprint("baseline");
-    const history = Array.from({ length: 5 }, (_, index) => {
+    const history = Array.from({ length: 8 }, (_, index) => {
       const span = `span-history-${index}`;
       return [
         event({
@@ -281,6 +281,8 @@ describe("projectActivityChannels", () => {
           span_id: span,
           tool_namespace: "fixture",
           tool_name: "Read",
+          adapter: "codex",
+          instance_id: "inst-history",
           operation_fingerprint: exact,
         }),
         event({
@@ -289,6 +291,8 @@ describe("projectActivityChannels", () => {
           span_id: span,
           outcome: "ok",
           duration_ms: 10_000,
+          adapter: "codex",
+          instance_id: "inst-history",
         }),
       ];
     }).flat();
@@ -301,12 +305,30 @@ describe("projectActivityChannels", () => {
           span_id: "span-current",
           tool_namespace: "fixture",
           tool_name: "Read",
+          adapter: "codex",
           operation_fingerprint: exact,
         }),
       ],
       NOW,
     ).get("inst-a");
     expect(established?.operation?.value.state).toBe("long-running");
+
+    const otherAdapter = projectActivityChannels(
+      [
+        ...history,
+        event({
+          event_type: "tool.requested",
+          ts: at(40),
+          span_id: "span-other-adapter",
+          tool_namespace: "fixture",
+          tool_name: "Read",
+          adapter: "cursor",
+          operation_fingerprint: exact,
+        }),
+      ],
+      NOW,
+    ).get("inst-a");
+    expect(otherAdapter?.operation?.value.state).toBe("active");
 
     const noBaseline = projectActivityChannels(
       [

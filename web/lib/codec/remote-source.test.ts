@@ -56,6 +56,58 @@ describe("readRemotePanels", () => {
     expect(p.character.pack_id).toBe("fallback-neutral");
   });
 
+  test("renders only validated remote Codec digest fields", () => {
+    writeBlob("rk-machine", {
+      v: 1,
+      machine: "rk-machine",
+      published_at: "2026-08-16T11:59:40.000Z",
+      agents: [
+        agent({
+          codec: {
+            schema_version: 1,
+            observed_at: "2026-08-16T11:59:35.000Z",
+            operation: {
+              category: "test",
+              label: "Testing",
+              event_id: "evt_remote_open",
+              observed_at: "2026-08-16T11:59:32.000Z",
+            },
+            context: {
+              used_percent: 88,
+              confidence: "exact",
+              event_id: "evt_remote_context",
+              observed_at: "2026-08-16T11:59:31.000Z",
+            },
+            recent_actions: [
+              {
+                category: "edit",
+                outcome: "ok",
+                event_id: "evt_remote_action",
+                observed_at: "2026-08-16T11:59:30.000Z",
+                secret: "must not cross",
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const panel = readRemotePanels(NOW, root)[0];
+    expect(panel?.operation).toMatchObject({
+      value: { category: "test", label: "Testing", state: "active" },
+      provenance: "projection",
+      evidence_event_ids: ["evt_remote_open"],
+    });
+    expect(panel?.context_band.value).toBe("low");
+    expect(panel?.recent_actions).toEqual([
+      {
+        category: "edit",
+        outcome: "ok",
+        event_id: "evt_remote_action",
+        observed_at: "2026-08-16T11:59:30.000Z",
+      },
+    ]);
+  });
+
   test("an aging blob degrades presence; an old one drops the machine", () => {
     writeBlob("aging", {
       v: 1,
