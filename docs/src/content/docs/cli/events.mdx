@@ -62,6 +62,10 @@ per-turn latency, and token economics. Each turn includes:
 - `context_coverage`, which distinguishes exact, partial, unsupported, and
   missing measurements.
 
+A turn can first report a partial context observation and later receive an
+exact append-only observation when a bounded native source finishes flushing.
+The projection uses the newest observation scoped to that turn.
+
 Harnery reports a zero wait duration only when the completed turn independently
 attests completeness. Delivered wait spans remain lower bounds without that
 attestation. `inference_ms` stays unknown unless a native runtime field reports

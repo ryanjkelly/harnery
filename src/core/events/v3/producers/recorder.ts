@@ -80,6 +80,8 @@ const CLOSED_SPAN_TURN_RETENTION = 2;
 const CLOSED_SPAN_MEMORY_CAP = 512;
 const CLOSED_TURN_MEMORY_CAP = 16;
 const SPAN_SOFT_WATERMARK = 128;
+const PENDING_RUNTIME_CONTEXT_CAP = 4;
+const RUNTIME_CONTEXT_RETRY_LIMIT = 2;
 /**
  * Adapters whose turn-boundary recovery and mid-flight onboarding are enabled.
  * Kept in code, outside the digested capability profiles, so tuning recovery
@@ -123,6 +125,23 @@ interface PendingEventV3 {
   event: EventV3;
 }
 
+interface TurnContextTargetV3 {
+  terminal_event_id: `evt_${string}`;
+  terminal_observed_at: string;
+  turn_id: `tid_${string}`;
+  run_id?: `run_${string}`;
+  workflow_id?: `wf_${string}`;
+  workflow_agent_id?: string;
+}
+
+interface PendingRuntimeContextV3 extends TurnContextTargetV3 {
+  native_session_id: string;
+  native_turn_id: string;
+  transcript_path?: string;
+  runtime_version?: string;
+  attempts: number;
+}
+
 interface DelegationStateV3 extends OpenSpanStateV3 {
   source_id: `hid_${string}`;
   delegation_id: `del_${string}`;
@@ -162,6 +181,7 @@ export interface HookProducerStateV3 {
   turn_harness: TurnHarnessTimingV3;
   turn_ordinal: number;
   pending?: PendingEventV3;
+  pending_runtime_contexts?: PendingRuntimeContextV3[];
 }
 
 export interface RecordHookSignalV3Input {
@@ -675,6 +695,7 @@ function processHookSignalLocked(
         (nativeTid !== undefined && state.current_turn_id === nativeTid));
 
     recordTurnHarnessTiming(state, input, !duplicateOpenTurnStart);
+    reconcilePendingRuntimeContexts(input, state, path, rootId, fingerprintContext);
 
     closeResolvedWaits(input, state, path, rootId, fingerprintContext, nativeTid);
     if (input.signal === "permission-request") {
@@ -1057,13 +1078,15 @@ function processHookSignalLocked(
       commitProgressObservation(input, state, path, rootId, event, progressKind);
     }
     if (turnTelemetry) {
+      const contextTarget = turnContextTarget(event);
+      queuePendingRuntimeContext(input, state, contextTarget, turnTelemetry.context);
       commitTurnContextObservation(
         input,
         state,
         path,
         rootId,
         fingerprintContext,
-        event,
+        contextTarget,
         turnTelemetry.context,
         turnTelemetry.context_provenance,
       );
@@ -1517,11 +1540,12 @@ function commitTurnContextObservation(
   path: string,
   rootId: `root_${string}`,
   fingerprintContext: ReturnType<typeof fingerprintContextV3>,
-  turnTerminal: EventV3,
+  target: TurnContextTargetV3 | undefined,
   measurement: TelemetryObservationV3<ContextMeasurementV3>,
   contextProvenance?: ContextTelemetryProvenanceV3,
+  observedAt?: string,
 ): void {
-  if (turnTerminal.event_type !== "turn.completed") return;
+  if (!target) return;
   const event = buildEventV3("context.observed", {
     producer: {
       producer_id: input.producer_id,
@@ -1537,13 +1561,13 @@ function commitTurnContextObservation(
       instance_id: state.instance_id,
       session_id: state.session_id,
       generation_id: state.generation_id,
-      turn_id: (turnTerminal.scope as { turn_id: `tid_${string}` }).turn_id,
-      ...(input.run_id ? { run_id: input.run_id } : {}),
-      ...(input.workflow_id ? { workflow_id: input.workflow_id } : {}),
-      ...(input.workflow_agent_id ? { workflow_agent_id: input.workflow_agent_id } : {}),
+      turn_id: target.turn_id,
+      ...(target.run_id ? { run_id: target.run_id } : {}),
+      ...(target.workflow_id ? { workflow_id: target.workflow_id } : {}),
+      ...(target.workflow_agent_id ? { workflow_agent_id: target.workflow_agent_id } : {}),
     },
     attestation_id: state.attestation_id,
-    links: { caused_by: [turnTerminal.event_id] },
+    links: { caused_by: [target.terminal_event_id] },
     provenance: {
       source_event: safeRole(
         [
@@ -1573,7 +1597,7 @@ function commitTurnContextObservation(
     // The source sample may precede native task completion. The event itself
     // is committed after turn.completed, while measurement.measured_at keeps
     // the sample clock without creating a causal wall-clock regression.
-    observed_at: turnTerminal.time.observed_at,
+    observed_at: observedAt ?? target.terminal_observed_at,
     monotonic_ns: orderedEventMonotonic(state, input.monotonic_ns),
     clock_id: state.clock_id,
     payload: {
@@ -1581,6 +1605,128 @@ function commitTurnContextObservation(
     },
   }) as EventV3;
   commitEventLocked(input, state, path, event);
+}
+
+function turnContextTarget(turnTerminal: EventV3): TurnContextTargetV3 | undefined {
+  if (turnTerminal.event_type !== "turn.completed") return undefined;
+  const scope = turnTerminal.scope as {
+    turn_id: `tid_${string}`;
+    run_id?: `run_${string}`;
+    workflow_id?: `wf_${string}`;
+    workflow_agent_id?: string;
+  };
+  return {
+    terminal_event_id: turnTerminal.event_id as `evt_${string}`,
+    terminal_observed_at: turnTerminal.time.observed_at,
+    turn_id: scope.turn_id,
+    ...(scope.run_id ? { run_id: scope.run_id } : {}),
+    ...(scope.workflow_id ? { workflow_id: scope.workflow_id } : {}),
+    ...(scope.workflow_agent_id ? { workflow_agent_id: scope.workflow_agent_id } : {}),
+  };
+}
+
+function queuePendingRuntimeContext(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  target: TurnContextTargetV3 | undefined,
+  measurement: TelemetryObservationV3<ContextMeasurementV3>,
+): void {
+  if (
+    input.adapter !== "codex" ||
+    !target ||
+    measurement.state !== "expected_but_missing" ||
+    !retryableRuntimeContextReason(measurement.reason)
+  ) {
+    return;
+  }
+  const nativeSessionId = input.payload.session_id ?? input.payload.conversation_id;
+  const nativeTurnId = input.payload.turn_id;
+  if (!nativeSessionId || !nativeTurnId) return;
+  const pending: PendingRuntimeContextV3 = {
+    ...target,
+    native_session_id: nativeSessionId,
+    native_turn_id: nativeTurnId,
+    ...(input.payload.transcript_path ? { transcript_path: input.payload.transcript_path } : {}),
+    ...(input.adapterVersion ? { runtime_version: input.adapterVersion } : {}),
+    attempts: 0,
+  };
+  state.pending_runtime_contexts = [
+    ...(state.pending_runtime_contexts ?? []).filter(
+      (candidate) => candidate.turn_id !== target.turn_id,
+    ),
+    pending,
+  ].slice(-PENDING_RUNTIME_CONTEXT_CAP);
+}
+
+function reconcilePendingRuntimeContexts(
+  input: RecordHookSignalV3Input,
+  state: HookProducerStateV3,
+  path: string,
+  rootId: `root_${string}`,
+  fingerprintContext: ReturnType<typeof fingerprintContextV3>,
+): void {
+  if (state.adapter !== "codex" || !state.pending_runtime_contexts?.length) return;
+  for (const pending of [...state.pending_runtime_contexts]) {
+    const runtime = readRuntimeContextTelemetry({
+      adapter: "codex",
+      session_id: pending.native_session_id,
+      turn_id: pending.native_turn_id,
+      transcript_path: pending.transcript_path,
+      mode: "turn",
+    });
+    if (runtime.bytes_read > 0) recordRuntimeTelemetryTiming(state, runtime.io_duration_ms);
+    const queue = state.pending_runtime_contexts;
+    if (!queue) break;
+    const index = queue.findIndex((candidate) => candidate.turn_id === pending.turn_id);
+    if (index < 0) continue;
+    if (runtime.state === "observed") {
+      queue.splice(index, 1);
+      if (queue.length === 0) {
+        state.pending_runtime_contexts = undefined;
+      }
+      commitTurnContextObservation(
+        input,
+        state,
+        path,
+        rootId,
+        fingerprintContext,
+        pending,
+        runtimeContextObservation(runtime),
+        {
+          source_event: runtime.source_event,
+          source_witness: runtime.source_witness,
+          ...(pending.runtime_version ? { runtime_version: pending.runtime_version } : {}),
+          attestation: "derived",
+          confidence: "exact",
+        },
+        signalClock(input).observed_at,
+      );
+      continue;
+    }
+    const attempts = pending.attempts + 1;
+    if (
+      input.signal === "session-end" ||
+      runtime.state === "unsupported" ||
+      !retryableRuntimeContextReason(runtime.reason) ||
+      attempts >= RUNTIME_CONTEXT_RETRY_LIMIT
+    ) {
+      queue.splice(index, 1);
+    } else {
+      queue[index] = { ...pending, attempts };
+    }
+  }
+  if (state.pending_runtime_contexts?.length === 0) {
+    state.pending_runtime_contexts = undefined;
+  }
+  publishProducerState(path, state);
+}
+
+function retryableRuntimeContextReason(reason: string | undefined): boolean {
+  return (
+    reason === "codex_transcript_turn_not_found" ||
+    reason === "codex_transcript_turn_not_terminal" ||
+    reason === "codex_transcript_token_count_missing"
+  );
 }
 
 function turnTelemetryForTerminal(
@@ -2699,6 +2845,12 @@ function readProducerState(path: string): HookProducerStateV3 {
   state.waits ??= [];
   state.closed_turn_ids ??= [];
   state.turn_harness ??= emptyTurnHarnessTiming();
+  if (
+    Array.isArray(state.pending_runtime_contexts) &&
+    state.pending_runtime_contexts.length === 0
+  ) {
+    state.pending_runtime_contexts = undefined;
+  }
   if (state.adapter === "cursor") state.cursor_mode ??= "unknown";
   const allowedKeys = new Set([
     "adapter",
@@ -2721,6 +2873,7 @@ function readProducerState(path: string): HookProducerStateV3 {
     "last_observed_at",
     "next_sequence",
     "pending",
+    "pending_runtime_contexts",
     "privacy_epoch_id",
     "session_id",
     "session_span",
@@ -2817,6 +2970,11 @@ function readProducerState(path: string): HookProducerStateV3 {
     (state.last_observed_at !== undefined &&
       !Number.isFinite(Date.parse(state.last_observed_at))) ||
     (state.started_event_id !== undefined && !/^evt_[0-9a-f-]{36}$/.test(state.started_event_id)) ||
+    (state.pending_runtime_contexts !== undefined &&
+      (!Array.isArray(state.pending_runtime_contexts) ||
+        state.pending_runtime_contexts.length === 0 ||
+        state.pending_runtime_contexts.length > PENDING_RUNTIME_CONTEXT_CAP ||
+        state.pending_runtime_contexts.some((pending) => !validPendingRuntimeContext(pending)))) ||
     (state.pending?.source_id !== undefined &&
       !/^hid_[a-f0-9]{64}$/.test(state.pending.source_id)) ||
     (state.pending && !validateEventV3(state.pending.event).ok)
@@ -2893,6 +3051,39 @@ function validTurnHarnessTiming(value: TurnHarnessTimingV3): boolean {
     value.slowest_hook_ms >= 0 &&
     (value.slowest_hook === undefined ||
       /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(value.slowest_hook))
+  );
+}
+
+function validPendingRuntimeContext(value: unknown): value is PendingRuntimeContextV3 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const pending = value as PendingRuntimeContextV3;
+  return (
+    typeof pending.terminal_event_id === "string" &&
+    /^evt_[0-9a-f-]{36}$/.test(pending.terminal_event_id) &&
+    typeof pending.terminal_observed_at === "string" &&
+    Number.isFinite(Date.parse(pending.terminal_observed_at)) &&
+    typeof pending.turn_id === "string" &&
+    /^tid_[a-f0-9]{64}$/.test(pending.turn_id) &&
+    (pending.run_id === undefined || /^run_[0-9a-f-]{36}$/.test(pending.run_id)) &&
+    (pending.workflow_id === undefined || /^wf_[0-9a-f-]{36}$/.test(pending.workflow_id)) &&
+    (pending.workflow_agent_id === undefined ||
+      /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(pending.workflow_agent_id)) &&
+    typeof pending.native_session_id === "string" &&
+    pending.native_session_id.length > 0 &&
+    pending.native_session_id.length <= 512 &&
+    typeof pending.native_turn_id === "string" &&
+    pending.native_turn_id.length > 0 &&
+    pending.native_turn_id.length <= 512 &&
+    (pending.transcript_path === undefined ||
+      (typeof pending.transcript_path === "string" &&
+        pending.transcript_path.length > 0 &&
+        pending.transcript_path.length <= 4096)) &&
+    (pending.runtime_version === undefined ||
+      (typeof pending.runtime_version === "string" &&
+        /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(pending.runtime_version))) &&
+    Number.isSafeInteger(pending.attempts) &&
+    pending.attempts >= 0 &&
+    pending.attempts < RUNTIME_CONTEXT_RETRY_LIMIT
   );
 }
 

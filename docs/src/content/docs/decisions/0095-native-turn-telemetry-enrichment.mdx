@@ -29,9 +29,10 @@ occur.
 **Call prompt-to-tool or residual wall time inference.** Rejected because those
 intervals can include queueing, streaming, adapter work, and unmodeled waits.
 
-**Persist transcript paths or bodies for later joins.** Rejected because the
-numeric metadata and opaque event witness are sufficient. Paths and content
-would expand the privacy boundary without improving attribution.
+**Persist transcript paths or bodies in the ledger for later joins.** Rejected
+because the numeric metadata and opaque event witness are sufficient. Paths
+and content would expand the public privacy boundary without improving
+attribution.
 
 ## Decision
 
@@ -52,16 +53,31 @@ Codex turn context is attributable only when all of these conditions hold:
 The recorder writes the exact used-token and limit-token values as
 `context.observed` after `turn.completed`. It marks the observation
 `derived/exact` because Harnery performs the join, even though both numbers
-come from a native runtime event. The context event keeps commit order by using
-the turn terminal time; `measurement.measured_at` retains the source sample
-time. `provenance.source_record_id` is an epoch-keyed opaque fingerprint of the
-privacy-safe witness, not transcript bytes.
+come from a native runtime event. When the transcript is already terminal, the
+context event uses the turn terminal time. `measurement.measured_at` retains
+the source sample time. `provenance.source_record_id` is an epoch-keyed opaque
+fingerprint of the privacy-safe witness, not transcript bytes.
+
+Codex writes `task_complete` after its Stop hook returns. An unflushed Stop
+therefore records the specific partial result immediately and places a bounded
+join target in the owner-only producer state. A later hook retries the same
+bounded tail read. If the pair is now attributable, the recorder appends an
+exact `context.observed` event to the closed turn using the later hook time and
+the original sample time. Session end gets a final retry. The queue holds at
+most four targets, each target gets at most two retries, and non-retryable
+failures are discarded. This keeps Stop non-blocking and preserves append-only
+ledger history.
+
+The temporary producer-state target may contain the supplied transcript path
+and native IDs because that file is owner-only runtime state. It is removed
+after success or retry exhaustion. Those values never enter the ledger,
+diagnostics, typed telemetry result, or public projection.
 
 The hot turn path never recursively searches runtime homes. A missing Stop
 path remains unsupported, and a present but unreadable, unflushed, stale,
 ambiguous, or mismatched source records a specific partial reason without
-blocking completion. Status may use cached fallback discovery because it is
-not a terminal hook.
+blocking completion. Only flush-shaped missing reasons are retried. Status may
+use cached fallback discovery because it is not a terminal hook.
 
 Claude Code usage remains partial when the transcript supplies used tokens but
 no model-authoritative context limit. The prior hardcoded status window is not
@@ -79,6 +95,18 @@ timestamps and never populate `inference_ms` or residual time.
 
 ## Result
 
+Initial live dogfood exposed the actual Codex ordering: 10 completed turns
+across four post-landing generations all reached Stop before the matching
+`task_complete` was readable. Five reported `codex_transcript_turn_not_terminal`
+and five reported `codex_transcript_turn_not_found`. This contradicted the
+fixture assumption that the terminal would already be present during Stop and
+triggered the bounded reconciliation decision above.
+
+With the correction loaded, the first two eligible turns in the next live
+generation reconciled to exact context at 34.73% and 35.24%. Its newest turn
+remained partial while no later hook was available, which is the intended
+append-only behavior rather than a false exact value.
+
 Twelve completed Codex turns on runtime `0.149.0-alpha.4.1` placed the final
 token sample immediately before matching task completion, 699 to 1,492 ms
 earlier. This ordering supports the native terminal plus preceding token rule;
@@ -91,6 +119,8 @@ only when bytes were read, so regressions remain visible without inventing a
 sample for unsupported environments.
 
 The fixture suite covers attributable, missing, stale, ambiguous, cross-turn,
-unflushed, and unreadable states. It also checks Windows-to-WSL path
-candidates, bounded I/O, privacy sentinels, partial Claude usage, per-kind wait
+unflushed, and unreadable states. Recorder regressions cover next-hook and
+session-end reconciliation, retry exhaustion, latest-observation projection,
+and ledger privacy. The wider suite also checks Windows-to-WSL path candidates,
+bounded I/O, privacy sentinels, partial Claude usage, per-kind wait
 completeness, response latency, and recovered or missing boundaries.

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1286,10 +1287,127 @@ describe("event ledger V3 persistent hook recorder", () => {
     }
   });
 
-  test("keeps an unflushed Codex rollout partial without blocking turn completion", () => {
+  test("reconciles a late Codex terminal on the next hook or session end", () => {
+    for (const retrySignal of ["user-prompt-submit", "session-end"] as const) {
+      const root = candidateRoot("codex");
+      const nativeSession = `codex-unflushed-context-${retrySignal}`;
+      const nativeTurn = `codex-unflushed-turn-${retrySignal}`;
+      const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          timestamp: "2026-08-21T20:24:00.000Z",
+          ordinal: 1,
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: nativeTurn },
+        })}\n`,
+      );
+      recordHookSignalV3(
+        baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
+      );
+      recordHookSignalV3(
+        baseInput(
+          root,
+          "user-prompt-submit",
+          parsed({ session_id: nativeSession, turn_id: nativeTurn }),
+          "codex",
+        ),
+      );
+      expect(
+        recordHookSignalV3(
+          baseInput(
+            root,
+            "stop",
+            parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+            "codex",
+          ),
+        ).state,
+      ).toBe("recorded");
+
+      const partial = readLedgerV3(root)
+        .events.map(({ event }) => event)
+        .find((event) => event.event_type === "context.observed");
+      expect(partial?.event_type === "context.observed" && partial.payload.measurement).toEqual({
+        state: "expected_but_missing",
+        capability: "context_usage",
+        reason: "codex_transcript_turn_not_terminal",
+      });
+      expect(
+        readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+      ).toHaveLength(1);
+
+      appendFileSync(
+        transcript,
+        `${[
+          {
+            timestamp: "2026-08-21T20:24:14.100Z",
+            ordinal: 2,
+            type: "event_msg",
+            payload: {
+              type: "token_count",
+              info: {
+                last_token_usage: { input_tokens: 120_000 },
+                model_context_window: 258_400,
+              },
+            },
+          },
+          {
+            timestamp: "2026-08-21T20:24:15.200Z",
+            ordinal: 3,
+            type: "event_msg",
+            payload: { type: "task_complete", turn_id: nativeTurn },
+          },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n")}\n`,
+      );
+
+      const retryPayload =
+        retrySignal === "user-prompt-submit"
+          ? parsed({ session_id: nativeSession, turn_id: `${nativeTurn}-next` })
+          : parsed({ session_id: nativeSession });
+      expect(recordHookSignalV3(baseInput(root, retrySignal, retryPayload, "codex")).state).toBe(
+        "recorded",
+      );
+
+      const events = readLedgerV3(root).events.map(({ event }) => event);
+      const contexts = events.filter((event) => event.event_type === "context.observed");
+      expect(contexts).toHaveLength(2);
+      const exact = contexts.at(-1);
+      expect(exact?.event_type === "context.observed" && exact.payload.measurement).toMatchObject({
+        state: "observed",
+        value: { used_tokens: 120_000, limit_tokens: 258_400 },
+        attestation: "derived",
+        confidence: "exact",
+      });
+      expect(exact?.time.observed_at).not.toBe(partial?.time.observed_at);
+      expect(
+        readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+      ).toBeUndefined();
+      const producerStatePath = join(
+        root,
+        ".harnery/ledgers/v3/private-producers/codex",
+        readdirSync(join(root, ".harnery/ledgers/v3/private-producers/codex")).find((name) =>
+          name.endsWith(".json"),
+        )!,
+      );
+      expect(readFileSync(producerStatePath, "utf8")).not.toContain("pending_runtime_contexts");
+      const projection = projectLatencyV3(readLedgerV3(root)).turns.find(
+        (turn) => turn.turn_id === (exact?.scope as { turn_id?: string } | undefined)?.turn_id,
+      );
+      expect(projection?.context_coverage.state).toBe("observed");
+      expect(projection?.context_percent).toBeCloseTo((120_000 / 258_400) * 100);
+      const durable = readFileSync(eventV3Paths(root).active, "utf8");
+      expect(durable).not.toContain(transcript);
+      expect(durable).not.toContain(nativeSession);
+      expect(durable).not.toContain(nativeTurn);
+    }
+  });
+
+  test("bounds late Codex context retries when the transcript remains unflushed", () => {
     const root = candidateRoot("codex");
-    const nativeSession = "codex-unflushed-context-session";
-    const nativeTurn = "codex-unflushed-context-turn";
+    const nativeSession = "codex-bounded-context-retry";
+    const nativeTurn = "codex-bounded-context-turn";
     const transcript = join(root, `rollout-fixture-${nativeSession}.jsonl`);
     writeFileSync(
       transcript,
@@ -1300,35 +1418,39 @@ describe("event ledger V3 persistent hook recorder", () => {
         payload: { type: "task_started", turn_id: nativeTurn },
       })}\n`,
     );
-    recordHookSignalV3(
-      baseInput(root, "session-start", parsed({ session_id: nativeSession }), "codex"),
-    );
-    recordHookSignalV3(
-      baseInput(
-        root,
-        "user-prompt-submit",
-        parsed({ session_id: nativeSession, turn_id: nativeTurn }),
-        "codex",
-      ),
-    );
-    expect(
+    for (const [signal, turn] of [
+      ["session-start", undefined],
+      ["user-prompt-submit", nativeTurn],
+    ] as const) {
       recordHookSignalV3(
         baseInput(
           root,
-          "stop",
-          parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+          signal,
+          parsed({ session_id: nativeSession, ...(turn ? { turn_id: turn } : {}) }),
           "codex",
         ),
-      ).state,
-    ).toBe("recorded");
-    const context = readLedgerV3(root)
-      .events.map(({ event }) => event)
-      .find((event) => event.event_type === "context.observed");
-    expect(context?.event_type === "context.observed" && context.payload.measurement).toEqual({
-      state: "expected_but_missing",
-      capability: "context_usage",
-      reason: "codex_transcript_turn_not_terminal",
-    });
+      );
+    }
+    recordHookSignalV3(
+      baseInput(
+        root,
+        "stop",
+        parsed({ session_id: nativeSession, turn_id: nativeTurn, transcript_path: transcript }),
+        "codex",
+      ),
+    );
+    recordHookSignalV3(
+      baseInput(root, "pre-compact", parsed({ session_id: nativeSession }), "codex"),
+    );
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toMatchObject([{ attempts: 1 }]);
+    recordHookSignalV3(
+      baseInput(root, "post-compact", parsed({ session_id: nativeSession }), "codex"),
+    );
+    expect(
+      readHookProducerStateV3(root, "codex", nativeSession)?.pending_runtime_contexts,
+    ).toBeUndefined();
   });
 
   test("records paired local Cursor tools with an exact terminal count and no bodies", () => {
