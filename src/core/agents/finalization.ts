@@ -473,6 +473,9 @@ export function checkGitFinalization(
   options: { claimHistoryComplete?: boolean } = {},
 ): GitFinalizationResult {
   const root = resolve(coordRoot);
+  // Repository discovery resolves symlinks. Use the same physical base for
+  // display labels so macOS /var -> /private/var aliases stay repo-relative.
+  const labelRoot = physicalPath(root) ?? root;
   const repos = new Map<string, RepoWork>();
   const hostOutputPaths = new Set<string>();
   const unsupportedPaths: UnsupportedFinalizationPath[] = [];
@@ -504,7 +507,7 @@ export function checkGitFinalization(
     for (const repoPath of work.paths) {
       if (work.gitlinks.has(repoPath)) {
         if (gitlinkIsDirty(work.root, repoPath)) {
-          const label = repoLabel(root, work.root);
+          const label = repoLabel(labelRoot, work.root);
           dirtyPaths.add(label === "." ? repoPath : `${label}/${repoPath}`);
         }
         continue;
@@ -514,15 +517,17 @@ export function checkGitFinalization(
         work.root,
       );
       if (status.status !== 0) {
-        unverifiablePaths.push(join(repoLabel(root, work.root), repoPath).replaceAll("\\", "/"));
+        unverifiablePaths.push(
+          join(repoLabel(labelRoot, work.root), repoPath).replaceAll("\\", "/"),
+        );
       } else if (status.stdout.length > 0) {
-        const label = repoLabel(root, work.root);
+        const label = repoLabel(labelRoot, work.root);
         dirtyPaths.add(label === "." ? repoPath : `${label}/${repoPath}`);
       }
     }
 
     const syncState = repoSyncState(work.root);
-    const label = repoLabel(root, work.root);
+    const label = repoLabel(labelRoot, work.root);
     if (syncState === "unpushed") unpushedRepos.push(label);
     if (syncState === "unverifiable") unverifiableRepos.push(label);
   }
@@ -544,7 +549,7 @@ export function checkGitFinalization(
     ),
     unverifiable_paths: [...new Set(unverifiablePaths)].sort(),
     unverifiable_repos: [...new Set(unverifiableRepos)].sort(),
-    repos_checked: [...repos.keys()].map((repo) => repoLabel(root, repo)).sort(),
+    repos_checked: [...repos.keys()].map((repo) => repoLabel(labelRoot, repo)).sort(),
   };
   result.ok =
     result.claim_history_complete &&

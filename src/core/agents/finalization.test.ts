@@ -18,7 +18,11 @@ function git(cwd: string, ...args: string[]): string {
 
 function initRepo(path: string, bare = false): void {
   mkdirSync(path, { recursive: true });
-  git(path, "init", ...(bare ? ["--bare"] : ["--quiet"]));
+  git(
+    path,
+    "init",
+    ...(bare ? ["--bare", "--initial-branch=master"] : ["--quiet", "--initial-branch=master"]),
+  );
   if (!bare) {
     git(path, "config", "user.email", "test@example.invalid");
     git(path, "config", "user.name", "Test");
