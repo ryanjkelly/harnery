@@ -12,6 +12,7 @@ interface Props {
   agentNames: string[];
   instanceToName: Record<string, string>;
   initialAgent?: string | null;
+  initialSearch?: string | null;
   initialKind?: string | null;
   knownKinds?: string[];
 }
@@ -29,6 +30,7 @@ export function EventsLogTable({
   agentNames,
   instanceToName,
   initialAgent,
+  initialSearch,
   initialKind,
   knownKinds,
 }: Props) {
@@ -45,6 +47,7 @@ export function EventsLogTable({
       snapshotUrl="/api/events?limit=500"
       agentNames={agentNames}
       initialAgent={initialAgent}
+      initialSearch={initialSearch}
       initialKind={initialKind}
       knownKinds={knownKinds}
       emptyStateHint="No V3 events yet. Tool calls, prompts, and lifecycle boundaries appear after the first recorded agent signal."

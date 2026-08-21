@@ -68,6 +68,8 @@ interface Props<E> {
   agentNames: string[];
   /** Optional initial agent filter from URL searchParams. */
   initialAgent?: string | null;
+  /** Optional initial search text from URL searchParams (?q=…). */
+  initialSearch?: string | null;
   /** Optional initial kind filter from URL searchParams. */
   initialKind?: string | null;
   /** Optional kinds to seed the chip row even if the current buffer has zero
@@ -115,14 +117,15 @@ export function LogTable<E>({
   snapshotUrl,
   agentNames,
   initialAgent,
+  initialSearch,
   initialKind,
   knownKinds,
   emptyStateHint,
   maxBuffer = MAX_BUFFER,
 }: Props<E>) {
   const [rows, setRows] = useState<E[]>(initialRows);
-  const [search, setSearch] = useState<string>("");
-  const [debouncedSearch, setDebouncedSearch] = useState<string>("");
+  const [search, setSearch] = useState<string>(initialSearch ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState<string>(initialSearch ?? "");
   const [regexMode, setRegexMode] = useState<boolean>(false);
   const [agentFilter, setAgentFilter] = useState<string | null>(initialAgent ?? null);
   const [kindFilter, setKindFilter] = useState<string | null>(initialKind ?? null);

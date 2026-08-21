@@ -4,8 +4,13 @@ import type { Metadata } from "next";
 
 import { AttentionProvider } from "@/components/AttentionProvider";
 import { DateTimeFormatProvider } from "@/components/DateTimeFormatProvider";
-import { HostInfoProvider } from "@/components/HostInfoProvider";
 import { FileViewerProvider } from "@/components/file-viewer/FileViewerProvider";
+import { HostInfoProvider } from "@/components/HostInfoProvider";
+import { CommandPalette } from "@/components/palette/CommandPalette";
+import { PaletteProvider } from "@/components/palette/PaletteProvider";
+import { ActionsRegistrar } from "@/components/palette/registrars/ActionsRegistrar";
+import { CatalogRegistrar } from "@/components/palette/registrars/CatalogRegistrar";
+import { RoutesRegistrar } from "@/components/palette/registrars/RoutesRegistrar";
 import { hostInfo } from "@/lib/config";
 
 import "./globals.css";
@@ -15,11 +20,7 @@ export const metadata: Metadata = {
   description: "Standalone read-only view of the Harnery multi-agent coord state.",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   const host = hostInfo();
   return (
     <html
@@ -31,7 +32,15 @@ export default function RootLayout({
         <HostInfoProvider value={host}>
           <DateTimeFormatProvider>
             <AttentionProvider>
-              <FileViewerProvider>{children}</FileViewerProvider>
+              <FileViewerProvider>
+                <PaletteProvider>
+                  {children}
+                  <RoutesRegistrar />
+                  <ActionsRegistrar />
+                  <CatalogRegistrar />
+                  <CommandPalette />
+                </PaletteProvider>
+              </FileViewerProvider>
             </AttentionProvider>
           </DateTimeFormatProvider>
         </HostInfoProvider>

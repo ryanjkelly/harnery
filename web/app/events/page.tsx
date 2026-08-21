@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { AgentChipProvider } from "@/components/AgentChip";
 import { EventsLogTable } from "@/components/log-table/EventsLogTable";
 import { NavBar } from "@/components/NavBar";
@@ -13,7 +14,7 @@ export const revalidate = 0;
 export const metadata = { title: "Events · Harnery" };
 
 interface PageProps {
-  searchParams: Promise<{ limit?: string; type?: string; instance?: string }>;
+  searchParams: Promise<{ limit?: string; type?: string; instance?: string; q?: string }>;
 }
 
 /**
@@ -32,6 +33,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
   const limit = sp.limit ? Number(sp.limit) : 500;
   const type = sp.type ?? null;
   const instanceId = sp.instance ?? null;
+  const q = sp.q ?? null;
   const data = readEvents({ limit, instanceId: instanceId ?? undefined });
   const snap = readAgents();
 
@@ -81,6 +83,9 @@ export default async function EventsPage({ searchParams }: PageProps) {
           <div className="text-xs text-muted-foreground flex items-center gap-3">
             <span>{data.meta.total_lines.toLocaleString()} events in buffer</span>
             <code className="font-mono text-muted-foreground/80">Event Ledger V3</code>
+            <Link href="/live" className="underline hover:text-foreground">
+              commands-only view →
+            </Link>
           </div>
         </header>
 
@@ -90,6 +95,7 @@ export default async function EventsPage({ searchParams }: PageProps) {
             agentNames={agentNames}
             instanceToName={instanceToName}
             initialAgent={initialAgentName}
+            initialSearch={q}
             initialKind={type}
             knownKinds={allKinds}
           />

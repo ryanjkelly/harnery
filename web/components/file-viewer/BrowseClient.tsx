@@ -1,36 +1,41 @@
 "use client";
 
 /**
- * /browse split-pane: directory tree (left) + inline file viewer (right), with
- * a ⌘K fuzzy-search palette over both. Owns the selected path and mirrors it to
- * `?file=<rel>` via replaceState (Back/Forward re-reads it). Uses `?file=` not
- * the overlay's `?path=` so the global FileViewerProvider doesn't also pop its
- * modal here.
+ * /browse split-pane: directory tree (left) + inline file viewer (right).
+ * Owns the selected path and mirrors it to `?file=<rel>` via replaceState
+ * (Back/Forward re-reads it). Uses `?file=` not the overlay's `?path=` so the
+ * global FileViewerProvider doesn't also pop its modal here.
  *
- * Mobile (< md): one pane at a time — tree, or the viewer with a back-to-tree +
- * search bar. Search is reachable on every screen (header button + ⌘K), and the
- * palette goes full-screen. The tree auto-reveals + scrolls to the selection.
+ * File search is the global command palette's file prompt (⌘K anywhere; the
+ * header buttons open straight into it). While this page is mounted it
+ * registers a palette file-open override so a picked file lands in the
+ * in-page pane instead of the overlay.
+ *
+ * Mobile (< md): one pane at a time — tree, or the viewer with a back-to-tree
+ * + search bar. The tree auto-reveals + scrolls to the selection.
  */
 
 import { ChevronLeft, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { openCommandPalette } from "@/components/palette/CommandPalette";
+import { usePaletteFileOpenOverride } from "@/components/palette/PaletteProvider";
 import { DirectoryTree } from "./DirectoryTree";
 import { FileViewerPane } from "./FileViewerPane";
-import { SearchPalette } from "./SearchPalette";
 
 export function BrowseClient({ initialPath }: { initialPath: string | null }) {
   const [selected, setSelected] = useState<string | null>(initialPath);
   const [mobileView, setMobileView] = useState<"tree" | "file">(initialPath ? "file" : "tree");
-  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const select = useCallback((relPath: string) => {
     setSelected(relPath);
     setMobileView("file");
-    setPaletteOpen(false);
     const u = new URL(window.location.href);
     u.searchParams.set("file", relPath);
     window.history.replaceState(window.history.state, "", `${u.pathname}${u.search}${u.hash}`);
   }, []);
+
+  // Palette file results select in-pane while this page is mounted.
+  usePaletteFileOpenOverride(select);
 
   // Back/Forward → re-read ?file= so browser nav syncs the pane + reveal.
   useEffect(() => {
@@ -43,17 +48,7 @@ export function BrowseClient({ initialPath }: { initialPath: string | null }) {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // ⌘K / Ctrl-K toggles the search palette.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
-        e.preventDefault();
-        setPaletteOpen((o) => !o);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  const openSearch = useCallback(() => openCommandPalette({ view: "files" }), []);
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -62,7 +57,7 @@ export function BrowseClient({ initialPath }: { initialPath: string | null }) {
           mobileView === "tree" ? "flex" : "hidden"
         } w-full shrink-0 flex-col overflow-hidden border-r border-border md:flex md:w-72`}
       >
-        <SearchTrigger onClick={() => setPaletteOpen(true)} />
+        <SearchTrigger onClick={openSearch} />
         <div className="min-h-0 flex-1 overflow-auto">
           <DirectoryTree selectedPath={selected} onSelect={select} />
         </div>
@@ -81,7 +76,7 @@ export function BrowseClient({ initialPath }: { initialPath: string | null }) {
           </button>
           <button
             type="button"
-            onClick={() => setPaletteOpen(true)}
+            onClick={openSearch}
             aria-label="Search files"
             className="ml-auto rounded p-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
           >
@@ -90,8 +85,6 @@ export function BrowseClient({ initialPath }: { initialPath: string | null }) {
         </div>
         <FileViewerPane path={selected} />
       </section>
-
-      <SearchPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onSelect={select} />
     </div>
   );
 }
