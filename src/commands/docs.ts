@@ -1,6 +1,5 @@
 import type { Command } from "commander";
 import type { EmitContext, HarneryProgramContext } from "../commander.ts";
-import { createDocsFile } from "../lib/docs-new.ts";
 import { initDocsContext as initDocs, scanDocs } from "../lib/docs.ts";
 import { initDocsContext as initDocsIndex, runIndex } from "../lib/docs-index.ts";
 import { initDocsContext as initDocsLinks, runLinks } from "../lib/docs-links.ts";
@@ -8,6 +7,7 @@ import { initDocsContext as initDocsLint, runLint } from "../lib/docs-lint.ts";
 import { readDocsMetadata, readDocsMetadataKey } from "../lib/docs-meta.ts";
 import { initDocsMetadataAuditContext, runDocsMetadataAudit } from "../lib/docs-metadata-audit.ts";
 import { initDocsMetadataSyncContext, runDocsMetadataSync } from "../lib/docs-metadata-sync.ts";
+import { createDocsFile } from "../lib/docs-new.ts";
 import {
   countColdHandoffs,
   initDocsContext as initDocsSweep,

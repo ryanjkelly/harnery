@@ -37,4 +37,3 @@ export type LiveCoordinationObservationV3 =
       new_state: string;
       record: unknown;
     };
-

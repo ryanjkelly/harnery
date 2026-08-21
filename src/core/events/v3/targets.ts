@@ -180,4 +180,3 @@ function plainRecord(value: unknown): Record<string, unknown> | undefined {
   if (prototype !== Object.prototype && prototype !== null) return undefined;
   return value as Record<string, unknown>;
 }
-

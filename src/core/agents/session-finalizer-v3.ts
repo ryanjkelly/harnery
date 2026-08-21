@@ -289,7 +289,9 @@ export function reconcileSessionFinalizationV3(
     const now = options.now ?? new Date();
     const policy = sessionFinalizationConfig(coordRoot);
     const ledger =
-      route.mode === "candidate" ? readLedgerV3(coordRoot, { authority: "candidate" }) : readLedgerV3(coordRoot);
+      route.mode === "candidate"
+        ? readLedgerV3(coordRoot, { authority: "candidate" })
+        : readLedgerV3(coordRoot);
     if (!ledger.complete || ledger.diagnostics.length > 0) {
       result.diagnostics.push("ledger_not_authority_safe");
       return result;
@@ -791,7 +793,9 @@ function buildObservationEvent(
 ): EventV3 {
   const route = input.route;
   const rootId = (
-    route.mode === "candidate" ? readLedgerV3(coordRoot, { authority: "candidate" }) : readLedgerV3(coordRoot)
+    route.mode === "candidate"
+      ? readLedgerV3(coordRoot, { authority: "candidate" })
+      : readLedgerV3(coordRoot)
   ).events.find(({ event }) => event.event_type === "ledger.genesis")?.event.scope
     .root_id as `root_${string}`;
   const context = fingerprintContextV3(

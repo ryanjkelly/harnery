@@ -1,3 +1,5 @@
+import { DOCS_METADATA_TYPES } from "./docs-metadata-v2.ts";
+
 const timestamp = {
   type: "string",
   pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
@@ -92,6 +94,7 @@ export const docsMetadataV2Schema = {
   allOf: [
     {
       if: { properties: { type: { const: "plan" } }, required: ["type"] },
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the then keyword for conditional validation.
       then: {
         required: ["status", "status_changed_at", "owner"],
         properties: { status: { enum: ["proposed", "in-progress", "shipped", "abandoned"] } },
@@ -99,6 +102,7 @@ export const docsMetadataV2Schema = {
     },
     {
       if: { properties: { type: { const: "issue" } }, required: ["type"] },
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the then keyword for conditional validation.
       then: {
         required: ["status", "status_changed_at", "owner", "severity"],
         properties: { status: { enum: ["open", "resolved", "wontfix"] } },
@@ -106,6 +110,7 @@ export const docsMetadataV2Schema = {
     },
     {
       if: { properties: { type: { const: "handoff" } }, required: ["type"] },
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the then keyword for conditional validation.
       then: {
         required: ["status", "status_changed_at", "owner"],
         properties: { status: { enum: ["open", "resolved", "abandoned"] } },
@@ -113,6 +118,7 @@ export const docsMetadataV2Schema = {
     },
     {
       if: { properties: { type: { const: "runbook" } }, required: ["type"] },
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the then keyword for conditional validation.
       then: { required: ["owner", "reviewed_at", "review_due_at"] },
     },
     {
@@ -120,12 +126,13 @@ export const docsMetadataV2Schema = {
         properties: { type: { enum: ["book", "entity", "concept", "query", "page"] } },
         required: ["type"],
       },
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the then keyword for conditional validation.
       then: { required: ["title", "category", "source_count", "provenance"] },
     },
     {
       if: { properties: { type: { const: "synced-page" } }, required: ["type"] },
+      // biome-ignore lint/suspicious/noThenProperty: JSON Schema requires the then keyword for conditional validation.
       then: { required: ["title", "handle", "published", "source", "source_updated_at"] },
     },
   ],
 };
-import { DOCS_METADATA_TYPES } from "./docs-metadata-v2.ts";

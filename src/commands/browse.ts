@@ -994,8 +994,7 @@ async function runBrowse(
       // reviewed — a partially-reused run must never become the next
       // baseline's finding record.
       const fullCoverage =
-        critique !== undefined &&
-        critique.provider &&
+        critique?.provider &&
         critique.outcome !== "skipped" &&
         critiqueTiles !== undefined &&
         (!qaReuse || qaReuse.tiles_reused === 0);

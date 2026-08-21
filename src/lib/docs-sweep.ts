@@ -22,7 +22,7 @@ function isSubmoduleInitialized(name: string): boolean {
   return __existsSyncForDocs(__resolveForDocs(REPO_ROOT, name, ".git"));
 }
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /**

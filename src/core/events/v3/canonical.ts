@@ -151,4 +151,3 @@ function assertDomain(domain: string): void {
     throw new Error("fingerprint domain is invalid");
   }
 }
-

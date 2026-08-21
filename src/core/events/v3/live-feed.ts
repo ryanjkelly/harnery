@@ -317,4 +317,3 @@ function assertLiveIds(generationId: string, eventId: string): void {
 function liveRoot(coordRoot: string): string {
   return join(resolve(coordRoot), EVENT_V3_LIVE_RELATIVE_ROOT);
 }
-

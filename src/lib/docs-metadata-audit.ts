@@ -1,10 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { parseFrontmatter } from "./docs-frontmatter.ts";
-import {
-  isManagedDocsMetadataFile,
-  managedDocsMetadataType,
-} from "./docs-metadata-managed.ts";
+import { isManagedDocsMetadataFile, managedDocsMetadataType } from "./docs-metadata-managed.ts";
 import {
   type DocsMetadataProfile,
   type DocsMetadataValidationIssue,

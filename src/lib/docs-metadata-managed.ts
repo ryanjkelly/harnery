@@ -1,9 +1,5 @@
 import { basename } from "node:path";
-import {
-  type DocsMetadataType,
-  isDocsMetadataType,
-  isDocsMetadataV2,
-} from "./docs-metadata-v2.ts";
+import { type DocsMetadataType, isDocsMetadataType, isDocsMetadataV2 } from "./docs-metadata-v2.ts";
 
 function normalized(path: string): string {
   return path.replaceAll("\\", "/");

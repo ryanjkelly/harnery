@@ -307,7 +307,8 @@ describe("checkFile", () => {
   });
 
   test("downgrades findings in settled lifecycle docs; open ones stay errors", () => {
-    const resolved = "---\nschema: harnery-doc/v2\ntype: issue\nstatus: resolved\n---\n\n[t](nope.md)\n";
+    const resolved =
+      "---\nschema: harnery-doc/v2\ntype: issue\nstatus: resolved\n---\n\n[t](nope.md)\n";
     expect(check("docs/issues/2026-01-01_x.md", resolved).findings[0]?.severity).toBe("warning");
 
     const open = "---\nschema: harnery-doc/v2\ntype: issue\nstatus: open\n---\n\n[t](nope.md)\n";
@@ -319,7 +320,8 @@ describe("checkFile", () => {
     );
 
     // Status only helps for lifecycle dirs; a topic doc stays live regardless.
-    const topic = "---\nschema: harnery-doc/v2\ntype: topic\nstatus: resolved\n---\n\n[t](nope.md)\n";
+    const topic =
+      "---\nschema: harnery-doc/v2\ntype: topic\nstatus: resolved\n---\n\n[t](nope.md)\n";
     expect(check("docs/guides/topic.md", topic).findings[0]?.severity).toBe("error");
 
     // --strict overrides the downgrade here too.

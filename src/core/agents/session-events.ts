@@ -21,10 +21,7 @@ import { readHookProducerStateByInstanceV3 } from "../events/v3/producers/record
 import { resolveEmitRoot } from "./canonical-emit.ts";
 
 /** Event types accepted by `writeSessionEvent`. */
-export type SessionEventType =
-  | "command.started"
-  | "command.output_observed"
-  | "command.completed";
+export type SessionEventType = "command.started" | "command.output_observed" | "command.completed";
 
 /**
  * Resolved path of the ndjson sidecar file. Lives inside `.harnery/` so a

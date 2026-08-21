@@ -65,4 +65,3 @@ function finalizationScopeFromCoordinationViewV3(
     source_position: { ...instance.source_position },
   };
 }
-

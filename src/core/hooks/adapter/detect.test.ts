@@ -51,7 +51,9 @@ describe("shouldSkipHookAdapter", () => {
     });
     expect(shouldSkipHookAdapter("claude-code", mentionsInToolInput)).toBeFalse();
     expect(shouldSkipHookAdapter("claude-code", JSON.stringify({ cursor_version: 7 }))).toBeFalse();
-    expect(shouldSkipHookAdapter("claude-code", JSON.stringify({ cursor_version: "" }))).toBeFalse();
+    expect(
+      shouldSkipHookAdapter("claude-code", JSON.stringify({ cursor_version: "" })),
+    ).toBeFalse();
     expect(shouldSkipHookAdapter("claude-code", "")).toBeFalse();
     expect(shouldSkipHookAdapter("claude-code", "   ")).toBeFalse();
     expect(shouldSkipHookAdapter("claude-code", "not json")).toBeFalse();

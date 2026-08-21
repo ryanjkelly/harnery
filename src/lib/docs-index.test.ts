@@ -24,7 +24,10 @@ function makeRepo(): string {
 
   mkdirSync(join(root, "docs", "issues"), { recursive: true });
   writeFileSync(join(root, "docs", "issues", "README.md"), markedReadme("issues"));
-  writeFileSync(join(root, "docs", "issues", "2026-08-01_root-issue.md"), "---\nschema: harnery-doc/v2\ntype: issue\nstatus: open\n---\n# Root issue\n");
+  writeFileSync(
+    join(root, "docs", "issues", "2026-08-01_root-issue.md"),
+    "---\nschema: harnery-doc/v2\ntype: issue\nstatus: open\n---\n# Root issue\n",
+  );
 
   mkdirSync(join(root, "in-tree", "docs", "issues"), { recursive: true });
   writeFileSync(join(root, "in-tree", "docs", "issues", "README.md"), markedReadme("issues"));
