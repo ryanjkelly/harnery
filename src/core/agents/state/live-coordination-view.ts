@@ -19,7 +19,7 @@ import {
   nativeInstanceIdV3,
   resolveLiveEventLedgerRouteV3,
 } from "../../events/v3/live-routing.ts";
-import { type Heartbeat, readHeartbeat } from "./heartbeat-writer.ts";
+import { type Heartbeat, readHeartbeat } from "./heartbeat-reader.ts";
 import { resolveName } from "./names.ts";
 
 /**

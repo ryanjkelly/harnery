@@ -39,6 +39,7 @@ const ENTRYPOINTS = [
 const FORBIDDEN_SPECIFIERS = [
   "coord-writer",
   "council-writer",
+  "heartbeat-writer",
   "child_process",
   "node:child_process",
   "worker_threads",

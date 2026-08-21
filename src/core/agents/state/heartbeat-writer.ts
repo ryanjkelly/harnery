@@ -23,66 +23,12 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalClaimPath } from "../claim-path.ts";
-import { assertSafeInstanceId, resolveContainedFile } from "../coord-client.ts";
-import type { AgentActivity, TaskState } from "./session-state.ts";
+import { type Heartbeat, heartbeatPath, readHeartbeat } from "./heartbeat-reader.ts";
+import type { TaskState } from "./session-state.ts";
 
-export interface Heartbeat {
-  schema_version?: number;
-  instance_id: string;
-  name?: string;
-  kind?: string;
-  agent_id?: string;
-  session_id: string;
-  /** Native adapter session ID retained only in a generation-bound local projection. */
-  native_session_id?: string;
-  subagent_call_id?: string;
-  model?: string;
-  platform?: string;
-  started_at?: string;
-  last_heartbeat: string;
-  files_touched: string[];
-  task?: string;
-  task_updated_at?: string | null;
-  activity?: AgentActivity;
-  activity_updated_at?: string;
-  activity_source?: string;
-  task_state?: TaskState;
-  task_state_updated_at?: string;
-  task_state_reason?: string;
-  /** Session name built on the first non-empty set-task (never rebuilt). Its
-   * presence is the "this session has been named" signal the prompt-context
-   * nudge and the Stop-hook naming rule key on. */
-  suggested_session_name?: string;
-  /** Stamped by turn.completed once the suggested name is seen in assistant reply
-   * text, ending the per-turn transcript scan. */
-  session_name_seen_at?: string;
-  /** WHICH name that sighting was for. The scan is skipped only while this
-   * matches the current suggested name, so a re-minted name is detectable
-   * again rather than being suppressed by the earlier sighting. */
-  session_name_seen_for?: string;
-  last_status_at?: string;
-  current_turn_id?: string;
-  parent_instance_id?: string;
-  workflow_run_id?: string;
-  workflow_agent_id?: string;
-  /** Disposable-cache bindings that prove a row belongs to the current V3 generation. */
-  v3_instance_id?: `inst_${string}`;
-  v3_generation_id?: `gen_${string}`;
-  v3_projection_event_id?: string;
-  v3_task_state?: "set" | "cleared";
-  [extra: string]: unknown;
-}
-
-function heartbeatPath(coordRoot: string, instanceId: string): string {
-  assertSafeInstanceId(instanceId);
-  const safeInstanceId = basename(instanceId);
-  if (safeInstanceId !== instanceId) {
-    throw new Error("instance_id must be a direct-child coordination basename");
-  }
-  return resolveContainedFile(join(coordRoot, ".harnery", "active"), `${safeInstanceId}.json`);
-}
+export { type Heartbeat, readHeartbeat } from "./heartbeat-reader.ts";
 
 function nowIsoSeconds(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -93,16 +39,6 @@ function atomicWrite(path: string, content: string): void {
   const tmp = `${path}.tmp.${process.pid}`;
   writeFileSync(tmp, content, "utf8");
   renameSync(tmp, path);
-}
-
-export function readHeartbeat(coordRoot: string, instanceId: string): Heartbeat | null {
-  const path = heartbeatPath(coordRoot, instanceId);
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as Heartbeat;
-  } catch {
-    return null;
-  }
 }
 
 /** Persist operator-facing lifecycle prose in the generation-bound cache only. */
