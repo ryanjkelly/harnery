@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.34.1
+
+### Patch Changes
+
+- 4e5e850: Let a latched session recover by repeating `agents set-task`. While the current session name is still pending, the command now returns the unchanged name with `session_name_retry: true`, and PostToolUse creates a fresh ordered display boundary for the next exact block.
+
 ## 0.34.0
 
 ### Minor Changes
