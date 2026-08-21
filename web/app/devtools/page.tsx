@@ -60,10 +60,10 @@ export default async function DevtoolsPage() {
       <NavBar scannedDir={coordRoot()} />
       <main className="mx-auto max-w-5xl px-4 py-6">
         <header className="mb-5">
-          <h1 className="text-lg font-semibold">Coding agents</h1>
+          <h1 className="text-lg font-semibold">Tools</h1>
           <p className="text-sm text-muted-foreground">
-            Where Claude Code, Codex, and Cursor stand on this machine, read straight from local
-            files. Nothing leaves the box.
+            Coding agents: where Claude Code, Codex, and Cursor stand on this machine, read straight
+            from local files. Nothing leaves the box.
           </p>
         </header>
 

@@ -89,9 +89,12 @@ export function LiveRefresher() {
         className={`inline-flex items-center gap-1 text-[10px] uppercase tracking-wider cursor-help ${colorCls}`}
       >
         {icon}
-        <span>
-          {isLive ? "live" : isPolling ? "polling" : isReconnecting ? "reconnecting" : "connecting"}
-        </span>
+        {/* The initial "connecting" moment is routine (server-rendered content
+            is already on screen), so it stays icon-only instead of shouting a
+            state label that reads like an error. */}
+        {(isLive || isPolling || isReconnecting) && (
+          <span>{isLive ? "live" : isPolling ? "polling" : "reconnecting"}</span>
+        )}
       </span>
     </Tooltip>
   );

@@ -1,8 +1,13 @@
 "use client";
 
+import { Search } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
+import { openCommandPalette } from "@/components/palette/CommandPalette";
+import { OPEN_SETTINGS_EVENT } from "@/components/palette/registrars/ActionsRegistrar";
+import { APP_ROUTES, isRouteActive } from "@/lib/palette/routes";
 import { AttentionReplayBell } from "./AttentionReplayBell";
 import { LiveRefresher } from "./LiveRefresher";
 import { SettingsDialog } from "./SettingsDialog";
@@ -10,6 +15,35 @@ import { Tooltip } from "./ui/tooltip";
 
 export function NavBar({ scannedDir }: { scannedDir: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const pathname = usePathname();
+
+  // The command palette's "Display settings…" verb opens the same dialog the
+  // gear button does.
+  useEffect(() => {
+    const onOpenSettings = () => setSettingsOpen(true);
+    window.addEventListener(OPEN_SETTINGS_EVENT, onOpenSettings);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, onOpenSettings);
+  }, []);
+
+  // OS-appropriate shortcut label, client-only to avoid a hydration mismatch.
+  const [kbd, setKbd] = useState("");
+  useEffect(() => {
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform) || /Mac/.test(navigator.userAgent);
+    setKbd(isMac ? "⌘K" : "Ctrl K");
+  }, []);
+
+  // Routes render in registry order with a separator between groups, so
+  // related surfaces (activity / direction / execution / library) cluster.
+  const nav: Array<{ type: "link"; href: string; label: string } | { type: "sep"; key: string }> =
+    [];
+  let prevGroup: string | null = null;
+  for (const r of APP_ROUTES) {
+    if (prevGroup !== null && r.group !== prevGroup)
+      nav.push({ type: "sep", key: `sep-${r.group}` });
+    nav.push({ type: "link", href: r.href, label: r.href === "/" ? "Dashboard" : r.label });
+    prevGroup = r.group;
+  }
+
   return (
     <header className="border-b border-border mb-8">
       <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-baseline justify-between gap-6 flex-wrap">
@@ -22,46 +56,27 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
             <img src="/harnery-emblem.svg" alt="" width={22} height={22} className="shrink-0" />
             Harnery
           </Link>
-          <nav className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-            <Link href="/" className="hover:text-foreground">
-              Dashboard
-            </Link>
-            <Link href="/councils" className="hover:text-foreground">
-              Councils
-            </Link>
-            <Link href="/decisions" className="hover:text-foreground">
-              Decisions
-            </Link>
-            <Link href="/live" className="hover:text-foreground">
-              Live
-            </Link>
-            <Link href="/codec" className="hover:text-foreground">
-              Codec
-            </Link>
-            <Link href="/events" className="hover:text-foreground">
-              Events
-            </Link>
-            <Link href="/work" className="hover:text-foreground">
-              Work
-            </Link>
-            <Link href="/governors" className="hover:text-foreground">
-              Goals
-            </Link>
-            <Link href="/workflows" className="hover:text-foreground">
-              Workflows
-            </Link>
-            <Link href="/images" className="hover:text-foreground">
-              Images
-            </Link>
-            <Link href="/files" className="hover:text-foreground">
-              Files
-            </Link>
-            <Link href="/browse" className="hover:text-foreground">
-              Browse
-            </Link>
-            <Link href="/devtools" className="hover:text-foreground">
-              Tools
-            </Link>
+          <nav className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-muted-foreground">
+            {nav.map((entry) =>
+              entry.type === "sep" ? (
+                <span key={entry.key} aria-hidden className="select-none text-border">
+                  ·
+                </span>
+              ) : (
+                <Link
+                  key={entry.href}
+                  href={entry.href}
+                  aria-current={isRouteActive(entry.href, pathname) ? "page" : undefined}
+                  className={
+                    isRouteActive(entry.href, pathname)
+                      ? "text-foreground font-medium underline decoration-foreground/40 underline-offset-8"
+                      : "hover:text-foreground"
+                  }
+                >
+                  {entry.label}
+                </Link>
+              ),
+            )}
           </nav>
         </div>
         {/* items-center (not baseline): the icon buttons have no text baseline,
@@ -75,6 +90,21 @@ export function NavBar({ scannedDir }: { scannedDir: string }) {
           <span className="text-xs font-mono text-muted-foreground truncate min-w-0 max-w-[45vw] sm:max-w-105">
             {scannedDir}
           </span>
+          <Tooltip content={`Command palette${kbd ? ` (${kbd})` : ""}: search everything`}>
+            <button
+              type="button"
+              onClick={() => openCommandPalette()}
+              className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground rounded p-1 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              aria-label="Open command palette"
+            >
+              <Search className="size-4" aria-hidden />
+              {kbd && (
+                <kbd className="hidden rounded border border-border px-1 py-0.5 font-mono text-[10px] sm:inline">
+                  {kbd}
+                </kbd>
+              )}
+            </button>
+          </Tooltip>
           <AttentionReplayBell />
           <Tooltip content="Display settings: datetime format + timezone">
             <button

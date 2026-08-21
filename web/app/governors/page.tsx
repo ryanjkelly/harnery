@@ -2,6 +2,7 @@ import Link from "next/link";
 import { GovernorStateBadge } from "@/components/GovernorStateBadge";
 import { NavBar } from "@/components/NavBar";
 import { Badge } from "@/components/ui/badge";
+import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import {
   governorDashboardDecision,
@@ -16,6 +17,7 @@ export const metadata = { title: "Goals · Harnery" };
 
 export default function GovernorsPage() {
   const root = coordRoot();
+  const { binName } = hostInfo();
   const records = readGovernors(root);
   const service = readGovernorBackgroundService(root);
   const serviceState = service.running
@@ -27,9 +29,9 @@ export default function GovernorsPage() {
     <div className="min-h-screen">
       <NavBar scannedDir={coordRoot()} />
       <main className="mx-auto max-w-5xl px-4 py-6">
-        <h1 className="mb-1 text-xl font-semibold">Durable goals</h1>
+        <h1 className="mb-1 text-xl font-semibold">Goals</h1>
         <p className="mb-6 text-sm text-muted-foreground">
-          Bounded specialist teams supervising durable missions and immutable work graphs.
+          Durable goals: bounded specialist teams supervising missions and immutable work graphs.
         </p>
         <section className="mb-6 rounded-lg border border-border bg-card px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -54,7 +56,7 @@ export default function GovernorsPage() {
         </section>
         {records.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No goals yet. Create one with <code>harn governor create</code>.
+            No goals yet. Create one with <code>{binName} governor create</code>.
           </p>
         ) : (
           <ul className="space-y-2">

@@ -28,12 +28,6 @@ export default function CouncilsPage() {
     <AgentChipProvider summaries={summaries}>
       <NavBar scannedDir={coordRoot()} />
       <main className="w-full max-w-screen-2xl mx-auto px-6 pb-10">
-        <nav className="mb-4 text-xs text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">
-            ← Dashboard
-          </Link>
-        </nav>
-
         <header className="mb-6 flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-xl font-semibold tracking-tight">Councils</h1>
           <div className="flex items-center gap-4 flex-wrap">

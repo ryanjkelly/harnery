@@ -1,4 +1,5 @@
 import { FileText } from "lucide-react";
+import Link from "next/link";
 import { NavBar } from "@/components/NavBar";
 import { coordRoot } from "@/lib/coord-reader";
 
@@ -25,8 +26,16 @@ export default function FilesPage() {
         <FileText className="mb-4 size-10 text-muted-foreground/40" />
         <h1 className="mb-2 text-xl font-semibold tracking-tight">File viewer</h1>
         <p className="max-w-md text-sm text-muted-foreground">
-          Open any repo file in-dashboard. Click a file path in the event log, or deep-link directly
-          with{" "}
+          Open any repo file in-dashboard. Click a file path in the{" "}
+          <Link href="/events" className="underline hover:text-foreground">
+            event log
+          </Link>
+          , search with{" "}
+          <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-xs">⌘K</code>, browse the{" "}
+          <Link href="/browse" className="underline hover:text-foreground">
+            file tree
+          </Link>
+          , or deep-link directly with{" "}
           <code className="rounded bg-muted/60 px-1 py-0.5 font-mono text-xs">/files?path=…</code>.
         </p>
       </main>

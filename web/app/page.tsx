@@ -10,7 +10,7 @@ import {
   buildSubagentSummaries,
 } from "@/lib/agent-summary";
 import { detectAnomalies } from "@/lib/anomalies";
-import { readAgents, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
+import { coordRoot, readAgents, readEvents, readInstanceIdentities } from "@/lib/coord-reader";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +44,9 @@ export default function HomePage() {
 
   return (
     <AgentChipProvider summaries={summaries}>
-      <NavBar scannedDir={snap.meta.scanned_dir} />
+      {/* Global chrome shows the coord root like every other page; the
+          heartbeat scan dir (`.harnery/active`) is a dashboard detail. */}
+      <NavBar scannedDir={coordRoot()} />
       <main className="w-full max-w-screen-2xl mx-auto px-6 pb-10">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <h1 className="text-xl font-semibold tracking-tight">Agents coordination</h1>

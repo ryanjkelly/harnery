@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { NavBar } from "@/components/NavBar";
 import { WorkStateBadge } from "@/components/WorkStateBadge";
+import { hostInfo } from "@/lib/config";
 import { coordRoot } from "@/lib/coord-reader";
 import { readDurableWork } from "@/lib/work-reader";
 
@@ -10,18 +11,19 @@ export const metadata = { title: "Work · Harnery" };
 
 export default function WorkPage() {
   const records = readDurableWork(coordRoot());
+  const { binName } = hostInfo();
   return (
     <div className="min-h-screen">
       <NavBar scannedDir={coordRoot()} />
       <main className="mx-auto max-w-5xl px-4 py-6">
-        <h1 className="mb-1 text-xl font-semibold">Durable work</h1>
+        <h1 className="mb-1 text-xl font-semibold">Work</h1>
         <p className="mb-6 text-sm text-muted-foreground">
-          Objectives that survive across workflow attempts. Current state is derived from immutable
-          intent, append-only events, approvals, and run proof.
+          Durable objectives that survive across workflow attempts. Current state is derived from
+          immutable intent, append-only events, approvals, and run proof.
         </p>
         {records.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No durable work yet. Create one with <code>harn work create</code>.
+            No durable work yet. Create one with <code>{binName} work create</code>.
           </p>
         ) : (
           <ul className="space-y-2">
