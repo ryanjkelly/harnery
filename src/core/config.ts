@@ -9,8 +9,8 @@
  * Fields owned here: `binName` (host CLI name for agent-facing strings),
  * `hooksSetupHint`, `agents`, `tools`, `workflow`, `skills`, `presence`, plus the tunable
  * `coord` (heartbeat freshness), `artifacts` (working-file retention),
- * `backup` (restic repo/password/prune policy), and `sync` (rclone
- * remote/prefix) sections. The `files` deny/override section
+ * `backup` (restic repo/password/prune policy), `sync` (rclone
+ * remote/prefix), and `web` (dashboard port) sections. The `files` deny/override section
  * is parsed separately by `web/lib/files.ts`.
  *
  * Env vars and CLI flags override any config value per invocation (each accessor
@@ -29,6 +29,9 @@ export const DEFAULT_BIN_NAME = "harn";
 
 /** Heartbeat-freshness default (seconds): the sweep window when nothing overrides it. */
 export const DEFAULT_FRESHNESS_SECS = 600;
+
+/** Mnemonic dashboard port: 4276 spells HARN on a phone keypad. */
+export const DEFAULT_WEB_PORT = 4276;
 
 export interface SessionFinalizationConfig {
   archiveGraceSeconds: number;
@@ -137,6 +140,8 @@ interface HarneryConfig {
    * `~/.config/harnery/sync.json`, which is consulted as a lower-precedence fallback.
    */
   sync?: { remote?: string; prefix?: string };
+  /** Standalone dashboard defaults. */
+  web?: { port?: number; bind?: string };
   [k: string]: unknown;
 }
 
@@ -524,6 +529,36 @@ export function coordFreshnessSeconds(coordRoot?: string | null): number {
   const root = coordRoot ?? findCoordRoot();
   if (root) return posIntOr(readConfig(root).coord?.freshness_seconds, DEFAULT_FRESHNESS_SECS);
   return DEFAULT_FRESHNESS_SECS;
+}
+
+function parseWebPort(value: unknown, source: string): number {
+  const port = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new RangeError(`${source} must be an integer from 1024 through 65535`);
+  }
+  return port;
+}
+
+/**
+ * Resolve the standalone dashboard port.
+ *
+ * Precedence: explicit `--port` flag, `HARNERY_WEB_PORT`, merged
+ * `.harnery/config.jsonc` `web.port`, then the mnemonic built-in default 4276.
+ */
+export function resolveWebPort(explicitPort?: string, coordRoot?: string | null): number {
+  if (explicitPort !== undefined && explicitPort.trim() !== "") {
+    return parseWebPort(explicitPort, "--port");
+  }
+  const envPort = coordEnv("WEB_PORT");
+  if (envPort !== undefined && envPort.trim() !== "") {
+    return parseWebPort(envPort, "HARNERY_WEB_PORT");
+  }
+  const root = coordRoot ?? findCoordRoot();
+  const configuredPort = root ? readConfig(root).web?.port : undefined;
+  if (configuredPort !== undefined) {
+    return parseWebPort(configuredPort, "web.port");
+  }
+  return DEFAULT_WEB_PORT;
 }
 
 /** Policy for converging independent termination signals on one finalizer. */

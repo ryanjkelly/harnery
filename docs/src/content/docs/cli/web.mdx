@@ -18,9 +18,9 @@ The dashboard is not bundled in the npm package (which is the CLI + coord engine
 ## Subcommands
 
 ```
-harn web up [--port 9000] [--coord-root <dir>] [--prod] [--no-fetch] [--max-old-space <mb>]
+harn web up [--port 4276] [--coord-root <dir>] [--prod] [--no-fetch] [--max-old-space <mb>]
 harn web build [--no-fetch]
-harn web start [--port 9000] [--coord-root <dir>] [--no-fetch] [--max-old-space <mb>]
+harn web start [--port 4276] [--coord-root <dir>] [--no-fetch] [--max-old-space <mb>]
 ```
 
 ## `up`
@@ -29,7 +29,7 @@ Boot the dashboard. Dev mode by default (HMR, no build needed). With `--prod`, r
 
 ```bash
 harn web up
-# → http://localhost:9000
+# → http://localhost:4276
 
 harn web up --port 4000 --coord-root /path/to/some/repo
 # → http://localhost:4000, reading .harnery/ from /path/to/some/repo
@@ -92,7 +92,7 @@ Localhost-only by default. For cross-device access (phone, second laptop), pair 
 
 ```bash
 harn web up &
-harn tunnel up --target 127.0.0.1:9000
+harn tunnel up --target 127.0.0.1:4276
 ```
 
 `harn tunnel` runs an IP-gated reverse-proxy in front of a Cloudflare quick tunnel; see [`harn tunnel`](/cli/tunnel/) for the allowlist + setup story.

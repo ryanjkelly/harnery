@@ -200,10 +200,10 @@ Env overrides per process: `HARNERY_PRESENCE=1|0` (whole feature), `HARNERY_PRES
 
 | Field   | Type    | Default       | Description |
 | ------- | ------- | ------------- | ----------- |
-| `port`  | number  | `9000`        | Listen port for `harn web up` |
+| `port`  | number  | `4276`        | Listen port for `harn web up`; 4276 spells HARN on a phone keypad |
 | `bind`  | string  | `127.0.0.1`   | Bind address. Localhost-only by default |
 
-Override via flags: `harn web up --port 4000`.
+Precedence is `--port`, then `HARNERY_WEB_PORT`, then this config value, then `4276`. An occupied port fails with `web_port_in_use`; Harnery never silently chooses a different URL.
 
 ## `backup`
 
@@ -271,7 +271,7 @@ Full precedence for a `sync` remote, highest first: `HARNERY_SYNC_REMOTE` env â†
   },
 
   "web": {
-    "port": 9000
+    "port": 4276
   },
 
   "tools": {

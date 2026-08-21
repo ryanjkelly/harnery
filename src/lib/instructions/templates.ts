@@ -266,7 +266,7 @@ The web UI is the member + steward picker; don't create from the CLI (that skips
 the steward choice). Emit the link with the objective URL-encoded:
 
 \`\`\`
-http://localhost:9000/councils/new?objective=<encoded>
+http://localhost:4276/councils/new?objective=<encoded>
 \`\`\`
 
 If the dev server isn't up, start it with \`${b} web up\`.

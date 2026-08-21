@@ -5,9 +5,9 @@
   "description": "Standalone Next.js dashboard for the harnery coord layer. Booted by `harn web up`; not published to npm.",
   "type": "module",
   "scripts": {
-    "dev": "next dev --webpack -p ${HARNERY_WEB_PORT:-9000}",
+    "dev": "next dev --webpack -p ${HARNERY_WEB_PORT:-4276}",
     "build": "next build --webpack",
-    "start": "next start -p ${HARNERY_WEB_PORT:-9000}"
+    "start": "next start -p ${HARNERY_WEB_PORT:-4276}"
   },
   "dependencies": {
     "@shikijs/langs": "4.2.0",

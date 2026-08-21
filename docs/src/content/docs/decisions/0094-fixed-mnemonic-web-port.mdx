@@ -1,0 +1,50 @@
+---
+title: "0094: Use a fixed mnemonic web port"
+description: "ADR: make 4276 the stable Harnery dashboard default while preserving explicit overrides."
+sidebar:
+  order: 94
+---
+
+**Status:** accepted (2026-08-21) · **Scope:** standalone web dashboard
+
+## Context
+
+Harnery's dashboard used port 9000, a common development-server default with
+no connection to the product. Developers running another service on that port
+had to remember an override, and a new override could produce a different URL
+from one session to the next. The command also documented
+`HARNERY_WEB_PORT` and `web.port` as configuration surfaces while its Commander
+default overwrote the environment value and never read the project setting.
+
+## Alternatives considered
+
+**Keep port 9000.** Rejected because it is generic, commonly claimed by other
+local tools, and gives no clue which process owns the address.
+
+**Scan for the next free port.** Rejected because bookmarks, tunnel targets,
+documentation links, and operator instructions need one predictable URL.
+Automatic allocation would trade a visible collision for hidden URL drift.
+
+**Assign a random high port once per installation.** Rejected for the same
+reason. It would also make support instructions and cross-machine setup harder
+to reproduce.
+
+## Decision
+
+Use port `4276` as the built-in default for `harn web up`, `harn web start`,
+and the dashboard package scripts. The number maps to HARN on a phone keypad,
+which makes the ownership memorable without using a generic framework port.
+
+Resolve the port in this order: explicit `--port`, `HARNERY_WEB_PORT`, merged
+`.harnery/config.jsonc` `web.port`, then `4276`. Validate the selected port and
+probe its localhost socket before spawning Next. If it is occupied, return the
+`web_port_in_use` error with an explicit override hint. Never scan for or choose
+another port automatically.
+
+Explicit `9000` flags, environment values, and project settings remain valid.
+
+## Result
+
+The CLI, package scripts, schema, current documentation, embedded instruction
+templates, and host-development registry now agree on `4276`. Regression tests
+lock the resolution order, invalid-value handling, and occupied-port probe.

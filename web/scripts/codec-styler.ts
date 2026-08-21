@@ -18,7 +18,7 @@
  * exit 0 with inference disabled.
  *
  * Usage:
- *   bun web/scripts/codec-styler.ts [--base http://localhost:9000] [--once]
+ *   bun web/scripts/codec-styler.ts [--base http://localhost:4276] [--once]
  *   bun web/scripts/codec-styler.ts --watch 30
  */
 
@@ -214,7 +214,7 @@ async function pass(base: string, interpreter: Interpreter, root: string): Promi
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const baseIdx = args.indexOf("--base");
-  const base = baseIdx >= 0 ? (args[baseIdx + 1] ?? "") : "http://localhost:9000";
+  const base = baseIdx >= 0 ? (args[baseIdx + 1] ?? "") : "http://localhost:4276";
   const watchIdx = args.indexOf("--watch");
   const watchSecs = watchIdx >= 0 ? Number(args[watchIdx + 1] ?? 30) : 0;
   // The suggestions file must land in the SAME coord root the queried web
